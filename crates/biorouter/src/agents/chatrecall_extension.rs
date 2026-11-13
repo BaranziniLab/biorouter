@@ -299,6 +299,58 @@ impl ChatRecallClient {
         Ok(Self { info, context })
     }
 
+    /// Raise the reading chat to Private when any of `recalled` is a Private
+    /// chat this call is about to return content from (DR-33, design §2.6).
+    ///
+    /// Only an enforced, private-capability call can be admitted to a private
+    /// chat at all, so only such a call is asked; and a reader whose row is
+    /// already private changes nothing, so the per-hit lookups are skipped for
+    /// it. A hit whose row cannot be read is doubt, and doubt ratchets: its
+    /// excerpt is already in hand. `Err` withholds the whole result, because a
+    /// read this process cannot record is one it must not perform.
+    async fn ratchet_reader(
+        &self,
+        reader_session_id: &str,
+        cap: CallCapability,
+        recalled: &[String],
+    ) -> Result<(), String> {
+        if !cap.enforced() || !cap.tier().is_private() {
+            return Ok(());
+        }
+        let store = &self.context.session_manager;
+        if store
+            .get_session(reader_session_id, false)
+            .await
+            .is_ok_and(|reader| reader.privacy_tier.is_private())
+        {
+            return Ok(());
+        }
+        for target in recalled {
+            if target.as_str() == reader_session_id {
+                continue;
+            }
+            let private = store
+                .get_session(target, false)
+                .await
+                .map_or(true, |row| row.privacy_tier.is_private());
+            if private {
+                return crate::agents::extension_manager::raise_reader_privacy(
+                    store,
+                    reader_session_id,
+                    &format!("read:{target}"),
+                )
+                .await
+                .map_err(|error| {
+                    format!(
+                        "Chat recall found a private chat, and recording that this chat read it \
+                         failed, so nothing was returned ({error})."
+                    )
+                });
+            }
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn handle_chatrecall(
         &self,
@@ -413,6 +465,14 @@ impl ChatRecallClient {
                                 ),
                             )]);
                         }
+                    }
+
+                    // DR-33, design §2.6: a private chat's content is about to
+                    // be handed to this one, so this one is private from now on,
+                    // recorded BEFORE anything of the target is returned.
+                    if loaded_session.privacy_tier.is_private() {
+                        self.ratchet_reader(current_session_id, cap, std::slice::from_ref(&sid))
+                            .await?;
                     }
 
                     let conversation = loaded_session.conversation.as_ref();
@@ -577,6 +637,15 @@ impl ChatRecallClient {
                 .await
             {
                 Ok(results) => {
+                    // DR-33, design §2.6, as for LOAD: excerpts and the latest
+                    // message of a private chat are its content too.
+                    let recalled: Vec<String> = results
+                        .results
+                        .iter()
+                        .map(|hit| hit.session_id.clone())
+                        .collect();
+                    self.ratchet_reader(current_session_id, cap, &recalled)
+                        .await?;
                     let formatted_results = if results.rows_examined == 0 {
                         if recent_mode {
                             "No recent sessions found in the requested time range".to_string()
@@ -1466,5 +1535,200 @@ mod tests {
             "{mine}"
         );
         assert!(mine.contains("/data/p"), "{mine}");
+    }
+
+    // -----------------------------------------------------------------------
+    // DR-33, design §2.6: a read of a private chat ratchets the READER.
+    // -----------------------------------------------------------------------
+
+    impl Harness {
+        /// A reader chat that exists, classified Public: the stale-slot state
+        /// (its capability samples Private while its row has not ratcheted).
+        async fn public_reader(&self) -> Session {
+            self.sm
+                .create_session(
+                    std::path::PathBuf::from("/data/reader"),
+                    "reader".to_string(),
+                    SessionType::User,
+                )
+                .await
+                .unwrap()
+        }
+
+        async fn recall_as(
+            &self,
+            reader: &str,
+            cap: CallCapability,
+            args: serde_json::Value,
+        ) -> Result<Vec<Content>, String> {
+            self.client
+                .handle_chatrecall(reader, cap, args.as_object().cloned())
+                .await
+        }
+
+        async fn tier_of(&self, id: &str) -> (SessionClassification, Option<String>) {
+            let row = self.sm.get_session(id, false).await.unwrap();
+            (row.privacy_tier, row.privacy_reason)
+        }
+    }
+
+    #[tokio::test]
+    async fn loading_a_private_chat_ratchets_the_reader_before_it_returns() {
+        let h = Harness::new().await;
+        let target = h.private_session_named("cohort", "/data/u").await;
+        let reader = h.public_reader().await;
+
+        let out = h
+            .recall_as(
+                &reader.id,
+                CallCapability::for_test(ProviderTier::Private, true),
+                serde_json::json!({ "session_id": target.id }),
+            )
+            .await
+            .unwrap();
+        assert!(out[0].as_text().unwrap().text.contains("/data/u"));
+        assert_eq!(
+            h.tier_of(&reader.id).await,
+            (
+                SessionClassification::Private,
+                Some(format!("read:{}", target.id))
+            ),
+            "a chat that was handed a private chat's content is private from then on"
+        );
+    }
+
+    #[tokio::test]
+    async fn loading_a_public_chat_or_reading_with_tiers_off_changes_nothing() {
+        let h = Harness::new().await;
+        let public = h.public_session_named("notes", "/data/p").await;
+        let private = h.private_session_named("cohort", "/data/u").await;
+        let reader = h.public_reader().await;
+
+        h.recall_as(
+            &reader.id,
+            CallCapability::for_test(ProviderTier::Private, true),
+            serde_json::json!({ "session_id": public.id }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            h.tier_of(&reader.id).await,
+            (SessionClassification::Public, None)
+        );
+
+        // AR-7: with the switch off as sampled, nothing ratchets.
+        h.recall_as(
+            &reader.id,
+            CallCapability::for_test(ProviderTier::Private, false),
+            serde_json::json!({ "session_id": private.id }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            h.tier_of(&reader.id).await,
+            (SessionClassification::Public, None)
+        );
+
+        // A public capability is refused the private chat, so nothing it was
+        // given ratchets it.
+        h.recall_as(
+            &reader.id,
+            CallCapability::for_test(ProviderTier::Public, true),
+            serde_json::json!({ "session_id": private.id }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            h.tier_of(&reader.id).await,
+            (SessionClassification::Public, None)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_search_that_returns_a_private_chat_ratchets_the_reader() {
+        let h = Harness::new().await;
+        h.session_containing("notes", "/data/p", false, "SENTINELWORD notes")
+            .await;
+        let reader = h.public_reader().await;
+
+        // Only public hits: nothing to record.
+        h.recall_as(
+            &reader.id,
+            CallCapability::for_test(ProviderTier::Private, true),
+            serde_json::json!({ "query": "SENTINELWORD" }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            h.tier_of(&reader.id).await,
+            (SessionClassification::Public, None)
+        );
+
+        let private = h
+            .session_containing("cohort", "/data/u", true, "SENTINELWORD cohort")
+            .await;
+        let out = h
+            .recall_as(
+                &reader.id,
+                CallCapability::for_test(ProviderTier::Private, true),
+                serde_json::json!({ "query": "SENTINELWORD" }),
+            )
+            .await
+            .unwrap();
+        assert!(out[0].as_text().unwrap().text.contains("/data/u"));
+        assert_eq!(
+            h.tier_of(&reader.id).await,
+            (
+                SessionClassification::Private,
+                Some(format!("read:{}", private.id))
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_recent_listing_that_shows_a_private_chat_ratchets_the_reader() {
+        let h = Harness::new().await;
+        let private = h.private_session_named("cohort", "/data/u").await;
+        let reader = h.public_reader().await;
+        h.recall_as(
+            &reader.id,
+            CallCapability::for_test(ProviderTier::Private, true),
+            serde_json::json!({}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            h.tier_of(&reader.id).await,
+            (
+                SessionClassification::Private,
+                Some(format!("read:{}", private.id))
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn a_reader_already_private_keeps_its_reason() {
+        let h = Harness::new().await;
+        let target = h.private_session_named("cohort", "/data/u").await;
+        let reader = h.public_reader().await;
+        h.sm.update(&reader.id)
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+        h.recall_as(
+            &reader.id,
+            CallCapability::for_test(ProviderTier::Private, true),
+            serde_json::json!({ "session_id": target.id }),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            h.tier_of(&reader.id).await,
+            (
+                SessionClassification::Private,
+                Some("turn:versa_azure".to_string())
+            )
+        );
     }
 }

@@ -14,10 +14,14 @@ import DecisionHistory, {
   DECISION_ROW_HEIGHT,
   FOLLOW_INTERVAL_MS,
   filtersSetNouns,
+  listsSeveralModels,
+  rowModel,
   rowProbability,
   visibleRange,
 } from './DecisionHistory';
 import { CALIBRATION_COPY } from './decisionWords';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { AlertCircle } from '../icons/app-icons';
 
 const mocks = vi.hoisted(() => ({ page: vi.fn(), detail: vi.fn(), summary: vi.fn() }));
 vi.mock('../../utils/sessionDecisions', async (original) => ({
@@ -328,6 +332,56 @@ describe('the rows (R1)', () => {
   });
 });
 
+describe('the model a row names (W2-6)', () => {
+  const JOEY = 'decision-models/baseten-joey-2b-latest';
+  /** One chunk of a vote, as one of its models answered it. */
+  function voteWire(id: string, model: { provider: string; model: string }, tier: string) {
+    const row = wire(2, { id, model, tier });
+    return { ...row, decisions: row.decisions.map((d) => ({ ...d, model, tier })) };
+  }
+  const vote = () => [
+    voteWire('v-tev', { provider: 'ollama_decision', model: 'tev1:0.8b' }, 'private'),
+    voteWire('v-joey', { provider: 'baseten_decision', model: JOEY }, 'public'),
+    voteWire('v-clef', { provider: 'ollama_decision', model: 'clef-flash:latest' }, 'private'),
+  ];
+
+  afterEach(() => {
+    delete document.documentElement.dataset.biorouterSurface;
+  });
+
+  it('is the alias and a short place, never a slug or a provider key', () => {
+    const [tev, joey] = vote().map((row) => parseDecisionRecord(row)!);
+    expect(rowModel(tev)).toBe('tev1:0.8b · this computer');
+    expect(rowModel(joey)).toBe('joey-1 · Baseten');
+    // A `biorouter serve` browser's place is a phrase: the row keeps the alias alone.
+    document.documentElement.dataset.biorouterSurface = 'headless';
+    expect(rowModel(tev)).toBe('tev1:0.8b');
+    expect(rowModel(parseDecisionRecord(wire(0, { model: null }))!)).toBe('tev1:0.8b');
+  });
+
+  it('is drawn only when the list holds calls from more than one model', () => {
+    const one = [wire(0), wire(1)].map((row) => parseDecisionRecord(row)!);
+    expect(listsSeveralModels(one)).toBe(false);
+    expect(listsSeveralModels(vote().map((row) => parseDecisionRecord(row)!))).toBe(true);
+  });
+
+  it('tells a vote’s models apart on line 2 and in each row’s name', async () => {
+    serve(vote());
+    draw();
+    await screen.findAllByTestId('decision-row');
+    for (const [id, model] of [
+      ['v-tev', 'tev1:0.8b · this computer'],
+      ['v-joey', 'joey-1 · Baseten'],
+      ['v-clef', 'clef-flash:latest · this computer'],
+    ]) {
+      const row = rowOf(id);
+      expect(row.querySelector('.br-dh-row__when')).toHaveTextContent(model);
+      expect(row).toHaveAttribute('aria-label', expect.stringMatching(new RegExp(`, ${model}$`)));
+    }
+    expect(rowOf('v-joey')).not.toHaveTextContent('baseten');
+  });
+});
+
 describe('DecisionHistory', () => {
   it('lists the newest page, drawing only the rows in view of thousands', async () => {
     draw();
@@ -395,6 +449,31 @@ describe('DecisionHistory', () => {
     expect(detail).not.toHaveTextContent('≥');
     // An answer-type call shows no verdict on its head line: the answer is item 4.
     expect(within(detail).queryByTestId('decision-detail-verdict')).toBeNull();
+  });
+
+  it('says why a call failed in the primary ink with the failure glyph, never in red', async () => {
+    const failed = wire(0, {
+      outcome: 'error',
+      decisions: [],
+      error: 'The decision model did not answer in 10 s',
+    });
+    mocks.page.mockImplementation(async () => ({
+      records: [parseDecisionRecord(failed)!],
+      nextCursor: null,
+      total: 1,
+    }));
+    mocks.detail.mockImplementation(async () =>
+      parseDecisionDetail({ record: failed, context: { text: 'Full note d0' } })
+    );
+    draw();
+    const detail = await screen.findByTestId('decision-detail');
+    const error = within(detail).getByTestId('decision-detail-error');
+    expect(error).toHaveTextContent('Error: The decision model did not answer in 10 s');
+    // Red is rare (design.md 9.14): ink, words and the failure glyph.
+    const host = document.createElement('div');
+    host.innerHTML = renderToStaticMarkup(<AlertCircle />);
+    expect(error.querySelector('svg')?.innerHTML).toBe(host.querySelector('svg')?.innerHTML);
+    expect(error.outerHTML).not.toMatch(/danger/);
   });
 
   it('keeps the bars, model, tier, latency, tokens, certainty, chunk and context under Details', async () => {
@@ -937,50 +1016,74 @@ describe('following a running chat', () => {
     });
   }
 
+  /** `by` calls land at the top: every page read from now on lists and counts them. */
   function grow(by: number) {
-    mocks.summary.mockResolvedValue({
-      data: { total: TOTAL + by, aggregates: [], recentTurns: [] },
-      missing: false,
+    const fresh = Array.from(
+      { length: by },
+      (_, i) =>
+        parseDecisionRecord(
+          wire(0, {
+            id: `new${by - i}`,
+            createdAt: new Date(Date.UTC(2026, 10, 4, 10, 5, by - i)).toISOString(),
+          })
+        )!
+    );
+    mocks.page.mockImplementation(async (_s, _f, page) => {
+      const base = pageAt(page?.before);
+      return {
+        ...base,
+        total: TOTAL + by,
+        records: page?.before ? base.records : [...fresh, ...base.records],
+      };
     });
   }
 
-  function drawInBar() {
+  function drawInBar(filter: DecisionHistoryFilter = {}) {
     return render(
       <PreviewBarScope>
         <PreviewBar name="Decisions" />
-        <DecisionHistory sessionId="s1" filter={{}} filterKey={1} />
+        <DecisionHistory sessionId="s1" filter={filter} filterKey={1} />
       </PreviewBarScope>
     );
+  }
+
+  /** The follow tick's read: the list's own first call, under its own filter. */
+  function tickReads() {
+    return mocks.page.mock.calls.filter((call) => call[2]?.limit === 1);
+  }
+  function listReads() {
+    return mocks.page.mock.calls.filter((call) => call[2]?.limit === DECISION_PAGE_SIZE);
   }
 
   it('reloads in place when new calls land while the list is at the top', async () => {
     drawInBar();
     await waitFor(() => expect(screen.getAllByTestId('decision-row').length).toBeGreaterThan(0));
-    await waitFor(() => expect(mocks.summary).toHaveBeenCalledTimes(1));
-    expect(mocks.page).toHaveBeenCalledTimes(1);
+    expect(listReads()).toHaveLength(1);
 
-    // Nothing new: the tick reads the summary and leaves the list alone.
+    // Nothing new: the tick reads the list's first call and leaves the list alone.
     await tick();
-    await waitFor(() => expect(mocks.summary).toHaveBeenCalledTimes(2));
-    expect(mocks.page).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(tickReads()).toHaveLength(1));
+    expect(tickReads()[0][2]).toMatchObject({ before: null, limit: 1 });
+    expect(listReads()).toHaveLength(1);
 
     grow(3);
     await tick();
-    await waitFor(() => expect(mocks.page).toHaveBeenCalledTimes(2));
-    expect(mocks.page.mock.calls[1][2]).toMatchObject({ before: null });
+    await waitFor(() => expect(listReads()).toHaveLength(2));
+    expect(listReads()[1][2]).toMatchObject({ before: null });
+    await waitFor(() =>
+      expect(screen.getByTestId('decision-history-count')).toHaveTextContent('5,003 calls')
+    );
     expect(screen.queryByTestId('decision-history-new-calls')).toBeNull();
 
-    // The reload re-read the summary, so the same total does not reload again.
-    await waitFor(() => expect(mocks.summary).toHaveBeenCalledTimes(4));
+    // The reload read the new first page, so the same calls do not reload again.
     await tick();
-    await waitFor(() => expect(mocks.summary).toHaveBeenCalledTimes(5));
-    expect(mocks.page).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(tickReads()).toHaveLength(3));
+    expect(listReads()).toHaveLength(2);
   });
 
   it('offers "Show N new" instead of moving the rows under a reader who has scrolled', async () => {
     drawInBar();
     await waitFor(() => expect(screen.getAllByTestId('decision-row').length).toBeGreaterThan(0));
-    await waitFor(() => expect(mocks.summary).toHaveBeenCalledTimes(1));
     const list = screen.getByTestId('decision-list');
     sizeList(list);
     act(() => {
@@ -999,11 +1102,50 @@ describe('following a running chat', () => {
     await tick();
     const button = await screen.findByTestId('decision-history-new-calls');
     expect(button).toHaveTextContent('Show 3 new');
-    expect(mocks.page).toHaveBeenCalledTimes(1);
+    expect(listReads()).toHaveLength(1);
 
     fireEvent.click(button);
-    await waitFor(() => expect(mocks.page).toHaveBeenCalledTimes(2));
-    expect(mocks.page.mock.calls[1][2]).toMatchObject({ before: null });
+    await waitFor(() => expect(listReads()).toHaveLength(2));
+    expect(listReads()[1][2]).toMatchObject({ before: null });
     expect(screen.queryByTestId('decision-history-new-calls')).toBeNull();
+  });
+
+  // W3-7: the list read two gate attempts, and the third landed before the summary
+  // beside it was read. Counting against the summary, the view said "2 calls" for good.
+  it('follows a call that landed between the list’s read and the summary’s', async () => {
+    const attempts = [gateWire('g2', 0.1), gateWire('g1', 0.1)];
+    serve(attempts);
+    mocks.summary.mockResolvedValue({
+      data: { total: 3, aggregates: [], recentTurns: [] },
+      missing: false,
+    });
+    const filter: DecisionHistoryFilter = { origin: 'gate', originId: 'probe' };
+    drawInBar(filter);
+    await waitFor(() =>
+      expect(screen.getByTestId('decision-history-count')).toHaveTextContent('2 calls')
+    );
+    await waitFor(() => expect(mocks.summary).toHaveBeenCalled());
+
+    serve([gateWire('g3', 0.2), ...attempts]);
+    await tick();
+    await waitFor(() =>
+      expect(screen.getByTestId('decision-history-count')).toHaveTextContent('3 calls')
+    );
+    expect(screen.getAllByTestId('decision-row')).toHaveLength(3);
+    // The tick asked under the list's own filter, for one call.
+    expect(tickReads()[0][1]).toMatchObject(filter);
+  });
+
+  it('reloads when the first call changed though the count did not', async () => {
+    serve([gateWire('g2', 0.1), gateWire('g1', 0.1)]);
+    drawInBar();
+    await waitFor(() => expect(screen.getAllByTestId('decision-row')).toHaveLength(2));
+    const reads = mocks.page.mock.calls.length;
+
+    serve([gateWire('g3', 0.2), gateWire('g2', 0.1)]);
+    await tick();
+    await waitFor(() => expect(rowOf('g3')).toBeTruthy());
+    expect(mocks.page.mock.calls.length).toBe(reads + 2);
+    expect(screen.getByTestId('decision-history-count')).toHaveTextContent('2 calls');
   });
 });

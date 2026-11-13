@@ -1,6 +1,6 @@
 # Orchestration phases
 
-> **What this is.** How the main agent runs delegated work in phases (plan, research, implementation, verification and so on) with the `workspace_orchestrate` tool: the plan record, the phases and their kinds, how a subagent is spawned into a phase, the barrier that closes one, the decision gate that holds a phase, and every phase after it, until a decision model is confident it met its goal or the person decides, the monitors a phase gives its subagents, plans a workflow declares, the hand-offs that carry results forward, and how each interface shows the plan.
+> **What this is.** How the main agent runs delegated work in phases (plan, research, implementation, verification and so on) with the `workspace_orchestrate` tool: the plan record, the phases and their kinds, how a subagent is spawned into a phase, the barrier that closes one, the decision gate that holds a phase, and every phase after it, until a decision model (or, without one, the chat's own model) is confident it met its goal or the person decides, the monitors a phase gives its subagents, plans a workflow declares, the hand-offs that carry results forward, and how each interface shows the plan.
 > **Status:** Current.
 > **Audience:** end users who ask for a staged run, and developers working on the agent loop or on a surface that draws the plan.
 
@@ -82,7 +82,7 @@ A spawn into the phase that is still starting is held by the barrier too. Betwee
 
 ## Decision gates
 
-A phase may carry a decision gate: a decision model reads what the phase produced, and the phase completes only when the model is confident, question by question, that the phase met its goal. A gate never passes on an error. What decision models are, and which one a gate uses, is in [Decision models](decision-models.md).
+A phase may carry a decision gate: a decision model reads what the phase produced, and the phase completes only when the model is confident, question by question, that the phase met its goal. A gate never passes on an error. What decision models are, and which one a gate uses, is in [Decision models](decision-models.md). A gate does not need a decision model: one that names no model is judged by the chat's own language model when the chat has none ([A gate needs only a language model](#a-gate-needs-only-a-language-model)).
 
 **A gate binds the plan.** Once a phase has a gate, whoever set it, the agent cannot change, remove or skip it, and every phase listed after the gated phase waits: it cannot start, take a subagent or complete as `completed` until the gate passes or the person passes or skips the gated phase. The hold goes by position in the plan, not by `depends_on`, and it ends when the gated phase is completed or skipped. Work outside the plan is not held. The tool's description says so to the model in one paragraph, "A gate binds you", so the agent plans around it rather than learning it from a refusal.
 
@@ -113,10 +113,10 @@ Each phase in `action:"plan"` takes an optional `gate`:
 | `questions` | 1 to 8 yes/no questions, name to question |
 | `threshold` | the P(yes) every question must reach, 0 to 1, default 0.8; at least 0.50 for a gate the agent declares |
 | `max_attempts` | evaluations that may fail before the phase is blocked, 1 to 5, default 3 |
-| `model` | optional, as `provider/model` or by the bare name or alias `decide` takes (`tev1:0.8b`, `joey-1`) when it names exactly one model the chat may use; stored as `provider/model`. A bare name that names none, or several, refuses the plan: "Phase "verify"'s gate model: … Nothing was changed." Left out, the chat's default decision model, the configured one, or the first one the chat may use. A workflow file's gates still need `provider/model` |
+| `model` | optional, as `provider/model` or by the bare name or alias `decide` takes (`tev1:0.8b`, `joey-1`) when it names exactly one model the chat may use; stored as `provider/model`. A bare name that names none, or several, refuses the plan: "Phase "verify"'s gate model: … Nothing was changed." Left out, the chat's default decision model, the configured one, or the first one the chat may use, and with none the chat's own model. A workflow file's gates still need `provider/model` |
 | `allow_uncalibrated` | accept probabilities a model wrote rather than its own distribution, default false |
 
-**The model is checked when the gate is declared.** A gate or a phase monitor the plan adds is checked the way a saved monitor is ([What a save checks](decision-models.md#what-a-save-checks)), with nothing of the chat sent. A refused gate refuses the whole call: "Phase "build"'s gate cannot be answered in this chat: … Declare it without that model, or ask the person to set a decision model this chat may use. Nothing was changed." A check that cannot be made just then (a timeout, or a model server that is unreachable, busy or failing) is accepted with a note, "Phase "build"'s gate model could not be checked just now (…); the gate is asked when the phase completes." A stored gate repeated unchanged is not checked again, whoever set it; with `fresh:true` every gate in the new plan is new. A plan that changes while its additions are checked is refused, and nothing is written. Whether a model's probabilities are calibrated is judged when it answers.
+**The model is checked when the gate is declared.** A gate or a phase monitor the plan adds is checked the way a saved monitor is ([What a save checks](decision-models.md#what-a-save-checks)), with nothing of the chat sent. Only a gate that names a model can be refused: "Phase "build"'s gate cannot be answered in this chat: … Declare it without that model to let this chat's own model judge it, or ask the person to set a decision model this chat may use. Nothing was changed." A refused gate refuses the whole call. A gate that names no model is accepted in every chat; when the chat has no decision model it may use, the reply says "Phase "build"'s gate is judged by this chat's own model when the phase completes, because this chat has no decision model it may use now." A check that cannot be made just then (a timeout, or a model server that is unreachable, busy or failing) is accepted with a note, "Phase "build"'s gate model could not be checked just now (…); the gate is asked when the phase completes." A stored gate repeated unchanged is not checked again, whoever set it; with `fresh:true` every gate in the new plan is new. A plan that changes while its additions are checked is refused, and nothing is written. Whether a model's probabilities are calibrated is judged when it answers.
 
 **What the agent may still do with a gated plan:**
 
@@ -137,9 +137,22 @@ Each phase in `action:"plan"` takes an optional `gate`:
 
 A gated phase that passed its gate, or that the person closed, holds nothing, so the rules for open gated phases no longer apply to it.
 
+### A gate needs only a language model
+
+The app needs only one language model, and a gated plan works the same way with or without decision models. A gate that names no model asks the decision model the chat would use. When the chat has none it may use (none is set up, or none it may use at its privacy tier), or that model cannot be reached (a connection or certificate failure, a timeout, or a server error), the chat's own language model judges the gate instead (`orchestration_plan::judge_gate`). It reads the same text a decision model would ([What the gate reads](#what-the-gate-reads)) in one short completion that is not streamed, and answers each question yes or no with its probability of yes, as one JSON object. The answer is read strictly. Anything other than one JSON object answering every question, yes or no with a probability from 0 to 1 that agrees with it, is an evaluation error, and an error never passes. A verdict is then treated as a decision model's: the same threshold, the same attempts, and the same pass, skip and retry for the person. Its probabilities are the model's own estimate, so the gate's setting for uncalibrated probabilities does not apply to it.
+
+The chat's own model is the one the chat is bound to, at the chat's own tier, so nothing crosses a privacy boundary: it is the model that reads the phase's results anyway. Its tokens are counted on the chat like any other call the chat makes outside its turns, an answer that could not be read included, and a [usage limit](usage-limits.md) never stops it.
+
+The gate's record keeps who gave its last verdict and why, in one plain sentence, and every surface shows it. The agent's reply ends with the sentence, the gate dialog shows it under Judged by, and `biorouter session gates` prints it under the gate:
+
+- "This chat has no decision model it may use, so gpt-5.5, the chat's model, judged the gate."
+- "joey-1 on Baseten could not be reached because its server's certificate did not match, so gpt-5.5, the chat's model, judged the gate."
+
+A gate that names a decision model asks only that model. One the chat may not use is refused when the gate is declared or set, and one that cannot be reached is an evaluation error that waits for the person, as before. A refusal, an answer that could not be read and a rate limit are errors whoever was asked, never a reason to ask the chat's model. Monitors never fall back to the chat's model.
+
 ### What the gate reads
 
-One text, at most 6,000 characters and fitted to the gate model's window: the phase's title, kind and goal, its hand-off as it would be stored on completion (the summary given, the one written earlier, or the one composed from the subagents' result lines), and, when the parent wrote the hand-off, each subagent's result line. These are the same screened lines the automatic hand-off uses, so a subagent more private than its parent contributes its role and status and never its text. The decision goes through the decision service as the parent chat, at the parent's tier, with the privacy master switch as this tool call sampled it, so a private chat's phase never reaches a public decision model.
+One text, at most 6,000 characters and fitted to the gate model's window: the phase's title, kind and goal, its hand-off as it would be stored on completion (the summary given, the one written earlier, or the one composed from the subagents' result lines), and, when the parent wrote the hand-off, each subagent's result line. These are the same screened lines the automatic hand-off uses, so a subagent more private than its parent contributes its role and status and never its text. The decision goes through the decision service as the parent chat, at the parent's tier, with the privacy master switch as this tool call sampled it, so a private chat's phase never reaches a public decision model. When the chat's own model judges the gate, it reads the same text.
 
 **Fitted to the gate model's window.** The text is narrowed from its end, by the same count the decision service's size check uses (its margin, its 15% and one token for every digit), until it fits the model's window beside the questions, so the phase, its goal and the start of its hand-off are kept first. It is never narrowed below 400 characters (`GATE_STATE_MIN_CHARS` in `orchestration_plan.rs`), and a model too small even for that is refused by the size check with the sentence that names its window, which counts as an evaluation error. Before, the text was cut at 6,000 characters whatever the model, so a hand-off full of numbers failed on a 2,048-token local model such as `tev1:0.8b`.
 
@@ -151,7 +164,7 @@ With `status:"completed"`:
 2. A pass the person recorded closes the phase without asking the gate, once the barrier allows: "The person passed this phase's gate, so it completed without asking it."
 3. A gate whose attempts are all used is refused at once, and nothing is asked.
 4. The barrier runs first, on the stored plan. A phase whose subagents are still working is refused exactly as an ungated one is, and no decision model is asked.
-5. The decision model answers every question. Each question passes when P(yes) is at or above the threshold.
+5. The decision model answers every question, or the chat's own model does for a gate that names no model when no decision model may ([A gate needs only a language model](#a-gate-needs-only-a-language-model)). Each question passes when P(yes) is at or above the threshold.
 6. The verdict is written in one transaction, which refuses if the gate changed while it was evaluated and, on a pass, checks the barrier and the racing-spawn marks again.
 
 | Verdict | What happens |
@@ -159,7 +172,7 @@ With `status:"completed"`:
 | Every question passed | The phase is completed, as an ungated one would be. One attempt is recorded. |
 | A question fell short | The phase stays in progress and one attempt is used. The reply lists each failing question with its P(yes) and tells the agent to fix the work (spawn subagents into the phase, or write a hand-off that states the evidence) and complete again. A summary given with `complete` is kept as the phase's hand-off. |
 | The last attempt fell short | The phase is blocked. The reply tells the agent to say what the gate asked and what the results lacked, and that only the person can go on: they can give the gate its attempts again, change or remove it, or pass or skip the phase, in the app or with `biorouter session gates`. |
-| The gate could not be evaluated | Nothing is decided and no attempt is used: the model was refused, unreachable or too small for the text, or it returned uncalibrated probabilities the gate does not accept. The reply says why. A second error in a row blocks the phase. |
+| The gate could not be evaluated | Nothing is decided and no attempt is used: the model was refused, unreachable or too small for the text, it returned uncalibrated probabilities the gate does not accept, or the chat's own model gave an answer that could not be read. The reply says why. A second error in a row blocks the phase. |
 
 `complete` with `status:"blocked"` never asks the gate: "Its gate was not asked, used no attempt and still holds the phases after it". `status:"skipped"` on a gated phase is refused unless the person's skip stands, and a `completed` while the person's skip stands is refused too.
 
@@ -168,7 +181,7 @@ With `status:"completed"`:
 | Blocked because | The agent | The person |
 |---|---|---|
 | The gate did not pass in any of its attempts | Nothing: its completion is refused | Retry, change, remove, pass or skip |
-| Two evaluation errors in a row | Complete it again once a decision model the chat may use is reachable (no attempt is used) | The same |
+| Two evaluation errors in a row | Complete it again once the model that judges it can be reached (no attempt is used) | The same |
 | The agent marked it blocked | Complete it with `status:"completed"` to ask the gate | Change, remove, pass or skip |
 
 ### The person's controls
@@ -177,7 +190,7 @@ Only the person sets, replaces, removes, passes, skips or retries a gate, from t
 
 | Control | Route | What it does |
 |---|---|---|
-| Set or replace | `PUT /sessions/{session_id}/phase-gates/{phase_id}` | The gate becomes the person's, its attempts start over, and a phase its old gate blocked goes back in progress. Its model is checked, and a model the chat may not use is refused with 422. |
+| Set or replace | `PUT /sessions/{session_id}/phase-gates/{phase_id}` | The gate becomes the person's, its attempts start over, and a phase its old gate blocked goes back in progress. A model it names is checked, and a model the chat may not use is refused with 422: "… Remove the model from the gate to let the chat's own model judge it. Nothing was changed." A gate that names no model is never refused. |
 | Remove | `DELETE /sessions/{session_id}/phase-gates/{phase_id}` | The gate and its record go, and the phases after it are released. |
 | Retry | `POST …/decision` with `{"decision": "retry"}` | The attempts and errors start over, a standing pass or skip is dropped, the phase reopens, and the retry is counted. |
 | Pass or skip | `POST …/decision` with `"pass"` or `"skip"` | Applied at once, unless a subagent of the phase is still working or a spawn into it is in flight. Then it stands ("Your pass stands: phase "build" completes without its gate once its 2 working subagents finish and the agent completes it.") until the agent completes the phase with the matching status. |
@@ -186,7 +199,7 @@ A person's pass or skip is not held by an earlier gate. Each answer is `{message
 
 ### How a gate shows
 
-Every evaluation is one row of the chat's decision log (origin `gate`, the phase id and title), never a transcript row. The plan's snapshot carries the gate on its phase (`gate`): the threshold, the questions and their count, the attempts used and allowed, the last verdict, the lowest P(yes) at the last verdict, whether the gate has blocked the phase, who set it (`owner`), its model, whether it accepts uncalibrated probabilities, the last error, the person's pass or skip (`personDecision`), the retries the person granted, `needsPerson` and the phases it `holds`. `needsPerson` is true while an open phase is stuck and waits for the person: its gate blocked it, or it was marked blocked. It and `blocked` are never set once the phase is completed or skipped. Each open phase also carries `heldBy`, the gated phase it waits for.
+Every evaluation by a decision model is one row of the chat's decision log (origin `gate`, the phase id and title), never a transcript row; a verdict from the chat's own model writes none. The plan's snapshot carries the gate on its phase (`gate`): the threshold, the questions and their count, the attempts used and allowed, the last verdict, the lowest P(yes) at the last verdict, who gave the last verdict (`lastJudge`: `kind` `decision_model` or `chat_model`, the model by its name, never a provider id, and for the chat's model the `reason`), whether the gate has blocked the phase, who set it (`owner`), its model, whether it accepts uncalibrated probabilities, the last error, the person's pass or skip (`personDecision`), the retries the person granted, `needsPerson` and the phases it `holds`. `needsPerson` is true while an open phase is stuck and waits for the person: its gate blocked it, or it was marked blocked. It and `blocked` are never set once the phase is completed or skipped. Each open phase also carries `heldBy`, the gated phase it waits for.
 
 The tool's reply prints the gate as one line under the phase, with "waits for build's gate" on a held phase and "holds …" on the gated one, and the per-turn plan summary marks the phase as gated. A gate whose last check did not pass reads "last not passed (lowest P(yes) 0.42)", never "failed": a gate passes or it does not. The desktop app draws a chip on the phase row (Gate before it is asked, Passed, Not passed, Needs you, Blocked or Skipped) that opens the gate dialog; its tooltip gives the whole sentence, such as the attempt (n of m), "blocked after 3 attempts" when every attempt was used, "could not be evaluated" when evaluation errors in a row blocked it (which use no attempt), or the person's own pass or skip. A held phase reads "Waits for Build's gate". The gate has no row of its own in the chat summary's Decisions section: its chip on the phase is its place. `biorouter session subagents` and the terminal UI's pane mark a passed and a blocked gate as well. A surface reading an older snapshot without the field shows no chip.
 
@@ -196,7 +209,7 @@ A phase may also carry `monitors`: at most 4 decision-model monitors, in the sha
 
 ## Plans from a workflow
 
-A workflow file may declare the plan its chat starts with, as `orchestration_plan` ([workflow schema reference](../workflows/workflow-schema-reference.md#supervision-decision_settings-and-orchestration_plan)). The seed writes it once, into the new chat, before its first message, as the skeleton the file declares: no phase has started and no gate has been asked. Its gates are owned by the workflow, have no 0.50 floor, and bind the agent like any other. A plan needs the Completely Autonomous approval mode, where the agent has the `subagent` and `workspace_orchestrate` tools; started in another mode, the workflow is refused and no chat is left behind. A subagent cannot run phases, so a sub-workflow that declares a plan cannot be spawned.
+A workflow file may declare the plan its chat starts with, as `orchestration_plan` ([workflow schema reference](../workflows/workflow-schema-reference.md#supervision-decision_settings-and-orchestration_plan)). The seed writes it once, into the new chat, before its first message, as the skeleton the file declares: no phase has started and no gate has been asked. Its gates are owned by the workflow, have no 0.50 floor, and bind the agent like any other. A gate that names no model runs for a person with no decision model, judged by the chat's own model; one that names a model the person does not have refuses the workflow, with "Remove the model from the gate to let the chat's own model judge it." A plan needs the Completely Autonomous approval mode, where the agent has the `subagent` and `workspace_orchestrate` tools; started in another mode, the workflow is refused and no chat is left behind. A subagent cannot run phases, so a sub-workflow that declares a plan cannot be spawned.
 
 ## A monitor's stop stops the swarm
 

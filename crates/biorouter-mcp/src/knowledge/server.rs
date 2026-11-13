@@ -178,6 +178,19 @@ const KB_RATCHETING_TOOLS: &[&str] = &[
     "kb_merge",
 ];
 
+/// Tools that read across the session's visible set rather than one named base
+/// (DR-33, design §2.6): with no `kb_id` the searches fan out, the listing
+/// names every visible base, and the two pointer tools answer with the set. A
+/// result of one of these, given to a private caller, is marked as carrying
+/// private content whenever a private base is in that set.
+const KB_VISIBLE_SET_TOOLS: &[&str] = &[
+    "kb_search",
+    "kb_search_raw_sources",
+    "kb_list_bases",
+    "kb_get_active",
+    "kb_set_active",
+];
+
 #[derive(Clone)]
 pub struct KnowledgeServer {
     tool_router: ToolRouter<Self>,
@@ -2319,7 +2332,16 @@ impl ServerHandler for KnowledgeServer {
             }
         }
 
-        if let Some(kb_id) = self.gated_kb_id(&name, request.arguments.as_ref(), Some(&context))? {
+        // DR-33, design §2.6: the private bases this call reads, decided BEFORE
+        // it runs (and before a write's raise), so a public base a private
+        // write is about to raise is not counted as private content the caller
+        // was given. Only a private caller can be given any.
+        let mut private_sources: Vec<String> = Vec::new();
+        let gated = self.gated_kb_id(&name, request.arguments.as_ref(), Some(&context))?;
+        if gated.is_none() && caller.private && KB_VISIBLE_SET_TOOLS.contains(&name.as_str()) {
+            private_sources = self.private_bases_in_view(Some(&context), &caller);
+        }
+        if let Some(kb_id) = gated {
             // Issue #56, Task 10C. The read half of the ruling, and the reason
             // this is a hand-written `call_tool`: `kb_search`'s explicit-`kb_id`
             // branch joined `kb_root(root, &kb_id)` and searched it, and six
@@ -2330,6 +2352,10 @@ impl ServerHandler for KnowledgeServer {
             self.assert_kb_reachable(&kb_id, &caller)?;
             self.assert_transaction_admission(&name, &kb_id, request.arguments.as_ref(), &context)
                 .await?;
+            if caller.private {
+                private_sources =
+                    self.private_bases_named(&name, &kb_id, request.arguments.as_ref());
+            }
             if KB_RATCHETING_TOOLS.contains(&name.as_str()) {
                 // BEFORE the write: a raise that only lands on success leaves
                 // content in a base whose tier never moved if the write panics
@@ -2370,7 +2396,51 @@ impl ServerHandler for KnowledgeServer {
         }
 
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        self.tool_router.call(tcc).await
+        let mut result = self.tool_router.call(tcc).await?;
+        crate::knowledge::tier::mark_private_content(&mut result, &private_sources);
+        Ok(result)
+    }
+}
+
+impl KnowledgeServer {
+    /// The private bases among those a call naming `kb_id` reads: that base,
+    /// and a merge's source (DR-33, design §2.6). Read before the call runs.
+    fn private_bases_named(
+        &self,
+        tool: &str,
+        kb_id: &str,
+        args: Option<&rmcp::model::JsonObject>,
+    ) -> Vec<String> {
+        let root = self.service.root();
+        let mut named = vec![kb_id.to_string()];
+        if matches!(tool, "kb_merge" | "kb_merge_preview") {
+            if let Some(source) = args
+                .and_then(|a| a.get("source_kb_id"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| crate::knowledge::paths::validate_kb_id(s).is_ok())
+            {
+                named.push(source.to_string());
+            }
+        }
+        crate::knowledge::tier::private_among(root, named)
+    }
+
+    /// The private bases in this caller's visible set, for the tools that read
+    /// across it. A set that cannot be read is doubt, and doubt marks: the
+    /// tool may still answer from it.
+    fn private_bases_in_view(
+        &self,
+        context: Option<&RequestContext<RoleServer>>,
+        caller: &CallerIdentity,
+    ) -> Vec<String> {
+        let root = self.service.root();
+        match self.visible_bases_for_session(Self::session_id(context), caller) {
+            Ok(bases) => {
+                crate::knowledge::tier::private_among(root, bases.into_iter().map(|base| base.id))
+            }
+            Err(_) => vec!["unknown".to_string()],
+        }
     }
 }
 
@@ -6510,6 +6580,133 @@ mod tests {
         assert!(
             call_sites >= 4,
             "expected the four listing surfaces to reach the predicate, found {call_sites}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // DR-33, design §2.6: a result read out of a private base is MARKED, so the
+    // daemon's dispatch choke point ratchets the chat that receives it.
+    // -----------------------------------------------------------------------
+
+    fn marked_bases(out: &Result<CallToolResult, ErrorData>) -> Option<Vec<String>> {
+        let result = out.as_ref().expect("the call answers");
+        crate::knowledge::tier::private_content_bases(result.meta.as_ref())
+    }
+
+    fn probe_args(tool: &str, kb: &str) -> serde_json::Value {
+        (KB_TOOL_PROBES
+            .iter()
+            .find(|probe| probe.name == tool)
+            .unwrap_or_else(|| panic!("{tool} has a probe"))
+            .args)(kb)
+    }
+
+    #[tokio::test]
+    async fn a_private_callers_read_of_a_private_base_is_marked_with_the_base() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&["omop", "notes"]);
+        crate::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+
+        let out = call_tool_as(
+            &srv,
+            "kb_read_page",
+            probe_args("kb_read_page", "omop"),
+            Private,
+        )
+        .await;
+        assert_eq!(marked_bases(&out), Some(vec!["omop".to_string()]));
+
+        // A public base, read by the same caller, carries nothing private.
+        let out = call_tool_as(
+            &srv,
+            "kb_read_page",
+            probe_args("kb_read_page", "notes"),
+            Private,
+        )
+        .await;
+        assert_eq!(marked_bases(&out), None);
+        // A public caller is never given private content, so is never marked.
+        let out = call_tool_as(
+            &srv,
+            "kb_read_page",
+            probe_args("kb_read_page", "notes"),
+            Public,
+        )
+        .await;
+        assert_eq!(marked_bases(&out), None);
+    }
+
+    /// The tier is read BEFORE a write's raise: a private chat writing into a
+    /// public base raises the base, but was given nothing private by the call.
+    #[tokio::test]
+    async fn a_private_write_into_a_public_base_is_not_marked() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&["notes"]);
+        let out = call_tool_as(
+            &srv,
+            "kb_append_log",
+            probe_args("kb_append_log", "notes"),
+            Private,
+        )
+        .await;
+        assert!(
+            crate::knowledge::tier::is_private(&root, "notes"),
+            "precondition: the write raised the base"
+        );
+        assert_eq!(marked_bases(&out), None);
+    }
+
+    #[tokio::test]
+    async fn a_search_across_the_visible_set_is_marked_when_a_private_base_is_in_it() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&["omop", "notes"]);
+        let search = serde_json::json!({ "query": "anything" });
+
+        let out = call_tool_as(&srv, "kb_search", search.clone(), Private).await;
+        assert_eq!(marked_bases(&out), None, "every base is public");
+
+        crate::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+        let out = call_tool_as(&srv, "kb_search", search.clone(), Private).await;
+        assert_eq!(marked_bases(&out), Some(vec!["omop".to_string()]));
+        let out = call_tool_as(&srv, "kb_list_bases", serde_json::json!({}), Private).await;
+        assert_eq!(marked_bases(&out), Some(vec!["omop".to_string()]));
+
+        // A public caller's search skips the private base, so is not marked.
+        let out = call_tool_as(&srv, "kb_search", search, Public).await;
+        assert_eq!(marked_bases(&out), None);
+    }
+
+    /// Every tool is placed by the mark: it names one base (and is marked when
+    /// that base is private), reads across the visible set, or reads no
+    /// existing base. A new tool in none of the three would hand a private
+    /// base's content to a chat without the chat ever being told.
+    #[test]
+    fn every_tool_is_classified_for_the_private_content_mark() {
+        // Tools that read no existing base: creating one, and importing an
+        // archive the caller supplies. Their results are never marked.
+        const KB_NO_EXISTING_BASE_TOOLS: &[&str] = &["kb_create_base", "kb_import"];
+        let exposed: std::collections::BTreeSet<String> = KnowledgeServer::tool_router()
+            .list_all()
+            .into_iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        let mut placed = std::collections::BTreeSet::new();
+        let mut twice = std::collections::BTreeSet::new();
+        for name in KB_ID_GATED_TOOLS
+            .iter()
+            .chain(KB_VISIBLE_SET_TOOLS)
+            .chain(KB_NO_EXISTING_BASE_TOOLS)
+        {
+            if !placed.insert(name.to_string()) {
+                twice.insert(name.to_string());
+            }
+        }
+        assert_eq!(exposed, placed);
+        // The two searches name one base when given a `kb_id` and fan out over
+        // the visible set when not; nothing else may be in two lists.
+        assert_eq!(
+            twice,
+            std::collections::BTreeSet::from([
+                "kb_search".to_string(),
+                "kb_search_raw_sources".to_string()
+            ])
         );
     }
 }

@@ -42,6 +42,19 @@ pub struct CallCapability {
     tier: ProviderTier,
     enforced: bool,
     affiliation: Option<ModelAffiliation>,
+    /// DR-33: the tier was lowered by one of the chat's decision models, read
+    /// in the same lock as the tier (`decision_lowered_by().is_some()`), so a
+    /// refusal can pick its sentence without a second read of the slot. It
+    /// decides nothing: the gates read [`Self::tier`]. Set only by
+    /// [`Self::sample`].
+    lowered_by_decision: bool,
+    /// Issue #56: the slot already holds a private model, but this call is on a
+    /// turn that started public, so it is admitted at the turn's tier and the
+    /// private model applies from the next message. Like the flag above it
+    /// decides nothing; it lets a refusal say that instead of asking the person
+    /// to switch to a private model they just chose. Set only by
+    /// [`Self::no_wider_than`].
+    private_from_next_turn: bool,
 }
 
 impl CallCapability {
@@ -56,16 +69,18 @@ impl CallCapability {
         // `None` — legitimately the state before the first bind — resolves to
         // Public, the safe direction for every gate that reads this. Its
         // affiliation is `None` too, which is what a public model's is.
-        let (tier, affiliation) = provider
+        let (tier, affiliation, lowered_by_decision) = provider
             .lock()
             .await
             .as_ref()
-            .map(|p| (p.tier(), p.affiliation()))
-            .unwrap_or((ProviderTier::Public, None));
+            .map(|p| (p.tier(), p.affiliation(), p.decision_lowered_by().is_some()))
+            .unwrap_or((ProviderTier::Public, None, false));
         Self {
             tier,
             affiliation,
             enforced: crate::privacy::privacy_tiers_enabled(),
+            lowered_by_decision,
+            private_from_next_turn: false,
         }
     }
 
@@ -81,6 +96,8 @@ impl CallCapability {
             // gates keep this capability away from every private extension
             // regardless.
             affiliation: None,
+            lowered_by_decision: false,
+            private_from_next_turn: false,
         }
     }
 
@@ -125,6 +142,8 @@ impl CallCapability {
             tier,
             enforced,
             affiliation,
+            lowered_by_decision: false,
+            private_from_next_turn: false,
         }
     }
 
@@ -139,6 +158,21 @@ impl CallCapability {
             tier,
             enforced,
             affiliation,
+            lowered_by_decision: false,
+            private_from_next_turn: false,
+        }
+    }
+
+    /// A Public capability whose tier a decision model lowered, for the tests of
+    /// the sentences that name it.
+    #[cfg(test)]
+    pub(crate) const fn for_test_lowered_by_decision(enforced: bool) -> Self {
+        Self {
+            tier: ProviderTier::Public,
+            enforced,
+            affiliation: None,
+            lowered_by_decision: true,
+            private_from_next_turn: false,
         }
     }
 
@@ -150,12 +184,86 @@ impl CallCapability {
         Self::for_test(ProviderTier::Public, true)
     }
 
+    /// This capability, never wider than `ceiling`: the capability the running
+    /// turn started with (issue #56, a model switch while a turn runs).
+    ///
+    /// The reply loop pins the provider a turn's requests run on for the whole
+    /// turn, while the gates sample the slot on every call. A person who
+    /// switches a public chat to a private model while a turn runs therefore
+    /// moves the slot and not the model the turn is still sending to. Admitting
+    /// a call on the slot alone let private extension results reach that public
+    /// model. So a call on a turn's path is admitted on the lesser of the two:
+    ///
+    ///  * **The slot is Public now.** A switch to a less private model applies
+    ///    at once, so this sample is the answer, its decision-model cause
+    ///    included.
+    ///  * **The turn started Public and the slot is Private.** The turn still
+    ///    runs on the public model, so the ceiling is the answer and the switch
+    ///    applies at the next turn, whose Gate B takes a new ceiling. Its
+    ///    decision-model cause, if any, is the ceiling's, because that is why
+    ///    the turn is public. This is the one case that sets
+    ///    [`Self::private_from_next_turn`], so a refusal can say the new model
+    ///    starts with the next message.
+    ///  * **Both Private.** The tier stays Private, and the affiliation is the
+    ///    one a lead/worker pair carries
+    ///    ([`crate::providers::composite_affiliation`]): what a call returns
+    ///    reaches the model the turn runs on now and, through the transcript,
+    ///    the one the slot holds for the next turn, so it must be covered for
+    ///    both. When the two agree that is the identity.
+    ///
+    /// The master switch is this sample's, never the ceiling's: the ceiling
+    /// narrows reach, it does not turn enforcement on or off.
+    ///
+    /// ⚠ The decision-model flag is copied from whichever sample the tier came
+    /// from and never set here, so a capability still claims a decision model
+    /// lowered it only when [`Self::sample`] read that off a slot
+    /// (`lowered_by_decision_is_set_only_inside_sample`).
+    pub fn no_wider_than(self, ceiling: Self) -> Self {
+        if !self.tier.is_private() {
+            return self;
+        }
+        if !ceiling.tier.is_private() {
+            return Self {
+                enforced: self.enforced,
+                private_from_next_turn: true,
+                ..ceiling
+            };
+        }
+        Self {
+            affiliation: crate::providers::composite_affiliation(
+                self.affiliation,
+                ceiling.affiliation,
+            ),
+            private_from_next_turn: false,
+            ..self
+        }
+    }
+
     pub const fn tier(&self) -> ProviderTier {
         self.tier
     }
 
     pub const fn enforced(&self) -> bool {
         self.enforced
+    }
+
+    /// DR-33: whether this call's tier is Public because of a decision model
+    /// the chat names rather than because of its language model. A refusal
+    /// branches on it to say so instead of telling a Versa chat to "switch to a
+    /// private model" (design §3.9). The words are read off the bound
+    /// provider's `decision_lowered_by()` on the refusal path only.
+    pub const fn lowered_by_decision(&self) -> bool {
+        self.lowered_by_decision
+    }
+
+    /// Issue #56: the chat was switched to a private model while this call's
+    /// turn ran, and this call is admitted at the turn's public tier until the
+    /// next message ([`Self::no_wider_than`]). A refusal branches on it to say
+    /// the new model takes effect from the next message, rather than asking the
+    /// person to switch to a private model they just chose. It decides nothing:
+    /// the gates read [`Self::tier`].
+    pub const fn private_from_next_turn(&self) -> bool {
+        self.private_from_next_turn
     }
 
     /// Whose agreements cover the model this call was admitted on — DR-26's
@@ -428,6 +536,100 @@ mod tests {
         assert!(!CallCapability::for_test(Private, false).restricts_private_data());
     }
 
+    /// Issue #56, a model switch while a turn runs: the slot moving to a more
+    /// private model widens nothing until the next turn, and moving to a less
+    /// private one narrows at once.
+    #[test]
+    fn a_turn_is_never_wider_than_the_capability_it_started_with() {
+        use ProviderTier::{Private, Public};
+        let public = CallCapability::for_test(Public, true);
+        let private = CallCapability::for_test(Private, true);
+
+        let waits = private.no_wider_than(public);
+        assert_eq!(waits.tier(), Public);
+        assert_eq!(waits.affiliation(), None);
+        assert!(waits.restricts_private_data());
+
+        let at_once = public.no_wider_than(private);
+        assert_eq!(at_once.tier(), Public);
+        assert!(at_once.restricts_private_data());
+
+        assert_eq!(private.no_wider_than(private), private);
+        assert_eq!(public.no_wider_than(public), public);
+    }
+
+    /// The master switch is the call's own sample. A ceiling narrows reach; it
+    /// never turns enforcement on or off.
+    #[test]
+    fn the_master_switch_comes_from_the_call_not_the_ceiling() {
+        use ProviderTier::{Private, Public};
+        let off_now = CallCapability::for_test(Private, false);
+        let on_at_start = CallCapability::for_test(Public, true);
+        let capped = off_now.no_wider_than(on_at_start);
+        assert_eq!(capped.tier(), Public);
+        assert!(!capped.enforced());
+        assert!(!capped.restricts_private_data());
+
+        let on_now = CallCapability::for_test(Private, true);
+        let off_at_start = CallCapability::for_test(Public, false);
+        assert!(on_now.no_wider_than(off_at_start).enforced());
+    }
+
+    /// A turn a decision model made public stays public after the slot moves to
+    /// a plain private model, and still says why, so the refusal names the
+    /// decision model rather than asking for a switch the person already made.
+    #[test]
+    fn a_ceiling_lowered_by_a_decision_model_keeps_its_cause() {
+        let lowered = CallCapability::for_test_lowered_by_decision(true);
+        let private = CallCapability::for_test(ProviderTier::Private, true);
+        let capped = private.no_wider_than(lowered);
+        assert_eq!(capped.tier(), ProviderTier::Public);
+        assert!(capped.lowered_by_decision());
+        // The other way round, the slot's own (public, lowered) sample is the
+        // answer, cause included.
+        assert!(lowered.no_wider_than(private).lowered_by_decision());
+    }
+
+    /// Two private models: what a call returns reaches the turn's model now and
+    /// the slot's from the next turn, so it must be covered for both, as a
+    /// lead/worker pair is. A local half adds nothing; two institutions make
+    /// an extension that admits only one of them a mismatch.
+    #[test]
+    fn two_private_models_are_covered_for_both_institutions() {
+        let local = CallCapability::for_test_affiliated(
+            ProviderTier::Private,
+            true,
+            Some(ModelAffiliation::Local),
+        );
+        let ucsf = CallCapability::for_test_affiliated(
+            ProviderTier::Private,
+            true,
+            Some(ModelAffiliation::institution(InstitutionId::new("ucsf"))),
+        );
+        let at_stanford =
+            CallCapability::for_test_affiliated(ProviderTier::Private, true, Some(stanford()));
+
+        assert_eq!(local.no_wider_than(ucsf), ucsf);
+        assert_eq!(ucsf.no_wider_than(local), ucsf);
+        assert_eq!(
+            ucsf.cross_affiliation_warning("ucsfomopagent", &ucsf_extension()),
+            None,
+            "precondition: a UCSF model reaches a UCSF connector"
+        );
+        let both = ucsf.no_wider_than(at_stanford);
+        assert_eq!(both.tier(), ProviderTier::Private);
+        assert!(
+            both.cross_affiliation_warning("ucsfomopagent", &ucsf_extension())
+                .is_some(),
+            "a turn running on a Stanford model reached a UCSF connector because the slot \
+             moved to a UCSF model"
+        );
+        assert_eq!(
+            both.cross_affiliation_warning("anything", &unconstrained_private_extension()),
+            None
+        );
+    }
+
     // `public_enforced` and `sample` are covered by
     // `crates/biorouter/tests/privacy_capability.rs`. They are tested from
     // there, not from here, so that Task 51's whole-tree census of those two
@@ -592,5 +794,31 @@ mod tests {
             "moving the mixing policy moved the MASTER SWITCH, which is a different \
              control, with a different disclosure and a different write"
         );
+    }
+
+    /// Issue #56: a refusal can tell a switch that waits for the next message
+    /// from a chat that is simply public, because `no_wider_than` marks the one
+    /// case where the turn's public ceiling held back a private slot, and no
+    /// other.
+    #[test]
+    fn only_a_private_slot_under_a_public_turn_waits_for_the_next_message() {
+        let private = CallCapability::for_test(ProviderTier::Private, true);
+        let public = CallCapability::for_test(ProviderTier::Public, true);
+
+        let waits = private.no_wider_than(public);
+        assert_eq!(waits.tier(), ProviderTier::Public);
+        assert!(waits.private_from_next_turn());
+
+        assert!(!public.no_wider_than(private).private_from_next_turn());
+        assert!(!public.no_wider_than(public).private_from_next_turn());
+        assert!(!private.no_wider_than(private).private_from_next_turn());
+        for cap in [private, public] {
+            assert!(!cap.private_from_next_turn(), "{cap:?}");
+        }
+
+        // A ceiling already narrowed this way stays a ceiling: a public slot
+        // under it is public at once, and says nothing about a next message.
+        assert!(!public.no_wider_than(waits).private_from_next_turn());
+        assert!(private.no_wider_than(waits).private_from_next_turn());
     }
 }

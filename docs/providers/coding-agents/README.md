@@ -16,13 +16,46 @@ no Business Associate Agreement and no zero-data-retention agreement, so protect
 information must never reach these providers, and the page explains both the rule and the
 gate that enforces it.
 
-**They get every built-in capability, on the same terms as any other provider.**
-Developer (shell, text editor, analyze, image processor),
-Biorouter Copilot (the sole native desktop observation and control capability), Web & Documents, Knowledge, Workspace, Skills, Extension Manager, Memory,
-To Do, Chat Recall, the Dictionary, Agent Drafter and Auto Visualiser all reach the
-child over the bridge. A coding-agent chat is public, so the Dictionary's tools see and
-add only public terms there, as for any public model. What still does *not* is a **third-party** extension's tools, which
-remain admitted case by case rather than wholesale.
+**They get the built-in capabilities on the same terms as any other provider.**
+Developer (shell, text editor, analyze, image processor), Biorouter Copilot (the
+sole native desktop observation and control capability), Web & Documents,
+Knowledge, Workspace, Skills, Extension Manager, Memory, To Do, Chat Recall,
+Decisions, the Dictionary, Agent Drafter and Auto Visualiser all reach the child
+over the bridge. Knowledge, Workspace and Extension Manager reach it as audited
+subsets; see [the tool bridge](tool-bridge.md). A coding-agent chat is public, so
+the Dictionary's tools see and add only public terms there, as for any public model.
+
+Crew reaches the child in part. Its person tools, `crew__read` and `crew__change`,
+may cross, and only in a chat that is the person's own; every change still asks
+the person on its own card. Its grant tools, `crew__connections` and
+`crew__request`, never cross, because Crew refuses Claude Code and Codex
+everything a grant does: such a chat cannot be granted Crew access, a chat that
+has access cannot switch to one, and a Crew task cannot start on one, since the
+vendor's own agent runs tools Crew cannot isolate
+([Crew's own page](../../crew/agents-and-chat-access.md) says the same). To give
+a chat Crew access, or to start a Crew task, use a model from any other provider.
+Which chats get the person tools is described in [the tool bridge](tool-bridge.md).
+Wherever no Crew tool reaches
+such a chat, the model reads why in place of Crew's instructions
+(`CODING_AGENT_BRIDGE_EMPTY_NOTES`), so a person who asks it for Crew hears that
+Claude Code and Codex cannot be connected to a Crew channel, and that switching the
+chat to a model from any other provider, or starting a new chat with one, and then
+typing `/crew` connects it.
+
+One built-in capability is withheld on purpose: **Code Execution**, because it
+only wraps other tools behind a script, and the child is given those tools
+directly. The model is told so in place of its instructions, so it can say why
+rather than report a capability with nothing to call.
+
+A bundled capability reaches the bridge only through its entry in
+`CODING_AGENT_BRIDGE_POLICIES` (in `crates/biorouter/src/agents/agent.rs`), and a
+withheld one has an entry in `CODING_AGENT_BRIDGE_EXCLUSIONS` beside it, which
+holds the reason and what the model is told. Decisions had neither until
+2026-11-11, so a Claude Code or Codex chat read that it was loaded with no tools.
+The test `every_bundled_capability_is_bridged_or_withheld_on_purpose` now fails on
+any bundled capability in neither table. What still does *not* reach the child
+wholesale is a **third-party** extension's tools, which remain admitted case by
+case.
 
 ⚠ **This changed, and the previous text described the old behaviour.** The
 Developer roster used to be an empty list, and the reason given was that the

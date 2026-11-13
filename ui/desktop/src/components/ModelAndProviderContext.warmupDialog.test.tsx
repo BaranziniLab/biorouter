@@ -149,6 +149,23 @@ function SwitchHarness() {
   );
 }
 
+/** The same model, already on this computer: its Hugging Face file is in the cache. */
+const downloadedStatus = {
+  data: {
+    ...statusResponse.data,
+    catalog: [
+      {
+        ...statusResponse.data.catalog[0],
+        downloaded: true,
+        download_status: 'downloaded',
+        download_source: 'huggingface_cache',
+        fallback_downloaded: true,
+        fallback_download_status: 'downloaded',
+      },
+    ],
+  },
+};
+
 async function openTheSheet() {
   render(
     <ModelAndProviderProvider>
@@ -254,6 +271,103 @@ describe('the local-model warm-up dialog fits the window', () => {
   });
 });
 
+/**
+ * W2-5. The sheet talked about a download for a model already on disk: a "Download: 23 GB" row
+ * beside "Local copy: Downloaded", a sentence saying the model "may need to ... download", and the
+ * fallback and Ollama store rows that only describe where a download would come from.
+ */
+describe('the warm-up dialog says only what is true of the local copy', () => {
+  it('names the size as the model size, whichever way the copy stands', async () => {
+    const dialog = await openTheSheet();
+    expect(within(dialog).getByText('Model size')).toBeInTheDocument();
+    expect(within(dialog).getByText('23 GB')).toBeInTheDocument();
+    expect(within(dialog).queryByText('Download')).toBeNull();
+  });
+
+  it('keeps the download wording and its details while the model still needs downloading', async () => {
+    const dialog = await openTheSheet();
+    expect(dialog).toHaveAccessibleDescription(/may need to load, download, and produce/);
+    expect(within(dialog).getByText('Needs download')).toBeInTheDocument();
+    for (const label of ['Llama Server fallback', 'Ollama model', 'Model store', 'Model blob']) {
+      expect(within(dialog).getByText(label)).toBeInTheDocument();
+    }
+  });
+
+  it('drops the download wording and its details once the model is on this computer', async () => {
+    mocks.llamacppStatus.mockResolvedValue(downloadedStatus);
+    const dialog = await openTheSheet();
+    expect(dialog).toHaveAccessibleDescription(
+      'Qwen3.6 35B runs on this computer. First use can take a while because the model may need to load and produce a test response.'
+    );
+    expect(within(dialog).getByText('Model size')).toBeInTheDocument();
+    expect(within(dialog).getByText('Downloaded')).toBeInTheDocument();
+    for (const label of ['Llama Server fallback', 'Ollama model', 'Model store', 'Model blob']) {
+      expect(within(dialog).queryByText(label)).toBeNull();
+    }
+    expect(within(dialog).queryByText('/Users/test/.ollama/models')).toBeNull();
+    // What still decides whether to go ahead stays: the fit, the window and the memory.
+    expect(within(dialog).getByText('Default context')).toBeInTheDocument();
+    expect(within(dialog).getByText('Recommended GPU memory')).toBeInTheDocument();
+    expect(within(dialog).getByText('Large for this computer')).toBeInTheDocument();
+  });
+
+  it('says "Downloaded in Ollama" for a copy in the Ollama store, and still drops the details', async () => {
+    mocks.llamacppStatus.mockResolvedValue({
+      data: {
+        ...downloadedStatus.data,
+        catalog: [
+          {
+            ...downloadedStatus.data.catalog[0],
+            download_source: 'ollama',
+            fallback_downloaded: false,
+            fallback_download_status: 'not_downloaded',
+          },
+        ],
+      },
+    });
+    const dialog = await openTheSheet();
+    expect(within(dialog).getByText('Downloaded in Ollama')).toBeInTheDocument();
+    expect(within(dialog).queryByText('Llama Server fallback')).toBeNull();
+    expect(within(dialog).queryByText('Model blob')).toBeNull();
+  });
+});
+
+describe('after the warm-up, the switch names the model as the dialog did', () => {
+  // The picker's model object for a local row carries no alias, so the toast used to say `qwen3.6`.
+  it('uses the catalog name when the picked model carries no alias', async () => {
+    const user = userEvent.setup();
+    function BareSwitch() {
+      const { changeModel } = useModelAndProvider();
+      return (
+        <button
+          type="button"
+          onClick={() =>
+            void changeModel(null, {
+              name: 'qwen3.6',
+              provider: 'llamacpp',
+              subtext: 'Llama Server',
+            } as Model)
+          }
+        >
+          Switch bare
+        </button>
+      );
+    }
+    render(
+      <ModelAndProviderProvider>
+        <BareSwitch />
+      </ModelAndProviderProvider>
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Switch bare' }));
+    await screen.findByText('Warm up local model');
+    await user.click(screen.getByRole('button', { name: 'Warm up model' }));
+    await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalledTimes(1));
+    expect(mocks.toastSuccess.mock.calls[0][0].msg).toBe(
+      'New chats in every window now start on Qwen3.6 35B from Llama Server. Existing chats keep their own model.'
+    );
+  });
+});
+
 describe('the warm-up dialog keeps its decline and its work-in-flight rules', () => {
   it('Escape keeps the previous model', async () => {
     const user = userEvent.setup();
@@ -308,5 +422,53 @@ describe('the warm-up dialog keeps its decline and its work-in-flight rules', ()
     });
     await waitFor(() => expect(screen.queryByText('Warm up local model')).not.toBeInTheDocument());
     expect(mocks.setConfigProvider).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The fit, in plain words. The dialog printed the daemon's sentence as it came:
+ * "Recommended for this machine: 128 GiB apple_unified meets the 48 GiB recommendation."
+ * (live QA, 2026-11-12), the memory kind's id and a unit the rest of the app does not
+ * use. It now says the verdict the Settings info dialog says, and the memory rows name
+ * the kind in words.
+ */
+describe('the warm-up dialog says the fit in plain words', () => {
+  const machine = (accelerator_memory_kind: string, os: string, gib: number | null = 128) => ({
+    data: {
+      ...statusResponse.data,
+      catalog: [
+        {
+          ...statusResponse.data.catalog[0],
+          min_gpu_memory_gib: 32,
+          recommended_gpu_memory_gib: 48,
+          suitable: true,
+          suitability_status: 'suitable',
+          suitability_message: `Recommended for this machine: ${gib} GiB ${accelerator_memory_kind} meets the 48 GiB recommendation.`,
+        },
+      ],
+      system: {
+        ...statusResponse.data.system,
+        os,
+        accelerator_memory_gib: gib,
+        accelerator_memory_kind,
+      },
+    },
+  });
+
+  it.each([
+    ['apple_unified', 'macos', '128 GB unified memory', 'Fits this Mac'],
+    ['vram', 'linux', '128 GB VRAM', 'Fits this computer'],
+    ['cpu_only', 'linux', '128 GB system RAM', 'Fits this computer'],
+  ])('%s reads as words, never as the id', async (kind, os, detected, verdict) => {
+    mocks.llamacppStatus.mockResolvedValue(machine(kind, os));
+    const dialog = await openTheSheet();
+    const row = (label: string) => within(dialog).getByText(label).nextElementSibling;
+    expect(row('Detected GPU memory')).toHaveTextContent(detected);
+    expect(row('Recommended GPU memory')).toHaveTextContent('48 GB');
+    expect(row('Recommendation')).toHaveTextContent(verdict);
+    // No machine id and no daemon sentence anywhere in the sheet.
+    expect(dialog).not.toHaveTextContent(kind);
+    expect(dialog).not.toHaveTextContent('GiB');
+    expect(dialog).not.toHaveTextContent('Recommended for this machine');
   });
 });

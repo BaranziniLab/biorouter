@@ -119,8 +119,8 @@ const INSTRUCTIONS: &str = indoc! {r#"
       instead of pointing at Settings.
     - workspace_close: close its tab (tab), cancel its turn (turn), or stop its
       agent (agent).
-    - workspace_monitor: add, list or remove monitors that stop or steer a
-      subagent you spawned.
+    - workspace_monitor: add, list or remove monitors that stop or steer this
+      chat or a subagent you spawned.
     - workspace_watch: wait until one of several conversations finishes. Use it
       after starting background work; never poll workspace_read_conversation.
       A shortened completed result is not collected; follow the exact read call
@@ -730,8 +730,9 @@ struct WorkspaceCloseParams {
 struct WorkspaceMonitorParams {
     /// "list", "add" (`monitors`) or "remove" (`ids`).
     action: String,
-    /// A subagent this chat spawned.
-    session_id: String,
+    /// A subagent this chat spawned; omit for this chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
     /// For "add": 1 to 4 monitors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     monitors: Option<Vec<crate::decision::settings::MonitorSpec>>,
@@ -745,10 +746,10 @@ struct WorkspaceMonitorParams {
 /// the caps (4 set by an agent, 8 in all) and ownership are refusals that
 /// explain themselves at call time.
 const MONITOR_DESCRIPTION: &str = concat!(
-    "Add, list or remove decision-model monitors on a subagent this chat spawned: yes/no ",
-    "questions about its newest messages that stop or steer it when the answer reaches a ",
-    "threshold. You may change or remove only monitors you set; a running subagent applies a ",
-    "change from its next check."
+    "Add, list or remove decision-model monitors on this chat or a subagent it spawned: yes/no ",
+    "questions about the newest messages that stop or steer it when the answer reaches a ",
+    "threshold. You may change or remove only monitors you set; a change applies from the ",
+    "next check."
 );
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
@@ -858,6 +859,7 @@ const ORCHESTRATE_DESCRIPTION: &str = concat!(
     "Otherwise it stays in progress and the reply lists the questions that ",
     "fell short, so you can fix the work and complete again; once its attempts are used up ",
     "the phase is blocked. A gate that cannot be evaluated never passes. ",
+    "Without a decision model, this chat's own model judges a gate that names no model. ",
     "A gate binds you: you cannot change, remove or skip it, and later phases wait until it ",
     "passes or the person passes or skips it. Your gates need a threshold of at least 0.5. ",
     "Subagents run in the background; the user sees the plan and its subagents in the chat's ",
@@ -1807,6 +1809,10 @@ pub struct WorkspaceClient {
     pub(crate) context: PlatformExtensionContext,
     /// Answers a phase gate's questions. The process's service in production.
     decision_service: &'static crate::decision::DecisionService,
+    /// The chat model a gate falls back to, in place of the caller's agent's
+    /// (tests: a fake provider).
+    #[cfg(test)]
+    chat_model_override: Option<std::sync::Arc<dyn crate::providers::base::Provider>>,
 }
 
 impl WorkspaceClient {
@@ -1837,6 +1843,8 @@ impl WorkspaceClient {
             info,
             context,
             decision_service: crate::decision::global(),
+            #[cfg(test)]
+            chat_model_override: None,
         })
     }
 
@@ -1847,6 +1855,16 @@ impl WorkspaceClient {
         service: &'static crate::decision::DecisionService,
     ) -> Self {
         self.decision_service = service;
+        self
+    }
+
+    /// Use `model` as the chat's own model a gate falls back to (tests).
+    #[cfg(test)]
+    pub(crate) fn with_chat_model(
+        mut self,
+        model: std::sync::Arc<dyn crate::providers::base::Provider>,
+    ) -> Self {
+        self.chat_model_override = Some(model);
         self
     }
 
@@ -2137,6 +2155,34 @@ impl WorkspaceClient {
         } else {
             Err(crate::privacy::refusal::workspace_out_of_reach())
         }
+    }
+
+    /// [`Self::refuse_unless_direct_subagent_child`] for `workspace_monitor`,
+    /// whose refusal says what is true for the caller asking.
+    ///
+    /// A public-capability caller keeps the one out-of-reach sentence: it may
+    /// not learn whether a private chat exists, so "not your subagent" and
+    /// "private" must read alike. A caller that may read every chat (a
+    /// private one, or any caller with the master switch off) learns nothing
+    /// from a plainer answer, and the out-of-reach sentence would tell it
+    /// "this chat is running on a public model", which is false (live QA
+    /// M3-1, 2026-11-11).
+    async fn refuse_unless_direct_subagent_child_for(
+        &self,
+        cap: crate::privacy::CallCapability,
+        caller_session_id: &str,
+        target_session_id: &str,
+    ) -> Result<(), String> {
+        if self
+            .is_direct_subagent_child(caller_session_id, target_session_id)
+            .await
+        {
+            return Ok(());
+        }
+        if cap.enforced() && !cap.tier().is_private() {
+            return Err(crate::privacy::refusal::workspace_out_of_reach());
+        }
+        Err(monitor_target_not_reached(target_session_id))
     }
 
     async fn refuse_unless_direct_subagent_child(
@@ -4091,7 +4137,25 @@ impl WorkspaceClient {
             // Reached only when `bind_allowed` already passed, so the only way
             // this can be false is the raise; the branch above owns the other
             // sentence.
-            if !crate::privacy::tool_bind_allowed(provider.tier(), classification) {
+            //
+            // DR-33 (design §3.1): DR-16 is about the PROVIDER axis, so the
+            // baseline for a raise is the target's bound language model as
+            // well as its classification. A chat classified Public while bound
+            // to a private model (one its person made public by a decision
+            // model, or an empty one) moving to another private model is a
+            // Private-to-Private move: its reach is what its names and its
+            // model already give it, so it is not a raise. Read off its live
+            // agent's unwrapped model (peeked, never created), else its row.
+            let provider_axis_unchanged = provider.tier().is_private()
+                && Self::target_bound_model_tier(
+                    self.context.session_manager.as_ref(),
+                    &args.session_id,
+                )
+                .await
+                    == Some(crate::privacy::ProviderTier::Private);
+            if !provider_axis_unchanged
+                && !crate::privacy::tool_bind_allowed(provider.tier(), classification)
+            {
                 return Err(format!(
                     "failed to switch provider: {}",
                     crate::privacy::refusal::PrivacyRefusal::ToolTierRaise {
@@ -6355,7 +6419,7 @@ impl WorkspaceClient {
         let dry_run = transition(stored.clone())?;
         let checked = AddedSupervision::of(stored.as_ref(), &dry_run, fresh);
         let notes = self
-            .check_added_supervision(caller, cap.enforced(), &checked)
+            .check_added_supervision(caller, cap.enforced(), &checked, &dry_run)
             .await?;
 
         let (revising, replaced, monitor_note) = plan::mutate_plan(sm, caller, |current| {
@@ -6453,6 +6517,14 @@ impl WorkspaceClient {
     /// with the chat as it is stored and the master switch as this call
     /// sampled it. Nothing of the chat is sent.
     ///
+    /// First, what the plan (`after`) does to the chat's privacy tier
+    /// (DR-33, design §1.8, §3.6, §3.14): an agent may add a public gate or
+    /// phase monitor only to a chat its decision models already make public
+    /// (`staysPublic`); a plan that would make the chat public, or private at
+    /// its next message, is refused, because only the person can do that.
+    /// The bound model's tier is the language model's (`bound_model_tier`),
+    /// never the slot's.
+    ///
     /// A gate whose model the chat may not use, or that no model could
     /// answer, refuses the plan. A gate whose check failed for a reason that
     /// could pass (a timeout, a server fault) is accepted with a note: it is
@@ -6464,9 +6536,17 @@ impl WorkspaceClient {
         caller: &str,
         enforced: bool,
         added: &AddedSupervision,
+        after: &crate::agents::orchestration_plan::OrchestrationPlan,
     ) -> Result<Vec<String>, String> {
         use crate::decision::{DecisionSession, ModelSource};
 
+        let (bound, lowered_after_save) = self
+            .agent_tier_check(
+                caller,
+                enforced,
+                crate::decision::save::AfterSave::Plan(Some(after)),
+            )
+            .await?;
         if added.gates.is_empty() && added.monitors.is_empty() {
             return Ok(Vec::new());
         }
@@ -6477,20 +6557,40 @@ impl WorkspaceClient {
                     "This chat could not be read, so the gates and monitors this plan adds could \
                      not be checked ({e}). Nothing was changed."
                 )
-            })?;
+            })?
+            .with_bound_model_tier(bound)
+            .with_lowered_after_save(lowered_after_save);
         let service = self.decision_service;
         let mut notes = Vec::new();
         for (phase_id, gate) in &added.gates {
-            match service
-                .check_model_use(
-                    &session,
-                    gate.model.as_ref(),
-                    &gate.questions,
-                    ModelSource::Named,
-                )
-                .await
+            match crate::agents::orchestration_plan::gate_judge_for(
+                service,
+                &session,
+                gate.model.as_ref(),
+                &gate.questions,
+                ModelSource::Named,
+            )
+            .await
             {
-                Ok(()) => {}
+                Ok(crate::agents::orchestration_plan::GateJudgeCheck::DecisionModel) => {}
+                // A gate that names no model works in every chat: with no
+                // decision model this chat may use, its own model judges it.
+                Ok(crate::agents::orchestration_plan::GateJudgeCheck::ChatModel { why })
+                    if why.is_transient() =>
+                {
+                    notes.push(format!(
+                        "Phase \"{phase_id}\"'s gate model could not be checked just now ({}); \
+                         the gate is asked when the phase completes, and this chat's own model \
+                         judges it if no decision model can then.",
+                        as_clause(&why.to_string())
+                    ))
+                }
+                Ok(crate::agents::orchestration_plan::GateJudgeCheck::ChatModel { .. }) => notes
+                    .push(format!(
+                        "Phase \"{phase_id}\"'s gate is judged by this chat's own model when the \
+                         phase completes, because this chat has no decision model it may use \
+                         now."
+                    )),
                 Err(error) if error.is_transient() => notes.push(format!(
                     "Phase \"{phase_id}\"'s gate model could not be checked just now ({}); the \
                      gate is asked when the phase completes.",
@@ -6499,8 +6599,8 @@ impl WorkspaceClient {
                 Err(error) => {
                     return Err(format!(
                         "Phase \"{phase_id}\"'s gate cannot be answered in this chat: {}. Declare \
-                         it without that model, or ask the person to set a decision model this \
-                         chat may use. Nothing was changed.",
+                         it without that model to let this chat's own model judge it, or ask the \
+                         person to set a decision model this chat may use. Nothing was changed.",
                         as_clause(&error.to_string())
                     ))
                 }
@@ -6655,9 +6755,13 @@ impl WorkspaceClient {
     /// 3. The decision model reads the state the dry run would close the phase
     ///    with (its hand-off as written or composed), through the decision
     ///    service, as this chat at its own tier, with the master switch as
-    ///    this call sampled it.
+    ///    this call sampled it. A gate that names no model is judged by this
+    ///    chat's own bound model instead when the chat has no decision model
+    ///    it may use, or that model cannot be reached
+    ///    ([`crate::agents::orchestration_plan::judge_gate`]).
     /// 4. The verdict is written in one transaction that re-checks the gate
-    ///    and, on a pass, the barrier and the racing-spawn marks.
+    ///    and, on a pass, the barrier and the racing-spawn marks, with who
+    ///    gave it.
     async fn complete_gated(&self, job: GatedCompletion<'_>) -> Result<String, String> {
         use crate::agents::orchestration_plan as plan;
 
@@ -6692,7 +6796,7 @@ impl WorkspaceClient {
             .unwrap_or_else(|| phase.clone());
         let state = plan::gate_state_text(&closing, &states);
 
-        let verdict =
+        let (verdict, judge) =
             match crate::decision::DecisionSession::load(sm.clone(), caller, enforced).await {
                 Ok(session) => {
                     let session = session
@@ -6702,14 +6806,25 @@ impl WorkspaceClient {
                         )
                         .with_origin_label(Some(phase.title.clone()))
                         .with_turn(crate::decision::turns::current_turn(caller));
-                    plan::evaluate_gate(self.decision_service, &session, &gate, state).await
+                    let chat_model = self.chat_model_of(caller).await;
+                    // A gate the chat's own model judges is a side call on this chat:
+                    // counted in its usage, never held at a limit (`SideCall::GateJudge`).
+                    crate::session::session_manager::side_usage::with_side_usage_chat(
+                        sm,
+                        caller,
+                        plan::judge_gate(self.decision_service, &session, &gate, state, chat_model),
+                    )
+                    .await
                 }
-                Err(e) => plan::GateVerdict::Error(format!("this chat could not be read ({e})")),
+                Err(e) => (
+                    plan::GateVerdict::Error(format!("this chat could not be read ({e})")),
+                    None,
+                ),
             };
 
         let phase_id = phase.id.as_str();
         plan::mutate_plan(sm, caller, |current| {
-            let (next, note, closed) = plan::apply_gate_verdict(
+            let (mut next, mut note, closed) = plan::apply_gate_verdict(
                 current,
                 phase_id,
                 &gate,
@@ -6725,10 +6840,40 @@ impl WorkspaceClient {
                     plan::phase_spawn_mark(caller, phase_id),
                 )?;
             }
+            if let Some(judge) = &judge {
+                plan::record_gate_judge(&mut next, phase_id, judge);
+                if let Some(reason) = &judge.reason {
+                    note = format!("{note} {reason}");
+                }
+            }
             Ok((next, note))
         })
         .await
         .map_err(|e| e.to_string())
+    }
+
+    /// The language model the chat `session_id` is bound to, unwrapped
+    /// through any decision-bound wrapper (`Agent::bound_model_provider`):
+    /// what judges a phase gate that names no model when the chat has no
+    /// decision model it may use. It is the model that reads this tool's
+    /// result anyway, at the chat's own tier, so asking it crosses nothing.
+    /// `None` when no agent of that chat is loaded or it has no model.
+    async fn chat_model_of(
+        &self,
+        session_id: &str,
+    ) -> Option<std::sync::Arc<dyn crate::providers::base::Provider>> {
+        #[cfg(test)]
+        if let Some(model) = &self.chat_model_override {
+            return Some(model.clone());
+        }
+        let manager = crate::execution::manager::AgentManager::instance()
+            .await
+            .ok()?;
+        manager
+            .peek_agent(session_id)
+            .await?
+            .bound_model_provider()
+            .await
     }
 
     /// The plan with per-phase counts from this chat's subagent roster.
@@ -6786,16 +6931,19 @@ impl WorkspaceClient {
         })
     }
 
-    /// `workspace_monitor`: decision-model monitors on a subagent this chat
-    /// spawned.
+    /// `workspace_monitor`: decision-model monitors on this chat or a subagent
+    /// it spawned.
     ///
     /// The gates run in order, before anything about the target is read. The
-    /// target must be the caller's DIRECT subagent, read from the durable
-    /// parent link and asked whatever `workspace_child_scope_only` says,
-    /// because a monitor stops or steers another agent's work and only the
-    /// chat that delegated it answers for that work. Then §7: `list` reads
-    /// the target, `add` and `remove` write it. One sentence answers every
-    /// refusal, so the answers say nothing about a chat out of reach.
+    /// target is the caller's own chat (no `session_id`, or its own id: DR-33,
+    /// design S29, so an agent asked to monitor itself reaches the tier check
+    /// and is told why it may not lower its chat) or the caller's DIRECT
+    /// subagent, read from the durable parent link and asked whatever
+    /// `workspace_child_scope_only` says, because a monitor stops or steers
+    /// another agent's work and only the chat that delegated it answers for
+    /// that work. Then §7: `list` reads the target, `add` and `remove` write
+    /// it. A public caller gets one sentence for every refusal, so the answers
+    /// say nothing about a chat out of reach.
     ///
     /// An `add` from a private-capability chat into a public subagent is a
     /// first crossing: the monitors' names and questions reach the subagent's
@@ -6819,23 +6967,30 @@ impl WorkspaceClient {
         // raw arguments the inspector asked it with (see `handle_send_prompt`).
         let raw_arguments = arguments.clone();
         let args: WorkspaceMonitorParams = parse_args(arguments)?;
-        let target = args.session_id.trim();
+        // No `session_id` is this chat (DR-33, design S29: an agent putting a
+        // monitor on itself reaches the tier check and is told why it may
+        // not lower its chat, rather than being told it cannot reach it).
+        let target = args.session_id.as_deref().map(str::trim).unwrap_or(caller);
         let action = args.action.trim().to_ascii_lowercase();
-        self.refuse_unless_direct_subagent_child(caller, target)
-            .await?;
+        let own = target == caller;
+        if !own {
+            self.refuse_unless_direct_subagent_child_for(cap, caller, target)
+                .await?;
+        }
         let written_tier = if action == "list" {
             self.refuse_unless_visible(cap, target).await?;
             None
         } else {
             self.refuse_unless_writable(cap, target).await?
         };
+        let whom = MonitoredChat::of(target, own);
         let text = match action.as_str() {
-            "list" => return self.list_monitors(caller, target).await,
+            "list" => return self.list_monitors(caller, &whom).await,
             "add" => {
                 let added = self
                     .add_monitors(
                         caller,
-                        target,
+                        &whom,
                         cap.enforced(),
                         args.monitors.unwrap_or_default(),
                     )
@@ -6860,7 +7015,7 @@ impl WorkspaceClient {
                 added
             }
             "remove" => {
-                self.remove_monitors(caller, target, args.ids.unwrap_or_default())
+                self.remove_monitors(caller, &whom, cap.enforced(), args.ids.unwrap_or_default())
                     .await?
             }
             other => {
@@ -6874,14 +7029,20 @@ impl WorkspaceClient {
 
     /// `workspace_monitor action:"list"`: every monitor on the subagent, who
     /// set it and what it does.
-    async fn list_monitors(&self, caller: &str, target: &str) -> Result<CallToolResult, String> {
+    async fn list_monitors(
+        &self,
+        caller: &str,
+        whom: &MonitoredChat<'_>,
+    ) -> Result<CallToolResult, String> {
+        let target = whom.id;
+        let subject = whom.subject_capitalized();
         let settings = crate::decision::settings::load(&self.context.session_manager, target)
             .await
-            .map_err(|e| format!("Subagent {target}'s monitors could not be read: {e}"))?;
+            .map_err(|e| format!("{subject}'s monitors could not be read: {e}"))?;
         let mut lines = vec![match settings.monitors.len() {
-            0 => format!("Subagent {target} has no monitors."),
-            1 => format!("Subagent {target} has 1 monitor:"),
-            n => format!("Subagent {target} has {n} monitors:"),
+            0 => format!("{subject} has no monitors."),
+            1 => format!("{subject} has 1 monitor:"),
+            n => format!("{subject} has {n} monitors:"),
         }];
         let mut rows = Vec::with_capacity(settings.monitors.len());
         for monitor in &settings.monitors {
@@ -6891,7 +7052,7 @@ impl WorkspaceClient {
                 monitor.name,
                 monitor.id,
                 if monitor.enabled { "" } else { ", turned off" },
-                monitor_rule_words(monitor, None)
+                monitor_rule_words(monitor, None, whom.object())
             ));
             let mut row = serde_json::to_value(monitor).unwrap_or_else(|_| json!({}));
             if let Some(fields) = row.as_object_mut() {
@@ -6932,11 +7093,13 @@ impl WorkspaceClient {
     async fn add_monitors(
         &self,
         caller: &str,
-        target: &str,
+        whom: &MonitoredChat<'_>,
         enforced: bool,
         specs: Vec<crate::decision::settings::MonitorSpec>,
     ) -> Result<String, String> {
         use crate::decision::settings::{self, AgentEdit, MAX_AGENT_MONITORS};
+
+        let target = whom.id;
 
         if specs.is_empty() || specs.len() > MAX_AGENT_MONITORS {
             return Err(format!(
@@ -6960,21 +7123,41 @@ impl WorkspaceClient {
             criteria.push(criterion);
         }
 
+        // DR-33: what the change does to the subagent's tier. An agent may
+        // add a public monitor only where the subagent is public already (a
+        // public parent's child carries its ceiling, design §3.4).
+        let after = crate::decision::settings::agent_edit_preview(
+            stored.clone(),
+            caller,
+            crate::decision::settings::AgentEdit::Upsert(criteria.clone()),
+        )
+        .map_err(|e| with_nothing_changed(&e))?;
+        let (bound, lowered_after_save) = self
+            .agent_tier_check(
+                target,
+                enforced,
+                crate::decision::save::AfterSave::Settings(&after),
+            )
+            .await?;
         let session = crate::decision::DecisionSession::load(sm.clone(), target, enforced)
             .await
             .map_err(|e| {
                 format!(
-                    "Subagent {target} could not be read, so its monitors could not be checked \
-                     ({e}). Nothing was changed."
+                    "{} could not be read, so its monitors could not be checked ({e}). Nothing \
+                     was changed.",
+                    whom.subject_capitalized()
                 )
-            })?;
+            })?
+            .with_bound_model_tier(bound)
+            .with_lowered_after_save(lowered_after_save);
         for criterion in &criteria {
-            self.check_monitor_model(&session, criterion)
+            self.check_monitor_model(&session, criterion, whom)
                 .await
                 .map_err(|reason| {
                     format!(
-                        "Monitor '{}' cannot run on subagent {target}: {}. Nothing was changed.",
+                        "Monitor '{}' cannot run on {}: {}. Nothing was changed.",
                         criterion.name,
+                        whom.subject(),
                         as_clause(&reason)
                     )
                 })?;
@@ -6996,16 +7179,18 @@ impl WorkspaceClient {
             .iter()
             .map(|criterion| {
                 format!(
-                    "Monitor '{}' is on subagent {target}, set by you: it {}.",
+                    "Monitor '{}' is on {}, set by you: it {}.",
                     criterion.name,
-                    monitor_rule_words(criterion, default_label.as_deref())
+                    whom.subject(),
+                    monitor_rule_words(criterion, default_label.as_deref(), whom.object())
                 )
             })
             .collect();
-        lines.push(if criteria.len() == 1 {
-            "A running subagent applies it from its next check.".to_string()
-        } else {
-            "A running subagent applies them from its next check.".to_string()
+        lines.push(match (whom.own, criteria.len() == 1) {
+            (false, true) => "A running subagent applies it from its next check.".to_string(),
+            (false, false) => "A running subagent applies them from its next check.".to_string(),
+            (true, true) => "It applies from this chat's next check.".to_string(),
+            (true, false) => "They apply from this chat's next check.".to_string(),
         });
         Ok(lines.join(" "))
     }
@@ -7018,14 +7203,20 @@ impl WorkspaceClient {
         &self,
         session: &crate::decision::DecisionSession,
         criterion: &crate::decision::settings::MonitorCriterion,
+        whom: &MonitoredChat<'_>,
     ) -> Result<(), String> {
         if let Some(wanted) = &criterion.model {
             let listed = self.decision_service.models_for(Some(session)).await;
             if !listed.iter().any(|(entry, _)| entry.answers_to(wanted)) {
                 return Err(format!(
-                    "{} is not a decision model this subagent can use. Call decision_models to \
-                     list the ones it can.",
-                    wanted.label()
+                    "{} is not a decision model {} can use. Call decision_models to list the \
+                     ones it can.",
+                    wanted.label(),
+                    if whom.own {
+                        "this chat"
+                    } else {
+                        "this subagent"
+                    }
                 ));
             }
         }
@@ -7047,10 +7238,13 @@ impl WorkspaceClient {
     async fn remove_monitors(
         &self,
         caller: &str,
-        target: &str,
+        whom: &MonitoredChat<'_>,
+        enforced: bool,
         ids: Vec<String>,
     ) -> Result<String, String> {
         use crate::decision::settings::{self, AgentEdit};
+
+        let target = whom.id;
 
         let ids: Vec<String> = ids
             .iter()
@@ -7064,6 +7258,18 @@ impl WorkspaceClient {
                     .to_string(),
             );
         }
+        // DR-33: removing the subagent's last public decision model would make
+        // it private at its next message, which only the person may do.
+        let stored = settings::load(&self.context.session_manager, target)
+            .await
+            .map_err(|e| with_nothing_changed(&e.to_string()))?;
+        let after = settings::agent_edit_preview(stored, caller, AgentEdit::Remove(ids.clone()))?;
+        self.agent_tier_check(
+            target,
+            enforced,
+            crate::decision::save::AfterSave::Settings(&after),
+        )
+        .await?;
         settings::apply_agent_edit(
             &self.context.session_manager,
             target,
@@ -7072,17 +7278,97 @@ impl WorkspaceClient {
         )
         .await?;
         let named: Vec<String> = ids.iter().map(|id| format!("`{id}`")).collect();
+        let it = if ids.len() == 1 { "it" } else { "them" };
         Ok(format!(
-            "Removed {} {} from subagent {target}. A running subagent stops checking {} from its \
-             next check.",
+            "Removed {} {} from {}. {}",
             if ids.len() == 1 {
                 "monitor"
             } else {
                 "monitors"
             },
             named.join(", "),
-            if ids.len() == 1 { "it" } else { "them" }
+            whom.subject(),
+            if whom.own {
+                format!("This chat stops checking {it} from its next check.")
+            } else {
+                format!("A running subagent stops checking {it} from its next check.")
+            }
         ))
+    }
+
+    /// The tier of the language model `row`'s chat is bound to (DR-33, design
+    /// §2.1): its live agent's `bound_model_tier` when this daemon holds one
+    /// with a model bound (peeked, never created), else the tier its row
+    /// declares (`decision::save::row_bound_model_tier`). Never the slot's
+    /// folded tier.
+    async fn bound_model_tier_of(
+        row: &crate::session::Session,
+        enforced: bool,
+    ) -> Option<crate::privacy::ProviderTier> {
+        if let Ok(manager) = crate::execution::manager::AgentManager::instance().await {
+            if let Some(agent) = manager.peek_agent(&row.id).await {
+                if agent.bound_model_provider().await.is_some() {
+                    return Some(agent.bound_model_tier().await);
+                }
+            }
+        }
+        crate::decision::save::row_bound_model_tier(row, enforced).await
+    }
+
+    /// [`Self::bound_model_tier_of`] for the chat `session_id`, read with
+    /// the master switch on (this is asked only under enforcement). `None`
+    /// when its row cannot be read.
+    async fn target_bound_model_tier(
+        session_manager: &crate::session::SessionManager,
+        session_id: &str,
+    ) -> Option<crate::privacy::ProviderTier> {
+        let row = session_manager.get_session(session_id, false).await.ok()?;
+        Self::bound_model_tier_of(&row, true).await
+    }
+
+    /// DR-33 at an agent's door (design §1.8, §3.14): what saving `after` over
+    /// `target`'s row does to its privacy tier. `Err` is the agent's refusal,
+    /// ending "Nothing was changed.", when the save would make the chat
+    /// public, make it private at its next message, or name a public model it
+    /// cannot use. `Ok` carries the bound model's tier and whether the chat is
+    /// public after the save by its decision models, for the usability checks.
+    /// An agent never writes the person's acceptance (`public_basis.v1`).
+    async fn agent_tier_check(
+        &self,
+        target: &str,
+        enforced: bool,
+        after: crate::decision::save::AfterSave<'_>,
+    ) -> Result<(Option<crate::privacy::ProviderTier>, bool), String> {
+        let row = self
+            .context
+            .session_manager
+            .get_session(target, false)
+            .await
+            .map_err(|e| {
+                format!(
+                    "Chat {target} could not be read, so what this change does to its privacy \
+                     could not be checked ({e}). Nothing was changed."
+                )
+            })?;
+        let bound = Self::bound_model_tier_of(&row, enforced).await;
+        let session = crate::decision::DecisionSession::new(target, row.privacy_tier, enforced)
+            .with_bound_model_tier(bound);
+        match crate::decision::save::tier_change(
+            &session,
+            &row,
+            after,
+            &crate::decision::save::SaveDoor::agent("agent"),
+        ) {
+            Ok(change) => Ok((bound, change.lowered_after_save)),
+            Err(error) => {
+                let text = error.to_string();
+                let reason = text
+                    .strip_prefix("Nothing was saved: ")
+                    .or_else(|| text.strip_prefix("Nothing was saved. "))
+                    .unwrap_or(&text);
+                Err(with_nothing_changed(reason))
+            }
+        }
     }
 
     async fn panel_moim(&self, session_id: &str) -> Option<String> {
@@ -7182,6 +7468,17 @@ fn as_clause(text: &str) -> &str {
 }
 
 /// `why` as a refusal that ends in "Nothing was changed.".
+/// `workspace_monitor`'s refusal of a chat that is neither this one nor a
+/// subagent this one spawned, for a caller that may read every chat
+/// ([`WorkspaceClient::refuse_unless_direct_subagent_child_for`]).
+fn monitor_target_not_reached(target: &str) -> String {
+    format!(
+        "Chat {target} is not this chat or a subagent this chat spawned, or there is no chat \
+         with that id. workspace_monitor sets monitors only on this chat (omit session_id) and \
+         on its own subagents. Nothing was read and nothing was changed."
+    )
+}
+
 fn with_nothing_changed(why: &str) -> String {
     let why = why.trim_end();
     if why.ends_with("Nothing was changed.") {
@@ -7209,6 +7506,47 @@ fn ask_for_install(error: &crate::decision::DecisionError) -> String {
 
 /// Who set `monitor`, as the caller reads it: a short key for the
 /// structured listing and the phrase for the text.
+/// The chat a `workspace_monitor` call acts on, for the words its replies
+/// use: this chat itself (no `session_id`, or the caller's own), or a direct
+/// subagent of it.
+struct MonitoredChat<'a> {
+    id: &'a str,
+    own: bool,
+}
+
+impl<'a> MonitoredChat<'a> {
+    fn of(id: &'a str, own: bool) -> Self {
+        Self { id, own }
+    }
+
+    /// "this chat" or "subagent <id>", mid-sentence.
+    fn subject(&self) -> String {
+        if self.own {
+            "this chat".to_string()
+        } else {
+            format!("subagent {}", self.id)
+        }
+    }
+
+    /// [`Self::subject`] opening a sentence.
+    fn subject_capitalized(&self) -> String {
+        if self.own {
+            "This chat".to_string()
+        } else {
+            format!("Subagent {}", self.id)
+        }
+    }
+
+    /// What a stop or steer monitor acts on: "this chat" or "the subagent".
+    fn object(&self) -> &'static str {
+        if self.own {
+            "this chat"
+        } else {
+            "the subagent"
+        }
+    }
+}
+
 fn monitor_owner(
     monitor: &crate::decision::settings::MonitorCriterion,
     caller: &str,
@@ -7237,14 +7575,15 @@ fn monitor_owner(
 fn monitor_rule_words(
     monitor: &crate::decision::settings::MonitorCriterion,
     default_label: Option<&str>,
+    whom: &str,
 ) -> String {
     use crate::decision::settings::{MonitorAction, MonitorDirection, MonitorTiming};
     use crate::decision::DecisionKind;
 
     let does = match monitor.action {
-        MonitorAction::Stop => "stops the subagent",
-        MonitorAction::Steer => "steers the subagent",
-        MonitorAction::Notify => "posts a notice",
+        MonitorAction::Stop => format!("stops {whom}"),
+        MonitorAction::Steer => format!("steers {whom}"),
+        MonitorAction::Notify => "posts a notice".to_string(),
     };
     let watched = match (
         &monitor.question.kind,
@@ -15338,6 +15677,7 @@ pub(crate) mod tests {
                     .then(|| "Which source should I use?".into()),
                 artifacts: Vec::new(),
                 tokens: None,
+                model: None,
                 human_intervened: false,
                 stopped_by_monitor: None,
                 decisions: None,
@@ -18454,8 +18794,15 @@ pub(crate) mod tests {
         let refused = orchestrate(&c, &parent, args).await;
         let text = result_text(&refused);
         assert_eq!(refused.is_error, Some(true), "{text}");
-        assert!(text.contains("Phase \"build\"'s gate model:"), "{text}");
-        assert!(text.contains("test_decision/tev1"), "{text}");
+        // The refusal `decide` gives, in the same plain words: the models this
+        // chat may use by their names and where they run, never
+        // `provider/model` (`resolve_model_name`).
+        assert_eq!(
+            text,
+            "Error: Phase \"build\"'s gate model: A decision model named nosuch:1b is not set \
+             up. This chat may use tev1 on this computer. Nothing was changed."
+        );
+        assert!(!text.contains("test_decision"), "{text}");
     }
 
     /// The whole loop the owner asked for: a gate that fails hands the work
@@ -18646,6 +18993,82 @@ pub(crate) mod tests {
         }
     }
 
+    /// DR-33 (design §1.8, §3.6, §3.14): an agent cannot make its chat
+    /// public by declaring a gate on a public decision model. On an empty chat
+    /// bound to a private model the plan is refused with the agent's sentence
+    /// and nothing is stored; on a chat the person already made public by a
+    /// decision model, the same gate is accepted (`staysPublic`).
+    #[tokio::test]
+    async fn an_agent_cannot_make_its_chat_public_with_a_gate_but_may_add_one_to_a_public_chat() {
+        use crate::agents::decisions_extension::test_support::{entry, model};
+        use crate::privacy::decision_axes::{BasisAuthor, PublicBasis};
+        use crate::session::session_manager::{BasisWrite, BasisWriteOutcome};
+        let mut joey_entry = entry(
+            "joey-1",
+            crate::privacy::ProviderTier::Public,
+            false,
+            crate::decision::DecisionAdapter::SystemOne,
+        );
+        joey_entry.provider = "baseten_decision".into();
+        let joey = model(joey_entry, 0.9);
+        let calls = joey.calls.clone();
+        let (c, parent) = gated_client(vec![joey]).await;
+        let sm = c.context.session_manager.clone();
+        sm.update(&parent)
+            .provider_name("versa_azure")
+            .model_config(crate::model::ModelConfig::new_or_fail("gpt-5.5"))
+            .apply()
+            .await
+            .unwrap();
+
+        let mut args = gated_plan_args();
+        args["phases"][1]["gate"]["model"] = json!("baseten_decision/joey-1");
+        let refused = orchestrate(&c, &parent, args.clone()).await;
+        let text = result_text(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            text.contains(crate::decision::save::AGENT_MAY_NOT_MOVE_THE_TIER),
+            "{text}"
+        );
+        assert!(text.ends_with("Nothing was changed."), "{text}");
+        assert!(
+            crate::agents::orchestration_plan::load_plan(&sm, &parent)
+                .await
+                .unwrap()
+                .is_none(),
+            "a refused plan stored nothing"
+        );
+
+        // The person makes the chat public by a decision model first.
+        let written = sm
+            .write_public_basis(
+                &parent,
+                BasisWrite::Set(PublicBasis::new(
+                    &parent,
+                    BasisAuthor::Person,
+                    "test",
+                    vec![],
+                )),
+                |data| {
+                    data.set_extension_state(
+                        crate::decision::settings::DECISION_SETTINGS_STATE,
+                        crate::decision::settings::DECISION_SETTINGS_VERSION,
+                        json!({
+                            "defaultModel": {"provider": "baseten_decision", "model": "joey-1"},
+                            "monitors": []
+                        }),
+                    );
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(written, BasisWriteOutcome::Written(()));
+        let accepted = orchestrate(&c, &parent, args).await;
+        assert_eq!(accepted.is_error, Some(false), "{}", result_text(&accepted));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+    }
+
     /// A model source whose every model times out when opened: a check that
     /// cannot finish now but might later.
     struct TimingOutSource;
@@ -18708,6 +19131,181 @@ pub(crate) mod tests {
             declared.structured_content.unwrap()["phases"][1]["gate"].is_object(),
             "the gate was stored"
         );
+    }
+
+    /// The app needs only a language model. With no decision model at all, a
+    /// gate that names none is accepted with a note, and completing its phase
+    /// asks the chat's own model, whose verdict holds or passes the gate
+    /// exactly as a decision model's would. The reply and the gate's record
+    /// name the chat's model and why.
+    #[tokio::test]
+    async fn with_no_decision_model_a_gate_is_accepted_and_the_chats_own_model_judges_it() {
+        use crate::agents::orchestration_plan::gate_chat_stub::ChatStub;
+        let (c, parent) = gated_client(Vec::new()).await;
+        let short = ChatStub::answering(r#"{"tests_pass": {"answer": "no", "p_yes": 0.2}}"#);
+        let c = c.with_chat_model(short.provider());
+        let declared = orchestrate(&c, &parent, gated_plan_args()).await;
+        let text = result_text(&declared);
+        assert_eq!(declared.is_error, Some(false), "{text}");
+        assert!(
+            text.contains(
+                "Phase \"build\"'s gate is judged by this chat's own model when the phase \
+                 completes, because this chat has no decision model it may use now."
+            ),
+            "{text}"
+        );
+        assert_eq!(short.calls(), 0, "a declaration asks nothing");
+
+        let complete = json!({ "action": "complete", "phase": "build" });
+        let held = orchestrate(&c, &parent, complete.clone()).await;
+        let text = result_text(&held);
+        assert_eq!(held.is_error, Some(false), "{text}");
+        assert!(text.contains("NOT completed"), "{text}");
+        assert!(text.contains("tests_pass: P(yes) 0.20"), "{text}");
+        assert!(
+            text.contains(
+                "This chat has no decision model it may use, so stub-chat-model, the chat's \
+                 model, judged the gate."
+            ),
+            "{text}"
+        );
+        assert_eq!(short.calls(), 1, "one completion");
+        let prompt = short.last_prompt();
+        assert!(prompt.contains("A parser with passing tests"), "{prompt}");
+        assert!(
+            prompt.contains("- tests_pass: Do the results show every new test passing?"),
+            "{prompt}"
+        );
+        let snapshot = held.structured_content.unwrap();
+        let gate = &snapshot["phases"][1]["gate"];
+        assert_eq!(gate["attempts"], 1);
+        assert_eq!(gate["lastPassed"], false);
+        assert_eq!(gate["lastJudge"]["kind"], "chat_model");
+        assert_eq!(gate["lastJudge"]["model"], "stub-chat-model");
+
+        let done = ChatStub::answering(r#"{"tests_pass": {"answer": "yes", "p_yes": 0.93}}"#);
+        let c = c.with_chat_model(done.provider());
+        let passed = orchestrate(&c, &parent, complete).await;
+        let text = result_text(&passed);
+        assert!(text.contains("gate passed on attempt 2 of 2"), "{text}");
+        let snapshot = passed.structured_content.unwrap();
+        assert_eq!(snapshot["phases"][1]["status"], "completed");
+        assert_eq!(snapshot["phases"][1]["gate"]["lastPassed"], true);
+        assert_eq!(
+            snapshot["phases"][1]["gate"]["lastJudge"]["kind"],
+            "chat_model"
+        );
+        assert_eq!(done.calls(), 1);
+    }
+
+    /// A gate the chat's own model judges is billed like any other call the chat
+    /// makes outside its turns: one `side:gate_judge` row on the chat, counted in
+    /// its spend, and never the request the next one is estimated from.
+    #[tokio::test]
+    async fn a_gate_the_chats_own_model_judges_is_counted_on_the_chat() {
+        use crate::agents::orchestration_plan::gate_chat_stub::ChatStub;
+        let (c, parent) = gated_client(Vec::new()).await;
+        let judge = ChatStub::answering_with_usage(
+            r#"{"tests_pass": {"answer": "no", "p_yes": 0.2}}"#,
+            crate::providers::base::Usage::new(Some(1_200), Some(40), Some(1_240)),
+        );
+        let c = c.with_chat_model(judge.provider());
+        let declared = orchestrate(&c, &parent, gated_plan_args()).await;
+        assert_eq!(declared.is_error, Some(false), "{}", result_text(&declared));
+        let sm = &c.context.session_manager;
+        let spent_before = sm.spend_snapshot(&parent, false).await.unwrap().chat_tokens;
+        let basis_before = sm.last_request_usage(&parent).await.unwrap();
+
+        let held = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "build" }),
+        )
+        .await;
+        let text = result_text(&held);
+        assert_eq!(held.is_error, Some(false), "{text}");
+        assert!(text.contains("NOT completed"), "{text}");
+        assert_eq!(judge.calls(), 1, "one completion");
+
+        let pool = sm.storage().pool().await.unwrap();
+        let keys: Vec<String> =
+            sqlx::query_scalar("SELECT event_key FROM token_events WHERE session_id = ?")
+                .bind(&parent)
+                .fetch_all(pool)
+                .await
+                .unwrap();
+        assert_eq!(keys.len(), 1, "{keys:?}");
+        assert!(keys[0].starts_with("side:gate_judge:"), "{keys:?}");
+        assert_eq!(
+            sm.spend_snapshot(&parent, false).await.unwrap().chat_tokens - spent_before,
+            1_240,
+            "the judgment counts toward the chat"
+        );
+        assert_eq!(
+            sm.last_request_usage(&parent).await.unwrap(),
+            basis_before,
+            "a side call is never the basis of the next request's estimate"
+        );
+    }
+
+    /// A gate that names no model, whose decision model cannot be reached,
+    /// is judged by the chat's own model rather than erroring and waiting for
+    /// the person; the record says why. A gate that NAMES that model keeps
+    /// the error and never asks the chat's model.
+    #[tokio::test]
+    async fn an_unreachable_decision_model_hands_a_gate_with_no_model_to_the_chats_model() {
+        let mut broken = local_model(0.99);
+        broken.fail_all = true;
+        let (c, parent) = gated_client(vec![broken]).await;
+        let chat = crate::agents::orchestration_plan::gate_chat_stub::ChatStub::answering(
+            r#"{"tests_pass": {"answer": "yes", "p_yes": 0.9}}"#,
+        );
+        let c = c.with_chat_model(chat.provider());
+        let declared = orchestrate(&c, &parent, gated_plan_args()).await;
+        assert_eq!(declared.is_error, Some(false), "{}", result_text(&declared));
+        let passed = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "build" }),
+        )
+        .await;
+        let text = result_text(&passed);
+        assert!(text.contains("gate passed on attempt 1 of 2"), "{text}");
+        assert!(
+            text.contains(
+                "tev1 failed on its server (HTTP 500), so stub-chat-model, the chat's model, \
+                 judged the gate."
+            ),
+            "{text}"
+        );
+        assert_eq!(chat.calls(), 1);
+
+        // Named: the error stands, no attempt is used, the chat model is not
+        // asked.
+        let (c, parent) = gated_client(vec![{
+            let mut broken = local_model(0.99);
+            broken.fail_all = true;
+            broken
+        }])
+        .await;
+        let chat = crate::agents::orchestration_plan::gate_chat_stub::ChatStub::answering(
+            r#"{"tests_pass": {"answer": "yes", "p_yes": 0.9}}"#,
+        );
+        let c = c.with_chat_model(chat.provider());
+        let mut args = gated_plan_args();
+        args["phases"][1]["gate"]["model"] = json!("test_decision/tev1");
+        let declared = orchestrate(&c, &parent, args).await;
+        assert_eq!(declared.is_error, Some(false), "{}", result_text(&declared));
+        let errored = orchestrate(
+            &c,
+            &parent,
+            json!({ "action": "complete", "phase": "build" }),
+        )
+        .await;
+        let text = result_text(&errored);
+        assert!(text.contains("could not be evaluated"), "{text}");
+        assert!(text.contains("no attempt was used"), "{text}");
+        assert_eq!(chat.calls(), 0, "a named model's gate never falls back");
     }
 
     /// A phase an earlier gate holds is refused with the hold, and no gate is
@@ -19240,6 +19838,188 @@ pub(crate) mod tests {
         )
         .await;
         assert_eq!(listed.is_error, Some(false), "{}", result_text(&listed));
+    }
+
+    /// Live QA M3-1 (DR-33, design S29): an agent in a private chat that puts
+    /// a public monitor on ITS OWN chat reaches the tier check and is told why
+    /// it may not (only the person can change whether the chat is private),
+    /// not that the chat is out of reach "on a public model". A private
+    /// monitor on itself lands, by its id or with `session_id` omitted, and
+    /// the replies say "this chat".
+    #[tokio::test]
+    async fn workspace_monitor_reaches_its_own_chat_and_refuses_lowering_it() {
+        let (c, parent) = gated_client(vec![local_model(0.5)]).await;
+        make_private(&c, &parent).await;
+        let cap =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true);
+
+        let refused = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "add", "session_id": parent,
+                    "monitors": [off_task(Some("baseten_decision/joey-1"))] }),
+        )
+        .await;
+        let text = result_text(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            !text.contains(&crate::privacy::refusal::workspace_out_of_reach()),
+            "{text}"
+        );
+        assert!(
+            !text.contains("public model, and the two answers"),
+            "{text}"
+        );
+        assert!(
+            text.contains("This chat is private, so joey-1, a Baseten model, can't read it."),
+            "{text}"
+        );
+        assert!(
+            text.contains("which only the person can choose") && text.contains("do not retry"),
+            "{text}"
+        );
+        assert!(text.ends_with("Nothing was changed."), "{text}");
+        assert!(stored_monitors(&c, &parent).await.is_empty());
+
+        // With no session_id: this chat.
+        let added = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "add", "monitors": [off_task(Some("test_decision/tev1"))] }),
+        )
+        .await;
+        let text = result_text(&added);
+        assert_eq!(added.is_error, Some(false), "{text}");
+        assert_eq!(
+            text,
+            "Monitor 'Off task' is on this chat, set by you: it stops this chat when P(yes) \
+             reaches 0.80, checked after each of its steps with test_decision/tev1. It applies \
+             from this chat's next check."
+        );
+        assert_eq!(stored_monitors(&c, &parent).await.len(), 1);
+
+        let listed = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "list", "session_id": parent }),
+        )
+        .await;
+        let text = result_text(&listed);
+        assert!(text.starts_with("This chat has 1 monitor:"), "{text}");
+
+        let removed = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "remove", "ids": ["off-task"] }),
+        )
+        .await;
+        let text = result_text(&removed);
+        assert_eq!(removed.is_error, Some(false), "{text}");
+        assert!(
+            text.starts_with("Removed monitor `off-task` from this chat."),
+            "{text}"
+        );
+        assert!(stored_monitors(&c, &parent).await.is_empty());
+    }
+
+    /// The self-target path skips the direct-child check, so it is also open
+    /// to the auto-injected delegation grant (`workspace_child_scope_only`).
+    /// That widening is deliberate and narrow: the tier check still runs, so
+    /// such a caller can no more lower its private chat than any other
+    /// caller, and a private monitor on itself only narrows its own work. It
+    /// still reaches no chat beyond itself and its direct subagents.
+    #[tokio::test]
+    async fn a_child_scope_only_grant_on_its_own_chat_still_cannot_lower_it() {
+        let (c, parent) = gated_client(vec![local_model(0.5)]).await;
+        make_private(&c, &parent).await;
+        let cap =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true);
+        let call = |args: serde_json::Value| {
+            let c = &c;
+            let parent = parent.clone();
+            async move {
+                let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
+                c.call_tool(
+                    "workspace_monitor",
+                    Some(args),
+                    crate::agents::mcp_client::McpMeta::new(parent, cap)
+                        .with_workspace_child_scope_only(true),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        for args in [
+            json!({ "action": "add", "monitors": [off_task(Some("baseten_decision/joey-1"))] }),
+            json!({ "action": "add", "session_id": parent,
+                    "monitors": [off_task(Some("baseten_decision/joey-1"))] }),
+        ] {
+            let refused = call(args).await;
+            let text = result_text(&refused);
+            assert_eq!(refused.is_error, Some(true), "{text}");
+            assert!(
+                text.contains("This chat is private, so joey-1, a Baseten model, can't read it.")
+                    && text.contains("which only the person can choose"),
+                "{text}"
+            );
+            assert!(stored_monitors(&c, &parent).await.is_empty());
+        }
+        assert!(
+            c.context
+                .session_manager
+                .get_session(&parent, false)
+                .await
+                .unwrap()
+                .privacy_tier
+                == crate::privacy::SessionClassification::Private,
+            "the chat stays private"
+        );
+
+        let added = call(json!({ "action": "add",
+                                 "monitors": [off_task(Some("test_decision/tev1"))] }))
+        .await;
+        assert_eq!(added.is_error, Some(false), "{}", result_text(&added));
+        assert_eq!(stored_monitors(&c, &parent).await.len(), 1);
+    }
+
+    /// A private caller's refusal for a chat that is not its own or its
+    /// subagent says so, rather than claiming it runs on a public model; a
+    /// public caller keeps the one out-of-reach sentence
+    /// (`workspace_monitor_reaches_only_direct_children`).
+    #[tokio::test]
+    async fn workspace_monitor_tells_a_private_caller_the_true_reason() {
+        let (c, parent) = gated_client(vec![local_model(0.5)]).await;
+        make_private(&c, &parent).await;
+        let peer = c
+            .context
+            .session_manager
+            .create_session(
+                std::env::temp_dir(),
+                "peer".to_string(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id;
+        let cap =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true);
+        let refused = monitor_tool(
+            &c,
+            &parent,
+            cap,
+            json!({ "action": "list", "session_id": peer }),
+        )
+        .await;
+        let text = result_text(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(text.contains(&monitor_target_not_reached(&peer)), "{text}");
+        assert!(!text.contains("public model"), "{text}");
     }
 
     /// A person's monitor on the subagent is never the agent's to change:

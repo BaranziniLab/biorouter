@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import ToolCallWithResponse, {
   logToString,
+  plainToolFailureText,
   summarizeTodoSidecar,
   summarizeToolCall,
   TODO_SIDECAR_NOT_APPLIED,
@@ -1180,6 +1181,63 @@ describe('summarizeToolCall', () => {
 
     expect(screen.getByText('Tool call failed')).toBeInTheDocument();
     expect(screen.getByText('Error: No matches found for: web search')).toBeInTheDocument();
+  });
+
+  // Live QA, 2026-11-11: the failed `decide` row printed the error taxonomy's
+  // header and the repetition guard's text for the agent.
+  it("shows a failed call's error without the [tool_error] header or the agent's text", () => {
+    const toolRequest: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'tool-loop-stop',
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'decisions__decide',
+          arguments: {
+            questions: { has_ms: { instructions: 'Does this note state MS?' } },
+            chunks: [{ id: 'note-1', text: 'Neuro follow-up' }],
+          },
+        },
+      },
+    };
+
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={toolRequest}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'tool-loop-stop',
+          toolResult: {
+            status: 'success',
+            value: {
+              isError: true,
+              content: [
+                {
+                  type: 'text',
+                  text:
+                    '[tool_error kind=transient retryable=true] A dependency blipped. One retry ' +
+                    "is reasonable.\nBiorouter stopped this tool call: 'decisions__decide' has " +
+                    'now been called with identical arguments 5 times without a changed result. ' +
+                    'The user did NOT decline it; this is an automatic repetition guard.',
+                },
+              ],
+            },
+          },
+        }}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+
+    fireEvent.click(screen.getByText(/^Failed/).closest('button') as HTMLElement);
+
+    const notice = screen.getByRole('alert');
+    expect(notice).toHaveTextContent(
+      'Biorouter stopped the agent repeating the same step (decide, 5 times).'
+    );
+    for (const raw of ['[tool_error', 'retryable=', 'did NOT decline', 'decisions__decide']) {
+      expect(notice).not.toHaveTextContent(raw);
+    }
   });
 
   it('contains an unexpected tool-card render failure instead of crashing the chat', () => {
@@ -2956,5 +3014,65 @@ describe('dictionary result actions', () => {
     expect(screen.queryByRole('button', { name: /^Undo/ })).not.toBeInTheDocument();
     // Nothing to act on, so no term is drawn without its buttons.
     expect(screen.queryByTestId('dictionary-tool-term')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Live QA, 2026-11-12: a refused subagent's card read "`workspace__subagent` failed:
+ * -32602: This chat is running on a public model…", a tool id and a protocol code in
+ * front of the sentence. The daemon writes the sentence alone now; a chat saved before
+ * still carries the prefixes, and the card drops them.
+ */
+describe('a failed call says its sentence, not the dispatch wrapper or the code', () => {
+  const SENTENCE =
+    'This chat is running on a public model, so it cannot start a subagent on a private one.';
+
+  it.each([
+    [`\`workspace__subagent\` failed: -32602: ${SENTENCE}`, SENTENCE],
+    [`\`workspace__subagent\` failed: ${SENTENCE}`, SENTENCE],
+    [`-32603: ${SENTENCE}`, SENTENCE],
+    // Nothing to strip, or nothing after it: left as it came.
+    [SENTENCE, SENTENCE],
+    ['`workspace__subagent` failed: ', '`workspace__subagent` failed: '],
+    ['Exit code 2: -32602 is not a prefix here', 'Exit code 2: -32602 is not a prefix here'],
+  ])('%s', (raw, shown) => {
+    expect(plainToolFailureText(raw)).toBe(shown);
+  });
+
+  it('shows only the sentence in the open card', () => {
+    const toolRequest: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'tool-refused-subagent',
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'workspace__subagent',
+          arguments: { instructions: 'Read every trial report.', role: 'Reader' },
+        },
+      },
+    };
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={toolRequest}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'tool-refused-subagent',
+          toolResult: {
+            status: 'error',
+            error: `\`workspace__subagent\` failed: -32602: ${SENTENCE}`,
+          },
+        }}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    const row = screen
+      .getAllByRole('button')
+      .find((button) => /Reader/.test(button.textContent ?? ''));
+    fireEvent.click(row as HTMLElement);
+    const notice = screen.getByRole('alert');
+    expect(notice).toHaveTextContent(SENTENCE);
+    expect(notice).not.toHaveTextContent('-32602');
+    expect(notice).not.toHaveTextContent('workspace__subagent');
   });
 });

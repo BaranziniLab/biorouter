@@ -73,6 +73,7 @@ import {
   type ContinuationRecoveryAction,
 } from '../utils/continuationLease';
 import type { ChatTurnErrorData, TurnErrorScope } from '../types/turnError';
+import { failedTurnPrompt, promptToSendAgain } from '../utils/failedTurn';
 import type { PendingSteer } from '../utils/trailingActivity';
 
 /**
@@ -4318,6 +4319,9 @@ class ChatStreamController {
    *    duplicate user turn is ever appended to the store. If there is no trailing
    *    user turn (nothing was ever sent on this controller, e.g. a pure mount
    *    load failure) the reload alone is the retry.
+   *  - After a provider failure the daemon already answered with a stored
+   *    notice, the failed turn's prompt goes again as a new row
+   *    (`resendFailedTurnPrompt`).
    */
   private retryTurnOnce = async (): Promise<void> => {
     // BR-71: same reading as `canSubmitMessage` — an observer's feed is not a
@@ -4331,7 +4335,11 @@ class ChatStreamController {
     if (!this.canSubmitMessage()) return;
 
     const last = this.messagesRef[this.messagesRef.length - 1];
-    if (!last || last.role !== 'user') return;
+    if (!last) return;
+    if (last.role !== 'user') {
+      await this.resendFailedTurnPrompt(previousError);
+      return;
+    }
 
     this.lastInteractionTime = Date.now();
     const ambiguousTurnId = this.ambiguousRetryTurnId;
@@ -4395,6 +4403,29 @@ class ChatStreamController {
       return;
     }
     await this.submitPreparedMessage(last, [...this.messagesRef], false);
+  };
+
+  /**
+   * Retry after a provider failure the daemon already answered: the turn ended,
+   * and its "Ran into this error" notice (with anything that landed beside it,
+   * such as a decision monitor's marker) sits after the prompt. There is no
+   * trailing user row to re-send, so the turn's prompt goes again as a new row,
+   * as the notice's own advice ("Please retry") asks the person to do by hand.
+   *
+   * Only for a provider-scoped failure: that scope is the daemon's own verdict
+   * that the turn is over (`classify_abort`), so nothing can still be running
+   * and the prompt it finds is the failed turn's. A load or preparation failure
+   * may sit after a finished turn, whose prompt must never run twice.
+   */
+  private resendFailedTurnPrompt = async (
+    previousError: ChatTurnErrorData | undefined
+  ): Promise<void> => {
+    if (previousError?.scope !== 'provider' || this.ambiguousRetryTurnId) return;
+    const prompt = failedTurnPrompt(this.messagesRef);
+    if (!prompt) return;
+    this.lastInteractionTime = Date.now();
+    const again = promptToSendAgain(prompt);
+    await this.submitPreparedMessage(again, [...this.messagesRef, again], true);
   };
 
   retryTurn = (): Promise<void> => {

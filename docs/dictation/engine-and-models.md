@@ -1572,5 +1572,5 @@ A follow up on the same day measured the worker lifecycle on Metal, the hardened
 - [Managed policy](../security/managed-policy.md): the policy file the `dictation:` block extends.
 - [Privacy tiers](../security/privacy-tiers.md): the tier rules behind the target and bias decision.
 - [Linux service deployment](../deployment/headless-linux.md): the systemd unit and the `biorouter` service account that S8 installs models for.
-- [Serve decisions](../deployment/serve-decisions.md): the keyless daemon rules behind O-2 and the SD-16 record.
+- [Serve decisions](../deployment/serve-decisions.md): the keyless daemon rules behind O-2 and the SD-17 record.
 - [Releases](../releases/README.md): the release process whose asset count and smokes the engine must not change.

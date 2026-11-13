@@ -407,6 +407,30 @@ pub enum PrivacyRefusal {
          and give it the task directly."
     )]
     SpawnCrossesAffiliation { parent: String, child: String },
+
+    /// DR-33 (design §3.9): a private extension, a private knowledge base or a
+    /// private chat was refused because the chat is public **because of a
+    /// decision model it names**, not because of its language model. Telling a
+    /// Versa chat to "switch to a private model" is circular, so every tier
+    /// refusal on such a chat says this instead. Rendered for the agent;
+    /// [`decision_lowered_sentence`] with [`RefusalAudience::Person`] is the
+    /// person's.
+    ///
+    /// §14.4: it names the extension the caller asked for and the decision
+    /// model's monitor name, model and host, all of which the chat's own
+    /// settings hold. No content.
+    #[error(
+        "{}",
+        decision_lowered_sentence(
+            .extension.as_deref(),
+            .lowered_by.as_ref(),
+            RefusalAudience::Agent
+        )
+    )]
+    PublicByDecisionModel {
+        extension: Option<String>,
+        lowered_by: Option<super::decision_axes::LoweredBy>,
+    },
 }
 
 impl PrivacyRefusal {
@@ -471,7 +495,11 @@ impl PrivacyRefusal {
             | Self::AppSessionTierFixed { .. }
             // DR-31 is about WHOSE agreements cover the two models, which is a
             // different axis from the classification a repair card names.
-            | Self::SpawnCrossesAffiliation { .. } => None,
+            | Self::SpawnCrossesAffiliation { .. }
+            // DR-33: the chat is public by the person's choice of a decision
+            // model; there is no collided pair to repair, and a card offering a
+            // private model would be the circular advice this variant replaces.
+            | Self::PublicByDecisionModel { .. } => None,
         }
     }
 
@@ -497,7 +525,8 @@ impl PrivacyRefusal {
             // arms above return first — so there is no refused tier to report,
             // and naming one would put a tier crossing on a card for a refusal
             // that is not about tiers at all.
-            | Self::SpawnCrossesAffiliation { .. } => None,
+            | Self::SpawnCrossesAffiliation { .. }
+            | Self::PublicByDecisionModel { .. } => None,
         }
     }
 
@@ -525,9 +554,170 @@ impl PrivacyRefusal {
             // reading it. It carries no session id for the same reason the
             // spawn refusals do not.
             | Self::AppSessionTierFixed { .. }
-            | Self::SpawnCrossesAffiliation { .. } => None,
+            | Self::SpawnCrossesAffiliation { .. }
+            | Self::PublicByDecisionModel { .. } => None,
         }
     }
+}
+
+/// Who reads a refusal: the sentence differs, the rule does not (TRIAGE R4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefusalAudience {
+    /// A model, through a tool result or an agent-facing route.
+    Agent,
+    /// A person, on the desktop or at a terminal.
+    Person,
+}
+
+/// DR-33 (design §3.9): the sentence a tier refusal gives on a chat made public
+/// by one of its decision models. `extension` names what was refused when there
+/// is one ("the private extension OMOP"); `lowered_by` names the cause when the
+/// caller holds it (the bound provider's `decision_lowered_by()`, read on the
+/// refusal path only).
+///
+/// * Person: "This chat is public because monitor "Done" uses joey-1, a Baseten
+///   model, so it can't use the private extension OMOP. Remove that monitor, or
+///   choose a model on this computer for it, and the chat becomes private at
+///   your next message."
+/// * Agent: "This chat is public because the person gave it a public decision
+///   model (monitor "Done", joey-1 on Baseten), so private extensions are out
+///   of its reach. Do not retry; tell the person."
+pub fn decision_lowered_sentence(
+    extension: Option<&str>,
+    lowered_by: Option<&super::decision_axes::LoweredBy>,
+    audience: RefusalAudience,
+) -> String {
+    use super::decision_axes::NameSource;
+    match audience {
+        RefusalAudience::Person => {
+            let because = lowered_by
+                .map(|cause| cause.person_phrase())
+                .unwrap_or_else(|| "it uses a public decision model".to_string());
+            let what = extension
+                .map(|name| format!("the private extension {name}"))
+                .unwrap_or_else(|| "private extensions, knowledge bases or chats".to_string());
+            let several = lowered_by.is_some_and(|cause| cause.others > 0);
+            let remedy = match lowered_by.map(|cause| cause.source) {
+                // More than one public name: a remedy for the one named would
+                // leave the chat public, so the remedy names them all.
+                _ if several => {
+                    "Remove or change its public decision models, and the chat becomes private \
+                     at your next message."
+                }
+                Some(NameSource::Monitor) | None => {
+                    "Remove that monitor, or choose a model on this computer for it, and the \
+                     chat becomes private at your next message."
+                }
+                Some(NameSource::Default) => {
+                    "Clear that default, or choose a model on this computer, and the chat \
+                     becomes private at your next message."
+                }
+                Some(NameSource::Gate) => {
+                    "Choose a model on this computer for that gate, and the chat becomes \
+                     private at your next message."
+                }
+                Some(NameSource::PhaseMonitor) => {
+                    "Choose a model on this computer for that monitor, and the chat becomes \
+                     private at your next message."
+                }
+                Some(NameSource::Parent) => {
+                    "Do this work from the chat that started it, or from a private chat."
+                }
+            };
+            format!("This chat is public because {because}, so it can't use {what}. {remedy}")
+        }
+        RefusalAudience::Agent => {
+            let cause = lowered_by
+                .map(|cause| format!(" ({})", cause.agent_phrase()))
+                .unwrap_or_default();
+            let what = extension
+                .map(|name| format!("`{name}`, a private extension, is"))
+                .unwrap_or_else(|| "private extensions, knowledge bases and chats are".to_string());
+            format!(
+                "This chat is public because the person gave it a public decision model{cause}, \
+                 so {what} out of its reach. Do not retry; tell the person."
+            )
+        }
+    }
+}
+
+/// Issue #56: the sentence a private extension's refusal gives when the chat
+/// was switched to a private model while the running turn was on a public one
+/// ([`super::CallCapability::private_from_next_turn`]). [`privacy_refusal`]'s
+/// own sentence asks the person to switch this chat to a private model, which
+/// they just did; the switch applies from the next message, so the request can
+/// simply be made again then.
+///
+/// §14.4 as for `privacy_refusal`: the extension and nothing else.
+pub fn private_from_next_turn_sentence(extension: &str) -> String {
+    format!(
+        "`{extension}` is a private extension, and this chat was switched to a private model \
+         while this turn was running. The new model takes effect from the next message, so \
+         `{extension}` cannot be used in this turn. Do not retry in this turn, through any tool; \
+         tell the person to ask again in their next message."
+    )
+}
+
+/// [`privacy_refusal`], naming the decision model when one lowered the chat
+/// (design §3.9), or saying the chat's new private model starts with the next
+/// message when the person switched it while this turn ran (issue #56). The
+/// rule is `privacy_refusal`'s, unchanged: this only picks the sentence. A
+/// caller on a tool-call path passes `cap.tier()`, `cap.private_from_next_turn()`
+/// and `cap.lowered_by_decision()` off the SAME sampled capability, so a
+/// refusal never reads the slot a second time to decide. `lowered_by` is the
+/// words, read off the bound provider on the refusal path only; `None` still
+/// gives the decision sentence (without the monitor's name).
+///
+/// The mid-turn switch is asked first: the slot now holds a private model, so
+/// whatever made the turn public, decision model included, no longer holds from
+/// the next message, and that is the one thing the person needs to know.
+pub fn privacy_refusal_explained(
+    extension: &str,
+    extension_tier: ProviderTier,
+    caller_tier: ProviderTier,
+    private_from_next_turn: bool,
+    lowered_by_decision: bool,
+    lowered_by: Option<&super::decision_axes::LoweredBy>,
+) -> Option<ErrorData> {
+    let refused = privacy_refusal(extension, extension_tier, caller_tier)?;
+    if private_from_next_turn {
+        return Some(ErrorData::new(
+            refused.code,
+            private_from_next_turn_sentence(extension),
+            None,
+        ));
+    }
+    if !lowered_by_decision {
+        return Some(refused);
+    }
+    Some(ErrorData::new(
+        refused.code,
+        decision_lowered_sentence(Some(extension), lowered_by, RefusalAudience::Agent),
+        None,
+    ))
+}
+
+/// The spawn drop note's sentence when the child is public because the parent
+/// is public by a decision model (design §3.9). The other drop note says "this
+/// subagent is running on a public model", which is false of a Versa child born
+/// under a public ceiling.
+pub fn decision_drop_note(
+    dropped: &[String],
+    lowered_by: Option<&super::decision_axes::LoweredBy>,
+) -> Option<String> {
+    if dropped.is_empty() {
+        return None;
+    }
+    let cause = lowered_by
+        .map(|cause| format!(" ({})", cause.agent_phrase()))
+        .unwrap_or_default();
+    Some(format!(
+        "Note: this chat is public because the person gave it a public decision model{cause}, so \
+         the subagent runs public too and was NOT given these private extensions of yours: {}. Do \
+         not ask the subagent to use them, and do not re-spawn it to try again; the boundary is \
+         the same every time. Do not retry; tell the person if the task needs them.",
+        dropped.join(", ")
+    ))
 }
 
 /// The one sentence every turn refusal contains, and the reason it is a
@@ -966,7 +1156,18 @@ fn extension_enable_refusal_inner(
     // SPAWNS one — it pulls that server's secrets out of the keychain and opens
     // the session — so Gate C refusing the first tool call afterwards is already
     // too late.
-    if let Some(err) = privacy_refusal(extension, class.tier, caller) {
+    //
+    // DR-33 (design §3.9): on a chat a decision model made public, the advice
+    // "switch to a private model" is circular, so the sentence names the
+    // decision model instead. Same rule, same sample; only the words change.
+    if let Some(err) = privacy_refusal_explained(
+        extension,
+        class.tier,
+        caller,
+        cap.private_from_next_turn(),
+        cap.lowered_by_decision(),
+        None,
+    ) {
         return Some(err);
     }
 
@@ -1837,5 +2038,209 @@ mod tests {
         // marker tells the user their message was not sent. Neither happened.
         assert!(!msg.contains(USER_ACTION_REFUSAL_MARKER), "{msg}");
         assert!(!msg.contains(TURN_REFUSAL_MARKER), "{msg}");
+    }
+
+    // -----------------------------------------------------------------------
+    // DR-33 (design §3.9): a chat made public by a decision model.
+    // -----------------------------------------------------------------------
+
+    fn joey() -> crate::privacy::decision_axes::LoweredBy {
+        use crate::privacy::decision_axes::{HostLabel, LoweredBy, NameSource};
+        LoweredBy {
+            source: NameSource::Monitor,
+            label: "Done".to_string(),
+            model: "joey-1".to_string(),
+            host: HostLabel::Baseten,
+            others: 0,
+        }
+    }
+
+    /// A chat lowered by more than one public name: the sentence says there
+    /// are others, and the remedy is for all of them, because clearing only
+    /// the one named would leave the chat public (review, 2026-11-11).
+    #[test]
+    fn a_refusal_on_a_chat_with_several_public_names_offers_the_remedy_for_all_of_them() {
+        use crate::privacy::decision_axes::NameSource;
+        let several = crate::privacy::decision_axes::LoweredBy {
+            source: NameSource::Default,
+            label: "default".to_string(),
+            others: 1,
+            ..joey()
+        };
+        assert_eq!(
+            decision_lowered_sentence(Some("OMOP"), Some(&several), RefusalAudience::Person),
+            "This chat is public because its default decision model is joey-1, a Baseten model, \
+             and 1 other public decision model, so it can't use the private extension OMOP. \
+             Remove or change its public decision models, and the chat becomes private at your \
+             next message."
+        );
+        assert!(
+            decision_lowered_sentence(None, Some(&several), RefusalAudience::Agent)
+                .contains("(default decision model, joey-1 on Baseten, and 1 more)")
+        );
+    }
+
+    /// The two sentences of design §3.9, verbatim where the design gives them.
+    #[test]
+    fn a_decision_lowered_refusal_names_the_monitor_and_never_sends_the_person_to_the_model_picker()
+    {
+        let person =
+            decision_lowered_sentence(Some("OMOP"), Some(&joey()), RefusalAudience::Person);
+        assert_eq!(
+            person,
+            "This chat is public because monitor \"Done\" uses joey-1, a Baseten model, so it \
+             can't use the private extension OMOP. Remove that monitor, or choose a model on this \
+             computer for it, and the chat becomes private at your next message."
+        );
+        let agent = decision_lowered_sentence(None, Some(&joey()), RefusalAudience::Agent);
+        assert_eq!(
+            agent,
+            "This chat is public because the person gave it a public decision model (monitor \
+             \"Done\", joey-1 on Baseten), so private extensions, knowledge bases and chats are \
+             out of its reach. Do not retry; tell the person."
+        );
+        for text in [&person, &agent] {
+            assert!(
+                !text.contains(ASK_THE_USER_TO_SWITCH),
+                "circular advice: {text}"
+            );
+            assert!(
+                !text.contains("switch this chat to a private model"),
+                "{text}"
+            );
+        }
+        let typed = PrivacyRefusal::PublicByDecisionModel {
+            extension: None,
+            lowered_by: Some(joey()),
+        };
+        assert_eq!(typed.to_string(), agent);
+        assert_eq!(typed.session_classification(), None);
+        assert_eq!(typed.provider_tier(), None);
+        assert_eq!(typed.session_id(), None);
+    }
+
+    /// Same rule as `privacy_refusal`, only the words change, and only when
+    /// the sampled capability says a decision model lowered the chat.
+    #[test]
+    fn the_explained_refusal_refuses_exactly_when_privacy_refusal_does() {
+        use ProviderTier::{Private, Public};
+        for ext in [Private, Public] {
+            for caller in [Private, Public] {
+                for next_turn in [false, true] {
+                    for lowered in [false, true] {
+                        let plain = privacy_refusal("omop", ext, caller);
+                        let explained = privacy_refusal_explained(
+                            "omop", ext, caller, next_turn, lowered, None,
+                        );
+                        assert_eq!(
+                            plain.is_some(),
+                            explained.is_some(),
+                            "{ext:?} {caller:?} {next_turn} {lowered}"
+                        );
+                        if let (Some(plain), Some(explained)) = (plain, explained) {
+                            assert_eq!(plain.code, explained.code);
+                            if next_turn {
+                                assert_eq!(
+                                    explained.message,
+                                    private_from_next_turn_sentence("omop")
+                                );
+                            } else if lowered {
+                                assert!(explained.message.contains("public decision model"));
+                                assert!(!explained.message.contains(ASK_THE_USER_TO_SWITCH));
+                            } else {
+                                assert_eq!(plain.message, explained.message);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Issue #56: a person who switched a public chat to a private model while
+    /// a turn ran is not asked to switch to a private model. The refusal says
+    /// the new model starts with the next message, and names the extension.
+    #[test]
+    fn a_switch_made_while_the_turn_ran_is_not_asked_for_again() {
+        let sentence = private_from_next_turn_sentence("ucsfomopagent");
+        assert!(
+            sentence.contains("`ucsfomopagent` is a private extension"),
+            "{sentence}"
+        );
+        assert!(
+            sentence.contains("takes effect from the next message"),
+            "{sentence}"
+        );
+        assert!(
+            sentence.contains("ask again in their next message"),
+            "{sentence}"
+        );
+        assert!(
+            !sentence.contains("switch this chat to a private model"),
+            "{sentence}"
+        );
+        assert!(!sentence.contains(ASK_THE_USER_TO_SWITCH), "{sentence}");
+        assert!(
+            !sentence.contains('\u{2014}') && !sentence.contains('\u{2013}'),
+            "{sentence}"
+        );
+    }
+
+    /// The enable gate reads the same capability Gate C does, so an agent
+    /// enabling a private extension after such a switch is told the same thing.
+    #[test]
+    fn the_enable_gate_says_the_new_model_starts_next_message() {
+        use crate::privacy::CallCapability;
+        const NAME: &str = "ucsfomopagent";
+        let waits = CallCapability::for_test(ProviderTier::Private, true)
+            .no_wider_than(CallCapability::for_test(ProviderTier::Public, true));
+        let refused = extension_enable_refusal(waits, NAME, Some(&entry_for(NAME, true)), false)
+            .expect("a turn that started public may not enable a private extension");
+        assert_eq!(refused.message, private_from_next_turn_sentence(NAME));
+    }
+
+    /// The enable gate, on a capability sampled from a chat a decision model
+    /// made public: still refused, with the decision sentence.
+    #[test]
+    fn the_enable_gate_names_the_decision_model_on_a_lowered_chat() {
+        use crate::privacy::CallCapability;
+        const NAME: &str = "ucsfomopagent";
+        let lowered = CallCapability::for_test_lowered_by_decision(true);
+        let refused = extension_enable_refusal(lowered, NAME, Some(&entry_for(NAME, true)), false)
+            .expect("a lowered chat is public and may not enable a private extension");
+        assert!(
+            refused.message.contains("public decision model"),
+            "{}",
+            refused.message
+        );
+        assert!(refused.message.contains(NAME), "{}", refused.message);
+        assert!(
+            !refused.message.contains(ASK_THE_USER_TO_SWITCH),
+            "{}",
+            refused.message
+        );
+        // An ordinary public chat keeps today's sentence.
+        let public = CallCapability::for_test(ProviderTier::Public, true);
+        let today =
+            extension_enable_refusal(public, NAME, Some(&entry_for(NAME, true)), false).unwrap();
+        assert!(
+            today
+                .message
+                .contains("switch this chat to a private model"),
+            "{}",
+            today.message
+        );
+    }
+
+    #[test]
+    fn the_drop_note_for_a_lowered_parent_does_not_claim_a_public_model() {
+        assert_eq!(decision_drop_note(&[], Some(&joey())), None);
+        let note = decision_drop_note(&["omop".to_string()], Some(&joey())).unwrap();
+        assert!(note.contains("omop"), "{note}");
+        assert!(
+            note.contains("public decision model (monitor \"Done\", joey-1 on Baseten)"),
+            "{note}"
+        );
+        assert!(!note.contains("running on a public model"), "{note}");
     }
 }

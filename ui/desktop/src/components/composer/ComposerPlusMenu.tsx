@@ -25,9 +25,11 @@ export type ComposerTrigger = '@' | '/';
  * A chosen mention or command runs after the menu has closed and declined to
  * hand focus back to the `+`, so the caret lands in the text, not on a button.
  *
- * In a chat that exists, a last row opens the chat's decision monitors: the
- * summary's Decisions section, the other way in, is drawn only once a chat has a
- * decision call or a monitor, so without this row nothing could add the first.
+ * A last row opens the chat's decision monitors: the summary's Decisions section,
+ * the other way in, is drawn only once a chat has a decision call or a monitor, so
+ * without this row nothing could add the first. Before the chat's first message it
+ * opens them in draft mode (DR-33, design §4): monitors set then start with the
+ * chat, which is how a chat on a private model gets a public decision model.
  */
 export function ComposerPlusMenu({
   onAttachFiles,
@@ -38,7 +40,7 @@ export function ComposerPlusMenu({
   onAttachFiles: (files: FileList) => void;
   /** Put `@` or `/` at the caret and open the matching menu. */
   onInsertTrigger: (trigger: ComposerTrigger) => void;
-  /** Open the chat's Monitors dialog. Absent (and the row with it) before the chat exists. */
+  /** Open the chat's Monitors dialog (in draft mode before it exists). Absent, no row. */
   onOpenDecisionMonitors?: () => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);

@@ -130,6 +130,43 @@ export function applyTurnRaises(
   return changed ? next : rows;
 }
 
+/**
+ * `session` with its classification patched in place (a declassification, or a
+ * raise announced by a chat store). The daemon's reason the chat is public
+ * (`public_because`, DR-33) belonged to the old classification, so it goes with
+ * it; the next page read brings back whatever is true now.
+ */
+export function withPrivacyTier(
+  session: SessionSummary,
+  privacy_tier: SessionSummary['privacy_tier']
+): SessionSummary {
+  if (session.public_because == null) return { ...session, privacy_tier };
+  const { public_because: _stale, ...rest } = session;
+  return { ...rest, privacy_tier };
+}
+
+/** The head re-reads of every mounted list in this window ({@link refreshSidebarChats}). */
+const refreshRequests = new Set<() => void>();
+
+/**
+ * Ask every sidebar chat list in this window to read its head again now.
+ *
+ * For a saved change that moves a chat or changes its hover note without
+ * changing which chats exist or how they are classified, which none of the
+ * list's other ears hear. Saving a chat's decision settings is the case it is
+ * for: the save is activity (D-3), so the chat now sorts first, and it may
+ * write or clear the record that makes the chat public by its decision model
+ * (DR-33), which is what `public_because` reads. Call it after the save has
+ * landed; a read that outran the write would find the old row.
+ *
+ * This window only. Another window reads its head when it comes to the front
+ * (`focus`), so its row catches up then. The read is the ordinary debounced
+ * head read, so a burst of calls costs one request.
+ */
+export function refreshSidebarChats(): void {
+  for (const request of [...refreshRequests]) request();
+}
+
 export interface SidebarSessionsState {
   sessions: SessionSummary[];
   hasMore: boolean;
@@ -419,7 +456,7 @@ export default function useSidebarSessions(
       if (pendingAllRef.current) {
         pendingAllRef.current = pendingAllRef.current.map((session) =>
           session.id === sessionId && session.privacy_tier !== privacy_tier
-            ? { ...session, privacy_tier }
+            ? withPrivacyTier(session, privacy_tier)
             : session
         );
       }
@@ -427,7 +464,7 @@ export default function useSidebarSessions(
       const next = sessionsRef.current.map((session) => {
         if (session.id !== sessionId || session.privacy_tier === privacy_tier) return session;
         changed = true;
-        return { ...session, privacy_tier };
+        return withPrivacyTier(session, privacy_tier);
       });
       if (!changed) return;
       sessionsRef.current = next;
@@ -445,6 +482,7 @@ export default function useSidebarSessions(
       if (!document.hidden) scheduleRefresh();
     };
 
+    refreshRequests.add(scheduleRefresh);
     window.addEventListener('session-created', scheduleRefresh);
     window.addEventListener('message-stream-finished', scheduleRefresh);
     window.addEventListener(SESSION_META_CHANGED_EVENT, scheduleRefresh);
@@ -456,6 +494,7 @@ export default function useSidebarSessions(
       unsubscribeList();
       unsubscribeRemoved();
       unsubscribeRows();
+      refreshRequests.delete(scheduleRefresh);
       if (refreshTimer !== undefined) window.clearTimeout(refreshTimer);
       window.removeEventListener('session-created', scheduleRefresh);
       window.removeEventListener('message-stream-finished', scheduleRefresh);

@@ -2221,14 +2221,21 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     // Line 1: the large-language model and the provider. A Baseten decision
     // model reads by its alias (`joey-1`), as its cards and replies do, and a
     // decision model by where it runs rather than its provider key.
-    let line1 = Line::from(vec![
+    let mut line1 = vec![
         Span::styled(
             crate::commands::decide::model_name(&s.provider, &s.model),
             Style::new().fg(ACCENT),
         ),
         sep(),
         Span::styled(status_provider_text(&s.provider, &s.model), dim),
-    ]);
+    ];
+    // DR-33: the chat's tier, in its one case that the model beside it does
+    // not explain: a private model's chat made public by its decision models.
+    if let Some(reason) = s.privacy_reason.as_deref() {
+        line1.push(sep());
+        line1.push(Span::styled(reason.to_string(), dim));
+    }
+    let line1 = Line::from(line1);
 
     // Line 2: skills · extensions · knowledge bases, with the context meter
     // right-aligned.
@@ -3211,6 +3218,7 @@ fn status_from_session(_session: &CliSession) -> StatusInfo {
         knowledge_bases: databases,
         used_tokens: 0,
         context_limit: 0,
+        privacy_reason: None,
     }
 }
 
@@ -3246,6 +3254,11 @@ async fn refresh_context(session: &CliSession, app: &mut App) {
             &mut app.status,
             meta.provider_name.as_deref(),
             meta.model_config.as_ref().map(|m| m.model_name.as_str()),
+        );
+        app.status.privacy_reason = crate::session::output::decision_privacy_reason(
+            &meta,
+            session.agent.bound_model_tier().await,
+            biorouter::privacy::privacy_tiers_enabled(),
         );
     }
 }
@@ -3465,6 +3478,30 @@ mod tests {
         assert!(text.contains("extensions"));
         assert!(text.contains("knowledge bases"));
         assert!(text.contains("Send a message"));
+    }
+
+    /// DR-33 (design §5): the header says why a Versa chat is public when its
+    /// decision models made it so, after the model, and says nothing of tiers
+    /// otherwise.
+    #[test]
+    fn the_status_says_why_decision_models_made_the_chat_public() {
+        let reason = "public because monitor \"Done\" uses joey-1 · Baseten";
+        let mut app = App::new(StatusInfo {
+            provider: "versa_azure".into(),
+            model: "gpt-5.5".into(),
+            privacy_reason: Some(reason.to_string()),
+            ..Default::default()
+        });
+        let text = buffer_text(&mut app, 120, 24);
+        assert!(text.contains(reason), "{text}");
+
+        let mut app = App::new(StatusInfo {
+            provider: "versa_azure".into(),
+            model: "gpt-5.5".into(),
+            ..Default::default()
+        });
+        let text = buffer_text(&mut app, 120, 24);
+        assert!(!text.contains("public because"), "{text}");
     }
 
     #[test]
@@ -3915,6 +3952,61 @@ mod tests {
         assert!(
             text.contains(&format!("and {more} more")),
             "the +N more overflow line should be visible:\n{text}"
+        );
+    }
+
+    /// Owner decision 4: a private chat refused a public subagent (DR-19) shows
+    /// the person the line the desktop card and the line-oriented terminal add,
+    /// under the spawn's request only. The same words from any other tool, or
+    /// any other spawn failure, add nothing.
+    #[test]
+    fn a_refused_public_subagent_tells_the_person_what_to_do() {
+        use biorouter::agents::subagent_tool::{
+            MAKE_CHAT_PUBLIC_FROM_HISTORY, PUBLIC_CHILD_REFUSAL_OPENING,
+        };
+        use rmcp::model::{CallToolRequestParams, ErrorCode, ErrorData};
+        let req = |id: &str, name: &str| {
+            Message::assistant().with_tool_request(
+                id,
+                Ok(CallToolRequestParams {
+                    name: name.to_string().into(),
+                    arguments: None,
+                    meta: None,
+                    task: None,
+                }),
+            )
+        };
+        let refused = |id: &str, message: String| {
+            Message::user().with_tool_response(
+                id,
+                Err(ErrorData::new(ErrorCode::INVALID_REQUEST, message, None)),
+            )
+        };
+        let dr19 = biorouter::privacy::PrivacyRefusal::spawn_downgrade(
+            biorouter::privacy::ProviderTier::Public,
+        )
+        .to_string();
+
+        let mut app = App::new(StatusInfo::default());
+        app.push_message(&req("shell", "developer__shell"), false);
+        app.push_message(&refused("shell", dr19.clone()), false);
+        app.push_message(&req("cap", "workspace__subagent"), false);
+        app.push_message(
+            &refused("cap", "the subagent cap was reached".to_string()),
+            false,
+        );
+        let text = buffer_text(&mut app, 200, 40);
+        assert!(!text.contains(MAKE_CHAT_PUBLIC_FROM_HISTORY), "{text}");
+        assert!(!text.contains(PUBLIC_CHILD_REFUSAL_OPENING), "{text}");
+
+        app.push_message(&req("spawn", "subagent"), false);
+        app.push_message(&refused("spawn", dr19), false);
+        let text = buffer_text(&mut app, 200, 40);
+        assert!(text.contains(PUBLIC_CHILD_REFUSAL_OPENING), "{text}");
+        assert!(text.contains(MAKE_CHAT_PUBLIC_FROM_HISTORY), "{text}");
+        assert!(
+            app.pending_spawn_calls.is_empty(),
+            "a spawn's request is forgotten once its result is drawn"
         );
     }
 

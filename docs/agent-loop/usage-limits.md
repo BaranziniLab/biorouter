@@ -149,7 +149,10 @@ Other spending doors follow the same rule:
   meets the gate.
 - **Decision models.** A monitor, a `decide` batch or a phase gate is counted, through the
   usage ledger, but never blocked by a usage limit: it is a side call, and stopping it
-  part-way would leave a monitor's verdict unknown.
+  part-way would leave a monitor's verdict unknown. A phase gate that the chat's own model
+  judges, because the chat has no decision model it may use or its decision model could not
+  be reached, is counted the same way, as a side call on the chat (`SideCall::GateJudge`),
+  and is not stopped either.
 - **Workflow generation.** The model call that turns a chat into a workflow is added to
   the chat's usage, so it counts too.
 - **Chat titles.** A chat at a limit is not named by a model. After a message the limit
@@ -162,8 +165,8 @@ paused chat, automatic, overflow and background compaction, `/compact`, the self
 pass, the `/goal` judge and prompt Stop hooks, starting a subagent and each of its
 requests, a chat's title, the start of a scheduled run (monthly limit), and the start of a
 Crew task (the month, and the asking chat for `tasks_ask`). It does not hold decision models,
-workflow generation, the stall check, the permission judge, MCP sampling or knowledge macros,
-which are counted but not stopped, nor
+a phase gate judged by the chat model, workflow generation, the stall check, the permission
+judge, MCP sampling or knowledge macros, which are counted but not stopped, nor
 prompt hooks on events other than Stop (for example `UserPromptSubmit` or `PreToolUse`).
 
 ## How the next request is estimated

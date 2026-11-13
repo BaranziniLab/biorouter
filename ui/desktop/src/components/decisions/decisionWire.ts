@@ -367,9 +367,68 @@ export interface DecideErrorGroup {
   chunks: number;
 }
 
+/** One answer `escalate` asked again (`EscalatedAnswer`). */
+export interface DecideEscalatedAnswer {
+  /** The question's name, which the card maps to its words. */
+  question: string;
+  /** The final answer and its probability. */
+  label: string;
+  p: number | null;
+  /** The model that gave the final answer, by the name a person reads. */
+  by: string;
+  /** The first model's answer and its probability. */
+  firstLabel: string;
+  firstP: number | null;
+  /** Why the second model gave no answer, when it did not (the first answer stands). */
+  error: string | null;
+  /**
+   * The chunk was too long for the second model's window, so it was never sent to it
+   * (`tooLarge`, or the chunk named in the escalation's `tooLargeIds`); `error` says
+   * how long. Otherwise a missing answer is a failure.
+   */
+  tooLarge: boolean;
+}
+
+/** One chunk `escalate` asked again (`EscalatedItem`). */
+export interface DecideEscalatedItem {
+  chunkId: string;
+  answers: DecideEscalatedAnswer[];
+}
+
+/**
+ * What `escalate` did (`EscalationSummary`): the second model, how many chunks the
+ * first decided and how many the second was asked about again, and each one asked.
+ */
+export interface DecideEscalation {
+  /** The second model, by the name a person reads. */
+  label: string;
+  tier: 'public' | 'private' | null;
+  firstLabel: string;
+  /** A top answer under this probability was asked again. */
+  below: number | null;
+  firstDecided: number;
+  /** Chunks asked again. */
+  escalated: number;
+  /** Answers asked again (a chunk asked two questions again counts two). */
+  answers: number;
+  decided: number;
+  changed: number;
+  /**
+   * Answers asked again that the second model gave no answer to, so the first answer
+   * stands: it failed, or the chunk was too long for it.
+   */
+  errors: number;
+  /** Chunks too long for the second model's window, never sent to it (`tooLargeIds`). */
+  tooLong: number;
+  /** Chunks the second model was sent and gave no answer to (a failure, not a size). */
+  failed: number;
+  items: DecideEscalatedItem[];
+}
+
 /**
  * What one `decide` call did (`DecideSummary`, the call's MCP `structuredContent`):
- * counts, never chunks.
+ * counts, never chunks. The one exception is `escalation.items`, the chunk ids the
+ * second model was asked about, which the card shows only in its open well.
  */
 export interface DecideBatchSummary {
   batchId: string;
@@ -384,6 +443,8 @@ export interface DecideBatchSummary {
   errorGroups: DecideErrorGroup[];
   /** The models of a vote, in the order they were asked; `null` for one model's batch. */
   voteModels: DecideVoteModel[] | null;
+  /** What `escalate` did; `null` when the call did not escalate. */
+  escalation: DecideEscalation | null;
 }
 
 const optionalCount = (value: unknown): number | null => {
@@ -463,6 +524,91 @@ function voteModelsOf(value: unknown): DecideVoteModel[] {
     : [];
 }
 
+function escalatedAnswerOf(value: unknown, chunkTooLarge: boolean): DecideEscalatedAnswer[] {
+  const answer = record(value);
+  const question = text(answer?.question);
+  const label = text(answer?.label);
+  if (!answer || !question || !label) return [];
+  const error = text(answer.error);
+  return [
+    {
+      question,
+      label,
+      p: probability(answer.p),
+      by: text(answer.by) ?? '',
+      firstLabel: text(answer.firstLabel) ?? '',
+      firstP: probability(answer.firstP),
+      error,
+      tooLarge: error !== null && (answer.tooLarge === true || chunkTooLarge),
+    },
+  ];
+}
+
+function escalationOf(value: unknown): DecideEscalation | null {
+  const escalation = record(value);
+  const label = text(escalation?.label);
+  if (!escalation || !label) return null;
+  // Every escalated chunk too long for the second model, uncapped (`too_large_ids`).
+  const tooLargeIds = new Set(
+    Array.isArray(escalation.tooLargeIds)
+      ? escalation.tooLargeIds.filter((id): id is string => typeof id === 'string')
+      : []
+  );
+  const items = Array.isArray(escalation.items)
+    ? escalation.items.flatMap((entry): DecideEscalatedItem[] => {
+        const item = record(entry);
+        const chunkId = text(item?.chunkId);
+        if (!item || !chunkId) return [];
+        const answers = Array.isArray(item.answers)
+          ? item.answers.flatMap((answer) => escalatedAnswerOf(answer, tooLargeIds.has(chunkId)))
+          : [];
+        return answers.length > 0 ? [{ chunkId, answers }] : [];
+      })
+    : [];
+  const chunksWhere = (test: (answer: DecideEscalatedAnswer) => boolean) =>
+    items.filter((item) => item.answers.some(test)).length;
+  const errors = count(escalation.errors);
+  const tooLong = Math.max(
+    tooLargeIds.size,
+    chunksWhere((answer) => answer.tooLarge)
+  );
+  // The second model's failures by chunk (`error_groups`, which leaves out a chunk
+  // too long for it), each group's listed ids plus its `more`.
+  const failedInGroups = Array.isArray(escalation.errorGroups)
+    ? escalation.errorGroups.reduce((sum: number, entry: unknown) => {
+        const group = record(entry);
+        if (!group) return sum;
+        const listed = Array.isArray(group.chunkIds) ? group.chunkIds.length : 0;
+        return sum + listed + count(group.more);
+      }, 0)
+    : 0;
+  return {
+    label,
+    tier: escalation.tier === 'public' || escalation.tier === 'private' ? escalation.tier : null,
+    firstLabel: text(escalation.firstLabel) ?? '',
+    below: probability(escalation.below),
+    firstDecided: count(escalation.firstDecided),
+    escalated: count(escalation.escalated),
+    answers: count(escalation.answers),
+    decided: count(escalation.decided),
+    changed: count(escalation.changed),
+    errors,
+    tooLong,
+    // By chunk, as the line's other counts are. A result that lists no chunk and no
+    // group (none could be read) still says its failed answers rather than nothing,
+    // less the ones too long for the second model: `errors` counts those as well, and
+    // the line already says them as too long.
+    failed:
+      items.length > 0 || failedInGroups > 0
+        ? Math.max(
+            failedInGroups,
+            chunksWhere((answer) => answer.error !== null && !answer.tooLarge)
+          )
+        : Math.max(0, errors - tooLong),
+    items,
+  };
+}
+
 function modelOf(value: unknown): DecideBatchSummary['model'] {
   const ref = record(value);
   const provider = text(ref?.provider);
@@ -503,6 +649,7 @@ function batchSummaryOf(value: unknown): DecideBatchSummary | null {
     questions,
     errorGroups,
     voteModels: vote ? voteModelsOf(summary.models) : null,
+    escalation: vote ? null : escalationOf(summary.escalation),
   };
 }
 
@@ -571,12 +718,28 @@ export function decideQuestionKind(question: Record<string, unknown> | null): st
   return written;
 }
 
-/** What a `decide` call's own arguments state: how many chunks, and its questions. */
+/**
+ * What a `decide` call's own arguments state: how many chunks it decides (only those
+ * `only_ids` names, when it names any), each chunk's id in call order, and its
+ * questions. A chunk's place in that order is the number the decision history gives
+ * it ("Chunk 4"), so the card names a chunk the same way. The chunks' text is never
+ * read.
+ */
 export function decideArguments(args: Record<string, unknown> | undefined): {
   chunks: number | null;
+  chunkIds: string[];
   questions: Array<{ name: string; instructions: string; kind: string; threshold: number | null }>;
 } {
-  const chunks = Array.isArray(args?.chunks) ? args.chunks.length : null;
+  const chunkIds = Array.isArray(args?.chunks)
+    ? args.chunks.map((chunk) => text(record(chunk)?.id) ?? '')
+    : [];
+  const onlyIds = args?.only_ids ?? args?.onlyIds;
+  const chunks =
+    Array.isArray(onlyIds) && onlyIds.length > 0
+      ? onlyIds.length
+      : Array.isArray(args?.chunks)
+        ? args.chunks.length
+        : null;
   const raw = record(args?.questions);
   const questions = raw
     ? Object.entries(raw).map(([name, value]) => {
@@ -596,5 +759,5 @@ export function decideArguments(args: Record<string, unknown> | undefined): {
         };
       })
     : [];
-  return { chunks, questions };
+  return { chunks, chunkIds, questions };
 }

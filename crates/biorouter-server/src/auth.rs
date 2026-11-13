@@ -1474,8 +1474,32 @@ mod tests {
             include_str!("routes/agent.rs"),
             "async fn agent_add_extension",
         );
+        // Since DR-33 the refusal's WORDS come from `add_extension_tier_refusal`,
+        // which says a decision model made the chat public when one did, and
+        // otherwise is `PrivateExtensionOverHttp`. It picks text only: it takes
+        // the name and the cause, never the caller, so it cannot become a
+        // proof-of-user branch either.
+        let words = body_of(
+            include_str!("routes/agent.rs"),
+            "fn add_extension_tier_refusal",
+        );
         assert!(
-            handler.contains("PrivateExtensionOverHttp"),
+            words.contains("PrivacyRefusal::PrivateExtensionOverHttp"),
+            "the outright tier refusal no longer reads as `PrivateExtensionOverHttp`"
+        );
+        for proof in [
+            "user_action_proof(",
+            "is_user_action(",
+            "X-User-Action",
+            "headers",
+        ] {
+            assert!(
+                !words.contains(proof),
+                "the tier refusal's words may not depend on the caller (`{proof}`)"
+            );
+        }
+        assert!(
+            handler.contains("add_extension_tier_refusal("),
             "the outright tier refusal has left /agent/add_extension"
         );
         // The reach gate is the ONE proof-of-user call this handler may make, and
@@ -1489,10 +1513,10 @@ mod tests {
         // also named in the comment above the guard, which explains why the
         // predicate is asked rather than re-typed — and splitting on the bare
         // name landed there instead, putting the guard outside this span and
-        // making the scan report a refusal that had gone nowhere. The
-        // path-qualified spelling is the constructor and nothing else.
+        // making the scan report a refusal that had gone nowhere. The call to
+        // the words' helper is the refusal and nothing else.
         let (before_the_refusal, _) = tier_decision
-            .split_once("PrivacyRefusal::PrivateExtensionOverHttp")
+            .split_once("add_extension_tier_refusal(")
             .expect(
                 "the tier refusal now runs BEFORE the reach gate, so this scan no longer \
                      covers the span its claim is about",

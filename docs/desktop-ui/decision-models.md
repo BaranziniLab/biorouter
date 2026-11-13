@@ -5,7 +5,8 @@
 > Monitors dialog and its install panel, the gate chip on a phase row and the phase gate dialog it
 > opens, the Supervision panel of a workflow, the `decide` card and the per-turn marker in the
 > transcript, a decision chat's composer and card, the Decision models line of the Usage panel, and
-> the per-chat count in History.
+> the per-chat count in History, and how each surface says when a decision model makes a chat
+> public (DR-33).
 > Covers what each one reads, the owner rule that keeps thousands of calls out of the chat, and the
 > tests that hold each part.
 > **Status:** Current. Built on the decision-model branch (`claude/decision-models`, November 2026),
@@ -218,12 +219,33 @@ and every `decisions__*` tool row (`utils/toolGlyph.ts`, whose test reads the to
   tall as the loaded rows, and the next page is asked for once the last loaded row is within 20
   rows of the view. The arrow keys, Home, End and the page keys move the selection, which is the
   list's active descendant and is kept in the DOM wherever the window is.
+  - **A `decide` call's rows stay together.** The daemon stores every row of a batch with the
+    time its first row was stored (`insert_decision_into!` in
+    `crates/biorouter/src/decision/log.rs`), so each chunk shows that one time, and the page order
+    (`PAGE_ORDER` there) puts a batch's rows next to each other in chunk order, the last chunk on
+    top as in the rest of the newest-first list. A row that names no chunk (a stopped batch's) sits
+    above its chunks, and a vote's models answer the same chunk side by side. A monitor that
+    checked while the batch ran lists above the whole batch. Before this, each row took the time
+    it was stored, so chunks listed in the order they finished.
+  - **It follows a running chat.** While the view is open and the window visible, it reads the
+    list's own first call every 4 seconds (`FOLLOW_INTERVAL_MS`, the same filter, one row) and
+    compares it with what the list's first page read. A new call reloads the list in place when
+    the list is within 24px of the top; otherwise the preview bar offers "Show 3 new", so the rows
+    under the reader never move. It compares with the list's own read, not with a separate summary
+    read: a call that landed between those two reads used to stay missing from the list until
+    Refresh. It counts only calls the filter shows.
 - **A row** is the glyph, the title (a monitor by its name; a call that asked several monitors at
   once "2 monitors", with their names on the second line; a gate by its phase; a `decide` chunk by
   the id the agent gave it, else "Chunk 30"), and on the right the verdict ("Fired", "Quiet",
   "1 of 2 fired", "Passed", "Not passed") or, for a `decide`, chat or ad hoc call, the answer.
-  The second line holds the time and, for a one-question call, a small bar with its named
-  probability. The model and the latency are under Details.
+  The second line holds the time (and a several-monitor call's names) and, for a one-question
+  call, a small bar with its named probability. When the rows loaded so far came from more than
+  one model (a vote, or monitors on different models), the second line also ends with each row's
+  model, with where it runs when that is short: "1:31:02 PM · joey-1 · Baseten",
+  "1:31:02 PM · tev1:0.8b · this computer" (the longer place a `biorouter serve` browser shows
+  stays under Details). The row's accessible name then ends with the model too (`rowModel` and
+  `listsSeveralModels` in `DecisionHistory.tsx`). A chat whose calls all used one model keeps
+  the model under Details, and the latency is always there.
 - **The detail pane** shows, up front: the title once, one muted line with the kind and the time
   ("Monitor · 1:26:51 PM"), an error or a refusal and the privacy note when they apply, then per
   question the question in plain words (never its name, never in mono), the answer with its own
@@ -252,7 +274,9 @@ above the detail. The view only reads, so it works the same in a `biorouter serv
 ## The Monitors dialog
 
 `components/decisions/MonitorsDialog.tsx` (styled by `monitorsDialog.css` and
-`decisionsPanel.css`) lists the chat's monitors and adds, edits or removes them. A monitor has a
+`decisionsPanel.css`) holds the chat's default decision model and lists the chat's monitors, and
+adds, edits or removes them. Its subtitle says the model first: "Choose the decision model this
+chat uses, and add monitors that ask it about the chat as it runs." A monitor has a
 name, a question, yes or no or one of several options (with the answer that fires it), a model,
 an action (notify, tell the agent, stop the turn), when it checks (after each step, or when the
 turn ends), an on switch, and a few settings most monitors leave at their defaults.
@@ -294,13 +318,16 @@ A row is the monitor's name, at most one owner badge, and its switch:
   can no longer change it."), and "Inherited" for a copy from the chat that started this
   subagent ("Copied from the chat that started this subagent."). A change you make to an agent's
   monitor (an edit, or its switch) makes it yours.
-- **One muted line with two facts**, what it does and its rule in words (`monitorRowLine`):
-  "Stop the turn · when P(yes) is at or above 0.85". The rule reads the monitor's `option` as
+- **One muted line with three facts**, what it does, its rule in words and when it checks
+  (`monitorRowLine`): "Stop the turn · when P(yes) is at or above 0.85 · after each step", or
+  "… · when the turn ends". The line is cut with an ellipsis when it is too long, so the peek says
+  the timing again. The rule reads the monitor's `option` as
   `MonitorCriterion::pass_threshold` does (`monitorThreshold` in `utils/sessionDecisions.ts`):
   "when P(no) is at or above 0.85" for a yes/no monitor that watches No, "when P(rrms) is at or
   above 0.70" for a choice, and "when P(mild or a higher level) is at or above 0.85" for a score
   monitor, whose level is named by its label whether the record stores the label or its index. A
-  choice monitor with no option chosen yet reads "… · choose the option it fires on".
+  choice monitor with no option chosen yet reads "Notify me · choose the option it fires on ·
+  after each step".
 - **The peek.** That line is an InfoTip trigger, so hover peeks and a click pins
   ([Hover and click](shared-controls.md#hover-and-click)). The peek says, in at most two
   sentences, which model it uses, where it runs and when it checks ("Uses tev1:0.8b on this
@@ -393,6 +420,19 @@ stands, every model and the default carry the catalog's `sessionUnavailableReaso
 saves no monitor there that every check would refuse. Where the daemon gave no reason, a public
 model is still refused for a private chat.
 
+**A public model that makes the chat public is offered** (DR-33). A chat is as private as its least
+private model, decision models included, so on a chat bound to a private model (Versa) that has no
+message yet, or that the person made public from History, choosing joey-1 on Baseten makes the
+chat public. The catalog marks such a model `chatEffect: "makesPublic"`; the row is enabled and its
+muted text ends "Makes this chat public". The dialog never works this out itself. On a chat that
+has messages and was never made public this way, the daemon's reason is "Public model: it can't
+read a private chat. Start a new chat and choose this model before its first message, or make this
+chat public from History."; the row keeps its first sentence, and because a disabled row cannot
+hold a tip, the picker field carries the rest as its InfoTip (`anyPublicModelRefused`). On a
+`biorouter serve` daemon whose operator did not allow it, those rows read "This server doesn't
+allow public decision models in a private chat."
+([SD-16](../deployment/serve-decisions.md#sd-16-a-keyless-daemon-makes-no-chat-public-by-a-decision-model-unless-its-operator-allows-it)).
+
 **A model list that cannot be read is said under the picker.** A daemon without the route (404, an
 older Biorouter service, which answers a bare 404) is told apart from an empty list
 (`fetchDecisionCatalog`'s `missing`) and gets a sentence asking for a restart to finish updating.
@@ -406,10 +446,12 @@ Retry link that reads the list again and keeps the monitor being edited.
 
 - **Two ways in.** The summary's Decisions section has a Monitors button, but that section is
   drawn only once a chat has a decision call or a monitor, so the composer's `+` menu also carries
-  "Decision monitors…" (`composer/ComposerPlusMenu.tsx`), which is how the first monitor is added.
-  The row is there only in a chat that exists (`ChatInput`'s `sessionId`), never on Home or in a
-  new chat before its first message, and not in a decision chat, which draws no `+`. Both open the
-  one dialog `BaseChat` mounts.
+  "Decision models and monitors…" (`composer/ComposerPlusMenu.tsx`), which is how the first
+  monitor is added and how the chat's default decision model is chosen. The row names both because
+  the dialog holds both; the dialog keeps the title "Monitors", the name of the summary's button.
+  In a chat that exists both open the one dialog `BaseChat` mounts. Before the chat's first
+  message (on Home, or in a new chat) the `+` row opens the dialog in draft mode, described in
+  [Before the first message](#before-the-first-message). A decision chat draws no `+`.
 - **It never writes what it has not read.** Every open reads the settings and keeps Add and every
   row's controls off until the answer arrives, even when the summary already holds a copy: the
   summary's copy of an idle chat can predate a write made with `biorouter session monitors` or in
@@ -433,6 +475,91 @@ Retry link that reads the list again and keeps the monitor being edited.
 
 With `readOnly` (for a surface that shows the monitors without letting them change) the rows draw
 with their switch disabled and no `⋯`, and there is no Add and no editor.
+
+### When a save makes the chat public
+
+Every write answers with its `tierEffect` and the line to show for it, and the dialog draws that
+line with one InfoTip (`decisions/TierEffectLine.tsx`; the words are `TIER_EFFECT_COPY` in
+`decisions/decisionWords.ts`, shared by every surface below so no two say it differently):
+
+- **While an edit would make the chat public**, one line sits above Save: "This chat will be
+  public: joey-1 runs on Baseten.", with the InfoTip "A chat is as private as its least private
+  model, so gpt-5.5 keeps answering but the chat can't use private extensions, knowledge bases or
+  chats. Choose a model on this computer to keep it private." Save is the person's answer: it
+  sends the write with `acceptPublicDecisionModels: true`. The line is worked out from the rows the
+  daemon marked `makesPublic`, on the list as it would stand after the save.
+- **When the daemon asks anyway** (409 `needsPublicDecisionConfirmation`, for a write that did not
+  say it), the dialog shows the daemon's question with Make it public and Cancel, and Make it
+  public sends the same write again with the answer.
+- **A save that keeps it public** reads "This chat stays public: joey-1 runs on Baseten."
+- **A save that removes the last public model** reads "This chat becomes private at your next
+  message.", with the InfoTip "Public models can't be used in it after that unless you make it
+  public from History." It needs no confirmation.
+
+The phase gate dialog's editor does the same for a gate's model (or, for a gate with none, the
+chat's default): the line above Save gate, and Save gate as the answer.
+
+### The chat's default decision model
+
+The top of the Monitors dialog, in a chat and before the first message alike, is one select,
+"Decision model for this chat" (`DefaultModelField` in `MonitorsDialog.tsx`), with the picker's
+own rows (`decisions/decisionModelOption.tsx`). Its first row, "Chosen automatically", clears the
+default, so a decision that names no model is chosen within the chat's tier (a model on this
+computer first). A monitor, a gate or a `decide` call that names no model runs on it. A pick is
+applied at once, like a row's switch, and keeps the monitors as stored. A public row that would
+make the chat public reads "Makes this chat public"; picking it shows "This chat will be public:
+joey-1 runs on Baseten." under the select with Cancel and Make it public, and only the answer is
+sent (`acceptPublicDecisionModels`), in draft mode to the draft. The daemon's line after a save
+names a Baseten model by its alias even when the chat stored its slug ("joey-1 runs on Baseten",
+never `decision-models/baseten-joey-2b-latest`; `LoweredBy::model_name`), as do `privacyBasis.model`
+and every refusal. Live QA M1-1 (2026-11-11) found
+the dialog offered monitors only, so a person could not set the default the CLI sets with
+`biorouter session monitors <id> default`. Tests: `decisions/MonitorsDialog.tierEffect.test.tsx`.
+
+### Before the first message
+
+`decisions/DraftMonitorsDialog.tsx` is the Monitors dialog for a chat that has no session row yet,
+shared by both composers (Home's `Hub` and a blank chat's `BaseChat`), which would otherwise
+diverge. It edits the default decision model (the select above) and the monitors only, and writes
+nothing to the daemon. So where a chat's dialog says "Saved" after a change, the draft dialog says
+"Ready for the first message", with the same check, under the note "These monitors start with the
+chat when you send its first message." The tip beside "This chat will be public" names the chat model the way the
+model chip does (`gpt-5.5`, not `gpt-5.5-2026-04-24`), here and in a chat's own Monitors dialog. The draft lives in renderer memory beside the held chat model
+(`decisions/draftDecisionSettings.ts`), keyed by the composer (a chat tab, or Home's draft key), so
+it outlives a tab switch and a trip to Settings and is never written to disk. The list is read
+with `GET /decisions/models?boundProvider=<p>&boundModel=<m>`, so each row carries what it would
+do to a chat on the model the chat will start on.
+
+Send carries the draft as `decisionSettings` on `POST /agent/start`, with the held chat model.
+A draft the person saved under "This chat will be public" records the model it was accepted under
+(`acceptedFor`), and Send passes `acceptPublicDecisionModels` only while the chat still starts on
+that model. When the model changed after that, or the daemon asks for any other reason, Send
+shows "Make this chat public?" with the daemon's line and Send and Cancel
+(`decisions/usePublicDecisionConfirm.tsx`). Cancel is not a failure: nothing is reported and the
+message goes back to the composer. The draft is dropped once the chat it started exists. Tests:
+`Hub.draftMonitors.test.tsx`, `decisions/MonitorsDialog.tierEffect.test.tsx`,
+`decisions/usePublicDecisionConfirm.test.tsx`.
+
+### Where else it shows
+
+The daemon computes why a chat is public (`privacyBasis` on `GET /sessions/{id}`, read by
+`privacy/usePrivacyBasis.ts` while the chat is public and again whenever its decision settings
+move); no surface folds it. A listing does not carry it, so the sidebar, History and the tab strip
+show only the lock, as for any chat.
+
+| Surface | What it shows |
+|---|---|
+| The chat's privacy pill (`SessionNamePill`, `PrivacyBadge`) | "Public", with the InfoTip "Public: monitor "Done" uses joey-1 · Baseten. A chat is as private as its least private model, so it can't use private extensions, knowledge bases or chats." For a subagent of a public chat: "Public: it is part of a public chat's work." The Private tip reads "Private. Biorouter only lets private models, decision models included, read this chat." |
+| The model chip and its menu (`ModelEffortChip`, `ModelsBottomBar`) | Versa keeps its lock (the chip describes the model). The chat's line in its tooltip and menu header names the reason, as the pill's tip does: "Public chat: monitor "Done" uses joey-1 · Baseten." (`privacyBasisChipLine`). A chat in the tab strip draws no pill, so this is where the reason shows (live QA M1-2, M2-3). |
+| The model switch (`SwitchModelModal`) | On a chat its decision models keep public, "This chat stays public: its decision models include joey-1 · Baseten." in place of "After your next message this chat becomes private" |
+| A workflow's start | "Start this workflow?", "This workflow uses joey-1 · Baseten, so this chat will be public.", with Start it and Cancel |
+| The declassify dialog (History) | The public monitors and default the declassification turns off ("Monitor "Done" uses joey-1 · Baseten and will be turned off."), with the InfoTip "After this, a public decision model you choose can read the whole chat." The lines come from the chat's settings and the catalog's tiers; the daemon turns them off whatever the dialog read |
+| A refusal card | The daemon's sentence, which on a chat made public by a decision model names it: "This chat is public because monitor "Done" uses joey-1, a Baseten model, so it can't use the private extension OMOP. …" |
+
+A gate's line in the plan text (the tool result card the person reads, `gate_words` in
+`agents/orchestration_plan.rs`) names the gate's decision model when it names one: "1 question at
+P(yes) >= 0.50 with joey-1 · Baseten, 0 of 3 attempts used, …" (live QA M2-4). The plan card does
+not yet say which phase's gate is the last public one.
 
 ### The install panel
 
@@ -503,8 +630,11 @@ button overrides a gate.
   phase the plan no longer names reads "a later phase", never its id); and a closed **Details**
   with the threshold ("Every question must reach P(yes) 0.90"), the last check when it is not
   already up front, the attempts, the model (`tev1:0.8b · this computer`, or "This chat's
-  decision model"), "Accepts uncalibrated probabilities" when set, and who set it (The agent,
-  You, The workflow).
+  decision model, or its own model when it has none"), who gave the last verdict (Judged by:
+  "gpt-5.5, the chat's model" or "joey-1, a decision model", and for the chat's model the
+  sentence saying why, such as "This chat has no decision model it may use, so gpt-5.5, the
+  chat's model, judged the gate."), "Accepts uncalibrated probabilities" when set, and who set
+  it (The agent, You, The workflow).
 - **The footer** holds Skip this phase and Pass this phase, each with a tooltip ("Lets the agent
   move on without this phase. It is marked skipped." and "Counts the phase as passed, as if its
   gate had passed."). Pass is the primary button only when the person is needed (blocked and
@@ -564,20 +694,38 @@ daemon ran.
 - **The closed row** says what was checked, and its meta stays short, because a row's meta never
   truncates: "Checked 30 chunks against 1 question · 10 yes", or "… · 41 yes, 6 to review, 2
   errors". The yes count is given for one yes or no question only (from the daemon's four groups when it sends them, where a yes is a pass; "N yes by majority" for a vote); a choice, a score or several
-  questions add only the error count. While the call runs it reads "Checking 30 chunks against 1
+  questions add only the error count, even when a threshold gives the daemon's groups for them. A call that escalated adds how many chunks it asked again, "… · 10 yes, 8 escalated". While the call runs it reads "Checking 30 chunks against 1
+  question", or, for a call with `only_ids`, the chunks it names: "Checking 20 chunks against 1
   question".
 - **The open well** starts with one muted line: the model and where it runs (`joey-1 ·
   Baseten`), a private model's padlock right after its name (in `PRIVATE_MARK_INK`, as on the decision card), the errors when there are any, and "598 of 600 chunks checked" only when fewer
   chunks were checked than sent and the errors do not account for it. When the batch is
   uncalibrated, the history's sentence follows ("This model's probabilities are its own
   estimate.", with its InfoTip). Then, for at most three questions, the question in plain words
-  (never its name; "Question 1" when the call gave none) and one muted counts line: the answers, each with its number first, then the review count said as part of them, "1 yes · 19 no · 4 of them to review" (a yes is a pass; the review count is never a group beside the answers). A choice or a score gives each answer in option order ("300 rrms · 200 spms · 98 none · 12 of them to review"). A vote of several models opens its well with "Vote of 3 models: …" and counts the majority, "Majority 7 yes · 13 no · the models agreed on 19 of 20", with ties counted when there are any.
+  (never its name; "Question 1" when the call gave none) and one muted counts line: the answers, each with its number first, then the review count said as part of them, "1 yes · 19 no · 4 of them to review" (a yes is a pass; the review count is never a group beside the answers). A choice or a score gives each answer in option order ("300 rrms · 200 spms · 98 none · 12 of them to review"), with or without a threshold: the daemon sends a thresholded choice its four groups too, and the card used to draw them as "10 yes · 20 no", answers a three-way choice never offered (`decideCountsLine` reads the groups as yes and no only for a yes or no question, and for a choice or a score takes only the review count from them). A vote of several models opens its well with "Vote of 3 models: …" and counts the majority, "Majority 7 yes · 13 no · the models agreed on 19 of 20", with ties counted when there are any.
   A fourth question and beyond are "2 more questions in the decision history". Grouped errors
   follow, and the well ends with the history link, named "Open this decide call in the decision
   history". While the call runs only the question texts show.
+- **A call that escalated** (`escalate`, see "Escalating the unsure answers" in [the agent-loop
+  guide](../agent-loop/decision-models.md#the-decide-tool-screening-a-large-input)) says so in ONE
+  line under the model, "8 of 30 escalated to clef-flash:latest", with the second model's padlock
+  when it is private and "· 1 failed" when the second model failed some answers. An InfoTip
+  ends the line (hover peeks, click pins): "Answers with a top probability under 0.80 were asked
+  again of clef-flash:latest, and its answers are final.", then "It changed 3 of 8." or, when it
+  failed some, "Where it gave no answer, tev1:0.8b's answer stands." Its per-chunk details sit in the
+  open well, which is the row's own disclosure, under an "Escalated" section shaped like the
+  errors: each chunk asked again by its number in the call, "Chunk 4", the number the decision
+  history gives the same chunk (never the id the agent gave it), with its final answer beside
+  the first model's ("no 0.90, was yes 0.60 by tev1:0.8b", or "yes by tev1:0.8b: the second model
+  gave no answer" when it failed or the chunk was too large for its window), each answer prefixed by its question's words only when several questions were asked
+  again. At most ten chunks are listed (`DECIDE_CARD_ESCALATED_SHOWN`), then "2 more chunks in the
+  decision history"; the batch's other chunks are never listed. `decisionWire.ts` reads the
+  daemon's `escalation` block into `DecideEscalation`, and `decideArguments` gives the call's
+  chunk ids in order, from which the card takes each number.
 - **What is not on the card.** The question type, the threshold, the passed count and the time
-  are in the history's rows and detail. The chunks, which may hold clinical text, and the
-  result's text for the model, which names chunk ids, are never listed.
+  are in the history's rows and detail. The chunks' text, which may hold clinical notes, the
+  result's text for the model and the chunks' ids are never shown; the escalated chunks are
+  named by their number in the call, in the open well only.
 
 The to-review count is the chunks the agent has to read before it reports them (the result's
 `review`, explained under "The review list" in
@@ -739,7 +887,8 @@ not something it used.
 | The hook's gate, re-reads and polling | `hooks/useSessionDecisions.test.tsx` |
 | The section's rows (one per monitor that exists now, a several-monitor call on each, no row for a removed monitor or a gate), the trailing words, the closed line, opening on a fire or an error, a person's toggle holding, the Monitors button and its absence in a decision chat, and the stylesheet rules | `components/summary/SummaryDecisions.test.tsx`, `components/summary/summaryDecisionRows.test.ts` |
 | The section at 240px in Chromium: five 28px rows for 5,000 calls, no bar, the heading's 24px Monitors button, nothing past the card | `components/summary/summaryDecisions.browser.test.tsx` |
-| The history view's window, paging, selection, filters (Source, Outcome per source, the Filters popover and its label, the chips no picker names), row titles and verdicts, the detail up front and under Details, and the Model tier label | `components/decisions/DecisionHistory.test.tsx` |
+| The history view's window, paging, selection, filters (Source, Outcome per source, the Filters popover and its label, the chips no picker names), row titles and verdicts, the model on the second line only when the list holds several models, following new calls against the list's own read, the detail up front and under Details, and the Model tier label | `components/decisions/DecisionHistory.test.tsx` |
+| A `decide` call's rows at one time and in chunk order, a vote's models side by side, pages walking them once each, and a cursor that resumes only from a row of this chat | `crates/biorouter/src/decision/log.rs` (`cargo test -p biorouter --lib decision::log`) |
 | In Chromium: 2,000 rows scrolled to the end, ten calls hugged in a narrow panel, the Filters popover kept open by a nested pick, Escape closing one layer at a time, and the dark popover's strong step | `components/decisions/decisionHistory.browser.test.tsx` |
 | The `decisions` kind in the side panel | `components/decisions/decisionsArtifact.test.tsx` |
 | The Monitors dialog: each change written at once over a fresh read (an agent's monitor added meanwhile kept, Undo putting back only its own monitor), the status and Undo, rows and their peek, the editor in place with More options and its starting state, Fires when and the 21-stop threshold, Stop only once, choice descriptions, validation and the daemon's refusals, owner badges and the transfer to the person, privacy reasons and the Crew rows, the model list's missing route, refusal and failure with Retry, and the browser | `components/decisions/MonitorsDialog.test.tsx`, `utils/sessionDecisions.test.ts` |

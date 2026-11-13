@@ -329,6 +329,9 @@ fn classify_provider_details(details: &str) -> ProviderErrorKind {
         || details.contains("safety policy")
         || details.contains("safety filter")
         || details.contains("content blocked")
+        // Azure's in-stream verdict (`formats::openai`): "Azure's content
+        // filter blocked this reply (flagged: …)".
+        || details.contains("content filter blocked")
     {
         ProviderErrorKind::Policy
     } else if status("404")
@@ -630,6 +633,10 @@ mod tests {
             ("model_not_found", ProviderErrorKind::ModelUnavailable),
             (
                 "request rejected by safety filter",
+                ProviderErrorKind::Policy,
+            ),
+            (
+                "Azure's content filter blocked this reply (flagged: violence).",
                 ProviderErrorKind::Policy,
             ),
             ("429 rate_limit_exceeded", ProviderErrorKind::RateLimit),

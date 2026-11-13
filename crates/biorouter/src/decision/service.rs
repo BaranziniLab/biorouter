@@ -219,14 +219,37 @@ pub struct DecisionSession {
     /// chat's settings could not be read; a call that names no model is then
     /// refused rather than sent where that default may have ruled out.
     pub chat_default_model: Result<Option<DecisionModelRef>, String>,
-    /// The capability tier of the chat model the chat is bound to now, when
-    /// the caller knows it. Read ONLY by the save-time checks
-    /// ([`DecisionService::check_model_use`]), never by a decision: a chat
-    /// still Public but bound to a private model becomes private at its first
-    /// turn, so a public decision model saved for it now would be refused at
-    /// every turn. It compares capability with capability and never crosses
-    /// into classification (no `privacy::floor`).
-    pub bound_tier: Option<ProviderTier>,
+    /// The tier of the language model the chat is bound to now, unwrapped
+    /// through any decision-bound wrapper (`Agent::bound_model_tier`, or
+    /// offline the row's declaration, `super::save::row_bound_model_tier`),
+    /// when the caller knows it. Never the slot's folded tier (design §2.1).
+    /// Read ONLY by the save-time checks ([`DecisionService::check_model_use`],
+    /// [`DecisionService::models_for`]'s rows, [`chat_effect`]), never by a
+    /// decision: a chat still Public but bound to a private model becomes
+    /// private at its first message unless a person makes it public by naming
+    /// a decision model before then (DR-33). It compares capability with
+    /// capability and never crosses into classification (no `privacy::floor`).
+    pub bound_model_tier: Option<ProviderTier>,
+    /// Whether a person may still make this chat public by naming a decision
+    /// model, and whether its decision models already do, as the door read
+    /// the row ([`Self::with_row_tier_context`]). `None` when the door did not
+    /// read it: then nothing is predicted from it.
+    pub tier_context: Option<SaveTierContext>,
+    /// Set by the save itself ([`super::save`]) when the chat will be public
+    /// after the save because of its decision models (the save's effect is
+    /// `becomesPublic` or `staysPublic`), so a public model it resolves is not
+    /// refused as one the chat could not read after its first message.
+    pub lowered_after_save: bool,
+}
+
+/// What a door read about whether a chat's decision models may make it, or
+/// already make it, public (DR-33).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SaveTierContext {
+    /// Whether a person may still lower it (design §1.8).
+    pub eligibility: crate::privacy::decision_axes::Eligibility,
+    /// Whether its standing decision models make it public now.
+    pub lowered_now: bool,
 }
 
 impl std::fmt::Debug for DecisionSession {
@@ -237,7 +260,8 @@ impl std::fmt::Debug for DecisionSession {
             .field("enforced", &self.enforced)
             .field("origin", &self.origin)
             .field("live", &self.live.is_some())
-            .field("bound_tier", &self.bound_tier)
+            .field("bound_model_tier", &self.bound_model_tier)
+            .field("tier_context", &self.tier_context)
             .finish_non_exhaustive()
     }
 }
@@ -259,14 +283,42 @@ impl DecisionSession {
             origin_label: None,
             live: None,
             chat_default_model: Ok(None),
-            bound_tier: None,
+            bound_model_tier: None,
+            tier_context: None,
+            lowered_after_save: false,
         }
     }
 
-    /// The tier of the chat model the chat is bound to, for the save-time
-    /// checks only (see [`Self::bound_tier`]).
-    pub fn with_bound_tier(mut self, tier: Option<ProviderTier>) -> Self {
-        self.bound_tier = tier;
+    /// The tier of the language model the chat is bound to, for the save-time
+    /// checks only (see [`Self::bound_model_tier`]).
+    pub fn with_bound_model_tier(mut self, tier: Option<ProviderTier>) -> Self {
+        self.bound_model_tier = tier;
+        self
+    }
+
+    /// [`Self::with_bound_model_tier`], under the name the doors used before
+    /// the field was renamed. The value must be the INNER model's tier
+    /// (`Agent::bound_model_tier`), never the slot's.
+    pub fn with_bound_tier(self, tier: Option<ProviderTier>) -> Self {
+        self.with_bound_model_tier(tier)
+    }
+
+    /// The row's eligibility and whether its decision models lower it now
+    /// ([`Self::tier_context`]), read off `row` as stored. Needs
+    /// [`Self::bound_model_tier`] set first, since "lowered" is relative to
+    /// the bound model.
+    pub fn with_row_tier_context(mut self, row: &crate::session::Session) -> Self {
+        let bound = self.bound_model_tier.unwrap_or(ProviderTier::Public);
+        self.tier_context = Some(SaveTierContext {
+            eligibility: crate::privacy::decision_axes::eligibility(row),
+            lowered_now: crate::privacy::decision_axes::from_row(row).lowers(bound),
+        });
+        self
+    }
+
+    /// See [`Self::lowered_after_save`]. For the save doors in this crate.
+    pub(crate) fn with_lowered_after_save(mut self, lowered: bool) -> Self {
+        self.lowered_after_save = lowered;
         self
     }
 
@@ -571,6 +623,17 @@ pub struct DecisionService {
     warm: Mutex<HashSet<String>>,
 }
 
+/// Some of a call's chunks, sorted by whether each fits a model's window
+/// beside the questions asked ([`DecisionService::split_by_window`]).
+#[derive(Debug, Default)]
+pub struct WindowSplit {
+    /// The chunks that fit, in order, each with its place in the call.
+    pub fits: Vec<(usize, DecisionChunk)>,
+    /// Each chunk too large for the model, by id, in order, with the sentence
+    /// that says how large it is and how much the model takes.
+    pub too_large: Vec<(String, DecisionError)>,
+}
+
 static GLOBAL: LazyLock<DecisionService> =
     LazyLock::new(|| DecisionService::new(Arc::new(ConfiguredDecisionModels)));
 
@@ -761,6 +824,9 @@ impl DecisionService {
                             .map(|error| error.to_string())
                         })
                     })
+                    .or_else(|| {
+                        session.and_then(|session| becoming_private_reason(session, entry.tier))
+                    })
                     .or_else(|| entry.load_refusal.clone());
                 (entry, reason)
             })
@@ -892,8 +958,15 @@ impl DecisionService {
         chunks: Vec<DecisionChunk>,
     ) -> DecisionResult<Vec<ChunkOutcome>> {
         let batch_id = uuid::Uuid::now_v7().to_string();
-        self.decide_batch_from(session, Some(model), source, questions, chunks, &batch_id)
-            .await
+        self.decide_batch_from(
+            session,
+            Some(model),
+            source,
+            questions,
+            numbered(chunks),
+            &batch_id,
+        )
+        .await
     }
 
     /// [`Self::decide_many`] with the caller's own batch id, so the caller can
@@ -907,6 +980,24 @@ impl DecisionService {
         chunks: Vec<DecisionChunk>,
         batch_id: &str,
     ) -> DecisionResult<Vec<ChunkOutcome>> {
+        self.decide_batch_at(session, model, questions, numbered(chunks), batch_id)
+            .await
+    }
+
+    /// [`Self::decide_batch`] over some of a larger call's chunks, each with
+    /// its place in that call (from 0), which the decision history numbers it
+    /// by ("Chunk 4"). A second pass over part of a call (the `decide` tool's
+    /// `only_ids`, and its `escalate`, which asks a second model about the
+    /// chunks the first was unsure of) then names each chunk by the number its
+    /// first pass gave it, rather than by its place among the few asked again.
+    pub async fn decide_batch_at(
+        &self,
+        session: Option<&DecisionSession>,
+        model: Option<&DecisionModelRef>,
+        questions: &IndexMap<String, Question>,
+        chunks: Vec<(usize, DecisionChunk)>,
+        batch_id: &str,
+    ) -> DecisionResult<Vec<ChunkOutcome>> {
         let source = ModelSource::of(session, model);
         self.decide_batch_from(session, model, source, questions, chunks, batch_id)
             .await
@@ -918,7 +1009,7 @@ impl DecisionService {
         model: Option<&DecisionModelRef>,
         source: ModelSource,
         questions: &IndexMap<String, Question>,
-        chunks: Vec<DecisionChunk>,
+        chunks: Vec<(usize, DecisionChunk)>,
         batch_id: &str,
     ) -> DecisionResult<Vec<ChunkOutcome>> {
         validate_questions(questions).map_err(DecisionError::Invalid)?;
@@ -929,7 +1020,7 @@ impl DecisionService {
             )));
         }
         let mut seen = HashSet::new();
-        for chunk in &chunks {
+        for (_, chunk) in &chunks {
             if chunk.id.trim().is_empty() || !seen.insert(chunk.id.as_str()) {
                 return Err(DecisionError::Invalid(format!(
                     "Every chunk needs its own non-empty id; `{}` is empty or repeated",
@@ -937,10 +1028,11 @@ impl DecisionService {
                 )));
             }
         }
+        let ids = || -> Vec<&str> { chunks.iter().map(|(_, chunk)| chunk.id.as_str()).collect() };
         let resolved = match self.resolve(session, model).await {
             Ok(resolved) => resolved,
             Err(error) => {
-                self.record_batch_failure(session, None, questions, &chunks, batch_id, &error)
+                self.record_batch_failure(session, None, questions, &ids(), batch_id, &error)
                     .await;
                 return Err(error);
             }
@@ -959,7 +1051,7 @@ impl DecisionService {
                 session,
                 Some(resolved.as_ref()),
                 questions,
-                &chunks,
+                &ids(),
                 batch_id,
                 &error,
             )
@@ -976,7 +1068,7 @@ impl DecisionService {
             batch_id,
             stopped: Mutex::new(Stopped::default()),
         };
-        let outcomes = futures::stream::iter(chunks.into_iter().enumerate())
+        let outcomes = futures::stream::iter(chunks)
             .map(|(index, chunk)| self.decide_chunk(&batch, index, chunk))
             .buffered(parallel)
             .collect::<Vec<_>>()
@@ -1136,10 +1228,11 @@ impl DecisionService {
                 .zip(automatic_choice(session, &admitted, None));
             let mut text = match elsewhere {
                 Some((provider, other)) => format!(
-                    "{reason} A decision that names no model uses the configured decision \
-                     provider, `{provider}`, which has none this chat may use. Name `{}`, or \
+                    "{reason} A decision that names no model uses the decision provider \
+                     Biorouter is set to, {}, which has none this chat may use. Name {}, or \
                      clear BIOROUTER_DECISION_PROVIDER.",
-                    other.model_ref().label()
+                    provider_in_words(provider),
+                    other.in_words()
                 ),
                 // A local server that is not answering lists none of the
                 // models installed there, so "none is installed" would be
@@ -1264,7 +1357,8 @@ impl DecisionService {
         error: &DecisionError,
     ) {
         let batch_id = uuid::Uuid::now_v7().to_string();
-        self.record_batch_failure(Some(session), None, questions, chunks, &batch_id, error)
+        let ids: Vec<&str> = chunks.iter().map(|chunk| chunk.id.as_str()).collect();
+        self.record_batch_failure(Some(session), None, questions, &ids, &batch_id, error)
             .await;
     }
 
@@ -1356,7 +1450,7 @@ impl DecisionService {
     ) -> DecisionResult<()> {
         if questions.len() > caps.max_questions {
             return Err(DecisionError::Unsupported(format!(
-                "`{}` takes at most {} questions per request, not {}",
+                "{} takes at most {} questions per request, not {}",
                 model.display_name(),
                 caps.max_questions,
                 questions.len()
@@ -1366,15 +1460,15 @@ impl DecisionService {
         for (name, question) in questions {
             if !caps.kinds.contains(&question.kind.tag()) {
                 return Err(DecisionError::Unsupported(format!(
-                    "`{}` cannot answer question `{name}`: it does not take {:?} questions",
+                    "{} cannot answer question `{name}`: it does not take {} questions",
                     model.display_name(),
-                    question.kind.tag()
+                    kind_in_words(question.kind.tag())
                 )));
             }
             if let DecisionKind::Choice { options } = &question.kind {
                 if options.len() > max_options {
                     return Err(DecisionError::Unsupported(format!(
-                        "`{}` takes at most {max_options} options per choice question, and \
+                        "{} takes at most {max_options} options per choice question, and \
                          question `{name}` offers {}. Ask with fewer options, or choose \
                          another model.",
                         model.display_name(),
@@ -1697,18 +1791,18 @@ impl DecisionService {
         session: Option<&DecisionSession>,
         model: Option<&dyn DecisionModel>,
         questions: &IndexMap<String, Question>,
-        chunks: &[DecisionChunk],
+        chunk_ids: &[&str],
         batch_id: &str,
         error: &DecisionError,
     ) {
         let request = DecisionRequest {
             questions: questions.clone(),
-            context: DecisionContext::Text(unsent_batch_text(chunks)),
+            context: DecisionContext::Text(unsent_batch_text(chunk_ids)),
         };
         let attempt = Attempt {
             session,
             batch_id: Some(batch_id),
-            stopped_chunks: chunks.len(),
+            stopped_chunks: chunk_ids.len(),
             ..Attempt::default()
         };
         self.record_failure(
@@ -1827,7 +1921,8 @@ impl DecisionService {
     /// could run now, by every check a decision makes before it sends: the
     /// chat's Crew grant, the model's resolution (named, the chat's default,
     /// the configured default, the automatic choice), the chat's bound model
-    /// ([`DecisionSession::bound_tier`]), Gate H and affiliation with the
+    /// ([`DecisionSession::bound_model_tier`], [`refuse_unlowered_resolution`]),
+    /// Gate H and affiliation with the
     /// workspace's gate, the question kinds, and the server's own refusal to
     /// load the model. Opening an Ollama model asks its server's `/api/show`
     /// with the model's name only; nothing of the chat is sent.
@@ -1856,11 +1951,32 @@ impl DecisionService {
         question_sets: &[&IndexMap<String, Question>],
         source: ModelSource,
     ) -> DecisionResult<Vec<DecisionResult<()>>> {
+        let model = self.checked_model(session, wanted, source).await?;
+        let caps = model.caps();
+        Ok(question_sets
+            .iter()
+            .map(|questions| {
+                self.check_kinds(model.as_ref(), &caps, questions)?;
+                check_fit(model.as_ref(), &caps, questions)
+            })
+            .collect())
+    }
+
+    /// The model `wanted` names for `session`, opened after every model-wide
+    /// check a decision makes before it sends: the chat's Crew grant, the
+    /// resolution, the chat's bound model, Gate H and affiliation with the
+    /// workspace's gate, and the server's own refusal to load the model.
+    async fn checked_model(
+        &self,
+        session: &DecisionSession,
+        wanted: Option<&DecisionModelRef>,
+        source: ModelSource,
+    ) -> DecisionResult<Arc<dyn DecisionModel>> {
         if let Some(reason) = self.session_refusal(session).await {
             return Err(DecisionError::Refused(reason));
         }
         let model = self.resolve(Some(session), wanted).await?;
-        refuse_by_bound_tier(session, model.as_ref(), source)?;
+        refuse_unlowered_resolution(session, wanted.is_none(), model.as_ref(), source)?;
         self.check_privacy(session, model.as_ref(), source).await?;
         let model_ref = model.model_ref();
         let load_refusal = self
@@ -1872,14 +1988,69 @@ impl DecisionService {
         if let Some(refusal) = load_refusal {
             return Err(DecisionError::Unsupported(refusal));
         }
+        Ok(model)
+    }
+
+    /// Whether the model `wanted` names could be asked `questions` for
+    /// `session`: every model-wide check [`Self::check_model_use`] makes (the
+    /// chat's Crew grant, the resolution, the chat's bound model, Gate H and
+    /// affiliation, the server's refusal to load the model) and the question
+    /// kinds, but nothing about size, neither the questions' fit in the window
+    /// nor any chunk's. Nothing of the chat is sent. For a caller that sends
+    /// to a second model only after a first one answered (the `decide` tool's
+    /// `escalate`): a model this chat may not use is refused before the first
+    /// model is asked anything, while what is too large for it can only be
+    /// known once the first model has said which chunks, and which of their
+    /// questions, are asked again ([`Self::split_by_window`]).
+    pub async fn check_model_takes(
+        &self,
+        session: &DecisionSession,
+        wanted: &DecisionModelRef,
+        questions: &IndexMap<String, Question>,
+        source: ModelSource,
+    ) -> DecisionResult<()> {
+        let model = self.checked_model(session, Some(wanted), source).await?;
         let caps = model.caps();
-        Ok(question_sets
-            .iter()
-            .map(|questions| {
-                self.check_kinds(model.as_ref(), &caps, questions)?;
-                check_fit(model.as_ref(), &caps, questions)
-            })
-            .collect())
+        self.check_kinds(model.as_ref(), &caps, questions)
+    }
+
+    /// `chunks` sorted by whether each fits the model `wanted` names beside
+    /// `questions`, by the size check that runs before a chunk is sent (its
+    /// window, and its request limit where it has one): the chunks that fit,
+    /// in order and with their places, and each chunk too large for it with
+    /// the sentence that says how large. Nothing of the chat is sent and
+    /// nothing is recorded; the model-wide checks are left to the batch that
+    /// sends what fits. `Err` is the model's own: it could not be opened. For
+    /// a caller that asks a second model about part of a call (the `decide`
+    /// tool's `escalate`), so a chunk too large for it is left out, and only
+    /// that chunk, rather than refusing the call.
+    ///
+    /// This is a size sort only, never a gate: it opens the model directly,
+    /// not through [`Self::checked_model`], so a chunk that fits says nothing
+    /// about whether this chat may use the model. [`Self::check_model_takes`]
+    /// asks the model-wide checks before the first model is asked anything,
+    /// and the batch that sends asks Gate H, affiliation and the Crew grant
+    /// again, for the batch and before every chunk.
+    pub async fn split_by_window(
+        &self,
+        wanted: &DecisionModelRef,
+        questions: &IndexMap<String, Question>,
+        chunks: Vec<(usize, DecisionChunk)>,
+    ) -> DecisionResult<WindowSplit> {
+        let model = self.source.open(wanted).await?;
+        let caps = model.caps();
+        let mut split = WindowSplit::default();
+        for (place, chunk) in chunks {
+            let request = DecisionRequest {
+                questions: questions.clone(),
+                context: chunk.context.clone(),
+            };
+            match check_size(model.as_ref(), &caps, &request, Some(&chunk.id)).await {
+                Ok(()) => split.fits.push((place, chunk)),
+                Err(error) => split.too_large.push((chunk.id, error)),
+            }
+        }
+        Ok(split)
     }
 
     /// Whether the chat `session` could run what saving `settings` over
@@ -2053,6 +2224,28 @@ fn turned_on(
     !before.enabled || before.question.kind != monitor.question.kind || runs_on != ran_on
 }
 
+/// A question kind as a refusal says it: "yes or no", "choice", "score".
+fn kind_in_words(tag: super::types::DecisionKindTag) -> &'static str {
+    use super::types::DecisionKindTag;
+    match tag {
+        DecisionKindTag::Binary => "yes or no",
+        DecisionKindTag::Choice => "choice",
+        DecisionKindTag::Score => "score",
+    }
+}
+
+/// A decision provider as a refusal says it: "Baseten", "Ollama", else its id.
+fn provider_in_words(provider: &str) -> String {
+    use crate::providers::decision::catalog::{
+        BASETEN_DECISION_PROVIDER, OLLAMA_DECISION_PROVIDER,
+    };
+    match provider {
+        BASETEN_DECISION_PROVIDER => "Baseten".to_string(),
+        OLLAMA_DECISION_PROVIDER => "Ollama".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// `text` as a sentence: with a full stop added when it ends without one.
 fn as_sentence(text: &str) -> String {
     let text = text.trim_end();
@@ -2064,27 +2257,107 @@ fn as_sentence(text: &str) -> String {
 }
 
 /// The save-time rule for a chat bound to a private model while it is still
-/// Public: its first turn makes it private, and then a public decision model
-/// is refused at every call, so it is refused now. Capability against
-/// capability, under the master switch as the caller sampled it.
-fn refuse_by_bound_tier(
+/// Public, narrowed by DR-33 (design §1.2): a public decision model the save
+/// would run on is refused when the chat will NOT be public after the save
+/// ([`DecisionSession::lowered_after_save`]), because its first message then
+/// makes it private and the model is refused at every call after that.
+///
+/// It no longer refuses a public model the person names on an empty chat:
+/// that save makes the chat public (its tier effect is `becomesPublic`), which
+/// the door asks the person to confirm. What it still refuses:
+///
+/// - a model the save RESOLVED rather than named (`resolved`: a monitor or
+///   gate with no model on a chat with no default, so the configured default
+///   or the automatic choice), since the configured default never lowers a
+///   chat (§1.2, §3.13);
+/// - a named model whose adapter is public but whose provider does not
+///   declare it public (an Ollama model renamed from a cloud model), which
+///   the fold counts as doubt and so never lowers (§1.5).
+///
+/// Capability against capability, under the master switch as the caller
+/// sampled it. A Private chat is Gate H's.
+fn refuse_unlowered_resolution(
     session: &DecisionSession,
+    resolved: bool,
     model: &dyn DecisionModel,
     source: ModelSource,
 ) -> DecisionResult<()> {
-    if session.enforced
-        && session.bound_tier == Some(ProviderTier::Private)
-        && !session.classification.is_private()
-        && model.tier() == ProviderTier::Public
+    if !session.enforced
+        || session.bound_model_tier != Some(ProviderTier::Private)
+        || session.classification.is_private()
+        || session.lowered_after_save
+        || model.tier() != ProviderTier::Public
     {
-        return Err(DecisionError::Refused(format!(
-            "This chat runs on a private model, so it becomes private at its first turn, and \
-             `{}` is a public model a private chat cannot use. {}.",
-            model.display_name(),
-            source.advice_text()
-        )));
+        return Ok(());
     }
-    Ok(())
+    let name = model.display_name();
+    Err(DecisionError::Refused(if resolved {
+        format!(
+            "This chat runs on a private model, so it becomes private at its first message, and \
+             {name}, the decision model it would use with none named, could not read it then. \
+             Choose a decision model that runs on this computer for it, or choose {name} for \
+             this chat before its first message."
+        )
+    } else {
+        format!(
+            "This chat runs on a private model, so it becomes private at its first message, and \
+             {name} is a public model a private chat cannot use. {}.",
+            source.advice_text()
+        )
+    }))
+}
+
+/// The reason a picker row gives for a public decision model on a chat that
+/// is Public now, bound to a private model, not made public by its decision
+/// models, and no longer eligible to be (design §1.8, §5): it has messages,
+/// so it becomes private at its next one and the model could not read it.
+pub const PUBLIC_MODEL_ON_A_CHAT_BECOMING_PRIVATE: &str =
+    "Public model: it can't read a private chat. Start a new chat and choose this model before \
+     its first message, or make this chat public from History.";
+
+/// [`PUBLIC_MODEL_ON_A_CHAT_BECOMING_PRIVATE`] for `tier`'s row, when it
+/// applies. Needs the door's [`DecisionSession::tier_context`].
+fn becoming_private_reason(session: &DecisionSession, tier: ProviderTier) -> Option<String> {
+    let context = session.tier_context?;
+    (session.enforced
+        && session.bound_model_tier == Some(ProviderTier::Private)
+        && !session.classification.is_private()
+        && tier == ProviderTier::Public
+        && !context.lowered_now
+        && !context.eligibility.is_eligible())
+    .then(|| PUBLIC_MODEL_ON_A_CHAT_BECOMING_PRIVATE.to_string())
+}
+
+/// What choosing a listed decision model would do to the chat's tier, for a
+/// picker row (`DecisionModelInfo.chatEffect`, design §5).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ChatEffect {
+    /// The chat is bound to a private model and may still be made public, and
+    /// this model is public: choosing it makes the chat public (asked for at
+    /// Save).
+    MakesPublic,
+}
+
+/// [`ChatEffect`] for `entry` on `session`, or `None` when choosing it moves
+/// nothing. Computed from the provider's declaration, the same one the fold
+/// uses ([`crate::privacy::decision_axes::declared_name`]), so a row that
+/// says "Makes this chat public" is one whose save has that effect. Needs the
+/// door's [`DecisionSession::tier_context`]; with none, nothing is predicted.
+pub fn chat_effect(session: &DecisionSession, entry: &DecisionModelEntry) -> Option<ChatEffect> {
+    let context = session.tier_context?;
+    let declared_public = crate::privacy::decision_axes::declared_name(&DecisionModelRef::new(
+        entry.provider.clone(),
+        entry.model.clone(),
+    ))
+    .is_some_and(|declared| !declared.tier.is_private());
+    (session.enforced
+        && session.bound_model_tier == Some(ProviderTier::Private)
+        && !session.classification.is_private()
+        && declared_public
+        && !context.lowered_now
+        && context.eligibility.is_eligible())
+    .then_some(ChatEffect::MakesPublic)
 }
 
 /// One call's answer, its latency in milliseconds, and the request's place in
@@ -2307,7 +2580,7 @@ fn privacy_allows(
     .map_err(|e| DecisionError::Refused(e.to_string()))?;
     if session.enforced && !owners_compatible(affiliation, &session.affiliations) {
         return Err(DecisionError::Refused(format!(
-            "This chat holds private data from an institution `{name}` is not covered by, so \
+            "This chat holds private data from an institution that does not cover {name}, so \
              this decision cannot run on it. Choose a decision model that runs on this computer, \
              or one that institution covers."
         )));
@@ -2442,15 +2715,20 @@ const UNSENT_IDS_SHOWN: usize = 20;
 
 /// What a batch-failure row holds in place of a context: how many chunks, and
 /// which, since none was sent.
-fn unsent_batch_text(chunks: &[DecisionChunk]) -> String {
-    let ids: Vec<&str> = chunks.iter().map(|chunk| chunk.id.as_str()).collect();
+fn unsent_batch_text(ids: &[&str]) -> String {
     format!(
         "Not sent: the batch of {} chunk{} was stopped before any chunk reached a decision \
          model. Chunks: {}.",
-        chunks.len(),
-        if chunks.len() == 1 { "" } else { "s" },
-        shown_ids(&ids)
+        ids.len(),
+        if ids.len() == 1 { "" } else { "s" },
+        shown_ids(ids)
     )
+}
+
+/// Each chunk with its place in the list (from 0), for a batch that is a
+/// whole call.
+fn numbered(chunks: Vec<DecisionChunk>) -> Vec<(usize, DecisionChunk)> {
+    chunks.into_iter().enumerate().collect()
 }
 
 /// What the row for a batch stopped partway holds: how many of its chunks
@@ -2672,7 +2950,9 @@ fn named_for_chunk(
                 tokens: text,
                 usable,
                 limit,
-                model,
+                // An adapter may write the name in backticks; a sentence a
+                // person reads names it plainly.
+                model: model.trim_matches('`').to_string(),
             }
         }
         other => other,
@@ -2748,7 +3028,7 @@ fn check_fit(
         return Ok(());
     }
     Err(DecisionError::Unsupported(format!(
-        "`{}`'s {}-token window cannot hold {} beside the text {} about: Biorouter keeps \
+        "{}'s {}-token window cannot hold {} beside the text {} about: Biorouter keeps \
          room for the model's own framing, and that leaves about {room} tokens of text, under \
          the {MIN_STATE_TOKENS} needed at the least. Shorten the {}, or choose a model with a \
          larger window.",
@@ -2831,7 +3111,7 @@ async fn check_size(
         let bytes = model.request_bytes(request);
         if bytes > limit {
             return Err(DecisionError::Invalid(format!(
-                "{chunk} is about {bytes} bytes, over the {limit}-byte request limit of `{}`. \
+                "{chunk} is about {bytes} bytes, over the {limit}-byte request limit of {}. \
                  Split it into smaller pieces and ask again.",
                 model.display_name()
             )));
@@ -2846,7 +3126,7 @@ async fn check_size(
             tokens,
             usable,
             limit,
-            model: format!("`{}`", model.display_name()),
+            model: model.display_name(),
         });
     }
     Ok(())
@@ -5167,8 +5447,8 @@ mod tests {
         let why = svc.check_settings(&chat, &scored, None).await.unwrap_err();
         assert!(
             why.starts_with(
-                "Nothing was saved: monitor \"Done\" could not run. `local` cannot \
-                             answer question `done`: it does not take Score questions"
+                "Nothing was saved: monitor \"Done\" could not run. local cannot \
+                             answer question `done`: it does not take score questions"
             ),
             "{why}"
         );
@@ -5251,7 +5531,7 @@ mod tests {
         let text = err.to_string();
         assert!(matches!(err, DecisionError::Unsupported(_)), "{err:?}");
         assert!(
-            text.starts_with("`small`'s 2048-token window cannot hold this question"),
+            text.starts_with("small's 2048-token window cannot hold this question"),
             "{text}"
         );
         // The same question fits a larger window, and a short one fits the small.
@@ -5406,6 +5686,7 @@ mod tests {
             tokens: 2_503,
             usable: 2_048,
             limit: 2_048,
+            // As an adapter writes it, in backticks: the sentence names it plainly.
             model: "`tev1:0.8b`".into(),
         };
         // R3-F2: the server's whole-prompt count, said in the unit
@@ -5416,7 +5697,7 @@ mod tests {
         assert_eq!(
             named.to_string(),
             "Chunk `note-7` is about 2177 tokens, more than the about 1669 tokens of text \
-             `tev1:0.8b` takes beside these questions (its window is 2048 tokens). Split it \
+             tev1:0.8b takes beside these questions (its window is 2048 tokens). Split it \
              into smaller pieces and ask again."
         );
         assert_eq!(usable_chunk(2_048, None).tokens, 1_669);
@@ -5676,7 +5957,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(why.contains("does not take Score questions"), "{why}");
+        assert!(why.contains("does not take score questions"), "{why}");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
@@ -5742,18 +6023,24 @@ mod tests {
         assert!(
             why.starts_with(
                 "Nothing was saved: monitor \"Done\" could not run. This chat holds \
-                             private data from an institution `hosted` is not covered by"
+                             private data from an institution that does not cover hosted"
             ),
             "{why}"
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 
-    /// A chat still Public but bound to a private model becomes private at
-    /// its first turn, so a public decision model is refused at save. A
-    /// decision itself never reads the bound tier.
+    /// DR-33 (design §1.2): on a chat still Public but bound to a private
+    /// model, the check refuses a public model only when the chat will not be
+    /// public after the save. A save that makes it public
+    /// (`lowered_after_save`, set by `decision::save` from the tier effect)
+    /// may name one. A model the save resolves (no model, no chat default:
+    /// the configured default or the automatic choice) never lowers the chat,
+    /// so it is refused with its own sentence. A decision itself never reads
+    /// the bound tier.
     #[tokio::test]
-    async fn a_fresh_chat_bound_to_a_private_model_refuses_a_public_decision_model_at_save() {
+    async fn a_fresh_chat_bound_to_a_private_model_refuses_a_public_model_only_when_the_save_does_not_make_it_public(
+    ) {
         let (svc, calls) = service(
             vec![
                 entry("cloud", ProviderTier::Public, false),
@@ -5761,7 +6048,7 @@ mod tests {
             ],
             Duration::ZERO,
         );
-        let fresh = public_chat("bound-private").with_bound_tier(Some(ProviderTier::Private));
+        let fresh = public_chat("bound-private").with_bound_model_tier(Some(ProviderTier::Private));
         let cloud = settings_of(
             None,
             vec![monitor(serde_json::json!({"model": named("cloud")}))],
@@ -5769,15 +6056,24 @@ mod tests {
         assert_eq!(
             svc.check_settings(&fresh, &cloud, None).await.unwrap_err(),
             "Nothing was saved: monitor \"Done\" could not run. This chat runs on a private \
-             model, so it becomes private at its first turn, and `cloud` is a public model a \
-             private chat cannot use. Choose a decision model that runs on this computer."
+             model, so it becomes private at its first message, and cloud is a public model a \
+             private chat cannot use. Choose a decision model that runs on this computer.",
+            "a public model the save does not make standing (here a provider the fold does not \
+             know) is refused"
+        );
+        let lowered = fresh.clone().with_lowered_after_save(true);
+        assert_eq!(
+            svc.check_settings(&lowered, &cloud, None).await,
+            Ok(()),
+            "a save that makes the chat public may name a public model"
         );
         let local = settings_of(
             None,
             vec![monitor(serde_json::json!({"model": named("local")}))],
         );
         assert_eq!(svc.check_settings(&fresh, &local, None).await, Ok(()));
-        let bound_public = public_chat("bound-public").with_bound_tier(Some(ProviderTier::Public));
+        let bound_public =
+            public_chat("bound-public").with_bound_model_tier(Some(ProviderTier::Public));
         assert_eq!(
             svc.check_settings(&bound_public, &cloud, None).await,
             Ok(())
@@ -5785,11 +6081,38 @@ mod tests {
         let unknown = public_chat("bound-unknown");
         assert_eq!(svc.check_settings(&unknown, &cloud, None).await, Ok(()));
         let off = DecisionSession::new("bound-off", SessionClassification::Public, false)
-            .with_bound_tier(Some(ProviderTier::Private));
+            .with_bound_model_tier(Some(ProviderTier::Private));
         assert_eq!(
             svc.check_settings(&off, &cloud, None).await,
             Ok(()),
             "the master switch as sampled"
+        );
+
+        // A monitor with no model on a chat with no default resolves to the
+        // configured default, which never lowers a chat, so it is refused;
+        // but a save that makes the chat public through another name leaves
+        // the chat public for every model it resolves too.
+        let (resolving, _) = service(
+            vec![entry("cloud", ProviderTier::Public, false)],
+            Duration::ZERO,
+        );
+        let resolving =
+            resolving.with_default_model(Some(DecisionModelRef::new("test_decision", "cloud")));
+        let modelless = settings_of(None, vec![monitor(serde_json::json!({}))]);
+        assert_eq!(
+            resolving
+                .check_settings(&fresh, &modelless, None)
+                .await
+                .unwrap_err(),
+            "Nothing was saved: monitor \"Done\" could not run. This chat runs on a private \
+             model, so it becomes private at its first message, and cloud, the decision model \
+             it would use with none named, could not read it then. Choose a decision model that \
+             runs on this computer for it, or choose cloud for this chat before its first \
+             message."
+        );
+        assert_eq!(
+            resolving.check_settings(&lowered, &modelless, None).await,
+            Ok(())
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         // A decision does not read it.
@@ -5801,6 +6124,58 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// A picker row (design §5): on an eligible Public chat bound to a
+    /// private model, a public model is offered with "makes this chat
+    /// public"; on one that has started (not eligible, not lowered) it is
+    /// disabled with the reason; with no context read, nothing is predicted.
+    #[tokio::test]
+    async fn picker_rows_say_which_public_models_would_make_the_chat_public() {
+        use crate::privacy::decision_axes::Eligibility;
+        let mut joey = entry("joey-1", ProviderTier::Public, false);
+        joey.provider = crate::providers::decision::catalog::BASETEN_DECISION_PROVIDER.into();
+        let (svc, _) = service(vec![joey.clone()], Duration::ZERO);
+        let bound = public_chat("rows").with_bound_model_tier(Some(ProviderTier::Private));
+        let context = |eligibility, lowered_now| {
+            let mut chat = bound.clone();
+            chat.tier_context = Some(SaveTierContext {
+                eligibility,
+                lowered_now,
+            });
+            chat
+        };
+
+        let empty = context(Eligibility::Empty, false);
+        assert_eq!(chat_effect(&empty, &joey), Some(ChatEffect::MakesPublic));
+        assert_eq!(svc.models_for(Some(&empty)).await[0].1, None);
+
+        let started = context(Eligibility::NotEligible, false);
+        assert_eq!(chat_effect(&started, &joey), None);
+        assert_eq!(
+            svc.models_for(Some(&started)).await[0].1.as_deref(),
+            Some(PUBLIC_MODEL_ON_A_CHAT_BECOMING_PRIVATE)
+        );
+
+        let lowered = context(Eligibility::AlreadyLowered, true);
+        assert_eq!(chat_effect(&lowered, &joey), None, "it is public already");
+        assert_eq!(svc.models_for(Some(&lowered)).await[0].1, None);
+
+        assert_eq!(
+            chat_effect(&bound, &joey),
+            None,
+            "no context, no prediction"
+        );
+        assert_eq!(svc.models_for(Some(&bound)).await[0].1, None);
+
+        let mut public_model = context(Eligibility::Empty, false);
+        public_model.bound_model_tier = Some(ProviderTier::Public);
+        assert_eq!(chat_effect(&public_model, &joey), None);
+
+        let mut off = context(Eligibility::NotEligible, false);
+        off.enforced = false;
+        assert_eq!(chat_effect(&off, &joey), None);
+        assert_eq!(svc.models_for(Some(&off)).await[0].1, None);
     }
 
     #[tokio::test]
@@ -5831,7 +6206,7 @@ mod tests {
         assert!(
             why.starts_with(
                 "Nothing was saved: this decision chat's model test_decision/local \
-                             could not answer this question. `local` cannot answer question"
+                             could not answer this question. local cannot answer question"
             ),
             "{why}"
         );
@@ -6100,9 +6475,9 @@ mod tests {
         assert_eq!(
             err,
             DecisionError::Refused(format!(
-                "{CREW_SCOPED_REFUSAL} A decision that names no model uses the configured \
-                 decision provider, `baseten_decision`, which has none this chat may use. Name \
-                 `ollama_decision/tev1:0.8b`, or clear BIOROUTER_DECISION_PROVIDER."
+                "{CREW_SCOPED_REFUSAL} A decision that names no model uses the decision \
+                 provider Biorouter is set to, Baseten, which has none this chat may use. Name \
+                 tev1:0.8b on this computer, or clear BIOROUTER_DECISION_PROVIDER."
             ))
         );
         assert!(

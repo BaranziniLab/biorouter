@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { ModalShell } from '../ModalShell';
+import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/Checkbox';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
@@ -14,11 +15,12 @@ import { Slider } from '../ui/slider';
 import { useSurfaceTriggerHint } from '../ui/surfaceTriggerHint';
 import { Textarea } from '../ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
-import { MoreHorizontal, Plus, X } from '../icons/app-icons';
+import { AlertCircle, MoreHorizontal, Plus, X } from '../icons/app-icons';
 import {
   fetchDecisionCatalog,
   fetchDecisionSettings,
   formatProbability,
+  gateJudgeWords,
   phaseGateState,
   type DecisionHistoryFilter,
   type DecisionModelEntry,
@@ -26,6 +28,7 @@ import {
   type DecisionTier,
   type GateOwner,
   type PhaseGateSnapshot,
+  type PublicDecisionConfirmation,
 } from '../../utils/sessionDecisions';
 import {
   GATE_ATTEMPTS_MAX,
@@ -54,13 +57,21 @@ import {
   type PhaseSnapshot,
 } from '../../utils/sessionSubagents';
 import {
+  anyPublicModelRefused,
   decisionModelKey,
   decisionModelOptions,
   formatDecisionModelOption,
   isDecisionModelOptionDisabled,
   type DecisionModelOption,
 } from './decisionModelOption';
-import { GATE_STATE_ICONS, decisionModelDisplay } from './decisionWords';
+import {
+  GATE_STATE_ICONS,
+  TIER_EFFECT_COPY,
+  decisionModelDisplay,
+  publicModelsSentence,
+  tierEffectNote,
+} from './decisionWords';
+import { TierEffectLine } from './TierEffectLine';
 import './decisionsPanel.css';
 
 export const PHASE_GATE_COPY = {
@@ -107,18 +118,23 @@ export const PHASE_GATE_COPY = {
     lastCheck: 'Last check',
     attempts: 'Attempts',
     model: 'Model',
+    judgedBy: 'Judged by',
     probabilities: 'Probabilities',
     setBy: 'Set by',
   },
-  chatDefault: "This chat's decision model",
+  chatDefault: "This chat's decision model, or its own model when it has none",
   uncalibrated: 'Accepts uncalibrated probabilities',
-  /** R2-7: the banner's one line; why it waits is in the tip beside it. */
-  waitingForYou: 'Waiting for you.',
+  /**
+   * R2-7: the one chip that says the phase needs the person; why it waits is in the
+   * tip beside it. A neutral chip, not a tinted banner: something that needs the
+   * person asks by its words, never by a status hue (red is rare, design.md 9.14).
+   */
+  waitingForYou: 'Waiting for you',
   waitingWhy: 'Why it waits',
   needsPerson:
     'Only you can move this phase on now: pass it, skip it, give its gate its attempts again, or change or remove the gate.',
   blockedByErrors:
-    'The gate could not be evaluated several times in a row. The agent can ask it again once a decision model this chat may use is reachable, or you can decide here.',
+    'The gate could not be evaluated several times in a row. The agent can ask it again once the model that judges it can be reached, or you can decide here.',
   markedBlocked:
     'The agent marked this phase blocked, so the gate was not asked. The agent can ask it by completing the phase, or you can decide here.',
   standingPass:
@@ -150,7 +166,7 @@ export const PHASE_GATE_COPY = {
     replaces: 'Saving makes this gate yours and starts its attempts over.',
     questions: 'Questions',
     questionsHelp:
-      "A decision model answers each question from the phase's hand-off and its subagents' results. The phase completes only when every answer reaches the threshold.",
+      "A decision model answers each question from the phase's hand-off and its subagents' results, or the chat's own model when the chat has none. The phase completes only when every answer reaches the threshold.",
     question: (n: number) => `Question ${n}`,
     addQuestion: 'Add a question',
     removeQuestion: (n: number) => `Remove question ${n}`,
@@ -160,7 +176,7 @@ export const PHASE_GATE_COPY = {
     /** R2: the helper names its outcome, in words. */
     thresholdRule: (t: string) => `Passes when every question's P(yes) is at or above ${t}.`,
     thresholdLow:
-      'Below 0.50 the gate passes answers the decision model leans against. That is your call to make.',
+      'Below 0.50 the gate passes answers the model leans against. That is your call to make.',
     moreOptions: 'More options',
     moreSummary: (attempts: number, model: string) =>
       `${attempts} ${attempts === 1 ? 'attempt' : 'attempts'} · ${model}`,
@@ -518,7 +534,13 @@ function GateEditor({
             <FieldLabel
               htmlFor={`${base}-model`}
               label={copy.editor.model}
-              help={chatTier === 'private' ? copy.editor.modelHelp : null}
+              help={
+                chatTier === 'private'
+                  ? copy.editor.modelHelp
+                  : anyPublicModelRefused(models, chatTier)
+                    ? TIER_EFFECT_COPY.publicRefusedInfo
+                    : null
+              }
             />
             <Select
               inputId={`${base}-model`}
@@ -639,13 +661,11 @@ function GateFacts({
         ) : null}
       </div>
       {needsNote ? (
-        // R2-7: one line up front; the full reason (and what each choice does) in a tip.
-        <Note tone="warning" role="status" testId="phase-gate-needs-person">
-          <span className="br-gate-waiting">
-            {copy.waitingForYou}
-            <InfoTip label={copy.waitingWhy} help={needsNote} />
-          </span>
-        </Note>
+        // R2-7: one chip up front; the full reason (and what each choice does) in a tip.
+        <p className="br-gate-waiting" role="status" data-testid="phase-gate-needs-person">
+          <Badge data-testid="phase-gate-waiting-chip">{copy.waitingForYou}</Badge>
+          <InfoTip label={copy.waitingWhy} help={needsNote} />
+        </p>
       ) : null}
       {standingNote ? (
         <Note role="status" testId="phase-gate-standing-note">
@@ -694,6 +714,16 @@ function GateFacts({
           <Fact label={copy.facts.model}>
             <span data-testid="phase-gate-model-line">{gateModelText(model, gate.model)}</span>
           </Fact>
+          {gate.lastJudge ? (
+            <Fact label={copy.facts.judgedBy}>
+              <span data-testid="phase-gate-judge">{gateJudgeWords(gate.lastJudge)}</span>
+              {gate.lastJudge.reason ? (
+                <span className="block" data-testid="phase-gate-judge-reason">
+                  {gate.lastJudge.reason}
+                </span>
+              ) : null}
+            </Fact>
+          ) : null}
           {gate.allowUncalibrated ? (
             <Fact label={copy.facts.probabilities}>{copy.uncalibrated}</Fact>
           ) : null}
@@ -845,12 +875,17 @@ export function PhaseGateDialog({
       setMoreOpen(usesMoreOptions(draft));
     }
     setFocusField(null);
+    setAsking(null);
     setEditingDraft(draft);
   };
   const [showErrors, setShowErrors] = useState(false);
   const [busy, setBusy] = useState<Busy>(null);
   const [outcome, setOutcome] = useState<{ message: string; applied: boolean } | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
+  /** DR-33: the daemon's question for a set it would not take unanswered ("This chat will be public: …"). */
+  const [asking, setAsking] = useState<PublicDecisionConfirmation | null>(null);
+  /** What the last set did to the chat's tier, in one line and a tip. */
+  const [effectNote, setEffectNote] = useState<{ line: string; info: string | null } | null>(null);
   const [confirmingRemove, setConfirmingRemove] = useState(false);
   const [fetchedModels, setFetchedModels] = useState<DecisionModelEntry[]>([]);
   const [fetchedRefusal, setFetchedRefusal] = useState<string | null>(null);
@@ -875,6 +910,7 @@ export function PhaseGateDialog({
       setAnswered(null);
       setOutcome(null);
       setRefusal(null);
+      setEffectNote(null);
       setShowErrors(false);
       setBusy(null);
       setConfirmingRemove(false);
@@ -926,11 +962,15 @@ export function PhaseGateDialog({
 
   const settle = (result: PhaseGateResult) => {
     if (!result.ok) {
-      setRefusal(result.message);
+      // Asked, not refused: the line goes above Save, which then answers it.
+      if (result.confirmation) setAsking(result.confirmation);
+      else setRefusal(result.message);
       return false;
     }
     setRefusal(null);
+    setAsking(null);
     setOutcome({ message: result.message, applied: result.applied });
+    setEffectNote(tierEffectNote(result.tierEffect ?? null, result.tierEffectLine ?? null));
     if (result.plan) {
       setAnswered({
         phase: result.plan.phases.find((candidate) => candidate.id === phaseId) ?? null,
@@ -946,6 +986,7 @@ export function PhaseGateDialog({
     setBusy(action);
     setOutcome(null);
     setRefusal(null);
+    setEffectNote(null);
     try {
       return settle(await request());
     } finally {
@@ -957,13 +998,36 @@ export function PhaseGateDialog({
     void run(choice, () => decidePhaseGate(sessionId, phaseId, choice));
 
   const draftErrors = editing ? validateGateDraft(editing) : {};
+  // DR-33: the gate's model (or the chat's default, for a gate with none) is one the
+  // daemon marked as making this chat public. Said above Save, which then answers it.
+  const gateModelRef = editing ? (editing.model ?? defaultModel) : null;
+  const loweringEntry = gateModelRef
+    ? models.find(
+        (entry) =>
+          entry.provider === gateModelRef.provider &&
+          entry.model === gateModelRef.model &&
+          entry.chatEffect === 'makesPublic'
+      )
+    : undefined;
+  const gateEffect = asking
+    ? { line: asking.message, info: asking.info }
+    : loweringEntry
+      ? {
+          line: TIER_EFFECT_COPY.willBePublic(publicModelsSentence([loweringEntry])),
+          info: TIER_EFFECT_COPY.publicInfo(null),
+        }
+      : null;
   const save = async () => {
     if (!editing) return;
     if (gateDraftHasErrors(draftErrors)) {
       setShowErrors(true);
       return;
     }
-    const saved = await run('save', () => setPhaseGate(sessionId, phaseId, editing));
+    // The line above Save said the chat will be public: Save is the person's answer.
+    const acceptPublicDecisionModels = gateEffect !== null;
+    const saved = await run('save', () =>
+      setPhaseGate(sessionId, phaseId, editing, { acceptPublicDecisionModels })
+    );
     if (saved) {
       startEditing(null);
       setShowErrors(false);
@@ -1041,7 +1105,11 @@ export function PhaseGateDialog({
         data-testid="phase-gate-save"
         onClick={() => void save()}
       >
-        {busy === 'save' ? copy.editor.saving : copy.editor.save}
+        {busy === 'save'
+          ? copy.editor.saving
+          : asking
+            ? TIER_EFFECT_COPY.confirmSave
+            : copy.editor.save}
       </Button>
     </>
   ) : gate && !closed ? (
@@ -1164,6 +1232,22 @@ export function PhaseGateDialog({
           {copy.noGate}
         </p>
       )}
+      {editing && phase && gateEffect ? (
+        <TierEffectLine
+          line={gateEffect.line}
+          info={gateEffect.info}
+          infoLabel={TIER_EFFECT_COPY.publicInfoLabel}
+          testId="phase-gate-tier-effect"
+        />
+      ) : null}
+      {effectNote && !editing ? (
+        <TierEffectLine
+          line={effectNote.line}
+          info={effectNote.info}
+          infoLabel={TIER_EFFECT_COPY.publicInfoLabel}
+          testId="phase-gate-tier-effect-saved"
+        />
+      ) : null}
       {outcome ? (
         <Note
           tone={outcome.applied ? 'success' : 'neutral'}
@@ -1174,9 +1258,12 @@ export function PhaseGateDialog({
         </Note>
       ) : null}
       {refusal ? (
-        <Note tone="danger" role="alert" testId="phase-gate-refusal">
+        // The Monitors dialog's refusal line: the failure glyph and the daemon's words in
+        // the primary ink, never a red box (red is rare, design.md 9.14).
+        <p className="br-monitors__error" role="alert" data-testid="phase-gate-refusal">
+          <AlertCircle aria-hidden="true" />
           {fieldWord ? `${fieldWord}: ${refusal}` : refusal}
-        </Note>
+        </p>
       ) : null}
       {phase && gate ? (
         <ConfirmationModal

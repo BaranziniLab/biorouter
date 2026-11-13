@@ -363,7 +363,12 @@ async fn install_user_action_proof() -> Option<[u8; 32]> {
     // any route is mounted, so no request is ever served against an unrecorded
     // launch state, and so the sample predates anything this process could write
     // to `config.yaml` itself.
-    biorouter_server::launch::record_launch_state(launcher_declared_a_key);
+    // SD-16 rides the same pin: the operator's opt-in to public decision models
+    // on a keyless daemon is read here, once, and never again.
+    biorouter_server::launch::record_launch_state_with(
+        launcher_declared_a_key,
+        biorouter_server::launch::operator_allowed_public_decision_models_in_env(),
+    );
     digest
 }
 

@@ -494,7 +494,7 @@ const SHELL_CSP: &str = "frame-ancestors 'none'";
 /// gives the shell for dictation. The grant still belongs to the origin: a
 /// same-origin popup an app page opens does not inherit the app's policy and
 /// can record on a lasting grant, and Firefox and Safari ignore the header.
-/// SD-16 in `docs/deployment/serve-decisions.md` records both residuals.
+/// SD-17 in `docs/deployment/serve-decisions.md` records both residuals.
 const SHELL_PERMISSIONS_POLICY: &str = "microphone=(self)";
 
 fn insecure_address() -> Response<Body> {
@@ -1477,7 +1477,7 @@ mod tests {
     /// The shell may use the microphone, for dictation, and no frame of
     /// another origin may. App pages on the same origin turn it off for
     /// themselves and their frames (`routes::apps`); a popup they open does
-    /// not inherit that, which is the residual SD-16 records. Pinned verbatim,
+    /// not inherit that, which is the residual SD-17 records. Pinned verbatim,
     /// and on the shell itself, at the root and on a deep link that falls
     /// through to it.
     #[tokio::test]

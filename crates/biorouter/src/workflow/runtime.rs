@@ -8,7 +8,9 @@ use utoipa::ToSchema;
 use crate::agents::extension::ExtensionConfig;
 use crate::agents::Agent;
 use crate::prompt_template::render_global_file;
-use crate::workflow::supervision::{self, SeedOutcome, SeedRefusal, SeedTarget, SeedTargetKind};
+use crate::workflow::supervision::{
+    self, SeedConsent, SeedOutcome, SeedRefusal, SeedTarget, SeedTargetKind,
+};
 use crate::workflow::{Workflow, WorkflowKnowledgeBases};
 
 use biorouter_mcp::knowledge::service::{KnowledgeService, PrimaryUpdate};
@@ -289,6 +291,28 @@ pub async fn apply_prepared_to_agent(
     agent.set_session_context_prompt(prompt).await;
 }
 
+/// The privacy inputs of [`install_prepared`]: the master switch as the caller
+/// sampled it, and the person's answer about a workflow whose decision models
+/// make the chat public ([`SeedConsent`], DR-33). A bare `bool` is the switch
+/// with no acceptance, so a lowering workflow is refused.
+#[derive(Debug, Clone)]
+pub struct InstallPrivacy {
+    pub enforced: bool,
+    pub consent: SeedConsent,
+}
+
+impl InstallPrivacy {
+    pub fn new(enforced: bool, consent: SeedConsent) -> Self {
+        Self { enforced, consent }
+    }
+}
+
+impl From<bool> for InstallPrivacy {
+    fn from(enforced: bool) -> Self {
+        Self::new(enforced, SeedConsent::Unconfirmed)
+    }
+}
+
 /// Install a workflow into the session about to run it: its knowledge
 /// selection, its components, and the prompt [`prepare_prompt`] already
 /// resolved.
@@ -312,8 +336,12 @@ pub async fn apply_prepared_to_agent(
 /// installed. The seed asks with what this agent really runs on: its approval
 /// mode (`config.biorouter_mode`), its own decision service when one was
 /// installed ([`Agent::custom_decision_service`]) or else the process's, and
-/// the capability tier of the chat model it is bound to. `enforced` is the
-/// privacy master switch as the caller sampled it.
+/// the tier of the language model it is bound to (`Agent::bound_model_tier`,
+/// never the slot's folded tier). `privacy` is the master switch as the caller
+/// sampled it and, for a workflow whose decision models make the chat public,
+/// whether the person accepted that ([`InstallPrivacy`]; a bare `bool` did
+/// not). A seed that made the chat public lowers this agent's slot at once
+/// (`Agent::lower_decision_axes`), so nothing in between reads it as private.
 ///
 /// A seed that cannot apply what the workflow declares writes nothing and
 /// fails the install with an error that carries the [`SeedRefusal`] (downcast
@@ -327,18 +355,23 @@ pub async fn install_prepared(
     workflow: &Workflow,
     include_final_output_tool: bool,
     prompt: Option<String>,
-    enforced: bool,
+    privacy: impl Into<InstallPrivacy>,
 ) -> Result<SeedOutcome> {
+    let InstallPrivacy { enforced, consent } = privacy.into();
     let outcome = if supervision::declares_supervision(workflow) {
         let custom = agent.custom_decision_service();
         let service = match custom.as_deref() {
             Some(service) => service,
             None => crate::decision::global(),
         };
-        // What the chat is bound to now: a chat still Public but bound to a
-        // private model becomes private at its first turn, so a public
-        // decision model must be refused for it before that turn.
-        let bound_tier = agent.provider().await.ok().map(|provider| provider.tier());
+        // The language model the chat is bound to now, unwrapped: a chat
+        // still Public but bound to a private model becomes private at its
+        // first message unless the workflow's decision models make it public,
+        // which the person must accept (`consent`).
+        let bound_tier = match agent.bound_model_provider().await {
+            Some(_) => Some(agent.bound_model_tier().await),
+            None => None,
+        };
         let target = SeedTarget {
             session_id: session_id.to_string(),
             kind: SeedTargetKind::Chat,
@@ -351,14 +384,25 @@ pub async fn install_prepared(
         // Measured in a debug build: `scheduler::execute_job`'s future pinned
         // on a 2 MiB test thread already needed about 2000 KiB, and inlining
         // the seed into it overflowed that stack.
-        Box::pin(supervision::seed(
+        let outcome = Box::pin(supervision::seed(
             agent.config.session_manager.as_ref(),
             service,
             workflow,
-            target,
+            target.with_consent(consent),
         ))
         .await
-        .map_err(|refusal| anyhow::Error::new(refusal).context(WORKFLOW_NOT_STARTED))?
+        .map_err(|refusal| anyhow::Error::new(refusal).context(WORKFLOW_NOT_STARTED))?;
+        if enforced && matches!(outcome, SeedOutcome::Seeded { .. }) {
+            // Lower-only: a seed that wrote a lowering takes effect now; any
+            // other seed leaves the slot as it is.
+            let row = agent
+                .config
+                .session_manager
+                .get_session(session_id, false)
+                .await?;
+            Box::pin(agent.lower_decision_axes(&row)).await;
+        }
+        outcome
     } else {
         SeedOutcome::NothingDeclared
     };

@@ -137,6 +137,44 @@ pub fn tier_row(classification: SessionClassification) -> String {
     }
 }
 
+/// DR-33: a decision model, in the terminal's spelling of a name plus where it
+/// runs (`joey-1 · Baseten`, `tev1:0.8b · this computer`).
+pub fn decision_model_place(
+    model: &str,
+    host: &biorouter::privacy::decision_axes::HostLabel,
+) -> String {
+    use biorouter::privacy::decision_axes::HostLabel;
+    let (name, place) = match host {
+        HostLabel::Baseten => (
+            crate::commands::decide::model_name("baseten_decision", model),
+            "Baseten".to_string(),
+        ),
+        HostLabel::ThisComputer => (model.to_string(), "this computer".to_string()),
+        HostLabel::OllamaAt(at) => (model.to_string(), format!("Ollama at {at}")),
+        HostLabel::OllamaCloud => (model.to_string(), "Ollama cloud".to_string()),
+    };
+    crate::commands::decide::terminal_text(&format!("{name} · {place}"))
+}
+
+/// DR-33 (design §5): why a chat bound to a private model is public, when its
+/// decision models made it so. The banner's second privacy line and the
+/// terminal UI's header say it: `public because monitor "Done" uses joey-1 ·
+/// Baseten`.
+pub fn decision_reason(cause: &biorouter::privacy::decision_axes::LoweredBy) -> String {
+    use biorouter::privacy::decision_axes::NameSource;
+    let model = decision_model_place(&cause.model, &cause.host);
+    let label = crate::commands::decide::terminal_text(&cause.label);
+    match cause.source {
+        NameSource::Default => format!("public because the default decision model is {model}"),
+        NameSource::Monitor => format!("public because monitor \"{label}\" uses {model}"),
+        NameSource::Gate => format!("public because the gate on phase \"{label}\" uses {model}"),
+        NameSource::PhaseMonitor => {
+            format!("public because subagent monitor \"{label}\" uses {model}")
+        }
+        NameSource::Parent => "public because it is part of a public chat's work".to_string(),
+    }
+}
+
 /// Where the provider that is about to be refused came from.
 ///
 /// `biorouter-cli/src/session/builder.rs` resolves it as `--provider` flag →
@@ -289,6 +327,54 @@ pub fn export_capability_refusal(session_id: &str, private_models: &[PrivateMode
 mod tests {
     use super::*;
     use biorouter::privacy::SessionClassification;
+
+    #[test]
+    fn a_decision_reason_names_the_cause_and_where_its_model_runs() {
+        use biorouter::privacy::decision_axes::{HostLabel, LoweredBy, NameSource};
+        let cause = |source, label: &str, model: &str, host| LoweredBy {
+            source,
+            label: label.to_string(),
+            model: model.to_string(),
+            host,
+            others: 0,
+        };
+        assert_eq!(
+            decision_reason(&cause(
+                NameSource::Monitor,
+                "Done",
+                "joey-1",
+                HostLabel::Baseten
+            )),
+            "public because monitor \"Done\" uses joey-1 · Baseten"
+        );
+        assert_eq!(
+            decision_reason(&cause(
+                NameSource::Default,
+                "default",
+                "joey-1",
+                HostLabel::Baseten
+            )),
+            "public because the default decision model is joey-1 · Baseten"
+        );
+        assert_eq!(
+            decision_reason(&cause(
+                NameSource::Gate,
+                "Review",
+                "gpt-oss:20b",
+                HostLabel::OllamaAt("10.0.0.5".into())
+            )),
+            "public because the gate on phase \"Review\" uses gpt-oss:20b · Ollama at 10.0.0.5"
+        );
+        assert_eq!(
+            decision_reason(&cause(
+                NameSource::Parent,
+                "parent-id",
+                "",
+                HostLabel::Baseten
+            )),
+            "public because it is part of a public chat's work"
+        );
+    }
 
     fn versa() -> PrivateModel {
         PrivateModel {

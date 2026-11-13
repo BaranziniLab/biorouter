@@ -62,7 +62,14 @@ impl Agent {
     ) -> ToolResult<Vec<Content>> {
         let chat_provider = self.provider().await.ok();
         let pinned_provider = Arc::new(tokio::sync::Mutex::new(chat_provider.clone()));
-        let chat_capability = crate::privacy::CallCapability::sample(&pinned_provider).await;
+        // Issue #56: capped to the running turn, as the conversation-ingest
+        // branch is, so a public turn whose chat was switched to a private
+        // model mid-turn is not told private knowledge base ids through
+        // `resolve_target_kb`'s candidate list.
+        let chat_capability = self.capped_to_turn(
+            &session.id,
+            crate::privacy::CallCapability::sample(&pinned_provider).await,
+        );
         handle_ingest_source_with_provider(
             arguments,
             session,

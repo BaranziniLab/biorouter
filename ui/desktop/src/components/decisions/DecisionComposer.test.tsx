@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DecisionComposer,
@@ -156,10 +156,12 @@ describe('the decision composer', () => {
         'Only the person at the keyboard may set this.'
       )
     );
-    // On its own line, in danger ink, and still the one status node.
+    // On its own line, in the primary ink with the failure glyph (red is rare,
+    // design.md 9.14), and still the one status node.
     const status = screen.getByTestId('decision-composer-status');
     expect(status).toHaveAttribute('data-wide', 'true');
-    expect(status).toHaveAttribute('data-tone', 'danger');
+    expect(status).toHaveAttribute('data-tone', 'problem');
+    expect(within(status).getByTestId('decision-composer-failed')).toBeInTheDocument();
     expect(screen.getAllByRole('status')).toHaveLength(1);
     expect(field).toHaveAccessibleDescription('Only the person at the keyboard may set this.');
   });
@@ -310,7 +312,7 @@ describe('what the composer shows up front (F-8, B-5)', () => {
     expect(screen.getByTestId('decision-composer').textContent).not.toMatch(/[≥<]/);
   });
 
-  it('marks a threshold out of range in danger ink, on its own line', async () => {
+  it('marks a threshold out of range in the primary ink, on its own line', async () => {
     render(<DecisionComposer sessionId="chat-1" />);
     await ready();
     fireEvent.change(screen.getByTestId('decision-composer-question'), {
@@ -321,8 +323,10 @@ describe('what the composer shows up front (F-8, B-5)', () => {
     fireEvent.change(threshold, { target: { value: '1.5' } });
     const status = screen.getByTestId('decision-composer-status');
     expect(status).toHaveTextContent('The threshold is a number from 0 to 1.');
-    expect(status).toHaveAttribute('data-tone', 'danger');
+    expect(status).toHaveAttribute('data-tone', 'problem');
     expect(status).toHaveAttribute('data-wide', 'true');
+    // An invalid field, not a failure: the field keeps its one red edge, so no glyph here.
+    expect(within(status).queryByTestId('decision-composer-failed')).toBeNull();
     expect(threshold).toHaveAttribute('aria-invalid', 'true');
   });
 

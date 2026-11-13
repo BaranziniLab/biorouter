@@ -207,6 +207,12 @@ describe('the actual pre-session accepted destination callback', () => {
       setIsCreatingSession,
       firstSend,
       createSession,
+      // #484's new chat start: no decision models drafted, nothing to confirm.
+      draftDecisions: undefined,
+      draftDecisionStartOptions: () => ({}),
+      currentProvider: null,
+      currentModel: null,
+      publicDecisionConfirm: { confirm: vi.fn(async () => true) },
       pendingWorkingDir: undefined,
       resolveNewSessionWorkingDir: () => '/work',
       getInitialWorkingDir: () => '/work',

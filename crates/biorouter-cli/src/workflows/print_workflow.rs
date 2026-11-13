@@ -68,6 +68,11 @@ fn supervision_lines(workflow: &Workflow) -> Vec<String> {
     let fallback = default_model
         .clone()
         .unwrap_or_else(|| "the chat's default decision model".to_string());
+    // A gate that names no model works without any decision model: the
+    // chat's own model judges it then.
+    let gate_fallback = default_model.clone().unwrap_or_else(|| {
+        "the chat's default decision model, or the chat's own model when it has none".to_string()
+    });
     if let Some(declared) = &workflow.decision_settings {
         if let Some(model) = &default_model {
             items.push(format!("Default decision model: {model}"));
@@ -83,7 +88,7 @@ fn supervision_lines(workflow: &Workflow) -> Vec<String> {
         items.push(plan_line(plan));
         for phase in &plan.phases {
             if let Some(gate) = &phase.gate {
-                items.push(gate_line(&phase.id, gate, &fallback));
+                items.push(gate_line(&phase.id, gate, &gate_fallback));
             }
             let monitors = phase.monitors.as_ref().map_or(0, Vec::len);
             if monitors > 0 {
@@ -334,7 +339,8 @@ mod tests {
         assert_eq!(
             supervision_lines(&undeclared)[1],
             "   - Phase \"check\" gate: 1 question, each must reach P(yes) ≥ 0.80 before the \
-             phase completes, 3 attempts; asked of the chat's default decision model"
+             phase completes, 3 attempts; asked of the chat's default decision model, or the \
+             chat's own model when it has none"
         );
 
         // D-2: a Baseten slug reads as its alias, as every terminal line names it.

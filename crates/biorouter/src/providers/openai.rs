@@ -3,8 +3,8 @@ use super::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsag
 use super::embedding::{EmbeddingCapable, EmbeddingRequest, EmbeddingResponse};
 use super::errors::ProviderError;
 use super::formats::openai::{
-    add_reasoning_content_to_request, create_request, get_usage, model_uses_responses_api,
-    response_to_message, stamp_reasoning_provenance,
+    add_reasoning_content_to_request, content_filter_block_in_completion, create_request,
+    get_usage, model_uses_responses_api, response_to_message, stamp_reasoning_provenance,
 };
 use super::formats::openai_responses::{
     create_responses_request, get_responses_usage, responses_api_to_message, stream_responses_api,
@@ -12,8 +12,8 @@ use super::formats::openai_responses::{
 };
 use super::retry::ProviderRetry;
 use super::utils::{
-    get_model, handle_response_openai_compat, handle_status_openai_compat, stream_openai_compat,
-    ImageFormat,
+    get_model, handle_response_openai_compat, handle_response_openai_provider,
+    handle_status_openai_provider, stream_openai_compat, ImageFormat,
 };
 use crate::config::declarative_providers::DeclarativeProviderConfig;
 use crate::conversation::message::Message;
@@ -320,12 +320,16 @@ impl OpenAiProvider {
         model_uses_responses_api(model_name)
     }
 
+    /// One blocking request on the Chat Completions route. A prompt a content
+    /// filter refuses is a named policy block, not "Bad request (400)" plus the
+    /// server's paragraph ([`handle_status_openai_provider`]); the same holds
+    /// for [`Self::post_responses`] and both streamed routes.
     async fn post(&self, payload: &Value) -> Result<Value, ProviderError> {
         let response = self
             .api_client
             .response_post(&self.base_path, payload)
             .await?;
-        handle_response_openai_compat(response).await
+        handle_response_openai_provider(response).await
     }
 
     async fn post_responses(&self, payload: &Value) -> Result<Value, ProviderError> {
@@ -333,7 +337,7 @@ impl OpenAiProvider {
             .api_client
             .response_post("v1/responses", payload)
             .await?;
-        handle_response_openai_compat(response).await
+        handle_response_openai_provider(response).await
     }
 }
 
@@ -480,6 +484,16 @@ impl Provider for OpenAiProvider {
                     let _ = log.error(e);
                 })?;
 
+            // A reply a content filter blocked is a 200 whose choice says
+            // `finish_reason: "content_filter"`, with an empty or cut-off
+            // message. Read as a reply it ended the turn as if the model had
+            // finished. It is the stream decoder's block, in the same words
+            // (Azure's when the choice carries Azure's verdict, the
+            // provider's otherwise), and is not retried.
+            if let Some(block) = content_filter_block_in_completion(&json_response) {
+                let _ = log.provider_error(&block);
+                return Err(block);
+            }
             let mut message = response_to_message(&json_response)?;
             // Record which provider produced any captured reasoning_content so
             // replay (above) stays scoped to this provider across a mid-session
@@ -557,7 +571,7 @@ impl Provider for OpenAiProvider {
                         .api_client
                         .response_post("v1/responses", &payload_clone)
                         .await?;
-                    handle_status_openai_compat(resp).await
+                    handle_status_openai_provider(resp).await
                 })
                 .await
                 .inspect_err(|e| {
@@ -579,7 +593,7 @@ impl Provider for OpenAiProvider {
                         .api_client
                         .response_post(&self.base_path, &payload)
                         .await?;
-                    handle_status_openai_compat(resp).await
+                    handle_status_openai_provider(resp).await
                 })
                 .await
                 .inspect_err(|e| {
@@ -1093,5 +1107,322 @@ impl EmbeddingCapable for OpenAiProvider {
             .into_iter()
             .map(|d| d.embedding)
             .collect())
+    }
+}
+
+/// A content filter's verdict on every path this provider takes: a prompt it
+/// refuses (HTTP 400, on both routes, streamed or not), a non-streamed reply
+/// it blocks, and the Responses route's streamed stop. Each is a policy block
+/// in Biorouter's own words, sent once, carrying nothing the provider wrote.
+/// The streamed Chat Completions block is the stream decoder's
+/// (`formats::openai`) and is tested there.
+#[cfg(test)]
+mod content_filter_tests {
+    use super::*;
+    use crate::providers::api_client::{ApiClient, AuthMethod};
+    use crate::providers::errors::ProviderErrorKind;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    const CHAT_COMPLETIONS_MODEL: &str = "gpt-4o";
+    const RESPONSES_MODEL: &str = "gpt-5.6-sol";
+
+    fn provider(server: &MockServer, model: &str) -> OpenAiProvider {
+        let api_client = ApiClient::new(
+            server.uri(),
+            AuthMethod::BearerToken("test-key".to_string()),
+        )
+        .expect("api client builds");
+        OpenAiProvider::new(api_client, ModelConfig::new_or_fail(model))
+    }
+
+    fn prompt() -> Vec<Message> {
+        vec![Message::user().with_text("Reply with the single word ready.")]
+    }
+
+    async fn answering(route: &str, template: ResponseTemplate) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path(route))
+            .respond_with(template)
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn requests(server: &MockServer) -> usize {
+        server.received_requests().await.unwrap_or_default().len()
+    }
+
+    fn assert_policy(error: &ProviderError) {
+        assert_eq!(error.kind(), ProviderErrorKind::Policy, "{error:?}");
+        assert!(!crate::agents::mistakes::is_recoverable(error));
+        assert!(!error.to_string().contains("SECRET"), "{error}");
+    }
+
+    /// A prompt a content filter refused, on either route, streamed or not,
+    /// used to read "Bad request (400): " plus the server's paragraph. It is
+    /// the provider's block when the server names no verdict, and Azure's,
+    /// with its categories, when the error carries Azure's verdict (an Azure
+    /// resource reached through this provider). Sent once either way.
+    #[tokio::test]
+    async fn a_filtered_prompt_is_a_policy_block_on_every_route_and_sent_once() {
+        let cases = [
+            (
+                serde_json::json!({
+                    "error": {
+                        "code": "content_filter",
+                        "type": "invalid_request_error",
+                        "message": "SECRET_PROVIDER_PARAGRAPH Your prompt was flagged."
+                    }
+                }),
+                "Request failed: The provider's content filter blocked this request. Revise \
+                 the request or contact your provider administrator.",
+            ),
+            (
+                serde_json::json!({
+                    "error": {
+                        "code": "content_filter",
+                        "message": "SECRET_PROVIDER_PARAGRAPH The response was filtered.",
+                        "innererror": {
+                            "code": "ResponsibleAIPolicyViolation",
+                            "content_filter_result": {
+                                "jailbreak": {"filtered": true, "detected": true},
+                                "hate": {"filtered": false, "severity": "safe"}
+                            }
+                        }
+                    }
+                }),
+                "Request failed: Azure's content filter blocked this request (flagged: \
+                 jailbreak). Revise the request or contact your provider administrator.",
+            ),
+        ];
+        for (body, expected) in cases {
+            for (route, model) in [
+                ("/v1/chat/completions", CHAT_COMPLETIONS_MODEL),
+                ("/v1/responses", RESPONSES_MODEL),
+            ] {
+                let server =
+                    answering(route, ResponseTemplate::new(400).set_body_json(&body)).await;
+                let provider = provider(&server, model);
+
+                let error = match provider.stream("system", &prompt(), &[]).await {
+                    Err(error) => error,
+                    Ok(_) => panic!("{model}: a filtered prompt never streams"),
+                };
+                assert_policy(&error);
+                assert_eq!(error.to_string(), expected, "{model}");
+                assert_eq!(requests(&server).await, 1, "{model}: sent once");
+
+                let error = provider
+                    .complete("system", &prompt(), &[])
+                    .await
+                    .expect_err("a filtered prompt never answers");
+                assert_policy(&error);
+                assert_eq!(error.to_string(), expected, "{model}");
+                assert_eq!(requests(&server).await, 2, "{model}: sent once more");
+            }
+        }
+    }
+
+    /// Any other 400 keeps the reading it always had.
+    #[tokio::test]
+    async fn another_400_is_still_a_bad_request() {
+        let server = answering(
+            "/v1/chat/completions",
+            ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": {"code": "invalid_value", "message": "Unsupported parameter: 'temperature'."}
+            })),
+        )
+        .await;
+        let error = provider(&server, CHAT_COMPLETIONS_MODEL)
+            .complete("system", &prompt(), &[])
+            .await
+            .expect_err("a 400 never answers");
+        assert_eq!(
+            error.to_string(),
+            "Request failed: Bad request (400): Unsupported parameter: 'temperature'."
+        );
+        assert_eq!(error.kind(), ProviderErrorKind::InvalidRequest);
+    }
+
+    fn completion(choice: Value) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "id": "chatcmpl-cf",
+            "object": "chat.completion",
+            "model": CHAT_COMPLETIONS_MODEL,
+            "choices": [choice],
+            "usage": {"prompt_tokens": 9, "completion_tokens": 2, "total_tokens": 11}
+        }))
+    }
+
+    /// A non-streamed reply whose choice says `finish_reason:
+    /// "content_filter"` (a title, a decision model, `complete_fast`, or a
+    /// server that does not stream) used to come back as whatever message
+    /// stood beside it, empty or cut off, as if the model had finished. It is
+    /// the stream decoder's block: the provider's when nothing names whose
+    /// filter it was, Azure's with its categories when the choice carries
+    /// Azure's verdict (an Azure resource reached through this provider).
+    #[tokio::test]
+    async fn a_completion_the_filter_blocked_is_a_policy_block_sent_once() {
+        let cases = [
+            (
+                serde_json::json!({
+                    "index": 0,
+                    "finish_reason": "content_filter",
+                    "message": {"role": "assistant", "content": "SECRET_REPLY_TEXT"}
+                }),
+                "Request failed: The provider's content filter blocked this reply. Revise the \
+                 request or contact your provider administrator.",
+            ),
+            (
+                serde_json::json!({
+                    "index": 0,
+                    "finish_reason": "content_filter",
+                    "message": {"role": "assistant"},
+                    "content_filter_results": {
+                        "hate": {"filtered": true, "severity": "high"},
+                        "SECRET_PROVIDER_PAYLOAD": {"filtered": false}
+                    }
+                }),
+                "Request failed: Azure's content filter blocked this reply (flagged: hate). \
+                 Revise the request or contact your provider administrator.",
+            ),
+        ];
+        for (choice, expected) in cases {
+            let server = answering("/v1/chat/completions", completion(choice)).await;
+            let error = provider(&server, CHAT_COMPLETIONS_MODEL)
+                .complete("system", &prompt(), &[])
+                .await
+                .expect_err("a blocked reply is not an answer");
+            assert_policy(&error);
+            assert_eq!(error.to_string(), expected);
+            assert_eq!(requests(&server).await, 1, "sent once");
+        }
+    }
+
+    /// An ordinary reply, and one whose filter failed to run, are the reply.
+    #[tokio::test]
+    async fn a_completion_the_filter_passed_or_did_not_run_on_is_the_reply() {
+        for choice in [
+            serde_json::json!({
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "ready"}
+            }),
+            serde_json::json!({
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "ready"},
+                "content_filter_result": {
+                    "error": {"code": "content_filter_error", "message": "The contents are not filtered"}
+                },
+                "content_filter_results": {}
+            }),
+        ] {
+            let server = answering("/v1/chat/completions", completion(choice)).await;
+            let (message, _) = provider(&server, CHAT_COMPLETIONS_MODEL)
+                .complete("system", &prompt(), &[])
+                .await
+                .expect("the reply arrives");
+            assert_eq!(message.as_concat_text(), "ready");
+        }
+    }
+
+    const RESPONSES_STOP: &str = "Request failed: The provider's content filter blocked this \
+                                  reply. Revise the request or contact your provider \
+                                  administrator.";
+
+    fn stopped_response() -> Value {
+        serde_json::json!({
+            "id": "resp_cf",
+            "object": "response",
+            "created_at": 1,
+            "status": "incomplete",
+            "model": RESPONSES_MODEL,
+            "output": [{
+                "type": "message",
+                "id": "msg_1",
+                "status": "incomplete",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "SECRET_REPLY_TEXT"}]
+            }],
+            "usage": {"input_tokens": 9, "output_tokens": 2, "total_tokens": 11},
+            "incomplete_details": {"reason": "content_filter"}
+        })
+    }
+
+    /// On the Responses route the filter's stop is `incomplete_details.reason`
+    /// `content_filter`. A blocking request used to read it as the cut-off
+    /// reply.
+    #[tokio::test]
+    async fn a_blocking_responses_reply_the_filter_stopped_is_a_policy_block() {
+        let server = answering(
+            "/v1/responses",
+            ResponseTemplate::new(200).set_body_json(stopped_response()),
+        )
+        .await;
+        let error = provider(&server, RESPONSES_MODEL)
+            .complete("system", &prompt(), &[])
+            .await
+            .expect_err("a stopped reply is not an answer");
+        assert_policy(&error);
+        assert_eq!(error.to_string(), RESPONSES_STOP);
+        assert_eq!(requests(&server).await, 1, "sent once");
+    }
+
+    /// The same stop in a stream ends it on the block, after the text that
+    /// had already arrived, instead of finishing the turn with the reason as
+    /// its finish reason.
+    #[tokio::test]
+    async fn a_streamed_responses_reply_the_filter_stopped_is_a_policy_block() {
+        let frames = [
+            serde_json::json!({
+                "type": "response.output_text.delta",
+                "sequence_number": 1,
+                "item_id": "msg_1",
+                "output_index": 0,
+                "content_index": 0,
+                "delta": "Here is "
+            }),
+            serde_json::json!({
+                "type": "response.incomplete",
+                "sequence_number": 2,
+                "response": stopped_response()
+            }),
+        ];
+        let sse: String = frames
+            .iter()
+            .map(|frame| format!("data: {frame}\n\n"))
+            .collect();
+        let server = answering(
+            "/v1/responses",
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse),
+        )
+        .await;
+        let mut stream = provider(&server, RESPONSES_MODEL)
+            .stream("system", &prompt(), &[])
+            .await
+            .unwrap_or_else(|_| panic!("the request is accepted"));
+        let mut text = String::new();
+        let error = loop {
+            match stream.next().await {
+                Some(Ok((message, usage, _))) => {
+                    assert!(usage.is_none(), "a block is not a finished turn");
+                    if let Some(message) = message {
+                        text.push_str(&message.as_concat_text());
+                    }
+                }
+                Some(Err(error)) => break error,
+                None => panic!("the stream ended without the block"),
+            }
+        };
+        assert_eq!(text, "Here is ");
+        assert_policy(&error);
+        assert_eq!(error.to_string(), RESPONSES_STOP);
+        assert!(stream.next().await.is_none());
+        assert_eq!(requests(&server).await, 1, "sent once");
     }
 }

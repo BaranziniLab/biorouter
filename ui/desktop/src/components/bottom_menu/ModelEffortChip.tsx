@@ -1,5 +1,6 @@
 import type { SessionClassification } from '../../api/types.gen';
 import type { PinnedModelView } from '../../hooks/chatStreamStore';
+import type { PrivacyBasis } from '../../utils/sessionDecisions';
 import type { View, ViewOptions } from '../../utils/navigationUtils';
 import ModelsBottomBar from '../settings/models/bottom_bar/ModelsBottomBar';
 
@@ -23,6 +24,8 @@ export interface ModelEffortChipProps {
   effectiveModel?: PinnedModelView;
   /** The chat's ratcheted classification (`ChatInput`'s `sessionPrivacyTier`). */
   privacyTier?: SessionClassification;
+  /** DR-33: why the chat is public, when a decision model made it so. */
+  privacyBasis?: PrivacyBasis | null;
   /** Opens the provider catalog when no model is configured. */
   setView: (view: View, options?: ViewOptions) => void;
   /**
@@ -43,6 +46,7 @@ export function ModelEffortChip({
   reasoningScope,
   effectiveModel,
   privacyTier,
+  privacyBasis,
   setView,
   handOffKey,
   dictationDraftKey,
@@ -53,6 +57,7 @@ export function ModelEffortChip({
         sessionId={sessionId}
         effectiveModel={effectiveModel}
         privacyTier={privacyTier}
+        privacyBasis={privacyBasis}
         setView={setView}
         reasoningScope={reasoningScope}
         handOffKey={handOffKey}

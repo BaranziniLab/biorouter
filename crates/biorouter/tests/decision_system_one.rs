@@ -1184,8 +1184,9 @@ async fn an_unreachable_server_is_named_and_may_be_retried() {
     let err = adapter.decide(&one_question(NOTE)).await.unwrap_err();
     let (status, _, message) = backend(&err);
     assert_eq!(status, None);
-    assert!(
-        message.starts_with("Baseten decision model `joey-1` could not be reached"),
+    // Plain words, never the transport library's text (it goes to the log).
+    assert_eq!(
+        message, "joey-1 on Baseten could not be reached because nothing answered at its address",
         "{message}"
     );
     assert!(!message.contains("synthetic-test-key"), "{message}");
@@ -1271,11 +1272,14 @@ async fn a_servers_over_window_refusal_reads_as_the_size_error() {
         .expect("a batch");
     let error = outcomes[0].error.as_deref().expect("the chunk fails");
     // The server's 2,503 prompt tokens, said in the unit decision_models uses
-    // (R3-F2): before the margin's factor and less the questions' share.
+    // (R3-F2): before the margin's factor and less the questions' share. The
+    // model by its plain name, never in backticks.
     assert!(
         error.starts_with("Chunk `note-0003` is about ")
-            && error
-                .contains("`tev1:0.8b` takes beside these questions (its window is 2048 tokens)"),
+            && error.contains(
+                " tokens of text tev1:0.8b takes beside these questions (its window is 2048 \
+                 tokens)"
+            ),
         "{error}"
     );
     assert!(!error.contains("SENTINEL"), "{error}");

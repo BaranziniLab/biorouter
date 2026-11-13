@@ -20,6 +20,15 @@ const mocks = vi.hoisted(() => ({
   // Row reads delivered in this window, for the listener the dialog module
   // installs; `deliverRow` below plays one.
   rowListeners: new Set<(facts: { sessionId: string; privacy_tier: string }) => void>(),
+  // DR-33: the chat's decision settings and the catalog, read when the dialog opens.
+  fetchDecisionSettings: vi.fn(),
+  fetchDecisionCatalog: vi.fn(),
+}));
+
+vi.mock('../../utils/sessionDecisions', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../utils/sessionDecisions')>()),
+  fetchDecisionSettings: mocks.fetchDecisionSettings,
+  fetchDecisionCatalog: mocks.fetchDecisionCatalog,
 }));
 
 vi.mock('../../api', () => ({
@@ -105,6 +114,12 @@ const s = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.fetchDecisionSettings.mockResolvedValue({ data: null, missing: false });
+  mocks.fetchDecisionCatalog.mockResolvedValue({
+    models: [],
+    sessionUnavailableReason: null,
+    missing: false,
+  });
   mocks.declassifySession.mockImplementation(answerLikeTheClient(200, ''));
   // Every failure re-reads the row before it says anything. Unless a test says
   // otherwise, the write did not land.
@@ -844,5 +859,66 @@ describe('the undo window dismisses as Undo', () => {
     });
     expect(mocks.declassifySession).not.toHaveBeenCalled();
     expect(onDeclassified).not.toHaveBeenCalled();
+  });
+});
+
+describe('DR-33: the decision models a declassification turns off', () => {
+  const monitor = (name: string, provider: string, model: string, enabled = true) => ({
+    id: name.toLowerCase(),
+    name,
+    enabled,
+    model: { provider, model, adapter: null },
+  });
+  const catalogEntry = (provider: string, model: string, tier: 'public' | 'private') => ({
+    provider,
+    model,
+    displayName: model,
+    contextTokens: null,
+    kinds: ['binary'],
+    tier,
+    adapter: null,
+    local: tier === 'private',
+    unavailableReason: null,
+  });
+
+  it('names the enabled public monitors and the public default before the person agrees', async () => {
+    mocks.fetchDecisionSettings.mockResolvedValue({
+      data: {
+        defaultModel: { provider: 'baseten_decision', model: 'joey-1', adapter: null },
+        monitors: [
+          monitor('Done', 'baseten_decision', 'joey-1'),
+          monitor('Drift', 'baseten_decision', 'joey-1'),
+          monitor('Local', 'ollama_decision', 'tev1:0.8b'),
+          monitor('Off', 'baseten_decision', 'joey-1', false),
+        ],
+      },
+      missing: false,
+    });
+    mocks.fetchDecisionCatalog.mockResolvedValue({
+      models: [
+        catalogEntry('baseten_decision', 'joey-1', 'public'),
+        catalogEntry('ollama_decision', 'tev1:0.8b', 'private'),
+      ],
+      sessionUnavailableReason: null,
+      missing: false,
+    });
+    render(<DeclassifySessionDialog session={s} />);
+
+    const list = await screen.findByTestId('declassify-decision-models');
+    expect(list).toHaveTextContent(
+      'Monitors "Done" and "Drift" use joey-1 · Baseten and will be turned off.'
+    );
+    expect(list).toHaveTextContent('The default decision model joey-1 · Baseten will be cleared.');
+    expect(list).not.toHaveTextContent('Local');
+    expect(list).not.toHaveTextContent('"Off"');
+    expect(
+      screen.getByRole('button', { name: 'About Decision models after this' })
+    ).toBeInTheDocument();
+  });
+
+  it('says nothing for a chat with no public decision model', async () => {
+    render(<DeclassifySessionDialog session={s} />);
+    await waitFor(() => expect(mocks.fetchDecisionCatalog).toHaveBeenCalled());
+    expect(screen.queryByTestId('declassify-decision-models')).toBeNull();
   });
 });

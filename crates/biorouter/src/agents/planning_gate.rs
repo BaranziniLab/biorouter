@@ -16,7 +16,8 @@
 //!    refused with a pointer back to `todo__todo_write` — ONCE per turn. A model
 //!    that states a reason and repeats the call gets it run.
 //! 3. **Stop check.** A turn that created or changed the checklist cannot end
-//!    while items are unfinished, unless its final message names each one. It
+//!    while items are not started or in progress, unless its final message
+//!    names each one. An item marked blocked never holds the turn. It
 //!    blocks at most [`STOP_HOOK_BLOCK_CAP`] times per turn and, unlike the
 //!    Stop-hook counter, the count does NOT reset when tools run — so a model
 //!    that keeps stopping cannot cycle until `max_turns`.
@@ -686,8 +687,16 @@ struct ChecklistObjection {
     open: usize,
 }
 
-/// The turn may not end while `state` has unfinished items, unless
-/// `final_text` names every one of them — by `#N` id or by its text.
+/// The turn may not end while `state` has an item still to work on (not
+/// started or in progress), unless `final_text` names every such item, by
+/// `#N` id or by its text.
+///
+/// An item marked blocked never holds the turn: the agent has already said it
+/// is stuck on something outside its reach, and the checklist shows the user
+/// so. A list whose only unfinished items are blocked therefore ends cleanly
+/// instead of being sent back until the reply happens to name each one. The
+/// blocked items are still listed in an objection's feedback, so the model
+/// sees the whole list it is being asked about.
 ///
 /// The feedback asks for a reason too, but only the naming is checked: a
 /// deterministic check cannot tell a reason from a status recap, and a named
@@ -695,12 +704,12 @@ struct ChecklistObjection {
 fn checklist_objection(state: &TodoState, final_text: &str) -> Option<ChecklistObjection> {
     // The status each item READS as, so the current item says "in progress"
     // although it was never marked so (`TodoState::derived_active_index`).
-    let statuses = state.effective_statuses();
-    let open: Vec<(&TodoItem, TodoStatus)> = state
-        .items
+    let items: Vec<(&TodoItem, TodoStatus)> =
+        state.items.iter().zip(state.effective_statuses()).collect();
+    let open: Vec<(&TodoItem, TodoStatus)> = items
         .iter()
-        .zip(statuses)
-        .filter(|(_, status)| *status != TodoStatus::Completed)
+        .copied()
+        .filter(|(_, status)| matches!(status, TodoStatus::Pending | TodoStatus::InProgress))
         .collect();
     if open.is_empty() {
         return None;
@@ -712,18 +721,30 @@ fn checklist_objection(state: &TodoState, final_text: &str) -> Option<ChecklistO
     {
         return None;
     }
-    let listed = open
+    let blocked: Vec<(&TodoItem, TodoStatus)> = items
         .iter()
-        .map(|(item, status)| format!("- #{} ({}) {}", item.id, status_label(*status), item.text))
-        .collect::<Vec<_>>()
-        .join("\n");
+        .copied()
+        .filter(|(_, status)| *status == TodoStatus::Blocked)
+        .collect();
+    let listed = item_lines(&open);
+    let blocked_listed = if blocked.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "Marked blocked, which does not hold the turn:\n{}\n",
+            item_lines(&blocked)
+        )
+    };
     Some(ChecklistObjection {
         feedback: format!(
             "Before you finish: your checklist still has {} unfinished item(s):\n{listed}\n\
+             {blocked_listed}\
              Finish the work, and report what is done in the `todo` field of your next tool \
              call (or, if no call is left, one `todo__todo_update` with all of them in \
-             `updates`). If an item cannot or should not be done now, end your turn with a \
-             message that names each unfinished item by its #N id and says why it is not done.",
+             `updates`). If an item is waiting on something outside your reach, mark it \
+             `blocked` with `todo__todo_update`; a blocked item does not hold the turn. If an \
+             item cannot or should not be done now, end your turn with a message that names \
+             each unfinished item by its #N id and says why it is not done.",
             open.len()
         ),
         notice: format!(
@@ -734,6 +755,15 @@ fn checklist_objection(state: &TodoState, final_text: &str) -> Option<ChecklistO
         ),
         open: open.len(),
     })
+}
+
+/// One `- #N (status) text` line per item, each with the status it reads as.
+fn item_lines(items: &[(&TodoItem, TodoStatus)]) -> String {
+    items
+        .iter()
+        .map(|(item, status)| format!("- #{} ({}) {}", item.id, status_label(*status), item.text))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn names_item(final_text: &str, final_words: &[String], item: &TodoItem) -> bool {
@@ -1349,12 +1379,66 @@ mod tests {
     }
 
     #[test]
-    fn a_finished_or_empty_checklist_never_blocks_and_blocked_items_count_as_open() {
+    fn a_finished_or_empty_checklist_never_blocks() {
         assert!(checklist_objection(&checklist("- [x] one\n- [x] two"), "done").is_none());
         assert!(checklist_objection(&TodoState::default(), "done").is_none());
-        let objection = checklist_objection(&checklist("- [x] one\n- [!] ask the user"), "done")
-            .expect("a blocked item is unfinished");
+    }
+
+    #[test]
+    fn blocked_items_never_hold_the_turn_but_are_listed_beside_open_ones() {
+        // Every unfinished item is blocked: the agent has already said it is
+        // stuck, so the turn ends even though the reply names none of them.
+        assert!(checklist_objection(
+            &checklist("- [x] one\n- [!] ask the user\n- [!] wait for the upload"),
+            "done"
+        )
+        .is_none());
+
+        // One pending and one blocked: the pending one holds the turn, and the
+        // feedback lists both so the model sees the whole list. The pending
+        // item is the derived current item (a blocked one never is), so it
+        // reads "in progress" although it was never marked so.
+        let state = checklist("- [ ] write the report\n- [!] ask the user");
+        let objection = checklist_objection(&state, "done").expect("a pending item is still open");
+        assert_eq!(objection.open, 1, "only the pending item counts as open");
+        assert!(
+            objection
+                .feedback
+                .contains("#1 (in progress) write the report"),
+            "{}",
+            objection.feedback
+        );
         assert!(objection.feedback.contains("#2 (blocked) ask the user"));
+        assert!(
+            objection
+                .feedback
+                .contains("Marked blocked, which does not hold the turn:\n- #2 (blocked)"),
+            "{}",
+            objection.feedback
+        );
+        assert!(objection.notice.contains("#1"), "{}", objection.notice);
+        assert!(!objection.notice.contains("#2"), "{}", objection.notice);
+
+        // Naming the pending one is enough; the blocked one needs no naming.
+        assert!(checklist_objection(&state, "#1 needs data I do not have yet.").is_none());
+        // Naming only the blocked one is not.
+        assert!(checklist_objection(&state, "#2 is waiting on you.").is_some());
+
+        // No blocked items: no blocked section in the feedback, but the model
+        // is still told that marking an item blocked releases it.
+        let objection = checklist_objection(&checklist("- [ ] one"), "done").expect("open");
+        assert!(
+            !objection.feedback.contains("Marked blocked"),
+            "{}",
+            objection.feedback
+        );
+        assert!(
+            objection.feedback.contains(
+                "mark it `blocked` with `todo__todo_update`; a blocked item does not hold the turn"
+            ),
+            "{}",
+            objection.feedback
+        );
     }
 
     /// The current item is derived, never stored, and the objection reads it

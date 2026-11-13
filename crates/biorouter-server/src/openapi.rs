@@ -824,6 +824,11 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::reply::ContinuationLeaseErrorResponse,
         super::routes::session::ImportSessionRequest,
         super::routes::session::SessionListResponse,
+        super::routes::session::SessionDetail,
+        super::routes::session::PrivacyBasis,
+        super::routes::session::PrivacyBasisKind,
+        super::routes::session::PrivacyBasisSource,
+        biorouter::privacy::decision_axes::HostLabel,
         super::routes::session::SidebarSessionListResponse,
         biorouter::session::SessionSummary,
         // #56: `Session::privacy_tier` and `SessionSummary::privacy_tier`.
@@ -857,10 +862,13 @@ impl utoipa::Modify for ApiKeySecurity {
         biorouter::agents::orchestration_plan::PhaseKind,
         biorouter::agents::orchestration_plan::PhaseStatus,
         // A phase's decision gate, as `PhaseSnapshot::gate` names it, and
-        // the enums its `owner` and `personDecision` fields name.
+        // the enums its `owner` and `personDecision` fields name, and who
+        // gave its last verdict (`lastJudge`).
         biorouter::agents::orchestration_plan::PhaseGateSnapshot,
         biorouter::agents::orchestration_plan::GateOwner,
         biorouter::agents::orchestration_plan::PersonGateAction,
+        biorouter::agents::orchestration_plan::GateJudge,
+        biorouter::agents::orchestration_plan::GateJudgeKind,
         // `/sessions/{session_id}/phase-gates/{phase_id}`: the gate the
         // person sets, their decision about it, and what the write did.
         biorouter::agents::orchestration_plan::PhaseGateSpec,
@@ -871,6 +879,13 @@ impl utoipa::Modify for ApiKeySecurity {
         // decision, one chat's decision log and its decision settings. utoipa
         // 4 collects no nested schema, so every type a field names is here.
         super::routes::decisions::DecisionModelInfo,
+        super::routes::decisions::DecisionSettingsWrite,
+        super::routes::decisions::DecisionSettingsSaved,
+        super::routes::decisions::PhaseGateWrite,
+        super::routes::decisions::PublicDecisionConfirmation,
+        super::routes::agent::StartedSession,
+        biorouter::decision::ChatEffect,
+        biorouter::privacy::decision_axes::TierEffect,
         super::routes::decisions::DecisionModelsResponse,
         super::routes::decisions::DecideRequest,
         super::routes::decisions::DecideResponse,
@@ -1385,7 +1400,9 @@ mod decision_supervision_contract_tests {
                 "/sessions/{session_id}/phase-gates/{phase_id}",
                 "put",
                 "workspace",
-                Some("PhaseGateSpec"),
+                // DR-33: the gate (`PhaseGateSpec`, flattened in) plus the
+                // person's confirmation of a lowering beside it.
+                Some("PhaseGateWrite"),
                 ("200", "PhaseGateResponse"),
             ),
             (
@@ -1460,6 +1477,8 @@ mod decision_supervision_contract_tests {
             ("MonitorCriterion", "MonitorOwner"),
             ("PhaseGateSnapshot", "GateOwner"),
             ("PhaseGateSnapshot", "PersonGateAction"),
+            ("PhaseGateSnapshot", "GateJudge"),
+            ("PhaseGateSnapshot", "GateJudgeKind"),
             ("Workflow", "WorkflowPlan"),
             ("Workflow", "WorkflowPhase"),
             ("Workflow", "WorkflowGate"),
@@ -1515,6 +1534,7 @@ mod decision_supervision_contract_tests {
                     "retriesGranted",
                     "needsPerson",
                     "holds",
+                    "lastJudge",
                 ][..],
             ),
             ("PhaseSnapshot", &["heldBy"][..]),

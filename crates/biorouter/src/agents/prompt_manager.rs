@@ -373,6 +373,11 @@ pub const CREW_NEEDS_THE_DAEMON: &str =
 /// template renders as the capability's instructions, so Crew's guidance for tools this chat
 /// cannot have goes with it. Nothing asks `capability_has_tool` about Crew, so the missing
 /// roster changes nothing else.
+///
+/// An entry that already carries a `withheld_note` is left alone. That note is the coding-agent
+/// bridge's (`note_capabilities_withheld_from_the_bridge`): a Claude Code or Codex chat cannot
+/// get Crew from the daemon either, so pointing it there would send the person to a step that
+/// still gives the chat nothing, and replacing the entry would drop the note that says why.
 fn name_crew_without_a_host(extensions_info: &mut [ExtensionInfo], crew_host: bool) {
     if crew_host {
         return;
@@ -383,6 +388,7 @@ fn name_crew_without_a_host(extensions_info: &mut [ExtensionInfo], crew_host: bo
             && prompt_name_key(&info.name) == crew
             && info.tool_roster_known
             && info.available_tools.is_empty()
+            && info.withheld_note.is_none()
         {
             *info =
                 ExtensionInfo::capability(&info.name, CREW_NEEDS_THE_DAEMON, info.has_resources);
@@ -1216,6 +1222,62 @@ mod tests {
         assert!(
             crew_section(&with_tools).contains("focused capability guidance"),
             "{with_tools}"
+        );
+    }
+
+    /// A bridged chat's Crew note survives a process with no Crew host. Without a host the empty
+    /// Crew roster would read [`CREW_NEEDS_THE_DAEMON`], but a Claude Code or Codex chat gets no
+    /// Crew tool from the daemon either: it keeps the bridge's note, which says why and what to do.
+    #[tokio::test]
+    async fn a_bridged_crew_note_is_kept_where_no_crew_host_is_installed() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        let mut crew = crew_with_no_tools();
+        crew.withheld_note = Some("No Crew tool is available in this chat.".to_string());
+        let prompt = crate::crew::tool_host::with_host_for_tests(None, async {
+            build_with(&manager, vec![crew])
+        })
+        .await;
+        let crew = crew_section(&prompt);
+        assert!(
+            crew.contains("No Crew tool is available in this chat."),
+            "{crew}"
+        );
+        assert!(!prompt.contains(CREW_NEEDS_THE_DAEMON), "{prompt}");
+        assert!(!crew.contains("no effective tools"), "{crew}");
+        assert!(
+            !prompt.contains("Never ask for a password"),
+            "Crew's guidance must not survive an empty roster: {prompt}"
+        );
+    }
+
+    /// A capability withheld on purpose (the coding-agent bridge's exclusions)
+    /// says why in its own section, in place of both its instructions and the
+    /// generic "no effective tools" line.
+    #[test]
+    fn a_withheld_capability_reads_its_note_not_its_instructions() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        let mut withheld = ExtensionInfo::capability(
+            "code_execution",
+            "instructions for tools it was not given",
+            false,
+        );
+        withheld.tool_roster_known = true;
+        withheld.withheld_note = Some("Code Execution is not used in this chat.".to_string());
+
+        let prompt = manager.builder().with_extension(withheld).build();
+
+        assert!(prompt.contains("## code_execution"), "{prompt}");
+        assert!(
+            prompt.contains("Code Execution is not used in this chat."),
+            "{prompt}"
+        );
+        assert!(
+            !prompt.contains("instructions for tools it was not given"),
+            "{prompt}"
+        );
+        assert!(
+            !prompt.contains("loaded but has no effective tools for this turn"),
+            "{prompt}"
         );
     }
 

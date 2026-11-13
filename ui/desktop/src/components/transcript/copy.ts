@@ -136,6 +136,35 @@ export const transcriptCopy = {
     stopLabel: 'Stop subagent',
   },
 
+  /**
+   * The row a delegated subagent's result draws in its parent's chat: how it
+   * ended, then its title ("Subagent finished: Read every trial report").
+   */
+  subagentResult: {
+    outcome: {
+      completed: 'Subagent finished',
+      blocked: 'Subagent stopped to ask',
+      incomplete: 'Subagent stopped early',
+      error: 'Subagent failed',
+    },
+    /** A result that could not be read still ended. */
+    ended: 'Subagent finished',
+    label: (outcome: string, title: string | null) => (title ? `${outcome}: ${title}` : outcome),
+    summary: 'Summary',
+    error: 'Error',
+    question: 'Question',
+    files: 'Files changed',
+    monitor: 'Stopped by a monitor',
+    monitorLine: (name: string, question: string) =>
+      name && question ? `${name}: ${question}` : name || question,
+    decisions: 'Decision models',
+    tokens: 'Tokens',
+    tokenLine: (total: string, input: string, output: string) =>
+      `${total} in all, ${input} in, ${output} out`,
+    intervened: "You wrote in this subagent's chat while it ran.",
+    result: 'Result',
+  },
+
   /** A workflow chat's starter prompts. */
   workflow: {
     label: 'Workflow',

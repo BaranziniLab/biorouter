@@ -4,7 +4,10 @@ use crate::config::paths::Paths;
 use crate::model::ModelConfig;
 use crate::privacy::ProviderTier;
 use crate::providers::errors::ProviderError;
-use crate::providers::formats::openai::{decode_streaming_message, ReasoningDisplay};
+use crate::providers::formats::openai::{
+    azure_content_filter_refusal, content_filter_refusal, decode_streaming_message,
+    ReasoningDisplay,
+};
 use anyhow::{anyhow, Result};
 use async_stream::try_stream;
 use base64::Engine;
@@ -116,7 +119,21 @@ pub fn filter_extensions_from_system_prompt(system: &str) -> String {
 /// This is not a reach decision (it never asks what a model may touch), only
 /// where the model runs: token calibration, the prompt variant, and whether a
 /// reported usage can be a truncation.
+///
+/// ⚠ It reads the language model UNDER a DR-33 decision-bound wrapper
+/// ([`super::decision_bound::unwrap_decision_bound`]). The wrapper's tier is
+/// `least(language model, decision models)`, so a public decision model lowers
+/// it to Public and `ProviderAffiliation::of` then answers "not here" for a
+/// Llama Server or loopback Ollama model that IS here. The turn's provider is
+/// that wrapper at Normal effort, so such a chat got the hosted prompt variant
+/// and an hourly clock that broke prompt-cache reuse on every hour boundary.
+/// Where the model runs is a property of the model, not of the chat's tier.
+/// This is not a privacy gate and must never become one: every gate keeps
+/// reading the wrapper's folded tier.
 pub(crate) fn runs_on_this_machine(provider: &dyn super::base::Provider) -> bool {
+    if let Some(inner) = provider.decision_bound_inner() {
+        return runs_on_this_machine(super::decision_bound::unwrap_decision_bound(inner).as_ref());
+    }
     super::base::ProviderAffiliation::of(provider)
         .is_some_and(|resolved| resolved.kind == super::base::ProviderAffiliationKind::Local)
 }
@@ -390,6 +407,72 @@ pub async fn handle_status_openai_compat(response: Response) -> Result<Response,
 pub async fn handle_response_openai_compat(response: Response) -> Result<Value, ProviderError> {
     let response = handle_status_openai_compat(response).await?;
 
+    response.json::<Value>().await.map_err(|e| {
+        ProviderError::RequestFailed(format!("Response body is not valid JSON: {}", e))
+    })
+}
+
+/// [`handle_status_openai_compat`] for an Azure OpenAI resource, on either
+/// route: a prompt Azure's content filter refused (HTTP 400, code
+/// `content_filter`) reads as a policy block naming the flagged categories in
+/// plain words, is not retried, and carries none of Azure's own paragraph
+/// ([`azure_content_filter_refusal`]). Every other status reads as it always
+/// has. Without it the `azure_openai` provider said "Bad request (400): The
+/// response was filtered due to the prompt triggering Azure OpenAI's content
+/// management policy…", naming no category.
+pub async fn handle_status_azure_openai(response: Response) -> Result<Response, ProviderError> {
+    handle_status_reading_filter_refusal(response, azure_content_filter_refusal).await
+}
+
+/// [`handle_response_openai_compat`], with an Azure resource's status read by
+/// [`handle_status_azure_openai`].
+pub async fn handle_response_azure_openai(response: Response) -> Result<Value, ProviderError> {
+    let response = handle_status_azure_openai(response).await?;
+    response_json(response).await
+}
+
+/// [`handle_status_openai_compat`] for the `openai` provider and the custom
+/// providers built on it: a prompt a content filter refused (HTTP 400, code
+/// `content_filter`) reads as a policy block, is not retried, and carries
+/// none of the server's own paragraph ([`content_filter_refusal`]). It names
+/// Azure's filter and its categories when the error carries Azure's verdict,
+/// and the provider's otherwise. Every other status reads as it always has.
+/// Without it such a refusal read "Bad request (400): " plus the server's
+/// paragraph.
+pub async fn handle_status_openai_provider(response: Response) -> Result<Response, ProviderError> {
+    handle_status_reading_filter_refusal(response, content_filter_refusal).await
+}
+
+/// [`handle_response_openai_compat`], with the status read by
+/// [`handle_status_openai_provider`].
+pub async fn handle_response_openai_provider(response: Response) -> Result<Value, ProviderError> {
+    let response = handle_status_openai_provider(response).await?;
+    response_json(response).await
+}
+
+/// A status read as [`handle_status_openai_compat`] reads it, except that an
+/// HTTP 400 is first offered to `refusal`, which turns a content filter's
+/// refusal into its policy block.
+async fn handle_status_reading_filter_refusal(
+    response: Response,
+    refusal: fn(u16, &Value) -> Option<ProviderError>,
+) -> Result<Response, ProviderError> {
+    let status = response.status();
+    if status != StatusCode::BAD_REQUEST {
+        return handle_status_openai_compat(response).await;
+    }
+    let body = response.text().await.unwrap_or_default();
+    let payload = serde_json::from_str::<Value>(&body).ok();
+    if let Some(refusal) = payload
+        .as_ref()
+        .and_then(|payload| refusal(status.as_u16(), payload))
+    {
+        return Err(refusal);
+    }
+    Err(map_http_error_to_provider_error(status, payload))
+}
+
+async fn response_json(response: Response) -> Result<Value, ProviderError> {
     response.json::<Value>().await.map_err(|e| {
         ProviderError::RequestFailed(format!("Response body is not valid JSON: {}", e))
     })
@@ -1683,6 +1766,94 @@ mod tests {
                 endpoint.1
             );
         }
+    }
+
+    /// A local model stays local when a public decision model lowers the
+    /// chat's tier (DR-33). The turn's provider is then the decision-bound
+    /// wrapper, whose folded tier is Public, and reading where the model runs
+    /// off that fold sent a Llama Server or loopback Ollama chat the hosted
+    /// prompt variant and an hourly clock. The wrapper's tier is untouched:
+    /// this reads where the model runs, never what the chat may reach.
+    #[test]
+    fn runs_on_this_machine_looks_through_a_decision_bound_wrapper() {
+        use crate::conversation::message::Message;
+        use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};
+        use crate::privacy::decision_axes::{DecisionAxes, HostLabel, LoweredBy, NameSource};
+        use crate::providers::base::{Provider, ProviderMetadata, ProviderUsage};
+        use crate::providers::decision_bound::DecisionBoundProvider;
+        use rmcp::model::Tool;
+        use std::sync::Arc;
+
+        struct Endpoint(&'static str, ProviderTier, Option<ModelAffiliation>);
+
+        #[async_trait::async_trait]
+        impl Provider for Endpoint {
+            fn metadata() -> ProviderMetadata {
+                ProviderMetadata::empty()
+            }
+            fn get_name(&self) -> &str {
+                self.0
+            }
+            fn tier(&self) -> ProviderTier {
+                self.1
+            }
+            fn affiliation(&self) -> Option<ModelAffiliation> {
+                self.2
+            }
+            fn get_model_config(&self) -> ModelConfig {
+                ModelConfig::new_or_fail("qwen3.8-27b")
+            }
+            async fn complete_with_model(
+                &self,
+                _model_config: &ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<(Message, ProviderUsage), ProviderError> {
+                unreachable!("only asked where it runs")
+            }
+        }
+
+        let public_decision_model = || {
+            DecisionAxes::public_for_test(LoweredBy {
+                source: NameSource::Monitor,
+                label: "Done".to_string(),
+                model: "joey-1".to_string(),
+                host: HostLabel::Baseten,
+                others: 0,
+            })
+        };
+
+        for name in ["llamacpp", "ollama"] {
+            let inner: Arc<dyn Provider> = Arc::new(Endpoint(
+                name,
+                ProviderTier::Private,
+                Some(ModelAffiliation::Local),
+            ));
+            let bound = DecisionBoundProvider::bind(Arc::clone(&inner), public_decision_model());
+            assert!(
+                bound.decision_bound_inner().is_some(),
+                "{name}: the fixture must actually wrap"
+            );
+            assert_eq!(
+                bound.tier(),
+                ProviderTier::Public,
+                "{name}: the chat's tier stays folded"
+            );
+            assert!(runs_on_this_machine(inner.as_ref()), "{name}");
+            assert!(
+                runs_on_this_machine(bound.as_ref()),
+                "{name}: a public decision model does not move the model off this machine"
+            );
+        }
+
+        // A model that does not run here is not made local by the wrapper.
+        let ucsf = ModelAffiliation::institution(InstitutionId::new("ucsf"));
+        let hosted: Arc<dyn Provider> =
+            Arc::new(Endpoint("versa_azure", ProviderTier::Private, Some(ucsf)));
+        let bound = DecisionBoundProvider::bind(hosted, public_decision_model());
+        assert!(bound.decision_bound_inner().is_some());
+        assert!(!runs_on_this_machine(bound.as_ref()));
     }
 
     /// The same KV-collision sentence where no status says "500": an error

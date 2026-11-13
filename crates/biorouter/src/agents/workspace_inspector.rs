@@ -743,11 +743,14 @@ pub async fn uninspected_crossing_refusal(
         .get_session(&target, false)
         .await
         .ok()?;
-    if !crate::privacy::crossing::needs_disclosure(
+    // DR-33, design §3.4: a child born under this caller's public ceiling asks
+    // on every payload, so a remembered approval never covers it.
+    if !crate::privacy::crossing::needs_disclosure_to(
         cap.tier(),
         row.privacy_tier,
         caller_session_id,
         &target,
+        crate::privacy::decision_axes::ceiling_names_caller(&row, caller_session_id),
     ) {
         return None;
     }
@@ -821,6 +824,7 @@ impl WorkspaceCrossingInspector {
             // hole this arm closes: the card fired for `workspace_send_prompt`
             // into that same session one call later, and never for the call that
             // created and seeded it.
+            let mut every_time = false;
             let target = match target {
                 Some(target) => {
                     // Metadata only: resolving the disclosure boundary must never
@@ -829,11 +833,18 @@ impl WorkspaceCrossingInspector {
                     let Ok(row) = session_manager.get_session(&target, false).await else {
                         continue;
                     };
-                    if !crate::privacy::crossing::needs_disclosure(
+                    every_time =
+                        crate::privacy::decision_axes::ceiling_names_caller(&row, &session.id);
+                    // DR-33, design §3.4: a child this chat started while it
+                    // was public by a decision model runs under its public
+                    // ceiling. Now that this chat is private, every write into
+                    // that child shows its payload; no approval is remembered.
+                    if !crate::privacy::crossing::needs_disclosure_to(
                         cap.tier(),
                         row.privacy_tier,
                         &session.id,
                         &target,
+                        every_time,
                     ) {
                         continue;
                     }
@@ -855,6 +866,14 @@ impl WorkspaceCrossingInspector {
                 target_session = %target,
                 "Private-to-public workspace write escalated to approval (issue #56)"
             );
+            // DR-33: a child under this chat's public ceiling is asked about on
+            // every write, so the card must not promise the opposite.
+            let remembered = if every_time {
+                "Approving sends it now. Because this conversation started that one while it \
+                 was public, it asks again for every message it sends there."
+            } else {
+                "Approving sends it now, and stops asking for this pair of conversations."
+            };
             results.push(InspectionResult {
                 tool_request_id: request.id.clone(),
                 action: InspectionAction::RequireApproval(Some(format!(
@@ -863,8 +882,7 @@ impl WorkspaceCrossingInspector {
                     // the boundary between quoted text and Biorouter's warning.
                     "🔒 This conversation is on a model hosted inside your institution. \
                      It is about to send text to conversation {target}, which is NOT. \
-                     Approving sends it now, and stops asking for this pair of \
-                     conversations. This confirmation appears in every permission mode, \
+                     {remembered} This confirmation appears in every permission mode, \
                      including Fully Automatic. ⟪WHAT IT WOULD SEND⟫ {payload} ⟪END⟫"
                 ))),
                 reason: format!("Private-to-public workspace write into {target}"),

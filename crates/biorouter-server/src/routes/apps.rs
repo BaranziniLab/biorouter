@@ -168,7 +168,7 @@ const APP_PAGE_COOP: &str = "noopener-allow-popups";
 /// or any document of this origin served without the header (`/status`, a JSON
 /// route), records on a lasting grant through the popup's `navigator` (measured
 /// in Chrome 157, 2026-11-05). Firefox and Safari ignore `Permissions-Policy`
-/// altogether. SD-16 in `docs/deployment/serve-decisions.md` records both
+/// altogether. SD-17 in `docs/deployment/serve-decisions.md` records both
 /// residuals. No response header closes the `about:blank` case or the Firefox
 /// and Safari one; per app origins close both.
 const APP_PERMISSIONS_POLICY: &str = "microphone=(), camera=(), display-capture=()";
@@ -2456,7 +2456,12 @@ mod app_provider_bind {
     /// fail-safe direction is the one where an error refuses a raise rather than
     /// granting one.
     async fn established_capability(agent: &Agent, session_id: &str) -> Option<ProviderTier> {
-        if let Ok(bound) = agent.provider().await {
+        // DR-33 (design §3.1): the bound MODEL's tier, unwrapped through the
+        // decision-bound wrapper. DR-21 asks whether a bind raises the
+        // provider axis; a chat the slot reads Public only because a decision
+        // model lowered it is still a chat on a private model, and reading the
+        // wrapper would make a private-to-private rebind look like a raise.
+        if let Some(bound) = agent.bound_model_provider().await {
             return Some(bound.tier());
         }
         let session = match agent
@@ -5889,7 +5894,7 @@ mod app_isolation_and_lifecycle_tests {
         assert_eq!(header(header::CACHE_CONTROL), "no-store");
         assert_eq!(header(header::X_CONTENT_TYPE_OPTIONS), "nosniff");
         // Opened at the top level, the frame still gets no microphone, camera
-        // or screen capture from the origin's grants (SD-16).
+        // or screen capture from the origin's grants (SD-17).
         assert_eq!(header(PERMISSIONS_POLICY), APP_PERMISSIONS_POLICY);
         let body = body_of(resp).await;
         assert_eq!(body, FIGURE_FRAME_HTML);
@@ -9533,8 +9538,8 @@ mod tests {
     /// browser grants the microphone to an origin. Every document an app serves
     /// therefore turns the microphone, the camera and screen capture off, so
     /// code an agent wrote cannot record on the person's grant to the shell
-    /// from the page or any frame it holds (PR-03, DD-79, SD-16; a popup it
-    /// opens is the residual SD-16 records). Pinned verbatim: a looser value
+    /// from the page or any frame it holds (PR-03, DD-79, SD-17; a popup it
+    /// opens is the residual SD-17 records). Pinned verbatim: a looser value
     /// (`microphone=*`, or `(self)`, which IS the shared origin) would let it.
     #[test]
     fn every_app_document_denies_the_microphone_camera_and_screen_capture() {
@@ -9688,7 +9693,7 @@ mod tests {
                 guarded,
                 "`{name}` answers with HTML on the app origin without \
                  `APP_PERMISSIONS_POLICY`. On `biorouter serve` that page would share the \
-                 shell's microphone grant (SD-16): send the header, or answer through \
+                 shell's microphone grant (SD-17): send the header, or answer through \
                  `app_page_response` or `with_app_file_csp`."
             );
         }
@@ -9854,7 +9859,7 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some(super::APP_PAGE_COOP)
         );
-        // The page an app's author wrote gets no microphone (SD-16).
+        // The page an app's author wrote gets no microphone (SD-17).
         assert_eq!(
             headers
                 .get("permissions-policy")
@@ -14502,6 +14507,63 @@ mod tests {
                 .await
                 .unwrap()
                 .id
+        }
+
+        /// DR-33 (design §3.1): DR-21 asks whether a bind raises the PROVIDER
+        /// axis. A chat on a private model that the person made public with a
+        /// Baseten decision model reads Public in its slot, and comparing that
+        /// with the incoming private model called a private-to-private rebind a
+        /// raise. The comparison is between the two plain models.
+        #[tokio::test]
+        async fn a_chat_made_public_by_a_decision_model_may_rebind_to_another_private_model() {
+            use biorouter::decision::settings::{
+                DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION,
+            };
+            use biorouter::privacy::decision_axes::{BasisAuthor, PublicBasis};
+            use biorouter::session::session_manager::{BasisWrite, BasisWriteOutcome};
+            if !biorouter::privacy::privacy_tiers_enabled() {
+                return;
+            }
+            let dir = tempfile::TempDir::new().unwrap();
+            let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+            let agent = agent_over(session_manager.clone(), dir.path());
+            let session = session_over(&session_manager, dir.path(), "dr33-lowered").await;
+            let basis = PublicBasis::new(&session, BasisAuthor::Person, "test", vec![]);
+            let written = session_manager
+                .write_public_basis(&session, BasisWrite::Set(basis), |data| {
+                    data.set_extension_state(
+                        DECISION_SETTINGS_STATE,
+                        DECISION_SETTINGS_VERSION,
+                        serde_json::json!({
+                            "defaultModel": {"provider": "baseten_decision", "model": "joey-1"},
+                            "monitors": [],
+                        }),
+                    );
+                    Ok(())
+                })
+                .await
+                .unwrap();
+            assert_eq!(written, BasisWriteOutcome::Written(()));
+            agent
+                .update_provider(tiered("versa_azure", ProviderTier::Private), &session)
+                .await
+                .unwrap();
+            // The premise: the slot is public, the model is not.
+            assert_eq!(agent.provider().await.unwrap().tier(), ProviderTier::Public);
+            assert_eq!(agent.bound_model_tier().await, ProviderTier::Private);
+
+            let provider =
+                app_provider_bind::adopt_for_test(tiered("ollama", ProviderTier::Private));
+            app_provider_bind::bind_app_provider(&agent, &session, provider)
+                .await
+                .map_err(|refusal| refusal.to_string())
+                .expect("a private-to-private rebind is not a raise");
+            assert_eq!(agent.bound_model_tier().await, ProviderTier::Private);
+            assert_eq!(
+                agent.provider().await.unwrap().tier(),
+                ProviderTier::Public,
+                "the rebind keeps the person's lowering"
+            );
         }
 
         /// Site 1. `configure_main_provider` reads `cfg.model` out of the

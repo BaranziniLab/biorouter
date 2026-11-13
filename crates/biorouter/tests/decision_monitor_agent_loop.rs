@@ -1172,16 +1172,24 @@ async fn a_private_chat_never_reaches_a_public_monitor_model() {
 
     assert_eq!(decisions.requests(), 0, "nothing reached the public model");
     assert_eq!(llm.calls(), 2, "the refusal does not stop the turn");
+    // DR-33 §3.15: a public model can never read this private chat, so the
+    // monitor is switched off for the chat, said once, and stored off.
     let notices = notices(&messages);
     assert_eq!(
-        count_containing(&notices, "Monitor 'Form reached' could not be checked"),
+        count_containing(
+            &notices,
+            "Monitor \"Form reached\" was turned off: this chat is private now, so joey-1 · \
+             Baseten can't read it."
+        ),
         1,
         "{notices:?}"
     );
-    assert_eq!(
-        count_containing(&notices, "off for the rest of this turn"),
-        1,
-        "a refusal turns the monitor off at once: {notices:?}"
+    let stored = biorouter::decision::settings::load(&chat.sessions, &chat.session_id)
+        .await
+        .unwrap();
+    assert!(
+        !stored.monitors[0].enabled,
+        "the monitor is stored switched off"
     );
 }
 

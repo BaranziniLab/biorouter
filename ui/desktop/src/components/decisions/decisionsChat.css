@@ -213,12 +213,14 @@
   overflow-wrap: anywhere;
 }
 
+/* A call with no answer: the primary ink, the words and the failure glyph, never a
+   status hue (red is rare, design.md 9.14). */
 .br-decision-card__error {
   display: flex;
   align-items: flex-start;
   gap: 6px;
   margin: 0;
-  color: var(--text-danger);
+  color: var(--text-default);
   font-size: var(--text-secondary);
   line-height: var(--text-secondary--line-height);
   overflow-wrap: anywhere;
@@ -446,8 +448,10 @@
   overflow-wrap: anywhere;
 }
 
-.br-decision-composer__status[data-tone='danger'] {
-  color: var(--text-danger);
+/* A problem (a refused save, a threshold out of range) is said in the primary ink:
+   red is rare (design.md 9.14), and the words and the failure glyph carry it. */
+.br-decision-composer__status[data-tone='problem'] {
+  color: var(--text-default);
 }
 
 /* "Saved" is a state, not evidence: muted, never success green. */

@@ -1018,6 +1018,17 @@ fn agent_may_change(monitor: &MonitorCriterion, caller: &str) -> Result<(), Stri
     }
 }
 
+/// What [`apply_agent_edit`] would store over `current`, without the store: a
+/// door works out what the edit does to the subagent's privacy tier before it
+/// writes (DR-33). `Err` is [`apply_agent_edit`]'s own sentence.
+pub fn agent_edit_preview(
+    current: DecisionSettings,
+    caller_id: &str,
+    edit: AgentEdit,
+) -> Result<DecisionSettings, String> {
+    agent_edited(current, caller_id, edit)
+}
+
 /// [`apply_agent_edit`]'s rule, without the store.
 fn agent_edited(
     mut settings: DecisionSettings,
@@ -1311,6 +1322,96 @@ pub async fn sync_inherited(
         reports.push(report);
     }
     reports
+}
+
+/// Design §3.5 (DR-33): refuse a save that would put a copy of a PUBLIC
+/// decision model's "also watch" monitor onto a running subagent classified
+/// Private. A copy is a standing name on the child, and a name on a Private
+/// chat is inert: Gate H would refuse every check, so the copy could only
+/// fail. The save is refused instead, naming the child.
+///
+/// Only what the save changes is asked: a monitor set to also watch subagents
+/// that is new, was not watching them, was off, or now runs on another model
+/// (its own, else the chat's default). A model's tier is the one its provider
+/// declares (`privacy::decision_axes::declared_name`); a model the fold does
+/// not know is not refused here (the child's own checks refuse it). A child
+/// whose row cannot be read is skipped: its copy is then refused by Gate H at
+/// its first check and switched off, which loses nothing.
+///
+/// The CLI's save with no daemon cannot see running children and passes
+/// none, so this is a daemon door's check.
+pub async fn refuse_public_copies_on_private_children(
+    session_manager: &SessionManager,
+    saved: &DecisionSettings,
+    stored: Option<&DecisionSettings>,
+    live_children: &[String],
+) -> Result<(), String> {
+    if live_children.is_empty() {
+        return Ok(());
+    }
+    let watching_public: Vec<(
+        &MonitorCriterion,
+        crate::privacy::decision_axes::DeclaredName,
+    )> = saved
+        .monitors
+        .iter()
+        .filter(|monitor| monitor.enabled && monitor.apply_to_subagents)
+        .filter(|monitor| newly_watching(monitor, saved, stored))
+        .filter_map(|monitor| {
+            let model = monitor.model.as_ref().or(saved.default_model.as_ref())?;
+            let declared = crate::privacy::decision_axes::declared_name(model)?;
+            (!declared.tier.is_private()).then_some((monitor, declared))
+        })
+        .collect();
+    let Some((monitor, declared)) = watching_public.first() else {
+        return Ok(());
+    };
+    for child in live_children {
+        let Ok(row) = session_manager.get_session(child, false).await else {
+            continue;
+        };
+        if !row.privacy_tier.is_private() {
+            continue;
+        }
+        let model = monitor
+            .model
+            .as_ref()
+            .or(saved.default_model.as_ref())
+            .map(|model| model.model.clone())
+            .unwrap_or_default();
+        let title = if row.name.trim().is_empty() {
+            child.clone()
+        } else {
+            row.name.trim().to_string()
+        };
+        return Err(format!(
+            "Nothing was saved: subagent '{title}' is private, so monitor \"{}\" ({model} on {}) \
+             can't watch it. Turn off \"Also watch subagents\" for this monitor, or choose a \
+             model on this computer.",
+            monitor.name,
+            declared.host.place()
+        ));
+    }
+    Ok(())
+}
+
+/// Whether saving `settings` over `stored` makes `monitor` watch subagents in
+/// a way it did not before: it is new, it was off or not watching them, or it
+/// runs on another model (its own, else the chat's default).
+fn newly_watching(
+    monitor: &MonitorCriterion,
+    settings: &DecisionSettings,
+    stored: Option<&DecisionSettings>,
+) -> bool {
+    let Some(stored) = stored else {
+        return true;
+    };
+    let Some(before) = stored.monitors.iter().find(|m| m.id == monitor.id) else {
+        return true;
+    };
+    let runs_on = monitor.model.as_ref().or(settings.default_model.as_ref());
+    let ran_on = before.model.as_ref().or(stored.default_model.as_ref());
+    !before.enabled || !before.apply_to_subagents || runs_on != ran_on
 }
 
 async fn sync_child(
@@ -2403,6 +2504,93 @@ mod tests {
             .map(|i| agent_monitor(&format!("a{i}"), "parent-1"))
             .collect();
         assert!(clash(None, &five, &[]).contains("at most 4 monitors set by an agent"));
+    }
+
+    /// Design §3.5 (DR-33): a save that would put a copy of a public "also
+    /// watch" monitor onto a running subagent classified Private is refused,
+    /// naming the subagent; a public subagent, a local model, an unchanged
+    /// monitor and a save with no running subagents are not.
+    #[tokio::test]
+    async fn an_also_watch_public_monitor_is_refused_while_a_running_subagent_is_private() {
+        let (dir, sm, _parent) = store().await;
+        let child = |title: &'static str| {
+            let sm = sm.clone();
+            let path = dir.path().to_path_buf();
+            async move {
+                sm.create_session(path, title.into(), SessionType::SubAgent)
+                    .await
+                    .unwrap()
+                    .id
+            }
+        };
+        let private = child("Fetch the data").await;
+        sm.update(&private)
+            .raise_privacy(
+                crate::privacy::SessionClassification::Private,
+                "turn:versa_azure",
+            )
+            .apply()
+            .await
+            .unwrap();
+        let public = child("Summarise").await;
+        let on = |provider: &str, model: &str| MonitorCriterion {
+            name: "Done".into(),
+            model: Some(DecisionModelRef::new(provider, model)),
+            ..for_subagents("done")
+        };
+        let joey = of(vec![on("baseten_decision", "joey-1")]);
+
+        let refusal = refuse_public_copies_on_private_children(
+            &sm,
+            &joey,
+            None,
+            &[public.clone(), private.clone()],
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            refusal,
+            "Nothing was saved: subagent 'Fetch the data' is private, so monitor \"Done\" \
+             (joey-1 on Baseten) can't watch it. Turn off \"Also watch subagents\" for this \
+             monitor, or choose a model on this computer."
+        );
+        assert_eq!(
+            refuse_public_copies_on_private_children(
+                &sm,
+                &joey,
+                None,
+                std::slice::from_ref(&public)
+            )
+            .await,
+            Ok(())
+        );
+        assert_eq!(
+            refuse_public_copies_on_private_children(&sm, &joey, None, &[]).await,
+            Ok(())
+        );
+        assert_eq!(
+            refuse_public_copies_on_private_children(
+                &sm,
+                &joey,
+                Some(&joey),
+                std::slice::from_ref(&private)
+            )
+            .await,
+            Ok(()),
+            "only what the save changes is asked"
+        );
+        let local = of(vec![on("ollama_decision", "tev1:0.8b")]);
+        assert_eq!(
+            refuse_public_copies_on_private_children(
+                &sm,
+                &local,
+                None,
+                std::slice::from_ref(&private)
+            )
+            .await,
+            Ok(()),
+            "a model on this computer may watch a private subagent"
+        );
     }
 
     #[tokio::test]

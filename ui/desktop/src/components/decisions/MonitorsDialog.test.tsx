@@ -27,6 +27,8 @@ import {
   usesHiddenSettings,
   validateMonitor,
 } from './MonitorsDialog';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { AlertCircle } from '../icons/app-icons';
 
 const mocks = vi.hoisted(() => ({
   save: vi.fn(),
@@ -34,6 +36,16 @@ const mocks = vi.hoisted(() => ({
   settings: vi.fn(),
   install: vi.fn(),
   startInstall: vi.fn(),
+  hasSubagents: vi.fn(),
+  refreshSidebar: vi.fn(),
+}));
+vi.mock('../BioRouterSidebar/useSidebarSessions', async (original) => ({
+  ...(await original<typeof import('../BioRouterSidebar/useSidebarSessions')>()),
+  refreshSidebarChats: mocks.refreshSidebar,
+}));
+vi.mock('./chatSubagents', () => ({
+  fetchHasSubagents: mocks.hasSubagents,
+  knownHasSubagents: () => null,
 }));
 vi.mock('../../utils/sessionDecisions', async (original) => ({
   ...(await original<typeof import('../../utils/sessionDecisions')>()),
@@ -253,6 +265,10 @@ beforeEach(() => {
   mocks.settings.mockReset().mockResolvedValue({ data: STORED, missing: false });
   mocks.install.mockReset().mockResolvedValue({ data: INSTALL_STATUS, missing: false });
   mocks.startInstall.mockReset();
+  // A roster that could not be read, unless a test says otherwise: the box stays in
+  // More options, and no answer lands after a test that does not wait for it.
+  mocks.hasSubagents.mockReset().mockResolvedValue(null);
+  mocks.refreshSidebar.mockReset();
 });
 
 afterEach(() => {
@@ -333,14 +349,43 @@ describe('validation, as the daemon would refuse it', () => {
   });
 });
 
+describe('the dialog', () => {
+  it('keeps the title Monitors and says first that it holds the chat’s decision model (W2-7)', () => {
+    draw();
+    const dialog = screen.getByRole('dialog', { name: 'Monitors' });
+    expect(dialog).toHaveAccessibleDescription(
+      'Choose the decision model this chat uses, and add monitors that ask it about the chat as it runs.'
+    );
+    expect(within(dialog).getByText('Decision model for this chat')).toBeInTheDocument();
+  });
+});
+
 describe('a monitor row', () => {
-  it('shows the name and two facts, in words: what it does and its rule', () => {
+  it('shows the name and three facts, in words: what it does, its rule and when it checks', () => {
     draw();
     const item = screen.getByTestId('monitor-item');
     expect(item).toHaveTextContent('Form reached');
     const line = within(item).getByTestId('monitor-line');
-    expect(line.textContent).toBe('Stop the turn · when P(yes) is at or above 0.85');
+    expect(line.textContent).toBe(
+      'Stop the turn · when P(yes) is at or above 0.85 · after each step'
+    );
     expect(item.textContent).not.toMatch(/[≥<]/);
+  });
+
+  it('says when a monitor checks on its row, not only in the peek (W3-8)', () => {
+    expect(monitorRowLine(wireMonitor({ timing: 'post_iteration' }))).toBe(
+      'Stop the turn · when P(yes) is at or above 0.85 · after each step'
+    );
+    expect(monitorRowLine(wireMonitor({ timing: 'turn_end', action: 'notify' }))).toBe(
+      'Notify me · when P(yes) is at or above 0.85 · when the turn ends'
+    );
+  });
+
+  it('says on its row when a monitor also watches subagents, and only then', () => {
+    expect(monitorRowLine(wireMonitor({ applyToSubagents: true }))).toBe(
+      'Stop the turn · when P(yes) is at or above 0.85 · after each step · also watches subagents'
+    );
+    expect(monitorRowLine(wireMonitor({ applyToSubagents: false }))).not.toMatch(/subagents/);
   });
 
   it('is a list row in a flat shell, not a filled box; the editor is still a filled box', async () => {
@@ -380,7 +425,7 @@ describe('a monitor row', () => {
     expect(within(item).getByTestId('monitor-line')).not.toHaveTextContent('tev1');
     const toggle = within(item).getByRole('switch', { name: 'Form reached' });
     expect(toggle).toHaveAccessibleDescription(
-      `Stop the turn · when P(yes) is at or above 0.85 ${peek}`
+      `Stop the turn · when P(yes) is at or above 0.85 · after each step ${peek}`
     );
     // R1-3: the peek opens below its line, so it never covers the row's own name.
     fireEvent.click(within(item).getByTestId('monitor-line'));
@@ -437,7 +482,7 @@ describe('a monitor row', () => {
 
   it('names the answer a monitor watches, as the daemon reads `option`', () => {
     expect(monitorRowLine(wireMonitor({ option: 'no' }))).toBe(
-      'Stop the turn · when P(no) is at or above 0.85'
+      'Stop the turn · when P(no) is at or above 0.85 · after each step'
     );
     expect(monitorRowLine(wireMonitor({ option: 'NO' }))).toMatch(/P\(no\)/);
     expect(monitorRowLine(wireMonitor({ option: null }))).toMatch(/P\(yes\)/);
@@ -450,7 +495,7 @@ describe('a monitor row', () => {
       },
     };
     expect(monitorRowLine(wireMonitor({ ...severity, option: 'mild' }))).toBe(
-      'Stop the turn · when P(mild or a higher level) is at or above 0.85'
+      'Stop the turn · when P(mild or a higher level) is at or above 0.85 · after each step'
     );
     expect(monitorRowLine(wireMonitor({ ...severity, option: '2' }))).toMatch(
       /P\(severe or a higher level\)/
@@ -465,9 +510,9 @@ describe('a monitor row', () => {
       direction: 'below',
       action: 'notify',
     });
-    expect(monitorRowLine(course)).toBe('Notify me · when P(spms) is below 0.20');
+    expect(monitorRowLine(course)).toBe('Notify me · when P(spms) is below 0.20 · after each step');
     expect(monitorRowLine({ ...course, option: null })).toBe(
-      'Notify me · choose the option it fires on'
+      'Notify me · choose the option it fires on · after each step'
     );
   });
 
@@ -566,14 +611,33 @@ describe('each change applies when it is made', () => {
     expect(await screen.findByText('Saved')).toBeInTheDocument();
   });
 
+  it('in draft mode says the change is ready for the first message, never "Saved"', async () => {
+    const onChange = vi.fn();
+    await drawReady({
+      sessionId: '',
+      draft: { chat: { boundProvider: 'versa_azure', boundModel: 'gpt-5.5' }, onChange },
+    });
+    fireEvent.click(screen.getByRole('switch', { name: 'Form reached' }));
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+    const status = screen.getByTestId('monitors-status');
+    expect(status).toHaveAttribute('data-state', 'saved');
+    expect(status).toHaveTextContent(/^Ready for the first message$/);
+    expect(status).not.toHaveTextContent('Saved');
+    // Nothing is stored until the chat's first message is sent.
+    expect(mocks.save).not.toHaveBeenCalled();
+  });
+
   it('a refused toggle reverts the switch and says why under that row', async () => {
     mocks.save.mockRejectedValue(new Error('Nothing was saved: `Form reached` could not run.'));
     await drawReady();
     const toggle = screen.getByRole('switch', { name: 'Form reached' });
     fireEvent.click(toggle);
-    expect(await screen.findByTestId('monitor-row-error')).toHaveTextContent(
-      'Nothing was saved: Form reached could not run.'
-    );
+    const error = await screen.findByTestId('monitor-row-error');
+    expect(error).toHaveTextContent('Nothing was saved: Form reached could not run.');
+    // Red is rare (design.md 9.14): the failure glyph and the words, in the primary ink.
+    const host = document.createElement('div');
+    host.innerHTML = renderToStaticMarkup(<AlertCircle />);
+    expect(error.querySelector('svg')?.innerHTML).toBe(host.querySelector('svg')?.innerHTML);
     expect(toggle).toHaveAttribute('aria-checked', 'true');
   });
 
@@ -809,6 +873,12 @@ describe('the editor, in place', () => {
           : ({ ...base, ...change } as MonitorCriterion);
       expect(usesHiddenSettings(monitor)).toBe(true);
       expect(usesHiddenSettings(base)).toBe(false);
+    });
+
+    it('does not count watching subagents when that box sits up front', () => {
+      const watching = { ...STORED.monitors[0], applyToSubagents: true };
+      expect(usesHiddenSettings(watching, { subagentsUpFront: true })).toBe(false);
+      expect(usesHiddenSettings(watching, { subagentsUpFront: false })).toBe(true);
     });
 
     it('opens on edit when the stored monitor uses one of them', async () => {
@@ -1180,7 +1250,9 @@ describe('when the model list cannot be read', () => {
     );
     const field = await openEditor();
     const error = await within(field).findByTestId('monitor-models-error');
-    expect(error.firstChild?.textContent).toBe('Biorouter refused to list the decision models.');
+    // The failure glyph first, then the one sentence.
+    expect(error.firstChild?.nodeName.toLowerCase()).toBe('svg');
+    expect(error.childNodes[1]?.textContent).toBe('Biorouter refused to list the decision models.');
   });
 
   it('says a failure with its message, and the Retry link reads again keeping the draft', async () => {
@@ -1718,6 +1790,94 @@ describe('owners and subagents', () => {
     saveEditor();
     expect((await savedMonitors())[1].applyToSubagents).toBe(true);
   });
+
+  /** Owner decision 2: off by default, and in plain sight once the chat has subagents. */
+  describe('on a chat that already has subagents', () => {
+    const inMoreOptions = () =>
+      within(screen.getByTestId('monitor-more-options')).queryByTestId('monitor-subagents');
+
+    it('keeps the box in More options while the chat has none', async () => {
+      mocks.hasSubagents.mockResolvedValue(false);
+      await drawReady();
+      await waitFor(() => expect(mocks.hasSubagents).toHaveBeenCalledWith('s1', expect.anything()));
+      fireEvent.click(screen.getByTestId('monitor-add'));
+      expect(screen.queryByTestId('monitor-subagents')).toBeNull();
+      openMoreOptions();
+      expect(inMoreOptions()).toBeInTheDocument();
+    });
+
+    it('shows the box up front, off, once the dialog reads that the chat has subagents', async () => {
+      mocks.hasSubagents.mockResolvedValue(true);
+      await drawReady();
+      await waitFor(() => expect(mocks.hasSubagents).toHaveBeenCalled());
+      fillNewMonitor('Secrets', 'Is a secret in the output?');
+      const box = await screen.findByTestId('monitor-subagents');
+      expect(moreOptionsOpen()).toBe(false);
+      expect(within(box).getByRole('checkbox')).not.toBeChecked();
+      openMoreOptions();
+      expect(inMoreOptions()).toBeNull();
+      // Saved off when left alone: the default does not change because subagents exist.
+      saveEditor();
+      expect((await savedMonitors())[1].applyToSubagents).toBe(false);
+    });
+
+    it('takes the caller’s word without reading the roster', async () => {
+      await drawReady({ hasSubagents: true });
+      fireEvent.click(screen.getByTestId('monitor-add'));
+      expect(screen.getByTestId('monitor-subagents')).toBeInTheDocument();
+      expect(moreOptionsOpen()).toBe(false);
+      expect(mocks.hasSubagents).not.toHaveBeenCalled();
+    });
+
+    it('turned on up front, it saves and the row line says so', async () => {
+      await drawReady({ hasSubagents: true });
+      fillNewMonitor('Secrets', 'Is a secret in the output?');
+      fireEvent.click(within(screen.getByTestId('monitor-subagents')).getByRole('checkbox'));
+      saveEditor();
+      expect((await savedMonitors())[1].applyToSubagents).toBe(true);
+      await waitFor(() => expect(screen.queryByTestId('monitor-editor')).toBeNull());
+      expect(screen.getAllByTestId('monitor-line')[1]).toHaveTextContent(
+        'Notify me · when P(yes) is at or above 0.85 · after each step · also watches subagents'
+      );
+    });
+
+    it('does not open More options on edit just because the monitor watches subagents', async () => {
+      const watching = settingsWith({ ...STORED.monitors[0], applyToSubagents: true });
+      mocks.settings.mockResolvedValue({ data: watching, missing: false });
+      await drawReady({ settings: watching, hasSubagents: true });
+      await rowAction('Form reached', 'Edit');
+      expect(moreOptionsOpen()).toBe(false);
+      expect(within(screen.getByTestId('monitor-subagents')).getByRole('checkbox')).toBeChecked();
+    });
+
+    it('shows the box up front when a monitor already watches subagents, with none yet', async () => {
+      mocks.hasSubagents.mockResolvedValue(false);
+      const watching = settingsWith({ ...STORED.monitors[0], applyToSubagents: true });
+      mocks.settings.mockResolvedValue({ data: watching, missing: false });
+      await drawReady({ settings: watching });
+      await waitFor(() => expect(mocks.hasSubagents).toHaveBeenCalled());
+      fillNewMonitor('Secrets', 'Is a secret in the output?');
+      const box = screen.getByTestId('monitor-subagents');
+      expect(moreOptionsOpen()).toBe(false);
+      expect(within(box).getByRole('checkbox')).not.toBeChecked();
+      openMoreOptions();
+      expect(inMoreOptions()).toBeNull();
+      fireEvent.click(screen.getByTestId('monitor-cancel'));
+      // The monitor that watches them opens with the box up front and checked, and
+      // More options stays closed.
+      await rowAction('Form reached', 'Edit');
+      expect(moreOptionsOpen()).toBe(false);
+      expect(within(screen.getByTestId('monitor-subagents')).getByRole('checkbox')).toBeChecked();
+    });
+
+    it('never shows the box on a subagent chat, and does not read a roster there', async () => {
+      await drawReady({ isSubagentChat: true });
+      fireEvent.click(screen.getByTestId('monitor-add'));
+      openMoreOptions();
+      expect(screen.queryByTestId('monitor-subagents')).toBeNull();
+      expect(mocks.hasSubagents).not.toHaveBeenCalled();
+    });
+  });
 });
 
 /** The client judges only the monitor being written; the daemon's own check still decides. */
@@ -1868,5 +2028,38 @@ describe('the install panel', () => {
     await waitFor(() => expect(mocks.catalog).toHaveBeenCalled());
     expect(screen.queryByTestId('decision-model-install')).toBeNull();
     expect(mocks.install).not.toHaveBeenCalled();
+  });
+});
+
+/** A saved change is activity and can change why the chat is public (DR-33). */
+describe('the sidebar after a save', () => {
+  it('asks the sidebar to re-read its chats once a write has landed', async () => {
+    await drawReady();
+    fireEvent.click(screen.getByRole('switch', { name: 'Form reached' }));
+    await savedMonitors();
+    await waitFor(() => expect(mocks.refreshSidebar).toHaveBeenCalledTimes(1));
+    // After the write, never before it: a read that outran it would find the old row.
+    expect(mocks.save.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.refreshSidebar.mock.invocationCallOrder[0]
+    );
+  });
+
+  it('leaves the sidebar alone when the write is refused', async () => {
+    mocks.save.mockRejectedValue(new Error('Nothing was saved: `Form reached` could not run.'));
+    await drawReady();
+    fireEvent.click(screen.getByRole('switch', { name: 'Form reached' }));
+    await screen.findByTestId('monitor-row-error');
+    expect(mocks.refreshSidebar).not.toHaveBeenCalled();
+  });
+
+  it('leaves the sidebar alone in draft mode, where nothing is stored yet', async () => {
+    const onChange = vi.fn();
+    await drawReady({
+      sessionId: '',
+      draft: { chat: { boundProvider: 'versa_azure', boundModel: 'gpt-5.5' }, onChange },
+    });
+    fireEvent.click(screen.getByRole('switch', { name: 'Form reached' }));
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+    expect(mocks.refreshSidebar).not.toHaveBeenCalled();
   });
 });

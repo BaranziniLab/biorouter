@@ -454,7 +454,10 @@ fn render_tool_request(req: &ToolRequest, theme: Theme, debug: bool) {
             // models (dispatch tolerates both — `is_spawn_tool_call`), so both
             // must render as a delegation rather than falling through to the
             // generic "tool with arguments" card.
-            "subagent" | "workspace__subagent" => render_subagent_request(call, debug),
+            name if is_spawn_tool_name(name) => {
+                note_spawn_call(&req.id);
+                render_subagent_request(call, debug)
+            }
             "todo__write" => render_todo_request(call, debug),
             _ => render_default_request(call, debug),
         },
@@ -498,6 +501,7 @@ fn content_clears_priority_gate(priority: Option<f32>, min_priority: f32, debug:
 
 fn render_tool_response(resp: &ToolResponse, theme: Theme, debug: bool) {
     let config = Config::global();
+    let was_spawn_call = take_spawn_call(&resp.id);
 
     match &resp.tool_result {
         Ok(result) => {
@@ -553,8 +557,92 @@ fn render_tool_response(resp: &ToolResponse, theme: Theme, debug: bool) {
                 render_artifact_note(&note);
             }
         }
-        Err(e) => print_markdown_source(&e.to_string(), theme),
+        Err(e) => {
+            let text = e.to_string();
+            print_markdown_source(&text, theme);
+            if let Some(line) = spawn_refusal_person_line(was_spawn_call, &text) {
+                if !text.ends_with('\n') {
+                    println!();
+                }
+                println!("{line}");
+            }
+        }
     }
+}
+
+/// The spawn calls this terminal has shown and whose result it has not shown
+/// yet, by request id. A tool response carries no tool name, so this is how
+/// [`render_tool_response`] knows a failure is the spawn tool's: any tool can
+/// print DR-19's words, and the person-only line is true only under Biorouter's
+/// own refusal. Process-wide, as stdout is: the turn's messages can be rendered
+/// from any runtime thread. Bounded, because a call whose result never arrives
+/// (a cancelled turn) would otherwise stay for the life of the process.
+static PENDING_SPAWN_CALLS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+const MAX_PENDING_SPAWN_CALLS: usize = 64;
+
+fn note_spawn_call(request_id: &str) {
+    remember_spawn_call(
+        &mut PENDING_SPAWN_CALLS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        request_id,
+    );
+}
+
+/// Whether `request_id` was a spawn call this terminal showed, forgetting it.
+fn take_spawn_call(request_id: &str) -> bool {
+    forget_spawn_call(
+        &mut PENDING_SPAWN_CALLS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
+        request_id,
+    )
+}
+
+/// Whether `name` is the spawn tool, in either spelling: prefixed by the
+/// workspace extension (BR-71), or bare from a prefix-stripping model.
+pub(crate) fn is_spawn_tool_name(name: &str) -> bool {
+    use biorouter::agents::subagent_tool::{SUBAGENT_TOOL_NAME, SUBAGENT_TOOL_PREFIXED};
+    name == SUBAGENT_TOOL_PREFIXED || name == SUBAGENT_TOOL_NAME
+}
+
+/// Remember a spawn request, oldest dropped past [`MAX_PENDING_SPAWN_CALLS`].
+/// The full-screen view keeps a list of its own and calls this too.
+pub(crate) fn remember_spawn_call(pending: &mut Vec<String>, request_id: &str) {
+    if pending.iter().any(|id| id == request_id) {
+        return;
+    }
+    if pending.len() >= MAX_PENDING_SPAWN_CALLS {
+        pending.remove(0);
+    }
+    pending.push(request_id.to_string());
+}
+
+/// Whether `request_id` is in `pending`, removing it.
+pub(crate) fn forget_spawn_call(pending: &mut Vec<String>, request_id: &str) -> bool {
+    match pending.iter().position(|id| id == request_id) {
+        Some(at) => {
+            pending.remove(at);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Owner decision 4 (2026-11-12): the one line printed under a private chat's
+/// refused public subagent (DR-19), for the person at the terminal, the same
+/// line the desktop card adds. It is never part of the tool result, so the
+/// model never reads it; this only prints it. `None` for any other failure,
+/// and for any tool but the spawn tool, whatever its error says. The
+/// full-screen view (`tui::app`) shows the same line.
+pub(crate) fn spawn_refusal_person_line(
+    was_spawn_call: bool,
+    error_text: &str,
+) -> Option<&'static str> {
+    if !was_spawn_call {
+        return None;
+    }
+    biorouter::agents::subagent_tool::person_only_spawn_refusal_hint(error_text)
 }
 
 /// A user-facing summary of an artifact resource or browser link emitted by a tool.
@@ -1499,6 +1587,33 @@ fn banner_model(provider: &str, model: &str) -> String {
     crate::commands::decide::model_name(provider, model)
 }
 
+/// DR-33 (design §5): why this chat is public when its decision models made it
+/// so, for the banner's privacy row and the terminal UI's header; `None` when
+/// they did not (the chat's model is public, nothing public is named, or the
+/// chat is private), and whenever privacy tiers are off (`enforced`, sampled
+/// by the caller), when no notice about tiers is shown.
+///
+/// `bound_model_tier` is the tier of the model itself
+/// (`Agent::bound_model_tier`), never the slot's: the question is whether the
+/// decision models lowered a private model's chat. Read from the stored row,
+/// the one record every process agrees on, so the banner says what the next
+/// turn's Gate B will compute.
+pub fn decision_privacy_reason(
+    row: &biorouter::session::Session,
+    bound_model_tier: biorouter::privacy::ProviderTier,
+    enforced: bool,
+) -> Option<String> {
+    if !enforced {
+        return None;
+    }
+    let axes = biorouter::privacy::decision_axes::from_row(row);
+    if !axes.lowers(bound_model_tier) {
+        return None;
+    }
+    axes.lowered_by().map(super::privacy::decision_reason)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn display_session_info(
     resume: bool,
     provider: &str,
@@ -1511,6 +1626,9 @@ pub fn display_session_info(
     // `provider_instance` would report the model's tier instead and say
     // "Private" for the one case that matters.
     privacy: biorouter::privacy::SessionClassification,
+    // DR-33: [`decision_privacy_reason`], when decision models made the chat
+    // public.
+    decision_reason: Option<String>,
 ) {
     let headline = if resume {
         "resuming chat"
@@ -1553,6 +1671,9 @@ pub fn display_session_info(
         "privacy",
         format!("{} (at start)", super::privacy::tier_row(privacy)),
     );
+    if let Some(reason) = decision_reason {
+        row("", reason);
+    }
 
     row(
         "workdir",
@@ -1778,6 +1899,16 @@ pub fn preview() {
         &sid,
         None,
         biorouter::privacy::SessionClassification::Private,
+        None,
+    );
+    display_session_info(
+        false,
+        "versa_azure",
+        "gpt-5.5",
+        &sid,
+        None,
+        biorouter::privacy::SessionClassification::Public,
+        Some("public because monitor \"Done\" uses joey-1 · Baseten".to_string()),
     );
 
     // Section rules for a few representative tools.
@@ -1815,6 +1946,82 @@ mod tests {
     use super::*;
     use base64::Engine as _;
     use rmcp::model::{CallToolResult, Content, Meta, RawResource, ResourceContents};
+
+    /// A Public row whose default decision model is Baseten's joey-1, with
+    /// the person's basis when `basis`.
+    fn lowered_row(basis: bool) -> biorouter::session::Session {
+        use biorouter::decision::settings::{
+            DecisionSettings, DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION,
+        };
+        use biorouter::privacy::decision_axes::{
+            BasisAuthor, PublicBasis, PUBLIC_BASIS_STATE, PUBLIC_BASIS_VERSION,
+        };
+        let mut row = biorouter::session::Session {
+            id: "20261110_1".to_string(),
+            ..Default::default()
+        };
+        let settings = DecisionSettings {
+            default_model: Some(biorouter::decision::DecisionModelRef::new(
+                "baseten_decision",
+                "joey-1",
+            )),
+            monitors: Vec::new(),
+        };
+        row.extension_data.set_extension_state(
+            DECISION_SETTINGS_STATE,
+            DECISION_SETTINGS_VERSION,
+            serde_json::to_value(&settings).unwrap(),
+        );
+        if basis {
+            let record = PublicBasis::new(
+                &row.id,
+                BasisAuthor::Person,
+                "cli",
+                vec!["baseten_decision/joey-1".to_string()],
+            );
+            row.extension_data.set_extension_state(
+                PUBLIC_BASIS_STATE,
+                PUBLIC_BASIS_VERSION,
+                serde_json::to_value(&record).unwrap(),
+            );
+        }
+        row
+    }
+
+    /// DR-33 (design §5): the banner says why a private model's chat is
+    /// public, and only then: not for a public model's chat, not for a public
+    /// name nobody accepted (no basis, so it lowers nothing), not for a chat
+    /// that is private, and not with privacy tiers off.
+    #[test]
+    fn the_banner_says_why_decision_models_made_a_private_models_chat_public() {
+        use biorouter::privacy::{ProviderTier, SessionClassification};
+        assert_eq!(
+            decision_privacy_reason(&lowered_row(true), ProviderTier::Private, true).as_deref(),
+            Some("public because the default decision model is joey-1 · Baseten")
+        );
+        assert_eq!(
+            decision_privacy_reason(&lowered_row(true), ProviderTier::Public, true),
+            None,
+            "a public model's chat is public by its model"
+        );
+        assert_eq!(
+            decision_privacy_reason(&lowered_row(false), ProviderTier::Private, true),
+            None,
+            "a public name with no basis lowers nothing"
+        );
+        let mut private = lowered_row(true);
+        private.privacy_tier = SessionClassification::Private;
+        assert_eq!(
+            decision_privacy_reason(&private, ProviderTier::Private, true),
+            None,
+            "a private chat's names are inert"
+        );
+        assert_eq!(
+            decision_privacy_reason(&lowered_row(true), ProviderTier::Private, false),
+            None,
+            "no tier notice with privacy tiers off"
+        );
+    }
 
     #[test]
     fn the_banner_names_a_baseten_decision_model_by_its_alias() {
@@ -2366,5 +2573,115 @@ mod tests {
             ),
             "/…/with/many/components/file.txt"
         );
+    }
+
+    /// The refusal a private chat gets for a public subagent (DR-19), as the
+    /// terminal prints an `ErrorData`.
+    fn spawn_refusal_text() -> String {
+        rmcp::model::ErrorData::new(
+            rmcp::model::ErrorCode::INVALID_REQUEST,
+            biorouter::privacy::PrivacyRefusal::spawn_downgrade(
+                biorouter::privacy::ProviderTier::Public,
+            )
+            .to_string(),
+            None,
+        )
+        .to_string()
+    }
+
+    /// Owner decision 4: under the spawn tool's DR-19 refusal the person reads
+    /// the desktop card's one line, and under nothing else.
+    #[test]
+    fn a_refused_public_subagent_tells_the_person_what_to_do() {
+        let refusal = spawn_refusal_text();
+        assert_eq!(
+            spawn_refusal_person_line(true, &refusal),
+            Some(biorouter::agents::subagent_tool::MAKE_CHAT_PUBLIC_FROM_HISTORY)
+        );
+        assert_eq!(
+            spawn_refusal_person_line(false, &refusal),
+            None,
+            "another tool that prints DR-19's words is not the spawn tool's refusal"
+        );
+        assert_eq!(
+            spawn_refusal_person_line(true, "-32600: the subagent cap was reached"),
+            None
+        );
+    }
+
+    /// A tool response carries no tool name, so the terminal remembers which
+    /// requests it showed were spawns, and forgets each once its result is
+    /// shown.
+    #[test]
+    fn the_terminal_remembers_a_spawn_request_until_its_result() {
+        let spawn = "output-test-spawn-call";
+        let other = "output-test-shell-call";
+        let call = |name: &str| {
+            Ok(CallToolRequestParams {
+                task: None,
+                meta: None,
+                name: name.to_string().into(),
+                arguments: Some(serde_json::Map::new()),
+            })
+        };
+        let pending = |id: &str| {
+            PENDING_SPAWN_CALLS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(|held| held == id)
+        };
+        render_message(
+            &Message::assistant().with_tool_request(spawn, call("workspace__subagent")),
+            false,
+        );
+        render_message(
+            &Message::assistant().with_tool_request(other, call("developer__shell")),
+            false,
+        );
+        assert!(pending(spawn), "the spawn request was not remembered");
+        assert!(!pending(other), "a shell call is not a spawn");
+        render_message(
+            &Message::user().with_tool_response(
+                spawn,
+                Err(rmcp::model::ErrorData::new(
+                    rmcp::model::ErrorCode::INVALID_REQUEST,
+                    spawn_refusal_text(),
+                    None,
+                )),
+            ),
+            false,
+        );
+        assert!(
+            !pending(spawn),
+            "the spawn's result was shown, so the request is forgotten"
+        );
+
+        note_spawn_call("output-test-pending");
+        assert!(take_spawn_call("output-test-pending"));
+        assert!(!take_spawn_call("output-test-pending"));
+    }
+
+    /// A spawn whose result never arrives is dropped once enough newer ones
+    /// wait, oldest first. On a list of its own: the process-wide one is
+    /// shared with the test above.
+    #[test]
+    fn pending_spawn_calls_are_bounded() {
+        let mut pending = Vec::new();
+        for n in 0..=MAX_PENDING_SPAWN_CALLS {
+            remember_spawn_call(&mut pending, &format!("call-{n}"));
+        }
+        remember_spawn_call(&mut pending, "call-1");
+        assert_eq!(pending.len(), MAX_PENDING_SPAWN_CALLS);
+        assert!(
+            !forget_spawn_call(&mut pending, "call-0"),
+            "the oldest goes first"
+        );
+        assert!(forget_spawn_call(&mut pending, "call-1"));
+        assert!(!forget_spawn_call(&mut pending, "call-1"));
+        assert!(forget_spawn_call(
+            &mut pending,
+            &format!("call-{MAX_PENDING_SPAWN_CALLS}")
+        ));
     }
 }

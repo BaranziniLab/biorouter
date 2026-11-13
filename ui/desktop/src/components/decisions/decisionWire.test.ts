@@ -281,7 +281,173 @@ describe('a decide batch summary', () => {
       ],
       errorGroups: [{ message: 'The decision model did not answer in 10 s', chunks: 2 }],
       voteModels: null,
+      escalation: null,
     });
+  });
+
+  it('reads what escalate did: the second model, its counts and each chunk it was asked', () => {
+    const parsed = parseDecideBatchSummary({
+      status: 'success',
+      value: {
+        content: [],
+        structuredContent: {
+          ...wireDecideSummary(),
+          escalation: {
+            model: { provider: 'ollama_decision', model: 'clef-flash:latest' },
+            label: 'clef-flash:latest',
+            tier: 'private',
+            firstLabel: 'tev1:0.8b',
+            below: 0.8,
+            firstDecided: 598,
+            escalated: 2,
+            answers: 2,
+            decided: 1,
+            changed: 1,
+            errors: 1,
+            items: [
+              {
+                chunkId: 'note-0003',
+                answers: [
+                  {
+                    question: 'has_ms',
+                    label: 'no',
+                    p: 0.91,
+                    by: 'clef-flash:latest',
+                    firstLabel: 'yes',
+                    firstP: 0.55,
+                  },
+                ],
+              },
+              { chunkId: 'note-0004', answers: [{ question: 'has_ms' }] },
+              { answers: [] },
+            ],
+            errorGroups: [],
+          },
+        },
+      },
+    });
+    expect(parsed?.escalation).toEqual({
+      label: 'clef-flash:latest',
+      tier: 'private',
+      firstLabel: 'tev1:0.8b',
+      below: 0.8,
+      firstDecided: 598,
+      escalated: 2,
+      answers: 2,
+      decided: 1,
+      changed: 1,
+      errors: 1,
+      tooLong: 0,
+      // The dropped item held the failure, and no group names it.
+      failed: 0,
+      // An answer with no label, or an item with no id, is dropped rather than drawn empty.
+      items: [
+        {
+          chunkId: 'note-0003',
+          answers: [
+            {
+              question: 'has_ms',
+              label: 'no',
+              p: 0.91,
+              by: 'clef-flash:latest',
+              firstLabel: 'yes',
+              firstP: 0.55,
+              error: null,
+              tooLarge: false,
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  it('tells the chunks too long for the second model from the ones it failed', () => {
+    const kept = (chunkId: string, error: string, tooLarge?: boolean) => ({
+      chunkId,
+      answers: [
+        {
+          question: 'has_ms',
+          label: 'yes',
+          p: 0.6,
+          by: 'tev1:0.8b',
+          firstLabel: 'yes',
+          firstP: 0.6,
+          error,
+          ...(tooLarge === undefined ? {} : { tooLarge }),
+        },
+      ],
+    });
+    const parsed = parseDecideBatchSummary({
+      status: 'success',
+      value: {
+        content: [],
+        structuredContent: {
+          ...wireDecideSummary(),
+          escalation: {
+            model: { provider: 'baseten_decision', model: 'elephant-1' },
+            label: 'elephant-1',
+            tier: 'public',
+            firstLabel: 'tev1:0.8b',
+            below: 0.8,
+            firstDecided: 30,
+            escalated: 3,
+            answers: 3,
+            decided: 0,
+            changed: 0,
+            errors: 3,
+            items: [
+              kept('n01', 'Chunk 1 is about 20000 tokens, more than …', true),
+              // Named only in `tooLargeIds`: still too long, not failed.
+              kept('n02', 'Chunk 2 is about 20000 tokens, more than …'),
+              kept('n03', 'the decision server failed'),
+            ],
+            errorGroups: [{ message: 'the decision server failed', chunkIds: ['n03'], more: 0 }],
+            tooLargeIds: ['n01', 'n02'],
+          },
+        },
+      },
+    });
+    expect(parsed?.escalation).toMatchObject({ errors: 3, tooLong: 2, failed: 1 });
+    expect(parsed?.escalation?.items.map((item) => item.answers[0].tooLarge)).toEqual([
+      true,
+      true,
+      false,
+    ]);
+  });
+
+  it('does not count a chunk too long for the second model as failed when no chunk is listed', () => {
+    // `errors` includes the chunks too long for the second model, so a result that lists
+    // no chunk and no group must not say the same two as "too long" and "failed" both.
+    const escalationWith = (errors: number) =>
+      parseDecideBatchSummary({
+        status: 'success',
+        value: {
+          content: [],
+          structuredContent: {
+            ...wireDecideSummary(),
+            escalation: {
+              model: { provider: 'baseten_decision', model: 'elephant-1' },
+              label: 'elephant-1',
+              tier: 'public',
+              firstLabel: 'tev1:0.8b',
+              below: 0.8,
+              firstDecided: 30,
+              escalated: 3,
+              answers: 3,
+              decided: 0,
+              changed: 0,
+              errors,
+              items: [],
+              errorGroups: [],
+              tooLargeIds: ['n01', 'n02'],
+            },
+          },
+        },
+      })?.escalation;
+    expect(escalationWith(2)).toMatchObject({ errors: 2, tooLong: 2, failed: 0 });
+    expect(escalationWith(3)).toMatchObject({ errors: 3, tooLong: 2, failed: 1 });
+    // Never below zero, whatever the counts say.
+    expect(escalationWith(1)).toMatchObject({ errors: 1, tooLong: 2, failed: 0 });
   });
 
   it('reads the four answer groups that add up to the chunks decided (G-3)', () => {
@@ -432,10 +598,29 @@ describe('a decide call’s own arguments', () => {
       chunks: Array.from({ length: 600 }, (_, i) => ({ id: `note-${i}`, text: 'PHI text' })),
     });
     expect(args.chunks).toBe(600);
+    expect(args.chunkIds).toHaveLength(600);
+    expect(args.chunkIds[3]).toBe('note-3');
     expect(args.questions).toEqual([
       { name: 'has_ms', instructions: 'Does this note state MS?', kind: 'yes_no', threshold: 0.9 },
       { name: 'course', instructions: 'Which course?', kind: 'choice', threshold: null },
     ]);
+  });
+
+  it('counts only the chunks `only_ids` names, and keeps every id in call order', () => {
+    const chunks = Array.from({ length: 60 }, (_, i) => ({ id: ` n${i} `, text: 'PHI text' }));
+    for (const key of ['only_ids', 'onlyIds']) {
+      const args = decideArguments({
+        questions: { q: { instructions: 'Is it?' } },
+        chunks,
+        [key]: ['n3', 'n9'],
+      });
+      expect(args.chunks).toBe(2);
+      // Every chunk keeps its place, so the card numbers one as the history does.
+      expect(args.chunkIds.indexOf('n9')).toBe(9);
+    }
+    // An empty or malformed `only_ids` is no narrowing: the tool refuses it anyway.
+    expect(decideArguments({ chunks, only_ids: [] }).chunks).toBe(60);
+    expect(decideArguments({ chunks, only_ids: 'n3' }).chunks).toBe(60);
   });
 
   it('reads `question` as the instructions and infers the type the way the tool does', () => {

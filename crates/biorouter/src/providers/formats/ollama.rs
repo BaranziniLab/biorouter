@@ -744,7 +744,10 @@ fn tool_result_text(
             (parts.join("\n"), images)
         }
         Err(error) => (
-            format!("The tool call returned the following error:\n{error}"),
+            format!(
+                "The tool call returned the following error:\n{}",
+                super::tool_error_text(error)
+            ),
             Vec::new(),
         ),
     }

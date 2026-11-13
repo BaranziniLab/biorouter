@@ -548,6 +548,51 @@ fn failure_stop_reason(tool_name: &str, streak: u32) -> String {
     )
 }
 
+/// What the PERSON is told when a repetition stop ends the turn.
+///
+/// A stop's `reason` is written for the agent ("The user did NOT decline it…
+/// Change approach…") and stays the denied call's tool result, where the agent
+/// reads it. It used to be the turn's ending too, and shown to the person it
+/// read as a model failure addressed to somebody else (live QA, 2026-11-11: a
+/// red "Model request failed" over the agent's own instructions). So the
+/// ending is this plain sentence instead, naming the step the way a tool row
+/// does (`decide`, not `decisions__decide`) and the run that tripped the
+/// guard.
+///
+/// The desktop draws the same four sentences when an older daemon sends the
+/// agent's text (`ui/desktop/src/utils/repetitionStop.ts`); keep them equal.
+pub fn repetition_stop_notice(result: &InspectionResult, tool_name: &str) -> String {
+    let step = tool_name.rsplit("__").next().unwrap_or(tool_name);
+    let (what, unit) = match result.finding_id.as_deref() {
+        Some(REPETITION_NEAR_DUP_HARD_FINDING_ID) => ("repeating nearly the same step", "times"),
+        Some(REPETITION_OSCILLATION_HARD_FINDING_ID) => {
+            ("going back and forth between the same two steps", "calls")
+        }
+        Some(FAILURE_LOOP_HARD_FINDING_ID) => {
+            ("retrying a step that keeps failing the same way", "times")
+        }
+        _ => ("repeating the same step", "times"),
+    };
+    match stop_run_length(&result.reason, tool_name) {
+        Some(run) => format!("Biorouter stopped the agent {what} ({step}, {run} {unit})."),
+        None => format!("Biorouter stopped the agent {what} ({step})."),
+    }
+}
+
+/// The run length a hard-stop reason states: "… 5 times …" in the exact,
+/// near-duplicate and failure stops, "your last 6 tool calls …" in the
+/// oscillation stop. Read out of the reason because every formatter above
+/// writes it there and nowhere else; the quoted tool name is removed first so a
+/// name with digits in it cannot be read as the count. Pinned against all four
+/// formatters in `the_person_hears_a_plain_sentence_for_every_hard_stop`.
+fn stop_run_length(reason: &str, tool_name: &str) -> Option<u32> {
+    static RUN: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(r"\b(\d+) (?:times|tool calls)\b").expect("valid run-length pattern")
+    });
+    let reason = reason.replace(&format!("'{tool_name}'"), "''");
+    RUN.captures(&reason)?.get(1)?.as_str().parse().ok()
+}
+
 // Helper struct for internal tracking
 #[derive(Debug, Clone)]
 struct InternalToolCall {
@@ -917,12 +962,60 @@ fn call_observations(messages: &[Message], limit: usize) -> Vec<CallObservation>
                         .is_some_and(|outcome| outcome.failure.is_none())
                 {
                     observation.active_job |= active_job_result(&observation.call, result);
-                    observation.fingerprint = Some(result_fingerprint(result));
+                    observation.fingerprint =
+                        Some(call_result_fingerprint(&observation.call.name, result));
                 }
             }
         }
     }
     calls
+}
+
+/// What the repetition guard adds for the agent when the repeated call is
+/// `decide`: that the answer will not change, and the two ways to get a
+/// second look at the unsure items instead. Empty for every other tool.
+fn decide_repeat_note(tool_name: &str) -> &'static str {
+    if !is_decide_tool(tool_name) {
+        return "";
+    }
+    " A decision model gives the same answer to the same text, so the same decide gets the \
+     result you already have: use it. That result lists the low-confidence ids. For a second \
+     opinion on those, call decide once with `escalate` {\"model\": \"<another decision \
+     model>\", \"below\": 0.8}, or with `only_ids` set to those ids and another `model`."
+}
+
+/// Keys of a `decide` result that change on every call whatever was decided:
+/// the batch id the decision history files it under, and how long it took.
+const DECIDE_VOLATILE_RESULT_KEYS: &[&str] = &["batchId", "elapsedMs"];
+
+/// Whether `tool_name` is the `decide` tool, whose answer to the same
+/// questions over the same chunks is the same answer: a decision model reads
+/// the same text the same way.
+fn is_decide_tool(tool_name: &str) -> bool {
+    tool_name == crate::agents::decisions_extension::DECIDE_TOOL_NAME
+}
+
+/// What a completed call's result is compared by, to tell a changed result
+/// from the same one. A `decide` result names a fresh batch id and its
+/// elapsed time on every call, so it is compared by what it decided (its
+/// structured summary without those two keys): an identical decide over
+/// identical chunks then reads as the unchanged result it is, rather than as
+/// progress (live QA, 2026-11-11: an agent re-ran the same 30-note decide 24
+/// times, and every run cleared the guard's window).
+fn call_result_fingerprint(tool_name: &str, result: &CallToolResult) -> [u8; 32] {
+    if is_decide_tool(tool_name) {
+        if let Some(Value::Object(summary)) = &result.structured_content {
+            let decided: Map<String, Value> = summary
+                .iter()
+                .filter(|(key, _)| !DECIDE_VOLATILE_RESULT_KEYS.contains(&key.as_str()))
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect();
+            let bytes =
+                serde_json::to_vec(&canonicalize_json(&Value::Object(decided))).unwrap_or_default();
+            return Sha256::digest(bytes).into();
+        }
+    }
+    result_fingerprint(result)
 }
 
 fn result_fingerprint(result: &CallToolResult) -> [u8; 32] {
@@ -1282,9 +1375,10 @@ impl RepetitionInspector {
             "Biorouter stopped this tool call: '{tool_name}' has now been called \
              with identical arguments {repeat_count} times without a changed result. The user did \
              NOT decline it; this is an automatic repetition guard. Repeating the \
-             same call will not produce a different result. Change approach: vary \
+             same call will not produce a different result.{} Change approach: vary \
              the arguments, use a different tool, or explain what is blocking you \
-             and stop."
+             and stop.",
+            decide_repeat_note(tool_name)
         )
     }
 
@@ -1297,9 +1391,10 @@ impl RepetitionInspector {
             .unwrap_or_default();
         format!(
             "Repetition warning: you have called '{tool_name}' with identical \
-             arguments {repeat_count} times without a changed result.{stop} \
+             arguments {repeat_count} times without a changed result.{stop}{} \
              Change approach now: vary the arguments, use a different tool, or \
-             explain what is blocking you and stop."
+             explain what is blocking you and stop.",
+            decide_repeat_note(tool_name)
         )
     }
 
@@ -1345,10 +1440,11 @@ impl RepetitionInspector {
             "Possible loop: '{tool_name}' has now been called {run} times in a row \
              with only minor argument tweaks (the calls are near-identical once \
              ids and whitespace are ignored). Small edits to the same call rarely \
-             produce a different result. If you are deliberately iterating over \
+             produce a different result.{} If you are deliberately iterating over \
              genuinely different inputs, ignore this and continue; otherwise stop \
              tweaking and change approach: use a different tool, re-read what the \
-             last result actually said, or explain what is blocking you."
+             last result actually said, or explain what is blocking you.",
+            decide_repeat_note(tool_name)
         )
     }
 
@@ -1356,9 +1452,10 @@ impl RepetitionInspector {
         format!(
             "Biorouter stopped this tool call: '{tool_name}' has been called {run} \
              times in a row with near-identical arguments (only minor tweaks). The \
-             user did NOT decline it; this is an automatic loop guard. Change \
+             user did NOT decline it; this is an automatic loop guard.{} Change \
              approach: use a different tool, re-read the last result, or explain \
-             what is blocking you and stop."
+             what is blocking you and stop.",
+            decide_repeat_note(tool_name)
         )
     }
 
@@ -1630,6 +1727,82 @@ impl ToolInspector for RepetitionInspector {
 mod tests {
     use super::*;
     use rmcp::object;
+
+    /// Live QA, 2026-11-11: five identical `decisions__decide` calls ended the
+    /// turn under a red "Model request failed" carrying the agent's own
+    /// instructions ("The user did NOT decline it…"). The person now reads one
+    /// plain sentence per kind of stop, with the step's short name and the run
+    /// that tripped the guard, and the agent keeps its text.
+    #[test]
+    fn the_person_hears_a_plain_sentence_for_every_hard_stop() {
+        let tool = "decisions__decide";
+        let stop = |finding: &str, reason: String| InspectionResult {
+            tool_request_id: "1".into(),
+            action: InspectionAction::Deny,
+            reason,
+            confidence: 1.0,
+            inspector_name: REPETITION_INSPECTOR_NAME.into(),
+            finding_id: Some(finding.into()),
+        };
+        for (result, expected) in [
+            (
+                stop(
+                    REPETITION_HARD_FINDING_ID,
+                    RepetitionInspector::hard_stop_reason(tool, 5),
+                ),
+                "Biorouter stopped the agent repeating the same step (decide, 5 times).",
+            ),
+            (
+                stop(
+                    REPETITION_NEAR_DUP_HARD_FINDING_ID,
+                    RepetitionInspector::near_dup_stop_reason(tool, 6),
+                ),
+                "Biorouter stopped the agent repeating nearly the same step (decide, 6 times).",
+            ),
+            (
+                stop(
+                    REPETITION_OSCILLATION_HARD_FINDING_ID,
+                    RepetitionInspector::oscillation_stop_reason(tool, 8),
+                ),
+                "Biorouter stopped the agent going back and forth between the same two steps \
+                 (decide, 8 calls).",
+            ),
+            (
+                stop(FAILURE_LOOP_HARD_FINDING_ID, failure_stop_reason(tool, 3)),
+                "Biorouter stopped the agent retrying a step that keeps failing the same way \
+                 (decide, 3 times).",
+            ),
+        ] {
+            let notice = repetition_stop_notice(&result, tool);
+            assert_eq!(notice, expected);
+            for agent_words in [
+                "decisions__decide",
+                "did NOT decline",
+                "Change approach",
+                "'",
+            ] {
+                assert!(!notice.contains(agent_words), "{notice}");
+            }
+        }
+
+        // A digit in the tool's own name is not the count.
+        let named = "tool2__step_10_times";
+        assert_eq!(
+            repetition_stop_notice(
+                &stop(
+                    REPETITION_HARD_FINDING_ID,
+                    RepetitionInspector::hard_stop_reason(named, 4),
+                ),
+                named,
+            ),
+            "Biorouter stopped the agent repeating the same step (step_10_times, 4 times)."
+        );
+        // A reason that states no run still yields a sentence, without one.
+        assert_eq!(
+            repetition_stop_notice(&stop(REPETITION_HARD_FINDING_ID, "stopped".into()), tool),
+            "Biorouter stopped the agent repeating the same step (decide)."
+        );
+    }
 
     fn call(name: &str, args: Value) -> InternalToolCall {
         InternalToolCall::from_tool_call(&CallToolRequestParams {
@@ -2290,6 +2463,122 @@ mod tests {
         .await;
         assert_eq!(stopped[0].action, InspectionAction::Deny);
         assert!(!tool_progress_since(&messages, messages.len() - 1));
+    }
+
+    /// A `decide` result as the tool returns it: a fresh batch id and time
+    /// on every call, around what was decided.
+    fn decide_result(run: usize, passed: usize) -> ToolResult<CallToolResult> {
+        Ok(CallToolResult {
+            content: vec![rmcp::model::Content::text(format!(
+                "decide: 30 chunks x 1 question with tev1:0.8b (private) in {run}.1 s: 30 \
+                 decided, 0 failed."
+            ))],
+            structured_content: Some(serde_json::json!({
+                "kind": "decide_batch",
+                "batchId": format!("019a-batch-{run}"),
+                "elapsedMs": 1000 + run,
+                "chunks": 30,
+                "decided": 30,
+                "questions": [{"name": "has_ms", "passed": passed}],
+                "lowConfidenceIds": ["n03", "n07"],
+            })),
+            is_error: Some(false),
+            meta: None,
+        })
+    }
+
+    /// Live QA, 2026-11-11: an agent re-ran the same 30-note decide 24 times.
+    /// Every result named a new batch id and time, so each read as a changed
+    /// result and the guard never fired. A decide over the same chunks gives
+    /// the same answer, so it is now compared by what it decided, and the
+    /// agent is told the result is the same and how to get a second look.
+    #[tokio::test]
+    async fn an_identical_successful_decide_is_a_repeat_whatever_its_batch_id() {
+        let inspector = RepetitionInspector::staged(3, 5);
+        let args = serde_json::json!({
+            "questions": {"has_ms": {"instructions": "MS?"}},
+            "chunks": [{"id": "n01", "text": "note"}],
+        });
+        let decide = "decisions__decide";
+        let mut messages = Vec::new();
+        for run in 0..2 {
+            let start = messages.len();
+            completed_call(&mut messages, decide, args.clone(), decide_result(run, 12));
+            assert_eq!(
+                tool_progress_since(&messages, start),
+                run == 0,
+                "only the first run is new: run {run}"
+            );
+        }
+        let warning = inspect_next(&inspector, &messages, decide, args.clone()).await;
+        assert_eq!(warning[0].action, InspectionAction::Warn);
+        assert_eq!(
+            warning[0].finding_id.as_deref(),
+            Some(REPETITION_SOFT_FINDING_ID)
+        );
+        for words in [
+            "the result you already have",
+            "low-confidence ids",
+            "`only_ids`",
+            "`escalate`",
+        ] {
+            assert!(warning[0].reason.contains(words), "{}", warning[0].reason);
+        }
+        for run in 2..4 {
+            completed_call(&mut messages, decide, args.clone(), decide_result(run, 12));
+        }
+        let stopped = inspect_next(&inspector, &messages, decide, args.clone()).await;
+        assert_eq!(stopped[0].action, InspectionAction::Deny);
+        assert!(
+            stopped[0].reason.contains("`escalate`"),
+            "{}",
+            stopped[0].reason
+        );
+        assert_eq!(
+            repetition_stop_notice(&stopped[0], decide),
+            "Biorouter stopped the agent repeating the same step (decide, 5 times)."
+        );
+
+        // A decide that answered differently (a retry after a timeout that
+        // now decided more) is progress, and clears the count.
+        let start = messages.len();
+        completed_call(&mut messages, decide, args.clone(), decide_result(9, 13));
+        assert!(tool_progress_since(&messages, start));
+        assert!(inspect_next(&inspector, &messages, decide, args)
+            .await
+            .is_empty());
+    }
+
+    /// The decide note is for decide alone; another tool's warning is as it
+    /// was, and a result with no structured content is compared as before.
+    #[test]
+    fn only_decide_gets_the_decide_note_and_its_own_fingerprint() {
+        assert!(
+            !RepetitionInspector::soft_warn_reason("read_file", 3, Some(5)).contains("only_ids")
+        );
+        assert!(RepetitionInspector::hard_stop_reason("decisions__decide", 5).contains("only_ids"));
+        let plain = |text: &str| CallToolResult {
+            content: vec![rmcp::model::Content::text(text)],
+            structured_content: None,
+            is_error: Some(false),
+            meta: None,
+        };
+        assert_ne!(
+            call_result_fingerprint("decisions__decide", &plain("in 1.1 s")),
+            call_result_fingerprint("decisions__decide", &plain("in 2.1 s")),
+            "no structured summary: compared by its text, as any tool is"
+        );
+        let a = decide_result(1, 12).unwrap();
+        let b = decide_result(2, 12).unwrap();
+        assert_eq!(
+            call_result_fingerprint("decisions__decide", &a),
+            call_result_fingerprint("decisions__decide", &b)
+        );
+        assert_ne!(
+            call_result_fingerprint("other__tool", &a),
+            call_result_fingerprint("other__tool", &b),
+            "another tool's batch id is still part of its result"
+        );
     }
 
     #[cfg(unix)]

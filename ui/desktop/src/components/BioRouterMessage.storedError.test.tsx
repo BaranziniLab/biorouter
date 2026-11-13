@@ -1,8 +1,9 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import BioRouterMessage from './BioRouterMessage';
 import type { Message } from '../api';
 import { transcriptCopy } from './transcript/copy';
+import { StoredTurnErrorRetryContext } from './conversation/ChatTurnError';
 
 vi.mock('./MarkdownContent', () => ({
   default: ({ content }: { content: string }) => <div data-testid="markdown">{content}</div>,
@@ -58,6 +59,41 @@ describe('BioRouterMessage stored turn error', () => {
   it('announces a notice that arrives while the person watches', () => {
     renderMessage(assistant(`Ran into this error: ${RAW}\n\n${ADVICE}`), true);
     expect(screen.getByRole('alert')).toHaveTextContent('Model authentication failed');
+  });
+
+  // When the chat's live failure is this notice, the live row is not drawn and
+  // its Retry rides here, so the failure shows once and can still be retried.
+  it('carries the live Retry only on the notice the chat is showing', () => {
+    const onRetry = vi.fn();
+    const message = assistant(`Ran into this error: ${RAW}\n\n${ADVICE}`);
+    const { rerender } = render(
+      <StoredTurnErrorRetryContext.Provider value={{ messageId: 'm1', onRetry }}>
+        <BioRouterMessage
+          sessionId="s1"
+          message={message}
+          messages={[message]}
+          toolCallNotifications={new Map()}
+          onRunInTerminal={null}
+          onOpenArtifact={vi.fn()}
+        />
+      </StoredTurnErrorRetryContext.Provider>
+    );
+    fireEvent.click(screen.getByTestId('chat-turn-error-retry'));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <StoredTurnErrorRetryContext.Provider value={{ messageId: 'another', onRetry }}>
+        <BioRouterMessage
+          sessionId="s1"
+          message={message}
+          messages={[message]}
+          toolCallNotifications={new Map()}
+          onRunInTerminal={null}
+          onOpenArtifact={vi.fn()}
+        />
+      </StoredTurnErrorRetryContext.Provider>
+    );
+    expect(screen.queryByTestId('chat-turn-error-retry')).toBeNull();
   });
 
   it('leaves an ordinary answer to markdown', () => {

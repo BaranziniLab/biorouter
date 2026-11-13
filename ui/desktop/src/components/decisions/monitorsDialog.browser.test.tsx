@@ -85,6 +85,7 @@ function App() {
       settings={current}
       onSaved={setCurrent}
       models={models}
+      hasSubagents={false}
     />
   );
 }
@@ -285,6 +286,28 @@ describe('the Monitors dialog in a real layout engine', () => {
       expect(boxes.side).toBe('bottom');
       expect(boxes.peek.top).toBeGreaterThanOrEqual(boxes.line.bottom);
       expect(boxes.peek.top).toBeGreaterThan(boxes.name.bottom);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('says a row’s whole line, timing included, without cutting it (W3-8)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      const line = await tab.evaluate(() => {
+        const node = document.querySelector(
+          '[data-monitor-id="a"] [data-testid="monitor-line"]'
+        ) as HTMLElement;
+        return {
+          text: node.textContent,
+          scrollWidth: node.scrollWidth,
+          clientWidth: node.clientWidth,
+        };
+      });
+      expect(line.text).toBe('Stop the turn · when P(yes) is at or above 0.85 · after each step');
+      // The line is cut with an ellipsis when it is too long; this one is not.
+      expect(line.scrollWidth).toBeLessThanOrEqual(line.clientWidth);
     } finally {
       await tab.close();
     }

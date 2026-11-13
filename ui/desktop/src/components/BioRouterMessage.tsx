@@ -1,5 +1,5 @@
 import { QuotedTextSelection, useTextSelection } from './QuotedTextSelection';
-import { useMemo, useRef, useState } from 'react';
+import { useContext, useMemo, useRef, useState } from 'react';
 import ImagePreview from './ImagePreview';
 import { InlineImage } from './InlineImage';
 import { extractImagePaths, removeImagePathsFromText } from '../utils/imageUtils';
@@ -28,7 +28,11 @@ import { Brain } from './icons/app-icons';
 import { TranscriptRow } from './TranscriptRow';
 import { transcriptCopy } from './transcript/copy';
 import { cn } from '../utils';
-import { presentStoredTurnError, TurnErrorRow } from './conversation/ChatTurnError';
+import {
+  presentStoredTurnError,
+  StoredTurnErrorRetryContext,
+  TurnErrorRow,
+} from './conversation/ChatTurnError';
 import { messageTurnWasStopped } from './conversation/turnStoppedNotice';
 import { splitAssistantText } from './transcript/transcriptRhythm';
 import { ThinkingClock, thoughtTook, useThoughtDuration } from './transcript/thinkingClock';
@@ -40,6 +44,8 @@ import {
 import { DecisionCard } from './decisions/DecisionCard';
 import { messageDecisionId } from '../utils/sessionDecisions';
 import { approvalCardExpired } from '../utils/approvalExpiry';
+import { readSubagentResult } from './transcript/subagentResult';
+import { SubagentResultRow } from './transcript/SubagentResultRow';
 
 interface BioRouterMessageProps {
   sessionId: string;
@@ -215,6 +221,30 @@ export default function BioRouterMessage({
         : null,
     [displayText, message.content, toolRequests.length]
   );
+  // Retry for the failure the chat is showing now, when this row is its notice
+  // (BaseChat provides it; the live row is not drawn then).
+  const storedRetry = useContext(StoredTurnErrorRetryContext);
+  const retryStoredError =
+    storedRetry && message.id && storedRetry.messageId === message.id
+      ? storedRetry.onRetry
+      : undefined;
+  // A delegated subagent's result is stored as an agent-injected assistant
+  // message whose text is written for the model (an injection frame around
+  // the result's JSON). It draws as one row in the tool rows' look, never as
+  // that text.
+  const subagentResult = useMemo(() => readSubagentResult(message), [message]);
+  if (subagentResult) {
+    return (
+      <div className="biorouter-message flex w-full justify-start min-w-0">
+        <SubagentResultRow
+          result={subagentResult}
+          onOpenArtifact={onOpenArtifact}
+          workingDir={workingDir}
+        />
+      </div>
+    );
+  }
+
   if (decisionId && toolRequests.length === 0) {
     return (
       <div className="biorouter-message flex w-full justify-start min-w-0">
@@ -240,7 +270,12 @@ export default function BioRouterMessage({
   if (storedError) {
     return (
       <div className="biorouter-message flex w-full justify-start min-w-0">
-        <TurnErrorRow presentation={storedError} alert={live} testId="stored-turn-error" />
+        <TurnErrorRow
+          presentation={storedError}
+          alert={live}
+          testId="stored-turn-error"
+          onRetry={retryStoredError}
+        />
       </div>
     );
   }

@@ -4,9 +4,9 @@
 > serves the interface itself, why a browser session cannot change its model yet starts every
 > chat on the one the operator chose, why the standalone `biorouter-headless` binary was
 > retired, how long the launch token stays good for, which chats the deprecated
-> `biorouter web` may still open, and what app pages on the served origin may do with a
-> microphone grant.
-> Each record states the ruling, the alternatives it
+> `biorouter web` may still open, when a decision model may make a chat public there, and what
+> app pages on the served origin may do with a microphone grant. Each record states the ruling,
+> the alternatives it
 > displaced, and the consequence a future change would have to accept.
 > **Status:** Current.
 > **Audience:** developers working on the daemon, the CLI, or release packaging; agents making
@@ -1305,7 +1305,76 @@ support that 1.89 had (issue #9).
 
 ---
 
-## SD-16: App pages turn the microphone off; the grant still belongs to the origin
+## SD-16: A keyless daemon makes no chat public by a decision model unless its operator allows it
+
+**Ruling (2026-11-10, with
+[DR-33](../security/privacy-tiers-execution-plan.md#dr-33-a-chats-decision-models-count-toward-its-tier-and-its-least-private-model-sets-it)).**
+A chat is as private as its least private model, its decision models included, so a person who
+chooses joey-1 on Baseten for an empty Versa chat makes that chat public. On a daemon that holds no
+user-action key (the one `biorouter serve` starts, or a `biorouterd` started by hand), that act is
+refused by default:
+
+- Every settings save, phase-gate write, `POST /agent/start` with `decisionSettings`, and workflow
+  seed whose tier effect is `becomesPublic` is refused with 403 and saves nothing: "This server
+  can't make a chat public by a decision model; the person who runs it can allow that with
+  `biorouter serve --allow-public-decision-models`. Nothing was saved." A refused start discards
+  its chat.
+- `biorouter serve --allow-public-decision-models` allows it. `serve` passes it to the daemon as
+  `BIOROUTER_ALLOW_PUBLIC_DECISION_MODELS=1` and removes the variable otherwise, so a value the
+  operator's shell happens to export never reaches the daemon. The daemon reads it once at launch
+  and pins it with SD-12's launch configuration (`biorouter_server::launch::allows_public_decision_models`),
+  so a shell that later edits the environment or `config.yaml` changes nothing. Only `1` or `true`
+  allows it. With it, the write still needs `acceptPublicDecisionModels: true`, which the browser
+  sends only after showing the person "This chat will be public: joey-1 runs on Baseten." When
+  the operator passed the flag, `serve` says so when it starts: "A person in the browser may make
+  a new chat public by choosing a public decision model (such as one on Baseten) before its first
+  message."
+- The browser learns it before the person reaches for the model (SD-8): on a daemon that does not
+  allow it, every public decision model whose choice would make the chat public carries the picker
+  reason "This server doesn't allow public decision models in a private chat." in
+  `GET /decisions/models`, so the Monitors and gate dialogs offer it disabled.
+- Removing the last public name, which makes the chat private at its next message, needs no
+  operator flag and no confirmation. It stays behind the reach gate (SD-11), because a raise is
+  the safe direction.
+- A daemon that holds a key is unchanged by this record: there the person's proof plus the flag
+  admit a lowering, and the variable is never consulted.
+
+**Why.** SD-1 guarantees that the tier the operator's choice of model implies holds for every
+session on a `serve` daemon, and SD-12 pins `CAPABILITY_CONFIG_KEYS` at launch so that nothing but
+the operator can move it. A lowering by a decision model is a per chat way around that guarantee
+that the pin does not cover: it changes a chat's capability through `extension_data`, not through
+a configuration key. On a keyless daemon no request can carry proof of a person, and a model with a
+shell recovers the daemon secret with `ps eww`, so the confirmation flag alone would be something
+an agent can send. The operator's flag is the one statement on such a daemon that only the person
+running it can make.
+
+**Displaced alternatives.**
+
+- *Admit a lowering on a keyless daemon with the confirmation flag alone.* Rejected: the flag is
+  a body key, and any holder of the secret can write it.
+- *Never allow it on a keyless daemon.* Rejected: a JupyterHub deployment of `serve` with a Versa
+  default and a Baseten key is exactly the configuration the owner asked for, and the person who
+  runs the server can decide that for their own deployment.
+- *Read the operator's choice from `config.yaml`.* Rejected for the reason SD-12 pins its keys: the agent can
+  edit that file.
+
+**Consequences to accept.**
+
+- On a default `serve` daemon a Versa chat can use only decision models on this computer.
+- With the flag, any holder of the daemon secret can make an empty chat public by naming a
+  public decision model, with the flag. That is the same standing a holder of the secret has for
+  every other write on a keyless daemon (SD-11), and the chat holds no content when it happens:
+  the record is admitted only on a chat with no message, or one the person declassified.
+  The residual this leaves, reviewed on 2026-11-11 and accepted: an agent in one chat that
+  recovers the secret can make another empty chat public while the person has it open, and the
+  person may then type into it without having chosen that. The chat's header and model chip say
+  it is public from the moment the write lands, and nothing it held before was exposed. Tying the
+  lowering to a caller that states it owns the target chat was considered and not built, because
+  a holder of the secret can state that too.
+
+---
+
+## SD-17: App pages turn the microphone off; the grant still belongs to the origin
 
 > **First part (2026-11-05).** The header ruling landed before a served page could ask for the
 > microphone. The browser dictation ruling below completes this record with PR-21.
@@ -1337,7 +1406,7 @@ same way.
 - On an app's page, its `assets/` documents and every frame they hold, Chromium rejects
   `getUserMedia` with `NotAllowedError`, while the shell on the same origin, under the same
   grant, still records. `ui/desktop/tests/e2e/serve-app-microphone.spec.ts` checks exactly that
-  against a real `biorouter serve`. A second test there, labelled SD-16 residual, pins the popup
+  against a real `biorouter serve`. A second test there, labelled SD-17 residual, pins the popup
   path below as it is today, so a change that closes it has to flip that test on purpose.
 - The figure frame is sandboxed to an opaque origin and inherits the policy of the app page that
   frames it. Its own header covers the case where something opens it at the top level.

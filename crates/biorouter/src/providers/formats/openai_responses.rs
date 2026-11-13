@@ -24,6 +24,12 @@ pub struct ResponsesApiResponse {
     pub reasoning: Option<ResponseReasoningInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<ResponseUsage>,
+    /// Why the response stopped short (`status: "incomplete"`): our own
+    /// `max_output_tokens`, or a content filter, which
+    /// [`responses_api_to_message`] reads as a policy block. Absent on a
+    /// completed response, hence defaulted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incomplete_details: Option<IncompleteDetails>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -321,14 +327,32 @@ where
     Ok(value.and_then(|value| serde_json::from_value(value).ok()))
 }
 
+/// The block a response stopped by a content filter amounts to, or `None`
+/// for any other stop. `incomplete_details.reason` of `content_filter` is how
+/// the Responses route says a filter cut the reply, streamed
+/// (`response.incomplete`) or not. It is the Chat Completions block in the
+/// same words ([`content_filter_stopped_reply`]): a policy refusal, never
+/// retried. It used to pass through as the finish reason `content_filter`, so
+/// the turn ended as if the model had finished, on whatever text arrived
+/// before the cut, and a blocking request answered with an empty reply.
+///
+/// [`content_filter_stopped_reply`]: crate::providers::formats::openai::content_filter_stopped_reply
+fn content_filter_block(
+    details: Option<&IncompleteDetails>,
+) -> Option<crate::providers::errors::ProviderError> {
+    (details.and_then(|details| details.reason.as_deref()) == Some("content_filter"))
+        .then(crate::providers::formats::openai::content_filter_stopped_reply)
+}
+
 /// The OpenAI-style `finish_reason` a truncated response reports.
 ///
 /// `max_output_tokens` becomes `"length"` — the one token the agent loop acts
 /// on (`TRUNCATION_CONTINUATION_MESSAGE` in `agents/agent.rs`), and the same
 /// mapping `formats::anthropic` and `formats::bedrock` already make for their
-/// own cap. ⚠ Every other reason passes through raw: `content_filter` is not a
-/// length problem, and auto-continuing one would re-ask for the content that
-/// was just refused.
+/// own cap. ⚠ Every other reason passes through raw, because auto-continuing
+/// anything but a length cap could re-ask for content that was refused. A
+/// `content_filter` stop never gets here: [`content_filter_block`] ends the
+/// stream on it first.
 fn incomplete_finish_reason(details: Option<&IncompleteDetails>) -> String {
     match details.and_then(|details| details.reason.as_deref()) {
         Some("max_output_tokens") => "length".to_string(),
@@ -548,7 +572,7 @@ fn function_call_output_item(response: &ToolResponse, images: &mut Vec<Value>) -
             json!({
                 "type": "function_call_output",
                 "call_id": response.id,
-                "output": format!("Error: {}", error_data.message)
+                "output": format!("Error: {}", super::tool_error_text(error_data))
             })
         }
     }
@@ -688,7 +712,19 @@ pub fn create_responses_request(
     Ok(payload)
 }
 
-pub fn responses_api_to_message(response: &ResponsesApiResponse) -> anyhow::Result<Message> {
+/// The message a blocking Responses request answered with.
+///
+/// ⚠ A response a content filter stopped is an error, not a message
+/// (`content_filter_block`): read as a message it was an empty or cut-off
+/// reply that named nothing. Every blocking Responses caller (`openai`,
+/// `azure_openai`, `versa_azure`) goes through here, so none of them can miss
+/// it.
+pub fn responses_api_to_message(
+    response: &ResponsesApiResponse,
+) -> Result<Message, crate::providers::errors::ProviderError> {
+    if let Some(block) = content_filter_block(response.incomplete_details.as_ref()) {
+        return Err(block);
+    }
     let mut content = Vec::new();
 
     for item in &response.output {
@@ -1303,7 +1339,18 @@ fn apply_stream_event(
         // The one difference is the finish reason. A cap we set ourselves maps
         // to `"length"`, which is what makes the agent loop continue the answer
         // instead of presenting a sentence that stops mid-word.
+        //
+        // A content filter's stop is not a cap: it ends the stream as a policy
+        // block, the way a Chat Completions chunk with `finish_reason:
+        // "content_filter"` does, so the reply loop neither continues it nor
+        // retries it.
         ResponsesStreamEvent::ResponseIncomplete { response, .. } => {
+            if let Some(block) = response
+                .as_ref()
+                .and_then(|response| content_filter_block(response.incomplete_details.as_ref()))
+            {
+                return Err(block.into());
+            }
             if let Some(response) = response {
                 let finish_reason = incomplete_finish_reason(response.incomplete_details.as_ref());
                 let mut usage = absorb_completed_response(
@@ -2147,25 +2194,106 @@ data: [DONE]
         assert_eq!(text, "only in the terminal frame");
     }
 
-    /// A refusal is not a length problem. `"length"` makes the agent loop
-    /// re-ask for the rest of the answer; doing that to a content filter asks
-    /// again for the content that was just refused.
+    /// The content-filter sentence every route says, as a Responses stop
+    /// reads it: the provider's, naming nothing, because the response names
+    /// neither the filter's owner nor a category.
+    const FILTERED_REPLY: &str = "The provider's content filter blocked this reply. Revise the \
+                                  request or contact your provider administrator.";
+
+    fn assert_a_policy_block(error: &ProviderError) {
+        assert_eq!(
+            error,
+            &ProviderError::RequestFailed(FILTERED_REPLY.to_string())
+        );
+        assert_eq!(
+            error.kind(),
+            crate::providers::errors::ProviderErrorKind::Policy
+        );
+        assert!(!crate::providers::retry::should_retry(error));
+        assert!(!crate::agents::mistakes::is_recoverable(error));
+    }
+
+    /// A content filter's stop is not a length problem, and not a finished
+    /// reply either. `"length"` makes the agent loop re-ask for the rest of
+    /// the answer, which asks again for the content that was just refused;
+    /// passing `content_filter` through as a finish reason (what this decoder
+    /// did until 2026-11-12) ended the turn as if the model had finished, on
+    /// whatever text came before the cut. It is the Chat Completions block:
+    /// a policy error, never retried, and the text already streamed stays
+    /// shown.
     ///
-    /// Catches: mapping every `response.incomplete` to `"length"` — the
-    /// plausible simplification of `incomplete_finish_reason`, which passes the
-    /// two tests above.
+    /// Catches: mapping every `response.incomplete` to `"length"`, and
+    /// reading a content-filter stop as a truncation with usage.
     #[tokio::test]
-    async fn a_content_filtered_truncation_is_not_reported_as_a_length_cap() {
+    async fn a_content_filtered_stream_is_a_policy_block_not_a_cut_off_reply() {
         let lines = r#"
-data: {"type":"response.incomplete","sequence_number":1,"response":{"id":"resp_cf","object":"response","created_at":1,"status":"incomplete","model":"gpt-5.4","output":[],"usage":{"input_tokens":10,"output_tokens":0,"total_tokens":10},"incomplete_details":{"reason":"content_filter"}}}
+data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_cf","object":"response","created_at":1,"status":"in_progress","model":"gpt-5.6-sol-2026-07-09","output":[]}}
+data: {"type":"response.output_text.delta","sequence_number":1,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"Here is "}
+data: {"type":"response.incomplete","sequence_number":2,"response":{"id":"resp_cf","object":"response","created_at":1,"status":"incomplete","model":"gpt-5.6-sol-2026-07-09","output":[],"usage":{"input_tokens":10,"output_tokens":3,"total_tokens":13},"incomplete_details":{"reason":"content_filter"}}}
 data: [DONE]
 "#;
-        let (_, usage, error) = drain_with_usage(lines).await;
-
-        assert_eq!(error, None);
+        let (text, usage, said) = drain_with_usage(lines).await;
+        assert_eq!(text, "Here is ", "what streamed before the cut stays shown");
+        assert!(usage.is_none(), "a block is not a finished turn: {usage:?}");
         assert_eq!(
-            usage.expect("usage").finish_reason.as_deref(),
-            Some("content_filter"),
+            said.as_deref(),
+            Some(format!("Request failed: {FILTERED_REPLY}").as_str())
+        );
+
+        let error = first_error(lines)
+            .await
+            .downcast::<ProviderError>()
+            .expect("the block is a typed provider error");
+        assert_a_policy_block(&error);
+    }
+
+    /// The same stop on a blocking request: `status: "incomplete"` with the
+    /// reason beside it. It used to decode as an empty reply.
+    #[test]
+    fn a_content_filtered_response_is_a_policy_block_on_the_blocking_path() {
+        let response: ResponsesApiResponse = serde_json::from_value(json!({
+            "id": "resp_cf",
+            "object": "response",
+            "created_at": 1,
+            "status": "incomplete",
+            "model": "gpt-5.6-sol-2026-07-09",
+            "output": [{
+                "type": "message",
+                "id": "msg_1",
+                "status": "incomplete",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "SECRET_REPLY_TEXT"}]
+            }],
+            "usage": {"input_tokens": 10, "output_tokens": 3, "total_tokens": 13},
+            "incomplete_details": {"reason": "content_filter"}
+        }))
+        .expect("an incomplete response decodes");
+        let error = responses_api_to_message(&response).expect_err("a blocked reply");
+        assert_a_policy_block(&error);
+        assert!(!error.to_string().contains("SECRET_REPLY_TEXT"));
+
+        // A cap we set ourselves is still the reply that arrived.
+        let capped: ResponsesApiResponse = serde_json::from_value(json!({
+            "id": "resp_cap",
+            "object": "response",
+            "created_at": 1,
+            "status": "incomplete",
+            "model": "gpt-5.6-sol-2026-07-09",
+            "output": [{
+                "type": "message",
+                "id": "msg_1",
+                "status": "incomplete",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "partial"}]
+            }],
+            "incomplete_details": {"reason": "max_output_tokens"}
+        }))
+        .expect("an incomplete response decodes");
+        assert_eq!(
+            responses_api_to_message(&capped)
+                .expect("a capped reply is a reply")
+                .as_concat_text(),
+            "partial"
         );
     }
 

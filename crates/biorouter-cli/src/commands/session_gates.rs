@@ -2,7 +2,9 @@
 //! the person's controls over the decision gates of one chat's phase plan.
 //!
 //! A gate asks a decision model yes/no questions about a phase's hand-off
-//! before the phase may complete, and holds every phase listed after it until
+//! before the phase may complete (a gate with no model, in a chat with no
+//! decision model it may use, is judged by the chat's own model), and holds
+//! every phase listed after it until
 //! it passes. Whoever set it (the agent, the person or the workflow the chat
 //! was started from), a stored gate binds the agent: it cannot change, remove
 //! or skip one. Only the person can, in the app or here.
@@ -18,16 +20,27 @@
 //! * **With none** the plan is read and written in this process, under the
 //!   tier rule the route applies (`check_local_reach`), with the model check
 //!   the route makes before it stores a gate
-//!   (`DecisionService::check_model_use`, which sends nothing of the chat) and
+//!   (`orchestration_plan::gate_judge_for`, which sends nothing of the chat
+//!   and never refuses a gate with no model, because the chat's own model
+//!   judges it when no decision model may) and
 //!   the same person transitions the route calls
 //!   (`orchestration_plan::person_set_gate`, `person_remove_gate`,
 //!   `person_gate_decision`).
+//!
+//! **A gate can make the chat public** (DR-33, design §3.6): the model of a
+//! gate on an open phase is one of the chat's standing decision models, so
+//! setting a public one (joey-1 on Baseten) on an empty chat bound to a
+//! private model makes it public, and removing the last one makes it private
+//! at its next message. Both paths work the effect out first and say it on
+//! stderr (`tierEffect` with `--format json`); a set that makes the chat
+//! public is asked about and confirmed by a confirmation typed at a terminal
+//! (`decision_tier`), and stored with the person's basis in the same write.
 
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
 use biorouter::agents::orchestration_plan::{
-    self as orchestration_plan, GateOwner, OrchestrationSnapshot, PersonGateAction,
+    self as orchestration_plan, GateJudgeKind, GateOwner, OrchestrationSnapshot, PersonGateAction,
     PersonGateChoice, PersonGateOutcome, PhaseGateSnapshot, PhaseGateSpec, PhaseSnapshot,
     PhaseStatus, MAX_GATE_QUESTIONS, MAX_PHASE_ID_CHARS,
 };
@@ -88,7 +101,8 @@ pub struct SetGate {
     #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=5))]
     pub attempts: Option<u32>,
     /// The decision model, by its name (tev1:0.8b, joey-1) or as
-    /// provider/model. Without it the chat's default decision model is used.
+    /// provider/model. Without it the chat's default decision model is used,
+    /// or the chat's own model when the chat has no decision model.
     #[arg(long, value_name = "MODEL")]
     pub model: Option<String>,
     /// Accept probabilities a model states in words (uncalibrated) rather
@@ -349,12 +363,21 @@ pub fn gate_line(gate: &PhaseGateSnapshot) -> String {
 fn gate_lines(session_id: &str, phase: &PhaseSnapshot, gate: &PhaseGateSnapshot) -> Vec<String> {
     let mut out = vec![format!("     gate: {}", gate_line(gate))];
     let mut details = Vec::new();
-    match &gate.model {
-        Some(model) => details.push(format!(
+    let chat_judged = gate
+        .last_judge
+        .as_ref()
+        .filter(|judge| judge.kind == GateJudgeKind::ChatModel);
+    match (&gate.model, chat_judged) {
+        (Some(model), _) => details.push(format!(
             "asked of {}",
             super::decide::person_model_names(&terminal_text(model))
         )),
-        None => details.push("asked of the chat's default decision model".to_string()),
+        (None, Some(judge)) => details.push(format!("judged by {}", terminal_text(&judge.words()))),
+        (None, None) => details.push(
+            "asked of the chat's default decision model, or of the chat's own model when it \
+             has none"
+                .to_string(),
+        ),
     }
     if gate.allow_uncalibrated {
         details.push("accepts uncalibrated answers".to_string());
@@ -373,6 +396,9 @@ fn gate_lines(session_id: &str, phase: &PhaseSnapshot, gate: &PhaseGateSnapshot)
             clip(name, 64),
             clip(question, 100)
         ));
+    }
+    if let Some(reason) = chat_judged.and_then(|judge| judge.reason.as_deref()) {
+        out.push(format!("     {}", clip(&terminal_text(reason), 160)));
     }
     if let Some(error) = gate.last_error.as_deref() {
         out.push(format!(
@@ -463,9 +489,31 @@ pub fn render_gates(session_id: &str, plan: Option<&OrchestrationSnapshot>) -> V
 
 /// The request a write makes of the daemon: method, path and body.
 pub fn request_for(session_id: &str, edit: &GateEdit) -> Result<(&'static str, String, String)> {
+    request_with(session_id, edit, false)
+}
+
+/// [`request_for`], with the person's acceptance of a lowering beside the
+/// gate when `accepted` (DR-33): the route answers a set that would make the
+/// chat public 409 `needsPublicDecisionConfirmation` without it.
+pub fn request_with(
+    session_id: &str,
+    edit: &GateEdit,
+    accepted: bool,
+) -> Result<(&'static str, String, String)> {
     let base = format!("/sessions/{session_id}/phase-gates/{}", edit.phase());
     Ok(match edit {
-        GateEdit::Set { spec, .. } => ("PUT", base, serde_json::to_string(spec)?),
+        GateEdit::Set { spec, .. } => {
+            let mut body = serde_json::to_value(spec)?;
+            if accepted {
+                if let Some(object) = body.as_object_mut() {
+                    object.insert(
+                        "acceptPublicDecisionModels".to_string(),
+                        serde_json::Value::Bool(true),
+                    );
+                }
+            }
+            ("PUT", base, body.to_string())
+        }
         GateEdit::Remove { .. } => ("DELETE", base, String::new()),
         GateEdit::Decide { choice, .. } => (
             "POST",
@@ -482,6 +530,10 @@ pub struct GateAnswer {
     pub applied: bool,
     /// The chat's plan after the write, as this caller may see it.
     pub plan: Option<serde_json::Value>,
+    /// What the write did to the chat's tier (DR-33), when it says.
+    pub tier_effect: Option<biorouter::privacy::decision_axes::TierEffect>,
+    /// The line that says it, in the terminal's words, or `None`.
+    pub effect_line: Option<String>,
 }
 
 impl GateAnswer {
@@ -490,6 +542,7 @@ impl GateAnswer {
             "message": self.message,
             "applied": self.applied,
             "plan": self.plan,
+            "tierEffect": self.tier_effect.unwrap_or(biorouter::privacy::decision_axes::TierEffect::None),
         })
     }
 }
@@ -517,6 +570,13 @@ pub fn write_answer(session_id: &str, request: &str, code: u16, body: &str) -> R
                     .and_then(serde_json::Value::as_bool)
                     .unwrap_or(true),
                 plan: value.get("plan").filter(|plan| !plan.is_null()).cloned(),
+                tier_effect: value
+                    .get("tierEffect")
+                    .and_then(|effect| serde_json::from_value(effect.clone()).ok()),
+                effect_line: value
+                    .get("tierEffectLine")
+                    .and_then(serde_json::Value::as_str)
+                    .map(super::decision_tier::cli_words),
             })
         }
         400 | 404 | 409 | 422 => match refusal_sentence(body) {
@@ -558,18 +618,43 @@ async fn daemon_roster(session_id: &str, auth: &DaemonAuth) -> Result<SessionSub
     parse_roster(&body)
 }
 
-async fn daemon_write(session_id: &str, edit: &GateEdit, auth: DaemonAuth) -> Result<GateAnswer> {
-    let (method, path, body) = request_for(session_id, edit)?;
-    let ((code, answer), _) = protected_write_with_key_if_wanted(
-        method,
-        &path,
-        &body,
-        auth,
-        configured_port(),
-        REQUEST_DEADLINE,
-    )
-    .await?;
-    write_answer(session_id, &format!("{method} {path}"), code, &answer)
+async fn daemon_write(
+    session_id: &str,
+    edit: &GateEdit,
+    auth: DaemonAuth,
+    confirm: &mut dyn super::decision_tier::ConfirmPublic,
+) -> Result<GateAnswer> {
+    use super::decision_tier::{
+        cli_words, confirmation_question, is_confirmation_request, with_public_confirmation,
+        SaveAttempt,
+    };
+    // The auth a retry sends is the one the first answer came back with.
+    let auth = Arc::new(std::sync::Mutex::new(auth));
+    with_public_confirmation(confirm, session_id, |accepted| {
+        let auth = Arc::clone(&auth);
+        async move {
+            let (method, path, body) = request_with(session_id, edit, accepted)?;
+            let current = auth.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            let ((code, answer), back) = protected_write_with_key_if_wanted(
+                method,
+                &path,
+                &body,
+                current,
+                configured_port(),
+                REQUEST_DEADLINE,
+            )
+            .await?;
+            *auth.lock().unwrap_or_else(|e| e.into_inner()) = back;
+            if is_confirmation_request(code, &answer) {
+                return Ok(SaveAttempt::NeedsConfirmation(cli_words(
+                    &confirmation_question(&answer),
+                )));
+            }
+            write_answer(session_id, &format!("{method} {path}"), code, &answer)
+                .map(SaveAttempt::Saved)
+        }
+    })
+    .await
 }
 
 /// The local session store, once the chat is within this terminal's reach,
@@ -634,49 +719,310 @@ fn without_full_stop(text: &str) -> &str {
     text.strip_suffix('.').unwrap_or(text)
 }
 
+/// What a local gate write did: the person transition's outcome and what it
+/// did to the chat's tier.
+#[derive(Debug, Clone)]
+pub struct LocalGateWrite {
+    pub outcome: PersonGateOutcome,
+    pub tier_effect: Option<biorouter::privacy::decision_axes::TierEffect>,
+    /// The line that says it, in the terminal's words, or `None`.
+    pub effect_line: Option<String>,
+}
+
+/// The tier change of a gate write that would store `predicted` (design
+/// §3.6), at the terminal's door with `consent`; `None` when the transition
+/// itself would refuse (then it says why, and nothing is written).
+fn gate_tier_change(
+    session: &DecisionSession,
+    row: &biorouter::session::Session,
+    predicted: Option<&orchestration_plan::OrchestrationPlan>,
+    consent: biorouter::decision::save::LoweringConsent,
+) -> Option<Result<biorouter::decision::save::TierChange>> {
+    use biorouter::decision::save::{tier_change, AfterSave, SaveDoor};
+    let plan = predicted?;
+    Some(tier_change(
+        session,
+        row,
+        AfterSave::Plan(Some(plan)),
+        &SaveDoor::cli(consent),
+    ))
+}
+
+/// The plan `apply` would store over the row's, or `None` when it refuses.
+fn predicted_plan<F>(
+    row: &biorouter::session::Session,
+    apply: F,
+) -> Option<orchestration_plan::OrchestrationPlan>
+where
+    F: FnOnce(
+        Option<orchestration_plan::OrchestrationPlan>,
+    ) -> Result<
+        (orchestration_plan::OrchestrationPlan, PersonGateOutcome),
+        orchestration_plan::GateWriteError,
+    >,
+{
+    let records = biorouter::privacy::decision_axes::RowRecords::parse(&row.extension_data);
+    apply(records.plan().cloned()).ok().map(|(plan, _)| plan)
+}
+
+/// A person's gate transition and the basis its tier change asks for, in ONE
+/// write (`SessionManager::write_public_basis`, which checks eligibility
+/// again inside it), as the daemon's route makes it. A first message that
+/// raced a lowering refuses it; nothing is written then.
+async fn write_gate_with_basis<F>(
+    manager: &SessionManager,
+    session_id: &str,
+    change: &biorouter::decision::save::TierChange,
+    apply: F,
+) -> Result<PersonGateOutcome>
+where
+    F: FnOnce(
+            Option<orchestration_plan::OrchestrationPlan>,
+        ) -> Result<
+            (orchestration_plan::OrchestrationPlan, PersonGateOutcome),
+            orchestration_plan::GateWriteError,
+        > + Send,
+{
+    use biorouter::session::session_manager::BasisWriteOutcome;
+    use orchestration_plan::{plan_record, OrchestrationPlan, PLAN_STATE, PLAN_VERSION};
+    let written = manager
+        .write_public_basis(session_id, change.basis.clone(), move |data| {
+            let current = data
+                .get_extension_state(PLAN_STATE, PLAN_VERSION)
+                .map(|value| serde_json::from_value::<OrchestrationPlan>(value.clone()))
+                .transpose()
+                .map_err(|error| {
+                    anyhow!(
+                        "Could not change this chat's phase gates: this chat's orchestration \
+                         plan was written in a form this build cannot read ({error}); nothing \
+                         was changed."
+                    )
+                })?;
+            // The revision is bumped once per write, as `mutate_plan` does;
+            // it is read and written on the record, the field being the
+            // plan module's own.
+            let previous_revision = data
+                .get_extension_state(PLAN_STATE, PLAN_VERSION)
+                .and_then(|value| value.get("revision"))
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0);
+            let (next, outcome) =
+                apply(current).map_err(|refusal| anyhow!("{}", refusal.message()))?;
+            let mut record = plan_record(&next);
+            if let Some(object) = record.as_object_mut() {
+                object.insert(
+                    "revision".to_string(),
+                    serde_json::Value::from(previous_revision + 1),
+                );
+            }
+            data.set_extension_state(PLAN_STATE, PLAN_VERSION, record);
+            Ok(outcome)
+        })
+        .await?;
+    match written {
+        BasisWriteOutcome::Written(outcome) => Ok(outcome),
+        BasisWriteOutcome::NotEligible => {
+            let model = change.public_names.first().map_or_else(
+                || "a public decision model".to_string(),
+                |name| name.model.clone(),
+            );
+            bail!(
+                "{}",
+                super::decision_tier::cli_words(
+                    &biorouter::session::session_manager::public_basis_not_eligible_sentence(
+                        &model
+                    )
+                )
+            )
+        }
+        BasisWriteOutcome::SessionNotFound => bail!("Session '{session_id}' not found."),
+    }
+}
+
 /// A gate write in the local store, as the daemon's routes make it: a new
 /// gate is checked as the route checks it, and its model must be one this
 /// chat may use (asked of `service`, which sends nothing of the chat), before
 /// the person transition stores it. `Err` is the sentence a person reads,
 /// and then nothing was changed.
+///
+/// DR-33: a set or a removal works out what it does to the chat's tier first
+/// (with the model the row says the chat is bound to); a set that makes the
+/// chat public is asked about with `confirm`, and one that touches the basis
+/// is written with it in the same statement.
 pub async fn write_locally(
     service: &DecisionService,
     store: &LocalStore,
     session_id: &str,
     edit: GateEdit,
-) -> Result<PersonGateOutcome> {
-    let manager = &store.manager;
-    let written = match edit {
+    confirm: &mut dyn super::decision_tier::ConfirmPublic,
+) -> Result<LocalGateWrite> {
+    match edit {
         GateEdit::Set { phase, spec } => {
-            let gate = orchestration_plan::validate_person_gate(&phase, &spec)
-                .map_err(|e| anyhow!("{e}"))?;
-            let session =
-                DecisionSession::load(Arc::clone(manager), session_id, store.enforced).await?;
-            if let Err(error) = service
-                .check_model_use(
-                    &session,
-                    gate.model.as_ref(),
-                    &gate.questions,
-                    ModelSource::Setting,
-                )
-                .await
-            {
-                bail!(
-                    "The gate on phase \"{phase}\" cannot be answered in this chat. {}. Nothing \
-                     was changed.",
-                    without_full_stop(&super::decide::terminal_advice(&error.to_string()))
-                );
-            }
-            orchestration_plan::person_set_gate(manager, session_id, &phase, gate).await
+            set_gate_locally(service, store, session_id, phase, spec, confirm).await
         }
-        GateEdit::Remove { phase } => {
-            orchestration_plan::person_remove_gate(manager, session_id, &phase).await
-        }
+        GateEdit::Remove { phase } => remove_gate_locally(store, session_id, phase).await,
         GateEdit::Decide { phase, choice } => {
-            orchestration_plan::person_gate_decision(manager, session_id, &phase, choice).await
+            orchestration_plan::person_gate_decision(&store.manager, session_id, &phase, choice)
+                .await
+                .map(|outcome| local_gate_write(outcome, None))
+                .map_err(|refusal| anyhow!("{}", refusal.message()))
         }
+    }
+}
+
+/// The row and the decision session a gate write's tier check reads.
+async fn gate_tier_read(
+    store: &LocalStore,
+    session_id: &str,
+) -> Result<(biorouter::session::Session, DecisionSession)> {
+    let manager = &store.manager;
+    let row = manager
+        .get_session(session_id, false)
+        .await
+        .map_err(|_| anyhow!("Session '{session_id}' not found."))?;
+    let session =
+        biorouter::decision::save::load_for_save(Arc::clone(manager), session_id, store.enforced)
+            .await?;
+    Ok((row, session))
+}
+
+/// [`write_locally`]'s set: checked, asked about when it makes the chat
+/// public, and written with its basis when it touches one.
+async fn set_gate_locally(
+    service: &DecisionService,
+    store: &LocalStore,
+    session_id: &str,
+    phase: String,
+    spec: PhaseGateSpec,
+    confirm: &mut dyn super::decision_tier::ConfirmPublic,
+) -> Result<LocalGateWrite> {
+    use super::decision_tier::{cli_words, with_public_confirmation, SaveAttempt};
+    use biorouter::decision::save::{LoweringConsent, NeedsPublicDecisionConfirmation};
+    let manager = &store.manager;
+    let gate =
+        orchestration_plan::validate_person_gate(&phase, &spec).map_err(|e| anyhow!("{e}"))?;
+    let (row, mut session) = gate_tier_read(store, session_id).await?;
+    let now = chrono::Utc::now();
+    let predicted = predicted_plan(&row, |plan| {
+        orchestration_plan::apply_person_set_gate(plan, &phase, gate.clone(), now)
+    });
+    let change = with_public_confirmation(confirm, session_id, |accepted| {
+        let consent = if accepted {
+            LoweringConsent::Confirmed
+        } else {
+            LoweringConsent::Unconfirmed
+        };
+        let result = gate_tier_change(&session, &row, predicted.as_ref(), consent);
+        async move {
+            match result {
+                None => Ok(SaveAttempt::Saved(None)),
+                Some(Ok(change)) => Ok(SaveAttempt::Saved(Some(change))),
+                Some(Err(error)) => match error.downcast_ref::<NeedsPublicDecisionConfirmation>() {
+                    Some(needs) => Ok(SaveAttempt::NeedsConfirmation(cli_words(&needs.sentence))),
+                    None => Err(anyhow!("{}", cli_words(&error.to_string()))),
+                },
+            }
+        }
+    })
+    .await?;
+    session.lowered_after_save = change
+        .as_ref()
+        .is_some_and(|change: &biorouter::decision::save::TierChange| change.lowered_after_save);
+    // A gate with no --model is never refused: with no decision model this
+    // chat may use, the chat's own model judges it.
+    if let Err(error) = orchestration_plan::gate_judge_for(
+        service,
+        &session,
+        gate.model.as_ref(),
+        &gate.questions,
+        ModelSource::Setting,
+    )
+    .await
+    {
+        bail!(
+            "The gate on phase \"{phase}\" cannot be answered in this chat. {}. Leave out \
+             --model to let the chat's own model judge it. Nothing was changed.",
+            without_full_stop(&super::decide::terminal_advice(&error.to_string()))
+        );
+    }
+    let written = match change.as_ref().filter(|change| {
+        !matches!(
+            change.basis,
+            biorouter::session::session_manager::BasisWrite::Keep
+        )
+    }) {
+        Some(with_basis) => {
+            let phase = phase.trim().to_string();
+            return write_gate_with_basis(manager, session_id, with_basis, move |current| {
+                orchestration_plan::apply_person_set_gate(current, &phase, gate, now)
+            })
+            .await
+            .map(|outcome| local_gate_write(outcome, change.as_ref()));
+        }
+        None => orchestration_plan::person_set_gate(manager, session_id, &phase, gate).await,
     };
-    written.map_err(|refusal| anyhow!("{}", refusal.message()))
+    written
+        .map(|outcome| local_gate_write(outcome, change.as_ref()))
+        .map_err(|refusal| anyhow!("{}", refusal.message()))
+}
+
+/// [`write_locally`]'s removal. A removal is a raise (the safe direction): it
+/// needs no confirmation, and clears the basis when it leaves no public name
+/// standing.
+async fn remove_gate_locally(
+    store: &LocalStore,
+    session_id: &str,
+    phase: String,
+) -> Result<LocalGateWrite> {
+    use super::decision_tier::cli_words;
+    use biorouter::decision::save::LoweringConsent;
+    let manager = &store.manager;
+    let (row, session) = gate_tier_read(store, session_id).await?;
+    let predicted = predicted_plan(&row, |plan| {
+        orchestration_plan::apply_person_remove_gate(plan, &phase)
+    });
+    let change = match gate_tier_change(
+        &session,
+        &row,
+        predicted.as_ref(),
+        LoweringConsent::Unconfirmed,
+    ) {
+        None => None,
+        Some(Ok(change)) => Some(change),
+        Some(Err(error)) => bail!("{}", cli_words(&error.to_string())),
+    };
+    let written = match change.as_ref().filter(|change| {
+        !matches!(
+            change.basis,
+            biorouter::session::session_manager::BasisWrite::Keep
+        )
+    }) {
+        Some(with_basis) => {
+            let phase = phase.trim().to_string();
+            return write_gate_with_basis(manager, session_id, with_basis, move |current| {
+                orchestration_plan::apply_person_remove_gate(current, &phase)
+            })
+            .await
+            .map(|outcome| local_gate_write(outcome, change.as_ref()));
+        }
+        None => orchestration_plan::person_remove_gate(manager, session_id, &phase).await,
+    };
+    written
+        .map(|outcome| local_gate_write(outcome, change.as_ref()))
+        .map_err(|refusal| anyhow!("{}", refusal.message()))
+}
+
+fn local_gate_write(
+    outcome: PersonGateOutcome,
+    change: Option<&biorouter::decision::save::TierChange>,
+) -> LocalGateWrite {
+    LocalGateWrite {
+        outcome,
+        tier_effect: change.map(|change| change.effect),
+        effect_line: change
+            .and_then(|change| change.effect_line())
+            .map(|line| super::decision_tier::cli_words(&line)),
+    }
 }
 
 fn print_plan(session_id: &str, plan: Option<&OrchestrationSnapshot>, format: GatesFormat) {
@@ -696,6 +1042,11 @@ fn print_answer(answer: &GateAnswer, format: GatesFormat) -> Result<()> {
     match format {
         GatesFormat::Json => super::print_line(serde_json::to_string_pretty(&answer.json())?),
         GatesFormat::Text => super::print_line(&answer.message),
+    }
+    // The tier effect goes to stderr in either format, as the monitors'
+    // does, so a script reading stdout gets the answer alone.
+    if let Some(line) = &answer.effect_line {
+        eprintln!("{line}");
     }
     Ok(())
 }
@@ -726,7 +1077,8 @@ pub async fn handle_session_gates(
                 print_plan(session_id, roster.plan.as_ref(), format);
             }
             Some(edit) => {
-                let answer = daemon_write(session_id, &edit, auth)
+                let mut confirm = super::decision_tier::TerminalConfirm::here();
+                let answer = daemon_write(session_id, &edit, auth, &mut confirm)
                     .await
                     .map_err(super::decide::advise)?;
                 print_answer(&answer, format)?;
@@ -741,9 +1093,16 @@ pub async fn handle_session_gates(
                     print_plan(session_id, plan.as_ref(), format);
                 }
                 Some(edit) => {
-                    let outcome =
-                        write_locally(biorouter::decision::global(), &store, session_id, edit)
-                            .await?;
+                    let mut confirm = super::decision_tier::TerminalConfirm::here();
+                    let written = write_locally(
+                        biorouter::decision::global(),
+                        &store,
+                        session_id,
+                        edit,
+                        &mut confirm,
+                    )
+                    .await?;
+                    let outcome = written.outcome;
                     let plan = match format {
                         GatesFormat::Json => local_plan(&store, session_id)
                             .await
@@ -757,6 +1116,8 @@ pub async fn handle_session_gates(
                             message: outcome.message,
                             applied: outcome.applied,
                             plan,
+                            tier_effect: written.tier_effect,
+                            effect_line: written.effect_line,
                         },
                         format,
                     )?;
@@ -770,6 +1131,7 @@ pub async fn handle_session_gates(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::decision_tier::Scripted;
     use biorouter::agents::orchestration_plan::{
         OrchestratePhaseInput, PhaseCounts, PhaseGateInput, PhaseKind, PlanPhaseInput, PLAN_STATE,
         PLAN_VERSION,
@@ -992,6 +1354,8 @@ mod tests {
                 message: "Your pass stands: phase \"research\" completes.".into(),
                 applied: false,
                 plan: None,
+                tier_effect: None,
+                effect_line: None,
             }
         );
         // Not about the key: the sentence alone.
@@ -1044,6 +1408,7 @@ mod tests {
             .into_iter()
             .collect(),
             model: None,
+            last_judge: None,
             model_adapter: None,
             allow_uncalibrated: false,
             last_error: None,
@@ -1070,6 +1435,46 @@ mod tests {
             gate: None,
             held_by: None,
         }
+    }
+
+    /// A gate the chat's own model judged says so by the model's name, with
+    /// why, never as "the chat's default decision model".
+    #[test]
+    fn a_gate_the_chats_own_model_judged_says_so() {
+        use biorouter::agents::orchestration_plan::{GateJudge, GateJudgeKind};
+        let mut research = snapshot_phase("research", PhaseStatus::Completed);
+        let mut gate = snapshot_gate(GateOwner::Workflow);
+        gate.attempts = 1;
+        gate.last_passed = Some(true);
+        gate.last_judge = Some(GateJudge {
+            kind: GateJudgeKind::ChatModel,
+            model: "gpt-5.5".into(),
+            reason: Some(
+                "This chat has no decision model it may use, so gpt-5.5, the chat's model, \
+                 judged the gate."
+                    .into(),
+            ),
+        });
+        research.gate = Some(gate);
+        let plan = OrchestrationSnapshot {
+            title: "Moon".into(),
+            goal: None,
+            revision: 1,
+            phases: vec![research],
+        };
+        let text = render_gates("s1", Some(&plan)).join("\n");
+        assert!(
+            text.contains("judged by gpt-5.5, the chat's model"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "This chat has no decision model it may use, so gpt-5.5, the chat's model, \
+                 judged the gate."
+            ),
+            "{text}"
+        );
+        assert!(!text.contains("default decision model"), "{text}");
     }
 
     #[test]
@@ -1303,9 +1708,16 @@ mod tests {
         ]))
         .unwrap();
 
-        let said = write_locally(&service(true), &store, &chat, GateEdit::Set { phase, spec })
-            .await
-            .unwrap();
+        let said = write_locally(
+            &service(true),
+            &store,
+            &chat,
+            GateEdit::Set { phase, spec },
+            &mut Scripted::no_terminal(),
+        )
+        .await
+        .unwrap()
+        .outcome;
         assert!(said.applied);
         assert!(
             said.message
@@ -1330,9 +1742,11 @@ mod tests {
                 phase: "research".into(),
                 choice: PersonGateChoice::Pass,
             },
+            &mut Scripted::no_terminal(),
         )
         .await
-        .unwrap();
+        .unwrap()
+        .outcome;
         assert!(
             passed.applied,
             "no subagent works in it: {}",
@@ -1364,6 +1778,7 @@ mod tests {
             GateEdit::Remove {
                 phase: "write".into(),
             },
+            &mut Scripted::no_terminal(),
         )
         .await
         .unwrap_err();
@@ -1396,6 +1811,7 @@ mod tests {
             &store,
             &chat,
             GateEdit::Set { phase, spec },
+            &mut Scripted::no_terminal(),
         )
         .await
         .unwrap_err();
@@ -1444,5 +1860,205 @@ mod tests {
                 .is_ok(),
             "with the master switch off nothing is refused, as on the route"
         );
+    }
+
+    /// Baseten's joey-1, public, listed, never asked anything.
+    struct Joey;
+
+    #[async_trait::async_trait]
+    impl DecisionModel for Joey {
+        fn model_ref(&self) -> DecisionModelRef {
+            DecisionModelRef::new("baseten_decision", "joey-1")
+                .with_adapter(DecisionAdapter::SystemOne)
+        }
+        fn display_name(&self) -> String {
+            "joey-1".into()
+        }
+        fn tier(&self) -> ProviderTier {
+            ProviderTier::Public
+        }
+        fn affiliation(&self) -> Option<ModelAffiliation> {
+            None
+        }
+        fn caps(&self) -> DecisionCaps {
+            DecisionCaps {
+                kinds: vec![DecisionKindTag::Binary],
+                max_questions: 64,
+                context_tokens: 4_096,
+                max_concurrency: 1,
+                max_request_bytes: None,
+                local: false,
+            }
+        }
+        async fn decide(&self, _: &DecisionRequest) -> DecisionResult<ModelVerdicts> {
+            panic!("a save-time check sent a decision");
+        }
+    }
+
+    struct JoeySource;
+
+    #[async_trait::async_trait]
+    impl DecisionModelSource for JoeySource {
+        async fn list(&self) -> Vec<DecisionModelEntry> {
+            vec![DecisionModelEntry {
+                provider: "baseten_decision".into(),
+                model: "joey-1".into(),
+                display_name: "joey-1".into(),
+                context_tokens: 4_096,
+                kinds: vec![DecisionKindTag::Binary],
+                tier: ProviderTier::Public,
+                affiliation: None,
+                adapter: DecisionAdapter::SystemOne,
+                local: false,
+                load_refusal: None,
+            }]
+        }
+        async fn open(&self, wanted: &DecisionModelRef) -> DecisionResult<Arc<dyn DecisionModel>> {
+            if wanted.model == "joey-1" {
+                Ok(Arc::new(Joey))
+            } else {
+                Err(DecisionError::NoModel(format!(
+                    "No decision model `{}` is listed.",
+                    wanted.label()
+                )))
+            }
+        }
+    }
+
+    fn has_basis(row: &biorouter::session::Session) -> bool {
+        use biorouter::privacy::decision_axes::{PUBLIC_BASIS_STATE, PUBLIC_BASIS_VERSION};
+        row.extension_data
+            .get_extension_state(PUBLIC_BASIS_STATE, PUBLIC_BASIS_VERSION)
+            .is_some()
+    }
+
+    /// DR-33 (design §3.6) with no daemon: on an empty chat bound to a
+    /// private model, a joey-1 gate on an open phase makes the chat public.
+    /// So the set asks first, and with no terminal it is refused and the plan
+    /// is unchanged; confirmed, the gate and the person's basis land in one
+    /// write and the effect is said. Removing that gate, the chat's last
+    /// public name, makes it private at its next message and clears the
+    /// basis, with no question.
+    #[tokio::test]
+    async fn a_public_gate_on_a_private_models_empty_chat_needs_a_typed_confirmation() {
+        use biorouter::privacy::decision_axes::TierEffect;
+        let dir = tempfile::tempdir().unwrap();
+        let manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let chat = chat_with_plan(&manager, dir.path()).await;
+        manager
+            .update(&chat)
+            .provider_name("versa_azure")
+            .model_config(biorouter::model::ModelConfig::new_or_fail("gpt-5.5"))
+            .apply()
+            .await
+            .unwrap();
+        let store = local_store_at(manager.clone(), &chat, ProviderTier::Private, true)
+            .await
+            .unwrap();
+        let service = DecisionService::new(Arc::new(JoeySource))
+            .with_use_gate(Arc::new(Allow))
+            .with_default_model(None);
+        let edit = || {
+            let (phase, spec) = build_spec(&set(&[
+                "research",
+                "--ask",
+                "facts=Two facts?",
+                "--model",
+                "baseten_decision/joey-1",
+            ]))
+            .unwrap();
+            GateEdit::Set { phase, spec }
+        };
+
+        let mut nobody = Scripted::no_terminal();
+        let error = write_locally(&service, &store, &chat, edit(), &mut nobody)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            crate::commands::decision_tier::NO_TERMINAL
+        );
+        assert_eq!(
+            nobody.asked,
+            vec!["This chat will be public: joey-1 runs on Baseten.".to_string()]
+        );
+        let plan = local_plan(&store, &chat).await.unwrap().unwrap();
+        assert!(plan.phases[0].gate.is_none(), "nothing was stored");
+        assert!(!has_basis(
+            &manager.get_session(&chat, false).await.unwrap()
+        ));
+
+        let written = write_locally(&service, &store, &chat, edit(), &mut Scripted::yes())
+            .await
+            .unwrap();
+        assert_eq!(written.tier_effect, Some(TierEffect::BecomesPublic));
+        assert_eq!(
+            written.effect_line.as_deref(),
+            Some("This chat will be public: joey-1 runs on Baseten.")
+        );
+        let plan = local_plan(&store, &chat).await.unwrap().unwrap();
+        assert!(plan.phases[0].gate.is_some(), "the gate was stored");
+        let row = manager.get_session(&chat, false).await.unwrap();
+        assert!(has_basis(&row), "with the person's basis");
+        assert_eq!(
+            crate::session::output::decision_privacy_reason(&row, ProviderTier::Private, true)
+                .as_deref(),
+            Some("public because the gate on phase \"research title\" uses joey-1 · Baseten")
+        );
+
+        let mut never = Scripted::no_terminal();
+        let removed = write_locally(
+            &service,
+            &store,
+            &chat,
+            GateEdit::Remove {
+                phase: "research".into(),
+            },
+            &mut never,
+        )
+        .await
+        .unwrap();
+        assert!(never.asked.is_empty(), "a removal is not asked about");
+        assert_eq!(
+            removed.tier_effect,
+            Some(TierEffect::BecomesPrivateAtNextMessage)
+        );
+        assert!(removed
+            .effect_line
+            .unwrap()
+            .starts_with("This chat becomes private at your next message."));
+        assert!(!has_basis(
+            &manager.get_session(&chat, false).await.unwrap()
+        ));
+    }
+
+    /// Through a daemon, the gate's body carries the acceptance only when
+    /// asked to, beside the gate's own keys, and the answer's effect is read.
+    #[test]
+    fn the_gate_put_carries_the_acceptance_and_its_answer_the_effect() {
+        let (phase, spec) = build_spec(&set(&["research", "--ask", "facts=Two facts?"])).unwrap();
+        let edit = GateEdit::Set { phase, spec };
+        let (_, _, plain) = request_with("s1", &edit, false).unwrap();
+        assert!(!plain.contains("acceptPublicDecisionModels"));
+        let (_, _, accepted) = request_with("s1", &edit, true).unwrap();
+        let body: serde_json::Value = serde_json::from_str(&accepted).unwrap();
+        assert_eq!(body["acceptPublicDecisionModels"], true);
+        assert_eq!(body["questions"]["facts"], "Two facts?");
+        let answer = write_answer(
+            "s1",
+            "PUT x",
+            200,
+            r#"{"message":"Phase \"research\" now has your gate.","applied":true,"plan":null,"tierEffect":"becomesPublic","tierEffectLine":"This chat will be public: decision-models/baseten-joey-2b-latest runs on Baseten."}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            answer.tier_effect,
+            Some(biorouter::privacy::decision_axes::TierEffect::BecomesPublic)
+        );
+        assert_eq!(
+            answer.effect_line.as_deref(),
+            Some("This chat will be public: joey-1 runs on Baseten.")
+        );
+        assert_eq!(answer.json()["tierEffect"], "becomesPublic");
     }
 }

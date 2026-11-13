@@ -187,36 +187,83 @@ fn filter_frame(result: Value) -> String {
     )
 }
 
+fn texts(items: &[ProviderStreamItem]) -> String {
+    items
+        .iter()
+        .filter_map(|(message, _, _)| message.as_ref())
+        .flat_map(|message| &message.content)
+        .filter_map(|content| match content {
+            MessageContent::Text(text) => Some(text.text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Azure documents an `error` inside a choice's content-filter results as the
+/// filter failing to run, with the reply delivered unfiltered; it is not a
+/// block. Live on Versa it rode the reply's own text chunks to a `stop`
+/// (2026-11-11), and Biorouter used to end the turn on it.
 #[tokio::test]
-async fn filter_service_errors_are_readable_and_never_echo_provider_data() {
+async fn filter_failure_annotations_are_read_on_whatever_their_code() -> anyhow::Result<()> {
     for key in ["content_filter_result", "content_filter_results"] {
-        for delta in [None, Some(json!({}))] {
-            let mut choice = json!({"index":0});
-            choice[key] = json!({"error":{"code":"content_filter_error","message":"SECRET_PROVIDER_PAYLOAD"}});
-            if let Some(delta) = delta {
-                choice["delta"] = delta;
+        for code in ["content_filter_error", "SECRET_PROVIDER_PAYLOAD"] {
+            for delta in [None, Some(json!({})), Some(json!({"content":"kept"}))] {
+                let mut choice = json!({"index":0});
+                choice[key] = json!({"error":{"code":code,"message":"SECRET_PROVIDER_PAYLOAD"}});
+                let expected = match &delta {
+                    Some(delta) => delta["content"].as_str().unwrap_or("").to_string(),
+                    None => String::new(),
+                };
+                if let Some(delta) = delta {
+                    choice["delta"] = delta;
+                }
+                let items = decode(vec![
+                    format!("data: {}", json!({"choices":[choice]})),
+                    chunk(json!({}), Some("stop")),
+                    "data: [DONE]".into(),
+                ])
+                .await?;
+                assert_eq!(texts(&items), expected, "{key} {code}");
             }
-            let error = decode(vec![format!("data: {}", json!({"choices":[choice]}))])
-                .await
-                .unwrap_err();
-            assert!(error
-                .downcast_ref::<biorouter::providers::errors::ProviderError>()
-                .is_some());
-            let text = error.to_string();
-            assert!(text.contains("Provider content filter failed"), "{text}");
-            assert!(!text.contains("SECRET_PROVIDER_PAYLOAD"));
-            assert!(!text.contains("missing field"));
         }
     }
+    Ok(())
 }
 
 #[tokio::test]
-async fn filter_errors_abort_pending_tools_without_dispatching_them() {
+async fn filter_failure_annotations_do_not_cut_a_pending_tool_call() -> anyhow::Result<()> {
+    let items = decode(vec![
+        start(r#"{"path":""#, None),
+        filter_frame(
+            json!({"error":{"code":"content_filter_error","message":"The contents are not filtered"}}),
+        ),
+        chunk(
+            json!({"tool_calls":[{"index":0,"function":{"arguments":"/tmp/fixture\"}"}}]}),
+            None,
+        ),
+        chunk(json!({}), Some("tool_calls")),
+    ])
+    .await?;
+    let calls = requests(&items);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(
+        calls[0]
+            .tool_call
+            .as_ref()
+            .expect("the call completes")
+            .arguments
+            .as_ref()
+            .unwrap()["path"],
+        "/tmp/fixture"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn filter_blocks_abort_pending_tools_without_dispatching_them() {
     let frames = vec![
         start("{}", None),
-        filter_frame(
-            json!({"error":{"code":"content_filter_error","message":"SECRET_PROVIDER_PAYLOAD"}}),
-        ),
+        filter_frame(json!({"violence":{"filtered":true,"severity":"high"}})),
         chunk(json!({}), Some("tool_calls")),
     ];
     let stream = response_to_streaming_message(tokio_stream::iter(frames.into_iter().map(Ok)));
@@ -224,7 +271,9 @@ async fn filter_errors_abort_pending_tools_without_dispatching_them() {
     let pending = stream.next().await.unwrap().unwrap();
     assert!(pending.2.is_some());
     let error = stream.next().await.unwrap().unwrap_err();
-    assert!(error.to_string().contains("Provider content filter failed"));
+    assert!(error
+        .to_string()
+        .contains("Azure's content filter blocked this reply (flagged: violence)."));
     assert!(stream.next().await.is_none());
 }
 
@@ -300,15 +349,35 @@ async fn azure_filter_annotations_do_not_complete_pending_tools() -> anyhow::Res
 
 #[tokio::test]
 async fn blocked_filter_frames_are_errors_even_without_delta_or_finish_reason() {
-    for frame in [
-        filter_frame(json!({"violence":{"filtered":true,"severity":"high"}})),
-        format!(
-            "data: {}",
-            json!({"choices":[{"index":0,"finish_reason":"content_filter"}]})
+    for (frame, said) in [
+        (
+            filter_frame(json!({"violence":{"filtered":true,"severity":"high"}})),
+            "Azure's content filter blocked this reply (flagged: violence).",
+        ),
+        // The finish reason alone, from a server that files no Azure verdict.
+        (
+            format!(
+                "data: {}",
+                json!({"choices":[{"index":0,"finish_reason":"content_filter"}]})
+            ),
+            "The provider's content filter blocked this reply.",
+        ),
+        // The finish reason beside Azure's empty verdict, as Versa sends it.
+        (
+            format!(
+                "data: {}",
+                json!({"choices":[{"index":0,"finish_reason":"content_filter","delta":{},"content_filter_results":{}}]})
+            ),
+            "Azure's content filter blocked this reply.",
         ),
     ] {
         let error = decode(vec![frame]).await.unwrap_err();
-        assert!(error.to_string().contains("safety filter blocked"));
+        let text = error.to_string();
+        assert!(
+            text.contains(said) && text.contains("Revise the request"),
+            "{text}"
+        );
+        assert!(!text.contains("(content_filter)"), "{text}");
         let provider_error = error
             .downcast_ref::<biorouter::providers::errors::ProviderError>()
             .unwrap();
@@ -329,6 +398,7 @@ async fn unrecognized_or_malformed_choices_still_fail_without_payload_disclosure
         json!({"index":0,"delta":"SECRET_PROVIDER_PAYLOAD","content_filter_results":{"hate":{"filtered":false}}}),
         json!({"index":0,"content_filter_results":{}}),
         json!({"index":0,"content_filter_results":{"error":null}}),
+        json!({"index":0,"content_filter_results":{"error":"SECRET_PROVIDER_PAYLOAD"}}),
         json!({"index":0,"content_filter_results":{"unexpected":"SECRET_PROVIDER_PAYLOAD"}}),
         json!({"index":0,"delta":{"content":"SECRET_PROVIDER_PAYLOAD","tool_calls":"SECRET_PROVIDER_PAYLOAD"}}),
     ] {
@@ -363,25 +433,4 @@ async fn invalid_json_and_top_level_errors_never_echo_provider_payloads() {
             );
         }
     }
-}
-
-#[tokio::test]
-async fn unknown_filter_errors_do_not_promise_retry_or_disclose_details() {
-    let error = decode(vec![filter_frame(
-        json!({"error":{"code":"SECRET_PROVIDER_PAYLOAD","message":"SECRET_PROVIDER_PAYLOAD"}}),
-    )])
-    .await
-    .unwrap_err();
-    let provider_error = error
-        .downcast_ref::<biorouter::providers::errors::ProviderError>()
-        .unwrap();
-    assert_eq!(
-        provider_error.kind(),
-        biorouter::providers::errors::ProviderErrorKind::Other
-    );
-    assert!(!biorouter::agents::mistakes::is_recoverable(provider_error));
-    let text = error.to_string();
-    assert!(text.contains("Provider content filter reported an error"));
-    assert!(!text.contains("Retry"));
-    assert!(!text.contains("SECRET_PROVIDER_PAYLOAD"));
 }

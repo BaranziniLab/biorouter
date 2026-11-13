@@ -3,6 +3,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { DecisionCard, DECISION_CARD_COPY, calibrationHelp } from './DecisionCard';
 import { resetDecisionRecordCacheForTests } from './decisionChatApi';
 import { wireBinaryDetail, wireChoiceDetail, wireErrorDetail } from './decisionFixtures';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { AlertCircle } from '../icons/app-icons';
+
+/** The failure glyph's drawing, to tell it from any other icon by shape. */
+function failureGlyph(): string {
+  const host = document.createElement('div');
+  host.innerHTML = renderToStaticMarkup(<AlertCircle />);
+  return host.querySelector('svg')?.innerHTML ?? '';
+}
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), headers: vi.fn() }));
 vi.mock('../../api/client.gen', () => ({ client: { get: mocks.get, put: vi.fn() } }));
@@ -306,9 +315,11 @@ describe('the decision card', () => {
   it('says why a failed call has no answer', async () => {
     mocks.get.mockResolvedValue(ok(wireErrorDetail()));
     show('dec-3');
-    expect(await screen.findByTestId('decision-error')).toHaveTextContent(
-      'Not decided: The decision model did not answer in 10 s'
-    );
+    const error = await screen.findByTestId('decision-error');
+    expect(error).toHaveTextContent('Not decided: The decision model did not answer in 10 s');
+    // Red is rare (design.md 9.14): the failure glyph and the words, nothing in a status hue.
+    expect(within(error).getByTestId('decision-error-glyph').innerHTML).toBe(failureGlyph());
+    expect(error.outerHTML).not.toMatch(/danger|warning/);
   });
 
   it('keeps the reply’s text when the row is gone or cannot be read', async () => {

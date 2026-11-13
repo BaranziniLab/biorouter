@@ -42,7 +42,9 @@ import { isUIResource } from '@mcp-ui/client';
 import { CallToolResponse, Content, EmbeddedResource } from '../api';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import { crossAffiliationOffer } from '../utils/crossAffiliation';
+import { personFacingToolError } from '../utils/repetitionStop';
 import { CrossAffiliationAcceptCard } from './privacy/CrossAffiliationAcceptCard';
+import { spawnRefusalHint } from './subagent/spawnRefusalHint';
 import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
 import { sanitizeUntrustedLabel, stripHiddenCharacters } from '../utils/untrustedText';
 import { TranscriptRow, TranscriptRowSection } from './TranscriptRow';
@@ -396,10 +398,47 @@ function displayError(error: unknown): string {
   return 'The tool call failed without an error message.';
 }
 
+/**
+ * What Biorouter itself puts in a failed call's `data`: the error taxonomy's
+ * envelope (`ENVELOPE_KEY` in `crates/biorouter/src/agents/tool_errors.rs`),
+ * which repeats the message, and the agent loop's execution audit
+ * (`biorouterToolExecution` in `agents/agent.rs`). Neither is for a person.
+ */
+const BIOROUTER_ERROR_DATA_KEYS: ReadonlySet<string> = new Set(['error', 'biorouterToolExecution']);
+
+/**
+ * A failed call's text, for the card.
+ *
+ * The wire's `error` is the error's display, `<code>: <message>(<data>)`: a
+ * protocol code in front and the data as JSON behind. A refused subagent read
+ * "-32602: [tool_error …] … This chat is private, … ({"error":{…}})", the
+ * header in the middle where nothing strips it and its own sentence repeated as
+ * JSON. When the data holds only what Biorouter added, `error_data.message`
+ * says everything the display does, and the card reads that. Data a tool sent
+ * itself may explain the failure, so then the display is kept, as it is for a
+ * chat saved before `error_data` existed.
+ */
+function failedCallText(result: Record<string, unknown>): unknown {
+  const errorData = recordOf(result.error_data);
+  const message = errorData?.message;
+  if (typeof message !== 'string' || !message.trim()) return result.error;
+  const data = errorData?.data;
+  if (data === undefined || data === null) return message;
+  const fields = recordOf(data);
+  if (
+    fields &&
+    !Array.isArray(data) &&
+    Object.keys(fields).every((key) => BIOROUTER_ERROR_DATA_KEYS.has(key))
+  ) {
+    return message;
+  }
+  return result.error;
+}
+
 function getToolResultError(toolResult: unknown): string | null {
   const result = recordOf(toolResult);
   if (!result) return null;
-  if (result.status === 'error') return displayError(result.error);
+  if (result.status === 'error') return displayError(failedCallText(result));
 
   const value = normalizedToolResultValue(result);
   // `isError` is the wire spelling: rmcp serialises CallToolResult with
@@ -1898,6 +1937,15 @@ function ToolCallView({
   // rather than only inside the card is what stops the two from drifting into
   // "expanded for a control that does not render".
   const acceptOffer = sessionId ? crossAffiliationOffer(toolError) : null;
+
+  // Owner decision 4: a private chat refused a subagent on a public model is
+  // told, under the refusal and to the person alone, that the chat can be made
+  // public from History. The tool result never carries this line, so the agent
+  // never reads it (`subagent/spawnRefusalHint.ts`). Only in a live chat on the
+  // desktop: a saved or shared transcript has no chat to change, and a browser
+  // cannot make a chat public at all (`sessions/declassifyOnBrowser.ts`).
+  const refusalHint =
+    sessionId && !isBrowserSurface() ? spawnRefusalHint(toolCall.name, toolError) : null;
   // Open until the person says otherwise: `null` means "never toggled", which
   // follows the offer, so a refusal that lands AFTER the row mounted (the row
   // was running) still opens onto its accept control.
@@ -2211,6 +2259,7 @@ function ToolCallView({
       {toolError && (
         <div className="flex min-w-0 flex-col gap-2">
           <ToolFailureNotice title={TOOL_ROW_COPY.error} message={toolError} />
+          {refusalHint && <p className="text-supporting text-text-muted">{refusalHint}</p>}
           {/*
             Issue #56, DR-26 / Task 57 — the accept control, on the surface the
             refusal lands on and directly under the daemon's own words. DR-26
@@ -2396,11 +2445,46 @@ function ToolCallView({
 /** Longest live progress line the collapsed row carries before it is elided. */
 const MAX_LIVE_DETAIL_LENGTH = 64;
 
+/**
+ * The dispatch's own wrapper on a failed call, "`workspace__subagent` failed: ", which
+ * names the tool by its id. The row's label already says what failed in words.
+ */
+const DISPATCH_FAILURE_WRAPPER = /^`[A-Za-z0-9_.-]+` failed: /;
+
+/** A JSON-RPC error code ahead of its message ("-32602: "), as the MCP error prints it. */
+const JSON_RPC_CODE = /^-32\d{3}: /;
+
+/**
+ * A failed call's text without the two machine prefixes the daemon put in front of
+ * the sentence: "`workspace__subagent` failed: -32602: This chat is running on a public
+ * model..." reads "This chat is running on a public model..." (live QA, 2026-11-12, a
+ * refused subagent). The daemon now writes the plain sentence; a chat saved before keeps
+ * the prefixes, so the card drops them. Anything else, and a text that is only a prefix,
+ * is left as it came.
+ */
+export function plainToolFailureText(text: string): string {
+  let rest = text.trimStart();
+  const wrapper = DISPATCH_FAILURE_WRAPPER.exec(rest);
+  if (wrapper) rest = rest.slice(wrapper[0].length);
+  const code = JSON_RPC_CODE.exec(rest);
+  if (code) rest = rest.slice(code[0].length);
+  return rest.trim() ? rest : text;
+}
+
+/**
+ * A failed call's error, in the words the person reads: without the error
+ * taxonomy's `[tool_error …]` header and its advice to the agent, and a
+ * repetition stop as one plain sentence (`utils/repetitionStop.ts`). Callers
+ * that parse the raw text (the cross-affiliation offer) read it before this.
+ */
 function ToolFailureNotice({ title, message }: { title?: string; message: string }) {
+  // The wrapper and the code come off first: the taxonomy's header can only be
+  // recognised at the start of the text, and in a display it follows the code.
+  const shown = personFacingToolError(plainToolFailureText(message));
   return (
     <div role="alert" className="min-w-0">
       {title && <div className="text-secondary text-text-danger">{title}</div>}
-      <ToolContentPreview text={message}>
+      <ToolContentPreview text={shown}>
         {(text) => (
           <pre className="mt-1 whitespace-pre-wrap break-words font-mono text-code text-text-default [overflow-wrap:anywhere]">
             {text}

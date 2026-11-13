@@ -54,6 +54,7 @@ pub async fn agent_generator(
         max_turns: None,
         quiet: false,
         output_format: "text".to_string(),
+        decisions: Default::default(),
     })
     .await;
 

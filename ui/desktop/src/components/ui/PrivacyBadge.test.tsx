@@ -323,12 +323,12 @@ describe('PrivacyBadge', () => {
     expect(mark).toHaveClass('br-info-tip-target');
     expect(mark).toHaveAccessibleName('Private chat');
     expect(mark).toHaveAccessibleDescription(
-      'Private. Biorouter only lets a private model open this chat.'
+      'Private. Biorouter only lets private models, decision models included, read this chat.'
     );
     await user.click(mark);
     expect(mark).toHaveAttribute('data-pinned', 'true');
     expect(document.querySelector('[data-slot="info-tip-content"]')).toHaveTextContent(
-      'Private. Biorouter only lets a private model open this chat.'
+      'Private. Biorouter only lets private models, decision models included, read this chat.'
     );
   });
 
@@ -482,5 +482,21 @@ describe('PrivacyBadge', () => {
     expect(
       badgeOf(<PrivacyBadge tier="private" enforcementOff />)!.getAttribute('data-enforcement')
     ).toBe('off');
+  });
+});
+
+describe('DR-33: the pill says why a decision model made the chat public', () => {
+  it('a pill with help is its InfoTip’s trigger, and one without stays a plain pill', () => {
+    const help =
+      'Public: monitor "Done" uses joey-1 · Baseten. A chat is as private as its least private model, so it can\'t use private extensions, knowledge bases or chats.';
+    const { unmount } = render(<PrivacyBadge tier="public" help={help} />);
+    const pill = screen.getByTestId('privacy-badge');
+    expect(pill).toHaveTextContent('Public');
+    expect(pill).toHaveClass('br-info-tip-target');
+    expect(pill).toHaveAccessibleDescription(help);
+    unmount();
+
+    render(<PrivacyBadge tier="public" />);
+    expect(screen.getByTestId('privacy-badge')).not.toHaveClass('br-info-tip-target');
   });
 });

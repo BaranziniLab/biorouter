@@ -63,10 +63,36 @@ pub fn needs_disclosure(
     caller_session_id: &str,
     target_session_id: &str,
 ) -> bool {
+    // One ask of the predicate in this file: the ceiling-aware form with no
+    // ceiling is exactly the once-per-pair rule.
+    needs_disclosure_to(caller, target, caller_session_id, target_session_id, false)
+}
+
+/// [`needs_disclosure`], for a target that may carry a spawn ceiling (DR-33,
+/// design §3.4).
+///
+/// A subagent born under a parent that was public by a decision model runs
+/// under that parent's Public ceiling. If the parent later becomes Private (its
+/// last public decision model removed, then its next turn), its writes into the
+/// still-public child — `workspace_send_prompt`, a steer, a continuation — are
+/// private-to-public crossings, and **no approval is remembered for them**:
+/// every such payload asks, showing the payload. One approval must not let a
+/// now-private chat stream its content into a child it started while it was
+/// public.
+///
+/// `target_ceiling_names_caller` is
+/// [`crate::privacy::decision_axes::ceiling_names_caller`] of the target row.
+pub fn needs_disclosure_to(
+    caller: ProviderTier,
+    target: SessionClassification,
+    caller_session_id: &str,
+    target_session_id: &str,
+    target_ceiling_names_caller: bool,
+) -> bool {
     if !visibility::requires_first_crossing_approval(caller, target) {
         return false;
     }
-    !already_crossed(caller_session_id, target_session_id)
+    target_ceiling_names_caller || !already_crossed(caller_session_id, target_session_id)
 }
 
 /// Record that this pair has now crossed. Called by the handler once the write
@@ -132,6 +158,24 @@ mod tests {
         // And the pair is ordered: the target having disclosed to someone else
         // says nothing about this caller.
         assert!(needs_disclosure(CPriv, TPub, "other-caller", "first"));
+    }
+
+    /// DR-33 (design §3.4): a now-private parent writing into a child born
+    /// under its Public ceiling asks EVERY time, however often it has crossed.
+    #[test]
+    fn a_child_under_the_callers_ceiling_asks_every_time() {
+        let _g = guard();
+        assert!(needs_disclosure_to(CPriv, TPub, "parent", "child", true));
+        record("parent", "child");
+        assert!(
+            needs_disclosure_to(CPriv, TPub, "parent", "child", true),
+            "a remembered approval silenced a private parent's write into its ceilinged child"
+        );
+        // An ordinary target keeps the once-per-pair rule.
+        assert!(!needs_disclosure_to(CPriv, TPub, "parent", "child", false));
+        // And the ceiling never invents a crossing that is not one.
+        assert!(!needs_disclosure_to(CPub, TPub, "parent", "child", true));
+        assert!(!needs_disclosure_to(CPriv, TPriv, "parent", "child", true));
     }
 
     #[test]

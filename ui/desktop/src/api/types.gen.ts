@@ -709,6 +709,12 @@ export type ChannelLabel = {
     team?: string | null;
 };
 
+/**
+ * What choosing a listed decision model would do to the chat's tier, for a
+ * picker row (`DecisionModelInfo.chatEffect`, design §5).
+ */
+export type ChatEffect = 'makesPublic';
+
 export type ChatRequest = {
     /**
      * Opaque admission minted by an exact-generation Stop-and-Send. A live
@@ -2034,6 +2040,7 @@ export type DecisionKindTag = 'binary' | 'choice' | 'score';
  */
 export type DecisionModelInfo = {
     adapter: DecisionAdapter;
+    chatEffect?: ChatEffect | null;
     contextTokens: number;
     displayName: string;
     kinds: Array<DecisionKindTag>;
@@ -2187,6 +2194,31 @@ export type DecisionRecord = {
 export type DecisionSettings = {
     defaultModel?: DecisionModelRef | null;
     monitors?: Array<MonitorCriterion>;
+};
+
+/**
+ * What a decision-settings save stored, and what it did to the chat's tier.
+ */
+export type DecisionSettingsSaved = DecisionSettings & {
+    tierEffect: TierEffect;
+    /**
+     * The line to show for it ("This chat will be public: joey-1 runs on
+     * Baseten."), absent when there is nothing to say.
+     */
+    tierEffectLine?: string | null;
+};
+
+/**
+ * `PUT /sessions/{id}/decision-settings`'s body: the settings record, and the
+ * person's confirmation of a lowering beside it.
+ */
+export type DecisionSettingsWrite = DecisionSettings & {
+    /**
+     * The person saw "This chat will be public: …" and accepted it. Needed,
+     * with the user-action proof, for a save that makes a chat on a private
+     * model public by a decision model; ignored by any other save.
+     */
+    acceptPublicDecisionModels?: boolean;
 };
 
 /**
@@ -3460,6 +3492,29 @@ export type FrontendToolRequest = {
 };
 
 /**
+ * The model that gave a gate's last verdict, as every surface names it.
+ */
+export type GateJudge = {
+    kind: GateJudgeKind;
+    /**
+     * The model as a person reads it: a decision model's display name, or
+     * the chat model's own name. Never a provider id.
+     */
+    model: string;
+    /**
+     * Why the chat's own model judged the gate, in one plain sentence
+     * ("This chat has no decision model it may use, so gpt-5.5, the chat's
+     * model, judged the gate."). None when a decision model answered.
+     */
+    reason?: string | null;
+};
+
+/**
+ * Which kind of model gave a gate's verdict.
+ */
+export type GateJudgeKind = 'decision_model' | 'chat_model';
+
+/**
  * Who set a phase's gate.
  */
 export type GateOwner = 'agent' | 'person' | 'workflow';
@@ -3757,6 +3812,23 @@ export type HostKeyTrusted = {
      */
     known_hosts_file: string;
     port: number;
+};
+
+/**
+ * Where a public decision model runs, for the sentence.
+ */
+export type HostLabel = {
+    kind: 'baseten';
+} | {
+    kind: 'this_computer';
+} | {
+    /**
+     * An Ollama server that is not this computer.
+     */
+    host: string;
+    kind: 'ollama_at';
+} | {
+    kind: 'ollama_cloud';
 };
 
 export type HostStartError = {
@@ -5683,6 +5755,11 @@ export type PhaseGateResponse = {
      */
     message: string;
     plan?: OrchestrationSnapshot | null;
+    tierEffect?: TierEffect;
+    /**
+     * The line to show for it, absent when there is nothing to say.
+     */
+    tierEffectLine?: string | null;
 };
 
 /**
@@ -5705,6 +5782,7 @@ export type PhaseGateSnapshot = {
      * Why the last evaluation decided nothing, when it did not.
      */
     lastError?: string | null;
+    lastJudge?: GateJudge | null;
     /**
      * The lowest P(yes) across the gate's questions at the last evaluation.
      */
@@ -5716,7 +5794,8 @@ export type PhaseGateSnapshot = {
     maxAttempts: number;
     /**
      * The decision model the gate names, as `provider/model`; none means
-     * the chat's default decision model, else the configured one.
+     * the chat's default decision model, else the configured one, else the
+     * chat's own language model.
      */
     model?: string | null;
     modelAdapter?: DecisionAdapter | null;
@@ -5770,6 +5849,17 @@ export type PhaseGateSpec = {
      * The P(yes) every question must reach, from 0 to 1. Default 0.8.
      */
     threshold?: number | null;
+};
+
+/**
+ * `PUT /sessions/{id}/phase-gates/{phase_id}`'s body: the gate, and the
+ * person's confirmation of a lowering beside it.
+ */
+export type PhaseGateWrite = PhaseGateSpec & {
+    /**
+     * As [`DecisionSettingsWrite::accept_public_decision_models`].
+     */
+    acceptPublicDecisionModels?: boolean;
 };
 
 /**
@@ -5912,6 +6002,43 @@ export type PrivacyBarrierBody = {
     provider_tier: ProviderTier;
     session_classification: SessionClassification;
 };
+
+/**
+ * Why a chat is public when its own language model is private (DR-33,
+ * design §5): the decision model it names, as the daemon computed it, so no
+ * renderer recomputes the fold. Present only on the single-session read, and
+ * only when a decision model (or a public parent's ceiling) is what made the
+ * chat public. A sidebar row carries the short form, [`PublicBecause`], from
+ * the same reading (owner decision 3), and only for a decision model.
+ */
+export type PrivacyBasis = {
+    host: HostLabel;
+    kind: PrivacyBasisKind;
+    /**
+     * The monitor's name, the phase's title, or the parent chat's id.
+     */
+    label: string;
+    /**
+     * The model's own name (`joey-1`); empty for a parent ceiling that did not
+     * record one.
+     */
+    model: string;
+    /**
+     * Where it runs, in words (`Baseten`, `this computer`), for "joey-1 ·
+     * Baseten".
+     */
+    place: string;
+    source: PrivacyBasisSource;
+    /**
+     * The reason as one clause for a person: `monitor "Done" uses joey-1, a
+     * Baseten model`.
+     */
+    summary: string;
+};
+
+export type PrivacyBasisKind = 'decisionModel';
+
+export type PrivacyBasisSource = 'default' | 'monitor' | 'gate' | 'phaseMonitor' | 'parent';
 
 /**
  * What `GET /privacy/disclosure` serves (issue #56, DR-17 requirement 3).
@@ -6139,6 +6266,30 @@ export type ProviderType = 'Preferred' | 'Builtin' | 'Declarative' | 'Custom';
 
 export type ProvidersResponse = {
     providers: Array<ProviderDetails>;
+};
+
+/**
+ * The 409 a write answers when it would make the chat public by a decision
+ * model and did not carry the person's confirmation. Nothing was saved.
+ */
+export type PublicDecisionConfirmation = {
+    /**
+     * Always `needsPublicDecisionConfirmation`.
+     */
+    code: string;
+    /**
+     * The InfoTip beside it.
+     */
+    info: string;
+    /**
+     * The effect line, as the question to ask: "This chat will be public:
+     * joey-1 runs on Baseten."
+     */
+    message: string;
+    /**
+     * The public models, as `provider/model`.
+     */
+    models: Array<string>;
 };
 
 export type PurgeExtensionCredentialsRequest = {
@@ -7069,6 +7220,14 @@ export type SessionDecisionSummary = {
     total: number;
 };
 
+/**
+ * `GET /sessions/{session_id}`'s answer: the session, and why it is public
+ * when a decision model made it so.
+ */
+export type SessionDetail = Session & {
+    privacyBasis?: PrivacyBasis | null;
+};
+
 export type SessionDisplayInfo = {
     accumulatedInputTokens?: number | null;
     accumulatedOutputTokens?: number | null;
@@ -7256,6 +7415,26 @@ export type SessionSummary = {
      */
     parent_session_id?: string | null;
     privacy_tier?: SessionClassification;
+    /**
+     * The public decision model that made a chat public (DR-33), as a sidebar row
+     * names it. The daemon fills it from the same reading `GET /sessions/{id}`'s
+     * `privacyBasis` comes from, so no renderer recomputes the fold.
+     */
+    public_because?: {
+        /**
+         * The model as a person reads it (`joey-1`).
+         */
+        model: string;
+        /**
+         * How many other public decision models the chat also names. Zero, and
+         * then absent, when this is the only one.
+         */
+        others?: number;
+        /**
+         * Where it runs, in words (`Baseten`, `Ollama's cloud`).
+         */
+        place: string;
+    } | null;
     /**
      * BR-71: the session's type as stored (`user`/`scheduled`/`sub_agent`).
      */
@@ -8074,6 +8253,13 @@ export type SourceProvenance = {
 };
 
 export type StartAgentRequest = {
+    /**
+     * The person saw "This chat will be public: …" and accepted it: needed,
+     * with the user-action proof, when `decision_settings` or the workflow's
+     * own decision models would make a chat on a private model public.
+     */
+    accept_public_decision_models?: boolean;
+    decision_settings?: DecisionSettings | null;
     extension_overrides?: Array<ExtensionConfig> | null;
     model?: string | null;
     provider?: string | null;
@@ -8118,6 +8304,19 @@ export type StartRunRequest = {
     prompt: string;
     provider: string;
     request_id?: string | null;
+};
+
+/**
+ * `POST /agent/start`'s answer: the new chat, and what its decision models
+ * did to its privacy tier (DR-33).
+ */
+export type StartedSession = Session & {
+    tierEffect?: TierEffect | null;
+    /**
+     * The line to show for it ("This chat will be public: joey-1 runs on
+     * Baseten."), absent when there is nothing to say.
+     */
+    tierEffectLine?: string | null;
 };
 
 /**
@@ -8351,6 +8550,12 @@ export type Threshold = {
 } | {
     below: Threshold;
 };
+
+/**
+ * What a save does to a chat's tier (design §3.2). Computed from two folds and
+ * never from the slot.
+ */
+export type TierEffect = 'none' | 'becomesPublic' | 'staysPublic' | 'becomesPrivateAtNextMessage' | 'refusedNotEligible' | 'refusedPrivate';
 
 export type TokenState = {
     /**
@@ -9838,15 +10043,15 @@ export type StartAgentErrors = {
      */
     401: unknown;
     /**
-     * The workflow declares monitors or a phase plan, which only the person may apply to a chat, and this daemon holds a user-action key the request did not prove (or the desktop daemon's key never arrived). No chat was created.
+     * The workflow declares monitors or a phase plan, or the request names `decision_settings`, which only the person may apply to a chat, and this daemon holds a user-action key the request did not prove (or the desktop daemon's key never arrived). No chat was created. Or: their decision models would make the chat public and this daemon holds no user-action key and its operator did not allow that (SD-16); the chat was discarded.
      */
     403: ErrorResponse;
     /**
-     * The workflow declares a phase plan, which runs only in the Autonomous approval mode, and Biorouter is in another (the message reads "The workflow was not started: <sentence>" and the chat was discarded). Or: the configured provider is private and this daemon will not bind it to a new chat as things stand (SD-12). Either the daemon holds a user-action key and the request carried no proof it came from the user; or it holds none but its launcher declared it would send one, so the missing key is a fault rather than a deployment where no proof can exist; or it holds none and a capability-deciding configuration key has changed since it started, in which case the message names the key and asks for a restart. A daemon with no user-action key, launched without that declaration, binds the provider it was launched with and needs no proof.
+     * The workflow's or the request's decision models would make this chat, which runs on a private model, public, and the request did not say `accept_public_decision_models: true` (DR-33): the body is a `PublicDecisionConfirmation` (`code` = `needsPublicDecisionConfirmation`, `message` = the question) and the chat was discarded. Or: the workflow declares a phase plan, which runs only in the Autonomous approval mode, and Biorouter is in another (the message reads "The workflow was not started: <sentence>" and the chat was discarded). Or: the configured provider is private and this daemon will not bind it to a new chat as things stand (SD-12). Either the daemon holds a user-action key and the request carried no proof it came from the user; or it holds none but its launcher declared it would send one, so the missing key is a fault rather than a deployment where no proof can exist; or it holds none and a capability-deciding configuration key has changed since it started, in which case the message names the key and asks for a restart. A daemon with no user-action key, launched without that declaration, binds the provider it was launched with and needs no proof.
      */
     409: ErrorResponse;
     /**
-     * The workflow's monitors or phase gates are valid but cannot run for this chat: a decision model it may not use (its privacy tier, an institution, a Crew grant), one that is not there, or one that cannot take the question. The message reads "The workflow was not started: <sentence>", and the chat was discarded.
+     * The request's own `decision_settings` cannot run for this chat (the save check's sentence), or the workflow's monitors or phase gates are valid but cannot run for this chat: a decision model it may not use (its privacy tier, an institution, a Crew grant), one that is not there, or one that cannot take the question. The message reads "The workflow was not started: <sentence>", and the chat was discarded.
      */
     422: ErrorResponse;
     /**
@@ -9859,9 +10064,9 @@ export type StartAgentError = StartAgentErrors[keyof StartAgentErrors];
 
 export type StartAgentResponses = {
     /**
-     * Agent started successfully. A workflow that declares `decision_settings` or an `orchestration_plan` has had them applied to the new chat before anything was sent in it.
+     * Agent started successfully. A workflow that declares `decision_settings` or an `orchestration_plan` has had them applied to the new chat before anything was sent in it, and so have the request's own `decision_settings`. `tierEffect` says when they made the chat public (DR-33).
      */
-    200: Session;
+    200: StartedSession;
 };
 
 export type StartAgentResponse = StartAgentResponses[keyof StartAgentResponses];
@@ -13236,9 +13441,17 @@ export type ListDecisionModelsData = {
     path?: never;
     query?: {
         /**
-         * A chat to work out `unavailableReason` for. Gated like every route that names a chat
+         * A chat to work out `unavailableReason` and `chatEffect` for. Gated like every route that names a chat
          */
         sessionId?: string | null;
+        /**
+         * With `boundModel` and no `sessionId`: a chat not started yet that will be bound to this provider, for `chatEffect` (the composer's draft)
+         */
+        boundProvider?: string | null;
+        /**
+         * The draft's model
+         */
+        boundModel?: string | null;
     };
     url: '/decisions/models';
 };
@@ -16305,9 +16518,9 @@ export type GetSessionErrors = {
 
 export type GetSessionResponses = {
     /**
-     * Session history retrieved successfully
+     * Session history retrieved successfully, with `privacyBasis` when a decision model the chat names is what made it public (DR-33)
      */
-    200: Session;
+    200: SessionDetail;
 };
 
 export type GetSessionResponse = GetSessionResponses[keyof GetSessionResponses];
@@ -16449,7 +16662,7 @@ export type GetDecisionSettingsResponses = {
 export type GetDecisionSettingsResponse = GetDecisionSettingsResponses[keyof GetDecisionSettingsResponses];
 
 export type PutDecisionSettingsData = {
-    body: DecisionSettings;
+    body: DecisionSettingsWrite;
     path: {
         /**
          * The chat whose decision settings to replace
@@ -16470,7 +16683,7 @@ export type PutDecisionSettingsErrors = {
      */
     401: unknown;
     /**
-     * Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's (body = plain text)
+     * Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's, or the save would make the chat public by a decision model and the daemon's operator did not allow that (SD-16) (body = plain text)
      */
     403: unknown;
     /**
@@ -16478,7 +16691,11 @@ export type PutDecisionSettingsErrors = {
      */
     404: unknown;
     /**
-     * What this save turns on could not run for this chat now: the model is not available, cannot take the question, or the chat's privacy tier, an institution or a Crew grant refuses it. Nothing was saved (body = plain text)
+     * The save would make this chat, which runs on a private model, public by a decision model, and the body did not say `acceptPublicDecisionModels: true` (body = PublicDecisionConfirmation, JSON); or the chat started while it was being made public (body = plain text). Nothing was saved
+     */
+    409: PublicDecisionConfirmation;
+    /**
+     * What this save turns on could not run for this chat now: the model is not available, cannot take the question, or the chat's privacy tier, an institution or a Crew grant refuses it; or the chat holds messages a private model may have produced, so it can no longer be made public by a decision model. Nothing was saved (body = plain text)
      */
     422: unknown;
     /**
@@ -16487,11 +16704,13 @@ export type PutDecisionSettingsErrors = {
     500: unknown;
 };
 
+export type PutDecisionSettingsError = PutDecisionSettingsErrors[keyof PutDecisionSettingsErrors];
+
 export type PutDecisionSettingsResponses = {
     /**
-     * The settings as stored
+     * The settings as stored, with what the save did to the chat's privacy tier
      */
-    200: DecisionSettings;
+    200: DecisionSettingsSaved;
 };
 
 export type PutDecisionSettingsResponse = PutDecisionSettingsResponses[keyof PutDecisionSettingsResponses];
@@ -17032,7 +17251,7 @@ export type DeletePhaseGateResponses = {
 export type DeletePhaseGateResponse = DeletePhaseGateResponses[keyof DeletePhaseGateResponses];
 
 export type PutPhaseGateData = {
-    body: PhaseGateSpec;
+    body: PhaseGateWrite;
     path: {
         /**
          * The chat whose plan holds the phase
@@ -17057,7 +17276,7 @@ export type PutPhaseGateErrors = {
      */
     401: unknown;
     /**
-     * Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's (body = plain text)
+     * Refused: the named chat is out of this caller's reach (the same refusal, word for word, that `GET /sessions/{session_id}` gives), or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's, or the gate would make the chat public by a decision model and the daemon's operator did not allow that (SD-16) (body = plain text)
      */
     403: unknown;
     /**
@@ -17065,11 +17284,11 @@ export type PutPhaseGateErrors = {
      */
     404: unknown;
     /**
-     * The phase is completed or skipped, or the plan could not be read or written. Nothing was changed (body = plain text)
+     * The phase is completed or skipped, or the plan could not be read or written (body = plain text); or the gate's model would make this chat, which runs on a private model, public, and the body did not say `acceptPublicDecisionModels: true` (body = PublicDecisionConfirmation, JSON). Nothing was changed
      */
-    409: unknown;
+    409: PublicDecisionConfirmation;
     /**
-     * The gate's decision model cannot answer it in this chat now: not available, cannot take yes/no questions, will not load, or refused by the chat's privacy tier, an institution or a Crew grant. Nothing was changed (body = plain text)
+     * The decision model the gate names cannot answer it in this chat now: not available, cannot take yes/no questions, will not load, or refused by the chat's privacy tier, an institution or a Crew grant. A gate that names no model is never refused: with no decision model the chat may use, the chat's own model judges it. Nothing was changed (body = plain text)
      */
     422: unknown;
     /**
@@ -17078,9 +17297,11 @@ export type PutPhaseGateErrors = {
     500: unknown;
 };
 
+export type PutPhaseGateError = PutPhaseGateErrors[keyof PutPhaseGateErrors];
+
 export type PutPhaseGateResponses = {
     /**
-     * The gate is the person's now and its attempts start over; the plan as this caller may see it
+     * The gate is the person's now and its attempts start over; the plan as this caller may see it, and what the write did to the chat's privacy tier
      */
     200: PhaseGateResponse;
 };

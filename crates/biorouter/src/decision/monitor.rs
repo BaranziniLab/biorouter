@@ -164,6 +164,16 @@ pub enum Observation {
     /// The decision call failed. `refused` is a privacy or workspace refusal,
     /// which will not change within the turn.
     Error { message: String, refused: bool },
+    /// The call was refused by Gate H because the chat is classified Private
+    /// and the monitor's model is public (design §3.15): the monitor can never
+    /// run on this chat again, so it is switched off rather than allowed to
+    /// fail (or, set to pause, stop) every turn. Told apart from any other
+    /// refusal by [`ask_planned`], which saw the classification. `model` is
+    /// the model it was asked on, `phrase` its name for a person.
+    PrivateChatRefusal {
+        model: DecisionModelRef,
+        phrase: String,
+    },
     /// The criterion was due but could not be asked, so no call was made:
     /// `why` says why ([`EMPTY_WINDOW`], or why its question cannot be
     /// built). `for_turn`: nothing will change that this turn, so it is off
@@ -222,6 +232,16 @@ pub enum Step {
     /// chat starts, stopped one of them, so this chat stops too
     /// ([`escalate`]).
     ChildStopped(EscalatedStop),
+    /// The chat is private now and the monitor's model is public, so Gate H
+    /// refuses every check: the monitor is switched off for the chat (the
+    /// agent loop stores `enabled: false` through
+    /// [`persist_privacy_switch_off`]) and the turn goes on, whatever its
+    /// error policy (design §3.15). Said once. `model` is the model it ran
+    /// on, `phrase` its name as a person reads it (`joey-1 · Baseten`).
+    SwitchedOff {
+        model: DecisionModelRef,
+        phrase: String,
+    },
 }
 
 /// A stop that a copy of a person's monitor made in a subagent, carried to
@@ -531,6 +551,14 @@ impl CriterionState {
                     // so the notice must not say it keeps trying.
                     off: off || self.checks_used() >= evaluation_limit(criterion),
                 }
+            }
+            // Not an error the turn can wait out, and not one worth a stop:
+            // the monitor can never read this chat again. Off for the rest of
+            // the turn here; the loop stores it off for good.
+            Observation::PrivateChatRefusal { model, phrase } => {
+                self.turn.evaluations += 1;
+                self.turn.disabled = true;
+                Step::SwitchedOff { model, phrase }
             }
             // No call was made, so nothing is counted: not an evaluation,
             // not an error in the streak. Not being able to check is said,
@@ -1133,6 +1161,7 @@ impl MonitorRegistry {
     /// point checks if the next read fails.
     pub fn begin_turn(&self, session_id: &str, turn_id: &str) {
         clear_escalations(session_id);
+        clear_private_chat_refusals(session_id);
         let mut sessions = self.lock();
         let entry = sessions.entry(session_id.to_string()).or_default();
         entry.turn_id = Some(turn_id.to_string());
@@ -1661,6 +1690,22 @@ impl MonitorRegistry {
                             refused: false,
                         },
                     },
+                    Err(DecisionError::Refused(_)) if take_private_chat_refusal(session_id, id) => {
+                        match plan.model.clone() {
+                            Some(model) => Observation::PrivateChatRefusal {
+                                phrase: model_phrase(&model),
+                                model,
+                            },
+                            None => Observation::Error {
+                                message: outcome
+                                    .as_ref()
+                                    .err()
+                                    .map(ToString::to_string)
+                                    .unwrap_or_default(),
+                                refused: true,
+                            },
+                        }
+                    }
                     Err(error) => Observation::Error {
                         message: error.to_string(),
                         refused: matches!(error, DecisionError::Refused(_)),
@@ -2044,6 +2089,14 @@ pub async fn context_windows(
 /// chat as sampled for this point; each request is logged with origin
 /// `monitor`, the criterion id (ids joined with `+` for a shared request), the
 /// monitor's name and the turn.
+///
+/// A request refused because the chat is classified Private and its model is
+/// public (Gate H, design §3.15) is marked for [`MonitorRegistry::apply_point`],
+/// which switches those monitors off rather than letting them fail every
+/// check. Told by the facts, never by the refusal's words: the master switch
+/// as sampled for the point, the classification as stored now (one that cannot
+/// be read is not taken as Private here, so nothing is switched off on doubt),
+/// and the tier the model's provider declares.
 pub async fn ask_planned(
     service: &DecisionService,
     base: &DecisionSession,
@@ -2060,8 +2113,162 @@ pub async fn ask_planned(
                 .await
         }
     });
-    futures::future::join_all(asks).await
+    let outcomes = futures::future::join_all(asks).await;
+    let refused_public: Vec<&PlannedRequest> = planned
+        .iter()
+        .zip(&outcomes)
+        .filter(|(plan, outcome)| {
+            matches!(outcome, Err(DecisionError::Refused(_)))
+                && plan.model.as_ref().is_some_and(declares_public)
+        })
+        .map(|(plan, _)| plan)
+        .collect();
+    if base.enforced && !refused_public.is_empty() && classified_private_now(base).await {
+        for plan in refused_public {
+            note_private_chat_refusal(
+                &base.session_id,
+                plan.criteria.iter().map(|(id, _)| id.clone()),
+            );
+        }
+    }
+    outcomes
 }
+
+/// Whether `model`'s provider declares it public, as the fold reads it.
+fn declares_public(model: &DecisionModelRef) -> bool {
+    crate::privacy::decision_axes::declared_name(model)
+        .is_some_and(|declared| !declared.tier.is_private())
+}
+
+/// `joey-1 · Baseten`, `tev1:0.8b · this computer`: a decision model as a
+/// person reads it (TRIAGE R3). A provider the fold does not know is named by
+/// its label.
+pub fn model_phrase(model: &DecisionModelRef) -> String {
+    match crate::privacy::decision_axes::declared_name(model) {
+        Some(declared) => format!(
+            "{} · {}",
+            crate::providers::decision::catalog::decision_model_short_name(model),
+            declared.host.place()
+        ),
+        None => model.label(),
+    }
+}
+
+/// The chat's classification as stored now, for [`ask_planned`]'s mark. Not
+/// knowing reads as not Private: switching a monitor off is a change to the
+/// chat's settings, never made on doubt.
+async fn classified_private_now(base: &DecisionSession) -> bool {
+    match &base.live {
+        Some(live) => live
+            .current(&base.session_id)
+            .await
+            .is_ok_and(|classification| classification.is_private()),
+        None => base.classification.is_private(),
+    }
+}
+
+/// Monitors of each chat whose last check was refused because the chat is
+/// private and their model public ([`ask_planned`]), not yet folded in by
+/// [`MonitorRegistry::apply_point`]. Process-global, because `ask_planned`
+/// holds no registry; cleared when the chat's next turn begins.
+static PRIVATE_CHAT_REFUSALS: LazyLock<Mutex<HashMap<String, std::collections::HashSet<String>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn private_chat_refusals(
+) -> std::sync::MutexGuard<'static, HashMap<String, std::collections::HashSet<String>>> {
+    PRIVATE_CHAT_REFUSALS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+fn note_private_chat_refusal(session_id: &str, ids: impl Iterator<Item = String>) {
+    private_chat_refusals()
+        .entry(session_id.to_string())
+        .or_default()
+        .extend(ids);
+}
+
+fn take_private_chat_refusal(session_id: &str, id: &str) -> bool {
+    let mut map = private_chat_refusals();
+    let Some(ids) = map.get_mut(session_id) else {
+        return false;
+    };
+    let taken = ids.remove(id);
+    if ids.is_empty() {
+        map.remove(session_id);
+    }
+    taken
+}
+
+fn clear_private_chat_refusals(session_id: &str) {
+    private_chat_refusals().remove(session_id);
+}
+
+/// The notice for a monitor switched off because the chat is private now and
+/// its model public (design §3.15).
+pub fn switched_off_notice(name: &str, phrase: &str) -> String {
+    format!(
+        "Monitor \"{name}\" was turned off: this chat is private now, so {phrase} can't read it. \
+         Choose a model on this computer to turn it back on."
+    )
+}
+
+/// Store a [`Step::SwitchedOff`] event's monitor as switched off
+/// (`enabled: false`) in `session_id`'s decision settings, through the one
+/// settings transaction ([`super::settings::update`]). Nothing else in the
+/// record changes, and nothing is written when the monitor is gone, already
+/// off, or now runs on another model (the person changed it since). Any
+/// other event is ignored. The chat is classified Private, so the write
+/// cannot move its tier (the inert rule). A failed write warns: the monitor
+/// is then off for this turn only and is switched off again at its next
+/// check.
+pub async fn persist_privacy_switch_off(
+    session_manager: &crate::session::SessionManager,
+    session_id: &str,
+    event: &MonitorEvent,
+) {
+    let Step::SwitchedOff { model, .. } = &event.step else {
+        return;
+    };
+    let id = event.criterion_id.clone();
+    let model = model.clone();
+    let mut changed = false;
+    let written = super::settings::update(session_manager, session_id, |current| {
+        let mut settings = current.unwrap_or_default();
+        let default = settings.default_model.clone();
+        if let Some(monitor) = settings.monitors.iter_mut().find(|m| m.id == id) {
+            if monitor.enabled && monitor.model.as_ref().or(default.as_ref()) == Some(&model) {
+                monitor.enabled = false;
+                changed = true;
+            }
+        }
+        if changed {
+            Ok(settings)
+        } else {
+            Err(NOTHING_TO_SWITCH_OFF.to_string())
+        }
+    })
+    .await;
+    match written {
+        Ok(_) => tracing::info!(
+            session_id,
+            monitor = %event.criterion_id,
+            "a monitor on a public decision model was switched off: the chat is private"
+        ),
+        Err(_) if !changed => {}
+        Err(error) => tracing::warn!(
+            session_id,
+            monitor = %event.criterion_id,
+            "could not store a monitor as switched off; it is switched off again at its next \
+             check: {error:#}"
+        ),
+    }
+}
+
+/// The refusal [`persist_privacy_switch_off`] rolls its transaction back with
+/// when there is nothing to change, so nothing (not even the activity time)
+/// is written.
+const NOTHING_TO_SWITCH_OFF: &str = "the monitor is already off, gone or changed";
 
 /// How a probability reads in a notice: two decimals.
 pub fn format_p(p: f64) -> String {
@@ -2192,6 +2399,7 @@ pub fn event_notice(event: &MonitorEvent) -> Option<String> {
             "Monitor '{name}' cannot be checked ({}), so it is off for the rest of this turn.",
             plain(why)
         )),
+        Step::SwitchedOff { phrase, .. } => Some(switched_off_notice(name, phrase)),
         Step::ChildStopped(stop) => {
             let condition = if stop.p.is_some() {
                 event_condition(event)
@@ -4053,6 +4261,218 @@ mod tests {
             default_model: None,
             monitors,
         }
+    }
+
+    // -----------------------------------------------------------------
+    // DR-33 §3.15: a public monitor on a chat that is private now.
+    // -----------------------------------------------------------------
+
+    struct Joey;
+
+    #[async_trait::async_trait]
+    impl crate::decision::DecisionModel for Joey {
+        fn model_ref(&self) -> DecisionModelRef {
+            DecisionModelRef::new("baseten_decision", "joey-1")
+        }
+        fn display_name(&self) -> String {
+            "joey-1".into()
+        }
+        fn tier(&self) -> crate::privacy::ProviderTier {
+            crate::privacy::ProviderTier::Public
+        }
+        fn affiliation(&self) -> Option<crate::privacy::affiliation::ModelAffiliation> {
+            None
+        }
+        fn caps(&self) -> crate::decision::DecisionCaps {
+            crate::decision::DecisionCaps {
+                kinds: vec![super::super::types::DecisionKindTag::Binary],
+                max_questions: 64,
+                context_tokens: 16_000,
+                max_concurrency: 1,
+                max_request_bytes: None,
+                local: false,
+            }
+        }
+        async fn decide(
+            &self,
+            _: &DecisionRequest,
+        ) -> DecisionResult<super::super::types::ModelVerdicts> {
+            panic!("a refused monitor sends nothing");
+        }
+    }
+
+    struct OnlyJoey;
+
+    #[async_trait::async_trait]
+    impl crate::decision::DecisionModelSource for OnlyJoey {
+        async fn list(&self) -> Vec<crate::decision::DecisionModelEntry> {
+            Vec::new()
+        }
+        async fn open(
+            &self,
+            _: &DecisionModelRef,
+        ) -> DecisionResult<Arc<dyn crate::decision::DecisionModel>> {
+            Ok(Arc::new(Joey))
+        }
+    }
+
+    /// A workspace refusal that is not the privacy one.
+    struct Revoked;
+
+    #[async_trait::async_trait]
+    impl crate::decision::DecisionUseGate for Revoked {
+        async fn check(
+            &self,
+            _: &DecisionSession,
+            _: &dyn crate::decision::DecisionModel,
+        ) -> DecisionResult<()> {
+            Err(DecisionError::Refused(
+                "This chat's Crew access was removed.".into(),
+            ))
+        }
+    }
+
+    struct Allow;
+
+    #[async_trait::async_trait]
+    impl crate::decision::DecisionUseGate for Allow {
+        async fn check(
+            &self,
+            _: &DecisionSession,
+            _: &dyn crate::decision::DecisionModel,
+        ) -> DecisionResult<()> {
+            Ok(())
+        }
+    }
+
+    async fn point_on_joey(
+        gate: Arc<dyn crate::decision::DecisionUseGate>,
+        session_id: &str,
+        classification: crate::privacy::SessionClassification,
+    ) -> Vec<MonitorEvent> {
+        let registry = MonitorRegistry::default();
+        registry.begin_turn(session_id, "t1");
+        let mut pausing = criterion(0.8);
+        pausing.name = "Done".into();
+        pausing.on_error = MonitorErrorPolicy::Pause;
+        pausing.model = Some(DecisionModelRef::new("baseten_decision", "joey-1"));
+        registry.cache_settings(session_id, settings(vec![pausing]));
+        let conversation = conversation(&["start", "working on it"]);
+        let planned = registry.plan_point(
+            session_id,
+            MonitorTiming::PostIteration,
+            &conversation,
+            1,
+            |_| None,
+        );
+        let service = DecisionService::new(Arc::new(OnlyJoey))
+            .with_use_gate(gate)
+            .with_default_model(None);
+        let base = DecisionSession::new(session_id, classification, true);
+        let outcomes = ask_planned(&service, &base, &planned.requests).await;
+        registry.apply_point(
+            session_id,
+            &planned.requests,
+            outcomes,
+            planned.unchecked,
+            false,
+            false,
+        )
+    }
+
+    /// Design §3.15: a monitor on a public model, on a chat that is private
+    /// now (Gate H refuses it at every check), is switched off and the turn
+    /// goes on, even when it is set to pause, with one notice. A refusal for
+    /// any other reason keeps the monitor's own policy, and so does a public
+    /// chat.
+    #[tokio::test]
+    async fn a_public_monitor_on_a_private_chat_is_switched_off_and_does_not_stop_the_turn() {
+        use crate::privacy::SessionClassification;
+        let events = point_on_joey(
+            Arc::new(Allow),
+            "sw-private",
+            SessionClassification::Private,
+        )
+        .await;
+        assert_eq!(events.len(), 1, "{events:?}");
+        assert_eq!(
+            events[0].step,
+            Step::SwitchedOff {
+                model: DecisionModelRef::new("baseten_decision", "joey-1"),
+                phrase: "joey-1 · Baseten".into(),
+            }
+        );
+        assert!(
+            !event_stops(&events[0]),
+            "a switched-off monitor never stops the turn"
+        );
+        assert_eq!(
+            event_notice(&events[0]).as_deref(),
+            Some(
+                "Monitor \"Done\" was turned off: this chat is private now, so joey-1 · Baseten \
+                 can't read it. Choose a model on this computer to turn it back on."
+            )
+        );
+
+        // Another refusal, on a public chat: the monitor's own policy holds.
+        let events = point_on_joey(
+            Arc::new(Revoked),
+            "sw-public",
+            SessionClassification::Public,
+        )
+        .await;
+        assert!(
+            matches!(events[0].step, Step::FailedClosed { .. }),
+            "{events:?}"
+        );
+    }
+
+    /// The switch-off is stored as `enabled: false` through the settings
+    /// transaction, only for the monitor and model the event names; any other
+    /// event writes nothing.
+    #[tokio::test]
+    async fn a_switch_off_is_stored_once_for_its_own_monitor() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sm = crate::session::SessionManager::new(dir.path().to_path_buf());
+        let id = sm
+            .create_session(
+                dir.path().into(),
+                "chat".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id;
+        let joey = DecisionModelRef::new("baseten_decision", "joey-1");
+        let mut on_joey = criterion(0.8);
+        on_joey.model = Some(joey.clone());
+        let mut other = criterion(0.8);
+        other.id = "m2".into();
+        other.name = "Other".into();
+        super::super::settings::save(&sm, &id, settings(vec![on_joey.clone(), other]))
+            .await
+            .unwrap();
+        let event = monitor_event(
+            &on_joey,
+            Step::SwitchedOff {
+                model: joey.clone(),
+                phrase: model_phrase(&joey),
+            },
+        );
+        persist_privacy_switch_off(&sm, &id, &monitor_event(&on_joey, Step::Quiet)).await;
+        let untouched = super::super::settings::load(&sm, &id).await.unwrap();
+        assert!(untouched.monitors.iter().all(|m| m.enabled));
+
+        persist_privacy_switch_off(&sm, &id, &event).await;
+        let stored = super::super::settings::load(&sm, &id).await.unwrap();
+        assert!(!stored.monitors[0].enabled, "the public monitor is off");
+        assert!(stored.monitors[1].enabled, "the other one is not touched");
+        // Again: nothing left to change, nothing written.
+        persist_privacy_switch_off(&sm, &id, &event).await;
+        assert_eq!(
+            super::super::settings::load(&sm, &id).await.unwrap(),
+            stored
+        );
     }
 
     #[test]

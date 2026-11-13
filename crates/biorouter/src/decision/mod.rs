@@ -39,11 +39,14 @@ pub mod window;
 
 pub use error::{DecisionError, DecisionResult, INSTALL_ADVICE};
 pub use late::settle_late_answers;
-pub use model::{DecisionCaps, DecisionModel, DecisionModelEntry, DecisionModelSource};
+pub use model::{
+    model_in_words, DecisionCaps, DecisionModel, DecisionModelEntry, DecisionModelSource,
+};
 pub use save::{save_chat_checked, save_checked, UnusableDecisionSettings};
 pub use service::{
-    global, DecisionLogEntry, DecisionOutcome, DecisionService, DecisionSession, DecisionSink,
-    DecisionUseGate, LiveClassification, ModelSource,
+    chat_effect, global, ChatEffect, DecisionLogEntry, DecisionOutcome, DecisionService,
+    DecisionSession, DecisionSink, DecisionUseGate, LiveClassification, ModelSource,
+    SaveTierContext,
 };
 pub use types::{
     Answer, ChunkOutcome, Decision, DecisionAdapter, DecisionChunk, DecisionContext, DecisionKind,

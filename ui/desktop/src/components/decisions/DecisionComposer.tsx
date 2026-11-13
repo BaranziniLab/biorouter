@@ -1,6 +1,6 @@
 import './decisionsChat.css';
 import * as React from 'react';
-import { Check, Plus, X } from '../icons/app-icons';
+import { AlertCircle, Check, Plus, X } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { Disclosure } from '../ui/disclosure';
 import { InfoTip } from '../ui/info-tip';
@@ -372,28 +372,36 @@ export function DecisionComposer({ sessionId }: DecisionComposerProps) {
   // The one thing the status says, and how: a short state at the end of the question
   // line, a longer sentence on its own line under it (the same node either way).
   const problem = !verdict.ok && draft.instructions.trim() !== '' ? verdict.problem : null;
-  const status: { text: string; wide: boolean; danger: boolean; check: boolean } =
+  // Red is rare (design.md 9.14): a problem is said in the primary ink, never in a
+  // status hue. A refused save is a failure, so it also draws the failure glyph; a
+  // threshold out of range is an invalid field, whose field keeps the one red edge.
+  const status: {
+    text: string;
+    wide: boolean;
+    problem: boolean;
+    glyph: 'check' | 'failed' | null;
+  } =
     save.status === 'loading'
-      ? { text: DECISION_COMPOSER_COPY.loading, wide: false, danger: false, check: false }
+      ? { text: DECISION_COMPOSER_COPY.loading, wide: false, problem: false, glyph: null }
       : !verdict.ok
         ? {
             text: problem ?? '',
             wide: problem !== null,
-            danger: problem === DECISION_COMPOSER_COPY.badThreshold,
-            check: false,
+            problem: problem === DECISION_COMPOSER_COPY.badThreshold,
+            glyph: null,
           }
         : save.status === 'saving'
-          ? { text: DECISION_COMPOSER_COPY.saving, wide: false, danger: false, check: false }
+          ? { text: DECISION_COMPOSER_COPY.saving, wide: false, problem: false, glyph: null }
           : save.status === 'refused'
             ? {
                 text: DECISION_COMPOSER_COPY.refused(save.message),
                 wide: true,
-                danger: true,
-                check: false,
+                problem: true,
+                glyph: 'failed',
               }
             : save.status === 'saved' || lastSaved.current === wireKey(verdict.question)
-              ? { text: DECISION_COMPOSER_COPY.saved, wide: false, danger: false, check: true }
-              : { text: '', wide: false, danger: false, check: false };
+              ? { text: DECISION_COMPOSER_COPY.saved, wide: false, problem: false, glyph: 'check' }
+              : { text: '', wide: false, problem: false, glyph: null };
   const thresholdInvalid =
     draft.threshold.trim() !== '' &&
     !verdict.ok &&
@@ -479,10 +487,13 @@ export function DecisionComposer({ sessionId }: DecisionComposerProps) {
           role="status"
           data-state={save.status}
           data-wide={status.wide ? 'true' : undefined}
-          data-tone={status.danger ? 'danger' : undefined}
+          data-tone={status.problem ? 'problem' : undefined}
           data-testid="decision-composer-status"
         >
-          {status.check ? <Check aria-hidden /> : null}
+          {status.glyph === 'check' ? <Check aria-hidden /> : null}
+          {status.glyph === 'failed' ? (
+            <AlertCircle aria-hidden data-testid="decision-composer-failed" />
+          ) : null}
           {status.text}
         </span>
       </div>

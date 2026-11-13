@@ -644,6 +644,7 @@ mod tests {
             question: None,
             artifacts: Vec::new(),
             tokens: None,
+            model: None,
             human_intervened: false,
             stopped_by_monitor: None,
             decisions: None,

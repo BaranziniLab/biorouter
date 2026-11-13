@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ModalShell } from '../ModalShell';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
@@ -14,11 +14,12 @@ import { Select } from '../ui/Select';
 import { Slider } from '../ui/slider';
 import { Switch } from '../ui/switch';
 import { Textarea } from '../ui/textarea';
-import { Check, Plus, SlidersHorizontal, X } from '../icons/app-icons';
+import { AlertCircle, Check, Plus, SlidersHorizontal, X } from '../icons/app-icons';
 import {
   DEFAULT_MONITOR_WINDOW,
   DecisionRequestError,
   MAX_MONITORS,
+  PublicDecisionConfirmationError,
   MONITOR_NAME_MAX,
   decisionModelLabel,
   fetchDecisionCatalog,
@@ -30,10 +31,12 @@ import {
   refusalText,
   saveDecisionSettings,
   scoreLevelIndex,
+  type DecisionDraftChat,
   type DecisionModelEntry,
   type DecisionModelRef,
   type DecisionSettings,
   type DecisionTier,
+  type PublicDecisionConfirmation,
   type MonitorAction,
   type MonitorCriterion,
   type MonitorDirection,
@@ -43,9 +46,12 @@ import {
   type Threshold,
 } from '../../utils/sessionDecisions';
 import { isBrowserSurface } from '../../utils/surface';
+import { refreshSidebarChats } from '../BioRouterSidebar/useSidebarSessions';
+import { fetchHasSubagents, knownHasSubagents } from './chatSubagents';
 import { DecisionModelInstall, type DecisionInstallReason } from './DecisionModelInstall';
 import {
   DECISION_MODEL_OPTION_COPY,
+  anyPublicModelRefused,
   decisionModelKey,
   decisionModelOptions,
   decisionModelReason,
@@ -53,21 +59,25 @@ import {
   isDecisionModelOptionDisabled,
   type DecisionModelOption,
 } from './decisionModelOption';
-import { decisionModelPlace, ruleInWords } from './decisionWords';
+import {
+  TIER_EFFECT_COPY,
+  decisionModelPlace,
+  joinWithAnd,
+  publicModelsSentence,
+  ruleInWords,
+  tierEffectNote,
+} from './decisionWords';
+import { loweringModels } from './draftDecisionSettings';
+import { TierEffectLine } from './TierEffectLine';
 import './decisionsPanel.css';
 import './monitorsDialog.css';
-
-/** "A, B and C" (and a lone "A"), for the peek's extras. */
-function joinWithAnd(parts: readonly string[]): string {
-  if (parts.length <= 1) return parts.join('');
-  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
-}
 
 const capitalize = (text: string) => (text ? text[0].toUpperCase() + text.slice(1) : text);
 
 export const MONITORS_COPY = {
   title: 'Monitors',
-  subtitle: 'Monitors ask a decision model about this chat as it runs, and act on the answer.',
+  subtitle:
+    'Choose the decision model this chat uses, and add monitors that ask it about the chat as it runs.',
   empty: 'No monitors yet',
   emptyDescription:
     'A monitor watches this chat and notifies you, tells the agent or stops the turn when its question is answered.',
@@ -80,6 +90,8 @@ export const MONITORS_COPY = {
   undo: 'Undo',
   undoLabel: (name: string) => `Undo removing ${name}`,
   saved: 'Saved',
+  /** Draft mode's "Saved": nothing is stored until the chat's first message is sent. */
+  savedDraft: 'Ready for the first message',
   saving: 'Saving…',
   name: 'Name',
   nameRequired: 'Give the monitor a name.',
@@ -177,6 +189,13 @@ export const MONITORS_COPY = {
   saveFailed: 'Could not save the monitors.',
   loading: 'Reading the monitors…',
   loadFailed: "Could not read this chat's monitors. Close and open again to retry.",
+  /** Draft mode: a chat that has no message yet, so nothing is stored until Send. */
+  draftNote: 'These monitors start with the chat when you send its first message.',
+  /** The chat's default decision model (M1-1): one select above the monitors. */
+  defaultField: 'Decision model for this chat',
+  defaultFieldInfo: 'Monitors, gates and decisions that name no model use it.',
+  automatic: 'Chosen automatically',
+  automaticHint: 'a model on this computer first',
 };
 
 const copy = MONITORS_COPY;
@@ -321,9 +340,14 @@ export function newMonitor(): MonitorCriterion {
 /**
  * Whether a monitor uses any setting "More options" hides, set differently from a
  * new monitor's: then the editor opens with it open, so the person sees what
- * defines this monitor without hunting for it.
+ * defines this monitor without hunting for it. `subagentsUpFront`: the chat already
+ * has subagents, or a monitor already watches them, so "Also watch the subagents"
+ * sits outside "More options" and does not open it.
  */
-export function usesHiddenSettings(monitor: MonitorCriterion): boolean {
+export function usesHiddenSettings(
+  monitor: MonitorCriterion,
+  { subagentsUpFront = false }: { subagentsUpFront?: boolean } = {}
+): boolean {
   const fresh = newMonitor();
   return (
     monitor.question.kind.type !== 'binary' ||
@@ -334,7 +358,7 @@ export function usesHiddenSettings(monitor: MonitorCriterion): boolean {
     monitor.timing !== fresh.timing ||
     monitor.onError !== fresh.onError ||
     rearmLevel(monitor) !== null ||
-    monitor.applyToSubagents === true
+    (!subagentsUpFront && monitor.applyToSubagents === true)
   );
 }
 
@@ -437,15 +461,24 @@ function watchedOutcome(rule: Threshold, question: Question): string {
 }
 
 /**
- * A monitor row's second line: what it does, then its rule in words,
- * `Stop the turn · when P(yes) is at or above 0.85` (never `≥`), or, for a choice
- * whose option is not chosen yet, `Notify me · choose the option it fires on`.
+ * A monitor row's second line: what it does, its rule in words and when it checks,
+ * `Stop the turn · when P(yes) is at or above 0.85 · after each step` (never `≥`),
+ * or, for a choice whose option is not chosen yet,
+ * `Notify me · choose the option it fires on · after each step`, then
+ * `also watches subagents` when it does (owner decision 2: the person sees which
+ * monitors reach the subagents without opening one). The peek says the timing and
+ * the subagents again, because a long line is cut with an ellipsis.
  */
 export function monitorRowLine(monitor: MonitorCriterion): string {
   const rule = monitorThreshold(monitor);
-  return `${copy.actions[monitor.action]} · ${
-    rule ? ruleInWords(rule, monitor.question) : copy.chooseOptionPhrase
-  }`;
+  return [
+    copy.actions[monitor.action],
+    rule ? ruleInWords(rule, monitor.question) : copy.chooseOptionPhrase,
+    copy.peekTimings[monitor.timing],
+    monitor.applyToSubagents ? copy.peekSubagents : null,
+  ]
+    .filter((part): part is string => !!part)
+    .join(' · ');
 }
 
 /**
@@ -538,12 +571,15 @@ function MonitorEditor({
   catalogProblem,
   onRetryCatalog,
   isSubagentChat,
+  subagentsUpFront,
   opened,
   moreOpen,
   onMoreOpenChange,
   ids,
   busy,
   refusal,
+  effect,
+  confirmation,
   onCancel,
   onSave,
 }: {
@@ -562,6 +598,12 @@ function MonitorEditor({
   /** A subagent's chat, whose monitors cannot be set to watch subagents of its own. */
   isSubagentChat: boolean;
   /**
+   * The chat already has subagents (owner decision 2), or a stored monitor already
+   * watches them: "Also watch the subagents" sits up front, beside what the monitor
+   * does, rather than in "More options". It stays off until the person turns it on.
+   */
+  subagentsUpFront: boolean;
+  /**
    * The monitor as it was when this edit began (`null` for a new one). The
    * slider's stops are built from its threshold, not from the draft's: a stored
    * 0.33 keeps its stop for the whole edit, so a drag off it neither shrinks the
@@ -576,6 +618,14 @@ function MonitorEditor({
   busy: boolean;
   /** The daemon's refusal of this monitor's save, or `null`. */
   refusal: string | null;
+  /**
+   * DR-33: the line this save would earn ("This chat will be public: joey-1 runs on
+   * Baseten.") and its tip, shown above Save while the edit would make the chat
+   * public; Save is then the person's answer and sends it. `null` otherwise.
+   */
+  effect: { line: string; info: string } | null;
+  /** The daemon's question for a save it would not take unanswered, with its two buttons. */
+  confirmation: ReactNode;
   onCancel: () => void;
   onSave: () => void;
 }) {
@@ -684,6 +734,18 @@ function MonitorEditor({
     rule ? watchedOutcome(rule, draft.question) : 'yes',
     formatProbability(keptLevel ?? draft.threshold)
   );
+  // A subagent's own monitors never reach subagents of its own (`settings.rs`), so
+  // its chat has no box. The label wraps the box, so the square itself toggles it
+  // (`ui/Checkbox`). Up front once the chat has subagents, else in "More options".
+  const subagentsBox = isSubagentChat ? null : (
+    <label className="br-dh-check" data-testid="monitor-subagents">
+      <Checkbox
+        checked={draft.applyToSubagents === true}
+        onChange={(event) => onChange({ ...draft, applyToSubagents: event.target.checked })}
+      />
+      <span>{copy.subagents}</span>
+    </label>
+  );
 
   return (
     // A filled box, so the fields in it rest one step back on the page ground:
@@ -732,6 +794,7 @@ function MonitorEditor({
           onValueChange={(value) => onChange({ ...draft, action: value as MonitorAction })}
         />
       </div>
+      {subagentsUpFront ? subagentsBox : null}
       <Disclosure
         label={copy.moreOptions}
         summary={hiddenSummary(draft)}
@@ -950,9 +1013,16 @@ function MonitorEditor({
             ) : null}
           </div>
           <div className="br-form-field flex min-w-0 flex-col gap-1.5" data-testid="monitor-model">
-            <label htmlFor={ids.model} className="text-label text-text-default">
-              {copy.model}
-            </label>
+            <span className="flex min-w-0 items-center gap-1">
+              <label htmlFor={ids.model} className="text-label text-text-default">
+                {copy.model}
+              </label>
+              {/* A disabled row cannot hold a tip, so the way back from "Public model: it
+                  can't read a private chat" is the field's. */}
+              {anyPublicModelRefused(models, chatTier) ? (
+                <InfoTip label={copy.model} help={TIER_EFFECT_COPY.publicRefusedInfo} />
+              ) : null}
+            </span>
             <Select
               inputId={ids.model}
               options={options}
@@ -968,6 +1038,7 @@ function MonitorEditor({
             />
             {catalogProblem ? (
               <p className="br-monitors__error" role="alert" data-testid="monitor-models-error">
+                <AlertCircle aria-hidden="true" />
                 {catalogProblem.text}
                 {catalogProblem.retry ? (
                   <>
@@ -1037,24 +1108,24 @@ function MonitorEditor({
               <InfoTip label={copy.stopOnlyOnce} help={stopInfo} id={stopInfoId} />
             </div>
           ) : null}
-          {/* A subagent's own monitors never reach subagents of its own (`settings.rs`). The
-              label wraps the box, so the square itself toggles it (`ui/Checkbox`). */}
-          {isSubagentChat ? null : (
-            <label className="br-dh-check" data-testid="monitor-subagents">
-              <Checkbox
-                checked={draft.applyToSubagents === true}
-                onChange={(event) => onChange({ ...draft, applyToSubagents: event.target.checked })}
-              />
-              <span>{copy.subagents}</span>
-            </label>
-          )}
+          {subagentsUpFront ? null : subagentsBox}
         </div>
       </Disclosure>
       {refusal ? (
         <p className="br-monitors__error" role="alert" data-testid="monitor-save-error">
+          <AlertCircle aria-hidden="true" />
           {refusal}
         </p>
       ) : null}
+      {effect && !confirmation ? (
+        <TierEffectLine
+          line={effect.line}
+          info={effect.info}
+          infoLabel={TIER_EFFECT_COPY.publicInfoLabel}
+          testId="monitor-tier-effect"
+        />
+      ) : null}
+      {confirmation}
       <div className="br-monitors__actions">
         <Button
           type="button"
@@ -1110,10 +1181,56 @@ export interface MonitorsDialogProps {
    */
   isSubagentChat?: boolean;
   /**
+   * The chat already has subagents, so "Also watch the subagents" sits up front in a
+   * monitor's editor (owner decision 2). Left out, the dialog reads the chat's roster
+   * when it opens; `null` says it is not known, and the option stays in "More options"
+   * unless a stored monitor already watches subagents, which also puts it up front.
+   */
+  hasSubagents?: boolean | null;
+  /**
    * The chat works under a Crew grant, for the install panel's first sentence.
    * Also read from the catalog: the daemon names the grant in each hosted model's reason.
    */
   isCrewChat?: boolean;
+  /** The chat's own model in words (`gpt-5.5`), for the "This chat will be public" tip. */
+  chatModelName?: string | null;
+  /**
+   * Draft mode (DR-33, design §4): the chat has no session row yet (Home, or a blank
+   * chat), so nothing is written to the daemon. `settings` is the draft; each change
+   * is handed to `onChange`, and the composer sends it as `decisionSettings` with the
+   * chat's first message. `chat` is the model the chat will start on, so each listed
+   * model carries what it would do to that chat (`chatEffect`). Pass `sessionId` as
+   * `''` with it.
+   */
+  draft?: MonitorsDraft;
+}
+
+/** {@link MonitorsDialogProps.draft}. */
+export interface MonitorsDraft {
+  /** The model the chat will start on, or `null` before it is known. */
+  chat: DecisionDraftChat | null;
+  /**
+   * The person already accepted the draft as it stands making this chat public,
+   * under this model: a change that adds no public model to it asks nothing again.
+   */
+  accepted?: boolean;
+  /**
+   * A change to the draft. `acceptedPublic` is true when the result makes the chat
+   * public and the person saw that line and saved it (or answered the question).
+   */
+  onChange: (settings: DecisionSettings, acceptedPublic: boolean) => void;
+}
+
+/** The line a draft's change that makes the chat public is said with, built from the models' rows. */
+function publicEffectFor(
+  lowering: readonly DecisionModelEntry[],
+  chatModelName: string | null
+): { line: string; info: string } | null {
+  if (lowering.length === 0) return null;
+  return {
+    line: TIER_EFFECT_COPY.willBePublic(publicModelsSentence(lowering)),
+    info: TIER_EFFECT_COPY.publicInfo(chatModelName),
+  };
 }
 
 type Editing = {
@@ -1171,7 +1288,10 @@ export function MonitorsDialog({
   chatRefusal: givenChatRefusal,
   readOnly = false,
   isSubagentChat: givenSubagentChat = false,
+  hasSubagents: givenHasSubagents,
   isCrewChat: givenCrewChat = false,
+  chatModelName = null,
+  draft = undefined,
 }: MonitorsDialogProps) {
   const [monitors, setMonitors] = useState<MonitorCriterion[]>(settings?.monitors ?? []);
   const [editing, setEditing] = useState<Editing | null>(null);
@@ -1184,7 +1304,30 @@ export function MonitorsDialog({
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
   /** A row switch flipped and not yet answered: shown as asked until the write settles. */
   const [pendingToggle, setPendingToggle] = useState<{ id: string; enabled: boolean } | null>(null);
+  /** The chat's default decision model as stored (or held in a draft), for its select. */
+  const [storedDefault, setStoredDefault] = useState<DecisionModelRef | null>(
+    settings?.defaultModel ?? null
+  );
+  /** A default picked and not yet answered: shown as picked until the write settles. */
+  const [pendingDefault, setPendingDefault] = useState<{ model: DecisionModelRef | null } | null>(
+    null
+  );
+  const [defaultError, setDefaultError] = useState<string | null>(null);
   const [generalError, setGeneralError] = useState<string | null>(null);
+  /**
+   * DR-33: a write the daemon would not take until the person says the chat may be
+   * public, with the question it asked and the same write to send again with the
+   * answer. `inEditor` puts it above the editor's Save rather than under the list.
+   */
+  const [asking, setAsking] = useState<{
+    confirmation: PublicDecisionConfirmation;
+    retry: () => void;
+    inEditor: boolean;
+    /** Asked about a change of the default decision model: shown under its select. */
+    atDefault: boolean;
+  } | null>(null);
+  /** What the last write did to the chat's tier, said in one line (and a tip). */
+  const [effectNote, setEffectNote] = useState<{ line: string; info: string | null } | null>(null);
   const [focusTarget, setFocusTarget] = useState<FocusTarget | null>(null);
   const [fetchedModels, setFetchedModels] = useState<DecisionModelEntry[]>([]);
   const [fetchedChatRefusal, setFetchedChatRefusal] = useState<string | null>(null);
@@ -1201,6 +1344,11 @@ export function MonitorsDialog({
   const [stored, setStored] = useState<'ready' | 'loading' | 'error'>('ready');
   /** What is stored, as last read or written: a write whose fresh read fails starts from it. */
   const lastStored = useRef<DecisionSettings | null>(settings);
+  /** Keep `value` as what is stored, and draw its default decision model. */
+  const remember = useCallback((value: DecisionSettings | null) => {
+    lastStored.current = value;
+    setStoredDefault(value?.defaultModel ?? null);
+  }, []);
   /** Each open's number: a write that finishes after a close (or a reopen) changes nothing here. */
   const generation = useRef(0);
   const openRef = useRef(open);
@@ -1223,7 +1371,7 @@ export function MonitorsDialog({
     if (!open) return;
     generation.current += 1;
     setMonitors(settings?.monitors ?? []);
-    lastStored.current = settings;
+    remember(settings);
     lastProp.current = settings;
     setEditing(null);
     setMoreOpen(false);
@@ -1234,7 +1382,11 @@ export function MonitorsDialog({
     setUndo(null);
     setRowErrors({});
     setPendingToggle(null);
+    setPendingDefault(null);
+    setDefaultError(null);
     setGeneralError(null);
+    setAsking(null);
+    setEffectNote(null);
     if (!sessionId) {
       setStored('ready');
       return;
@@ -1246,7 +1398,7 @@ export function MonitorsDialog({
       .then(({ data }) => {
         if (controller.signal.aborted) return;
         const fresh = data ?? known;
-        lastStored.current = fresh;
+        remember(fresh);
         setMonitors(fresh?.monitors ?? []);
         setStored('ready');
       })
@@ -1265,7 +1417,7 @@ export function MonitorsDialog({
     if (settings === lastProp.current) return;
     lastProp.current = settings;
     if (!open || stored !== 'ready' || editing || busy || !settings) return;
-    lastStored.current = settings;
+    remember(settings);
     setMonitors(settings.monitors);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [settings]);
@@ -1274,13 +1426,33 @@ export function MonitorsDialog({
     if (!open) setCatalogRead(false);
   }, [open]);
 
+  // Whether the chat already has subagents, read on each open unless the caller
+  // says: a chat with none yet keeps "Also watch the subagents" in "More options".
+  const [fetchedHasSubagents, setFetchedHasSubagents] = useState<boolean | null>(null);
+  const isDraft = draft !== undefined;
+  useEffect(() => {
+    if (!open || isDraft || !sessionId || givenSubagentChat || givenHasSubagents !== undefined) {
+      return;
+    }
+    setFetchedHasSubagents(knownHasSubagents(sessionId));
+    const controller = new AbortController();
+    void fetchHasSubagents(sessionId, controller.signal).then((has) => {
+      if (!controller.signal.aborted && has !== null) setFetchedHasSubagents(has);
+    });
+    return () => controller.abort();
+  }, [open, isDraft, sessionId, givenSubagentChat, givenHasSubagents]);
+
   useEffect(() => {
     if (!open || givenModels) return;
     const controller = new AbortController();
     // A new read says nothing until it answers: no sentence about an older answer.
     setCatalogIssue(null);
-    // Named, so each model carries the daemon's own reason this chat may not use it.
-    fetchDecisionCatalog(controller.signal, sessionId || undefined)
+    // Named, so each model carries the daemon's own reason this chat may not use it;
+    // in draft mode, the model the chat will start on, so each carries its `chatEffect`.
+    fetchDecisionCatalog(
+      controller.signal,
+      draft ? (draft.chat ?? undefined) : sessionId || undefined
+    )
       .then((catalog) => {
         if (controller.signal.aborted) return;
         setFetchedModels(catalog.models);
@@ -1293,7 +1465,16 @@ export function MonitorsDialog({
         if (!controller.signal.aborted) setCatalogIssue(catalogProblemFor(error));
       });
     return () => controller.abort();
-  }, [open, givenModels, sessionId, catalogAttempt]);
+    // The draft's chat by its two strings: a new object each render must not re-read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    open,
+    givenModels,
+    sessionId,
+    catalogAttempt,
+    draft?.chat?.boundProvider,
+    draft?.chat?.boundModel,
+  ]);
 
   // Focus moves after the render that drew its target, and after a menu's own
   // focus return (Radix restores its trigger in a timeout of its own).
@@ -1327,6 +1508,13 @@ export function MonitorsDialog({
   const isSubagentChat =
     givenSubagentChat ||
     monitors.some((monitor) => monitor.setBy === 'agent' || !!monitor.inheritedFrom);
+  // Up front once the chat has subagents, or once a stored monitor already watches
+  // them: a setting that is on is never hidden behind "More options". The stored
+  // list, not the editor's draft, so ticking the box does not move it under the pointer.
+  const subagentsUpFront =
+    !isSubagentChat &&
+    ((givenHasSubagents ?? (isDraft ? null : fetchedHasSubagents)) === true ||
+      monitors.some((monitor) => monitor.applyToSubagents === true));
   const isCrewChat =
     givenCrewChat ||
     models.some((entry) => entry.unavailableReason?.startsWith(CREW_REASON_OPENING) === true);
@@ -1341,6 +1529,22 @@ export function MonitorsDialog({
     () => (editing ? validateMonitor(editing.draft, { chatTier, models, chatRefusal }) : {}),
     [editing, chatTier, models, chatRefusal]
   );
+
+  // DR-33: what Save would do to the chat's tier, from the rows the daemon marked
+  // `makesPublic`, worked out on the list as it would stand after this save.
+  const editorEffect = useMemo(() => {
+    if (!editing) return null;
+    const preview: DecisionSettings = {
+      defaultModel: storedDefault,
+      monitors:
+        editing.id === null
+          ? [...monitors, editing.draft]
+          : monitors.some((monitor) => monitor.id === editing.id)
+            ? monitors.map((monitor) => (monitor.id === editing.id ? editing.draft : monitor))
+            : [...monitors, editing.draft],
+    };
+    return publicEffectFor(loweringModels(preview, models), chatModelName);
+  }, [editing, monitors, models, chatModelName, storedDefault]);
 
   const clearRowError = (id: string) =>
     setRowErrors((current) => {
@@ -1361,14 +1565,84 @@ export function MonitorsDialog({
       outcome: {
         done?: (stored: DecisionSettings, wrote: boolean) => void;
         refused?: (sentence: string) => void;
+        /** The person's answer was asked for: the question is up, nothing was written. */
+        asked?: () => void;
+      } = {},
+      options: {
+        /** The person saw "This chat will be public: …" for this write (DR-33). */
+        acceptPublic?: boolean;
+        /** Put the question, if one is asked, above the editor's Save. */
+        inEditor?: boolean;
+        /**
+         * The chat's default decision model this write sets (`null` clears it), or
+         * `undefined` to keep what is stored. The question, if one is asked, goes
+         * under the default's select.
+         */
+        defaultModel?: DecisionModelRef | null;
       } = {}
-    ) => {
+    ): Promise<void> => {
       const gen = generation.current;
       const current = () => openRef.current && generation.current === gen;
+      const acceptPublic = options.acceptPublic === true;
+      const defaultFor = (stored: DecisionSettings | null) =>
+        options.defaultModel !== undefined ? options.defaultModel : (stored?.defaultModel ?? null);
+      const ask = (confirmation: PublicDecisionConfirmation) => {
+        setAsking({
+          confirmation,
+          inEditor: options.inEditor === true,
+          atDefault: options.defaultModel !== undefined,
+          retry: () => {
+            setAsking(null);
+            void write(change, outcome, { ...options, acceptPublic: true });
+          },
+        });
+        outcome.asked?.();
+      };
       setBusy(true);
       setStatus({ kind: 'saving' });
       setUndo(null);
       setGeneralError(null);
+      setAsking(null);
+      setEffectNote(null);
+      if (draft) {
+        // Draft mode: nothing is stored on the daemon yet. A change that would make the
+        // chat public is held until the person answers, as the daemon would hold it.
+        const base = lastStored.current;
+        const freshMonitors = base?.monitors ?? [];
+        const next = change(freshMonitors);
+        const kept: DecisionSettings = {
+          defaultModel: next === null ? (base?.defaultModel ?? null) : defaultFor(base),
+          monitors: next ?? freshMonitors,
+        };
+        const lowering = next === null ? [] : loweringModels(kept, models);
+        const before = draft.accepted ? loweringModels(base, models) : [];
+        const alreadyAccepted =
+          draft.accepted === true && lowering.every((entry) => before.includes(entry));
+        setBusy(false);
+        if (lowering.length > 0 && !acceptPublic && !alreadyAccepted) {
+          setStatus({ kind: 'idle' });
+          ask({
+            message: TIER_EFFECT_COPY.willBePublic(publicModelsSentence(lowering)),
+            info: TIER_EFFECT_COPY.publicInfo(chatModelName),
+            models: lowering.map((entry) => ({
+              provider: entry.provider,
+              model: entry.model,
+              adapter: null,
+            })),
+          });
+          return;
+        }
+        remember(kept);
+        setMonitors(kept.monitors);
+        setStatus({ kind: 'saved' });
+        if (next !== null) {
+          draft.onChange(kept, lowering.length > 0);
+          const effect = publicEffectFor(lowering, chatModelName);
+          if (effect) setEffectNote(effect);
+        }
+        outcome.done?.(kept, next !== null);
+        return;
+      }
       let fresh = lastStored.current;
       if (sessionId) {
         try {
@@ -1386,7 +1660,7 @@ export function MonitorsDialog({
             defaultModel: fresh?.defaultModel ?? null,
             monitors: freshMonitors,
           };
-          lastStored.current = kept;
+          remember(kept);
           setMonitors(freshMonitors);
           setBusy(false);
           setStatus({ kind: 'saved' });
@@ -1395,29 +1669,37 @@ export function MonitorsDialog({
         return;
       }
       try {
-        const saved = await saveDecisionSettings(sessionId, {
-          defaultModel: fresh?.defaultModel ?? null,
-          monitors: next,
-        });
-        onSaved?.(saved);
+        const saved = await saveDecisionSettings(
+          sessionId,
+          { defaultModel: defaultFor(fresh), monitors: next },
+          { acceptPublicDecisionModels: acceptPublic }
+        );
+        const { tierEffect, tierEffectLine, ...stored } = saved;
+        onSaved?.(stored);
+        // The save is activity, and may make the chat public by a decision model or
+        // stop doing so, so the sidebar re-reads its rows now: the order and the
+        // row's hover note follow at once. After the write has landed.
+        refreshSidebarChats();
         if (!current()) return;
-        lastStored.current = saved;
-        setMonitors(saved.monitors);
+        remember(stored);
+        setMonitors(stored.monitors);
         setBusy(false);
         setStatus({ kind: 'saved' });
-        outcome.done?.(saved, true);
+        setEffectNote(tierEffectNote(tierEffect, tierEffectLine, chatModelName));
+        outcome.done?.(stored, true);
       } catch (error) {
         if (!current()) return;
         if (fresh) {
-          lastStored.current = fresh;
+          remember(fresh);
           setMonitors(freshMonitors);
         }
         setBusy(false);
         setStatus({ kind: 'idle' });
-        outcome.refused?.(refusalOf(error));
+        if (error instanceof PublicDecisionConfirmationError) ask(error.confirmation);
+        else outcome.refused?.(refusalOf(error));
       }
     },
-    [sessionId, onSaved]
+    [sessionId, onSaved, draft, models, chatModelName, remember]
   );
 
   const startEdit = (monitor: MonitorCriterion | null) => {
@@ -1427,7 +1709,7 @@ export function MonitorsDialog({
     setStatus({ kind: 'idle' });
     setShowErrors(false);
     setEditorRefusal(null);
-    setMoreOpen(monitor ? usesHiddenSettings(monitor) : false);
+    setMoreOpen(monitor ? usesHiddenSettings(monitor, { subagentsUpFront }) : false);
     setEditing(
       monitor
         ? { id: monitor.id, draft: monitor, opened: monitor }
@@ -1497,6 +1779,8 @@ export function MonitorsDialog({
       JSON.stringify(monitorToWire(trimmed)) !== JSON.stringify(monitorToWire(original));
     const owned = changed ? ownedByThePerson(trimmed) : trimmed;
     let savedId = owned.id;
+    // The line above Save said the chat will be public: Save is the person's answer.
+    const acceptPublic = editorEffect !== null;
     void write(
       (fresh) => {
         if (editing.id !== null) {
@@ -1517,7 +1801,8 @@ export function MonitorsDialog({
           setFocusTarget({ kind: 'row', id: savedId });
         },
         refused: (sentence) => setEditorRefusal(sentence),
-      }
+      },
+      { acceptPublic, inEditor: true }
     );
   };
 
@@ -1549,6 +1834,7 @@ export function MonitorsDialog({
           setPendingToggle(null);
           setRowErrors((current) => ({ ...current, [monitor.id]: sentence }));
         },
+        asked: () => setPendingToggle(null),
       }
     );
   };
@@ -1589,6 +1875,31 @@ export function MonitorsDialog({
     );
   };
 
+  /**
+   * Set (or, with `null`, clear) the chat's default decision model, applied when
+   * picked like a row's switch. A pick that makes the chat public is asked about
+   * under the select, in the line Save would show (DR-33), and sent again with the
+   * person's answer; in draft mode it is held for the first message.
+   */
+  const setDefault = (model: DecisionModelRef | null) => {
+    if (busy || locked || editing) return;
+    if (decisionModelKey(model) === decisionModelKey(storedDefault)) return;
+    setDefaultError(null);
+    setPendingDefault({ model });
+    void write(
+      (fresh) => fresh,
+      {
+        done: () => setPendingDefault(null),
+        refused: (sentence) => {
+          setPendingDefault(null);
+          setDefaultError(sentence);
+        },
+        asked: () => setPendingDefault(null),
+      },
+      { defaultModel: model }
+    );
+  };
+
   const atLimit = monitors.length >= MAX_MONITORS;
   const rowsLocked = locked || busy || editing !== null;
   const showEmpty = stored === 'ready' && monitors.length === 0 && !editing;
@@ -1596,12 +1907,47 @@ export function MonitorsDialog({
     status.kind === 'saving'
       ? copy.saving
       : status.kind === 'saved'
-        ? copy.saved
+        ? draft
+          ? copy.savedDraft
+          : copy.saved
         : status.kind === 'removed'
           ? copy.removed(status.name)
           : atLimit && !readOnly
             ? copy.limit
             : '';
+
+  // The daemon's question (or, in draft mode, the dialog's own from the rows it read):
+  // one line, its tip, and the two answers. Make it public sends the same write again
+  // with the person's answer.
+  const askingNode = asking ? (
+    <div className="br-monitors__confirm flex flex-col gap-2" data-testid="monitors-public-confirm">
+      <TierEffectLine
+        line={asking.confirmation.message}
+        info={asking.confirmation.info}
+        infoLabel={TIER_EFFECT_COPY.publicInfoLabel}
+      />
+      <div className="br-monitors__actions">
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          data-testid="monitors-public-cancel"
+          onClick={() => setAsking(null)}
+        >
+          {TIER_EFFECT_COPY.confirmCancel}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          disabled={busy}
+          data-testid="monitors-public-accept"
+          onClick={asking.retry}
+        >
+          {TIER_EFFECT_COPY.confirmSave}
+        </Button>
+      </div>
+    </div>
+  ) : null;
 
   const editor = editing ? (
     <MonitorEditor
@@ -1610,16 +1956,19 @@ export function MonitorsDialog({
       models={models}
       chatTier={chatTier}
       chatRefusal={chatRefusal}
-      defaultModel={lastStored.current?.defaultModel ?? null}
+      defaultModel={storedDefault}
       catalogProblem={catalogIssue}
       onRetryCatalog={() => setCatalogAttempt((attempt) => attempt + 1)}
       isSubagentChat={isSubagentChat}
+      subagentsUpFront={subagentsUpFront}
       opened={editing.opened}
       moreOpen={moreOpen}
       onMoreOpenChange={setMoreOpen}
       ids={ids}
       busy={busy}
       refusal={editorRefusal}
+      effect={editorEffect}
+      confirmation={asking?.inEditor ? askingNode : null}
       onCancel={cancelEdit}
       onSave={saveEdit}
       onChange={(draft) => setEditing({ ...editing, draft })}
@@ -1687,11 +2036,28 @@ export function MonitorsDialog({
       testId="monitors-dialog"
     >
       <div className="br-monitors" ref={listRef}>
+        {draft ? (
+          <p className="br-monitors__note" data-testid="monitors-draft-note">
+            {copy.draftNote}
+          </p>
+        ) : null}
         {nothingUsable && !readOnly ? (
           <DecisionModelInstall
             reason={installReason}
             // Read the list again: the model just installed is in it now.
             onInstalled={() => setCatalogAttempt((attempt) => attempt + 1)}
+          />
+        ) : null}
+        {stored !== 'error' ? (
+          <DefaultModelField
+            id={`${base}-default-model`}
+            models={models}
+            chatTier={chatTier}
+            value={pendingDefault ? pendingDefault.model : storedDefault}
+            disabled={readOnly || rowsLocked}
+            error={defaultError}
+            confirmation={asking?.atDefault ? askingNode : null}
+            onChange={setDefault}
           />
         ) : null}
         {stored === 'loading' ? (
@@ -1700,6 +2066,7 @@ export function MonitorsDialog({
           </p>
         ) : stored === 'error' ? (
           <p className="br-monitors__error" role="alert" data-testid="monitors-load-error">
+            <AlertCircle aria-hidden="true" />
             {copy.loadFailed}
           </p>
         ) : showEmpty ? (
@@ -1765,13 +2132,116 @@ export function MonitorsDialog({
           </ul>
         ) : null}
         {footRow}
+        {effectNote && !editing ? (
+          <TierEffectLine
+            line={effectNote.line}
+            info={effectNote.info}
+            infoLabel={TIER_EFFECT_COPY.publicInfoLabel}
+            testId="monitors-tier-effect"
+          />
+        ) : null}
+        {asking && !asking.inEditor && !asking.atDefault ? askingNode : null}
         {generalError ? (
           <p className="br-monitors__error" role="alert" data-testid="monitors-save-error">
+            <AlertCircle aria-hidden="true" />
             {generalError}
           </p>
         ) : null}
       </div>
     </ModalShell>
+  );
+}
+
+/**
+ * The chat's default decision model (live QA M1-1, design §4): one quiet select at
+ * the top of the dialog, with the picker's own rows. Its first row clears the
+ * default, so a decision that names no model is chosen automatically within the
+ * chat's tier. A public row that would make the chat public says so on the row, and
+ * the pick is asked about under the select before anything is kept.
+ */
+function DefaultModelField({
+  id,
+  models,
+  chatTier,
+  value,
+  disabled,
+  error,
+  confirmation,
+  onChange,
+}: {
+  id: string;
+  models: readonly DecisionModelEntry[];
+  chatTier: DecisionTier | null;
+  value: DecisionModelRef | null;
+  disabled: boolean;
+  error: string | null;
+  confirmation: ReactNode;
+  onChange: (model: DecisionModelRef | null) => void;
+}) {
+  const options: DecisionModelOption[] = decisionModelOptions({ models, chatTier });
+  // The default's own default: no model named, chosen when a decision runs.
+  options[0] = {
+    value: '',
+    name: copy.automatic,
+    label: `${copy.automatic}, ${copy.automaticHint}`,
+    secondary: copy.automaticHint,
+    isPrivate: false,
+    model: null,
+    reason: null,
+  };
+  const selectedKey = decisionModelKey(
+    value
+      ? { provider: value.provider, model: modelEntryFor(value, models)?.model ?? value.model }
+      : null
+  );
+  if (value && !options.some((option) => option.value === selectedKey)) {
+    // A stored model the list does not hold (removed, or not read yet): kept, by its alias.
+    const name = decisionModelLabel(value) ?? selectedKey;
+    options.push({
+      value: selectedKey,
+      name,
+      label: name,
+      secondary: null,
+      isPrivate: false,
+      model: value,
+      reason: null,
+    });
+  }
+  const selected = options.find((option) => option.value === selectedKey) ?? options[0];
+  const info = anyPublicModelRefused(models, chatTier)
+    ? `${copy.defaultFieldInfo} ${TIER_EFFECT_COPY.publicRefusedInfo}`
+    : copy.defaultFieldInfo;
+  return (
+    <div
+      className="br-form-field flex min-w-0 flex-col gap-1.5"
+      data-testid="monitors-default-model"
+    >
+      <span className="flex min-w-0 items-center gap-1">
+        <label htmlFor={id} className="text-label text-text-default">
+          {copy.defaultField}
+        </label>
+        <InfoTip label={copy.defaultField} help={info} />
+      </span>
+      <Select
+        inputId={id}
+        options={options}
+        value={selected}
+        isSearchable={false}
+        isDisabled={disabled}
+        menuPlacement="auto"
+        menuPortalTarget={menuPortalTarget}
+        isOptionDisabled={isDecisionModelOptionDisabled}
+        formatOptionLabel={formatDecisionModelOption}
+        onChange={(raw: unknown) => onChange((raw as DecisionModelOption | null)?.model ?? null)}
+      />
+      {error ? (
+        <p className="br-monitors__error" role="alert" data-testid="monitors-default-error">
+          <AlertCircle aria-hidden="true" />
+          {error}
+        </p>
+      ) : null}
+      {confirmation}
+    </div>
   );
 }
 
@@ -1860,6 +2330,7 @@ function MonitorRow({
             role="alert"
             data-testid="monitor-row-error"
           >
+            <AlertCircle aria-hidden="true" />
             {error}
           </p>
         ) : null}

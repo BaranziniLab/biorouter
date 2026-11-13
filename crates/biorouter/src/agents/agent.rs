@@ -1180,6 +1180,25 @@ const CODING_AGENT_BRIDGE_ALLOWED_DICTIONARY_TOOLS: &[&str] = &[
     "dictionary__remove_added_terms",
 ];
 
+// The Decisions capability (`decisions_extension.rs`), default ON. It was
+// absent from this table, and the table is the only door a BUNDLED extension
+// has onto the bridge: `enabled_coding_agent_bridge_extension_targets` skips
+// every name `resolve_bundled_extension` knows, so a built-in with no policy
+// here was dropped silently. A Claude Code or Codex chat therefore read that
+// Decisions was loaded with no effective tools, and had no `decide`, while a
+// chat on any other provider had both. A drop like that is no longer silent:
+// every bundled capability is in this table or in
+// `CODING_AGENT_BRIDGE_EXCLUSIONS`, and
+// `every_bundled_capability_is_bridged_or_withheld_on_purpose` fails on one in
+// neither.
+//
+// Bridging it adds no new gate and drops none. A bridged call still reaches
+// `ExtensionManager::dispatch_tool_call` (Gate C, with the capability pinned
+// for this turn), and every model it names still goes through
+// `DecisionService`'s use gate (Gate H), exactly as on the direct path.
+const CODING_AGENT_BRIDGE_ALLOWED_DECISIONS_TOOLS: &[&str] =
+    &["decisions__decide", "decisions__decision_models"];
+
 const CODING_AGENT_BRIDGE_REQUIRED_COLLECTOR_TOOLS: &[&str] = &[
     "workspace__workspace_watch",
     "workspace__workspace_read_conversation",
@@ -1228,22 +1247,9 @@ const CODING_AGENT_BRIDGE_ALLOWED_WEBDOCUMENTS_TOOLS: &[&str] = &[
     "webdocuments__xlsx_tool",
 ];
 
-// ⚠ There is deliberately NO `code_execution` policy, and its absence is the
-// opposite of the Developer one — it withholds no capability.
-//
-// Code Execution is a token-efficiency mechanism, not a capability: with it on,
-// `survives_code_execution_filter` HIDES the ordinary tool surface and the model
-// reaches it by writing JavaScript against `execute_code`. A coding-agent child
-// does better than that. `prepare_tools_and_prompt_for_provider` strips
-// `code_execution__*` from the bridge plan and hands the child the REAL tools
-// directly — `coding_agent_bridge_recovers_managers_hidden_by_code_execution`
-// pins exactly that, asserting the recovered `skills__`/`extensionmanager__`/
-// `knowledge__` tools are present and the prompt describes them rather than a
-// nested executor.
-//
-// So bridging `execute_code` would nest a sandbox inside an agent that already
-// holds everything the sandbox wraps: strictly redundant, and it would put the
-// child back behind an indirection every other capability here removes.
+// The two knowledge-ingestion tools the agent dispatches itself. They ride on
+// the Knowledge target (`CodingAgentBridgePlan::target_for_tool`), so they are
+// offered only while Knowledge is on.
 const CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS: &[&str] = &[
     PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
     PLATFORM_INGEST_SOURCE_TOOL_NAME,
@@ -1289,7 +1295,12 @@ const CODING_AGENT_BRIDGE_ALLOWED_EXTENSION_MANAGER_TOOLS: &[&str] = &[
 // a person's proof. Every change parks its own proof-backed card (the permission inspector
 // leaves both tools to it), and a read takes the bridge's capability, Public for both coding
 // agents, so it returns only Public content. The grant's worker tools (`crew__connections`,
-// `crew__request`) are deliberately absent.
+// `crew__request`) are deliberately absent. Crew refuses these providers for everything a grant
+// does, in three places: a grant is never admitted for one (`checked_run_admission`), a chat
+// that holds a grant cannot be bound to one (`check_provider_binding`), and a Crew task cannot
+// start on one (`routes/crew.rs`), because the vendor's own agent runs tools Crew cannot
+// isolate. So the worker tools could only ever answer "type /crew", and a /crew that then
+// refuses this provider.
 const CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS: &[&str] = &["crew__read", "crew__change"];
 
 const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
@@ -1339,6 +1350,11 @@ const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
         tools: CODING_AGENT_BRIDGE_ALLOWED_DICTIONARY_TOOLS,
     },
     CodingAgentBridgePolicy {
+        capability_name: "Decisions",
+        target_name: "decisions",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_DECISIONS_TOOLS,
+    },
+    CodingAgentBridgePolicy {
         capability_name: "Knowledge",
         target_name: "knowledge",
         tools: CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS,
@@ -1364,6 +1380,122 @@ const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
         tools: CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS,
     },
 ];
+
+/// A bundled capability the coding-agent bridge withholds on purpose.
+///
+/// A bundled capability reaches a Claude Code or Codex child only through its
+/// entry in `CODING_AGENT_BRIDGE_POLICIES`, so one with no entry has none of
+/// its tools on the bridge. That is right for the capability below and was
+/// wrong for Decisions, and nothing told the two apart until this table
+/// existed: every bundled capability is now in exactly one of the two tables,
+/// and `every_bundled_capability_is_bridged_or_withheld_on_purpose` fails on a
+/// capability that is in neither. Crew is in the policy table, not here: only
+/// its person tools may cross, and its grant tools are simply not on that
+/// allowlist (`CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS`).
+///
+/// `note` is what the bridged model reads about the capability in place of its
+/// own instructions (`ExtensionInfo::withheld_note`). Without it the model read
+/// that the capability was "loaded but has no effective tools", which is how a
+/// child came to tell the person that Decisions "exposes no tools" rather than
+/// that it was missing.
+struct CodingAgentBridgeExclusion {
+    target_name: &'static str,
+    note: &'static str,
+}
+
+const CODING_AGENT_BRIDGE_EXCLUSIONS: &[CodingAgentBridgeExclusion] = &[
+    // Code Execution withholds no capability, which makes its absence the
+    // opposite of what the empty Developer list used to be.
+    //
+    // It is a token-efficiency mechanism, not a capability: with it on,
+    // `survives_code_execution_filter` HIDES the ordinary tool surface and the
+    // model reaches it by writing JavaScript against `execute_code`. A
+    // coding-agent child does better than that. The bridge plan leaves out
+    // `code_execution__*` and hands the child the REAL tools directly, which
+    // `coding_agent_bridge_recovers_managers_hidden_by_code_execution` pins: the
+    // recovered `skills__`, `extensionmanager__` and `knowledge__` tools are
+    // present and the prompt describes them rather than a nested executor.
+    //
+    // So bridging `execute_code` would nest a sandbox inside an agent that
+    // already holds everything the sandbox wraps: strictly redundant, and it
+    // would put the child back behind an indirection every other capability
+    // here removes.
+    CodingAgentBridgeExclusion {
+        target_name: "code_execution",
+        note: "Code Execution is not used in this chat. The tools it would run from a script are \
+               offered to you directly, so call them by name.",
+    },
+];
+
+/// What a bridged model reads about a capability that HAS a bridge policy when
+/// none of its tools crosses this turn, in place of its own instructions and
+/// the template's "loaded but has no effective tools" line.
+///
+/// A policy says which tools may cross, not that any will: Crew's admits only
+/// its person tools, which `CrewToolStanding::offers` gives only some chats.
+/// Without a note a Claude Code or Codex chat read that Crew was loaded with
+/// nothing to call, and could tell a person neither why nor what to do, which
+/// is the failure that hid Decisions.
+struct CodingAgentBridgeEmptyNote {
+    target_name: &'static str,
+    note: &'static str,
+}
+
+const CODING_AGENT_BRIDGE_EMPTY_NOTES: &[CodingAgentBridgeEmptyNote] = &[
+    // Holds wherever no Crew tool reaches the chat, which is wherever the
+    // chat's own Crew roster lacks the person tools. It speaks only of what a
+    // grant does (a channel connection, a Crew task), which Crew refuses these
+    // providers in every build (the three refusals named above
+    // `CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS`), so it never claims a person
+    // tool is absent where one might be offered.
+    CodingAgentBridgeEmptyNote {
+        target_name: "crew",
+        note: "No Crew tool is available in this chat. A chat on Claude Code or Codex cannot be \
+               connected to a Crew channel, and a Crew task cannot run on either, because Crew \
+               cannot isolate the tools their own agent runs. If the person asks for Crew, tell \
+               them this, and suggest they switch this chat to a model from any other provider \
+               in the model menu, or start a new chat with one, and then type /crew to connect \
+               it.",
+    },
+];
+
+/// Tell a bridged model why a capability it can see has no tools, in place of
+/// that capability's own instructions: a withheld capability's note
+/// (`CodingAgentBridgeExclusion`), or a bridged one's note for a turn in which
+/// none of its tools crosses (`CodingAgentBridgeEmptyNote`).
+///
+/// Only a capability with no effective tool this turn is noted: the note says
+/// there is nothing to call, so it must never replace a roster that has
+/// something in it.
+pub(super) fn note_capabilities_withheld_from_the_bridge(
+    extensions_info: &mut [crate::agents::extension::ExtensionInfo],
+) {
+    for info in extensions_info {
+        if info.classification != crate::agents::extension::ExtensionClassification::Capability
+            || !info.available_tools.is_empty()
+        {
+            continue;
+        }
+        let Some(note) = CODING_AGENT_BRIDGE_EXCLUSIONS
+            .iter()
+            .map(|exclusion| (exclusion.target_name, exclusion.note))
+            .chain(
+                CODING_AGENT_BRIDGE_EMPTY_NOTES
+                    .iter()
+                    .map(|empty| (empty.target_name, empty.note)),
+            )
+            .find(|(target_name, _)| {
+                resolve_bundled_extension(target_name)
+                    .is_some_and(|target| target.key() == info.name)
+            })
+            .map(|(_, note)| note)
+        else {
+            continue;
+        };
+        info.instructions.clear();
+        info.withheld_note = Some(note.to_string());
+    }
+}
 
 pub(crate) fn coding_agent_bridge_allows_tool(
     tool_name: &str,
@@ -1688,6 +1820,25 @@ async fn take_structured_final_output_action(
     })
 }
 
+/// What a bridged coding agent, and the transcript card that shows its call, is
+/// told when a spawn it asked for fails: the error's own sentence.
+///
+/// The spawn's refusals are sentences written to be read as they stand ("This
+/// chat is running on a public model, so it cannot delegate to a private one
+/// ..."). `ErrorData`'s `Display` puts the JSON-RPC code in front of the
+/// sentence, and this used to put the tool's name in front of that, so the
+/// child and the person read "`workspace__subagent` failed: -32602: This chat
+/// ...". The child knows which tool it called, and the code is a wire detail.
+/// The call still fails the same way: this changes only the words.
+fn bridged_spawn_error_text(error: &ErrorData) -> String {
+    let said = error.message.trim();
+    if said.is_empty() {
+        "The subagent could not start.".to_string()
+    } else {
+        said.to_string()
+    }
+}
+
 struct ChatBridgeDispatch {
     extensions: Arc<ExtensionManager>,
     session_manager: Arc<SessionManager>,
@@ -1807,7 +1958,6 @@ impl ChatBridgeDispatch {
 
     async fn dispatch_subagent(
         &self,
-        name: &str,
         call: CallToolRequestParams,
         cancel: CancellationToken,
     ) -> std::result::Result<CallToolResult, String> {
@@ -1840,7 +1990,7 @@ impl ChatBridgeDispatch {
         )
         .result
         .await
-        .map_err(|error| format!("`{name}` failed: {error}"))
+        .map_err(|error| bridged_spawn_error_text(&error))
     }
 
     async fn dispatch_ingest_source(
@@ -2121,7 +2271,7 @@ impl coding_agent_bridge::BridgeToolDispatch for ChatBridgeDispatch {
         let name = call.name.to_string();
         self.enforce_tool_access(session_id, &call).await?;
         if is_spawn_tool_call(&name) {
-            return self.dispatch_subagent(&name, call, cancel).await;
+            return self.dispatch_subagent(call, cancel).await;
         }
         if name == PLATFORM_INGEST_SOURCE_TOOL_NAME {
             return self
@@ -2296,6 +2446,16 @@ pub(crate) fn is_job_wait_tool(name: &str) -> bool {
 /// to be invented from global config — [`Agent::rebind_from_row`] does invent
 /// one, but inventing it here would report drift against a value the row never
 /// stated. Both answer `false`.
+/// How [`Agent::install_bound_provider`] is asked to write the slot (DR-33).
+pub(crate) enum BoundInstall {
+    /// Bind this provider (unwrapped first), with the row's axes.
+    Bind(Arc<dyn Provider>),
+    /// Gate B: re-fold the row's axes around the provider already bound.
+    Refresh,
+    /// After an admitted lowering: re-fold, but never raise.
+    LowerOnly,
+}
+
 fn row_names_another_binding(row: &Session, bound: &dyn Provider) -> bool {
     let Some(row_provider) = row.provider_name.as_deref() else {
         return false;
@@ -2871,21 +3031,17 @@ pub(crate) const GOAL_NOT_JUDGED_AT_USAGE_LIMIT: &str = "The /goal was not check
 ///
 /// It used to be `Model call failed: {error}. Retrying (1/1)…`, which gave
 /// `…your provider administrator.. Retrying` (the error's own full stop, then
-/// the frame's), and which a clinician read as her message having been
-/// flagged. A content-filter failure is said plainly; any other error keeps
-/// its own words, with one full stop.
+/// the frame's). The error keeps its own words, with one full stop.
+///
+/// A content filter never reaches this notice. `formats::openai` reads a
+/// filter that failed to run as an annotation and goes on reading the reply,
+/// and words a filter that blocked a reply or a request as "… content filter
+/// blocked this …", which `ProviderError::kind` classifies as a policy refusal
+/// that is never retried (`a_content_filter_block_is_never_retried`). The
+/// branches that matched its old markers (`content_filter_error`,
+/// `(content_filter)`) matched nothing any more, and are gone.
 fn provider_retry_notice(error: &ProviderError, attempt: u32, limit: u32) -> String {
     let said = error.to_string();
-    if said.contains("content_filter_error") {
-        return format!(
-            "The provider's content filter interrupted the reply. Trying again ({attempt}/{limit})…"
-        );
-    }
-    if said.contains("(content_filter)") {
-        return format!(
-            "The provider's safety filter stopped the reply. Trying again ({attempt}/{limit})…"
-        );
-    }
     let reason = said.trim_end().trim_end_matches(['.', '!', '?']).trim_end();
     format!("The model call failed: {reason}. Trying again ({attempt}/{limit})…")
 }
@@ -2984,18 +3140,60 @@ mod provider_retry_notice_tests {
             "The model call failed: Server error: Server error (502 Bad Gateway): upstream. \
              Trying again (1/2)…"
         );
-        assert_eq!(
-            provider_retry_notice(
-                &ProviderError::RequestFailed(
-                    "Provider safety filter blocked the response (content_filter). Revise the \
-                     request or contact your provider administrator."
-                        .to_string()
-                ),
-                1,
-                1
+        // The in-stream server fault `formats::openai` reports, which IS
+        // retried: its own sentence, one full stop, and no filter wording.
+        let fault = provider_retry_notice(
+            &ProviderError::ServerError(
+                crate::providers::formats::openai::IN_STREAM_SERVER_FAULT.to_string(),
             ),
-            "The provider's safety filter stopped the reply. Trying again (1/1)…"
+            1,
+            1,
         );
+        assert!(
+            fault.starts_with(
+                "The model call failed: Server error: The model server reported an internal \
+                 error partway through its reply."
+            ),
+            "{fault}"
+        );
+        assert!(fault.ends_with("records the error's code and type. Trying again (1/1)…"));
+        assert!(!fault.contains(".."), "{fault}");
+        assert!(!fault.contains("filter"), "{fault}");
+    }
+
+    /// Why the notice has no content-filter branch: every content-filter
+    /// error `formats::openai` makes now is a policy refusal, so the reply loop
+    /// stops on it with its own sentence instead of announcing a retry.
+    #[test]
+    fn a_content_filter_block_is_never_retried() {
+        let filtered_reply = crate::providers::formats::openai::content_filter_stopped_reply();
+        let filtered_request = crate::providers::formats::openai::azure_content_filter_refusal(
+            400,
+            &serde_json::json!({
+                "error": {
+                    "code": "content_filter",
+                    "innererror": {
+                        "content_filter_result": { "violence": { "filtered": true } }
+                    }
+                }
+            }),
+        )
+        .expect("Azure's prompt filter refusal");
+        for error in [filtered_reply, filtered_request] {
+            assert!(
+                error.to_string().contains("content filter blocked"),
+                "{error}"
+            );
+            assert_eq!(
+                error.kind(),
+                crate::providers::errors::ProviderErrorKind::Policy,
+                "{error}"
+            );
+            assert!(
+                !crate::agents::mistakes::is_recoverable(&error),
+                "a content filter block was retried: {error}"
+            );
+        }
     }
 }
 
@@ -3691,7 +3889,16 @@ fn repetition_denial_abort(
         tool_request_id = %request.id,
         "repetition policy denied a tool signature; terminating this user turn"
     );
-    Some((code, result.reason.clone()))
+    // The turn's ending is read by the PERSON (the desktop's turn row, the
+    // CLI's last line); `result.reason` is the agent's and stays the denied
+    // call's tool result. See `repetition_stop_notice`.
+    let tool_name = request
+        .tool_call
+        .as_ref()
+        .map(|call| call.name.to_string())
+        .unwrap_or_default();
+    let notice = crate::tool_monitor::repetition_stop_notice(result, &tool_name);
+    Some((code, notice))
 }
 
 /// PAR-04: give every tool a cancel abandoned an explicit "cancelled" result.
@@ -4719,6 +4926,138 @@ type DictionaryTurnOrigin = (
     Option<crate::privacy::affiliation::ModelAffiliation>,
 );
 
+/// Issue #56: the capability each chat's running turn started with.
+///
+/// The reply loop pins the provider a turn's requests run on for the whole
+/// turn (`reply_internal`'s `reply_provider`), while Gate C and Gate E sample
+/// the slot on every call. A person who switched a public chat to a private
+/// model while a turn ran therefore had private extension calls admitted for
+/// the rest of that turn, and their results went to the public model the turn
+/// was still sending to. Every call on a turn's path is now admitted on the
+/// lesser of the slot sampled then and this ceiling
+/// ([`crate::privacy::CallCapability::no_wider_than`]): a switch to a less
+/// private model applies at once, and a switch to a more private one at the
+/// next turn, whose Gate B takes a new ceiling.
+///
+/// Keyed by chat because `biorouter web` shares one agent across chats. On the
+/// Agent rather than in the reply generator (the stack cliff); a plain `Mutex`
+/// because it is never held across an await.
+#[derive(Default)]
+pub(super) struct TurnCeilings {
+    /// Per chat: the token of the turn that opened the entry, and its ceiling.
+    by_session: std::sync::Mutex<HashMap<String, (u64, crate::privacy::CallCapability)>>,
+    next_token: AtomicU64,
+}
+
+impl TurnCeilings {
+    fn lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, (u64, crate::privacy::CallCapability)>> {
+        self.by_session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Record `ceiling` for the turn of `session_id` that is starting. It holds
+    /// until the returned guard is dropped, which the reply stream does however
+    /// the turn ends, a Stop included. A newer turn's entry replaces this one,
+    /// and this guard then leaves it alone.
+    pub(super) fn open(
+        &self,
+        session_id: &str,
+        ceiling: crate::privacy::CallCapability,
+    ) -> TurnCeilingHeld<'_> {
+        let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+        self.lock().insert(session_id.to_string(), (token, ceiling));
+        TurnCeilingHeld {
+            ceilings: self,
+            session_id: session_id.to_string(),
+            token,
+        }
+    }
+
+    /// The running turn's ceiling, or `None` outside a turn.
+    fn get(&self, session_id: &str) -> Option<crate::privacy::CallCapability> {
+        self.lock().get(session_id).map(|(_, ceiling)| *ceiling)
+    }
+
+    /// Narrow the running turn's ceiling to `observed`. Never widens it.
+    fn lower(&self, session_id: &str, observed: crate::privacy::CallCapability) {
+        if let Some((_, ceiling)) = self.lock().get_mut(session_id) {
+            *ceiling = observed.no_wider_than(*ceiling);
+        }
+    }
+}
+
+/// A running turn's hold on its ceiling. See [`TurnCeilings::open`].
+pub(super) struct TurnCeilingHeld<'a> {
+    ceilings: &'a TurnCeilings,
+    session_id: String,
+    token: u64,
+}
+
+impl Drop for TurnCeilingHeld<'_> {
+    fn drop(&mut self) {
+        let mut by_session = self.ceilings.lock();
+        if by_session
+            .get(&self.session_id)
+            .is_some_and(|(token, _)| *token == self.token)
+        {
+            by_session.remove(&self.session_id);
+        }
+    }
+}
+
+/// One sample of the slot, and what a call made now on the chat's running turn
+/// is admitted on. See [`Agent::sample_turn_call`].
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TurnCall {
+    /// The slot as sampled.
+    slot: crate::privacy::CallCapability,
+    /// `slot`, never wider than the capability the running turn started with.
+    admitted: crate::privacy::CallCapability,
+}
+
+impl TurnCall {
+    /// A model switch landed while this turn ran and waits for the next turn:
+    /// the turn's ceiling narrowed what the slot alone would admit, on the tier
+    /// or on the affiliation. Never with the master switch off, where nothing
+    /// is refused.
+    ///
+    /// ⚠ **The affiliation arm is deliberate.** Between two private models at
+    /// different institutions the tier alone would admit a spawn, but the child
+    /// takes the slot's affiliation, so it reaches that institution's
+    /// connectors with no cross-affiliation warning, and its report goes to the
+    /// model this turn still runs on, which that institution does not cover.
+    /// That is the change DR-31 refuses across a spawn (affiliation equality in
+    /// `resolve_child_privacy`), reached through a mid-turn switch instead of a
+    /// provider override. A local slot after an institutional turn waits too,
+    /// because a local child reaches every institution's connectors. A local
+    /// ceiling is the identity of `composite_affiliation`, so the opposite
+    /// switch, from a local model to an institution's, waits for nothing here.
+    /// `a_spawn_waits_for_a_switch_to_another_institution` pins every row.
+    ///
+    /// The whole-capability comparison is exactly "the tier or the affiliation
+    /// narrowed": `no_wider_than` takes the master switch from the slot, and the
+    /// decision-model flag from whichever sample gave the tier, so neither can
+    /// differ on its own (the flag rows of the same test). It is not spelled
+    /// as two field comparisons because an affiliation compared outside
+    /// `privacy::affiliation::compatible` is a second implementation of DR-26's
+    /// table (`compatible_is_the_only_function_that_compares_two_affiliations`).
+    fn waits_for_next_turn(&self) -> bool {
+        self.admitted.enforced() && self.admitted != self.slot
+    }
+}
+
+/// The refusal a subagent spawn gets while a model switch waits for the next
+/// turn. Every child would either run at the slot's reach and report to the
+/// model this turn still runs on, or be refused by DR-19 anyway, so refusing is
+/// the whole of the answer for this turn.
+const SPAWN_WAITS_FOR_NEXT_TURN: &str =
+    "This chat was switched to another model while this turn was running, and the \
+     switch applies from the next message. A subagent cannot be started until then. Do \
+     not retry in this turn; finish without it, or tell the person.";
+
 /// The main biorouter Agent
 pub struct Agent {
     pub(super) provider: SharedProvider,
@@ -4866,6 +5205,12 @@ pub struct Agent {
     pub(super) normalizer: crate::conversation::SharedNormalizer,
     /// Issue #56 Gate B'. See [`CachedClassification`].
     pub(super) cached_classification: CachedClassification,
+    /// DR-33: whether the slot folds the bound chat's decision models into its
+    /// tier ([`Self::install_bound_provider`]). `false` only on the one Agent
+    /// `biorouter web` shares across every chat ([`Self::new_shared`]): a slot
+    /// shared by chats of different tiers would carry whichever chat's axes Gate
+    /// B installed last, and a concurrent turn of another chat would sample them.
+    pub(super) folds_decision_axes: AtomicBool,
     /// What the reply loop is awaiting right now. See [`crate::agents::loop_phase`].
     pub(super) loop_phase: crate::agents::loop_phase::LoopPhaseCell,
     /// Whether this reply already warned about, or stopped at, a usage limit.
@@ -4893,6 +5238,9 @@ pub struct Agent {
     /// The `turn_end` monitors this turn has already said it did not check.
     /// See [`UncheckedMonitorsNamed`].
     pub(super) unchecked_monitors_named: UncheckedMonitorsNamed,
+    /// Issue #56: the capability each chat's running turn started with, which
+    /// no call on that turn may exceed. See [`TurnCeilings`].
+    pub(super) turn_ceilings: TurnCeilings,
 }
 
 /// What an accepted steer is waiting behind. See [`AgentEvent::SteerWaiting`].
@@ -6030,6 +6378,29 @@ impl Agent {
         ))
     }
 
+    /// DR-33 (design §2.7): the Agent `biorouter web` runs every chat on. It
+    /// never folds decision models into its slot, so every chat's capability
+    /// there is its provider's, exactly as before DR-33. A chat lowered
+    /// elsewhere and opened here ratchets by its provider at its next turn.
+    pub fn new_shared() -> Self {
+        let agent = Self::new();
+        agent.folds_decision_axes.store(false, Ordering::SeqCst);
+        agent
+    }
+
+    /// [`Self::new_shared`] with a caller's configuration.
+    pub fn with_config_shared(config: AgentConfig) -> Self {
+        let agent = Self::with_config(config);
+        agent.folds_decision_axes.store(false, Ordering::SeqCst);
+        agent
+    }
+
+    /// Whether this Agent folds a chat's decision models into its slot (false
+    /// only for [`Self::new_shared`]).
+    pub fn folds_decision_axes(&self) -> bool {
+        self.folds_decision_axes.load(Ordering::SeqCst)
+    }
+
     pub fn with_config(config: AgentConfig) -> Self {
         // Create channels with buffer size 32 (adjust if needed)
         let (tool_tx, tool_rx) = mpsc::channel(32);
@@ -6114,6 +6485,7 @@ impl Agent {
             efforts: Default::default(),
             normalizer: Default::default(),
             cached_classification: Default::default(),
+            folds_decision_axes: AtomicBool::new(true),
             loop_phase: Default::default(),
             usage_limit_reply: Default::default(),
             live_acks: Default::default(),
@@ -6123,6 +6495,7 @@ impl Agent {
             pending_retry_note: std::sync::Mutex::new(None),
             decisions: Default::default(),
             unchecked_monitors_named: Default::default(),
+            turn_ceilings: TurnCeilings::default(),
         }
     }
 
@@ -7867,6 +8240,51 @@ impl Agent {
         output
     }
 
+    /// Issue #56: one sample of `slot`, and what a call made now on the running
+    /// turn of `session_id` is admitted on: that sample, never wider than the
+    /// capability the turn started with ([`TurnCeilings`]). Outside a turn the
+    /// two are the same sample.
+    ///
+    /// `slot` is the agent's own provider slot everywhere but the subagent
+    /// spawn, which passes a slot pinned to the very provider its child
+    /// inherits, so the check and the child cannot be two reads apart.
+    pub(super) async fn sample_turn_call(
+        &self,
+        session_id: &str,
+        slot: &SharedProvider,
+    ) -> TurnCall {
+        let sampled = crate::privacy::CallCapability::sample(slot).await;
+        TurnCall {
+            slot: sampled,
+            admitted: self.capped_to_turn(session_id, sampled),
+        }
+    }
+
+    /// The capability a call made now on `session_id`'s running turn is
+    /// admitted on. Sampled once, here, and carried by the caller: the agent
+    /// loop's tool calls, the schedule branch, the prefetch and Gate E's
+    /// model-facing roster all take it from this one place.
+    pub(crate) async fn call_capability(&self, session_id: &str) -> crate::privacy::CallCapability {
+        self.sample_turn_call(session_id, &self.provider)
+            .await
+            .admitted
+    }
+
+    /// `sampled`, never wider than the capability the running turn of
+    /// `session_id` started with, or `sampled` itself outside a turn. For a
+    /// branch of `dispatch_tool_call` that samples a provider it pinned for
+    /// itself, so its capability obeys the same ceiling as the loop's.
+    pub(crate) fn capped_to_turn(
+        &self,
+        session_id: &str,
+        sampled: crate::privacy::CallCapability,
+    ) -> crate::privacy::CallCapability {
+        match self.turn_ceilings.get(session_id) {
+            Some(ceiling) => sampled.no_wider_than(ceiling),
+            None => sampled,
+        }
+    }
+
     async fn call_prefetch_tool(
         &self,
         session_id: &str,
@@ -7876,10 +8294,11 @@ impl Agent {
         crate::crew::manager()?
             .authorize_session_tool(session_id, tool_name)
             .await?;
-        // Issue #56: one of the four production entries that sample a capability.
-        // The pre-turn prefetch is its own entry because it dispatches outside
-        // `Self::dispatch_tool_call` entirely.
-        let cap = crate::privacy::CallCapability::sample(&self.provider).await;
+        // Issue #56: its own entry because it dispatches outside
+        // `Self::dispatch_tool_call` entirely. It runs while the turn is being
+        // prepared, after the turn's ceiling is open, so it is capped like
+        // every other call on the turn.
+        let cap = self.call_capability(session_id).await;
         let tool = self
             .extension_manager
             .dispatch_tool_call(
@@ -9146,10 +9565,212 @@ impl Agent {
         if privacy_enforced && !crate::privacy::bind_allowed(provider.tier(), row.privacy_tier) {
             return Ok(false);
         }
-        let mut current_provider = self.provider.lock().await;
-        self.extension_manager.computer_use.revoke();
-        *current_provider = Some(provider);
+        self.install_bound_provider(Some(row), BoundInstall::Bind(provider))
+            .await;
         Ok(true)
+    }
+
+    /// DR-33: THE one production writer of the provider slot (design §2.2,
+    /// `the_provider_slot_has_one_production_writer`).
+    ///
+    /// Every install unwraps an incoming decision-bound wrapper first, so a
+    /// wrapper never crosses chats: a spawned child given its parent's provider
+    /// gets the parent's INNER provider and its own axes. The axes come from
+    /// `row` (`privacy::decision_axes::from_row`), and from nothing else; with no
+    /// row, or on [`Self::new_shared`]'s agent, the inner provider is installed
+    /// unwrapped.
+    ///
+    /// The three ways it is asked:
+    ///
+    /// * [`BoundInstall::Bind`] — a bind (`update_provider`, Gate B's repair
+    ///   rebind). Always installs.
+    /// * [`BoundInstall::Refresh`] — Gate B, from the row it already holds:
+    ///   re-installs around the SAME inner provider when the axes changed. Raises
+    ///   and lowerings both take effect here, in the same step as the ratchet.
+    /// * [`BoundInstall::LowerOnly`] — after an admitted lowering save
+    ///   ([`Self::lower_decision_axes`]): installs only when the result is not
+    ///   more private than what is installed. Never raises.
+    ///
+    /// Returns whether the slot changed.
+    pub(crate) async fn install_bound_provider(
+        &self,
+        row: Option<&Session>,
+        install: BoundInstall,
+    ) -> bool {
+        use crate::providers::decision_bound::{
+            install_is_current, unwrap_decision_bound, DecisionBoundProvider,
+        };
+        let lower_only = matches!(install, BoundInstall::LowerOnly);
+        let mut slot = self.provider.lock().await;
+        // Lower-only re-reads the row UNDER the slot lock, so a lowering cannot
+        // install axes folded from a row Gate B has since ratcheted: Gate B's
+        // post-ratchet refresh takes this same lock after the raise commits, so
+        // either that refresh runs after this install (and raises it back), or
+        // this read sees the Private row and installs nothing.
+        let fresh;
+        let row = match (lower_only, row) {
+            (true, Some(row)) => match self
+                .config
+                .session_manager
+                .get_session(&row.id, false)
+                .await
+            {
+                Ok(read) if !read.privacy_tier.is_private() => {
+                    fresh = read;
+                    Some(&fresh)
+                }
+                _ => return false,
+            },
+            (true, None) => return false,
+            (false, row) => row,
+        };
+        let axes = match row {
+            Some(row) if self.folds_decision_axes() => crate::privacy::decision_axes::from_row(row),
+            _ => crate::privacy::decision_axes::DecisionAxes::identity(),
+        };
+        let (inner, changes) = match install {
+            BoundInstall::Bind(provider) => (unwrap_decision_bound(provider), true),
+            BoundInstall::Refresh | BoundInstall::LowerOnly => {
+                let Some(current) = slot.as_ref() else {
+                    return false;
+                };
+                let inner = unwrap_decision_bound(Arc::clone(current));
+                if install_is_current(current, &inner, &axes) {
+                    return false;
+                }
+                let (next_tier, _) = axes.apply(inner.tier(), inner.affiliation());
+                // Lower-only: a result more private than what is installed waits
+                // for the next Gate B, which raises in the same step as the
+                // ratchet (design §2.4).
+                let raises = current.tier() == ProviderTier::Public && next_tier.is_private();
+                (inner, !(lower_only && raises))
+            }
+        };
+        if !changes {
+            return false;
+        }
+        let installed = DecisionBoundProvider::bind(inner, axes);
+        let installed_public = !installed.tier().is_private();
+        self.extension_manager.computer_use.revoke();
+        *slot = Some(installed);
+        // (Server package, DR-33.) A lowering's own observation, made while the
+        // slot is still held so Gate B's cache store (after its post-ratchet
+        // refresh, which waits for this lock) always lands after it: the axes
+        // fold only on a row read as Public (the inert rule), so a Public slot
+        // over a private model is an observation that the row is Public.
+        // Without it Gate B' in `provider()` compared the lowered tier with the
+        // fail-closed default and refused every non-turn completion until the
+        // first turn re-read the row.
+        if lower_only && installed_public && crate::privacy::privacy_tiers_enabled() {
+            if let Some(row) = row {
+                self.cached_classification
+                    .store(&row.id, SessionClassification::Public);
+            }
+        }
+        true
+    }
+
+    /// DR-33, design §2.2 item 3: after a door admitted and wrote a lowering
+    /// (`public_basis.v1`), take it into this agent's slot at once. Lower-only:
+    /// it installs the row's axes only when that does not make the slot more
+    /// private, so a reach that shrinks takes effect immediately and a raise
+    /// waits for Gate B. Returns whether the slot changed.
+    ///
+    /// `row` names the chat; what is installed is folded from the row as it is
+    /// stored when the slot lock is taken, never from `row` itself, which may
+    /// predate a ratchet (see [`Self::install_bound_provider`]).
+    pub async fn lower_decision_axes(&self, row: &Session) -> bool {
+        self.install_bound_provider(Some(row), BoundInstall::LowerOnly)
+            .await
+    }
+
+    /// DR-33 (design §2.5): with the master switch off, a turn is about to run
+    /// at unenforced capability, so the chat's `public_basis.v1` stops being
+    /// true. Clear it through the one writer (a `Clear` needs no eligibility:
+    /// it is a raise), and return the row without it so this turn folds what
+    /// is now stored. A row with no basis is returned as it is, with no write.
+    ///
+    /// Called by Gate B only while the switch is off; the caller read the
+    /// switch, so this does not read it again.
+    ///
+    /// A failed clear is logged and the row returned unchanged: the turn is
+    /// not refused for it (the switch is off, nothing is refused), and the next
+    /// unenforced turn tries again.
+    pub(crate) async fn retire_public_basis_for_unenforced_turn(
+        &self,
+        session_manager: &SessionManager,
+        row: Session,
+    ) -> Session {
+        use crate::privacy::decision_axes::RowRecords;
+        use crate::session::session_manager::{BasisWrite, BasisWriteOutcome};
+        if RowRecords::parse(&row.extension_data).basis().is_none() {
+            return row;
+        }
+        match session_manager
+            .write_public_basis(&row.id, BasisWrite::Clear, |_| Ok(()))
+            .await
+        {
+            Ok(BasisWriteOutcome::Written(())) => {
+                info!(
+                    session_id = %row.id,
+                    "privacy tiers are off for this turn, so the chat's public basis was cleared; \
+                     its public decision models lower nothing once tiers are back on"
+                );
+                // What is stored now, so this turn folds the row without it.
+                match session_manager.get_session(&row.id, false).await {
+                    Ok(fresh) => fresh,
+                    Err(_) => row,
+                }
+            }
+            Ok(_) => row,
+            Err(e) => {
+                warn!(
+                    session_id = %row.id,
+                    "could not clear the public basis before an unenforced turn ({e})"
+                );
+                row
+            }
+        }
+    }
+
+    /// The tier of the language model this chat is bound to, unwrapped
+    /// through any decision-bound wrapper (design §2.1). Every reader that asks
+    /// "what model is this chat bound to" — the save checks, DR-16's raise
+    /// comparators, Gate A's incoming side, spawn's R4 — reads this. Only the
+    /// readers that ask "what may this chat reach" read the slot's `tier()`.
+    /// No provider bound reads as Public, the fail-safe side.
+    pub async fn bound_model_tier(&self) -> ProviderTier {
+        self.bound_model_provider()
+            .await
+            .map(|provider| provider.tier())
+            .unwrap_or(ProviderTier::Public)
+    }
+
+    /// The affiliation of the bound language model, unwrapped as
+    /// [`Self::bound_model_tier`] is. Read off the same instance.
+    pub async fn bound_model_affiliation(
+        &self,
+    ) -> Option<crate::privacy::affiliation::ModelAffiliation> {
+        self.bound_model_provider()
+            .await
+            .and_then(|provider| provider.affiliation())
+    }
+
+    /// The bound language model itself, unwrapped. `None` before the first
+    /// bind.
+    pub async fn bound_model_provider(&self) -> Option<Arc<dyn Provider>> {
+        self.bound_provider_unchecked()
+            .await
+            .map(crate::providers::decision_bound::unwrap_decision_bound)
+    }
+
+    /// The decision model that made this chat less private than its language
+    /// model, when one did: the words a refusal on an HTTP route uses (design
+    /// §3.9). Text only.
+    pub async fn decision_lowered_by(&self) -> Option<crate::privacy::decision_axes::LoweredBy> {
+        self.bound_provider_unchecked()
+            .await
+            .and_then(|provider| provider.decision_lowered_by().cloned())
     }
 
     /// The binding this turn is about to run on, plus the classification the
@@ -9265,6 +9886,33 @@ impl Agent {
                 Ok(None)
             }
         }
+    }
+
+    /// Crew's check before each model request the reply loop sends.
+    ///
+    /// `request_provider` is what the request runs on, so the grant's binding
+    /// and the workspace's fresh admission are asked of it. At a non-Normal
+    /// effort it is a provider [`Self::provider_with_effort`] rebuilt around the
+    /// language model alone, so the tier that check read is the model's, not
+    /// the chat's (DR-33). The chat's is the slot's, and Crew is asked about
+    /// that one too, as a Normal-effort request already is, where the two are
+    /// one provider. Both carry one binding, so the second check reuses the
+    /// admission the first made rather than asking the workspace again.
+    async fn check_crew_before_request(
+        &self,
+        session_id: &str,
+        request_provider: &Arc<dyn Provider>,
+        rebuilt_for_effort: bool,
+    ) -> Result<()> {
+        let crew = crate::crew::manager()?;
+        crew.check_provider_dispatch(session_id, request_provider.as_ref())
+            .await?;
+        if rebuilt_for_effort {
+            if let Some(bound) = self.bound_provider_unchecked().await {
+                crew.check_provider_use(session_id, bound.as_ref()).await?;
+            }
+        }
+        Ok(())
     }
 
     async fn persist_composite_provider_state(
@@ -9396,6 +10044,17 @@ impl Agent {
             .collect()
     }
 
+    /// What a bridged child's spawn starts from.
+    ///
+    /// ⚠ DR-33: the spawn reads the parent's effective tier off
+    /// `task_config.provider` (`subagent_tool::resolve_child_privacy`), and here
+    /// that is the request's provider, which at a non-Normal effort carries the
+    /// model's own tier rather than the chat's. It equals the slot's on all
+    /// three axes only because every provider that needs a bridge is Public
+    /// (`every_bridge_provider_is_public_so_a_fold_cannot_change_it`): a fold
+    /// leaves a Public model Public, gives it no affiliation and names no cause
+    /// for it. A private bridge provider would have to take the slot's provider
+    /// here first.
     async fn coding_agent_bridge_subagent_context(
         &self,
         iteration_provider: &Arc<dyn Provider>,
@@ -9539,6 +10198,10 @@ impl Agent {
         bridged
     }
 
+    /// The bridge's dispatcher. Its `ingest_provider` runs the bridged knowledge
+    /// ingests, and their knowledge base ratchet reads its tier
+    /// (`ProviderCompleter::paired_factory`); the DR-33 caveat on
+    /// [`Self::coding_agent_bridge_subagent_context`] applies word for word.
     fn chat_bridge_dispatch(
         &self,
         iteration_provider: &Arc<dyn Provider>,
@@ -9555,6 +10218,22 @@ impl Agent {
         }
     }
 
+    /// The plan for this turn's coding-agent bridge, or `None` when
+    /// `iteration_provider` needs no bridge.
+    ///
+    /// ⚠ DR-33: WHETHER there is a bridge is the request's provider's answer;
+    /// how far the bridge reaches is the chat's. At a non-Normal effort
+    /// [`Self::provider_with_effort`] rebuilds the request's provider around the
+    /// language model alone, without the decision-bound wrapper, so its tier is
+    /// the model's and not the chat's. The capability is therefore sampled from
+    /// the provider in the agent's own slot whenever that one is Public (a
+    /// decision model, or a person's switch, made the chat public), and from the
+    /// request's provider only while the slot is Private, where no decision
+    /// model lowered anything. That is the lesser of the two and never wider
+    /// than either: sampling the slot alone would widen a public coding agent's
+    /// bridge to a private model someone switched to while the turn ran.
+    /// `the_turn_provider_never_decides_a_tier` in
+    /// `tests/privacy_guard_wiring.rs` holds the rest of the turn to this.
     pub(super) async fn prepare_coding_agent_bridge_plan(
         &self,
         iteration_provider: &Arc<dyn Provider>,
@@ -9564,8 +10243,11 @@ impl Agent {
             return None;
         }
 
-        let pinned_provider: SharedProvider =
-            Arc::new(Mutex::new(Some(Arc::clone(iteration_provider))));
+        let judged = match self.bound_provider_unchecked().await {
+            Some(bound) if !bound.tier().is_private() => bound,
+            _ => Arc::clone(iteration_provider),
+        };
+        let pinned_provider: SharedProvider = Arc::new(Mutex::new(Some(judged)));
         let capability = crate::privacy::CallCapability::sample(&pinned_provider).await;
         let targets = self.enabled_coding_agent_bridge_targets().await;
         let workspace_enabled = targets
@@ -9885,8 +10567,9 @@ impl Agent {
             // had no capability in scope at all — and two of its actions read
             // another chat's content. Sampled here, on the same provider mutex and
             // for the same reason: the value the call is granted must be fixed
-            // before the call runs, not re-read while it runs.
-            let cap = crate::privacy::CallCapability::sample(&self.provider).await;
+            // before the call runs, not re-read while it runs. Capped by the
+            // turn's ceiling like the loop's own sample.
+            let cap = self.call_capability(&session.id).await;
             // The turn's token, so a Stop releases an approval card nobody has
             // answered rather than leaving the turn parked on it.
             let result = self
@@ -10099,6 +10782,27 @@ impl Agent {
                     );
                 }
             };
+            // Issue #56: the child takes its parent's reach from `provider`, the
+            // slot, while its report goes to the model this turn pinned. After a
+            // switch that waits for the next turn, every child would either reach
+            // past what that model may see or be refused by DR-19 anyway. Judged
+            // on the very provider the child inherits, so the check and the child
+            // cannot disagree.
+            let inherited: SharedProvider = Arc::new(Mutex::new(Some(Arc::clone(&provider))));
+            if self
+                .sample_turn_call(&session.id, &inherited)
+                .await
+                .waits_for_next_turn()
+            {
+                return (
+                    request_id,
+                    Err(ErrorData::new(
+                        ErrorCode::INVALID_REQUEST,
+                        SPAWN_WAITS_FOR_NEXT_TURN.to_string(),
+                        None,
+                    )),
+                );
+            }
 
             let extensions = self.get_extension_configs().await;
             // The child asks the decision models this agent asks.
@@ -10141,8 +10845,11 @@ impl Agent {
             // once, and carried the rest of the way — every barrier downstream
             // reads this value rather than the provider mutex, so a swap that
             // lands while the call sits behind the dispatch semaphore cannot
-            // change what the call already got permission to do.
-            let cap = crate::privacy::CallCapability::sample(&self.provider).await;
+            // change what the call already got permission to do. Never wider
+            // than the capability the turn started with: the turn still sends
+            // this call's result to the model it pinned, so a switch to a more
+            // private model applies at the next turn.
+            let cap = self.call_capability(&session.id).await;
 
             // Clone the result to ensure no references to extension_manager are returned
             let result = self
@@ -10813,6 +11520,53 @@ impl Agent {
         }
     }
 
+    /// Issue #56 Gate E, at the capability a call on this chat's running turn
+    /// is admitted on, so a turn is never offered a tool its own dispatch would
+    /// refuse after a switch to a more private model. Outside a turn this is
+    /// the slot's sample, as it always was.
+    async fn model_facing_tools(
+        &self,
+        session_id: &str,
+        extension_name: Option<&str>,
+    ) -> ExtensionResult<Vec<Tool>> {
+        let capability = self.call_capability(session_id).await;
+        match extension_name {
+            Some(name) => {
+                self.extension_manager
+                    .get_prefixed_tools_for_extension_and_capability(name, capability)
+                    .await
+            }
+            None => {
+                self.extension_manager
+                    .get_prefixed_tools_for_capability(capability)
+                    .await
+            }
+        }
+    }
+
+    /// The Dictionary's tools reach the model only in a person's own chat (a `User`
+    /// session) outside a Crew scope, with dictionary learning on (DD-51); an unreadable
+    /// Crew registry fails closed, as dispatch does.
+    async fn withhold_dictionary_tools_where_unavailable(
+        &self,
+        session_id: &str,
+        prefixed_tools: &mut Vec<Tool>,
+    ) {
+        let dictionary_allowed = self
+            .config
+            .session_manager
+            .get_session(session_id, false)
+            .await
+            .is_ok_and(|session| session.session_type == SessionType::User);
+        let crew_scoped = match crate::crew::manager() {
+            Ok(crew) => crew.is_scoped_session(session_id).await,
+            Err(_) => true,
+        };
+        if !dictionary_allowed || crew_scoped || !self.dictionary_learning_enabled() {
+            prefixed_tools.retain(|tool| !tool.name.starts_with("dictionary__"));
+        }
+    }
+
     async fn list_tools_for(
         &self,
         session_id: &str,
@@ -10846,8 +11600,7 @@ impl Agent {
 
         let mut prefixed_tools = match audience {
             ToolAudience::Model => {
-                self.extension_manager
-                    .get_prefixed_tools(extension_name.clone())
+                self.model_facing_tools(session_id, extension_name.as_deref())
                     .await
             }
             ToolAudience::PermissionEditor => {
@@ -10859,20 +11612,8 @@ impl Agent {
         .unwrap_or_default();
 
         if matches!(audience, ToolAudience::Model) {
-            let dictionary_allowed = self
-                .config
-                .session_manager
-                .get_session(session_id, false)
-                .await
-                .is_ok_and(|session| session.session_type == SessionType::User);
-            // An unreadable Crew registry fails closed, as dispatch does.
-            let crew_scoped = match crate::crew::manager() {
-                Ok(crew) => crew.is_scoped_session(session_id).await,
-                Err(_) => true,
-            };
-            if !dictionary_allowed || crew_scoped || !self.dictionary_learning_enabled() {
-                prefixed_tools.retain(|tool| !tool.name.starts_with("dictionary__"));
-            }
+            self.withhold_dictionary_tools_where_unavailable(session_id, &mut prefixed_tools)
+                .await;
         }
 
         // Revoking the injection is necessary but not sufficient. `subagent` is
@@ -10898,16 +11639,31 @@ impl Agent {
         // knowledge; only the Agent has the map. Restore the enriched
         // description here so a session that defines sub-workflows still tells
         // the model their names — the pre-merge behaviour.
+        //
+        // The model also learns here which chat providers are set up on this
+        // computer, for `settings.provider` (live QA 2026-11-11: told nothing,
+        // it sent a Versa model name to Claude Code and Codex). Only the
+        // MODEL's list: it costs a readiness pass over the registry (cached for
+        // a few seconds), which the permission editor has no use for.
         if subagents_enabled {
             let sub_workflows: Vec<_> = self.sub_workflows.lock().await.values().cloned().collect();
-            if !sub_workflows.is_empty() {
-                if let Some(spawn) = prefixed_tools
-                    .iter_mut()
-                    .find(|t| t.name == crate::agents::subagent_tool::SUBAGENT_TOOL_PREFIXED)
-                {
+            let roster = match audience {
+                ToolAudience::Model => {
+                    Some(crate::providers::readiness::cached_chat_provider_roster().await)
+                }
+                ToolAudience::PermissionEditor => None,
+            };
+            if let Some(spawn) = prefixed_tools
+                .iter_mut()
+                .find(|t| t.name == crate::agents::subagent_tool::SUBAGENT_TOOL_PREFIXED)
+            {
+                if !sub_workflows.is_empty() {
                     spawn.description = Some(
                         crate::agents::subagent_tool::build_tool_description(&sub_workflows).into(),
                     );
+                }
+                if let Some(roster) = roster.as_deref() {
+                    crate::agents::subagent_tool::describe_provider_choices(spawn, roster);
                 }
             }
         }
@@ -11353,6 +12109,21 @@ impl Agent {
         // permanent, because `privacy_tier` is monotone and re-enabling never
         // revisits a row.
         let privacy_enforced = crate::privacy::privacy_tiers_enabled();
+        // DR-33 (design §2.5): a public basis never outlives an unenforced turn.
+        // The basis says "everything since the lowering was produced at Public
+        // capability", and a turn with the switch off can reach anything, so
+        // that stops being true the moment such a turn runs. Clear it before
+        // the turn (a raise, the safe direction): when tiers come back on the
+        // names are inert and this gate ratchets the chat by its provider, as
+        // it did before DR-33. Without it a Versa chat lowered earlier read as
+        // public after an off window in which it gathered private content.
+        let privacy_row = match privacy_row {
+            Some(row) if !privacy_enforced => Some(
+                self.retire_public_basis_for_unenforced_turn(session_manager.as_ref(), row)
+                    .await,
+            ),
+            other => other,
+        };
         if let Some(row) = privacy_row.as_ref() {
             // M4. The row is the standing record of what this chat runs on, and
             // until now only the PRIVACY arm below could make a turn honour it —
@@ -11425,6 +12196,14 @@ impl Agent {
                     }
                 }
             }
+            // DR-33 (design §2.2 item 2): the chat's decision models, from the
+            // row this gate already holds, before the barrier and the ratchet
+            // read the tier. A change of axes re-installs the wrapper around the
+            // SAME inner provider, so the barrier, the floor below and the loop's
+            // own sample all read one value. Raises happen only here and at the
+            // bind, in the same step as the ratchet (§2.4).
+            self.install_bound_provider(Some(row), BoundInstall::Refresh)
+                .await;
             let bound = self.bound_provider_unchecked().await;
             // No provider bound at all reads as Public — the fail-SAFE side.
             // Public is the less privileged tier, so an agent with nothing
@@ -11494,6 +12273,16 @@ impl Agent {
                             .await?;
                         classification = f;
                         classification_reason = Some(reason);
+                        // DR-33: a lowering save may have installed Public axes
+                        // between the refresh above and this ratchet (it read
+                        // the row before the raise committed). Re-fold from the
+                        // ratcheted row, which on a Private row is the identity,
+                        // so the slot can never be less private than the row
+                        // for the rest of this turn. A no-op when nothing raced.
+                        let mut ratcheted = row.clone();
+                        ratcheted.privacy_tier = f;
+                        self.install_bound_provider(Some(&ratcheted), BoundInstall::Refresh)
+                            .await;
                     }
                 }
             }
@@ -11557,6 +12346,28 @@ impl Agent {
             });
             return Ok(refused);
         }
+
+        // Issue #56: the capability this turn starts with, taken after Gate B's
+        // repair and ratchet and before the reply loop pins the provider its
+        // requests run on. It is this turn's ceiling from here until the turn's
+        // stream is dropped, however the turn ends (the hold moves into the
+        // stream below), and no call on the turn is admitted on more
+        // ([`TurnCeilings`]): a switch to a more private model while the turn
+        // runs applies at the next turn. A path below that returns without a
+        // turn drops the hold as it returns.
+        //
+        // ⚠ Taken AFTER the ratchet, which is what makes it sound. With tiers
+        // on, a Private sample here has just raised the row to Private, and
+        // Gate A refuses a public bind on a private row, so the model the loop
+        // pins cannot be less private than this ceiling unless the person
+        // declassifies the chat first (and `reply_internal` narrows the ceiling
+        // to the slot it pins from, for that case). A raw sample and not
+        // `call_capability`: a new turn's ceiling is never capped by a previous
+        // turn's.
+        let turn_ceiling_held = self.turn_ceilings.open(
+            &session_config.id,
+            crate::privacy::CallCapability::sample(&self.provider).await,
+        );
 
         // A daemon restart drops the in-memory goal registry and its Stop-hook
         // judge, while the goal itself persists in the session's extension_data
@@ -11882,8 +12693,16 @@ impl Agent {
         // the threshold (31,052 of 32,768 read "94.8%, compact"). The two checks
         // now see the same inputs whenever the answer would be "compact", and a
         // turn that stays under the threshold still assembles nothing.
-        let usage_may_be_truncated =
-            crate::providers::utils::runs_on_this_machine(self.provider().await?.as_ref());
+        //
+        // Asked of the language model itself, unwrapped (DR-33): where the
+        // model runs is not a tier question, and the slot's decision-bound
+        // wrapper reads Public for a local model whose chat names a public
+        // decision model, which would hide a truncated local usage from this
+        // check.
+        let usage_may_be_truncated = crate::providers::utils::runs_on_this_machine(
+            crate::providers::decision_bound::unwrap_decision_bound(self.provider().await?)
+                .as_ref(),
+        );
         let cold_path_tools_and_prompt = if session.total_tokens.is_none() || usage_may_be_truncated
         {
             // Boxed, both here and below: the deepest await of the prologue (`reply`'s note).
@@ -11924,6 +12743,8 @@ impl Agent {
         let conversation_to_compact = stored_conversation.clone();
 
         Ok(Box::pin(async_stream::try_stream! {
+            // Issue #56: the turn's ceiling lives exactly as long as this stream.
+            let _turn_ceiling_held = turn_ceiling_held;
             if let Some(published) = prestream_published {
                 yield published;
             }
@@ -13201,6 +14022,10 @@ impl Agent {
     ) {
         use crate::decision::monitor;
         for event in events {
+            // DR-33 §3.15 (decision package): a public monitor on a chat that
+            // is private now is stored switched off, not failed every turn.
+            monitor::persist_privacy_switch_off(&self.config.session_manager, session_id, event)
+                .await;
             if let Some(text) = monitor::event_notice(event) {
                 let notice = self.durable_notice(session_id, text).await;
                 verdict.events.push(AgentEvent::Message(notice));
@@ -13852,9 +14677,16 @@ impl Agent {
         let session_manager = self.config.session_manager.clone();
         let provider_conversation = crate::conversation::without_bedrock_reasoning(&conversation);
         let effort = self.resolve_effort(&session_config).await;
+        // ⚠ DR-33: at a non-Normal effort `turn_provider` is rebuilt around the
+        // language model alone, without the decision-bound wrapper, so its tier
+        // is the model's and not the chat's. Nothing on this turn's path judges
+        // a tier, an affiliation or a decision model's cause off it, or off
+        // `reply_provider` / `iteration_provider`, which may be it; every gate
+        // reads the agent's slot (`the_turn_provider_never_decides_a_tier`).
         let turn_provider = self.provider_with_effort(effort).await?;
-        let reply_provider = match &turn_provider {
-            Some(provider) => Arc::clone(provider),
+        let rebuilt_for_effort = turn_provider.is_some();
+        let reply_provider = match turn_provider {
+            Some(provider) => provider,
             None => self.provider().await?,
         };
         // DD-57: the chat extractor stamps this turn's messages and steers with the
@@ -13875,6 +14707,12 @@ impl Agent {
         if let Some((text, stamp)) = dictionary_pending {
             self.queue_dictionary_observation(&session_config.id, text, stamp);
         }
+        // Issue #56: the turn's ceiling, opened at Gate B, narrowed to the slot
+        // as the pin found it, so a slot that moved to a less private model
+        // between Gate B and the pin keeps the turn there even if it is moved
+        // back before the turn ends.
+        let pinned_with = self.call_capability(&session_config.id).await;
+        self.turn_ceilings.lower(&session_config.id, pinned_with);
         let context = self
             .prepare_reply_context(
                 &session_config.id,
@@ -14513,9 +15351,9 @@ impl Agent {
                 };
 
                 let iteration_provider = Arc::clone(&reply_provider);
-                crate::crew::manager()?.check_provider_dispatch(
-                    &session_config.id, iteration_provider.as_ref()
-                ).await?;
+                Box::pin(self.check_crew_before_request(
+                    &session_config.id, &iteration_provider, rebuilt_for_effort
+                )).await?;
                 let usage_event_key = uuid::Uuid::new_v4().to_string();
                 // A coding-agent provider drives a child process that has to call
                 // back in to use Biorouter's tools. The lease lives exactly as long
@@ -16695,6 +17533,12 @@ impl Agent {
             .check_provider_binding(session_id, provider.as_ref())
             .await?;
         self.extension_manager.computer_use.revoke();
+        // DR-33 (design §3.1, Gate A): the incoming instance is UNWRAPPED before
+        // its tier is read, so a parent's decision-bound wrapper handed to a
+        // child never decides the child's bind. On a Private row names are inert
+        // (effective equals inner) and on a Public row every bind is admitted, so
+        // the outcome of the statement below is the same as before DR-33.
+        let provider = crate::providers::decision_bound::unwrap_decision_bound(provider);
         let provider_name = provider.get_name().to_string();
         let model_config = crate::providers::persisted_model_config(provider.as_ref())?;
         let tier = provider.tier();
@@ -16800,10 +17644,29 @@ impl Agent {
 
         #[cfg(test)]
         seams::after_bind_before_swap().await;
-        {
-            let mut current_provider = self.provider.lock().await;
-            self.extension_manager.computer_use.revoke();
-            *current_provider = Some(provider);
+        // DR-33: the axes come from the row as it stands after the bind. A row
+        // that is gone (or a read that failed) installs the provider unwrapped,
+        // which is the fail-safe side only in the sense that matters: identity
+        // axes never lower anything.
+        let row = self
+            .config
+            .session_manager
+            .get_session(session_id, false)
+            .await
+            .ok();
+        self.install_bound_provider(row.as_ref(), BoundInstall::Bind(provider))
+            .await;
+        // The successful-public-bind observation above, for a private model the
+        // chat's decision models lowered: the axes fold only on a row read as
+        // Public (the inert rule), so an installed Public tier over a private
+        // model is itself an observation that the row is Public.
+        if tier.is_private() && crate::privacy::privacy_tiers_enabled() {
+            if let Some(installed) = self.bound_provider_unchecked().await {
+                if !installed.tier().is_private() {
+                    self.cached_classification
+                        .store(session_id, SessionClassification::Public);
+                }
+            }
         }
 
         // Issue #56 Task 48, DR-26's third axis at the BIND surface. Binding a
@@ -21071,6 +21934,541 @@ mod tests {
         assert!(revoked.contains("not available"), "{revoked}");
     }
 
+    /// Live QA, 2026-11-11: a Claude Code chat listed every tool it had and
+    /// none from Decisions ("Decisions is loaded but exposes no tools"), while
+    /// a Versa chat in the same sandbox had `decide` and `decision_models`.
+    /// Decisions is a bundled capability with no bridge policy, and a bundled
+    /// extension has no other way onto the bridge, so the plan dropped it.
+    ///
+    /// Both coding-agent providers build the same plan, so both are measured,
+    /// and the call is dispatched rather than only planned: the argument error
+    /// that comes back is the Decisions extension's own answer, which it can
+    /// only give once the call has passed `dispatch_tool_call` (Gate C).
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn coding_agent_bridge_offers_the_decision_tools_while_decisions_is_on() {
+        use crate::agents::decisions_extension::{
+            DECIDE_TOOL_NAME, DECISION_MODELS_TOOL_NAME, EXTENSION_NAME as DECISIONS,
+        };
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let target = resolve_bundled_extension(DECISIONS).expect("Decisions is bundled");
+        agent
+            .add_extension(target.into_config("decisions bridge regression".into()))
+            .await
+            .expect("enable Decisions");
+        let decision_tools = [DECIDE_TOOL_NAME, DECISION_MODELS_TOOL_NAME];
+        let tools = agent.list_tools(&session_id, None).await;
+        for expected in decision_tools {
+            assert!(
+                tools.iter().any(|tool| tool.name.as_ref() == expected),
+                "precondition: the live registry must expose {expected}"
+            );
+        }
+
+        for provider_name in ["claude_code", "codex"] {
+            let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider {
+                name: provider_name,
+            });
+            let plan = agent
+                .prepare_coding_agent_bridge_plan(&provider, &tools)
+                .await
+                .unwrap_or_else(|| panic!("{provider_name} needs a bridge plan"));
+            for expected in decision_tools {
+                assert_eq!(
+                    plan.tools
+                        .iter()
+                        .filter(|tool| tool.name.as_ref() == expected)
+                        .count(),
+                    1,
+                    "{provider_name} must be offered {expected} exactly once"
+                );
+            }
+            let dispatch = agent.chat_bridge_dispatch(&provider, None, plan);
+            let result = coding_agent_bridge::BridgeToolDispatch::dispatch(
+                &dispatch,
+                &session_id,
+                CallToolRequestParams {
+                    name: DECIDE_TOOL_NAME.into(),
+                    arguments: Some(object!({"questions": {}, "chunks": []})),
+                    meta: None,
+                    task: None,
+                },
+                // A coding-agent chat is Public, with the switch on.
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_or_else(|error| {
+                panic!("{provider_name}: a bridged decide must dispatch: {error}")
+            });
+            assert_eq!(result.is_error, Some(true), "{provider_name}");
+            let text = result
+                .content
+                .iter()
+                .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
+                .collect::<String>();
+            assert!(
+                text.contains("Ask between 1 and"),
+                "{provider_name}: the call must reach the Decisions extension: {text}"
+            );
+        }
+
+        // And off means off: with the capability detached, neither tool is
+        // offered, and the plan built while it was on stops admitting calls.
+        let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider {
+            name: "claude_code",
+        });
+        let stale_plan = agent
+            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .await
+            .expect("Claude Code needs a bridge plan");
+        agent
+            .extension_manager
+            .remove_extension(DECISIONS)
+            .await
+            .expect("detach Decisions");
+        let refusal = agent
+            .chat_bridge_dispatch(&provider, None, stale_plan)
+            .enforce_tool_access(
+                &session_id,
+                &CallToolRequestParams {
+                    name: DECISION_MODELS_TOOL_NAME.into(),
+                    arguments: Some(object!({})),
+                    meta: None,
+                    task: None,
+                },
+            )
+            .await
+            .expect_err("a detached Decisions must revoke the old grant");
+        assert!(refusal.contains("no longer enabled"), "{refusal}");
+        let tools = agent.list_tools(&session_id, None).await;
+        let plan = agent
+            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .await
+            .expect("Claude Code needs a bridge plan");
+        assert!(
+            plan.tools
+                .iter()
+                .all(|tool| !tool.name.starts_with("decisions__")),
+            "a chat with Decisions off must not be offered its tools"
+        );
+    }
+
+    /// Decisions went missing from Claude Code and Codex chats because a
+    /// bundled capability with no entry in `CODING_AGENT_BRIDGE_POLICIES` is
+    /// dropped from the bridge, and nothing said whether a drop was meant. The
+    /// audit that followed found Crew in the same state.
+    ///
+    /// So every bundled capability must be bridged by a policy or withheld by a
+    /// `CODING_AGENT_BRIDGE_EXCLUSIONS` entry, which carries the reason and what
+    /// the model is told. "Every" means each one a fresh install turns on (the
+    /// platform capabilities with `default_enabled`, and every built-in server,
+    /// which `inject_builtin_extensions` writes enabled) and each one a person
+    /// can turn on later (`chatrecall`): the set is read from the two registries
+    /// that spawn them, `PLATFORM_EXTENSIONS` and `BUILTIN_EXTENSIONS`, rather
+    /// than written out, so a capability added to either is covered the day it
+    /// lands and fails here, not in a live chat.
+    #[test]
+    fn every_bundled_capability_is_bridged_or_withheld_on_purpose() {
+        use std::collections::BTreeSet;
+        let key_of = |name: &str| {
+            resolve_bundled_extension(name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "`{name}` must resolve to exactly one bundled capability; a bridge \
+                         policy or exclusion naming anything else is stale"
+                    )
+                })
+                .key()
+        };
+        // (key, how a person gets it), one row per capability.
+        let mut bundled: Vec<(String, &'static str)> =
+            crate::agents::extension::PLATFORM_EXTENSIONS
+                .values()
+                .map(|def| {
+                    let kind = if def.default_enabled {
+                        "platform capability, on by default"
+                    } else {
+                        "platform capability, off by default and can be turned on"
+                    };
+                    (key_of(def.name), kind)
+                })
+                .chain(
+                    biorouter_mcp::BUILTIN_EXTENSIONS
+                        .values()
+                        .map(|def| (key_of(def.name), "built-in server")),
+                )
+                .collect();
+        bundled.sort();
+        // Both registries were read, and no two entries are one capability, or
+        // every assertion below passes for the wrong reason.
+        let keys: BTreeSet<&str> = bundled.iter().map(|(key, _)| key.as_str()).collect();
+        assert_eq!(
+            keys.len(),
+            bundled.len(),
+            "two registry entries share a key"
+        );
+        assert!(
+            bundled.len() >= 15
+                && keys.contains("crew")
+                && keys.contains("decisions")
+                && keys.contains("developer")
+                && keys.contains("chatrecall"),
+            "read only {keys:?}"
+        );
+
+        let bridged: BTreeSet<String> = CODING_AGENT_BRIDGE_POLICIES
+            .iter()
+            .map(|policy| key_of(policy.target_name))
+            .collect();
+        assert_eq!(
+            bridged.len(),
+            CODING_AGENT_BRIDGE_POLICIES.len(),
+            "two entries in CODING_AGENT_BRIDGE_POLICIES name the same capability"
+        );
+        let withheld: BTreeSet<String> = CODING_AGENT_BRIDGE_EXCLUSIONS
+            .iter()
+            .map(|exclusion| key_of(exclusion.target_name))
+            .collect();
+        assert_eq!(
+            withheld.len(),
+            CODING_AGENT_BRIDGE_EXCLUSIONS.len(),
+            "two entries in CODING_AGENT_BRIDGE_EXCLUSIONS name the same capability"
+        );
+        let both: Vec<_> = bridged.intersection(&withheld).collect();
+        assert!(
+            both.is_empty(),
+            "{both:?} is in both CODING_AGENT_BRIDGE_POLICIES and CODING_AGENT_BRIDGE_EXCLUSIONS \
+             (crates/biorouter/src/agents/agent.rs). A capability is bridged or withheld, never \
+             both: once some of its tools may cross, delete its exclusion, and let its policy name \
+             only those tools."
+        );
+
+        let unaccounted: Vec<String> = bundled
+            .iter()
+            .filter(|(key, _)| !bridged.contains(key) && !withheld.contains(key))
+            .map(|(key, kind)| format!("`{key}` ({kind})"))
+            .collect();
+        assert!(
+            unaccounted.is_empty(),
+            "{} has no entry in CODING_AGENT_BRIDGE_POLICIES and none in \
+             CODING_AGENT_BRIDGE_EXCLUSIONS (crates/biorouter/src/agents/agent.rs). A Claude \
+             Code or Codex chat would drop all of its tools while its instructions still reach \
+             the prompt, and nothing would say why. Bridge it with a CODING_AGENT_BRIDGE_POLICIES \
+             entry that names the tools which may cross, or withhold it with a \
+             CODING_AGENT_BRIDGE_EXCLUSIONS entry whose comment says why and whose note tells the \
+             model what to tell the person.",
+            unaccounted.join(", ")
+        );
+
+        // A note for a turn in which none of a capability's tools crosses
+        // belongs to a bridged capability: a withheld one has its own note.
+        let empty_noted: BTreeSet<String> = CODING_AGENT_BRIDGE_EMPTY_NOTES
+            .iter()
+            .map(|empty| key_of(empty.target_name))
+            .collect();
+        assert_eq!(
+            empty_noted.len(),
+            CODING_AGENT_BRIDGE_EMPTY_NOTES.len(),
+            "two entries in CODING_AGENT_BRIDGE_EMPTY_NOTES name the same capability"
+        );
+        for key in &empty_noted {
+            assert!(
+                bridged.contains(key),
+                "`{key}` is in CODING_AGENT_BRIDGE_EMPTY_NOTES with no entry in \
+                 CODING_AGENT_BRIDGE_POLICIES; a withheld capability's note belongs in \
+                 CODING_AGENT_BRIDGE_EXCLUSIONS"
+            );
+        }
+
+        for (target_name, note) in CODING_AGENT_BRIDGE_EXCLUSIONS
+            .iter()
+            .map(|exclusion| (exclusion.target_name, exclusion.note))
+            .chain(
+                CODING_AGENT_BRIDGE_EMPTY_NOTES
+                    .iter()
+                    .map(|empty| (empty.target_name, empty.note)),
+            )
+        {
+            assert!(
+                note.len() > 40 && note.ends_with('.') && !note.contains(['\u{2014}', '\u{2013}']),
+                "`{target_name}` needs a plain note the model can pass on: {note}"
+            );
+        }
+        // Crew's tools can all be absent from a bridged chat (in this build
+        // always), and the person must then hear why and what to do.
+        assert!(
+            empty_noted.contains("crew"),
+            "Crew needs a CODING_AGENT_BRIDGE_EMPTY_NOTES entry"
+        );
+        // Pinned, so withholding another capability, or bridging this one, is a
+        // decision rather than an accident. Code Execution would only wrap tools
+        // the child already has. Crew is bridged, for its person tools alone
+        // (`a_coding_agent_is_never_offered_crews_grant_tools`).
+        assert_eq!(
+            withheld,
+            BTreeSet::from(["code_execution".to_string()]),
+            "the withheld set changed: update this pin, the exclusion notes and \
+             docs/providers/coding-agents/README.md together"
+        );
+        assert!(bridged.contains("crew"), "Crew must have a bridge policy");
+    }
+
+    /// What a bridged model reads about a capability with no tool this turn:
+    /// Code Execution's exclusion note, Crew's note for a chat no Crew tool
+    /// reaches, and for any other bridged capability the template's own line,
+    /// left alone. A roster with anything in it is never replaced, so Crew's
+    /// note cannot hide a person tool that did cross.
+    #[test]
+    fn a_bridged_chat_reads_why_a_capability_has_no_tool_this_turn() {
+        use crate::agents::extension::ExtensionInfo;
+        let entry = |name: &str, tools: &[&str]| {
+            let mut info = ExtensionInfo::capability(name, "its own instructions", false);
+            info.tool_roster_known = true;
+            info.available_tools = tools.iter().map(|tool| (*tool).to_string()).collect();
+            info
+        };
+        let note_of = |table: &[(&'static str, &'static str)], name: &str| {
+            table
+                .iter()
+                .find(|(target_name, _)| *target_name == name)
+                .map(|(_, note)| note.to_string())
+                .unwrap_or_else(|| panic!("{name} has a note"))
+        };
+        let exclusions: Vec<_> = CODING_AGENT_BRIDGE_EXCLUSIONS
+            .iter()
+            .map(|exclusion| (exclusion.target_name, exclusion.note))
+            .collect();
+        let empty_notes: Vec<_> = CODING_AGENT_BRIDGE_EMPTY_NOTES
+            .iter()
+            .map(|empty| (empty.target_name, empty.note))
+            .collect();
+        let crew_note = note_of(&empty_notes, "crew");
+        // The note is what the person ends up hearing, so it holds both halves
+        // of the answer: why there is no Crew here, and what to do instead.
+        for part in [
+            "Claude Code or Codex",
+            "cannot isolate",
+            "any other provider",
+            "/crew",
+        ] {
+            assert!(crew_note.contains(part), "the Crew note lacks {part:?}");
+        }
+
+        let mut infos = vec![
+            entry("code_execution", &[]),
+            entry("crew", &[]),
+            entry("decisions", &[]),
+            entry("todo", &["todo_write"]),
+        ];
+        // A person tool that crossed keeps Crew's roster and guidance.
+        let mut crew_with_a_tool = entry("crew", &["read"]);
+        // A third-party extension named like a capability is not that capability.
+        let mut extension = ExtensionInfo::new("crew", "a third-party server", false);
+        extension.tool_roster_known = true;
+        infos.push(extension);
+        note_capabilities_withheld_from_the_bridge(&mut infos);
+        note_capabilities_withheld_from_the_bridge(std::slice::from_mut(&mut crew_with_a_tool));
+
+        assert_eq!(
+            infos[0].withheld_note.as_deref(),
+            Some(note_of(&exclusions, "code_execution").as_str())
+        );
+        assert_eq!(infos[1].withheld_note.as_deref(), Some(crew_note.as_str()));
+        for noted in &infos[..2] {
+            assert!(
+                noted.instructions.is_empty(),
+                "{}: its instructions describe tools it was not given",
+                noted.name
+            );
+        }
+        // Decisions has no note, so it keeps the template's own line; To Do
+        // has a tool; the third-party server is not a capability.
+        for (untouched, instructions) in infos[2..].iter().zip([
+            "its own instructions",
+            "its own instructions",
+            "a third-party server",
+        ]) {
+            assert_eq!(untouched.withheld_note, None, "{}", untouched.name);
+            assert_eq!(untouched.instructions, instructions, "{}", untouched.name);
+        }
+        assert_eq!(crew_with_a_tool.withheld_note, None);
+        assert_eq!(crew_with_a_tool.instructions, "its own instructions");
+    }
+
+    /// Crew on the coding-agent bridge, measured end to end (owner ruling D3,
+    /// coordinator instruction S-1). Crew is bridged for its person tools alone:
+    /// `crew__connections` and `crew__request` answer from a Crew grant, which
+    /// Crew never admits for Claude Code or Codex, so neither is ever offered to
+    /// such a chat, while a roster that holds a person tool has it bridged. The
+    /// bridged prompt never carries Crew's own instructions, which describe the
+    /// grant tools. Code Execution, the one withheld capability, is told apart by
+    /// its note.
+    ///
+    /// Every control is one that holds before and after the person tools land
+    /// (#475), which narrows a chat's own Crew roster: the registry and the
+    /// capability's instructions, never "an ordinary chat is offered the grant
+    /// tools", which stops being true there.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_coding_agent_is_never_offered_crews_grant_tools() {
+        use std::collections::BTreeSet;
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let enable = |name: &'static str| {
+            let agent = &agent;
+            async move {
+                let target = resolve_bundled_extension(name).expect("a bundled capability");
+                agent
+                    .add_extension(target.into_config(format!("{name} on the bridge")))
+                    .await
+                    .unwrap_or_else(|error| panic!("enable {name}: {error}"));
+            }
+        };
+        enable("crew").await;
+        enable("code_execution").await;
+        let grant_tools = ["crew__connections", "crew__request"];
+        let person_tools: BTreeSet<&str> = CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS
+            .iter()
+            .copied()
+            .collect();
+
+        // The allowlist: the grant tools are off it, the person tools are on it,
+        // and the two never meet.
+        for tool in grant_tools {
+            assert!(
+                !coding_agent_bridge_policy_allows_tool(tool),
+                "{tool} answers from a Crew grant, which Crew refuses these providers"
+            );
+            assert!(!person_tools.contains(tool), "{tool} is a grant tool");
+        }
+        assert!(
+            !person_tools.is_empty(),
+            "Crew's bridge policy admits nothing"
+        );
+        for tool in &person_tools {
+            assert!(tool.starts_with("crew__"), "{tool} is not a Crew tool");
+            assert!(coding_agent_bridge_policy_allows_tool(tool), "{tool}");
+        }
+
+        // The controls. The registry lists the grant tools, so the bridge had them
+        // to drop; and Crew's instructions are loaded, so their absence from the
+        // bridged prompt below is a choice, not a capability that never came up.
+        let registry: BTreeSet<String> = agent
+            .extension_manager
+            .get_prefixed_tools(None)
+            .await
+            .expect("list the registry")
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        for tool in grant_tools {
+            assert!(
+                registry.contains(tool),
+                "precondition: the registry lists {tool}"
+            );
+        }
+        // A distinctive sentence from Crew's own instructions.
+        let crew_instruction = "crew__connections lists authorized source_channel_ids.";
+        assert!(
+            agent
+                .extension_manager
+                .get_extensions_info()
+                .await
+                .iter()
+                .any(|info| info.name == "crew" && info.instructions.contains(crew_instruction)),
+            "precondition: Crew's instructions are loaded"
+        );
+        let code_execution_note = CODING_AGENT_BRIDGE_EXCLUSIONS
+            .iter()
+            .find(|exclusion| exclusion.target_name == "code_execution")
+            .expect("Code Execution is withheld")
+            .note;
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .expect("read the chat");
+
+        for provider_name in ["claude_code", "codex"] {
+            let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider {
+                name: provider_name,
+            });
+            let (tools, _, prompt, plan) = agent
+                .prepare_tools_and_prompt_for_provider(&session_id, &session.working_dir, &provider)
+                .await
+                .unwrap_or_else(|error| panic!("{provider_name}: prepare a turn: {error}"));
+            let plan = plan.unwrap_or_else(|| panic!("{provider_name} needs a bridge plan"));
+            assert!(
+                plan.target_named("crew").is_some(),
+                "{provider_name}: Crew is a bridge target while it is on"
+            );
+            for surface in [&tools, &plan.tools] {
+                for tool in surface.iter() {
+                    let name = tool.name.as_ref();
+                    assert!(
+                        !name.starts_with("crew__") || person_tools.contains(name),
+                        "{provider_name} was offered {name}, which only a Crew grant answers"
+                    );
+                    assert!(
+                        !name.starts_with("code_execution__"),
+                        "{provider_name} was offered withheld {name}"
+                    );
+                }
+            }
+            // The bridge is live for this chat, so what is absent was dropped.
+            assert!(
+                tools
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == "todo__todo_write"),
+                "{provider_name}: precondition, Todo is bridged"
+            );
+            assert!(
+                !prompt.contains(crew_instruction),
+                "{provider_name}: Crew's instructions describe the grant tools this chat \
+                 cannot have: {prompt}"
+            );
+            // No Crew tool crossed, so the Crew entry says why rather than that
+            // Crew is loaded with nothing to call (`CODING_AGENT_BRIDGE_EMPTY_NOTES`).
+            let crew_section = prompt
+                .split("\n## ")
+                .find(|section| section.starts_with("crew"))
+                .unwrap_or_else(|| panic!("{provider_name}: the prompt names Crew: {prompt}"));
+            assert!(
+                !crew_section.contains("loaded but has no effective tools"),
+                "{provider_name}: the person would hear that Crew has nothing to call, and not \
+                 why: {crew_section}"
+            );
+            assert!(
+                prompt.contains(code_execution_note),
+                "{provider_name}: the prompt must say Code Execution is not used: {prompt}"
+            );
+
+            // The person tools cross wherever the chat's own roster holds them.
+            // They arrive with #475, so stand them in beside the grant tools: the
+            // bridge keeps the person tools and drops the grant's.
+            let roster: Vec<Tool> = grant_tools
+                .iter()
+                .chain(person_tools.iter())
+                .map(|name| bridge_test_tool(name))
+                .collect();
+            let plan = agent
+                .prepare_coding_agent_bridge_plan(&provider, &roster)
+                .await
+                .unwrap_or_else(|| panic!("{provider_name} needs a bridge plan"));
+            let bridged_crew: BTreeSet<&str> = plan
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_ref())
+                .filter(|name| name.starts_with("crew__"))
+                .collect();
+            assert_eq!(
+                bridged_crew, person_tools,
+                "{provider_name}: a roster holding Crew's person tools has exactly those bridged"
+            );
+        }
+    }
+
     /// ⚠ The name still says "withholds arbitrary host tools", and that is
     /// still what it measures — but the set of tools that counts as *arbitrary*
     /// shrank. Every BUILT-IN capability is now bridged, Developer, Biorouter
@@ -21083,9 +22481,9 @@ mod tests {
     fn subscription_coding_agent_bridge_withholds_arbitrary_host_tools_but_allows_managers() {
         for blocked in [
             "custom_local_mcp__read_any_path",
-            // Not withheld — RECOVERED. See the comment on the missing
-            // `code_execution` policy: the child gets the real tools this would
-            // have wrapped, so bridging it would only re-add an indirection.
+            // Not withheld but RECOVERED. See Code Execution's entry in
+            // `CODING_AGENT_BRIDGE_EXCLUSIONS`: the child gets the real tools this
+            // would have wrapped, so bridging it would only re-add an indirection.
             "code_execution__execute_code",
             "code_execution__read_module",
             "workspace__workspace_set_tools",
@@ -21121,6 +22519,8 @@ mod tests {
             "memory__retrieve_memories",
             "todo__todo_update",
             "chatrecall__chatrecall",
+            "decisions__decide",
+            "decisions__decision_models",
             "workspace__subagent",
             "workspace__workspace_watch",
             "workspace__workspace_send_prompt",
@@ -21167,6 +22567,11 @@ mod tests {
             "developer",
             "computercontroller",
             "webdocuments",
+            "decisions",
+            // `todo` is already on: the fixture loads it.
+            "chatrecall",
+            // The withheld capability, checked below from the other side.
+            "code_execution",
         ] {
             let target = resolve_bundled_extension(name).expect("reviewed bundled target");
             agent
@@ -21217,6 +22622,39 @@ mod tests {
             prefixed("webdocuments"),
             expected(CODING_AGENT_BRIDGE_ALLOWED_WEBDOCUMENTS_TOOLS)
         );
+        // A tool added to Decisions must reach a coding agent too: this
+        // capability was missing from the bridge entirely until 2026-11-11.
+        assert_eq!(
+            prefixed("decisions"),
+            expected(CODING_AGENT_BRIDGE_ALLOWED_DECISIONS_TOOLS)
+        );
+        // To Do and Chat Recall bridge their whole rosters too, and nothing
+        // pinned either one until the audit that followed Decisions.
+        assert_eq!(
+            prefixed("todo"),
+            expected(CODING_AGENT_BRIDGE_ALLOWED_TODO_TOOLS)
+        );
+        assert_eq!(
+            prefixed("chatrecall"),
+            expected(CODING_AGENT_BRIDGE_ALLOWED_CHAT_RECALL_TOOLS)
+        );
+        // And a withheld capability is withheld whole: none of its live tools
+        // is on any allowlist, including a tool added to it later, so it can
+        // never reach a coding agent as a half-bridged surface its note says is
+        // not there.
+        for exclusion in CODING_AGENT_BRIDGE_EXCLUSIONS {
+            let key = resolve_bundled_extension(exclusion.target_name)
+                .expect("a withheld capability is bundled")
+                .key();
+            let live = prefixed(&key);
+            assert!(!live.is_empty(), "precondition: {key} is loaded");
+            for tool in &live {
+                assert!(
+                    !coding_agent_bridge_policy_allows_tool(tool),
+                    "{tool} belongs to withheld {key} and is on a bridge allowlist"
+                );
+            }
+        }
     }
 
     /// #150.3. `coding_agent_bridge_policy_matches_the_reviewed_builtin_router_rosters`
@@ -22727,6 +24165,31 @@ mod tests {
             monitor_reach.contains(&crate::privacy::refusal::workspace_out_of_reach()),
             "{monitor_reach}"
         );
+        // The handler also takes the caller's own chat (DR-33, live QA M3-1);
+        // the bridge does not: it still demands a direct child, so a coding
+        // agent cannot put a monitor on its own chat, by its id or with
+        // `session_id` left out.
+        let own_reach = dispatch
+            .enforce_child_supervision_scope(&parent_id, &monitor_call(&parent_id))
+            .await
+            .expect_err("the bridge holds workspace_monitor to direct children");
+        assert!(
+            own_reach.contains(&crate::privacy::refusal::workspace_out_of_reach()),
+            "{own_reach}"
+        );
+        let unnamed = dispatch
+            .enforce_child_supervision_scope(
+                &parent_id,
+                &CallToolRequestParams {
+                    name: "workspace__workspace_monitor".into(),
+                    arguments: Some(object!({ "action": "list" })),
+                    meta: None,
+                    task: None,
+                },
+            )
+            .await
+            .expect_err("the bridge needs a session_id for workspace_monitor");
+        assert!(unnamed.contains("requires session_id"), "{unnamed}");
 
         let target_agent = Arc::new(Agent::with_config(AgentConfig::new(
             Arc::clone(&agent.config.session_manager),
@@ -24237,6 +25700,86 @@ mod tests {
                 .expect_err("an absent extension must not retain its snapshotted spawn grant");
             assert!(absent.contains("no longer enabled"), "got: {absent}");
         }
+    }
+
+    /// A spawn the bridge refuses reaches the coding agent, and the transcript
+    /// card that shows its call, as the refusal's own sentence: not
+    /// "`workspace__subagent` failed: -32602: …". The call still fails.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_refused_bridged_spawn_reads_as_its_own_sentence() {
+        struct ClearWorkspaceServicesOverride;
+        impl Drop for ClearWorkspaceServicesOverride {
+            fn drop(&mut self) {
+                crate::workspace_services::clear_test_override();
+            }
+        }
+        crate::workspace_services::set_for_tests(None);
+        let _clear_workspace_services = ClearWorkspaceServicesOverride;
+        coding_agent_bridge::publish_base_url("http://127.0.0.1:1");
+
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let iteration_provider: Arc<dyn Provider> =
+            Arc::new(BridgedChildProvider { name: "codex" });
+        agent
+            .update_provider(Arc::clone(&iteration_provider), &session_id)
+            .await
+            .expect("bind the coding-agent-shaped provider");
+        let tools = agent.list_tools(&session_id, None).await;
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, true)
+            .await
+            .expect("read the parent session");
+        let conversation = session
+            .conversation
+            .clone()
+            .unwrap_or_else(Conversation::empty);
+        let lease =
+            issue_test_tool_bridge(&agent, &iteration_provider, &session, &conversation, &tools)
+                .await
+                .expect("coding-agent providers need a live grant");
+        let nonce = lease.url().rsplit('/').next().expect("a bridge nonce");
+        let grant = coding_agent_bridge::lookup(nonce).expect("the grant is live");
+
+        let refused = grant
+            .call(CallToolRequestParams {
+                name: "workspace__subagent".into(),
+                arguments: Some(object!({
+                    "instructions": "inherit the shell",
+                    "extensions": ["developer"]
+                })),
+                meta: None,
+                task: None,
+            })
+            .await
+            .expect_err("a bridged child cannot inherit Developer");
+        assert!(
+            refused.starts_with("Subscription-backed coding-agent subagents cannot inherit"),
+            "{refused}"
+        );
+        assert!(!refused.contains("-32602"), "{refused}");
+        assert!(!refused.contains("failed:"), "{refused}");
+    }
+
+    /// The text a bridged spawn's error becomes, for the refusal a public chat
+    /// gets when it asks for a private child (R4): the sentence alone, where
+    /// `ErrorData`'s `Display` carries the JSON-RPC code.
+    #[test]
+    fn a_spawn_refusal_through_the_bridge_is_only_its_sentence() {
+        let sentence =
+            crate::privacy::PrivacyRefusal::spawn_upgrade(ProviderTier::Private).to_string();
+        let error = ErrorData::new(ErrorCode::INVALID_PARAMS, sentence.clone(), None);
+        assert!(
+            error.to_string().starts_with("-32602: "),
+            "the code this removes"
+        );
+        assert_eq!(bridged_spawn_error_text(&error), sentence);
+        assert_eq!(
+            bridged_spawn_error_text(&ErrorData::new(ErrorCode::INTERNAL_ERROR, "  ", None)),
+            "The subagent could not start."
+        );
     }
 
     /// Decision 21: a session with subagents enabled and NO explicit workspace
@@ -28441,15 +29984,16 @@ mod gate_b_turn_tests {
 
     // ─── T3-SH-9: a retry that succeeded leaves no failure above its answer ──
 
-    /// Fails once with Azure's content-filter failure, then answers.
-    struct FilteredOnceProvider {
+    /// Fails once with the in-stream server fault `formats::openai` reports
+    /// (a retried error), then answers.
+    struct FaultsOnceProvider {
         calls: Arc<AtomicUsize>,
     }
 
     #[async_trait]
-    impl Provider for FilteredOnceProvider {
+    impl Provider for FaultsOnceProvider {
         fn metadata() -> ProviderMetadata {
-            ProviderMetadata::new("filtered", "Filtered", "", "gpt-5.5", vec![], "", vec![])
+            ProviderMetadata::new("faulty", "Faulty", "", "gpt-5.5", vec![], "", vec![])
         }
 
         fn get_name(&self) -> &str {
@@ -28469,9 +30013,7 @@ mod gate_b_turn_tests {
         ) -> Result<(Message, ProviderUsage), ProviderError> {
             if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
                 return Err(ProviderError::ServerError(
-                    "Provider content filter failed (content_filter_error). Retry the request or \
-                     contact your provider administrator."
-                        .to_string(),
+                    crate::providers::formats::openai::IN_STREAM_SERVER_FAULT.to_string(),
                 ));
             }
             Ok((
@@ -28486,9 +30028,9 @@ mod gate_b_turn_tests {
     }
 
     #[tokio::test]
-    async fn a_retried_content_filter_failure_is_said_plainly_and_does_not_stay() {
+    async fn a_retried_server_fault_is_said_plainly_and_does_not_stay() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let provider: Arc<dyn Provider> = Arc::new(FilteredOnceProvider {
+        let provider: Arc<dyn Provider> = Arc::new(FaultsOnceProvider {
             calls: Arc::clone(&calls),
         });
         let (_dir, agent, s) = agent_on(provider).await;
@@ -28521,9 +30063,10 @@ mod gate_b_turn_tests {
             .find(|(_, msg)| msg.contains("Trying again (1/"))
             .unwrap_or_else(|| panic!("the retry is announced:\n{}", rendered(&events)));
         assert!(
-            retry
-                .1
-                .starts_with("The provider's content filter interrupted the reply."),
+            retry.1.starts_with(
+                "The model call failed: Server error: The model server reported an internal \
+                 error partway through its reply."
+            ),
             "{}",
             retry.1
         );
@@ -31040,3 +32583,401 @@ mod mid_turn_compaction_tests {
             .any(|m| m.as_concat_text() == "There are 12 rows."));
     }
 }
+
+/// DR-33: the slot folds a chat's decision models into its tier, at the bind,
+/// at Gate B and after an admitted lowering, and nowhere else (design §2.2).
+#[cfg(test)]
+mod decision_axes_agent_tests {
+    use super::*;
+    use crate::agents::AgentConfig;
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::decision::settings::{DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION};
+    use crate::model::ModelConfig;
+    use crate::privacy::decision_axes::{BasisAuthor, NameSource, PublicBasis};
+    use crate::providers::base::{ProviderMetadata, ProviderUsage, Usage};
+    use crate::session::session_manager::{BasisWrite, BasisWriteOutcome};
+    use async_trait::async_trait;
+    use std::path::PathBuf;
+    use std::sync::atomic::AtomicUsize;
+    use tempfile::TempDir;
+
+    struct Counting {
+        name: &'static str,
+        tier: ProviderTier,
+        completions: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for Counting {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::empty()
+        }
+        fn get_name(&self) -> &str {
+            self.name
+        }
+        fn tier(&self) -> ProviderTier {
+            self.tier
+        }
+        fn affiliation(&self) -> Option<crate::privacy::affiliation::ModelAffiliation> {
+            self.tier
+                .is_private()
+                .then_some(crate::privacy::affiliation::ModelAffiliation::Local)
+        }
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.completions.fetch_add(1, Ordering::SeqCst);
+            Ok((
+                Message::assistant().with_text("ok"),
+                ProviderUsage::new("gpt-5.5".to_string(), Usage::default()),
+            ))
+        }
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("gpt-5.5")
+        }
+    }
+
+    fn versa() -> (Arc<dyn Provider>, Arc<AtomicUsize>) {
+        let completions = Arc::new(AtomicUsize::new(0));
+        (
+            Arc::new(Counting {
+                name: "versa_azure",
+                tier: ProviderTier::Private,
+                completions: Arc::clone(&completions),
+            }),
+            completions,
+        )
+    }
+
+    async fn agent(shared: bool) -> (TempDir, Arc<Agent>, String) {
+        let dir = TempDir::new().unwrap();
+        let config = AgentConfig::new(
+            Arc::new(SessionManager::new(dir.path().to_path_buf())),
+            Arc::new(PermissionManager::new(dir.path().to_path_buf())),
+            None,
+            BioRouterMode::Auto,
+        );
+        let agent = Arc::new(if shared {
+            Agent::with_config_shared(config)
+        } else {
+            Agent::with_config(config)
+        });
+        let id = agent
+            .config
+            .session_manager
+            .create_session(PathBuf::from("."), "mixed".to_string(), SessionType::User)
+            .await
+            .unwrap()
+            .id;
+        (dir, agent, id)
+    }
+
+    /// The person's accepted lowering, through the one writer.
+    async fn lower(sm: &SessionManager, id: &str) {
+        let basis = PublicBasis::new(id, BasisAuthor::Person, "test", vec![]);
+        let outcome = sm
+            .write_public_basis(id, BasisWrite::Set(basis), |data| {
+                data.set_extension_state(
+                    DECISION_SETTINGS_STATE,
+                    DECISION_SETTINGS_VERSION,
+                    serde_json::json!({
+                        "defaultModel": { "provider": "baseten_decision", "model": "joey-1" },
+                        "monitors": [],
+                    }),
+                );
+                Ok(())
+            })
+            .await
+            .unwrap();
+        assert_eq!(outcome, BasisWriteOutcome::Written(()));
+    }
+
+    /// The removal: no public name, and the basis cleared in the same write.
+    async fn remove(sm: &SessionManager, id: &str) {
+        sm.write_public_basis(id, BasisWrite::Clear, |data| {
+            data.set_extension_state(
+                DECISION_SETTINGS_STATE,
+                DECISION_SETTINGS_VERSION,
+                serde_json::json!({ "monitors": [] }),
+            );
+            Ok(())
+        })
+        .await
+        .unwrap();
+    }
+
+    fn cfg(id: &str) -> SessionConfig {
+        SessionConfig {
+            id: id.to_string(),
+            schedule_id: None,
+            max_turns: Some(2),
+            max_tool_calls: None,
+            budget: None,
+            retry_config: None,
+            reasoning_effort: None,
+        }
+    }
+
+    async fn turn(agent: &Agent, id: &str) {
+        let mut stream = agent
+            .reply(Message::user().with_text("hi"), cfg(id), None)
+            .await
+            .unwrap();
+        while stream.next().await.is_some() {}
+    }
+
+    async fn slot_tier(agent: &Agent) -> ProviderTier {
+        agent.bound_provider_unchecked().await.unwrap().tier()
+    }
+
+    async fn classification(agent: &Agent, id: &str) -> SessionClassification {
+        agent
+            .config
+            .session_manager
+            .get_session(id, false)
+            .await
+            .unwrap()
+            .privacy_tier
+    }
+
+    /// The headline cell of design §1.6: Versa plus an accepted Baseten
+    /// decision model is a public chat, from the bind on.
+    #[tokio::test]
+    async fn a_lowered_versa_chat_binds_public_and_its_first_turn_does_not_ratchet() {
+        let (_dir, agent, id) = agent(false).await;
+        lower(&agent.config.session_manager, &id).await;
+        let (provider, completions) = versa();
+        agent.update_provider(provider, &id).await.unwrap();
+
+        assert_eq!(slot_tier(&agent).await, ProviderTier::Public);
+        assert_eq!(agent.bound_model_tier().await, ProviderTier::Private);
+        let cause = agent
+            .decision_lowered_by()
+            .await
+            .expect("the cause is named");
+        assert_eq!(
+            (cause.source, cause.model.as_str()),
+            (NameSource::Default, "joey-1")
+        );
+        // Gate B' right after the bind: the cache learned the row is Public, or
+        // every non-turn completion of a lowered chat would be refused.
+        assert!(
+            agent.provider().await.is_ok(),
+            "Gate B' refused a lowered chat's provider right after its bind"
+        );
+        // The row records the real provider, never the wrapper.
+        let row = agent
+            .config
+            .session_manager
+            .get_session(&id, false)
+            .await
+            .unwrap();
+        assert_eq!(row.provider_name.as_deref(), Some("versa_azure"));
+
+        turn(&agent, &id).await;
+        assert_eq!(completions.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            classification(&agent, &id).await,
+            SessionClassification::Public
+        );
+    }
+
+    /// Design §2.2 item 2: a lowering written AFTER the bind (by a door with no
+    /// agent to refresh, such as the offline CLI) is folded at Gate B, before
+    /// the ratchet reads the tier.
+    #[tokio::test]
+    async fn gate_b_folds_a_lowering_written_after_the_bind() {
+        let (_dir, agent, id) = agent(false).await;
+        agent.update_provider(versa().0, &id).await.unwrap();
+        assert_eq!(slot_tier(&agent).await, ProviderTier::Private);
+        lower(&agent.config.session_manager, &id).await;
+        turn(&agent, &id).await;
+        assert_eq!(
+            classification(&agent, &id).await,
+            SessionClassification::Public,
+            "Gate B ratcheted on the stale Private slot"
+        );
+        assert_eq!(slot_tier(&agent).await, ProviderTier::Public);
+    }
+
+    /// A public name with no basis is inert: the chat ratchets by its model.
+    #[tokio::test]
+    async fn a_public_name_without_a_basis_lowers_nothing() {
+        let (_dir, agent, id) = agent(false).await;
+        agent
+            .config
+            .session_manager
+            .update_extension_state(
+                &id,
+                DECISION_SETTINGS_STATE,
+                DECISION_SETTINGS_VERSION,
+                |_| {
+                    Ok(serde_json::json!({
+                        "defaultModel": { "provider": "baseten_decision", "model": "joey-1" },
+                        "monitors": [],
+                    }))
+                },
+            )
+            .await
+            .unwrap();
+        agent.update_provider(versa().0, &id).await.unwrap();
+        assert_eq!(slot_tier(&agent).await, ProviderTier::Private);
+        turn(&agent, &id).await;
+        assert_eq!(
+            classification(&agent, &id).await,
+            SessionClassification::Private
+        );
+    }
+
+    /// Design §2.2 item 3 and §2.4: an admitted lowering takes effect at once,
+    /// a removal never does until Gate B, which raises in the same step as the
+    /// ratchet.
+    #[tokio::test]
+    async fn lowering_takes_effect_at_once_and_a_raise_waits_for_gate_b() {
+        let (_dir, agent, id) = agent(false).await;
+        let sm = Arc::clone(&agent.config.session_manager);
+        agent.update_provider(versa().0, &id).await.unwrap();
+        lower(&sm, &id).await;
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert!(
+            agent.lower_decision_axes(&row).await,
+            "the lowering was not installed"
+        );
+        assert_eq!(slot_tier(&agent).await, ProviderTier::Public);
+
+        remove(&sm, &id).await;
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert!(
+            !agent.lower_decision_axes(&row).await,
+            "a lower-only refresh raised the slot"
+        );
+        assert_eq!(slot_tier(&agent).await, ProviderTier::Public);
+
+        turn(&agent, &id).await;
+        assert_eq!(slot_tier(&agent).await, ProviderTier::Private);
+        assert_eq!(
+            classification(&agent, &id).await,
+            SessionClassification::Private
+        );
+    }
+
+    /// A lowering that read the row before Gate B's ratchet committed must not
+    /// install Public axes over the ratcheted row (review, 2026-11-11): the
+    /// lower-only install re-reads the row under the slot lock, so a stale
+    /// Public row leaves the slot Private and the cache untouched.
+    #[tokio::test]
+    async fn a_lowering_read_before_a_ratchet_installs_nothing_after_it() {
+        let (_dir, agent, id) = agent(false).await;
+        let sm = Arc::clone(&agent.config.session_manager);
+        agent.update_provider(versa().0, &id).await.unwrap();
+        lower(&sm, &id).await;
+        // What the save door read: Public, with its basis.
+        let stale = sm.get_session(&id, false).await.unwrap();
+        assert!(!stale.privacy_tier.is_private());
+        // Gate B's ratchet lands before the door installs.
+        sm.update(&id)
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+        assert!(
+            !agent.lower_decision_axes(&stale).await,
+            "a lowering folded from a pre-ratchet row was installed"
+        );
+        assert_eq!(slot_tier(&agent).await, ProviderTier::Private);
+    }
+
+    /// Gate A's incoming side (design §3.1): a parent's wrapper handed to
+    /// another chat never brings the parent's axes.
+    #[tokio::test]
+    async fn a_wrapper_bound_to_another_chat_is_unwrapped_first() {
+        let (_dir, parent, parent_id) = agent(false).await;
+        lower(&parent.config.session_manager, &parent_id).await;
+        let (inner, _) = versa();
+        parent
+            .update_provider(Arc::clone(&inner), &parent_id)
+            .await
+            .unwrap();
+        let wrapper = parent.bound_provider_unchecked().await.unwrap();
+        assert_eq!(wrapper.tier(), ProviderTier::Public);
+
+        let (_dir2, child, child_id) = agent(false).await;
+        child.update_provider(wrapper, &child_id).await.unwrap();
+        let installed = child.bound_provider_unchecked().await.unwrap();
+        assert!(
+            Arc::ptr_eq(&installed, &inner),
+            "the parent's wrapper crossed chats"
+        );
+        assert_eq!(installed.tier(), ProviderTier::Private);
+        assert!(child.decision_lowered_by().await.is_none());
+    }
+
+    /// Design §2.7: `biorouter web`'s shared agent never folds.
+    #[tokio::test]
+    async fn the_shared_agent_never_folds() {
+        let (_dir, agent, id) = agent(true).await;
+        assert!(!agent.folds_decision_axes());
+        lower(&agent.config.session_manager, &id).await;
+        agent.update_provider(versa().0, &id).await.unwrap();
+        assert_eq!(slot_tier(&agent).await, ProviderTier::Private);
+        turn(&agent, &id).await;
+        assert_eq!(
+            classification(&agent, &id).await,
+            SessionClassification::Private,
+            "a shared agent lowered a chat by its decision models"
+        );
+    }
+
+    /// Design §7.2: `install_bound_provider` is the one production write of the
+    /// slot, so no path can install a wrapper (or skip the unwrap) on its own.
+    #[test]
+    fn the_provider_slot_has_one_production_writer() {
+        let src = include_str!("agent.rs");
+        let locks = src.matches(&format!("{}.provider.lock()", "self")).count();
+        assert_eq!(
+            locks, 2,
+            "the slot lock is taken in exactly two places: the reader \
+             `bound_provider_unchecked` and the writer `install_bound_provider`"
+        );
+        assert_eq!(
+            src.matches(&format!("*{} = Some(", "slot")).count(),
+            1,
+            "the slot is assigned once, in `install_bound_provider`"
+        );
+        assert_eq!(
+            src.matches(&format!("*{}_provider = ", "current")).count(),
+            0
+        );
+        let writer = src
+            .find("    pub(crate) async fn install_bound_provider(")
+            .expect("the writer exists");
+        let assignment = src.find(&format!("*{} = Some(", "slot")).unwrap();
+        let next_fn = writer
+            + 10
+            + src
+                .get(writer + 10..)
+                .and_then(|rest| rest.find("\n    pub"))
+                .expect("a function follows the writer");
+        assert!(
+            assignment > writer && assignment < next_fn,
+            "the slot assignment is outside `install_bound_provider`"
+        );
+    }
+}
+
+/// DR-33 at every reasoning effort: the chat's tier, never the effort-rebuilt
+/// provider's, is what a turn is judged on.
+#[cfg(test)]
+#[path = "agent_effort_tier_tests.rs"]
+mod effort_tier_tests;
+
+/// A model switch that lands while a turn runs: the turn's capability is never
+/// wider than the one it started with.
+#[cfg(test)]
+#[path = "agent_mid_turn_switch_tests.rs"]
+mod mid_turn_switch_tests;

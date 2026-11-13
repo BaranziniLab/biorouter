@@ -44,9 +44,8 @@ import { disclosureRequiredForTier, useDisclosure } from '../../../privacy/discl
 import { readResolvedProviderTier } from '../../../privacy/useBoundProviderTier';
 import { HostManagedModelNote } from '../../../privacy/HostManagedModelNote';
 import { isDecisionProvider } from '../../../decisions/decisionWire';
-import { decisionModelPlace } from '../../../decisions/decisionWords';
-import { cn } from '../../../../utils';
-import { decisionModelLabel } from '../../../../utils/sessionDecisions';
+import { decisionModelPlace, privacyBasisChipLine } from '../../../decisions/decisionWords';
+import { decisionModelLabel, type PrivacyBasis } from '../../../../utils/sessionDecisions';
 import { switchModelCopy } from '../copy';
 import { isBrowserSurface } from '../../../../utils/surface';
 import type {
@@ -199,6 +198,12 @@ interface ModelsBottomBarProps {
    */
   privacyTier?: SessionClassification;
   /**
+   * DR-33: why this public chat is public when a decision model made it so (the
+   * daemon's `privacyBasis`, read by the chat). The chip's tip gains one line, and
+   * the model switch says the chat stays public.
+   */
+  privacyBasis?: PrivacyBasis | null;
+  /**
    * Issue #56 / F2 — what THIS chat actually runs on: the session row's own
    * provider and model (`restore_provider_from_session` binds exactly those),
    * or the one a turn reported when the privacy barrier repaired the binding
@@ -245,6 +250,7 @@ export default function ModelsBottomBar({
   alerts = [],
   hideAlertPopover = false,
   privacyTier,
+  privacyBasis = null,
   effectiveModel,
   reasoningScope,
   handOffKey,
@@ -261,6 +267,8 @@ export default function ModelsBottomBar({
     getCurrentModelAndProviderForDisplay,
     getCurrentModelDisplayName,
     getCurrentProviderDisplayName,
+    localModelDisplayName,
+    loadLocalModelNames,
   } = useModelAndProvider();
   const { read, getProviders, providersList } = useConfig();
   /**
@@ -495,6 +503,25 @@ export default function ModelsBottomBar({
     (currentModel || providerDefaultModel || displayModelName);
   const fullModelLabel = chipPair.role ? `${displayModel} (${chipPair.role})` : displayModel;
 
+  /**
+   * W2-5. A Llama Server model goes by its catalog name, the one the model
+   * picker lists it under ("Qwen3.8 27B", not `qwen3.8-27b`), in the chip and
+   * the menu. The id stays in the tooltip and closes the accessible name. `null`
+   * for every other model, and until the catalog has been read. Called
+   * optionally, so a context that predates the two members still names the id.
+   */
+  const localModelName = localModelDisplayName?.(effectiveProvider, displayModel) ?? null;
+  const spokenModelLabel = localModelName
+    ? chipPair.role
+      ? `${localModelName} (${chipPair.role})`
+      : localModelName
+    : fullModelLabel;
+  // The selection's own local model is read by the model context; a chat bound
+  // to one while the selection is elsewhere asks for the catalog here.
+  useEffect(() => {
+    if (effectiveProvider === 'llamacpp') void loadLocalModelNames?.();
+  }, [effectiveProvider, loadLocalModelNames]);
+
   // Update display provider when current provider changes
   useEffect(() => {
     if (currentProvider) {
@@ -644,9 +671,11 @@ export default function ModelsBottomBar({
   // there is room for it: the tooltip and the dropdown header.
   const privacyLine =
     privacyTier === 'private'
-      ? 'Private chat. Biorouter only lets a private model open it.'
+      ? 'Private chat. Biorouter only lets private models, decision models included, read it.'
       : privacyTier === 'public'
-        ? 'Public chat'
+        ? privacyBasis
+          ? privacyBasisChipLine(privacyBasis)
+          : 'Public chat'
         : null;
 
   // The MODEL's tier, in the model's own words. Every surface below states
@@ -725,11 +754,12 @@ export default function ModelsBottomBar({
     decisionChat && effectiveProvider && displayModel
       ? decisionModelLabel({ provider: effectiveProvider, model: displayModel })
       : null;
+  const chipModelName = localModelName ?? friendlyModelName(displayModel);
   const chipModelLabel = decisionAlias
     ? decisionAlias
     : chipPair.role
-      ? `${friendlyModelName(displayModel)} (${chipPair.role})`
-      : friendlyModelName(displayModel);
+      ? `${chipModelName} (${chipPair.role})`
+      : chipModelName;
   // A decision model has no reasoning effort to set: it answers in one step.
   const showEffort = !decisionChat && effort !== null && effort !== DEFAULT_REASONING_EFFORT;
   // The InfoTip's notes: where a choice here reaches, and the lead/worker pair.
@@ -761,7 +791,7 @@ export default function ModelsBottomBar({
     decisionChat && effectiveProvider && shownModelName
       ? (decisionModelLabel({ provider: effectiveProvider, model: shownModelName }) ??
         shownModelName)
-      : shownModelName;
+      : (localModelName ?? shownModelName);
   // DR-17 and §14.2, kept VISIBLE as one line (principle 2): the chat's tier,
   // then the standing disclosure the daemon serves for a non-private model.
   const showPrivacyBlock = Boolean(privacyLine || disclosureLine);
@@ -778,9 +808,11 @@ export default function ModelsBottomBar({
               // between the model's name and the model's affiliation, where the
               // only subject in reach was the model.
               aria-label={joinSentences([
-                `Current model: ${fullModelLabel}${modelClause ? ` (${modelClause})` : ''}`,
+                `Current model: ${spokenModelLabel}${modelClause ? ` (${modelClause})` : ''}`,
                 privacyLine,
                 !decisionChat && effort !== null && `Effort: ${REASONING_EFFORT_LABELS[effort]}`,
+                // W2-5. The id the visible name stands for, in the tooltip's words.
+                localModelName && MODEL_COPY.fullIdTooltip(displayModel),
               ])}
               data-testid="model-chip"
               data-kind="model"
@@ -841,24 +873,23 @@ export default function ModelsBottomBar({
             </div>
             <div className="mt-0.5 truncate text-label text-text-default">{lineModelName}</div>
             {providerLine && (
+              // Read whole at the menu's 288px, never cut (live QA, 2026-11-12: "Llama
+              // Server · Private …" and "On this mac…"). The provider and the tier are one
+              // line that wraps; who covers the model is its own line, glyph first, so a
+              // wrap never strands a "·" at the start of a line.
               <div
                 data-testid="model-provider-line"
-                className={cn(
-                  'flex min-w-0 items-center gap-1.5 text-supporting text-text-muted',
-                  decisionPlace && 'flex-wrap'
-                )}
+                className="flex min-w-0 flex-col text-supporting text-text-muted [overflow-wrap:anywhere]"
               >
-                <span
-                  className={cn('min-w-0', decisionPlace ? '[overflow-wrap:anywhere]' : 'truncate')}
-                >
-                  {providerLine}
-                </span>
+                <span className="min-w-0">{providerLine}</span>
                 {lineAffiliationWords && (
-                  <>
-                    <span aria-hidden="true">·</span>
+                  <span
+                    className="flex min-w-0 items-center gap-1.5"
+                    data-testid="model-affiliation-line"
+                  >
                     <AffiliationBadge affiliation={affiliation} dense />
-                    <span className="min-w-0 truncate">{lineAffiliationWords.label}</span>
-                  </>
+                    <span className="min-w-0">{lineAffiliationWords.label}</span>
+                  </span>
                 )}
               </div>
             )}
@@ -946,6 +977,7 @@ export default function ModelsBottomBar({
         <SwitchModelModal
           sessionId={sessionId}
           privacyTier={privacyTier}
+          privacyBasis={privacyBasis}
           initialProvider={effectiveModel?.provider}
           initialModel={effectiveModel?.model}
           setView={setView}

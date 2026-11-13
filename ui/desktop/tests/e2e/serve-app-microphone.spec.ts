@@ -1,6 +1,6 @@
 /**
  * What an app page on the `biorouter serve` origin can do with a microphone
- * grant given to the shell (dictation PR-03, DD-79, SD-16 in
+ * grant given to the shell (dictation PR-03, DD-79, SD-17 in
  * docs/deployment/serve-decisions.md).
  *
  * On `serve`, every Agent Drafter app is served on the shell's own origin
@@ -13,11 +13,11 @@
  * own, the launch bounce and the figure frame on the same origin cannot.
  *
  * The header governs those documents and the frames they hold, not the
- * origin's grant. Two residuals follow, and SD-16 records both:
+ * origin's grant. Two residuals follow, and SD-17 records both:
  *
  * - In Chromium, a same-origin popup an app page opens does not inherit the
  *   app's policy, so the page records through it. The second test pins that
- *   as it is today, labelled SD-16 residual, so a mitigation has to flip it on
+ *   as it is today, labelled SD-17 residual, so a mitigation has to flip it on
  *   purpose. No response header can close the `about:blank` case; per app
  *   origins do.
  * - Firefox and WebKit ignore `Permissions-Policy`, so there the app page
@@ -342,14 +342,14 @@ test.describe('serve: an app page and the shell origin microphone grant', () => 
     expect(await capture(page)).toEqual({ ok: true, tracks: 1 });
   });
 
-  test('Chromium: an app page records through a same-origin popup (SD-16 residual)', async () => {
+  test('Chromium: an app page records through a same-origin popup (SD-17 residual)', async () => {
     test.skip(!browser || !serve, skipReason);
     // This pins a hole as it is today, measured in Chrome 157 on 2026-11-05. A
     // popup is a new top-level document: it takes the policy of the response
     // that made it, or none for `about:blank` and for a document this origin
     // serves without the header, never the opener's. If a change makes this
     // test fail, it closed the residual: flip the expectations on purpose and
-    // update SD-16 in docs/deployment/serve-decisions.md in the same change.
+    // update SD-17 in docs/deployment/serve-decisions.md in the same change.
     await openShell();
     const path = await launchPath();
     await page.goto(`${origin}${path}`);
@@ -379,12 +379,12 @@ test.describe('serve: an app page and the shell origin microphone grant', () => 
   });
 
   for (const engine of ['Firefox', 'WebKit']) {
-    test(`${engine}: the documented residual (SD-16)`, async () => {
+    test(`${engine}: the documented residual (SD-17)`, async () => {
       test.skip(
         true,
         `${engine} ignores Permissions-Policy, so an app page on the serve origin can use a ` +
           'microphone grant the person gave the shell, in its own page as well as through a ' +
-          'popup. No header changes that; SD-16 records it, and per app origins close it.'
+          'popup. No header changes that; SD-17 records it, and per app origins close it.'
       );
     });
   }

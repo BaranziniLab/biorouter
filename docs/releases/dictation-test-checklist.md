@@ -245,7 +245,7 @@ Withdrawn by the owner's decision O-30 (2026-11-05). Biorouter builds no microph
 
 | # | Do this | Expect | Failure looks like | CI covers |
 |---|---|---|---|---|
-| S15.1 | Open a built app's page in a `serve` browser and call `getUserMedia` from its console in Chrome, Firefox and Safari. | Chrome refuses; record Firefox and Safari, the documented residual (SD-16). | Chrome grants it. | `serve` job (Chromium) |
+| S15.1 | Open a built app's page in a `serve` browser and call `getUserMedia` from its console in Chrome, Firefox and Safari. | Chrome refuses; record Firefox and Safari, the documented residual (SD-17). | Chrome grants it. | `serve` job (Chromium) |
 | S15.2 | In the desktop preview, click into an app's text field, then press **Dictate into this app**. Do it once with **Dictate into other apps** on and once with it off. | The text lands in the field both times (M-15, O-42). If M-15 failed, the button is absent. | Text in the wrong place; nothing happens while the switch is off. | `dictationAnywhere.test.ts` (the switch only) |
 | S15.3 | With nothing in the app focused, look at the live page toolbar; then click into a text field. | **Dictate into this app** is absent while nothing is focused and appears once a field has focus (O-42). The SDK reference carries MSG-APPS (MSG-APPS-NO-PREVIEW if M-15 failed). | A disabled button with no reason; a button that does nothing. | `WebPagePreview.dictation.test.tsx` |
 | S15.4 | Open an exported app in a browser; use **Dictate to clipboard** and paste. | The text pastes. | n/a | none |
