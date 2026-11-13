@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen } from '@testing-library/react';
 import ToolCallWithResponse, {
   logToString,
+  plainToolFailureText,
   summarizeTodoSidecar,
   summarizeToolCall,
   TODO_SIDECAR_NOT_APPLIED,
@@ -2574,5 +2575,65 @@ describe('ToolCallWithResponse: a failed row and an empty output say so (V2-11, 
     fireEvent.click(screen.getByText('Ran true').closest('button') as HTMLElement);
     expect(screen.queryByText('Output')).not.toBeInTheDocument();
     expect(screen.queryByText('No output')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Live QA, 2026-11-12: a refused subagent's card read "`workspace__subagent` failed:
+ * -32602: This chat is running on a public model…", a tool id and a protocol code in
+ * front of the sentence. The daemon writes the sentence alone now; a chat saved before
+ * still carries the prefixes, and the card drops them.
+ */
+describe('a failed call says its sentence, not the dispatch wrapper or the code', () => {
+  const SENTENCE =
+    'This chat is running on a public model, so it cannot start a subagent on a private one.';
+
+  it.each([
+    [`\`workspace__subagent\` failed: -32602: ${SENTENCE}`, SENTENCE],
+    [`\`workspace__subagent\` failed: ${SENTENCE}`, SENTENCE],
+    [`-32603: ${SENTENCE}`, SENTENCE],
+    // Nothing to strip, or nothing after it: left as it came.
+    [SENTENCE, SENTENCE],
+    ['`workspace__subagent` failed: ', '`workspace__subagent` failed: '],
+    ['Exit code 2: -32602 is not a prefix here', 'Exit code 2: -32602 is not a prefix here'],
+  ])('%s', (raw, shown) => {
+    expect(plainToolFailureText(raw)).toBe(shown);
+  });
+
+  it('shows only the sentence in the open card', () => {
+    const toolRequest: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'tool-refused-subagent',
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'workspace__subagent',
+          arguments: { instructions: 'Read every trial report.', role: 'Reader' },
+        },
+      },
+    };
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={toolRequest}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'tool-refused-subagent',
+          toolResult: {
+            status: 'error',
+            error: `\`workspace__subagent\` failed: -32602: ${SENTENCE}`,
+          },
+        }}
+        onOpenArtifact={noopOpenArtifact}
+      />
+    );
+    const row = screen
+      .getAllByRole('button')
+      .find((button) => /Reader/.test(button.textContent ?? ''));
+    fireEvent.click(row as HTMLElement);
+    const notice = screen.getByRole('alert');
+    expect(notice).toHaveTextContent(SENTENCE);
+    expect(notice).not.toHaveTextContent('-32602');
+    expect(notice).not.toHaveTextContent('workspace__subagent');
   });
 });

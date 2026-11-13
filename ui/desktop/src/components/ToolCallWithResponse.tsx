@@ -2229,13 +2229,39 @@ function ToolCallView({
 const MAX_LIVE_DETAIL_LENGTH = 64;
 
 /**
+ * The dispatch's own wrapper on a failed call, "`workspace__subagent` failed: ", which
+ * names the tool by its id. The row's label already says what failed in words.
+ */
+const DISPATCH_FAILURE_WRAPPER = /^`[A-Za-z0-9_.-]+` failed: /;
+
+/** A JSON-RPC error code ahead of its message ("-32602: "), as the MCP error prints it. */
+const JSON_RPC_CODE = /^-32\d{3}: /;
+
+/**
+ * A failed call's text without the two machine prefixes the daemon put in front of
+ * the sentence: "`workspace__subagent` failed: -32602: This chat is running on a public
+ * model..." reads "This chat is running on a public model..." (live QA, 2026-11-12, a
+ * refused subagent). The daemon now writes the plain sentence; a chat saved before keeps
+ * the prefixes, so the card drops them. Anything else, and a text that is only a prefix,
+ * is left as it came.
+ */
+export function plainToolFailureText(text: string): string {
+  let rest = text.trimStart();
+  const wrapper = DISPATCH_FAILURE_WRAPPER.exec(rest);
+  if (wrapper) rest = rest.slice(wrapper[0].length);
+  const code = JSON_RPC_CODE.exec(rest);
+  if (code) rest = rest.slice(code[0].length);
+  return rest.trim() ? rest : text;
+}
+
+/**
  * A failed call's error, in the words the person reads: without the error
  * taxonomy's `[tool_error …]` header and its advice to the agent, and a
  * repetition stop as one plain sentence (`utils/repetitionStop.ts`). Callers
  * that parse the raw text (the cross-affiliation offer) read it before this.
  */
 function ToolFailureNotice({ title, message }: { title?: string; message: string }) {
-  const shown = personFacingToolError(message);
+  const shown = plainToolFailureText(personFacingToolError(message));
   return (
     <div role="alert" className="min-w-0">
       {title && <div className="text-secondary text-text-danger">{title}</div>}
