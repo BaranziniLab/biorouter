@@ -1161,27 +1161,14 @@ async fn terminal_input(
         "Credential input cannot use an initial seed"
     );
     #[cfg(feature = "dictation")]
-    if dictation_session.is_some() {
-        if let Some(key) =
-            crate::session::dictation_key().filter(|key| *key == crate::session::get_newline_key())
-        {
-            eprintln!("{}", crate::dictation::messages::msg_key_clash(key));
-        }
-    }
+    let dictation = TerminalDictation::new(dictation_session, dictation_state);
     eprint!("{}", safe_text(prompt));
     std::io::stderr().flush()?;
     crossterm::terminal::enable_raw_mode()?;
     let _mode = TerminalMode;
     crossterm::execute!(std::io::stderr(), EnableBracketedPaste)?;
     let mut events = EventStream::new();
-    let mut value = Zeroizing::new(initial.unwrap_or("").to_string());
-    ensure!(
-        value.len() <= limit,
-        "Input exceeds the permitted byte limit; nothing was submitted"
-    );
-    if !hidden && !value.is_empty() {
-        eprint!("{}", safe_text(value.as_str()));
-    }
+    let mut value = seeded_value(initial, hidden, limit)?;
     while let Some(event) = events.next().await {
         let event = event?;
         if let Event::Paste(paste) = event {
@@ -1207,46 +1194,10 @@ async fn terminal_input(
         }
         match key.code {
             #[cfg(feature = "dictation")]
-            KeyCode::Char(c)
-                if dictation_session.is_some()
-                    && key.modifiers.contains(KeyModifiers::CONTROL)
-                    && Some(c.to_ascii_lowercase()) == crate::session::dictation_key()
-                    && Some(c.to_ascii_lowercase()) != Some(crate::session::get_newline_key()) =>
-            {
-                drop(events);
-                crossterm::terminal::disable_raw_mode()?;
-                let transcript = crate::dictation::frontend::capture_in_terminal(
-                    dictation_session.map(str::to_string),
-                    None,
-                    dictation_state.cloned().unwrap_or_default(),
-                )
-                .await;
-                crossterm::terminal::enable_raw_mode()?;
-                events = EventStream::new();
-                match transcript {
-                    Ok(Some(text)) => {
-                        let separator = if value
-                            .chars()
-                            .next_back()
-                            .is_some_and(|c| !c.is_whitespace())
-                        {
-                            " "
-                        } else {
-                            ""
-                        };
-                        if value.len() + separator.len() + text.trim().len() <= limit {
-                            value.push_str(separator);
-                            value.push_str(text.trim());
-                            eprint!("{separator}{}", safe_text(text.trim()));
-                        } else {
-                            eprintln!(
-                                "Input exceeds the permitted byte limit; nothing was inserted"
-                            );
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(reason) => eprintln!("{reason}"),
-                }
+            KeyCode::Char(c) if dictation.is_chord(c, key.modifiers) => {
+                events = DictateLine::Chord
+                    .run(events, prompt, limit, &mut value, &dictation)
+                    .await?;
             }
             KeyCode::Esc => {
                 eprint!("\r\n");
@@ -1258,106 +1209,11 @@ async fn terminal_input(
             }
             KeyCode::Enter => {
                 #[cfg(feature = "dictation")]
-                if value.trim() == "/dictate" && dictation_session.is_some() {
+                if let Some(command) = dictation.command(&value) {
                     value.clear();
-                    drop(events);
-                    crossterm::terminal::disable_raw_mode()?;
-                    let transcript = crate::dictation::frontend::capture_in_terminal(
-                        dictation_session.map(str::to_string),
-                        None,
-                        dictation_state.cloned().unwrap_or_default(),
-                    )
-                    .await;
-                    crossterm::terminal::enable_raw_mode()?;
-                    events = EventStream::new();
-                    eprint!("\r{}", safe_text(prompt));
-                    match transcript {
-                        Ok(Some(text)) => {
-                            if text.trim().len() <= limit {
-                                value.push_str(text.trim());
-                                eprint!("{}", safe_text(text.trim()));
-                            } else {
-                                eprintln!(
-                                    "Input exceeds the permitted byte limit; nothing was inserted"
-                                );
-                            }
-                        }
-                        Ok(None) => {}
-                        Err(reason) => eprintln!("{reason}"),
-                    }
-                    continue;
-                }
-                #[cfg(feature = "dictation")]
-                if value.trim() == "/dictate status" && dictation_session.is_some() {
-                    let paused = dictation_state.is_some_and(|state| state.paused());
-                    eprintln!(
-                        "\r\n{}",
-                        if paused {
-                            crate::dictation::messages::MSG_PAUSED
-                        } else {
-                            "Dictation is ready."
-                        }
-                    );
-                    value.clear();
-                    eprint!("{}", safe_text(prompt));
-                    continue;
-                }
-                #[cfg(feature = "dictation")]
-                if value.trim() == "/dictate retry" && dictation_session.is_some() {
-                    value.clear();
-                    drop(events);
-                    crossterm::terminal::disable_raw_mode()?;
-                    let transcript = crate::dictation::frontend::retry_in_terminal(
-                        dictation_session.map(str::to_string),
-                        None,
-                        dictation_state.cloned().unwrap_or_default(),
-                    )
-                    .await;
-                    crossterm::terminal::enable_raw_mode()?;
-                    events = EventStream::new();
-                    eprint!("\r{}", safe_text(prompt));
-                    match transcript {
-                        Ok(Some(text)) if text.trim().len() <= limit => {
-                            value.push_str(text.trim());
-                            eprint!("{}", safe_text(text.trim()));
-                        }
-                        Ok(Some(_)) => eprintln!(
-                            "Input exceeds the permitted byte limit; nothing was inserted"
-                        ),
-                        Ok(None) => {}
-                        Err(reason) => eprintln!("{reason}"),
-                    }
-                    continue;
-                }
-                #[cfg(feature = "dictation")]
-                if dictation_session.is_some()
-                    && (value.trim() == "/dictate install"
-                        || value.trim().starts_with("/dictate install "))
-                {
-                    let model = value
-                        .trim()
-                        .strip_prefix("/dictate install")
-                        .unwrap_or_default()
-                        .trim();
-                    let model = (!model.is_empty()).then(|| model.to_string());
-                    value.clear();
-                    drop(events);
-                    crossterm::terminal::disable_raw_mode()?;
-                    let result = crate::commands::dictation::handle_install(
-                        crate::commands::dictation::InstallArgs {
-                            model,
-                            from: None,
-                            system: false,
-                            yes: false,
-                        },
-                    )
-                    .await;
-                    crossterm::terminal::enable_raw_mode()?;
-                    events = EventStream::new();
-                    if let Err(error) = result {
-                        eprintln!("{error}");
-                    }
-                    eprint!("\r{}", safe_text(prompt));
+                    events = command
+                        .run(events, prompt, limit, &mut value, &dictation)
+                        .await?;
                     continue;
                 }
                 eprint!("\r\n");
@@ -1385,6 +1241,197 @@ async fn terminal_input(
         std::io::stderr().flush()?;
     }
     Ok(None)
+}
+
+/// The prompt's text before the person types: `initial`, refused for a hidden (credential)
+/// prompt and above `limit`, and echoed when it may be shown.
+fn seeded_value(initial: Option<&str>, hidden: bool, limit: usize) -> Result<Zeroizing<String>> {
+    let value = Zeroizing::new(initial.unwrap_or("").to_string());
+    ensure!(
+        value.len() <= limit,
+        "Input exceeds the permitted byte limit; nothing was submitted"
+    );
+    if !hidden && !value.is_empty() {
+        eprint!("{}", safe_text(value.as_str()));
+    }
+    Ok(value)
+}
+
+/// Dictation at a terminal prompt (S9): the chat it dictates for, if any, and the
+/// session's dictation state. A prompt with no chat offers no dictation at all.
+#[cfg(feature = "dictation")]
+struct TerminalDictation<'a> {
+    session: Option<&'a str>,
+    state: Option<&'a SharedDictationState>,
+}
+
+#[cfg(feature = "dictation")]
+impl<'a> TerminalDictation<'a> {
+    /// Says, once per prompt, when the dictation key is also the newline key, so the chord
+    /// cannot start a recording here.
+    fn new(session: Option<&'a str>, state: Option<&'a SharedDictationState>) -> Self {
+        if session.is_some() {
+            if let Some(key) = crate::session::dictation_key()
+                .filter(|key| *key == crate::session::get_newline_key())
+            {
+                eprintln!("{}", crate::dictation::messages::msg_key_clash(key));
+            }
+        }
+        Self { session, state }
+    }
+
+    fn is_chord(&self, c: char, modifiers: KeyModifiers) -> bool {
+        let key = Some(c.to_ascii_lowercase());
+        self.session.is_some()
+            && modifiers.contains(KeyModifiers::CONTROL)
+            && key == crate::session::dictation_key()
+            && key != Some(crate::session::get_newline_key())
+    }
+
+    fn command(&self, line: &str) -> Option<DictateLine> {
+        self.session.and(DictateLine::parse(line))
+    }
+}
+
+/// What dictation does at a terminal prompt (S9): the chord, and the `/dictate` commands
+/// the prompt answers itself, read from the whole line as the person typed it before Enter.
+#[cfg(feature = "dictation")]
+enum DictateLine {
+    Chord,
+    Capture,
+    Retry,
+    Status,
+    Install(Option<String>),
+}
+
+#[cfg(feature = "dictation")]
+impl DictateLine {
+    fn parse(line: &str) -> Option<Self> {
+        match line.trim() {
+            "/dictate" => Some(Self::Capture),
+            "/dictate retry" => Some(Self::Retry),
+            "/dictate status" => Some(Self::Status),
+            other => other
+                .strip_prefix("/dictate install")
+                .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+                .map(|rest| Self::Install(Some(rest.trim().to_string()).filter(|m| !m.is_empty()))),
+        }
+    }
+
+    /// Runs it and hands back the terminal's event reader (a new one when it left raw
+    /// mode). The chord adds its transcript after what is typed; a command, whose line the
+    /// caller emptied, writes the prompt again and puts its transcript there.
+    async fn run(
+        self,
+        events: EventStream,
+        prompt: &str,
+        limit: usize,
+        value: &mut Zeroizing<String>,
+        dictation: &TerminalDictation<'_>,
+    ) -> Result<EventStream> {
+        let session = dictation.session.map(str::to_string);
+        let state = dictation.state.cloned().unwrap_or_default();
+        match self {
+            Self::Chord => {
+                let capture = crate::dictation::frontend::capture_in_terminal(session, None, state);
+                let (events, transcript) = outside_raw_mode(events, capture).await?;
+                insert_dictated(value, transcript, limit, true);
+                Ok(events)
+            }
+            Self::Capture | Self::Retry => {
+                let (events, transcript) = if matches!(self, Self::Capture) {
+                    let capture =
+                        crate::dictation::frontend::capture_in_terminal(session, None, state);
+                    outside_raw_mode(events, capture).await?
+                } else {
+                    let retry = crate::dictation::frontend::retry_in_terminal(session, None, state);
+                    outside_raw_mode(events, retry).await?
+                };
+                eprint!("\r{}", safe_text(prompt));
+                insert_dictated(value, transcript, limit, false);
+                Ok(events)
+            }
+            Self::Status => {
+                let paused = dictation.state.is_some_and(|state| state.paused());
+                eprintln!(
+                    "\r\n{}",
+                    if paused {
+                        crate::dictation::messages::MSG_PAUSED
+                    } else {
+                        "Dictation is ready."
+                    }
+                );
+                eprint!("{}", safe_text(prompt));
+                Ok(events)
+            }
+            Self::Install(model) => {
+                let install = crate::commands::dictation::handle_install(
+                    crate::commands::dictation::InstallArgs {
+                        model,
+                        from: None,
+                        system: false,
+                        yes: false,
+                    },
+                );
+                let (events, result) = outside_raw_mode(events, install).await?;
+                if let Err(error) = result {
+                    eprintln!("{error}");
+                }
+                eprint!("\r{}", safe_text(prompt));
+                Ok(events)
+            }
+        }
+    }
+}
+
+/// Runs `work` with the terminal out of raw mode: a capture reads the terminal itself
+/// (Enter stops, Esc cancels), so the prompt's event reader is dropped before it starts
+/// and a new one is made after.
+#[cfg(feature = "dictation")]
+async fn outside_raw_mode<T>(
+    events: EventStream,
+    work: impl std::future::Future<Output = T>,
+) -> Result<(EventStream, T)> {
+    drop(events);
+    crossterm::terminal::disable_raw_mode()?;
+    let out = work.await;
+    crossterm::terminal::enable_raw_mode()?;
+    Ok((EventStream::new(), out))
+}
+
+/// Puts a dictated transcript into the line being typed and echoes it, or says why it did
+/// not. `after_text` separates it from text already typed with one space.
+#[cfg(feature = "dictation")]
+fn insert_dictated(
+    value: &mut Zeroizing<String>,
+    transcript: Result<Option<String>, String>,
+    limit: usize,
+    after_text: bool,
+) {
+    match transcript {
+        Ok(Some(text)) => {
+            let text = text.trim();
+            let separator = if after_text
+                && value
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| !c.is_whitespace())
+            {
+                " "
+            } else {
+                ""
+            };
+            if value.len() + separator.len() + text.len() <= limit {
+                value.push_str(separator);
+                value.push_str(text);
+                eprint!("{separator}{}", safe_text(text));
+            } else {
+                eprintln!("Input exceeds the permitted byte limit; nothing was inserted");
+            }
+        }
+        Ok(None) => {}
+        Err(reason) => eprintln!("{reason}"),
+    }
 }
 
 /// What the conversation says on stderr once it knows its chat (AG-F7): in text, a sentence
@@ -2058,5 +2105,77 @@ mod tests {
         assert!(!sensitive_schema(
             &serde_json::json!({"properties":{"cohort":{"type":"string"}}})
         ));
+    }
+
+    // The `/dictate` lines a shared conversation's prompt answers itself, as the four
+    // string conditions inside `terminal_input` read them before they became one parser.
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn the_prompt_reads_the_dictate_lines_it_always_did() {
+        use super::DictateLine;
+        let parse = |line: &str| DictateLine::parse(line);
+        assert!(matches!(parse("/dictate"), Some(DictateLine::Capture)));
+        assert!(matches!(parse("  /dictate  "), Some(DictateLine::Capture)));
+        assert!(matches!(parse("/dictate retry"), Some(DictateLine::Retry)));
+        assert!(matches!(
+            parse("/dictate status"),
+            Some(DictateLine::Status)
+        ));
+        assert!(matches!(
+            parse("/dictate install"),
+            Some(DictateLine::Install(None))
+        ));
+        assert!(matches!(
+            parse("/dictate install  small.en "),
+            Some(DictateLine::Install(Some(model))) if model == "small.en"
+        ));
+        for other in [
+            "/dictateX",
+            "/dictate installer",
+            "/dictate stat",
+            "dictate",
+            "hello",
+        ] {
+            assert!(parse(other).is_none(), "{other}");
+        }
+    }
+
+    // Where a transcript goes in the line being typed: after a space when it follows text
+    // (the chord), never past the prompt's byte limit, and an error said instead of typed.
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn a_dictated_transcript_joins_the_line_within_its_limit() {
+        use super::insert_dictated;
+        use zeroize::Zeroizing;
+        let mut value = Zeroizing::new("check".to_string());
+        insert_dictated(&mut value, Ok(Some(" EPAS1 levels ".into())), 64, true);
+        assert_eq!(value.as_str(), "check EPAS1 levels");
+        let mut value = Zeroizing::new("check ".to_string());
+        insert_dictated(&mut value, Ok(Some("EPAS1".into())), 64, true);
+        assert_eq!(value.as_str(), "check EPAS1");
+        let mut value = Zeroizing::new(String::new());
+        insert_dictated(&mut value, Ok(Some("EPAS1".into())), 64, false);
+        assert_eq!(value.as_str(), "EPAS1");
+        let mut value = Zeroizing::new("abc".to_string());
+        insert_dictated(&mut value, Ok(Some("defg".into())), 7, true);
+        assert_eq!(
+            value.as_str(),
+            "abc",
+            "a transcript past the limit is not inserted"
+        );
+        insert_dictated(&mut value, Err("no model".into()), 64, true);
+        insert_dictated(&mut value, Ok(None), 64, true);
+        assert_eq!(value.as_str(), "abc");
+    }
+
+    #[test]
+    fn a_prompt_seed_stays_within_its_limit() {
+        use super::seeded_value;
+        assert_eq!(
+            seeded_value(Some("draft"), false, 8).unwrap().as_str(),
+            "draft"
+        );
+        assert_eq!(seeded_value(None, true, 8).unwrap().as_str(), "");
+        assert!(seeded_value(Some("too long"), false, 4).is_err());
     }
 }
