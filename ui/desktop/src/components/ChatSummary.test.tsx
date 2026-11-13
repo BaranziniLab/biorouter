@@ -143,6 +143,17 @@ describe('compact chat summary', () => {
     expect(screen.getByText(summaryCopy.toolCalls)).toBeInTheDocument();
   });
 
+  it('labels the figures of a subagent’s own chat as that subagent’s, in the same section', () => {
+    render(<ChatSummary {...props} subagentChat />);
+    expect(summaryCopy.subagentDetails).toBe('Subagent chat');
+    expect(screen.getByRole('region', { name: summaryCopy.subagentDetails })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: summaryCopy.details })).not.toBeInTheDocument();
+    const trigger = screen.getByRole('button', { name: summaryCopy.subagentDetails });
+    expect(trigger).toHaveAccessibleDescription(summaryCopy.detailsSummary('211k'));
+    fireEvent.click(trigger);
+    expect(screen.getByText(summaryCopy.toolCalls)).toBeInTheDocument();
+  });
+
   // R2-4: a running subagent's tab read "Details  Tokens N/A".
   it('draws no Details summary when there is no token figure', () => {
     render(<ChatSummary {...props} billedTokens="N/A" />);

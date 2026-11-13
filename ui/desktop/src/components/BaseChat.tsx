@@ -2713,6 +2713,7 @@ function BaseChatContent({
         : null,
     privacyTier: session?.privacy_tier ?? loadingChatRow?.privacy_tier ?? null,
     decisionChat,
+    subagentChat: subagent.isSubagent,
     onWorkflow: handleWorkflowReviewAction,
     onDiagnostics: handleDiagnosticsReviewAction,
   };

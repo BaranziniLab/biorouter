@@ -10,23 +10,15 @@
  * The content's rules hold here too, and styles/summaryRail.test.ts reads this
  * file to keep them: two type sizes only (13/18 `--text-secondary` for rows,
  * 12/16 `--text-supporting` for labels, counts and second lines), 28px rows, and
- * no hairline anywhere. Sections are parted by 12px of space; a row answers the
- * pointer with the card's fill step, never with an outline.
+ * no box (owner direction, 2026-11-12): a phase, its grid and its rows sit on the
+ * card's own ground, labelled by the phase's line and parted from the next phase
+ * by one inset hairline, the only line drawn here. The sections themselves are
+ * parted by chatSummary.css's divider. A row answers the pointer with the card's
+ * fill step, never with an outline.
  *
  * Unlayered, so these beat the layered D-15 focus fill on the same buttons; every
  * rule that paints a row therefore restates the focus fill and its 2px edge.
  */
-
-/* SECTIONS. The summary's sections (To do, Plan or Agents, Decisions, This
-   chat) sit 12px apart, whatever comes first, and each opens on its heading
-   (SummarySectionHeading.tsx, below). */
-.br-summary__body > * + .br-agents__section {
-  margin-top: 12px;
-}
-
-.br-agents__section + .br-agents__section {
-  margin-top: 12px;
-}
 
 .br-agents {
   display: flex;
@@ -42,25 +34,27 @@
   list-style: none;
 }
 
-/* A PHASE GROUP IS A BAND (the reference's group blocks), so a phase, its grid,
-   its rows and its gate read as one chunk and the next phase as the next one.
-   It takes the control ground the fill rule gives it: in the rail's filled card
-   the page ground, one step back (a fill never sits on a fill); in the header
-   popover, which is the page ground, the fill. Bands are parted by 4px; no line.
-   The rows inside still bleed 8px, now to the band's edges. */
+/* A PHASE IS A CHUNK, NOT A BOX. Its line (the chevron, the title, the count
+   and the gate's circle) is its heading; its grid and rows follow on the card's
+   own ground, with no fill, radius or padding of its own. A phase after the
+   first is parted from the one above by a hairline inset to the content, 4px of
+   space on either side (9 to 10px from the line to the text): inset, where the
+   section divider (chatSummary.css) runs the card's full width, so a phase never
+   reads as a section. A structural line, the kind design.md 9.11 keeps. */
 .br-agents__phase {
-  padding: 0 8px 2px;
-  border-radius: var(--radius-element);
-  background-color: var(--br-control-ground, var(--background-fill));
+  min-width: 0;
 }
 
 .br-agents__phase + .br-agents__phase {
   margin-top: 4px;
+  padding-top: 4px;
+  border-top: 1px solid var(--border-subtle);
 }
 
 /* ROWS. Every control here is a full-width button that bleeds 8px into the
    body's 12px gutter, so its text keeps the to-do list's left edge and its
-   hover wash has room. */
+   hover wash has room. Nothing between a row and the card is a box, so the wash
+   is the card's own hover step. */
 .br-agents__row,
 .br-agents__phase-toggle,
 .br-agents__more {
@@ -259,8 +253,11 @@
   color: var(--text-muted);
 }
 
+/* The held line ("Waits for Build's gate") sits on the title's text edge, past
+   the chevron's column, so it reads as the phase's and not the section's. */
 .br-agents__phase-counts {
   margin: 0 0 2px;
+  padding-left: 22px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -268,10 +265,6 @@
 
 .br-agents__group-body {
   min-width: 0;
-}
-
-.br-agents__phase .br-agents__group-body {
-  margin-bottom: 4px;
 }
 
 /* The chevron leads, in the rows' 14px glyph column, so a heading's words sit on
@@ -303,6 +296,34 @@
   color: var(--text-muted);
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);
+}
+
+/* THE KEY, at the foot of the roster only while decision-model subagents
+   (circles) mix with language-model ones (squares): "Language model" and
+   "Decision model", each after its solid shape, in muted 12px words on the
+   rows' mark column, wrapping to a second line in a narrow rail. A line of
+   words, never a box. Its shapes say kind, not status, so they wear the muted
+   ink rather than the finished sage (the selector outranks the grid's inks). */
+.br-agents__key {
+  display: flex;
+  min-width: 0;
+  margin: 8px 0 0;
+  padding: 4px 0 2px 2px;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+}
+
+.br-agents__key-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.br-agents__key .br-agents__key-item > .br-agent-mark {
+  color: var(--text-muted);
 }
 
 /* The refresh error's Retry, at the error line's 12. A plain button, so it

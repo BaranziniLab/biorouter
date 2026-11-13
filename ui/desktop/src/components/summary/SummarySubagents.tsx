@@ -951,6 +951,31 @@ function GroupItem({
   );
 }
 
+/**
+ * The notation's key, at the foot of the roster: a square, "Language model", a
+ * circle, "Decision model", solid and in the muted ink, as the terminal's pane
+ * writes "■ language model  ● decision model". Drawn only while the roster mixes
+ * the two shapes, which is when a person needs it; a roster of one kind says
+ * nothing. Hidden from assistive technology, since every square and row already
+ * says "decision model" in its name.
+ */
+function ShapeKey({ rows }: { rows: readonly SubagentRow[] }) {
+  const shapes = new Set(rows.map((row) => agentMarkShape(row)));
+  if (shapes.size < 2) return null;
+  return (
+    <p className="br-agents__key" aria-hidden="true" data-testid="summary-agents-key">
+      <span className="br-agents__key-item">
+        <AgentMark kind="done" shape="square" size={AGENT_MARK_PX.grid} />
+        {copy.languageModel}
+      </span>
+      <span className="br-agents__key-item">
+        <AgentMark kind="done" shape="circle" size={AGENT_MARK_PX.grid} />
+        {copy.decisionModel}
+      </span>
+    </p>
+  );
+}
+
 function ListCount({ rows }: { rows: readonly SubagentRow[] }) {
   const counts = subagentCounts(rows);
   return (
@@ -974,6 +999,11 @@ function ListCount({ rows }: { rows: readonly SubagentRow[] }) {
  *   mark. With more, a group of more than four draws its grid of squares (10px,
  *   7px from 100 agents), then its first five rows (waiting for the person,
  *   failed, running, then the newest), then "Show N more".
+ *
+ * Nothing here is a box: the groups, grids and rows sit on the card's ground,
+ * and a phase is parted from the one above by an inset hairline. While
+ * decision-model subagents mix with language-model ones, a one-line key at the
+ * foot says which shape is which.
  *
  * A square's or row's hover previews its card and a click keeps it (one open at a
  * time); the card holds "Open in a tab" and the setup. The roster is one tab stop;
@@ -1149,6 +1179,7 @@ export function SummarySubagents({
                 ))}
               </ol>
             )}
+            <ShapeKey rows={allRows} />
           </div>
         ) : null}
         {error && <RefreshError refresh={refresh} />}

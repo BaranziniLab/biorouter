@@ -7,8 +7,9 @@
  * The content's rules hold here too, and SummaryDecisions.test.tsx reads this
  * file to keep them: two type sizes only (13/18 `--text-secondary` for a row's
  * name, 12/16 `--text-supporting` for counts and second lines), rows at least
- * 28px, and no hairline anywhere. The section is parted from its neighbours by
- * 12px of space; a row answers the pointer with the card's fill step.
+ * 28px, no box and no line of its own. The section is parted from the one above
+ * it by the summary's one section divider (chatSummary.css); a row answers the
+ * pointer with the card's fill step.
  *
  * Unlayered, so these beat the layered D-15 focus fill on the same buttons;
  * every rule that paints a row restates the focus fill and its 2px edge.
@@ -18,16 +19,6 @@
   display: flex;
   min-width: 0;
   flex-direction: column;
-}
-
-/* 12px from whatever sits above (the to-do list, its error, the subagents)
-   and to the statistics below. */
-.br-summary__body > * + .br-decisions {
-  margin-top: 12px;
-}
-
-.br-decisions + .br-summary__stats {
-  margin-top: 12px;
 }
 
 .br-decisions__list {
@@ -138,12 +129,12 @@
 
 /* A PHASE GATE'S MARK at the end of its phase's line (SummarySubagents.tsx,
    spec 3.3): a 20px control holding the gate's 10px circle (decision-model
-   work, in the agent grid's notation). At rest it has no fill, so a passed or
-   waiting gate is a small mark beside the count; a gate that wants a look ("Needs
-   you", "Not passed", "Blocked") adds its word and rests on the control ground
-   one step back from the filled card (no fill on a fill). The hover step under
-   the pointer either way. The transparent 1px border is what forced colours
-   draw. "Add gate" wears the worded chip in the same slot. */
+   work, in the agent grid's notation). It has no fill at rest in any state, so
+   it is never a box beside the phase's title (owner direction, 2026-11-12): a
+   passed or waiting gate is a small mark beside the count, and a gate that wants
+   a look ("Needs you", "Not passed", "Blocked") adds its word in the circle's
+   ink. The card's hover step under the pointer. The transparent 1px border is
+   what forced colours draw. "Add gate" is a plus in the same slot. */
 .br-agents__gate-slot {
   display: inline-flex;
   flex: none;
@@ -159,7 +150,7 @@
   align-items: center;
   border: 1px solid transparent;
   border-radius: var(--radius-inner);
-  background-color: var(--br-control-ground, var(--background-default));
+  background-color: transparent;
   color: var(--text-muted);
   font: inherit;
   font-size: var(--text-supporting);
@@ -183,9 +174,9 @@
   height: 12px;
 }
 
+/* A mark alone keeps 5px a side, so its hover step is near square. */
 .br-agents__gate:not([data-attention], [data-add-gate]) {
   padding: 0 5px;
-  background-color: transparent;
 }
 
 button.br-agents__gate:hover {

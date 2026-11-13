@@ -289,7 +289,7 @@ describe('the summary’s type: two sizes only, 13 and 12', () => {
   });
 });
 
-describe('the summary is filled, not outlined (owner message 13, R-27)', () => {
+describe('the summary is filled, not outlined, and parted into sections by hairlines (R-27, owner direction 2026-11-12)', () => {
   const CONTENT_CODE = readFileSync(
     join(__dirname, '../components/summary/chatSummary.css'),
     'utf8'
@@ -321,11 +321,35 @@ describe('the summary is filled, not outlined (owner message 13, R-27)', () => {
     expect(codeWithoutComments(RAIL_TSX)).toMatch(/className="br-summary-card br-fill-surface"/);
   });
 
-  it('parts the to-do list, the statistics and the footer by space, never by a hairline', () => {
-    expect(CONTENT_CODE).not.toMatch(/border(-top|-bottom)?\s*:/);
-    expect(property(contentRule('.br-summary__stats[data-after-todos]'), 'margin-top')).toBe(
-      '12px'
+  /**
+   * Sections, never boxes (owner direction, 2026-11-12). The divider between two sections is a
+   * structural line, the kind design.md 9.11 ("Fills before lines") keeps, and it is the ONE line
+   * the content draws: no section, list or row names a fill or a radius of its own, so nothing in
+   * the card is a box inside the box. The footer is parted by space.
+   */
+  it('parts its sections with one hairline across the card, and draws no other line or box', () => {
+    const borders = [
+      ...CONTENT_CODE.matchAll(/border(?:-top|-bottom|-left|-right)?\s*:\s*[^;]+;/g),
+    ];
+    expect(borders.map(([declaration]) => declaration)).toEqual([
+      'border-top: 1px solid var(--border-subtle);',
+    ]);
+    const divider = contentRule('.br-summary__body > * + .br-summary__section');
+    expect(property(divider, 'border-top')).toBe('1px solid var(--border-subtle)');
+    // Across the card's whole width: it reaches into the body's 12px gutter and gives the
+    // gutter back as padding, so nothing inside the section moves sideways.
+    expect(property(divider, 'margin')).toBe('8px -12px 0');
+    expect(property(divider, 'padding')).toBe('8px 12px 0');
+    // The old per-section gaps are gone: the divider is the one rule that parts them.
+    expect(CONTENT_CODE).not.toMatch(/\.br-summary__details\s*\{/);
+    expect(CONTENT_CODE).not.toMatch(/data-after-todos/);
+    // No fill and no radius anywhere in the content but the popover's own surface.
+    const filled = [...CONTENT_CODE.matchAll(/([^{}]+)\{([^{}]*)\}/g)].filter(([, , body]) =>
+      /(^|[;\s])(background(-color)?|border-radius):/.test(body)
     );
+    expect(filled.map(([, selector]) => selector.replace(/\s+/g, ' ').trim())).toEqual([
+      '.br-summary .br-summary__progress',
+    ]);
     expect(property(contentRule('.br-summary__footer'), 'padding')).toBe('4px');
   });
 
@@ -416,11 +440,17 @@ describe('the subagents keep the summary’s rules', () => {
     }
   });
 
-  it('draws no line: every border it names is a reset', () => {
+  it('draws one line, the inset hairline between two phases; every other border is a reset', () => {
     const borders = [
       ...AGENTS_CSS.matchAll(/border(?:-top|-bottom|-left|-right)?\s*:\s*([^;]+);/g),
     ];
-    for (const [, value] of borders) expect(['0', 'none'], value).toContain(value.trim());
+    const lines = borders.filter(([, value]) => !['0', 'none'].includes(value.trim()));
+    expect(lines.map(([declaration]) => declaration)).toEqual([
+      'border-top: 1px solid var(--border-subtle);',
+    ]);
+    expect(property(agentsRule('.br-agents__phase + .br-agents__phase'), 'border-top')).toBe(
+      '1px solid var(--border-subtle)'
+    );
     expect(AGENTS_CSS).not.toMatch(/outline:(?!\s*none\s*;)[^;]+;/);
   });
 
@@ -430,24 +460,42 @@ describe('the subagents keep the summary’s rules', () => {
     expect(property(rows, 'font-size')).toBe('var(--text-secondary)');
   });
 
-  it('parts its sections from the to-do list and the statistics by 12px of space', () => {
-    expect(property(agentsRule('.br-summary__body > * + .br-agents__section'), 'margin-top')).toBe(
-      '12px'
-    );
-    expect(property(agentsRule('.br-agents__section + .br-agents__section'), 'margin-top')).toBe(
-      '12px'
-    );
+  it('keeps no section spacing of its own: the content’s one divider parts every section', () => {
+    expect(AGENTS_CSS).not.toMatch(/br-agents__section/);
   });
 
-  it('draws a phase as a band of the page ground, parted from the next by the card’s fill', () => {
-    const band = agentsRule('.br-agents__phase');
-    // The control ground: the page ground in the filled card (a fill never sits on a
-    // fill), the fill in the popover, which is the page ground.
-    expect(property(band, 'background-color')).toBe(
-      'var(--br-control-ground, var(--background-fill))'
-    );
-    expect(property(band, 'border-radius')).toBe('var(--radius-element)');
-    expect(property(agentsRule('.br-agents__phase + .br-agents__phase'), 'margin-top')).toBe('4px');
+  /**
+   * The phase cards were white boxes on the grey rail (before/phases-20.png), a box in the
+   * card's box, which the owner named for removal on 2026-11-12. A phase is now a chunk on
+   * the card's ground: its line is its heading, and a hairline inset to the content (the
+   * section divider runs the card's full width) parts it from the phase above.
+   */
+  it('draws a phase as a chunk on the card’s own ground, never a box', () => {
+    const phase = agentsRule('.br-agents__phase');
+    for (const name of ['background', 'background-color', 'border-radius', 'padding']) {
+      expect(property(phase, name), name).toBeNull();
+    }
+    const next = agentsRule('.br-agents__phase + .br-agents__phase');
+    expect(property(next, 'border-top')).toBe('1px solid var(--border-subtle)');
+    expect(property(next, 'margin-top')).toBe('4px');
+    expect(property(next, 'padding-top')).toBe('4px');
+    // Nothing that holds a phase, its grid or its rows names a fill or a radius: a row's hover,
+    // focus and kept fills are the only fills, and they belong to the row.
+    const containers = [
+      ...AGENTS_CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g),
+      ...GRID_CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g),
+    ]
+      .map(([, selector, body]) => ({ selector: selector.replace(/\s+/g, ' ').trim(), body }))
+      .filter(({ selector }) =>
+        /\.br-agents(__phases?|__group-body|__list)?(?![\w-])|\.br-agent-grid(__cells|__item)?(?![\w-])/.test(
+          selector
+        )
+      )
+      .filter(({ selector }) => !/__(row|toggle|more|cell(?!s)|retry|chevron)/.test(selector));
+    expect(containers.length).toBeGreaterThan(0);
+    for (const { selector, body } of containers) {
+      expect(body, selector).not.toMatch(/(^|[;\s])(background(-color)?|border-radius):/);
+    }
   });
 
   it('labels a section in the app’s one caps style, at the supporting size', () => {

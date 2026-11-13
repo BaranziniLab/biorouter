@@ -151,6 +151,11 @@ export interface ChatSummaryProps {
    * offers no Make workflow and Decisions no Monitors button.
    */
   decisionChat?: boolean;
+  /**
+   * A subagent's own chat: its figures' section says "Subagent chat", so the
+   * summary reads as the subagent's conversation, not its parent's.
+   */
+  subagentChat?: boolean;
   onWorkflow: () => void;
   onDiagnostics: () => void;
 }
@@ -161,8 +166,10 @@ export interface ChatSummaryProps {
  * popover draw exactly this, so the two read as one component.
  *
  * A scrolling body over a pinned footer, in two type sizes (13 for rows and
- * actions, 12 for labels and counts). There is no "no tasks" sentence: with no
- * list, the statistics simply come first.
+ * actions, 12 for labels and counts). The body is sections, never boxes: each
+ * opens on its small muted heading, and a hairline parts it from the one above
+ * (`summary/chatSummary.css`). There is no "no tasks" sentence: with no list,
+ * the statistics simply come first.
  */
 export function ChatSummary({
   toolCalls,
@@ -176,6 +183,7 @@ export function ChatSummary({
   chatModel = null,
   privacyTier = null,
   decisionChat = false,
+  subagentChat = false,
   onWorkflow,
   onDiagnostics,
 }: ChatSummaryProps) {
@@ -193,6 +201,7 @@ export function ChatSummary({
   // heading carries the token figure.
   const [detailsOpen, setDetailsOpen] = useSectionToggle(false);
   const detailsId = useId();
+  const detailsLabel = subagentChat ? summaryCopy.subagentDetails : summaryCopy.details;
   const completed = items.filter((item) => item.status === 'completed').length;
   const statsPending =
     toolCalls === null || billedTokens === null || artifacts === null || codeDelta === null;
@@ -334,12 +343,9 @@ export function ChatSummary({
             closed by default, whose heading carries the token figure. A
             decision chat calls no tools and writes no files, so it holds Tokens
             only (B-3), with its model. */}
-        <section
-          aria-label={summaryCopy.details}
-          className="br-summary__section br-summary__details"
-        >
+        <section aria-label={detailsLabel} className="br-summary__section br-summary__details">
           <SummarySectionHeading
-            label={summaryCopy.details}
+            label={detailsLabel}
             count={billedTokens ? summaryCopy.detailsSummary(billedTokens) : undefined}
             open={detailsOpen}
             onOpenChange={setDetailsOpen}
