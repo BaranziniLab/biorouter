@@ -1,18 +1,18 @@
 # Workspace Control tool reference
 
-> **What this is.** The precise reference for the eight tools the Workspace Control capability puts in the model's tool list: exact name, arguments, return shape, refusal conditions, and the cases where a tool reports success it did not earn.
+> **What this is.** The precise reference for the tools the Workspace Control capability puts in the model's tool list (ten `workspace_*` tools and `subagent`): exact name, arguments, return shape, refusal conditions, and the cases where a tool reports success it did not earn.
 > **Status:** Current. Two false-success paths and one dead GUI frame are documented in place — see [`subagent`](#subagent) and [`workspace_close`](#workspace_close).
 > **Audience:** developers working on the agent loop, and anyone diagnosing a workspace tool that behaved unexpectedly.
 
 Workspace Control (`workspace`, identifier `Workspace`, display name **Workspace Control**) is a platform extension whose tools operate on BioRouter *sessions* — other conversations — rather than on files or the network. This page is the per-tool contract. It is written for the moment a tool misbehaves and you need to know what it actually promises, so it prefers exact strings and named source paths over explanation. For the user-facing account of what the extension is for, when the tiers differ, and what the confirmation cards say, read [the Workspace Control capability guide](../extensions/built-in/workspace.md) first.
 
-Everything below is read off `crates/biorouter/src/agents/workspace_extension.rs` (the seven `workspace_*` tools), `crates/biorouter/src/agents/subagent_tool.rs` (`subagent`), `crates/biorouter/src/agents/workspace_inspector.rs` (the always-confirm rule), and `ui/desktop/src/components/chatGroups/workspaceCommandPlanner.ts` (what the renderer does with a frame).
+Everything below is read off `crates/biorouter/src/agents/workspace_extension.rs` (the `workspace_*` tools), `crates/biorouter/src/agents/orchestration_plan.rs` (the phase plan `workspace_orchestrate` edits), `crates/biorouter/src/agents/subagent_tool.rs` (`subagent`), `crates/biorouter/src/agents/workspace_inspector.rs` (the always-confirm rule), and `ui/desktop/src/components/chatGroups/workspaceCommandPlanner.ts` (what the renderer does with a frame).
 
 ## Conventions that apply to every tool
 
-**The name the model sees is prefixed, and for seven of the eight that is the only spelling that works.** Extension tools reach dispatch as `{extension}__{tool}`, so the model's tool list holds `workspace__workspace_list`, `workspace__workspace_read_conversation`, and so on — `subagent` included, as `workspace__subagent`.
+**The name the model sees is prefixed, and for every tool but `subagent` that is the only spelling that works.** Extension tools reach dispatch as `{extension}__{tool}`, so the model's tool list holds `workspace__workspace_list`, `workspace__workspace_read_conversation`, and so on — `subagent` included, as `workspace__subagent`.
 
-For the seven `workspace_*` tools the prefixed form is the **only dispatchable spelling**. `ExtensionManager::dispatch_tool_call` does repair a stripped prefix, but only for a hardcoded three: `execute_code`, `read_module`, `search_modules`, and only when a `code_execution` extension is loaded. Everything else keeps the name it arrived with, and the next step is fatal to a bare workspace name: `get_client_for_tool` matches a client by `prefixed_name.starts_with(key)`, so a bare `workspace_close` *does* find the `workspace` client, but dispatch then strips the client name and requires a `__` separator — `"workspace_close".strip_prefix("workspace")` yields `_close`, the `__` strip fails, and the call dies with `Invalid tool name format: 'workspace_close'`.
+For the `workspace_*` tools the prefixed form is the **only dispatchable spelling**. `ExtensionManager::dispatch_tool_call` does repair a stripped prefix, but only for a hardcoded three: `execute_code`, `read_module`, `search_modules`, and only when a `code_execution` extension is loaded. Everything else keeps the name it arrived with, and the next step is fatal to a bare workspace name: `get_client_for_tool` matches a client by `prefixed_name.starts_with(key)`, so a bare `workspace_close` *does* find the `workspace` client, but dispatch then strips the client name and requires a `__` separator — `"workspace_close".strip_prefix("workspace")` yields `_close`, the `__` strip fails, and the call dies with `Invalid tool name format: 'workspace_close'`.
 
 Only `subagent` tolerates both spellings, and not at dispatch: `is_spawn_tool_call` (`agent.rs`) matches `subagent` and `workspace__subagent` alike, and `Agent::dispatch_tool_call` intercepts either form before the extension manager ever sees it. The bare names that appear in `is_workspace_tool_refused_for` and `is_parking_workspace_tool` are defensive *classification* — they make the subagent refusal and the parking exemption hold whatever spelling arrives — not evidence of a second dispatch path.
 
@@ -30,6 +30,10 @@ This page uses the bare names for readability.
 | `workspace_close.scope` | **Refused** — `unknown scope '…' (tab \| turn \| agent)` |
 | `workspace_send_prompt.mode` | **Refused** — `unknown mode '…' (turn \| steer \| note)` |
 | `workspace_watch.mode` | **Refused** — `unknown mode '…' (any \| all)` |
+| `workspace_orchestrate.action` | **Refused**, naming the five actions |
+| `workspace_orchestrate.status` | **Refused**, naming `completed`, `blocked` and `skipped` |
+| `workspace_monitor.action` | **Refused**: `Unknown action "…". Use "list", "add" or "remove".` |
+| `workspace_orchestrate.phases[].kind` | **Silently recorded as `other`**; common verb forms such as `implement` or `verify` map to their kind |
 | `workspace_list.scope` | **Silently treated as `open`**, and echoed back verbatim in the payload's `scope` field |
 | `workspace_read_conversation.view` | **Silently treated as `transcript`** |
 | `workspace_send_prompt.wait` | **Silently treated as no-wait**; only the exact string `final_message` parks |
@@ -38,7 +42,7 @@ This page uses the bare names for readability.
 
 ⚠ **That exemption list is not the list of everything that parks.** `code_execution__execute_code` parks too — a script's own tool calls raise approval cards — and it is deliberately absent from it: unlike these two it is not a do-nothing wrapper, and with the Code Execution capability on it is very nearly the only tool the model calls, so exempting it would leave the semaphore bounding nothing. It releases the permit for the parked interval only, through `tool_dispatch_limits::DispatchPermitHandle::while_parked`. A new parking tool has to pick one of those two shapes deliberately; neither is the default.
 
-**Subagents are refused all seven `workspace_*` tools.** `is_workspace_tool_refused_for` (`agent.rs`) enumerates them and refuses when the calling session's type is `SubAgent`, in both the prefixed and bare name forms. `subagent` itself is refused inside a subagent by `is_spawn_tool_call`, so a child cannot spawn grandchildren.
+**Subagents are refused every `workspace_*` tool**, `workspace_orchestrate` and `workspace_monitor` included. `is_workspace_tool_refused_for` (`agent.rs`) enumerates them and refuses when the calling session's type is `SubAgent`, in both the prefixed and bare name forms. `subagent` itself is refused inside a subagent by `is_spawn_tool_call`, so a child cannot spawn grandchildren.
 
 **What a missing daemon costs.** `workspace_services::get()` returns `None` in a process with no daemon (a plain `biorouter` terminal session). Each tool's entry names its own refusal; the summary is:
 
@@ -51,6 +55,8 @@ This page uses the bare names for readability.
 | `workspace_set_tools` | Extensions, skills and provider work; `set_knowledge_bases` refuses |
 | `workspace_close` | `tab` is a stated no-op; `turn` and `agent` refuse |
 | `workspace_open` | `session_id` form reports the session with no tab; `new` refuses |
+| `workspace_orchestrate` | Works: it reads and writes only the caller's own session row |
+| `workspace_monitor` | Works: it reads and writes the subagent's monitors in the session store |
 | `subagent` | Works, headless (no tab) |
 
 ## One worked sequence
@@ -71,13 +77,12 @@ Every tool below is documented in isolation, but they are meant to compose. This
 {
   "instructions": "Run the crate's test suite and report every failing test with its assertion message.",
   "extensions": ["developer"],
-  "background": true,
-  "visible": true,
+  "role": "test runner",
   "placement": "split"
 }
 ```
 
-`background: true` returns immediately with a handle message naming the child's **session id** — that is the id every subsequent call takes, not the handle id. If `BIOROUTER_SUBAGENT_BACKGROUND` is off, this argument is silently ignored and the call blocks instead, so read the result text rather than assuming.
+Every spawn from the agent loop runs in the background and returns immediately with a handle message naming the child's **session id**. That is the id every subsequent call takes, not the handle id. Without `placement` (or `visible: true`) no tab opens: the child is listed in the chat's side panel, unless "Open subagent tabs automatically" is on.
 
 **3. Park until it finishes**, instead of polling:
 
@@ -537,13 +542,95 @@ To start parallel work **the user** should be able to see, and to bring an exist
 
 ---
 
+## `workspace_orchestrate`
+
+The phase plan of a staged delegation. One tool with an `action`, because the plan is one record (`orchestration_plan.v1` in the caller's `extension_data`) and every action is a small edit of it. It is offered exactly where `subagent` is: the auto-injected grant lists it, and `Agent::list_tools_for` strips it with the spawn tool when the delegation gate is closed. A Claude Code or Codex parent reaches it over the coding-agent tool bridge, on the same terms as `subagent`. The full account is [Orchestration phases](orchestration-phases.md).
+
+### Arguments
+
+| Name | Type | Used by | Meaning |
+|---|---|---|---|
+| `action` | string | all | `plan`, `start`, `handoff`, `complete` or `read`. Required. |
+| `title` | string | `plan` | The plan's title, at most 80 characters. Required for a new plan; kept when a revision omits it. |
+| `goal` | string | `plan` | What the plan must achieve, at most 500 characters. |
+| `phases` | object[] | `plan` | Every phase, in order, at most 12: `id` (slug `[a-z0-9-]{1,40}`), `title`, `kind`, `goal`, `depends_on` (ids of earlier phases only), an optional `gate` (`questions`, `threshold` of at least 0.50, `max_attempts`, `model`, `allow_uncalibrated`) and optional `monitors` (at most 4, the `subagent` tool's monitor shape) that every subagent spawned into the phase starts with. |
+| `phase` | string | `start`, `handoff`, `complete` | The phase id. |
+| `summary` | string | `handoff`, `complete` | The results the phase carries forward, at most 4,000 characters. |
+| `status` | string | `complete` | `completed` (default), `blocked` or `skipped`. |
+| `fresh` | boolean | `plan` | `true` replaces a finished plan (every phase completed or skipped) with a new one whose phases start empty. The way to further phased work once a plan has reached its 64-subagent or 12-phase limit. |
+
+### Refusals
+
+- `plan`: a missing title on a new plan, no phases or more than 12, an id that is not a slug or appears twice, a dependency that is not an earlier phase or is the phase itself, a text over its bound, or a revision that drops a phase which already ran subagents. With `fresh:true`, a plan that still has an open phase, which the refusal names.
+- `start` on a completed or skipped phase.
+- `complete` on a phase that is already completed or skipped, and, as the barrier, on a phase with any subagent queued, running or being cancelled. That refusal lists the active subagents and the `workspace_watch` call (`mode: "all"`) that waits for them. It is also refused when a subagent was recorded into the phase after its subagents' states were read, and while a `subagent` call into the phase has not returned (a background child not yet registered, or a blocking child still running), or when one began while the call ran.
+- Any action but `plan` and `read` on a chat with no plan, and any unknown phase id, which is answered with the plan's phase ids.
+- Gates bind the agent, whoever set them ([Decision gates](orchestration-phases.md#decision-gates)). `plan` is refused when it changes or removes a stored gate ("Phase "build" already has a gate, and a revision cannot change or remove a gate. …"), drops an open gated phase, changes an open gated phase's title, goal or kind, moves a phase ahead of the open gate it waits for, or declares a gate below 0.50. `start`, a spawn and `complete` as `completed` are refused on a phase an earlier open gate holds, with the hold named. `complete` as `skipped` is refused on a gated phase unless the person's skip stands, as `completed` while it stands, and as `completed` after the gate failed every attempt ("Phase "build"'s gate failed all 3 attempts, so the phase cannot be completed through it. … Nothing was changed.").
+- A gate or phase monitor whose model this chat may not use: "Phase "build"'s gate cannot be answered in this chat: …. Declare it without that model, or ask the person to set a decision model this chat may use. Nothing was changed." and "Phase "build"'s monitor 'Off task' cannot run in this chat: …. Nothing was changed." A check that cannot be made just then is accepted with a note instead. A plan changed by the person while its additions were checked: "This chat's plan changed while its gates and monitors were being checked, so they were not checked against the plan as it is now. Call action "plan" again. Nothing was changed."
+
+A refusal writes nothing. A completion the person's standing pass allows closes the phase without asking its gate.
+
+When `complete` composes a hand-off because none was written, a subagent whose conversation is more private than the caller's contributes no result line: its line reads "(result withheld)", and both the hand-off and the reply say how many results were withheld. See [Orchestration phases](orchestration-phases.md#a-subagent-more-private-than-its-parent).
+
+### Returns
+
+Text: a sentence for the action, then the plan, one line per phase with its kind, title, status and progress (`2/3 done, 1 running`), its subagents and the first line of its hand-off. `structured_content` carries the `OrchestrationSnapshot`, the same object `GET /sessions/{session_id}/subagents` returns as `plan`. `read` on a chat with no plan is a success that says so, with no structured content.
+
+### When to reach for it
+
+Only when the user asks for a multi-phase or workflow-style run, or a plan with stages. A simple delegation is `subagent` alone.
+
+---
+
+## `workspace_monitor`
+
+Decision-model monitors on a subagent this chat spawned: list them, put new ones on it, or take off the ones this chat's agent set. It is in the auto-injected delegation grant beside `subagent`, and reachable over the coding-agent tool bridge, where it is held to direct children. Unlike `subagent` and `workspace_orchestrate`, it is not stripped when the delegation gate closes, because it reaches only children that already exist. A subagent is refused it. The full account of monitors on subagents is in [Decision models](decision-models.md#monitors-on-subagents).
+
+### Arguments
+
+| Name | Type | Used by | Meaning |
+|---|---|---|---|
+| `action` | string | all | `list`, `add` or `remove`. Required. |
+| `session_id` | string | all | The subagent: a conversation this chat spawned. |
+| `monitors` | object[] | `add` | 1 to 4 monitors: `name`, optional `id`, `question` (yes/no), `watch` (`yes` or `no`), `threshold`, `action` (`stop` or `steer`), `timing` (`each_step` or `turn_end`), optional `model` as `provider/model`, `consecutive`, `on_error`, `max_checks`. Naming the id of a monitor this chat set replaces it. |
+| `ids` | string[] | `remove` | The ids of monitors this chat set, as `list` shows them. |
+
+### Gates, in order
+
+1. **Direct child only.** The target must be the caller's direct subagent, read from the durable parent link whatever the grant's child scope says. Any other target gets the one out-of-reach sentence the privacy matrix gives, so the answer says nothing about a chat out of reach.
+2. **Reach.** `list` needs read reach; `add` and `remove` need write reach.
+3. **First crossing.** An `add` from a chat on a model inside the institution into a public subagent is a first crossing: the person sees the lock card with each monitor shown as "add monitor 'Name' (id x): question", in every permission mode, once per (chat, subagent) pair, and the pair shares its ledger with `workspace_send_prompt` and `workspace_set_tools`. From inside `execute_code` such a call is refused, with the advice to call `workspace_monitor` directly instead. `list` and `remove` never ask.
+4. **The model.** Each monitor's model is checked against the subagent's chat, the way a saved monitor is, with nothing of the chat sent ([What a save checks](decision-models.md#what-a-save-checks)).
+5. **Ownership and limits.** `settings::apply_agent_edit` writes all or nothing: a subagent holds at most 4 monitors set by an agent within 8 in all, and a change to a monitor the person set, or another chat's agent set, is refused.
+
+### Returns
+
+- **`add`**: "Monitor 'Off task' is on subagent 20261106_2, set by you: it stops the subagent when P(yes) reaches 0.80, checked after each of its steps with ollama_decision/tev1:0.8b. A running subagent applies it from its next check." The clause follows the monitor: "steers the subagent", P(no) for a `watch: no` monitor, "checked once, when its turn is about to end" for `turn_end`, and "{model} (its default decision model)" for one that names no model.
+- **`remove`**: "Removed monitor `off-task` from subagent 20261106_2. A running subagent stops checking it from its next check."
+- **`list`**: "Subagent 20261106_2 has 2 monitors:", then one line each ("- 'Off task' (`off-task`), set by you: it …", with ", turned off" when it is off), the subagent's default decision model, and "You may change or remove only the monitors set by you; tell the person if one of theirs should change." Each line names its owner: "set by you", "set by another chat's agent", "set by the person through this chat's monitors that also watch subagents" (or "through another chat's monitors"), or "set by the person".
+
+`structured_content` is `{kind: "workspace_monitor", sessionId, defaultModel, monitors}`, each monitor its stored record plus `owner` (`you`, `another_agent`, `person_from_this_chat`, `person_from_another_chat` or `person`), `ownerPhrase` and `yours`.
+
+### Refusals
+
+- A model the subagent may not use: "Monitor 'Off task' cannot run on subagent 20261106_2: …. Nothing was changed."
+- A model that is not listed: "baseten_decision/joey-9 is not a decision model this subagent can use. Call decision_models to list the ones it can."
+- No model at all: the cause ends "Ask the user to install one:" and the install advice, because the agent cannot install a model.
+- A count outside 1 to 4, a missing `ids`, an id this chat did not set, or a change to someone else's monitor, each with its own sentence ending "Nothing was changed."
+
+### When to reach for it
+
+When a subagent's work needs a decision model watching it: a stop on a risk, or a steer back to the task. The parent can set the same monitors at spawn with the `subagent` tool's `monitors` field.
+
+---
+
 ## `subagent`
 
 The one spawn tool, advertised by this extension under its pre-existing bare name (`SUBAGENT_TOOL_NAME = "subagent"`).
 
 > **Advertised here, dispatched elsewhere.** The agent loop intercepts the call before it reaches the extension (`is_spawn_tool_call` in `agent.rs`), because dispatch needs the parent's `TaskConfig` — provider, extensions, working dir — which only `Agent::dispatch_tool_call` holds. The extension's own `call_tool` arm exists but returns `` `subagent` is dispatched by the agent loop, not by this extension ``, and is reachable only if that interception is ever removed. If you see that string in a transcript, the interception is broken.
 
-This is also why `subagent` works in a terminal `biorouter session` with no `workspace` extension enabled: `Agent::reply` → `prepare_tools_and_prompt` → `list_tools` → `ensure_spawn_extension` loads a restricted delegation surface for any session where delegation is permitted. That surface includes `subagent` plus `workspace_watch`, `workspace_read_conversation`, and `workspace_close`, so the parent can monitor, collect, and stop its own child. It does not include broad listing, steering, tool mutation, or session creation.
+This is also why `subagent` works in a terminal `biorouter session` with no `workspace` extension enabled: `Agent::reply` → `prepare_tools_and_prompt` → `list_tools` → `ensure_spawn_extension` loads a restricted delegation surface for any session where delegation is permitted. That surface is `subagent`, `workspace_orchestrate`, `workspace_monitor`, `workspace_list`, `workspace_send_prompt`, `workspace_watch`, `workspace_read_conversation` and `workspace_close`, so the parent can plan phases, put decision-model monitors on its children, watch, collect and stop them, and find and write into other conversations it can see. It does not include tool mutation (`workspace_set_tools`), session creation (`workspace_open`) or the preview panel.
 
 ### Arguments
 
@@ -555,9 +642,12 @@ This is also why `subagent` works in a terminal `biorouter session` with no `wor
 | `extensions` | string[] | — | Omit to inherit all; `[]` for none. |
 | `settings` | object | — | `{ provider, model, temperature }` overrides. |
 | `summary` | bool | `true` | Return only the child's final summary. |
-| `visible` | bool | — | Show the child in its own tab. Defaults to true when a GUI is attached. `false` forces a silent run. |
-| `placement` | string | `"tab"` | `tab` \| `split` \| `window`, validated before a session is created. |
-| `background` | bool | `false` | **Advertised only when `background_enabled()`** — the config parameter `BIOROUTER_SUBAGENT_BACKGROUND`. Passing it while the flag is off is silently ignored and the call blocks as usual. |
+| `visible` | bool | unset | `true` asks for a tab. Unset means no tab: the child is listed in the chat's side panel, unless "Open subagent tabs automatically" (`BIOROUTER_WORKSPACE_OPEN_SUBAGENT_TABS`) is on. `false` runs it with no tab and no badge. With "Never open tabs automatically" on, no tab opens even for `true`: the user gets a notification instead. |
+| `placement` | string | `"tab"` | `tab` \| `split` \| `window`, validated before a session is created. Passing it with `visible` unset asks for a tab. |
+| `phase` | string | — | A phase id from the chat's `workspace_orchestrate` plan. Checked before a child session exists; an unknown or closed phase, or a chat with no plan, is refused. Checked again when the child is recorded into the phase, before it runs: a phase closed or dropped in between, or a plan that has meanwhile reached its 64 subagents, refuses the spawn and deletes the new child session. The child receives the hand-offs that phase depends on. See [Orchestration phases](orchestration-phases.md). |
+| `role` | string | — | A short label for what the child does, shown beside it on every surface. Control characters are dropped and it is cut at 40 characters. |
+| `monitors` | object[] | — | At most 4 decision-model monitors the child starts with, as `workspace_monitor` takes them, stored as monitors this chat's agent set. Checked against this chat's tier before anything is created; a refusal names the monitor and ends "Nothing was started." The child also starts with copies of this chat's "also watch subagents" monitors, a sub-workflow's monitors and its phase's. A sub-workflow that declares an `orchestration_plan` cannot be spawned. |
+| `background` | bool | — | Kept for persisted workflows. A spawn from the agent loop is always background, whatever is passed. |
 
 ### Concurrency limits
 
@@ -571,13 +661,11 @@ Three separate bounds, all env-tunable:
 
 The tab cap is claimed and checked under one lock (`VisibleChildGuard::try_claim`), because subagent dispatch is deliberately excluded from the tool-dispatch semaphore and a parallel fan-out would otherwise all read zero and all claim. The slot is released when the child's run ends, so a parent that spawns four, waits, and spawns four more gets tabs both times — it bounds the burst, not the total.
 
-A downgraded child is told to the parent through `ChildVisibility::parent_note`, appended to the tool result: `Subagent {id} is running in the background: you already have 4 subagent tabs open, which is the limit. It is listed in History under this conversation and you can read it with workspace_read_conversation.` The announce-only case gets its own note in the same place. `visible: false` and headless get no note — those are what the caller asked for or already knows.
+A downgraded child is told to the parent through `ChildVisibility::parent_note`, appended to the tool result: `Subagent {id} is running in the background: you already have 4 subagent tabs open, which is the limit. It is listed in this chat's side panel and in History under this conversation, and you can read it with workspace_read_conversation.` The announce-only case, the background default and a child with no desktop window attached each get their own note in the same place. `visible: false` alone gets no note, because it is what the caller asked for.
 
 ### Returns
 
-Blocking (the default): the subagent result envelope — the child's final summary when `summary: true` — with the visibility note appended when there is one.
-
-Background: an immediate handle message naming both ids and the three follow-ups, plus `structured_content` carrying the handle snapshot:
+A spawn from the agent loop always takes the background path (`handle_subagent_tool` forces it), so it answers at once with a handle message naming both ids and the three follow-ups, plus `structured_content` carrying the handle snapshot. The blocking shape (the subagent result envelope, with the visibility note appended) remains only for a caller that does not force background.
 
 ```text
 Subagent started in the background (handle `…`, session `…`). It keeps working while you do.
@@ -620,6 +708,7 @@ Two names are retired and pinned as such by `RETIRED_TOOL_NAMES`: `subagent_stat
 ## Related documentation
 
 - [Session metadata contract](session-metadata-contract.md) — the ID, kind, parent and subagent-run identity every one of these tools resolves against.
+- [Orchestration phases](orchestration-phases.md): the plan `workspace_orchestrate` edits, the barrier, the hand-offs, and how each interface shows a plan.
 - [Workspace control](workspace-control.md) — the task-oriented guide: laying work out across tabs, panes and windows, and the caps you meet in practice.
 - [Workspace Control capability](../extensions/built-in/workspace.md) — the user-facing guide: the two tiers, how to enable the full surface, the confirmation card, focus etiquette, and the CLI capability table.
 - [Subagents](subagents.md) — the glass-box tab, `human_intervened`, and what closing a child's tab does and does not do.

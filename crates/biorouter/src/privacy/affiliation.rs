@@ -1203,10 +1203,29 @@ pub fn dictionary_row_allowlists(stored: Option<&[String]>) -> Vec<ExtensionAffi
     }
 }
 
+/// Whether a model with this affiliation runs on this computer
+/// ([`ModelAffiliation::Local`]), so nothing it reads leaves the device.
+///
+/// The Crew rule for decision models asks exactly this: a chat under a Crew
+/// grant may be read by a decision model that runs here and by no other
+/// (DR-26). It lives here, beside [`compatible`], so the census in
+/// `tests/privacy_capability.rs` keeps every affiliation comparison in this
+/// file. `None` (an unstated affiliation) does not run here.
+pub fn runs_on_this_computer(model: Option<&ModelAffiliation>) -> bool {
+    matches!(model, Some(ModelAffiliation::Local))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::BTreeSet;
+
+    #[test]
+    fn only_a_local_model_runs_on_this_computer() {
+        assert!(runs_on_this_computer(Some(&ModelAffiliation::Local)));
+        assert!(!runs_on_this_computer(Some(&bound("ucsf"))));
+        assert!(!runs_on_this_computer(None));
+    }
 
     fn inst(s: &str) -> InstitutionId {
         InstitutionId::new(s)

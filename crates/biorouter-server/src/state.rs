@@ -1,11 +1,12 @@
 use axum::http::StatusCode;
+use biorouter::decision::DecisionService;
 use biorouter::execution::manager::AgentManager;
 use biorouter::scheduler_trait::SchedulerTrait;
 use biorouter::session::SessionManager;
 use biorouter_mcp::knowledge::service::KnowledgeService;
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, Notify};
 use tokio::task::JoinHandle;
@@ -917,6 +918,12 @@ pub struct AppState {
     /// (PR-15, DD-27 to DD-32): one table per daemon, so each test's `AppState`
     /// starts with its own limits.
     pub dictation: Arc<crate::routes::dictation::DictationStreams>,
+    /// The decision service the daemon's own doors ask when they check a
+    /// decision model for a chat: `POST /agent/start` seeding a workflow's
+    /// monitors and phase gates. The process's ([`biorouter::decision::global`])
+    /// unless a test installed its own with [`Self::set_decision_service`], so
+    /// no route test reaches a model.
+    decision_service: Arc<StdRwLock<&'static DecisionService>>,
 }
 
 impl AppState {
@@ -937,6 +944,7 @@ impl AppState {
             extension_loading_tasks: Arc::new(Mutex::new(HashMap::new())),
             knowledge_service,
             dictation: Arc::new(crate::routes::dictation::DictationStreams::default()),
+            decision_service: Arc::new(StdRwLock::new(biorouter::decision::global())),
         });
         // DD-32: the dictation worker takes half its threads while a loopback Ollama
         // generates in this daemon; only the daemon knows its live turns.
@@ -1013,6 +1021,7 @@ impl AppState {
             extension_loading_tasks: Arc::new(Mutex::new(HashMap::new())),
             knowledge_service,
             dictation: Arc::new(crate::routes::dictation::DictationStreams::default()),
+            decision_service: Arc::new(StdRwLock::new(biorouter::decision::global())),
         }))
     }
 
@@ -1985,6 +1994,29 @@ impl AppState {
 
     pub fn session_manager(&self) -> &SessionManager {
         self.agent_manager.session_manager()
+    }
+
+    /// The decision service this daemon's doors check decision models with
+    /// (see the field). Read per request, so a test's
+    /// [`Self::set_decision_service`] applies to the next one.
+    pub fn decision_service(&self) -> &'static DecisionService {
+        *self
+            .decision_service
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Ask `service` instead of the process's decision service. For tests and
+    /// embedders that bring their own decision models; production never calls
+    /// it.
+    // The integration tests reach it through the lib; the `biorouterd`
+    // binary compiles this module too and never does.
+    #[allow(dead_code)]
+    pub fn set_decision_service(&self, service: &'static DecisionService) {
+        *self
+            .decision_service
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = service;
     }
 
     pub async fn mark_workflow_run_if_absent(&self, session_id: &str) -> bool {

@@ -6,6 +6,7 @@ import { readComposerHandOff, useComposerHandOff } from '../composer/composerHan
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import { SegmentedControl, type SegmentedOption } from '../ui/segmented-control';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { useSurfaceTriggerHint } from '../ui/surfaceTriggerHint';
 import { ExtensionsPanel, useExtensionPicker } from './BottomMenuExtensionSelection';
 import { KnowledgePanel, useKnowledgePicker } from './BottomMenuKnowledgeSelection';
 import { SkillsPanel, useSkillPicker } from './BottomMenuSkillSelection';
@@ -162,6 +163,8 @@ export function ToolsChip({ sessionId, handOffKey }: ToolsChipProps) {
     : settled !== null && (settled.chat === chat || (settled.chat === null && chat !== null))
       ? settled.counts
       : null;
+  // The counts hint names the chip on a hover and never comes back over the open popover (H2).
+  const hint = useSurfaceTriggerHint(open);
   const onOpenChange = (next: boolean) => {
     setOpen(next);
     if (!next) {
@@ -173,8 +176,8 @@ export function ToolsChip({ sessionId, handOffKey }: ToolsChipProps) {
 
   return (
     <Popover open={open} onOpenChange={onOpenChange}>
-      <Tooltip>
-        <TooltipTrigger asChild>
+      <Tooltip {...hint.tooltip}>
+        <TooltipTrigger asChild {...hint.trigger}>
           <PopoverTrigger asChild>
             <button
               type="button"

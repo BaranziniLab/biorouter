@@ -12,6 +12,12 @@ use super::Agent;
 pub const COMPACT_TRIGGERS: &[&str] =
     &["/compact", "Please compact this conversation", "/summarize"];
 
+/// What `/compact` answers in a decision chat, where there is nothing to
+/// compact.
+pub const DECISION_CHAT_COMPACT_NOTICE: &str =
+    "This chat's model is a decision model, so there is no context to compact: each message is \
+     asked on its own.";
+
 pub struct CommandDef {
     pub name: &'static str,
     pub description: &'static str,
@@ -77,6 +83,24 @@ fn workflow_parameter_guidance(command: &str, path: &std::path::Path, names: &[S
         • **CLI:** Pass the workflow file at {} to `biorouter run --workflow` and supply a `--params KEY=VALUE` argument for each parameter.\n\
         • **Desktop:** Launch from the workflows sidebar to fill in parameters",
         names.len(), names.join(", "), path.display()
+    )
+}
+
+/// What a slash command answers when its workflow declares monitors or a
+/// phase plan (`decision_settings`, `orchestration_plan`).
+///
+/// Those blocks are seeded once, into a NEW chat, by the doors that start a
+/// workflow in its own chat (`POST /agent/start`, `biorouter run --workflow`,
+/// a schedule). A slash command runs the workflow inside a chat that already
+/// exists, which cannot take them: merging them would land under the
+/// person's own monitors, and nothing proves a person sent the command. So it
+/// is refused before anything is sent, with the way to run it.
+fn supervised_slash_workflow_refusal(command: &str, path: &std::path::Path) -> String {
+    format!(
+        "/{command} declares monitors or a phased plan, which apply only when the workflow \
+         starts its own chat. Start it from Workflows in the app or with \
+         `biorouter run --workflow {}`; nothing was sent.",
+        path.display()
     )
 }
 
@@ -225,6 +249,15 @@ impl Agent {
         &self,
         session_config: &SessionConfig,
     ) -> Result<Option<Message>> {
+        // A decision chat asks each message on its own, so it has no running
+        // context, and its model cannot write a summary: answer before any
+        // compaction runs.
+        if self.bound_decision_chat_provider().await.is_some() {
+            return Ok(Some(Message::assistant().with_system_notification(
+                SystemNotificationType::InlineMessage,
+                DECISION_CHAT_COMPACT_NOTICE,
+            )));
+        }
         let session_id = session_config.id.as_str();
         let manager = self.config.session_manager.clone();
         let (session, basis) = manager.snapshot_for_rewrite(session_id).await?;
@@ -439,6 +472,16 @@ impl Agent {
             )
             .map_err(|e| anyhow!("Failed to parse workflow: {}", e))?;
 
+        // Item 8: a slash command never seeds a workflow's supervision; it
+        // refuses one that declares any, before a parameter is read or a
+        // message is built.
+        if crate::workflow::supervision::declares_supervision(&validation_result) {
+            return Err(anyhow!(supervised_slash_workflow_refusal(
+                command,
+                &workflow_path
+            )));
+        }
+
         let param_values: Vec<String> = if params_str.is_empty() {
             vec![]
         } else {
@@ -540,6 +583,87 @@ mod slash_command_audit_tests {
         assert!(!guidance.contains("--workflow review"));
     }
 
+    /// Item 8: a slash command runs its workflow in a chat that already
+    /// exists, which a workflow's monitors and phase plan never reach. One
+    /// that declares either is refused with the way to run it, and nothing is
+    /// built to send; the same command bound to a workflow without them still
+    /// runs, so the refusal is the blocks' and not the binding's.
+    #[tokio::test]
+    async fn a_slash_workflow_with_supervision_is_refused_with_the_way_to_run_it() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let head = "version: 1.0.0\ntitle: Count\ndescription: probe\n\
+                    prompt: Echo the numbers 1 to 30, one echo per tool call.\n";
+        let monitored = dir.path().join("monitored.yaml");
+        std::fs::write(
+            &monitored,
+            format!(
+                "{head}decision_settings:\n  monitors:\n  - id: reached-ten\n    \
+                 name: Reached ten\n    question:\n      \
+                 instructions: Has the agent already echoed 10 or a larger number?\n      \
+                 kind: {{binary: {{}}}}\n    threshold: 0.7\n    action: stop\n    \
+                 onError: pause\n"
+            ),
+        )
+        .unwrap();
+        let phased = dir.path().join("phased.yaml");
+        std::fs::write(
+            &phased,
+            format!(
+                "{head}orchestration_plan:\n  title: Count plan\n  phases:\n  \
+                 - {{id: count, title: Count, kind: research}}\n"
+            ),
+        )
+        .unwrap();
+        let plain = dir.path().join("plain.yaml");
+        std::fs::write(&plain, head).unwrap();
+        let bindings = serde_json::json!([
+            {"command": "monitoredwf", "workflow_path": monitored},
+            {"command": "phasedwf", "workflow_path": phased},
+            {"command": "plainwf", "workflow_path": plain},
+        ])
+        .to_string();
+        let overrides = std::collections::HashMap::from([("SLASH_COMMANDS".to_string(), bindings)]);
+
+        let agent = Agent::new();
+        let config: SessionConfig =
+            serde_json::from_value(serde_json::json!({"id": "slash-supervised"})).unwrap();
+        let (monitored_answer, phased_answer, plain_answer) =
+            crate::config::with_config_overrides(overrides, async {
+                (
+                    agent.execute_command("/monitoredwf", &config).await,
+                    agent.execute_command("/phasedwf", &config).await,
+                    agent.execute_command("/plainwf", &config).await,
+                )
+            })
+            .await;
+
+        for (command, path, answer) in [
+            ("monitoredwf", &monitored, monitored_answer),
+            ("phasedwf", &phased, phased_answer),
+        ] {
+            let error = answer.expect_err("a supervised slash workflow is refused");
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "/{command} declares monitors or a phased plan, which apply only when the \
+                     workflow starts its own chat. Start it from Workflows in the app or with \
+                     `biorouter run --workflow {}`; nothing was sent.",
+                    path.display()
+                )
+            );
+        }
+        let message = plain_answer
+            .expect("a workflow without supervision still runs")
+            .expect("its prompt is sent");
+        assert_eq!(message.role, rmcp::model::Role::User);
+        assert!(
+            message
+                .as_concat_text()
+                .contains("Echo the numbers 1 to 30"),
+            "{message:?}"
+        );
+    }
+
     #[tokio::test]
     async fn legacy_commands_are_handled_without_a_provider() {
         let agent = Agent::new();
@@ -598,6 +722,63 @@ mod slash_command_audit_tests {
             }
             _ => None,
         })
+    }
+
+    /// A decision chat has no running context and its model writes no
+    /// summary, so `/compact` (and its other spellings) is answered with one
+    /// plain sentence before compaction runs, on every surface that sends it
+    /// as a turn.
+    #[tokio::test]
+    async fn compact_in_a_decision_chat_says_there_is_nothing_to_compact() {
+        use crate::agents::AgentConfig;
+        use crate::config::permission::PermissionManager;
+        use crate::config::BioRouterMode;
+        use crate::model::ModelConfig;
+        use crate::providers::decision::OllamaDecisionChatProvider;
+        use crate::session::session_manager::SessionType;
+        use crate::session::SessionManager;
+
+        let dir = tempfile::TempDir::new().unwrap();
+        let sessions = std::sync::Arc::new(SessionManager::new_ephemeral(dir.path().join("data")));
+        let agent = Agent::with_config(AgentConfig::new(
+            sessions.clone(),
+            std::sync::Arc::new(PermissionManager::new(dir.path().join("permissions"))),
+            None,
+            BioRouterMode::Auto,
+        ));
+        let session = sessions
+            .create_session(
+                dir.path().to_path_buf(),
+                "decision chat".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        agent
+            .update_provider(
+                std::sync::Arc::new(OllamaDecisionChatProvider::with_model(
+                    ModelConfig::new_or_fail("tev1:0.8b"),
+                )),
+                &session.id,
+            )
+            .await
+            .unwrap();
+        let config: SessionConfig =
+            serde_json::from_value(serde_json::json!({ "id": session.id })).unwrap();
+        for command in COMPACT_TRIGGERS {
+            let message = agent
+                .execute_command(command, &config)
+                .await
+                .unwrap_or_else(|e| panic!("{command:?} errored: {e:#}"))
+                .unwrap_or_else(|| panic!("{command:?} fell through to the decision model"));
+            assert_eq!(message.role, rmcp::model::Role::Assistant);
+            assert_eq!(
+                inline_text(&message),
+                Some(DECISION_CHAT_COMPACT_NOTICE),
+                "{command:?}"
+            );
+        }
+        assert!(DECISION_CHAT_COMPACT_NOTICE.contains("no context to compact"));
     }
 
     #[test]

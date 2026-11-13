@@ -360,6 +360,11 @@ impl BioRouterAcpAgent {
 
     pub async fn with_config(config: BioRouterAcpConfig) -> Result<Self> {
         let session_manager = Arc::new(SessionManager::new(config.data_dir));
+        // The decision log follows this agent's store, as the CLI's session
+        // builder and the daemon install it. Without it a decision made in an
+        // ACP session (the Jupyter AI persona's path) is neither logged in the
+        // chat's history nor billed.
+        biorouter::decision::log::install_global_sink(Arc::clone(&session_manager));
         let permission_manager = Arc::new(PermissionManager::new(config.config_dir));
 
         let agent = Agent::with_config(AgentConfig::new(
@@ -1996,5 +2001,93 @@ mod ws_auth_tests {
         assert_eq!(token_from_query("a=1"), None);
         // `nottoken=` must not satisfy the `token=` prefix.
         assert_eq!(token_from_query("nottoken=xyz"), None);
+    }
+}
+
+#[cfg(test)]
+mod decision_log_tests {
+    use super::{BioRouterAcpAgent, BioRouterAcpConfig};
+    use biorouter::decision::{DecisionModelRef, DecisionRequest, DecisionSession};
+    use biorouter::privacy::SessionClassification;
+    use biorouter::session::SessionType;
+    use std::sync::Arc;
+
+    fn unreachable_provider() -> Arc<dyn biorouter::providers::base::Provider> {
+        use biorouter::providers::api_client::{ApiClient, AuthMethod};
+        let api_client = ApiClient::new(
+            "http://127.0.0.1:1".to_string(),
+            AuthMethod::BearerToken("test-key".to_string()),
+        )
+        .unwrap();
+        Arc::new(biorouter::providers::openai::OpenAiProvider::new(
+            api_client,
+            biorouter::model::ModelConfig::new("gpt-5-nano").unwrap(),
+        ))
+    }
+
+    /// An ACP agent installs the decision log over its own store, as the CLI
+    /// and the daemon do. Without it a decision made in a `biorouter acp`
+    /// session was neither in the chat's decision history nor billed. A
+    /// request naming a provider that is not a decision provider fails before
+    /// anything is sent, and the failure is still a row in the chat's log.
+    #[test]
+    fn a_decision_in_an_acp_session_is_logged_in_its_store() {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_stack_size(16 * 1024 * 1024)
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(async {
+                let temp_dir = tempfile::tempdir().unwrap();
+                let agent = BioRouterAcpAgent::with_config(BioRouterAcpConfig {
+                    provider: unreachable_provider(),
+                    builtins: vec![],
+                    work_dir: temp_dir.path().to_path_buf(),
+                    data_dir: temp_dir.path().to_path_buf(),
+                    config_dir: temp_dir.path().to_path_buf(),
+                    biorouter_mode: biorouter::config::BioRouterMode::Auto,
+                    extensions: vec![],
+                })
+                .await
+                .unwrap();
+                let manager = agent.agent.config.session_manager.clone();
+                let chat = manager
+                    .create_session(
+                        temp_dir.path().to_path_buf(),
+                        "Persona".to_string(),
+                        SessionType::User,
+                    )
+                    .await
+                    .unwrap();
+                let request: DecisionRequest = serde_json::from_value(serde_json::json!({
+                    "questions": {
+                        "mentions_ms": {
+                            "instructions": "Does the note mention multiple sclerosis?",
+                            "kind": {"binary": {}}
+                        }
+                    },
+                    "context": {"text": "A short clinic note."}
+                }))
+                .unwrap();
+                let session = DecisionSession::new(&chat.id, SessionClassification::Public, false);
+
+                let result = biorouter::decision::global()
+                    .decide(
+                        Some(&session),
+                        Some(&DecisionModelRef::new("not_a_decision_provider", "x")),
+                        &request,
+                    )
+                    .await;
+                assert!(result.is_err(), "the model cannot be opened");
+
+                let counts = biorouter::decision::log::count_for_sessions(
+                    &manager,
+                    std::slice::from_ref(&chat.id),
+                )
+                .await
+                .unwrap();
+                assert_eq!(counts.get(&chat.id), Some(&1), "{counts:?}");
+            });
     }
 }

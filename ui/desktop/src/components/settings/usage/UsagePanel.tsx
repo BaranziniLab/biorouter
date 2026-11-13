@@ -5,14 +5,18 @@ import {
   cacheTokens as combinedCacheTokens,
   knownBilledTokens,
 } from '../../../utils/usageAccounting';
-import { formatTokensCompact } from '../../../utils/usageStats';
+import {
+  decisionModelName,
+  formatTokensCompact,
+  isDecisionUsageRow,
+} from '../../../utils/usageStats';
 import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
 import { InfoTip } from '../../ui/info-tip';
 import { Progress } from '../../ui/progress';
 import { SettingRow } from '../../ui/setting-row';
 import { StatGrid, type StatItem } from '../../usage/StatGrid';
-import { settingsUsageCopy as copy } from '../../usage/copy';
+import { MODEL_NOT_RECORDED, settingsUsageCopy as copy } from '../../usage/copy';
 import '../../usage/usage.css';
 
 /**
@@ -37,6 +41,8 @@ function emptyDayRow(date: string): UsageReportRow {
     cost: 0,
     hasUnpriced: false,
     costExcludesCache: false,
+    decisionRequests: 0,
+    decisions: null,
   };
 }
 
@@ -108,10 +114,14 @@ export function formatUsageMonth(month: string): string {
   });
 }
 
+/**
+ * A model row's full name (`provider/model`), or `MODEL_NOT_RECORDED` for the report's bucket of
+ * usage saved without a model: the one name Home's usage card and the cost card use too.
+ */
 export function modelLabel(row: Pick<UsageReportRow, 'modelId' | 'provider'>): string {
   if (row.modelId && row.provider) return `${row.provider}/${row.modelId}`;
   if (row.modelId) return row.modelId;
-  return 'unknown';
+  return MODEL_NOT_RECORDED;
 }
 
 export function cacheTokens(
@@ -213,6 +223,85 @@ function TokenFlowCell({ row, showCache }: { row: UsageReportRow; showCache: boo
       {split ? <span className="sr-only">, {split}</span> : null}
     </span>
   );
+}
+
+/**
+ * Words for decision-model usage. They live here rather than in
+ * `usage/copy.ts` because only this panel shows them.
+ */
+const decisionCopy = {
+  label: 'Decision models',
+  help: (showCosts: boolean) =>
+    `Requests to decision models: monitors, the decide tool, phase gates and decision chats. ` +
+    (showCosts
+      ? 'Their tokens and dollars are included in the totals above. '
+      : 'Their tokens are included in the totals above. ') +
+    'They are not counted as turns.' +
+    (showCosts ? ' A local decision model has no meter, so its requests have no cost.' : ''),
+  notMetered: 'Not metered',
+  unavailable: 'Unavailable',
+  someUnavailable: (cost: string) => `${cost}, some unavailable`,
+  someNotMetered: (cost: string) => `${cost}, some not metered`,
+  modelKind: 'Decision model',
+  noTurns: 'Decision requests are not turns.',
+};
+
+type DecisionSubtotal = NonNullable<UsageTotals['decisions']>;
+
+function requestCount(requests: number): string {
+  return `${requests.toLocaleString('en-US')} ${requests === 1 ? 'request' : 'requests'}`;
+}
+
+/**
+ * True when no decision request in the subtotal is priced and none was billed
+ * at an unknown rate: every one went to a model with no meter (a local Ollama
+ * decision model). The server leaves `cost` empty unless something is priced.
+ */
+function isNotMetered(decisions: DecisionSubtotal): boolean {
+  return decisions.cost == null && !decisions.hasUnpriced;
+}
+
+/**
+ * The decision line's dollars. A local model has no meter: `Not metered`, or
+ * `$0.04, some not metered` beside priced requests. A hosted model Baseten
+ * billed at a price Biorouter does not know is not "not metered":
+ * `Unavailable`, or `$0.04, some unavailable` beside priced requests, as the
+ * model's own row reads it.
+ */
+export function formatDecisionCost(decisions: DecisionSubtotal): string {
+  if (isNotMetered(decisions)) return decisionCopy.notMetered;
+  if (decisions.cost == null) return decisionCopy.unavailable;
+  const cost = formatCostEstimate(decisions.cost);
+  if (decisions.hasUnpriced) return decisionCopy.someUnavailable(cost);
+  if (decisions.hasUnmetered) return decisionCopy.someNotMetered(cost);
+  return cost;
+}
+
+/** `1,240 requests, 2.1M tokens, $0.04`; the cost is dropped while costs are hidden. */
+export function formatDecisionUsage(
+  requests: number,
+  decisions: DecisionSubtotal,
+  showCosts: boolean
+): string {
+  const tokens = decisions.totalTokens ?? decisions.inputTokens + decisions.outputTokens;
+  const parts = [requestCount(requests), `${formatCompactTokens(tokens)} tokens`];
+  if (showCosts) parts.push(formatDecisionCost(decisions));
+  return parts.join(', ');
+}
+
+/**
+ * A bucket of decision requests to a local model alone. The server counts them
+ * as $0, since a local model has no meter, and leaves `hasUnpriced` false; an
+ * unpriced hosted decision model sets it and reads "Unavailable" instead.
+ */
+function isUnmeteredDecisionsOnly(row: UsageReportRow): boolean {
+  return (
+    row.turns === 0 && !row.hasUnpriced && row.decisions != null && isNotMetered(row.decisions)
+  );
+}
+
+function costCell(row: UsageReportRow): string {
+  return isUnmeteredDecisionsOnly(row) ? decisionCopy.notMetered : formatCostEstimate(row.cost);
 }
 
 function EmptyTableState({ children }: { children: React.ReactNode }) {
@@ -381,6 +470,21 @@ export function UsageReport({ summary, dayRows, modelRows, showCosts = true }: U
     <div className="flex flex-col gap-6" data-testid="usage-report">
       <StatGrid items={stats} data-testid="usage-summary-stats" />
 
+      {mtd.decisions && (
+        <div
+          className="-mt-3 flex items-center gap-3 text-secondary"
+          data-testid="usage-decision-line"
+        >
+          <span className="flex items-center text-text-muted">
+            {decisionCopy.label}
+            <InfoTip label={decisionCopy.label} help={decisionCopy.help(showCosts)} />
+          </span>
+          <span className="ml-auto text-text-default tabular-nums">
+            {formatDecisionUsage(mtd.decisionRequests ?? 0, mtd.decisions, showCosts)}
+          </span>
+        </div>
+      )}
+
       {(summary.monthlyTokenLimit != null || showDollarBudget) && (
         <div className="grid grid-cols-1 gap-x-6 gap-y-4 sm:grid-cols-2">
           {summary.monthlyTokenLimit != null && (
@@ -454,7 +558,7 @@ export function UsageReport({ summary, dayRows, modelRows, showCosts = true }: U
                     </td>
                     {showDayCost && (
                       <td className={`${TD} text-right text-text-muted tabular-nums`}>
-                        {formatCostEstimate(row.cost)}
+                        {costCell(row)}
                       </td>
                     )}
                   </tr>
@@ -494,35 +598,54 @@ export function UsageReport({ summary, dayRows, modelRows, showCosts = true }: U
                 </tr>
               </thead>
               <tbody>
-                {modelRows.map((row, index) => (
-                  <tr key={`${modelLabel(row)}-${index}`} className="text-text-default">
-                    <td className={TD}>
-                      <div className="min-w-0" title={modelLabel(row)}>
-                        <p className="truncate">{row.modelId ?? 'unknown'}</p>
-                        <p className="truncate text-supporting text-text-subtle">
-                          {row.provider ?? copy.unattributedProvider}
-                        </p>
-                      </div>
-                    </td>
-                    <td className={`${TD} text-right text-text-muted tabular-nums`}>
-                      {row.turns.toLocaleString('en-US')}
-                    </td>
-                    <td className={`${TD} tabular-nums text-text-muted`}>
-                      <TokenFlowCell row={row} showCache={showModelCache} />
-                    </td>
-                    <td className={`${TD} text-right tabular-nums`}>
-                      <CompactTokenValue
-                        value={billedTokenValue(row)}
-                        fallback={formatBilledTokens(row)}
-                      />
-                    </td>
-                    {showModelCost && (
-                      <td className={`${TD} text-right text-text-muted tabular-nums`}>
-                        {formatCostEstimate(row.cost)}
+                {modelRows.map((row, index) => {
+                  const decision = isDecisionUsageRow(row);
+                  return (
+                    <tr key={`${modelLabel(row)}-${index}`} className="text-text-default">
+                      <td className={TD}>
+                        <div className="min-w-0" title={modelLabel(row)}>
+                          <p className="truncate">
+                            {decision && row.modelId
+                              ? decisionModelName(row.modelId)
+                              : row.modelId || MODEL_NOT_RECORDED}
+                          </p>
+                          <p
+                            className="truncate text-supporting text-text-subtle"
+                            data-testid={decision ? 'usage-decision-model-kind' : undefined}
+                          >
+                            {decision
+                              ? `${decisionCopy.modelKind} · ${requestCount(row.decisionRequests ?? 0)}`
+                              : (row.provider ?? copy.unattributedProvider)}
+                          </p>
+                        </div>
                       </td>
-                    )}
-                  </tr>
-                ))}
+                      <td className={`${TD} text-right text-text-muted tabular-nums`}>
+                        {decision ? (
+                          <span title={decisionCopy.noTurns}>
+                            <span aria-hidden="true">—</span>
+                            <span className="sr-only">{decisionCopy.noTurns}</span>
+                          </span>
+                        ) : (
+                          row.turns.toLocaleString('en-US')
+                        )}
+                      </td>
+                      <td className={`${TD} tabular-nums text-text-muted`}>
+                        <TokenFlowCell row={row} showCache={showModelCache} />
+                      </td>
+                      <td className={`${TD} text-right tabular-nums`}>
+                        <CompactTokenValue
+                          value={billedTokenValue(row)}
+                          fallback={formatBilledTokens(row)}
+                        />
+                      </td>
+                      {showModelCost && (
+                        <td className={`${TD} text-right text-text-muted tabular-nums`}>
+                          {costCell(row)}
+                        </td>
+                      )}
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

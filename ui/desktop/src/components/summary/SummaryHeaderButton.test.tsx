@@ -143,6 +143,22 @@ describe('the progress dot', () => {
     expect(screen.getByRole('button', { name: summaryCopy.title })).toBeInTheDocument();
     expect(container.querySelector('.br-summary-dot')).toBeNull();
   });
+
+  it('marks subagents running in the background too, and says how many', () => {
+    const { container, rerender } = render(<Harness mode="rail" runningSubagents={3} />);
+    expect(
+      screen.getByRole('button', { name: 'Chat summary, 3 subagents running' })
+    ).toBeInTheDocument();
+    expect(container.querySelector('.br-summary-dot')).not.toBeNull();
+    rerender(<Harness mode="rail" runningSubagents={1} progress={{ done: 2, total: 5 }} />);
+    expect(
+      screen.getByRole('button', {
+        name: 'Chat summary, 2 of 5 to do items complete, 1 subagent running',
+      })
+    ).toBeInTheDocument();
+    rerender(<Harness mode="rail" runningSubagents={0} />);
+    expect(container.querySelector('.br-summary-dot')).toBeNull();
+  });
 });
 
 /**

@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { folderName, historyRowTitle } from './historyRow';
+import {
+  folderName,
+  historyRowTitle,
+  runModelFullName,
+  runModelName,
+  subagentOutcomeOf,
+  subagentRoleOf,
+  SUBAGENT_OUTCOME_KEY,
+  SUBAGENT_SPAWN_KEY,
+} from './historyRow';
 import { messageCount } from './copy';
 
 describe('folderName', () => {
@@ -115,5 +124,81 @@ describe('messageCount', () => {
     expect(messageCount(1)).toBe('1 message');
     expect(messageCount(0)).toBe('0 messages');
     expect(messageCount(12)).toBe('12 messages');
+  });
+});
+
+/**
+ * A nested run's status cell reads the child's durable outcome record (`subagent_roster.rs`:
+ * `subagent_outcome` . `v1` in `extension_data`). It draws only an END it recognises, and says
+ * nothing rather than guess.
+ */
+describe('subagentOutcomeOf', () => {
+  const data = (record: unknown) => ({ [SUBAGENT_OUTCOME_KEY]: record });
+
+  it('reads the key the daemon writes', () => {
+    expect(SUBAGENT_OUTCOME_KEY).toBe('subagent_outcome.v1');
+  });
+
+  it('reads each end, with the run’s own line when it left one', () => {
+    for (const status of ['completed', 'blocked', 'failed', 'incomplete'] as const) {
+      expect(subagentOutcomeOf(data({ status, ended_at: '2026-09-05T17:00:00Z' }))).toEqual({
+        status,
+        resultLine: null,
+      });
+    }
+    expect(
+      subagentOutcomeOf(data({ status: 'blocked', result_line: '  Which cohort did you mean? ' }))
+    ).toEqual({ status: 'blocked', resultLine: 'Which cohort did you mean?' });
+  });
+
+  it('says nothing for no record, a malformed one, or a status that is not an end', () => {
+    expect(subagentOutcomeOf(undefined)).toBeNull();
+    expect(subagentOutcomeOf(null)).toBeNull();
+    expect(subagentOutcomeOf({})).toBeNull();
+    expect(subagentOutcomeOf(data('completed'))).toBeNull();
+    expect(subagentOutcomeOf(data({ status: 42 }))).toBeNull();
+    for (const status of [
+      'running',
+      'queued',
+      'cancelling',
+      'interrupted',
+      'unknown',
+      'Completed',
+    ]) {
+      expect(subagentOutcomeOf(data({ status })), status).toBeNull();
+    }
+    // A blank line is no line.
+    expect(subagentOutcomeOf(data({ status: 'failed', result_line: '   ' }))).toEqual({
+      status: 'failed',
+      resultLine: null,
+    });
+  });
+});
+
+describe('runModelName', () => {
+  it('names the model a run used, or nothing', () => {
+    expect(runModelName({ model_config: { model_name: 'gpt-5.5' } })).toBe('gpt-5.5');
+    expect(runModelName({ model_config: { model_name: '  ' } })).toBeNull();
+    expect(runModelName({ model_config: null })).toBeNull();
+    expect(runModelName({})).toBeNull();
+  });
+
+  it('shortens a dated id the way the chat summary does, and keeps the full id for the tooltip', () => {
+    const run = { model_config: { model_name: 'gpt-5.5-2026-04-24' } };
+    expect(runModelName(run)).toBe('gpt-5.5');
+    expect(runModelFullName(run)).toBe('gpt-5.5-2026-04-24');
+  });
+});
+
+describe('subagentRoleOf', () => {
+  it('reads the role from the spawn record, trimmed, or nothing', () => {
+    expect(subagentRoleOf({ [SUBAGENT_SPAWN_KEY]: { role: ' celsius ', phase_id: 'r' } })).toBe(
+      'celsius'
+    );
+    expect(subagentRoleOf({ [SUBAGENT_SPAWN_KEY]: { role: '   ' } })).toBeNull();
+    expect(subagentRoleOf({ [SUBAGENT_SPAWN_KEY]: { role: 7 } })).toBeNull();
+    expect(subagentRoleOf({ [SUBAGENT_SPAWN_KEY]: null })).toBeNull();
+    expect(subagentRoleOf({})).toBeNull();
+    expect(subagentRoleOf(null)).toBeNull();
   });
 });

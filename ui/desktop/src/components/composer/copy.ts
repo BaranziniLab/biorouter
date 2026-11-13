@@ -41,6 +41,7 @@ export const COMPOSER_COPY = {
     mentionHint: '@',
     commands: 'Commands',
     commandsHint: '/',
+    decisionMonitors: 'Decision monitors…',
   },
 
   attachments: {

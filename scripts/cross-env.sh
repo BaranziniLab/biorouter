@@ -107,16 +107,28 @@ cross_linux() {
       # assert_glibc_floor is the only thing that would catch it.
       sed -i 's|^deb http://deb.debian.org|# deb http://deb.debian.org|; s|^# deb http://snapshot.debian.org|deb http://snapshot.debian.org|' /etc/apt/sources.list
       printf 'Acquire::Check-Valid-Until \"false\";\n' > /etc/apt/apt.conf.d/99no-check-valid-until
-      # snapshot.debian.org answers 503 and 504 under load: three dispatched runs of this
-      # job on 2026-11-05 and 2026-11-06 died in apt before compiling anything, while the
-      # same step passed on main in between. apt 2.2 retries a failed file at once, so
-      # each whole command is also retried after a pause that grows by 20 s per attempt.
-      printf 'Acquire::Retries \"3\";\n' > /etc/apt/apt.conf.d/99retries
-      apt_retry() { n=0; until \"\$@\"; do n=\$((n + 1)); [ \$n -ge 6 ] && return 1; echo \"apt failed (attempt \$n), retrying in \$((n * 20)) s\"; sleep \$((n * 20)); done; }
+      # snapshot.debian.org sheds load with 503s and 504s, sometimes for hours: it
+      # failed three cross-check runs in a row on 2026-11-05, and the release
+      # handoffs retry phases by hand for the same reason. So each fetch is
+      # retried, the whole install is tried twice, and only then does it fall
+      # back to archive.debian.org. That serves the same bullseye suites (so the
+      # glibc floor holds, and assert_glibc_floor still checks it) at their final
+      # versions rather than the pinned date, so the log says so.
+      printf 'Acquire::Retries \"2\";\nAcquire::http::Timeout \"30\";\n' > /etc/apt/apt.conf.d/80-retries
       dpkg --add-architecture amd64
-      apt_retry apt-get update -q
-      apt_retry apt-get install -y --no-install-recommends gcc-x86-64-linux-gnu g++-x86-64-linux-gnu \
-        protobuf-compiler cmake libxcb1-dev:amd64 libbz2-dev:amd64
+      pkgs='gcc-x86-64-linux-gnu g++-x86-64-linux-gnu protobuf-compiler cmake libxcb1-dev:amd64 libbz2-dev:amd64'
+      fetched=
+      for attempt in 1 2; do
+        if apt-get update -q && apt-get install -y --no-install-recommends \$pkgs; then fetched=1; break; fi
+        echo \"cross-env: snapshot.debian.org fetch failed (attempt \$attempt of 2)\" >&2
+        sleep \$((attempt * 20))
+      done
+      if [ -z \"\$fetched\" ]; then
+        echo \"cross-env: WARNING: snapshot.debian.org unavailable; installing from archive.debian.org, not the pinned snapshot\" >&2
+        sed -E -i 's|^deb http://snapshot\.debian\.org/archive/([a-z-]+)/[0-9TZ]+ |deb http://archive.debian.org/\1 |' /etc/apt/sources.list
+        apt-get update -q
+        apt-get install -y --no-install-recommends \$pkgs
+      fi
       export CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc \
              CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++ \
              AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar \

@@ -1,12 +1,16 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../utils';
-import { TOOLTIP_SURFACE_CLASS_NAME, isFocusFromTabKey } from './Tooltip';
+import {
+  TOOLTIP_DELAY_MS,
+  TOOLTIP_SKIP_DELAY_MS,
+  TOOLTIP_SURFACE_CLASS_NAME,
+  isFocusFromTabKey,
+} from './Tooltip';
 
 const TOOLTIP_ATTRIBUTE = 'data-biorouter-tooltip';
 const GENERATED_ARIA_LABEL_ATTRIBUTE = 'data-biorouter-tooltip-aria-label';
 const TOOLTIP_SELECTOR = `[${TOOLTIP_ATTRIBUTE}]`;
-const TOOLTIP_OPEN_DELAY_MS = 500;
 const TOOLTIP_OFFSET = 8;
 const VIEWPORT_PADDING = 8;
 const INTERACTIVE_SELECTOR =
@@ -63,6 +67,11 @@ export function AppTooltipLayer() {
   const [horizontalShift, setHorizontalShift] = useState(0);
   const tooltipRef = useRef<HTMLDivElement>(null);
   const openTimerRef = useRef<number | null>(null);
+  // The label tooltips' skip window (`AppTooltipProvider`), for title tooltips too: while one
+  // shows, and for TOOLTIP_SKIP_DELAY_MS after it closes, the next opens with no delay, so
+  // moving along a row of titled controls does not wait 500ms at every one.
+  const skipDelayRef = useRef(false);
+  const skipTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     upgradeTitlesWithin(document.body);
@@ -106,7 +115,8 @@ export function AppTooltipLayer() {
       }
 
       if (openTimerRef.current !== null) window.clearTimeout(openTimerRef.current);
-      openTimerRef.current = window.setTimeout(() => {
+      openTimerRef.current = null;
+      const reveal = () => {
         openTimerRef.current = null;
         if (!target.isConnected) return;
 
@@ -122,7 +132,9 @@ export function AppTooltipLayer() {
           y: side === 'top' ? bounds.top - TOOLTIP_OFFSET : bounds.bottom + TOOLTIP_OFFSET,
           side,
         });
-      }, TOOLTIP_OPEN_DELAY_MS);
+      };
+      if (skipDelayRef.current) reveal();
+      else openTimerRef.current = window.setTimeout(reveal, TOOLTIP_DELAY_MS);
     };
 
     const hideTooltip = (event?: Event) => {
@@ -199,6 +211,25 @@ export function AppTooltipLayer() {
       );
     }
   }, [horizontalShift, tooltip]);
+
+  // The skip window follows the tooltip being SHOWN, whichever way it closes (a pointer leaving,
+  // a press, Escape, a scroll, or its target leaving the page), so it is keyed on the state.
+  const isOpen = tooltip !== null;
+  useEffect(() => {
+    if (isOpen) {
+      skipDelayRef.current = true;
+      return;
+    }
+    if (!skipDelayRef.current) return;
+    skipTimerRef.current = window.setTimeout(() => {
+      skipTimerRef.current = null;
+      skipDelayRef.current = false;
+    }, TOOLTIP_SKIP_DELAY_MS);
+    return () => {
+      if (skipTimerRef.current !== null) window.clearTimeout(skipTimerRef.current);
+      skipTimerRef.current = null;
+    };
+  }, [isOpen]);
 
   // A tooltip outlives its target when the target LEAVES rather than when the
   // pointer does: hover a row control, change route without moving the pointer,

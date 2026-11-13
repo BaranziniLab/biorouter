@@ -29,8 +29,9 @@ The loop records what it is awaiting in a phase on the `Agent` (never in the rep
 |---|---|
 | Normal completion | Drained at the commit point; the turn continues and answers it. |
 | `max_turns`, `max_tool_calls`, stall stop | A steer the person typed restarts the count ("actions without user input") and is answered. One typed after the loop broke, while it waits for children, ends that wait and the runner continues the same turn with it — same turn id, one `TurnFinished`. |
+| A decision-model monitor's `stop` (or a `pause` monitor's error) | Monitors are still checked while a steer the person typed waits. A check already running gets up to 3 seconds (`MONITOR_STEER_GRACE`) to answer, and a slower one gives way and is made at the next point. A stop that check makes is held: the steer is answered first, and the monitor's next check stops the turn if its answer still holds. The stop itself ends the loop like the limits above, never through the commit point: another chat's injection waiting there is stored unanswered rather than continuing the turn. A stop also stores a model-only note in a `<decision-monitor-stop>` frame telling the next turn's model why it stopped, and stops the chat's subagents; a steer typed after the stop, while the turn waits for them, ends that wait and continues the turn. See "A stop held back" in [Decision models](decision-models.md#monitors-a-decision-model-watching-the-chat). |
 | Spend cap, provider abort, stream error, structured final output | Stored with `steerOutcome: "unanswered"`, after any prose the reply had streamed. |
-| Stop | Stored unanswered, between the partial reply and the "Stopped." notice. |
+| Stop | Stored unanswered, between the partial reply and the "Stopped." notice. A plain Stop also stops every subagent the chat started that still has work in flight; Stop-and-Send, which carries the steer into the next turn, leaves them running. |
 | Orphan reap | Never while a card is parked or an accepted steer is still unread; the clock restarts from the moment the loop reads it. A reap finishes as `reason: "orphaned"`. |
 
 A steer is removed from the queue only after its row is stored, so a Stop landing mid-write leaves it for the runner's settle rather than dropping it. Its message ID and timestamp are assigned at admission; a keyed steer uses the reserved `steer:` prefix. The runner drops an interrupted database write before settling the queue, and settlement updates an already committed matching row rather than inserting a second copy.
@@ -58,4 +59,5 @@ Chromium allows six connections per host across every window. Observers are capp
 - [Workspace control](workspace-control.md) — steering from the terminal, and what a daemon without a user-action key refuses.
 - [Turn cancellation and process reaping](turn-cancellation-and-process-reaping.md) — the Stop half of turn control.
 - [Subagents](subagents.md) — steering a delegated child from its tab.
+- [Decision models](decision-models.md): monitors, what a monitor's stop does while a steer waits, and what a Stop does to the chat's subagents.
 - [Decisions behind `biorouter serve`](../deployment/serve-decisions.md) — SD-11, why a keyless daemon refuses steers.

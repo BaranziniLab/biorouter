@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { ReactElement } from 'react';
 import { cleanup, render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PrivacyBadge } from './PrivacyBadge';
 import type { SessionClassification } from '../../api';
@@ -292,10 +293,63 @@ describe('PrivacyBadge', () => {
     // the tooltip mechanism is a `<title>` child element) untooltipped.
     expect(mark.getAttribute('role')).toBe('img');
     expect(mark.getAttribute('aria-label')).toBe('Private chat');
-    expect(mark.getAttribute('title')).toMatch(/^Private\. Biorouter only lets a private model/);
     // The glyph itself must stay decorative, or a screen reader announces the
     // padlock twice — once from the span's label and once from the svg.
     expect(mark.querySelector('svg')!.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  /**
+   * The sentence is the padlock's HELP, so it is an InfoTip on the mark, never a
+   * `title=` (spec 2.6): it used to sit in a title on a span no key could reach.
+   * Now the mark is a tab stop, the sentence is its description, and a click
+   * keeps the tip. The words themselves are frozen privacy copy.
+   */
+  it('explains a standalone dense padlock with an InfoTip, not a title', async () => {
+    const user = userEvent.setup();
+    const mark = badgeOf(<PrivacyBadge tier="private" dense />)! as HTMLElement;
+    expect(mark).not.toHaveAttribute('title');
+    expect(mark).toHaveAttribute('tabindex', '0');
+    expect(mark).toHaveClass('br-info-tip-target');
+    expect(mark).toHaveAccessibleName('Private chat');
+    expect(mark).toHaveAccessibleDescription(
+      'Private. Biorouter only lets a private model open this chat.'
+    );
+    await user.click(mark);
+    expect(mark).toHaveAttribute('data-pinned', 'true');
+    expect(document.querySelector('[data-slot="info-tip-content"]')).toHaveTextContent(
+      'Private. Biorouter only lets a private model open this chat.'
+    );
+  });
+
+  it('keeps the enforcement-off sentence word for word in the InfoTip', () => {
+    const mark = badgeOf(<PrivacyBadge tier="private" dense enforcementOff />)!;
+    expect(mark).not.toHaveAttribute('title');
+    expect(mark).toHaveAccessibleDescription(
+      'Private, but privacy tiers are turned off, so nothing enforces this'
+    );
+  });
+
+  /**
+   * Inside a control (the composer's model chip is a menu trigger; a knowledge
+   * picker row is an option) the padlock is part of that control, which names
+   * the tier itself. A tab stop there would be a control inside a control: its
+   * click would also open the menu, and its tip would stack on the chip's own
+   * hint. So it stays the plain mark, with no title either.
+   */
+  it('stays a plain mark inside a button or a listbox row', () => {
+    for (const host of [
+      (child: ReactElement) => <button type="button">{child}</button>,
+      (child: ReactElement) => <div role="option">{child}</div>,
+    ]) {
+      cleanup();
+      const mark = badgeOf(host(<PrivacyBadge tier="private" dense />))!;
+      expect(mark).not.toHaveAttribute('tabindex');
+      expect(mark).not.toHaveAttribute('title');
+      expect(mark).not.toHaveAttribute('aria-describedby');
+      expect(mark).not.toHaveClass('br-info-tip-target');
+      expect(mark.getAttribute('aria-label')).toBe('Private chat');
+      expect(document.querySelector('[data-slot="info-tip-description"]')).toBeNull();
+    }
   });
 
   /**

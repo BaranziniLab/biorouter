@@ -1,10 +1,19 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronsDownUp } from './icons/app-icons';
-import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
-import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
+import React, { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { Progress } from './ui/progress';
 import { useConfig } from './ConfigContext';
-import { FOOTER_COPY } from './bottom_menu/copy';
+import { CONTEXT_CARD_COPY, FOOTER_COPY } from './bottom_menu/copy';
+import {
+  FooterCard,
+  FooterCardAction,
+  FooterCardActions,
+  FooterCardDetail,
+  FooterCardNote,
+  FooterCardRoot,
+  FooterCardSection,
+  FooterCardTrigger,
+  FooterCardValue,
+} from './bottom_menu/FooterCard';
+import { useFooterCard } from './bottom_menu/useFooterCard';
 import './bottom_menu/pickers.css';
 
 interface ContextWindowGaugeProps {
@@ -24,12 +33,45 @@ function clampThresholdPct(v: number): number {
   return Math.max(AUTO_COMPACT_MIN_PCT, Math.min(AUTO_COMPACT_MAX_PCT, Math.round(v)));
 }
 
-/** Inline bar-style context gauge. Used both as a row inside the picker
- * popover and as the popover body of the standalone
- * indicator (chat-tab mode). Icon stays neutral so it matches the rest of
- * the picker icons; the bar alone goes green → yellow → orange → red as
- * usage climbs. The bar also carries a draggable threshold marker — the
- * point at which Biorouter auto-compacts — clamped to 20–90%. */
+/**
+ * What the saved threshold makes Biorouter do, read the way the daemon reads it
+ * (`check_if_compaction_needed` in crates/biorouter/src/context_mgmt/mod.rs): a
+ * share strictly between 0 and 1 is where it compacts, and anything at or
+ * outside those bounds turns automatic compaction off (0 is the documented
+ * "disabled"). A value that is not a number leaves the daemon's default, so it
+ * reads as nothing here either. The percentage is the real one, not the
+ * marker's: the marker only reaches 20 to 90%, and a sentence that said "90%"
+ * for a saved 0.95 would be wrong about what happens.
+ */
+function savedAutoCompact(v: unknown): 'off' | number | null {
+  if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+  if (v <= 0 || v >= 1) return 'off';
+  // Never "0%" or "100%" for a share strictly between them.
+  return Math.max(1, Math.min(99, Math.round(v * 100)));
+}
+
+/**
+ * The share of the window that is left, from 0 to 1: the arc the ring draws and the figure the
+ * card reads, computed once so the two can never round apart. No window reads as all of it left.
+ */
+function remainingShare(used: number, total: number): number {
+  if (total <= 0) return 1;
+  return Math.max(0, Math.min(1, Math.max(total - used, 0) / total));
+}
+
+/**
+ * The context card's body (`ContextWindowIndicator`'s `FooterCard`), built only from the footer
+ * cards' pieces so it reads like the folder and cost cards beside it: one "Context window"
+ * section holding what is LEFT (as the ring draws it), what is USED (as the bar fills), the bar
+ * with its auto-compact marker, the sentence that says where the marker sits, and Compact chat.
+ *
+ * The bar alone carries colour: green, then yellow past half, then red past the threshold. The
+ * marker is the point at which Biorouter auto-compacts, a slider clamped to 20 to 90%: drag it (or
+ * press anywhere on the bar), or use the arrow keys, Home and End. It has no hover tooltip: its
+ * reading is its `aria-valuetext` and the note under the bar, which says it to everyone. Both say
+ * what the saved value makes Biorouter do (`savedAutoCompact`): that automatic compaction is off,
+ * or a saved share the marker cannot reach, until the person moves the marker.
+ */
 export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
   totalTokens,
   tokenLimit,
@@ -44,10 +86,16 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
   // direct `upsertConfig` here would leave every other consumer of this
   // (non-secret, therefore cached) key on the pre-write value (#52).
   const { read: readConfigValue, upsert: upsertConfigValue } = useConfig();
+  /** Where the marker sits: always inside the slider's 20 to 90%. */
   const [thresholdPct, setThresholdPct] = useState<number>(AUTO_COMPACT_DEFAULT_PCT);
-  // Controlled tooltip so Radix's default focus-trigger doesn't pop the
-  // hint open when the popover auto-focuses the slider on mount.
-  const [tooltipOpen, setTooltipOpen] = useState(false);
+  /**
+   * What the saved value makes Biorouter do when the marker cannot say it:
+   * `'off'`, or a percentage outside the marker's range. `null` once the marker
+   * is the threshold (the default, a saved value inside the range, or any
+   * change the person makes, which always writes the marker's value).
+   */
+  const [savedOutsideMarker, setSavedOutsideMarker] = useState<'off' | number | null>(null);
+  const nothingToCompactId = useId();
   const barRef = useRef<HTMLDivElement | null>(null);
   const draggingRef = useRef(false);
   const pendingPctRef = useRef<number | null>(null);
@@ -65,9 +113,16 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
     readConfigValue(AUTO_COMPACT_THRESHOLD_KEY, false)
       .then((v) => {
         if (cancelled) return;
-        if (typeof v === 'number' && v > 0 && v < 1) {
-          setThresholdPct(clampThresholdPct(v * 100));
+        const saved = savedAutoCompact(v);
+        if (saved === null) return;
+        if (saved === 'off') {
+          // The marker stays where a change would start from, the default.
+          setSavedOutsideMarker('off');
+          return;
         }
+        const marker = clampThresholdPct(saved);
+        setThresholdPct(marker);
+        setSavedOutsideMarker(marker === saved ? null : saved);
       })
       .catch(() => {
         /* fall back to default */
@@ -78,7 +133,7 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
   }, [readConfigValue]);
 
   // Flush any in-flight pending change if the gauge unmounts mid-drag
-  // (e.g. popover closes when the user releases the mouse outside of it).
+  // (e.g. the card closes when the person releases the mouse outside of it).
   useEffect(() => {
     return () => {
       if (pendingPctRef.current !== null) {
@@ -103,15 +158,19 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
 
   // Live updates during drag don't hit the API — we only persist on release
   // so a single drag costs one POST, not dozens.
+  // Every change the person makes writes the marker's value, which turns
+  // automatic compaction on at that share and makes the marker the threshold.
   const updateThresholdLive = (raw: number) => {
     const next = clampThresholdPct(raw);
     setThresholdPct(next);
+    setSavedOutsideMarker(null);
     pendingPctRef.current = next;
   };
 
   const handleSliderChange = (raw: number) => {
     const next = clampThresholdPct(raw);
     setThresholdPct(next);
+    setSavedOutsideMarker(null);
     persistThreshold(next);
   };
 
@@ -143,7 +202,16 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
 
   const handleDragStart = useCallback(
     (e: React.MouseEvent) => {
-      e.preventDefault();
+      // NOT `preventDefault()`: the press's own focus is what keeps the card.
+      // A press inside any footer card moves focus into it (onto the marker,
+      // which is focusable, or onto the card's surface for a press on the bar),
+      // and only a card that holds focus outlives a window switch: coming back,
+      // the window refocuses whatever had focus, and a draft that had kept it
+      // was "focus outside" to Radix, which closed the card the press had
+      // pinned. The browser's focus for a press draws no focus edge; a script
+      // focus here would, since it inherits the draft's. What the cancelled
+      // default also stopped, a text selection dragged out of the bar, is
+      // `user-select: none` on `.br-context-gauge` (pickers.css).
       e.stopPropagation();
       draggingRef.current = true;
       // Snap to where the user clicked; persist on release.
@@ -195,122 +263,88 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
   if (total <= 0) return null;
   const ratio = Math.min(1, current / total);
   const pct = Math.round(ratio * 100);
+  const leftPct = Math.round(remainingShare(current, total) * 100);
   const overThreshold = pct >= thresholdPct;
   // Three bands, not four: the old ladder spelled `warning` twice (`ratio <= 0.75`
   // and the fallback both resolved to it), so the 0.75 rung was a no-op.
   const barTone = overThreshold ? 'danger' : ratio <= 0.5 ? 'success' : 'warning';
+  const empty = current === 0;
+  // What Biorouter will do, which the marker can only show between 20 and 90%:
+  // `null` when automatic compaction is off.
+  const compactsAt = savedOutsideMarker === 'off' ? null : (savedOutsideMarker ?? thresholdPct);
   return (
-    // The label and the Compact button sit on the BAR's line, not centred on the
-    // bar and its caption together: centred, "Context" floated between the two
-    // and belonged to neither. The bar's centre is 14px down its column (the
-    // threshold triangle's 10px, then half the 8px track), so the label's 16px
-    // line takes 6px above it and the 28px button none. 16px in from the popover
-    // edge (`p-1` + `px-3`), the text edge every composer menu and list shares.
-    <div className="flex items-start gap-3 px-3 py-1.5">
-      {/* ONE metadata size in this popover: every figure here is a reading off
-          a gauge, so all of it is `supporting` in the muted ink. */}
-      <span className="mt-1.5 flex-shrink-0 text-supporting text-text-muted">
-        {FOOTER_COPY.contextLabel}
-      </span>
-      <div className="flex-1 min-w-0 flex flex-col gap-1">
-        {/* The bar holds the usage fill *and* a draggable downward triangle
-            marking the auto-compact threshold. The bar is the drag target;
-            mousedown anywhere on the bar (or the triangle) jumps the
-            threshold to the cursor and starts a drag. */}
-        {/* The threshold triangle is a SIBLING of the bar, not a child of it.
-            It used to live inside the track, which forced the track to run
-            `overflow-visible` so the glyph could stick out above — the one
-            reason this bar could not be the shared `Progress` (an 8px pill
-            that clips its fill). Both are absolutely positioned against this
-            same wrapper and the wrapper is exactly as wide as the track, so
-            `left: {pct}%` means the identical thing it did before; only the
-            vertical origin moved, from the track's top edge to the wrapper's
-            (hence -2px here rather than -12px, the wrapper's own pt-2.5). */}
-        <div className="relative pt-2.5">
-          <Progress
-            ref={barRef}
-            label={FOOTER_COPY.contextUsed}
-            value={pct}
-            tone={barTone}
-            // A conversation with one message is still using context.
-            minVisiblePercent={2}
-            className="cursor-pointer"
-            onMouseDown={handleDragStart}
-          />
-          <Tooltip open={tooltipOpen}>
-            <TooltipTrigger asChild>
-              {/* Hit area is larger than the 10×6 visible triangle so the
-                  hover tooltip doesn't flicker when the cursor grazes the
-                  triangle edges. The visible glyph is the inner element. */}
-              <div
-                role="slider"
-                aria-label={FOOTER_COPY.thresholdLabel}
-                aria-valuemin={AUTO_COMPACT_MIN_PCT}
-                aria-valuemax={AUTO_COMPACT_MAX_PCT}
-                aria-valuenow={thresholdPct}
-                tabIndex={0}
-                onKeyDown={handleKeyAdjust}
-                onMouseDown={handleDragStart}
-                onMouseEnter={() => setTooltipOpen(true)}
-                onMouseLeave={() => {
-                  if (!draggingRef.current) setTooltipOpen(false);
-                }}
-                className="absolute flex items-end justify-center cursor-ew-resize"
-                style={{
-                  left: `${thresholdPct}%`,
-                  top: '-2px',
-                  width: '22px',
-                  height: '18px',
-                  transform: 'translateX(-50%)',
-                }}
-              >
-                <span
-                  aria-hidden="true"
-                  style={{
-                    width: 0,
-                    height: 0,
-                    borderLeft: '5px solid transparent',
-                    borderRight: '5px solid transparent',
-                    borderTop: '6px solid currentColor',
-                    color: 'var(--color-text-default, currentColor)',
-                    pointerEvents: 'none',
-                  }}
-                />
-              </div>
-            </TooltipTrigger>
-            <TooltipContent side="top">{FOOTER_COPY.thresholdTooltip(thresholdPct)}</TooltipContent>
-          </Tooltip>
-        </div>
-        <div className="flex items-center justify-between text-supporting text-text-muted tabular-nums">
-          <span>
-            {fmt(current)} / {fmt(total)}
-          </span>
-          <span>{FOOTER_COPY.gaugeUsed(pct)}</span>
+    <FooterCardSection label={CONTEXT_CARD_COPY.section}>
+      {/* What is LEFT is the reading, because it is what the ring beside it
+          draws; what is USED is the detail, because it is what the bar fills. */}
+      <FooterCardValue>{CONTEXT_CARD_COPY.left(leftPct)}</FooterCardValue>
+      <FooterCardDetail>{CONTEXT_CARD_COPY.used(fmt(current), fmt(total))}</FooterCardDetail>
+      {/* The bar holds the usage fill *and* a draggable downward triangle
+          marking the auto-compact threshold. The bar is the drag target;
+          mousedown anywhere on the bar (or the triangle) jumps the threshold
+          to the cursor and starts a drag. */}
+      {/* The threshold triangle is a SIBLING of the bar, not a child of it.
+          It used to live inside the track, which forced the track to run
+          `overflow-visible` so the glyph could stick out above — the one
+          reason this bar could not be the shared `Progress` (an 8px pill that
+          clips its fill). Both are absolutely positioned against this same
+          wrapper and the wrapper is exactly as wide as the track, so
+          `left: {pct}%` means the identical thing it did before; only the
+          vertical origin moved, from the track's top edge to the wrapper's
+          (`.br-context-gauge*` in pickers.css). */}
+      <div className="br-context-gauge">
+        <Progress
+          ref={barRef}
+          label={CONTEXT_CARD_COPY.barLabel}
+          value={pct}
+          tone={barTone}
+          // A conversation with one message is still using context.
+          minVisiblePercent={2}
+          className="br-context-gauge__bar"
+          onMouseDown={handleDragStart}
+        />
+        {/* Hit area larger than the 10×6 visible triangle, so a press that
+            grazes the glyph still lands on it. The visible glyph is the inner
+            element. */}
+        <div
+          role="slider"
+          aria-label={CONTEXT_CARD_COPY.thresholdLabel}
+          aria-valuemin={AUTO_COMPACT_MIN_PCT}
+          aria-valuemax={AUTO_COMPACT_MAX_PCT}
+          aria-valuenow={thresholdPct}
+          aria-valuetext={
+            compactsAt === null
+              ? CONTEXT_CARD_COPY.thresholdOff
+              : CONTEXT_CARD_COPY.thresholdValue(compactsAt)
+          }
+          tabIndex={0}
+          onKeyDown={handleKeyAdjust}
+          onMouseDown={handleDragStart}
+          className="br-context-gauge__marker"
+          style={{ left: `${thresholdPct}%` }}
+        >
+          <span aria-hidden="true" className="br-context-gauge__glyph" />
         </div>
       </div>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="flex flex-shrink-0">
-            <button
-              type="button"
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                onCompact();
-              }}
-              disabled={current === 0}
-              aria-label={current === 0 ? FOOTER_COPY.nothingToCompact : FOOTER_COPY.compact}
-              className={`flex size-control-sm items-center justify-center rounded-element transition-colors ${current === 0 ? 'cursor-not-allowed text-text-muted opacity-50' : 'tint-interactive cursor-pointer text-text-muted hover:text-text-default'}`}
-            >
-              <ChevronsDownUp data-testid="compact-conversation-icon" className="size-4" />
-            </button>
-          </span>
-        </TooltipTrigger>
-        <TooltipContent side="top">
-          {current === 0 ? FOOTER_COPY.nothingToCompact : FOOTER_COPY.compact}
-        </TooltipContent>
-      </Tooltip>
-    </div>
+      <FooterCardNote>
+        {compactsAt === null
+          ? CONTEXT_CARD_COPY.autoCompactOff
+          : CONTEXT_CARD_COPY.autoCompactNote(compactsAt)}
+      </FooterCardNote>
+      <FooterCardActions>
+        <FooterCardAction
+          disabled={empty}
+          aria-describedby={empty ? nothingToCompactId : undefined}
+          onClick={() => onCompact()}
+        >
+          {CONTEXT_CARD_COPY.compact}
+        </FooterCardAction>
+      </FooterCardActions>
+      {empty && (
+        <FooterCardNote id={nothingToCompactId}>
+          {CONTEXT_CARD_COPY.nothingToCompact}
+        </FooterCardNote>
+      )}
+    </FooterCardSection>
   );
 };
 
@@ -503,8 +537,19 @@ function useDrawnWindow(
   return { limit: holds ? held.limit : 0, fresh: false };
 }
 
-/** The footer's context readout: a ring that opens the gauge (threshold and
- * Compact) in a popover. One line of tooltip, "72% context left · 92k of 128k". */
+/**
+ * The footer's context readout (spec 3.7), one of the line's three items that behave alike
+ * (`useFooterCard`, `FooterCard`): a ring that draws what is left of the window, "N% left" beside
+ * it once less than half is left, and one card. Hovering the ring (300ms), reaching it with Tab or
+ * clicking it opens the card; a click pins it, a second click closes it, and Enter or Space also
+ * moves focus into it. The card is `ContextWindowGauge`: what is left and used, the bar with the
+ * auto-compact marker, and Compact chat, which runs the compaction and closes the card.
+ *
+ * It replaced a dark one-line tooltip on hover and a separate popover on click, so the ring now
+ * answers a hover, a click and a key the same way the folder chip and the cost beside it do. The
+ * ring's name still says the whole reading ("72% context left · 92k of 128k"), so a screen reader
+ * has it without opening the card.
+ */
 export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   sessionId,
   boundModel,
@@ -515,7 +560,8 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   onCompact,
   showRemainingPercent = false,
 }) => {
-  const [open, setOpen] = useState(false);
+  const card = useFooterCard();
+  const cardId = useId();
   const current = totalTokens ?? 0;
   // NO WINDOW LOADED FOR THIS CHAT'S MODEL, NO RING (V2-R4-1). A context window
   // is a property of a bound model, and the composer's 128k fallback stands in
@@ -535,8 +581,7 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   );
   const total = drawnWindow.limit;
   const drawn = total > 0;
-  const remainingTokens = Math.max(total - current, 0);
-  const remainingRatio = total > 0 ? Math.max(0, Math.min(1, remainingTokens / total)) : 1;
+  const remainingRatio = remainingShare(current, total);
   const remainingPct = Math.round(remainingRatio * 100);
   const strokeOffset = RING_CIRCUMFERENCE * (1 - remainingRatio);
   // A reading is "loaded" for the sweep only when its window is a fresh lookup
@@ -547,60 +592,67 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
     drawn ? strokeOffset : null,
     drawnWindow.fresh && totalTokens !== undefined
   );
+  // A ring that stops being drawn (a model change, a chat that loads again)
+  // takes its card with it, and the card does not come back open by itself
+  // when the ring returns: nothing the person did then opened it.
+  const closeCard = card.close;
+  useEffect(() => {
+    if (!drawn) closeCard();
+  }, [drawn, closeCard]);
   if (!drawn) return null;
   const summary = FOOTER_COPY.contextTooltip(remainingPct, fmt(current), fmt(total));
   const showFigure = showRemainingPercent && remainingPct < CONTEXT_FIGURE_BELOW_PCT;
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <PopoverTrigger asChild>
-            <button
-              type="button"
-              aria-label={summary}
-              data-testid="context-window-indicator"
-              className="br-footline__item"
-            >
-              <svg viewBox="0 0 16 16" aria-hidden="true">
-                <circle
-                  cx="8"
-                  cy="8"
-                  r={RING_RADIUS}
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  className="text-border-subtle"
-                />
-                <circle
-                  cx="8"
-                  cy="8"
-                  r={RING_RADIUS}
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeDasharray={RING_CIRCUMFERENCE}
-                  strokeDashoffset={strokeOffset}
-                  className="br-footline__ring-arc"
-                  data-testid="context-ring-arc"
-                  data-motion-still={arcStill ? '' : undefined}
-                  transform="rotate(-90 8 8)"
-                />
-              </svg>
-              {/* Sans with tabular figures (principle 3: mono is for machine
-                  strings only), so a figure that changes as tokens stream does
-                  not re-measure the line. Hidden from the accessibility tree:
-                  the button's name already says it with its subject. */}
-              {showFigure && (
-                <span aria-hidden="true">{FOOTER_COPY.contextLeft(remainingPct)}</span>
-              )}
-            </button>
-          </PopoverTrigger>
-        </TooltipTrigger>
-        <TooltipContent side="top">{summary}</TooltipContent>
-      </Tooltip>
-      <PopoverContent side="top" align="end" className="w-72 p-1">
-        {/* The gauge reads the window the ring draws (loaded, or held across a
+    <FooterCardRoot card={card}>
+      <FooterCardTrigger
+        card={card}
+        cardId={cardId}
+        aria-label={summary}
+        data-testid="context-window-indicator"
+      >
+        <svg viewBox="0 0 16 16" aria-hidden="true">
+          {/* The track: authored ink (`.br-footline__ring-track`, pickers.css), which a kept
+              trigger deepens so the circle still shows on its strong fill. */}
+          <circle
+            cx="8"
+            cy="8"
+            r={RING_RADIUS}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            className="br-footline__ring-track"
+            data-testid="context-ring-track"
+          />
+          <circle
+            cx="8"
+            cy="8"
+            r={RING_RADIUS}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeDasharray={RING_CIRCUMFERENCE}
+            strokeDashoffset={strokeOffset}
+            className="br-footline__ring-arc"
+            data-testid="context-ring-arc"
+            data-motion-still={arcStill ? '' : undefined}
+            transform="rotate(-90 8 8)"
+          />
+        </svg>
+        {/* Sans with tabular figures (principle 3: mono is for machine
+            strings only), so a figure that changes as tokens stream does
+            not re-measure the line. Hidden from the accessibility tree:
+            the button's name already says it with its subject. */}
+        {showFigure && <span aria-hidden="true">{FOOTER_COPY.contextLeft(remainingPct)}</span>}
+      </FooterCardTrigger>
+      <FooterCard
+        card={card}
+        id={cardId}
+        label={CONTEXT_CARD_COPY.cardLabel}
+        align="end"
+        testId="context-card"
+      >
+        {/* The card reads the window the ring draws (loaded, or held across a
             re-read), so the two never disagree. */}
         <ContextWindowGauge
           totalTokens={totalTokens}
@@ -608,10 +660,10 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
           isTokenLimitLoaded
           onCompact={() => {
             onCompact();
-            setOpen(false);
+            card.close();
           }}
         />
-      </PopoverContent>
-    </Popover>
+      </FooterCard>
+    </FooterCardRoot>
   );
 };

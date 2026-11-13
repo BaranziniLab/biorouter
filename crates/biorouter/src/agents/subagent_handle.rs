@@ -20,6 +20,13 @@
 //!   BR-71 decision 23's replacement for the old poll tool's `cancel: true`) and
 //!   through the BR-42 active-work view, which
 //!   [`crate::agents::subagent_handler::run_complete_subagent_task`] registers.
+//! * **Stopping the parent stops what it started, through one function.**
+//!   Because nothing inherits the parent's token, a stop of the parent (the
+//!   person's Stop, or a decision-model monitor's) reaches its subagents only
+//!   through [`stop_delegated_children`], which closes the parent to new
+//!   continuations, records why on each handle ([`ChildStopCause`]) and stops
+//!   every child with work in flight through [`stop_child_turn`], the same
+//!   per-child step `workspace_close` takes.
 //! * **The fork-bomb guards still apply.** The in-flight counter is incremented
 //!   before the spawn (so a storm of background spawns is refused just like a
 //!   storm of blocking ones) and the concurrency semaphore is acquired *inside*
@@ -27,11 +34,15 @@
 //! * **Handles are process-local and in-memory.** The child *session* is
 //!   persisted as always, but a handle does not survive a restart; a poll after
 //!   a restart reports the handle as unknown rather than inventing a result.
-//! * **Off by default.** `BIOROUTER_SUBAGENT_BACKGROUND` (config or env) gates
-//!   the `subagent` tool's `background` parameter, so the default tool surface
-//!   and the default blocking behaviour are unchanged. Since BR-71 decision 23
-//!   it gates *only* that parameter: collecting a detached child is done with
-//!   the workspace tools, which are advertised on their own terms.
+//!   What does survive is the child's durable outcome record, written when the
+//!   delegated run ends (`subagent_roster::record_outcome`), which is how the
+//!   side panel, `biorouter session subagents` and the terminal UI still show a
+//!   finished child's status after a restart.
+//! * **Every parent-facing spawn runs here.** `handle_subagent_tool` and the
+//!   coding-agent bridge both force `background` on (the supervised default),
+//!   so every delegated child is a handle in this registry.
+//!   `BIOROUTER_SUBAGENT_BACKGROUND` (config or env, default off) now matters
+//!   only to a caller that does not force it, which in this tree is a test.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
@@ -44,6 +55,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agents::subagent_result::SubagentResult;
 use crate::config::Config;
 use crate::conversation::message::Message;
+use crate::workspace_services::WorkspaceServices;
 
 /// Is the async-handle path available at all?
 ///
@@ -160,6 +172,77 @@ pub enum InitialInputDisposition {
     Duplicate,
 }
 
+/// Why a subagent was stopped from outside its own run: the chat that started
+/// it was stopped, so it was stopped with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChildStopCause {
+    /// A decision-model monitor on the chat that started the subagent stopped
+    /// that chat's turn.
+    ParentMonitor { monitor: String },
+    /// The person stopped the chat that started the subagent.
+    ParentStopped,
+    /// A copy of the person's monitor, set on the chat that started the
+    /// subagent to also watch every subagent it starts, stopped a sibling. The
+    /// whole run stops with it.
+    SiblingMonitor { monitor: String, sibling: String },
+}
+
+impl ChildStopCause {
+    /// The sentence the stopped subagent's result opens with, and the notice
+    /// stored in its chat.
+    pub fn sentence(&self) -> String {
+        match self {
+            Self::ParentMonitor { monitor } => format!(
+                "Stopped because monitor '{}' stopped the chat that started this subagent.",
+                one_line(monitor)
+            ),
+            Self::ParentStopped => {
+                "Stopped because the person stopped the chat that started this subagent."
+                    .to_string()
+            }
+            Self::SiblingMonitor { monitor, sibling } => format!(
+                "Stopped because monitor '{}', set by the person to watch every subagent of \
+                 that chat, stopped subagent '{}'.",
+                one_line(monitor),
+                one_line(sibling)
+            ),
+        }
+    }
+}
+
+/// `text` on one line, so a name cannot break the sentence it sits in.
+fn one_line(text: &str) -> String {
+    text.split(|c: char| c.is_whitespace() || c.is_control())
+        .filter(|word| !word.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// One subagent [`stop_delegated_children`] stopped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoppedChild {
+    pub child_session_id: String,
+    /// The handle's title (for a spawn, its task on one line, cut at 80
+    /// characters).
+    pub title: String,
+}
+
+/// What [`stop_child_turn`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChildTurnStop {
+    /// The delegated run (running, or still queued for a slot) was asked to
+    /// stop through its handle. It finishes with whatever it produced so far.
+    DelegatedRun,
+    /// A later turn (one the person or the parent started after the delegated
+    /// run) was cancelled through the daemon; its turn id.
+    Turn(String),
+    /// Nothing was running.
+    Idle,
+    /// No delegated run is in flight and there is no daemon to cancel a later
+    /// turn through.
+    NoDaemon,
+}
+
 #[derive(Debug, Clone)]
 pub struct TerminalGeneration {
     pub generation: u64,
@@ -206,6 +289,10 @@ pub struct BackgroundSubagent {
     /// replacement provider turn has not started yet. During this gap the
     /// original result is historical and the parent must keep supervising.
     continuation_pending: Mutex<ContinuationPendingState>,
+    /// Why [`stop_delegated_children`] stopped the work in flight, read when
+    /// that work ends. The first cause wins. A later turn beginning clears it,
+    /// so a cause never outlives the work it stopped.
+    stop_cause: Mutex<Option<ChildStopCause>>,
 }
 
 impl BackgroundSubagent {
@@ -275,6 +362,7 @@ impl BackgroundSubagent {
             child_turn_generation: AtomicU64::new(0),
             collected_generation: Mutex::new(None),
             continuation_pending: Mutex::new(ContinuationPendingState::default()),
+            stop_cause: Mutex::new(None),
         });
 
         handles.push(handle.clone());
@@ -556,6 +644,17 @@ impl BackgroundSubagent {
         self.result.borrow().is_none()
     }
 
+    /// Registered but not yet running its delegated turn: still waiting for a
+    /// concurrency permit, or its runtime profile is not installed yet. The
+    /// subagent roster shows this as "queued".
+    pub fn is_initializing(&self) -> bool {
+        let state = self
+            .initial_run
+            .lock()
+            .expect("subagent initial-run state poisoned");
+        !state.finished && !state.runtime_ready
+    }
+
     /// The finished result, if the run has ended.
     pub fn result(&self) -> Option<SubagentResult> {
         self.result.borrow().clone()
@@ -570,6 +669,43 @@ impl BackgroundSubagent {
 
     pub fn is_cancelled(&self) -> bool {
         self.cancel.is_cancelled()
+    }
+
+    /// Why the chat that started this subagent stopped its work in flight, if
+    /// it did ([`stop_delegated_children`]). Read when that work ends, to say
+    /// so in its result.
+    pub fn stop_cause(&self) -> Option<ChildStopCause> {
+        self.stop_cause
+            .lock()
+            .expect("subagent stop cause poisoned")
+            .clone()
+    }
+
+    /// Record why the work in flight is being stopped. The first cause wins:
+    /// `false` when one was already recorded.
+    fn record_stop_cause(&self, cause: &ChildStopCause) -> bool {
+        let mut recorded = self
+            .stop_cause
+            .lock()
+            .expect("subagent stop cause poisoned");
+        if recorded.is_some() {
+            return false;
+        }
+        *recorded = Some(cause.clone());
+        true
+    }
+
+    /// Withdraw a cause this stop recorded when it turned out to stop nothing
+    /// (the turn ended on its own first), so it is not read as the reason a
+    /// turn that finished normally ended.
+    fn withdraw_stop_cause(&self, cause: &ChildStopCause) {
+        let mut recorded = self
+            .stop_cause
+            .lock()
+            .expect("subagent stop cause poisoned");
+        if recorded.as_ref() == Some(cause) {
+            *recorded = None;
+        }
     }
 
     pub fn elapsed(&self) -> Duration {
@@ -811,6 +947,200 @@ pub fn begin_parent_closing(parent_session_id: &str) {
     }
 }
 
+/// Stop every subagent `parent_session_id` started that has work in flight,
+/// because the parent itself was stopped: by the person, or by one of its
+/// decision-model monitors. Returns the children it stopped, oldest first.
+///
+/// Children run on their own cancellation token (see the module doc), so
+/// without this a stopped parent's subagents keep running and spending. For
+/// the parent this:
+/// 1. closes it to continuations ([`begin_parent_closing`]), so a
+///    Stop-and-Send on one of its children is refused from here on;
+/// 2. for each child with work in flight (its delegated run, running or still
+///    queued; a later turn the daemon runs; or a continuation waiting to
+///    start) records `cause` on its handle, where the run's result reads it,
+///    and stops it through [`stop_child_turn`].
+///
+/// A finished child is left alone. A run something else already asked to stop
+/// is still reported (it is still unwinding) but keeps its own reason.
+///
+/// Uses the daemon's services when they are installed. Never called with the
+/// handle registry locked: the daemon's turn cancellation takes its own turn
+/// registry lock.
+pub fn stop_delegated_children(
+    parent_session_id: &str,
+    cause: ChildStopCause,
+) -> Vec<StoppedChild> {
+    let services = crate::workspace_services::get();
+    stop_children_with(parent_session_id, None, &cause, services.as_deref())
+}
+
+/// [`stop_delegated_children`] for every child but `except_child_session_id`:
+/// the subagent whose own monitor stopped it, and so stopped the rest of the
+/// run with it.
+pub fn stop_delegated_children_except(
+    parent_session_id: &str,
+    except_child_session_id: &str,
+    cause: ChildStopCause,
+) -> Vec<StoppedChild> {
+    let services = crate::workspace_services::get();
+    stop_children_with(
+        parent_session_id,
+        Some(except_child_session_id),
+        &cause,
+        services.as_deref(),
+    )
+}
+
+/// [`stop_delegated_children`] for only the children `admits` lets through,
+/// for a caller that may not stop every one of them: the HTTP Stop, whose
+/// caller may be refused a child that a mid-run raise made more private than
+/// the chat that started it (`routes::reply::stop_the_chats_subagents`).
+///
+/// A child `admits` refuses is left exactly as it was: not stopped, no cause
+/// recorded, and not in the result. `admits` is asked about every child the
+/// registry holds for the parent when the stop runs, including one registered
+/// after the caller resolved its answers, so a caller that answers from a list
+/// it built beforehand refuses such a child rather than stopping it unasked.
+pub fn stop_delegated_children_admitted(
+    parent_session_id: &str,
+    cause: ChildStopCause,
+    admits: &dyn Fn(&str) -> bool,
+) -> Vec<StoppedChild> {
+    let services = crate::workspace_services::get();
+    stop_children_matching(parent_session_id, admits, &cause, services.as_deref())
+}
+
+/// [`stop_delegated_children`] and [`stop_delegated_children_except`] with the
+/// daemon's services passed in rather than read from the installed ones: for a
+/// caller that holds its own, such as a test of the daemon's turn runner.
+/// `None` stops only what the handles reach in process.
+pub fn stop_children_with(
+    parent_session_id: &str,
+    except_child_session_id: Option<&str>,
+    cause: &ChildStopCause,
+    services: Option<&dyn WorkspaceServices>,
+) -> Vec<StoppedChild> {
+    stop_children_matching(
+        parent_session_id,
+        &|child| except_child_session_id != Some(child),
+        cause,
+        services,
+    )
+}
+
+/// The one implementation behind every stop of a parent's children: each child
+/// with work in flight that `admits` lets through.
+fn stop_children_matching(
+    parent_session_id: &str,
+    admits: &dyn Fn(&str) -> bool,
+    cause: &ChildStopCause,
+    services: Option<&dyn WorkspaceServices>,
+) -> Vec<StoppedChild> {
+    begin_parent_closing(parent_session_id);
+    // A snapshot: the registry lock is released before any service is asked.
+    // The daemon's turn cancellation takes its turn registry lock, and its
+    // Stop-and-Send admission takes this registry while holding that lock
+    // (`mark_continuation_pending_for_turn`), so holding this one across a
+    // service call would invert the order.
+    let handles = list_for_session(parent_session_id);
+    let mut stopped: Vec<StoppedChild> = Vec::new();
+    for handle in handles {
+        let child = handle.child_session_id.as_str();
+        if !admits(child) {
+            continue;
+        }
+        let delegated_run = handle.is_running();
+        let later_turn = !delegated_run && services.is_some_and(|svc| svc.is_turn_active(child));
+        let continuation = handle.continuation_pending();
+        if !(delegated_run || later_turn || continuation) {
+            continue;
+        }
+        // Recorded BEFORE the token trips, so the run's completion, which the
+        // trip wakes, finds it. A run already asked to stop (another agent's
+        // workspace_close, an earlier stop) keeps its own reason.
+        let recorded = !(delegated_run && handle.is_cancelled()) && handle.record_stop_cause(cause);
+        let outcome = stop_child_turn(Some(handle.as_ref()), child, services);
+        let acted = continuation
+            || matches!(
+                outcome,
+                ChildTurnStop::DelegatedRun | ChildTurnStop::Turn(_)
+            );
+        if !acted {
+            // The later turn ended on its own before it could be cancelled.
+            if recorded {
+                handle.withdraw_stop_cause(cause);
+            }
+            continue;
+        }
+        if !stopped.iter().any(|done| done.child_session_id == child) {
+            stopped.push(StoppedChild {
+                child_session_id: child.to_string(),
+                title: handle.title.clone(),
+            });
+        }
+    }
+    stopped
+}
+
+/// Stop the work a child session is doing right now: the one per-child step
+/// of every stop that reaches a subagent from outside it (`workspace_close`
+/// scope `turn`, and [`stop_delegated_children`]).
+///
+/// First abandons any Stop-and-Send continuation waiting to start, through
+/// the daemon when there is one. Then, when `handle` (the caller's handle on
+/// this child) has its delegated run in flight, running or still queued,
+/// trips that run's token; otherwise asks the daemon to cancel the turn it
+/// runs for the child.
+pub fn stop_child_turn(
+    handle: Option<&BackgroundSubagent>,
+    child_session_id: &str,
+    services: Option<&dyn WorkspaceServices>,
+) -> ChildTurnStop {
+    match services {
+        Some(services) => {
+            services.abandon_pending_continuations(child_session_id);
+        }
+        None => {
+            abandon_continuation(child_session_id);
+        }
+    }
+    if let Some(handle) = handle.filter(|handle| handle.is_running()) {
+        handle.cancel();
+        return ChildTurnStop::DelegatedRun;
+    }
+    match services {
+        Some(services) => match services.cancel_turn(child_session_id) {
+            Some(turn_id) => ChildTurnStop::Turn(turn_id),
+            None => ChildTurnStop::Idle,
+        },
+        None => ChildTurnStop::NoDaemon,
+    }
+}
+
+/// Why the chat that started `child_session_id` stopped the later turn it is
+/// running, when it did: a turn the daemon runs after the delegated run
+/// finished (the person typed into the subagent's tab, or the chat that
+/// started it sent it a prompt).
+///
+/// [`stop_delegated_children`] records the cause on the handle and cancels
+/// such a turn through the daemon, which leaves the handle's own token alone,
+/// so the delegated run's completion never reads it. The daemon's turn runner
+/// asks here when a cancelled turn ends, to say why in the turn's result and in
+/// the subagent's own chat. A handle whose delegated run is still in flight
+/// answers nothing: that run's completion reads the cause itself, and two
+/// readers would store the notice twice. A cause recorded for earlier work is
+/// gone by now, because the turn's start cleared it ([`begin_child_turn`],
+/// [`admit_child_turn`]).
+pub fn child_turn_stop_cause(child_session_id: &str) -> Option<ChildStopCause> {
+    HANDLES
+        .lock()
+        .expect("subagent handle registry poisoned")
+        .iter()
+        .filter(|handle| handle.child_session_id == child_session_id && !handle.is_running())
+        .find_map(|handle| handle.stop_cause())
+}
+
 pub fn record_child_turn_terminal(child_session_id: &str, result: SubagentResult) {
     let _decision = SUPERVISION_DECISION_GATE
         .lock()
@@ -923,6 +1253,12 @@ fn advance_child_turn(handle: &BackgroundSubagent) {
         handle.signal_state_change();
         return;
     }
+    // A later turn is new work: a reason recorded for the work before it is
+    // history and must not be read as this turn's.
+    *handle
+        .stop_cause
+        .lock()
+        .expect("subagent stop cause poisoned") = None;
     let was_pending = state.committed || state.reservations > 0;
     if was_pending {
         state.generation = state.generation.wrapping_add(1);
@@ -1251,6 +1587,7 @@ pub fn ensure_direct_followup_handle(
         child_turn_generation: AtomicU64::new(1),
         collected_generation: Mutex::new(Some(0)),
         continuation_pending: Mutex::new(ContinuationPendingState::default()),
+        stop_cause: Mutex::new(None),
     });
     handles.push(Arc::clone(&handle));
     prune_locked(&mut handles, parent_session_id);
@@ -2291,5 +2628,464 @@ mod tests {
         record_child_turn_terminal(&handle.child_session_id, done("second result"));
         assert!(handle.mark_terminal_generation_collected_if_generation(second_generation));
         assert!(handle.latest_generation_collected());
+    }
+
+    // --- Stopping a stopped parent's subagents ---------------------------------
+
+    /// A daemon stand-in that answers which children have a turn in flight,
+    /// and records what was cancelled and abandoned.
+    #[derive(Default)]
+    struct FakeDaemon {
+        active: Mutex<std::collections::HashSet<String>>,
+        /// `cancel_turn` leaves the turn active, as a cancellation that has
+        /// been requested but has not landed yet.
+        cancellation_settles_later: bool,
+        /// `cancel_turn` finds nothing: the turn ended on its own between
+        /// `is_turn_active` and the cancel.
+        turn_ends_before_cancel: bool,
+        cancelled: Mutex<Vec<String>>,
+        abandoned: Mutex<Vec<String>>,
+    }
+
+    impl FakeDaemon {
+        fn with_active(children: &[&str]) -> Self {
+            let daemon = Self::default();
+            daemon
+                .active
+                .lock()
+                .unwrap()
+                .extend(children.iter().map(|child| child.to_string()));
+            daemon
+        }
+        fn cancelled(&self) -> Vec<String> {
+            self.cancelled.lock().unwrap().clone()
+        }
+        fn abandoned(&self) -> Vec<String> {
+            self.abandoned.lock().unwrap().clone()
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl WorkspaceServices for FakeDaemon {
+        fn gui_attached(&self) -> bool {
+            false
+        }
+        fn layout_snapshot(&self) -> Option<serde_json::Value> {
+            None
+        }
+        fn is_turn_active(&self, session_id: &str) -> bool {
+            self.active.lock().unwrap().contains(session_id)
+        }
+        fn cancel_turn(&self, session_id: &str) -> Option<String> {
+            if self.turn_ends_before_cancel {
+                self.active.lock().unwrap().remove(session_id);
+                return None;
+            }
+            let was_active = if self.cancellation_settles_later {
+                self.active.lock().unwrap().contains(session_id)
+            } else {
+                self.active.lock().unwrap().remove(session_id)
+            };
+            if !was_active {
+                return None;
+            }
+            self.cancelled.lock().unwrap().push(session_id.to_string());
+            Some(format!("turn-of-{session_id}"))
+        }
+        fn abandon_pending_continuations(&self, session_id: &str) -> bool {
+            self.abandoned.lock().unwrap().push(session_id.to_string());
+            abandon_continuation(session_id)
+        }
+        fn begin_turn(
+            &self,
+            _session_id: &str,
+            _cancel: CancellationToken,
+        ) -> Result<Box<dyn crate::workspace_services::WorkspaceTurnLease>, String> {
+            Err("not used here".into())
+        }
+        async fn stop_agent(&self, _session_id: &str) -> Result<(), String> {
+            Ok(())
+        }
+        async fn start_detached_turn(
+            &self,
+            _session_id: &str,
+            _message: Message,
+        ) -> Result<String, String> {
+            Err("not used here".into())
+        }
+        async fn start_session(
+            &self,
+            _working_dir: std::path::PathBuf,
+            _extensions: Option<Vec<String>>,
+            _knowledge_bases: Vec<String>,
+            _primary: crate::workspace_services::KbPrimaryChoice,
+        ) -> Result<String, String> {
+            Err("not used here".into())
+        }
+        fn set_knowledge_bases(
+            &self,
+            _session_id: &str,
+            _kbs: &[String],
+            _primary: crate::workspace_services::KbPrimaryChoice,
+        ) -> Result<crate::workspace_services::KbSelectionView, String> {
+            Ok(Default::default())
+        }
+        fn knowledge_selection(
+            &self,
+            _session_id: &str,
+        ) -> crate::workspace_services::KbSelectionView {
+            Default::default()
+        }
+        async fn gui_command(
+            &self,
+            _frame: serde_json::Value,
+            _wait_result: bool,
+        ) -> Result<serde_json::Value, String> {
+            Err("no GUI attached".into())
+        }
+    }
+
+    fn child_of(parent: &str, child: &str, title: &str) -> Arc<BackgroundSubagent> {
+        BackgroundSubagent::register(parent, child, title, CancellationToken::new())
+    }
+
+    fn queued_child_of(parent: &str, child: &str, title: &str) -> Arc<BackgroundSubagent> {
+        BackgroundSubagent::register_initializing(parent, child, title, CancellationToken::new())
+    }
+
+    fn monitor_cause(name: &str) -> ChildStopCause {
+        ChildStopCause::ParentMonitor {
+            monitor: name.to_string(),
+        }
+    }
+
+    /// The parent stopped, so its children stop: a running delegated run and
+    /// one still queued for a slot are cancelled through their own tokens, a
+    /// later turn the daemon runs is cancelled through the daemon, the parent
+    /// refuses Stop-and-Send from then on, and each handle says why.
+    #[test]
+    #[serial_test::serial(workspace_services)]
+    fn stop_delegated_children_cancels_running_and_queued_children_and_closes_the_parent() {
+        let parent = "p06-stop-parent";
+        let running = child_of(parent, "p06-stop-running", "count to sixty");
+        let queued = queued_child_of(parent, "p06-stop-queued", "wait for a slot");
+        // Its delegated run finished; the person continued it from its tab,
+        // and that later turn is running in the daemon.
+        let later = child_of(parent, "p06-stop-later", "continued by the person");
+        later.complete(done("the delegated run"));
+        let daemon = Arc::new(FakeDaemon::with_active(&[
+            "p06-stop-running",
+            "p06-stop-later",
+        ]));
+        crate::workspace_services::set_for_tests(Some(daemon.clone()));
+
+        let stopped = stop_delegated_children(parent, monitor_cause("fanout"));
+        crate::workspace_services::clear_test_override();
+
+        assert_eq!(
+            stopped,
+            vec![
+                StoppedChild {
+                    child_session_id: "p06-stop-running".into(),
+                    title: "count to sixty".into(),
+                },
+                StoppedChild {
+                    child_session_id: "p06-stop-queued".into(),
+                    title: "wait for a slot".into(),
+                },
+                StoppedChild {
+                    child_session_id: "p06-stop-later".into(),
+                    title: "continued by the person".into(),
+                },
+            ]
+        );
+        assert!(
+            running.is_cancelled(),
+            "a running delegated run is cancelled"
+        );
+        assert!(queued.is_cancelled(), "a queued delegated run is cancelled");
+        assert!(
+            !later.is_cancelled(),
+            "a finished run's token is not the later turn's"
+        );
+        assert_eq!(
+            daemon.cancelled(),
+            vec!["p06-stop-later".to_string()],
+            "only the later turn goes through the daemon: the delegated runs' own tokens are \
+             the ones their daemon turns hold"
+        );
+        assert_eq!(
+            daemon.abandoned(),
+            vec![
+                "p06-stop-running".to_string(),
+                "p06-stop-queued".to_string(),
+                "p06-stop-later".to_string(),
+            ],
+            "every stopped child's pending continuation is abandoned through the daemon"
+        );
+        for handle in [&running, &queued, &later] {
+            assert_eq!(handle.stop_cause(), Some(monitor_cause("fanout")));
+        }
+
+        // The parent is closing: a Stop-and-Send on any of its children is
+        // refused, so none can be restarted behind the stop.
+        for handle in [&running, &queued, &later] {
+            let refused = mark_continuation_pending(&handle.child_session_id);
+            assert!(refused.refused_parent_closing());
+            assert!(!handle.continuation_pending());
+        }
+    }
+
+    /// A finished child has nothing to stop, and another chat's children are
+    /// not this chat's to stop.
+    #[test]
+    fn it_leaves_finished_children_and_other_parents_children_alone() {
+        let parent = "p06-alone-parent";
+        let finished = child_of(parent, "p06-alone-finished", "already done");
+        finished.complete(done("finished before the stop"));
+        let other = child_of(
+            "p06-alone-other-parent",
+            "p06-alone-other",
+            "someone else's",
+        );
+        let daemon = FakeDaemon::default();
+
+        let stopped =
+            stop_children_with(parent, None, &ChildStopCause::ParentStopped, Some(&daemon));
+
+        assert!(stopped.is_empty(), "nothing was in flight: {stopped:?}");
+        assert_eq!(finished.stop_cause(), None);
+        assert_eq!(
+            finished.result().unwrap().summary,
+            "finished before the stop",
+            "a finished result is not touched"
+        );
+        assert!(daemon.cancelled().is_empty());
+        assert!(daemon.abandoned().is_empty());
+
+        assert!(!other.is_cancelled());
+        assert_eq!(other.stop_cause(), None);
+        let admitted = mark_continuation_pending(&other.child_session_id);
+        assert!(
+            !admitted.refused_parent_closing(),
+            "another chat stays open to continuations"
+        );
+        admitted.rollback();
+    }
+
+    /// The subagent whose own monitor stopped it is not stopped a second time
+    /// by the stop it set off; its siblings are, and say whose monitor did it.
+    #[test]
+    #[serial_test::serial(workspace_services)]
+    fn the_except_variant_spares_the_stopping_child() {
+        let parent = "p06-except-parent";
+        let stopper = child_of(parent, "p06-except-stopper", "deletes a file");
+        let first = child_of(parent, "p06-except-first", "counts");
+        let second = queued_child_of(parent, "p06-except-second", "also counts");
+        let cause = ChildStopCause::SiblingMonitor {
+            monitor: "rm".into(),
+            sibling: "deletes a file".into(),
+        };
+        crate::workspace_services::set_for_tests(None);
+
+        let stopped = stop_delegated_children_except(parent, "p06-except-stopper", cause.clone());
+        crate::workspace_services::clear_test_override();
+
+        let ids: Vec<&str> = stopped
+            .iter()
+            .map(|child| child.child_session_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["p06-except-first", "p06-except-second"]);
+        assert!(first.is_cancelled() && second.is_cancelled());
+        assert_eq!(first.stop_cause(), Some(cause.clone()));
+        assert_eq!(second.stop_cause(), Some(cause));
+        assert!(
+            !stopper.is_cancelled(),
+            "the stopping child ends through its own monitor's stop"
+        );
+        assert_eq!(stopper.stop_cause(), None);
+        // The parent closes with it: the escalation stops the whole run.
+        assert!(mark_continuation_pending(&stopper.child_session_id).refused_parent_closing());
+    }
+
+    /// The first reason recorded is the one the child reports, a run that was
+    /// already stopping keeps its own (none), and a later turn starts clean.
+    #[test]
+    fn the_first_cause_wins() {
+        let parent = "p06-first-parent";
+        let running = child_of(parent, "p06-first-running", "running");
+        let first = monitor_cause("budget");
+        assert_eq!(
+            stop_children_with(parent, None, &first, None).len(),
+            1,
+            "the running child is stopped"
+        );
+        let again = stop_children_with(parent, None, &ChildStopCause::ParentStopped, None);
+        assert_eq!(
+            again.len(),
+            1,
+            "a child still unwinding is still reported, so the parent waits for it"
+        );
+        assert_eq!(running.stop_cause(), Some(first.clone()));
+
+        // A later turn the daemon runs, whose cancellation has not landed yet,
+        // is stopped twice: the second stop's reason does not replace the
+        // first.
+        let later = child_of(parent, "p06-first-later", "continued");
+        later.complete(done("delegated run"));
+        let daemon = FakeDaemon {
+            cancellation_settles_later: true,
+            ..FakeDaemon::with_active(&["p06-first-later"])
+        };
+        let sibling = ChildStopCause::SiblingMonitor {
+            monitor: "rm".into(),
+            sibling: "deletes a file".into(),
+        };
+        stop_children_with(parent, None, &sibling, Some(&daemon));
+        stop_children_with(parent, None, &ChildStopCause::ParentStopped, Some(&daemon));
+        assert_eq!(later.stop_cause(), Some(sibling));
+        assert_eq!(daemon.cancelled().len(), 2, "both stops asked the daemon");
+
+        // The next turn is new work; the old reason is not its reason.
+        begin_child_turn(&later.child_session_id);
+        assert_eq!(later.stop_cause(), None);
+
+        // A run something else had already asked to stop (another agent's
+        // workspace_close) keeps no reason of ours.
+        let closed = child_of("p06-first-closed-parent", "p06-first-closed", "closed");
+        closed.cancel();
+        let reported = stop_children_with(
+            "p06-first-closed-parent",
+            None,
+            &ChildStopCause::ParentStopped,
+            None,
+        );
+        assert_eq!(reported.len(), 1);
+        assert_eq!(closed.stop_cause(), None);
+    }
+
+    /// A later turn that ended on its own between the check and the cancel was
+    /// not stopped: it is not reported, and no reason is left on its handle.
+    #[test]
+    fn a_stop_that_finds_the_turn_already_over_records_nothing() {
+        let parent = "p06-raced-parent";
+        let later = child_of(parent, "p06-raced-later", "just finished");
+        later.complete(done("delegated run"));
+        let daemon = FakeDaemon {
+            turn_ends_before_cancel: true,
+            ..FakeDaemon::with_active(&["p06-raced-later"])
+        };
+
+        let stopped =
+            stop_children_with(parent, None, &ChildStopCause::ParentStopped, Some(&daemon));
+
+        assert!(stopped.is_empty(), "{stopped:?}");
+        assert_eq!(later.stop_cause(), None);
+    }
+
+    /// Item B, a later turn: the daemon's turn runner reads why the chat that
+    /// started the subagent stopped the turn, which the cascade stopped through
+    /// the daemon and so never tripped the handle's own token. A delegated run
+    /// still in flight answers nothing, because its own completion says why,
+    /// and the next turn starts with no reason.
+    #[test]
+    fn a_later_turn_stopped_with_its_parent_reads_why() {
+        let parent = "p06-later-reads-parent";
+        let running = child_of(parent, "p06-later-reads-running", "running");
+        let later = child_of(parent, "p06-later-reads-later", "continued");
+        begin_child_turn(&later.child_session_id);
+        later.complete(done("delegated run"));
+        assert!(admit_child_turn(&later.child_session_id));
+        let daemon = FakeDaemon::with_active(&["p06-later-reads-later"]);
+        let cause = monitor_cause("budget");
+
+        let stopped = stop_children_with(parent, None, &cause, Some(&daemon));
+
+        assert_eq!(stopped.len(), 2, "{stopped:?}");
+        assert!(
+            !later.is_cancelled(),
+            "the later turn stops through the daemon"
+        );
+        assert_eq!(child_turn_stop_cause("p06-later-reads-later"), Some(cause));
+        assert_eq!(
+            running.stop_cause(),
+            Some(monitor_cause("budget")),
+            "the delegated run's completion reads it"
+        );
+        assert_eq!(child_turn_stop_cause("p06-later-reads-running"), None);
+        assert_eq!(child_turn_stop_cause("p06-later-reads-nobody"), None);
+
+        begin_child_turn(&later.child_session_id);
+        assert_eq!(child_turn_stop_cause("p06-later-reads-later"), None);
+        running.complete(done("cleanup"));
+    }
+
+    /// The per-child step `workspace_close` takes: a delegated run through its
+    /// handle, a later turn through the daemon, and nothing without one.
+    #[test]
+    fn stop_child_turn_stops_the_work_in_flight() {
+        let running = child_of("p06-step-parent", "p06-step-running", "running");
+        let daemon = FakeDaemon::with_active(&["p06-step-running", "p06-step-later"]);
+        assert_eq!(
+            stop_child_turn(Some(&*running), "p06-step-running", Some(&daemon)),
+            ChildTurnStop::DelegatedRun
+        );
+        assert!(running.is_cancelled());
+        assert!(daemon.cancelled().is_empty());
+
+        assert_eq!(
+            stop_child_turn(None, "p06-step-later", Some(&daemon)),
+            ChildTurnStop::Turn("turn-of-p06-step-later".into())
+        );
+        assert_eq!(
+            stop_child_turn(None, "p06-step-later", Some(&daemon)),
+            ChildTurnStop::Idle
+        );
+        assert_eq!(
+            daemon.abandoned(),
+            vec![
+                "p06-step-running".to_string(),
+                "p06-step-later".to_string(),
+                "p06-step-later".to_string(),
+            ]
+        );
+        assert_eq!(
+            stop_child_turn(None, "p06-step-later", None),
+            ChildTurnStop::NoDaemon
+        );
+
+        // Without a daemon a waiting Stop-and-Send continuation is still
+        // abandoned, in process.
+        let resumed = child_of("p06-step-parent-2", "p06-step-resumed", "resumed");
+        begin_child_turn(&resumed.child_session_id);
+        resumed.complete(done("original"));
+        mark_continuation_pending(&resumed.child_session_id).commit();
+        assert!(resumed.continuation_pending());
+        assert_eq!(
+            stop_child_turn(Some(&*resumed), "p06-step-resumed", None),
+            ChildTurnStop::NoDaemon
+        );
+        assert!(!resumed.continuation_pending());
+    }
+
+    #[test]
+    fn each_cause_says_why_in_one_line() {
+        assert_eq!(
+            monitor_cause("fan\nout").sentence(),
+            "Stopped because monitor 'fan out' stopped the chat that started this subagent."
+        );
+        assert_eq!(
+            ChildStopCause::ParentStopped.sentence(),
+            "Stopped because the person stopped the chat that started this subagent."
+        );
+        assert_eq!(
+            ChildStopCause::SiblingMonitor {
+                monitor: "rm".into(),
+                sibling: "delete\tthe file".into(),
+            }
+            .sentence(),
+            "Stopped because monitor 'rm', set by the person to watch every subagent of that \
+             chat, stopped subagent 'delete the file'."
+        );
     }
 }

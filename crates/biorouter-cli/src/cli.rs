@@ -786,6 +786,107 @@ enum SessionCommand {
         )]
         user_action_key_stdin: bool,
     },
+    #[command(
+        about = "List the subagents a session started, with their status, model and setup",
+        long_about = "Lists the subagents a session started, oldest first: each one's status, \
+                      model, extensions, skills and knowledge bases, tool calls and run time, and \
+                      the first line of its result. When the session's agent declared a phase \
+                      plan, the plan comes first, with each phase's progress. With a running \
+                      daemon the status is live; without one the list is read from the local \
+                      session store, and a subagent that was running reads as interrupted or \
+                      unknown. Follow a running subagent with `biorouter session attach <id>`."
+    )]
+    Subagents {
+        /// Session id of the parent chat.
+        session_id: String,
+        #[arg(
+            short,
+            long,
+            value_enum,
+            default_value_t = crate::commands::session_subagents::SubagentsFormat::Text,
+            help = "Output format (text, json)"
+        )]
+        format: crate::commands::session_subagents::SubagentsFormat,
+        #[arg(long, help = "Redraw every 2 seconds until Ctrl-C")]
+        watch: bool,
+        #[arg(
+            long,
+            help = "For a daemon started with a user-action key: read the raw key from the first line of stdin, so a private chat's subagents can be listed"
+        )]
+        user_action_key_stdin: bool,
+    },
+    #[command(
+        about = "List a session's decision-model calls: aggregates first, then a page of calls",
+        long_about = "Lists the decision-model calls one session made. The aggregates come \
+                      first: one line per source (monitor, tool, gate, chat, adhoc) and \
+                      criterion, then one line per source for each recent turn. A page of \
+                      individual calls follows, newest first, with the filters below and a \
+                      cursor for the next page. With a running daemon the calls come from it; \
+                      without one they are read from the local session store."
+    )]
+    Decisions {
+        /// Session id of the chat.
+        session_id: String,
+        #[command(flatten)]
+        filters: crate::commands::session_decisions::DecisionFilters,
+        #[arg(long, help = "Print JSON (the summary and the page) instead of text")]
+        json: bool,
+        #[arg(
+            long,
+            help = "For a daemon started with a user-action key: read the raw key from the first line of stdin, so a private chat's decisions can be listed"
+        )]
+        user_action_key_stdin: bool,
+    },
+    #[command(
+        about = "List, add or remove the decision-model monitors that watch a session",
+        long_about = "A monitor asks a decision model one question about the session's recent \
+                      messages after each agent iteration, or once as a turn ends. When the \
+                      probability of the wanted answer reaches its threshold, it stops the turn, \
+                      shows a notice, or tells the model. With a running daemon the monitors are \
+                      read and written through it; without one, in the local session store."
+    )]
+    Monitors {
+        /// Session id of the chat.
+        session_id: String,
+        #[command(subcommand)]
+        command: crate::commands::session_monitors::MonitorsCommand,
+        #[arg(
+            long,
+            global = true,
+            help = "For a daemon started with a user-action key: read the raw key from the first line of stdin, instead of being asked for it on the terminal"
+        )]
+        user_action_key_stdin: bool,
+    },
+    #[command(
+        about = "List a session's phase gates, or set, remove, pass, skip or retry one",
+        long_about = "A phase gate asks a decision model yes/no questions about a phase's \
+                      hand-off before the phase may complete, and holds every phase listed \
+                      after it until it passes. Whoever set a gate (the agent, you, or the \
+                      workflow the chat was started from), the agent cannot change, remove or \
+                      skip it: only you can, here or in the app. With no subcommand the gates \
+                      are listed. With a running daemon they are read and written through it; \
+                      without one, in the local session store."
+    )]
+    Gates {
+        /// Session id of the chat whose plan holds the phases.
+        session_id: String,
+        #[command(subcommand)]
+        command: Option<crate::commands::session_gates::GatesCommand>,
+        #[arg(
+            long,
+            global = true,
+            value_enum,
+            default_value_t = crate::commands::session_gates::GatesFormat::Text,
+            help = "Output format (text, json)"
+        )]
+        format: crate::commands::session_gates::GatesFormat,
+        #[arg(
+            long,
+            global = true,
+            help = "For a daemon started with a user-action key: read the raw key from the first line of stdin, instead of being asked for it on the terminal"
+        )]
+        user_action_key_stdin: bool,
+    },
     #[command(about = "Stop the turn a session is running (idempotent)")]
     Cancel {
         /// Session id whose running turn should be stopped.
@@ -1096,6 +1197,45 @@ enum ModelsCommand {
     Local {
         #[command(subcommand)]
         command: LocalModelCommand,
+    },
+
+    /// Decision models: fast models that answer a typed question with probabilities
+    #[command(about = "List the decision models this machine can use")]
+    Decision {
+        #[command(subcommand)]
+        command: DecisionModelCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum DecisionModelCommand {
+    /// List the decision models available now, local first
+    #[command(
+        about = "List the decision models available now, with tier, context, kinds and adapter",
+        visible_alias = "ls"
+    )]
+    List {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+    },
+    /// Install a decision model into the Ollama on this computer
+    #[command(
+        about = "Install a decision model into the Ollama on this computer (default tev1:0.8b)",
+        long_about = "Downloads a decision model Biorouter offers (tev1:0.8b, about 1.5 GB, or \
+                      clef-flash:latest, about 12 GB) into the Ollama that OLLAMA_HOST names, \
+                      which must run on this computer, and checks that Ollama answers decisions \
+                      with it. A decision model on this computer is the only kind that may read \
+                      a private chat. No daemon is needed: the next model listing sees it."
+    )]
+    Pull {
+        /// The model to install: tev1:0.8b (the default) or clef-flash:latest.
+        #[arg(value_name = "MODEL")]
+        model: Option<String>,
     },
 }
 
@@ -2083,6 +2223,21 @@ enum Command {
         command: WorkflowCommand,
     },
 
+    /// Ask a decision model one typed question about a text
+    #[command(
+        about = "Ask a decision model one typed question about a text, with probabilities",
+        long_about = "Asks a decision model one question about a text and prints the answer \
+                      with the probability of every outcome, drawn as bars. The question is yes \
+                      or no by default; --choice makes it a choice between named options and \
+                      --levels a score. The text comes from stdin, --text, or one file per \
+                      decision with --batch <DIR>, which also prints a summary table. With \
+                      --session the decision is recorded in that chat's decision log, and the \
+                      chat's privacy tier decides which decision models may read the text. \
+                      Without one, a model hosted outside your institution is named in a \
+                      warning before anything is sent."
+    )]
+    Decide(crate::commands::decide::DecideOptions),
+
     /// Inspect and update model/provider configuration
     #[command(about = "Inspect and update model/provider configuration")]
     Models {
@@ -2492,6 +2647,7 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Transcribe { .. }) => "transcribe",
         Some(Command::Dictate { .. }) => "dictate",
         Some(Command::Dictionary { .. }) => "dictionary",
+        Some(Command::Decide(_)) => "decide",
         Some(Command::Knowledge { .. }) => "knowledge",
         Some(Command::Extension { .. }) => "extension",
         Some(Command::Skill { .. }) => "skill",
@@ -2613,6 +2769,60 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
                 name,
                 of,
                 read_only,
+                user_action_key_stdin,
+            )
+            .await?;
+        }
+        SessionCommand::Subagents {
+            session_id,
+            format,
+            watch,
+            user_action_key_stdin,
+        } => {
+            crate::commands::session_subagents::handle_session_subagents(
+                &session_id,
+                format,
+                watch,
+                user_action_key_stdin,
+            )
+            .await?;
+        }
+        SessionCommand::Decisions {
+            session_id,
+            filters,
+            json,
+            user_action_key_stdin,
+        } => {
+            crate::commands::session_decisions::handle_session_decisions(
+                &session_id,
+                filters,
+                json,
+                user_action_key_stdin,
+            )
+            .await?;
+        }
+        SessionCommand::Monitors {
+            session_id,
+            command,
+            user_action_key_stdin,
+        } => {
+            crate::commands::session_monitors::handle_session_monitors(
+                &session_id,
+                command,
+                user_action_key_stdin,
+            )
+            .await?;
+        }
+        SessionCommand::Gates {
+            session_id,
+            command,
+            format,
+            user_action_key_stdin,
+        } => {
+            crate::commands::session_gates::handle_session_gates(
+                &session_id,
+                command,
+                format,
                 user_action_key_stdin,
             )
             .await?;
@@ -3260,6 +3470,14 @@ async fn handle_models_subcommand(command: ModelsCommand) -> Result<()> {
                 crate::commands::models::handle_models_local_rm(model).await
             }
         },
+        ModelsCommand::Decision { command } => match command {
+            DecisionModelCommand::List { format } => {
+                crate::commands::decide::handle_models_decision_list(&format).await
+            }
+            DecisionModelCommand::Pull { model } => {
+                crate::commands::decision_pull::handle_models_decision_pull(model).await
+            }
+        },
     }
 }
 
@@ -3686,6 +3904,7 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
         Some(Command::SetupPath {}) => crate::commands::doctor::handle_setup_path().await,
         Some(Command::Bench { cmd }) => handle_bench_command(cmd).await,
         Some(Command::Workflow { command }) => handle_workflow_subcommand(command),
+        Some(Command::Decide(options)) => crate::commands::decide::handle_decide(options).await,
         Some(Command::Models { command }) => handle_models_subcommand(command).await,
         Some(Command::Dictation { command }) => match command {
             DictationCommand::Status { format, verbose } => {
@@ -3844,6 +4063,361 @@ mod cli_tests {
         root.build();
         walk(&mut root, "biorouter", &mut leaks);
         assert!(leaks.is_empty(), "internal notes in --help: {leaks:#?}");
+    }
+
+    #[test]
+    fn session_subagents_parses_its_id_format_and_watch() {
+        use crate::commands::session_subagents::SubagentsFormat;
+        let parse = |argv: &[&str]| -> Option<SessionCommand> {
+            match Cli::try_parse_from(argv).ok()?.command {
+                Some(Command::Session { command, .. }) => command,
+                _ => None,
+            }
+        };
+
+        let Some(SessionCommand::Subagents {
+            session_id,
+            format,
+            watch,
+            user_action_key_stdin,
+        }) = parse(&["biorouter", "session", "subagents", "20261104_1"])
+        else {
+            panic!("`session subagents <id>` did not parse as the subagents command");
+        };
+        assert_eq!(session_id, "20261104_1");
+        assert_eq!(format, SubagentsFormat::Text, "text is the default");
+        assert!(!watch && !user_action_key_stdin);
+
+        let Some(SessionCommand::Subagents { format, watch, .. }) = parse(&[
+            "biorouter",
+            "session",
+            "subagents",
+            "20261104_1",
+            "--format",
+            "json",
+            "--watch",
+        ]) else {
+            panic!("`--format json --watch` did not parse");
+        };
+        assert_eq!(format, SubagentsFormat::Json);
+        assert!(watch);
+
+        let Some(SessionCommand::Subagents {
+            user_action_key_stdin,
+            ..
+        }) = parse(&[
+            "biorouter",
+            "session",
+            "subagents",
+            "20261104_1",
+            "-f",
+            "text",
+            "--user-action-key-stdin",
+        ])
+        else {
+            panic!("`-f text --user-action-key-stdin` did not parse");
+        };
+        assert!(user_action_key_stdin);
+
+        // The id is required, and a format it does not know is refused rather
+        // than read as text.
+        assert!(Cli::try_parse_from(["biorouter", "session", "subagents"]).is_err());
+        assert!(Cli::try_parse_from([
+            "biorouter",
+            "session",
+            "subagents",
+            "20261104_1",
+            "--format",
+            "yaml"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn decide_parses_as_a_top_level_command() {
+        let parsed = Cli::try_parse_from([
+            "biorouter",
+            "decide",
+            "--model",
+            "ollama_decision/tev1:0.8b",
+            "--ask",
+            "Is an EDSS score stated?",
+            "--threshold",
+            "0.8",
+            "--json",
+        ])
+        .expect("decide parses");
+        let Some(Command::Decide(options)) = parsed.command else {
+            panic!("not the decide command");
+        };
+        assert_eq!(options.model.as_deref(), Some("ollama_decision/tev1:0.8b"));
+        assert_eq!(options.ask, "Is an EDSS score stated?");
+        assert_eq!(options.threshold, Some(0.8));
+        assert!(options.json && options.session.is_none() && options.batch.is_none());
+        assert_eq!(get_command_name(&Some(Command::Decide(options))), "decide");
+        assert!(
+            Cli::try_parse_from(["biorouter", "decide"]).is_err(),
+            "--ask is required"
+        );
+    }
+
+    #[test]
+    fn models_decision_list_parses() {
+        let parsed = Cli::try_parse_from([
+            "biorouter",
+            "models",
+            "decision",
+            "list",
+            "--format",
+            "json",
+        ])
+        .expect("models decision list parses");
+        let Some(Command::Models {
+            command:
+                ModelsCommand::Decision {
+                    command: DecisionModelCommand::List { format },
+                },
+        }) = parsed.command
+        else {
+            panic!("not models decision list");
+        };
+        assert_eq!(format, "json");
+        assert!(Cli::try_parse_from(["biorouter", "models", "decision", "ls"]).is_ok());
+
+        // `pull` installs the default unless a model is named.
+        let pull = |argv: &[&str]| -> Option<Option<String>> {
+            match Cli::try_parse_from(argv).ok()?.command {
+                Some(Command::Models {
+                    command:
+                        ModelsCommand::Decision {
+                            command: DecisionModelCommand::Pull { model },
+                        },
+                }) => Some(model),
+                _ => None,
+            }
+        };
+        assert_eq!(
+            pull(&["biorouter", "models", "decision", "pull"]),
+            Some(None)
+        );
+        assert_eq!(
+            pull(&[
+                "biorouter",
+                "models",
+                "decision",
+                "pull",
+                "clef-flash:latest"
+            ]),
+            Some(Some("clef-flash:latest".to_string()))
+        );
+        assert_eq!(
+            crate::commands::decision_pull::requested_model(None),
+            "tev1:0.8b"
+        );
+        assert!(Cli::try_parse_from([
+            "biorouter",
+            "models",
+            "decision",
+            "list",
+            "--format",
+            "yaml"
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn session_decisions_and_monitors_parse() {
+        use crate::commands::session_decisions::{OutcomeArg, SourceArg};
+        use crate::commands::session_monitors::MonitorsCommand;
+        let parse = |argv: &[&str]| -> Option<SessionCommand> {
+            match Cli::try_parse_from(argv).ok()?.command {
+                Some(Command::Session { command, .. }) => command,
+                _ => None,
+            }
+        };
+
+        let Some(SessionCommand::Decisions {
+            session_id,
+            filters,
+            json,
+            user_action_key_stdin,
+        }) = parse(&[
+            "biorouter",
+            "session",
+            "decisions",
+            "20261104_1",
+            "--source",
+            "tool",
+            "--turn",
+            "t1",
+            "--outcome",
+            "error",
+            "--errors",
+            "-l",
+            "50",
+            "--json",
+        ])
+        else {
+            panic!("`session decisions` did not parse");
+        };
+        assert_eq!(session_id, "20261104_1");
+        assert_eq!(filters.source, Some(SourceArg::Tool));
+        assert_eq!(filters.turn.as_deref(), Some("t1"));
+        assert_eq!(filters.outcome, Some(OutcomeArg::Error));
+        assert!(filters.errors && json && !user_action_key_stdin);
+        assert_eq!(filters.limit, 50);
+
+        let Some(SessionCommand::Decisions { filters, .. }) =
+            parse(&["biorouter", "session", "decisions", "20261104_1"])
+        else {
+            panic!("bare `session decisions <id>` did not parse");
+        };
+        assert_eq!(
+            filters.limit,
+            crate::commands::session_decisions::DEFAULT_LIMIT
+        );
+        assert!(parse(&["biorouter", "session", "decisions"]).is_none());
+        assert!(parse(&[
+            "biorouter",
+            "session",
+            "decisions",
+            "s1",
+            "--source",
+            "everything"
+        ])
+        .is_none());
+
+        let Some(SessionCommand::Monitors {
+            session_id,
+            command: MonitorsCommand::Add(add),
+            user_action_key_stdin,
+        }) = parse(&[
+            "biorouter",
+            "session",
+            "monitors",
+            "20261104_1",
+            "add",
+            "--name",
+            "Form reached",
+            "--ask",
+            "Has the agent reached the consent form?",
+            "--threshold",
+            "0.85",
+            "--action",
+            "stop",
+            "--user-action-key-stdin",
+        ])
+        else {
+            panic!("`session monitors <id> add` did not parse");
+        };
+        assert_eq!(session_id, "20261104_1");
+        assert_eq!(add.name, "Form reached");
+        assert!(
+            user_action_key_stdin,
+            "the key flag is global to the subcommands"
+        );
+
+        assert!(matches!(
+            parse(&["biorouter", "session", "monitors", "s1", "list"]),
+            Some(SessionCommand::Monitors {
+                command: MonitorsCommand::List { json: false },
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse(&[
+                "biorouter",
+                "session",
+                "monitors",
+                "s1",
+                "remove",
+                "form-reached"
+            ]),
+            Some(SessionCommand::Monitors {
+                command: MonitorsCommand::Remove { .. },
+                ..
+            })
+        ));
+        assert!(parse(&["biorouter", "session", "monitors", "s1"]).is_none());
+    }
+
+    #[test]
+    fn session_gates_parses_with_and_without_a_subcommand() {
+        use crate::commands::session_gates::{GatesCommand, GatesFormat};
+        let parse = |argv: &[&str]| -> Option<SessionCommand> {
+            match Cli::try_parse_from(argv).ok()?.command {
+                Some(Command::Session { command, .. }) => command,
+                _ => None,
+            }
+        };
+        // Bare, it lists, in text.
+        let Some(SessionCommand::Gates {
+            session_id,
+            command: None,
+            format: GatesFormat::Text,
+            user_action_key_stdin: false,
+        }) = parse(&["biorouter", "session", "gates", "20261106_1"])
+        else {
+            panic!("bare `session gates <id>` did not parse");
+        };
+        assert_eq!(session_id, "20261106_1");
+        // `--format` and the key flag are global to the subcommands.
+        assert!(matches!(
+            parse(&[
+                "biorouter",
+                "session",
+                "gates",
+                "s1",
+                "list",
+                "--format",
+                "json"
+            ]),
+            Some(SessionCommand::Gates {
+                command: Some(GatesCommand::List),
+                format: GatesFormat::Json,
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse(&["biorouter", "session", "gates", "s1", "--format", "json"]),
+            Some(SessionCommand::Gates {
+                command: None,
+                format: GatesFormat::Json,
+                ..
+            })
+        ));
+        let Some(SessionCommand::Gates {
+            command: Some(GatesCommand::Set(set)),
+            user_action_key_stdin: true,
+            ..
+        }) = parse(&[
+            "biorouter",
+            "session",
+            "gates",
+            "s1",
+            "set",
+            "research",
+            "--ask",
+            "facts=Does the hand-off list two facts about the moon?",
+            "--threshold",
+            "0.3",
+            "--user-action-key-stdin",
+        ])
+        else {
+            panic!("`session gates <id> set` did not parse");
+        };
+        assert_eq!(set.phase, "research");
+        assert_eq!(set.threshold, Some(0.3));
+        for word in ["remove", "pass", "skip", "retry"] {
+            assert!(
+                parse(&["biorouter", "session", "gates", "s1", word, "research"]).is_some(),
+                "{word}"
+            );
+        }
+        assert!(
+            parse(&["biorouter", "session", "gates"]).is_none(),
+            "an id is needed"
+        );
     }
 
     #[test]

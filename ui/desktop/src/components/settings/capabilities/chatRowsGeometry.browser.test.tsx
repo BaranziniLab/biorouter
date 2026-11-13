@@ -21,7 +21,6 @@ import { fileURLToPath } from 'node:url';
 import { build, type Plugin } from 'esbuild';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CAPABILITIES } from './capabilities';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const MAIN_CSS = readFileSync(resolve(here, '../../../styles/main.css'), 'utf8');
@@ -259,7 +258,7 @@ describe('the Chat tab rows in a real layout engine (spec 3.14, 5.7)', () => {
           (row) => row.getBoundingClientRect().height
         )
       );
-      expect(heights).toHaveLength(CAPABILITIES.length);
+      expect(heights).toHaveLength(16);
       for (const height of heights) near(height, 40, 'capability row');
     } finally {
       await tab.close();

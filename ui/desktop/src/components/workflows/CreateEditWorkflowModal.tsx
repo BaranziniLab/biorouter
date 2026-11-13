@@ -11,6 +11,11 @@ import { toastSuccess, toastError } from '../../toasts';
 import { saveWorkflow } from '../../workflow/workflow_management';
 import { storeSubscriptionCleanup } from '../../utils/storeSubscription';
 import { workflowFormCopy as copy } from './copy';
+import { WorkflowSupervisionSummary } from '../ui/WorkflowWarningModal';
+
+/** Under the summary of the monitors and phase gates a workflow declares. */
+export const SUPERVISION_KEPT =
+  'Monitors and phase gates are edited in the workflow file; saving here keeps them.';
 
 interface CreateEditWorkflowModalProps {
   isOpen: boolean;
@@ -278,6 +283,14 @@ export default function CreateEditWorkflowModal({
 
   if (!isOpen) return null;
 
+  const supervision =
+    workflow?.decision_settings || workflow?.orchestration_plan
+      ? {
+          decisionSettings: workflow.decision_settings,
+          orchestrationPlan: workflow.orchestration_plan,
+        }
+      : null;
+
   // A workflow that does not exist yet is created, not saved (spec 3.10); the same two buttons
   // read Save and Save and run once there is a file to write over.
   const progressLabel = isCreateMode ? copy.creating : copy.saving;
@@ -321,6 +334,20 @@ export default function CreateEditWorkflowModal({
           extensions={workflowExtensions}
           onExtensionsChange={setWorkflowExtensions}
         />
+        {/* Read-only here: the editor has no fields for monitors or gates, and saving keeps
+            both blocks as they are (`getCurrentWorkflow` spreads the workflow it was given). */}
+        {supervision ? (
+          <div className="pt-4">
+            <WorkflowSupervisionSummary supervision={supervision}>
+              <p
+                className="text-supporting text-text-muted"
+                data-testid="workflow-supervision-kept"
+              >
+                {SUPERVISION_KEPT}
+              </p>
+            </WorkflowSupervisionSummary>
+          </div>
+        ) : null}
       </div>
     </ModalShell>
   );

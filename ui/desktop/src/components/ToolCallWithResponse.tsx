@@ -38,6 +38,12 @@ import { CrossAffiliationAcceptCard } from './privacy/CrossAffiliationAcceptCard
 import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
 import { sanitizeUntrustedLabel, stripHiddenCharacters } from '../utils/untrustedText';
 import { TranscriptRow, TranscriptRowSection } from './TranscriptRow';
+import {
+  DecideToolSummary,
+  decideCallMeta,
+  summarizeDecideCall,
+} from './decisions/DecideToolSummary';
+import { DECIDE_TOOL_NAME } from './decisions/decisionWire';
 import { InfoTip } from './ui/info-tip';
 import { Button } from './ui/button';
 import { acceptTerms, keepTerms, undoAgentAdd } from './dictionary/useDictionary';
@@ -751,10 +757,40 @@ const summarizeDelegation = (args: Record<string, unknown>): string => {
     .replace(/\s+/g, ' ')
     .trim();
   const task = instructions ? headline(instructions) : '';
+  // The short role the parent gave (`role`, set with a phase plan) names the
+  // delegate the way the chat summary's row does.
+  const role = compactValue(firstPresent(args, ['role']) ?? '');
   if (workflow && task) return `Delegating ${workflow}: ${task}`;
   if (workflow) return `Delegating ${workflow}`;
+  if (role && task) return `Delegating to ${role}: ${task}`;
+  if (role) return `Delegating to ${role}`;
   if (task) return `Delegating: ${task}`;
   return 'Delegating to a subagent';
+};
+
+/**
+ * A label for a `workspace_orchestrate` call, by its action. It only edits the
+ * chat's phase plan; the subagents themselves run in the background and are
+ * listed in the chat summary, so nothing here promises a tab.
+ */
+const summarizeOrchestration = (args: Record<string, unknown>): string => {
+  const action = compactValue(firstPresent(args, ['action']) ?? '').toLowerCase();
+  const phase = compactValue(firstPresent(args, ['phase']) ?? '');
+  const title = compactValue(firstPresent(args, ['title']) ?? '');
+  switch (action) {
+    case 'plan':
+      return title ? `Setting up phases: ${title}` : 'Setting up phases';
+    case 'start':
+      return phase ? `Starting phase ${phase}` : 'Starting a phase';
+    case 'handoff':
+      return phase ? `Writing the hand-off for ${phase}` : 'Writing a phase hand-off';
+    case 'complete':
+      return phase ? `Completing phase ${phase}` : 'Completing a phase';
+    case 'read':
+      return 'Reading the phase plan';
+    default:
+      return 'Updating the phase plan';
+  }
 };
 
 const summarizeSearchQuery = (value: unknown): string | null => {
@@ -1191,6 +1227,9 @@ function describeToolCall(toolCall: ToolCallSummaryInput, toolResult?: unknown):
   // Before the generic name-matching chain: a delegation must be identifiable
   // by its task, not by the fact that it is a delegation.
   if (toolName === 'subagent') return summarizeDelegation(args);
+  if (toolName === 'workspace_orchestrate') return summarizeOrchestration(args);
+  // One row per batch, counting what it asked of how many chunks (owner addendum A1).
+  if (toolCall.name === DECIDE_TOOL_NAME) return summarizeDecideCall(args);
 
   const todoSummary = toolCall.name.startsWith('todo__')
     ? summarizeTodoCall(toolName, args, toolResult)
@@ -1675,9 +1714,47 @@ function ToolCallView({
   // `bridged` passed every gate an API provider's call passes, so it renders
   // with nothing here at all. The explanation sits in an InfoTip beside the
   // row, never in `title=`, so a keyboard reaches it.
-  const metaParts = [liveDetail, providerExecution === 'child' ? TOOL_ROW_COPY.notGated : null]
+  // A `decide` batch: one row whatever its size. Its well holds the questions and
+  // the per-question counts, never the chunks (which may be hundreds of clinical
+  // notes) and never the model's per-chunk table (owner addendum A1).
+  const isDecideBatch = toolCall.name === DECIDE_TOOL_NAME;
+  const decideMeta =
+    isDecideBatch && loadingStatus === 'success' ? decideCallMeta(toolResponse?.toolResult) : null;
+  const metaParts = [
+    liveDetail,
+    decideMeta,
+    providerExecution === 'child' ? TOOL_ROW_COPY.notGated : null,
+  ]
     .filter((part): part is string => Boolean(part))
     .map((part) => `· ${part}`);
+
+  const decideBody = isDecideBatch ? (
+    <>
+      <DecideToolSummary
+        sessionId={sessionId}
+        args={toolCall.arguments ?? {}}
+        toolResult={loadingStatus === 'success' ? toolResponse?.toolResult : undefined}
+        onOpenArtifact={onOpenArtifact}
+      />
+      {toolError && (
+        <div className="flex min-w-0 flex-col gap-2">
+          <ToolFailureNotice title={TOOL_ROW_COPY.error} message={toolError} />
+        </div>
+      )}
+      {showProgress && (
+        <TranscriptRowSection label={TOOL_ROW_COPY.progress}>
+          {progressEntries.map((entry, index) => (
+            <ToolProgress
+              key={index}
+              progress={entry.progress}
+              total={entry.total}
+              message={entry.message}
+            />
+          ))}
+        </TranscriptRowSection>
+      )}
+    </>
+  ) : null;
 
   const body = hasBody ? (
     <>
@@ -1888,7 +1965,7 @@ function ToolCallView({
         ) : undefined
       }
     >
-      {body}
+      {decideBody ?? body}
     </TranscriptRow>
   );
 }

@@ -1,5 +1,6 @@
 use crate::agents::chatrecall_extension;
 use crate::agents::code_execution_extension;
+use crate::agents::decisions_extension;
 use crate::agents::dictionary_extension;
 use crate::agents::extension_manager_extension;
 use crate::agents::skills_extension;
@@ -138,6 +139,23 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
                 default_enabled: true,
                 client_factory: |ctx| {
                     Box::new(code_execution_extension::CodeExecutionClient::new(ctx).unwrap())
+                },
+            },
+        );
+
+        map.insert(
+            decisions_extension::EXTENSION_NAME,
+            PlatformExtensionDef {
+                name: decisions_extension::EXTENSION_NAME,
+                description:
+                    "Ask fast decision models typed questions (yes or no, a choice, a score) \
+                     about many pieces of text at once, and get probabilities back",
+                // Default ON, and NOT counted by the delegation gate:
+                // `has_non_injected_extensions` excludes it by name, so a chat
+                // whose only extension is this one cannot delegate.
+                default_enabled: true,
+                client_factory: |ctx| {
+                    Box::new(decisions_extension::DecisionsClient::new(ctx).unwrap())
                 },
             },
         );
@@ -962,6 +980,7 @@ mod tests {
     fn platform_extension_defaults_match_capabilities() {
         assert_eq!(PLATFORM_EXTENSIONS.len(), 8);
         assert!(PLATFORM_EXTENSIONS["todo"].default_enabled);
+        assert!(PLATFORM_EXTENSIONS["decisions"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["extensionmanager"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["skills"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["code_execution"].default_enabled);

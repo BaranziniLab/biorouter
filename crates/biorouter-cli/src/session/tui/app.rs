@@ -12,6 +12,12 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::session::completion::SLASH_COMMANDS;
 
+/// Slash commands only the TUI handles (its subagent pane). Kept out of
+/// [`SLASH_COMMANDS`], which the classic CLI shares and which would then offer
+/// commands it cannot run. [`App::ghost`] tries these after the shared list, so
+/// a prefix both could complete still ghosts to the shared command.
+pub(crate) const TUI_ONLY_SLASH_COMMANDS: &[&str] = &["/subagents", "/attach", "/decisions"];
+
 /// Brand warm tan-brown accent (xterm-256 137 ≈ #af875f), Biorouter's light cream palette
 pub const ACCENT: Color = Color::Indexed(137);
 const DIM: Style = Style::new().add_modifier(Modifier::DIM);
@@ -164,6 +170,16 @@ pub struct App {
     /// current tool result stays expanded. `None` when there's no collapsible block
     /// (or in debug mode, where full output is kept).
     pub last_tool_result: Option<(usize, usize)>,
+    /// This chat's subagents: the pane's model, visibility, focus, selection.
+    pub subagents: super::subagents::SubagentPane,
+    /// A subagent's chat shown read-only in place of the history, if open.
+    pub child: Option<Box<super::subagents::ChildView>>,
+    /// The `/decisions` overlay, while open.
+    pub decisions: Option<super::decisions::DecisionsOverlay>,
+    /// Decision-log rows of decision-chat replies, read before the reply is
+    /// drawn so it renders as a card ([`App::push_message`]).
+    pub decision_records:
+        std::collections::HashMap<String, biorouter::decision::log::DecisionRecord>,
 }
 
 impl App {
@@ -214,6 +230,10 @@ impl App {
             stream_start: None,
             stream_dirty: false,
             last_tool_result: None,
+            subagents: super::subagents::SubagentPane::default(),
+            child: None,
+            decisions: None,
+            decision_records: std::collections::HashMap::new(),
         }
     }
 
@@ -419,8 +439,42 @@ impl App {
         ]));
     }
 
+    /// Draw `message` as decision activity when it is some, and say whether
+    /// it was. Decision activity never adds one row per call: a turn's
+    /// decision marker (`metadata.decision_summary`) is one line per origin,
+    /// and a decision-chat reply (`metadata.decision_id`) is a small card when
+    /// its log row has been read, else (`false`) its readable text.
+    fn push_decision_message(&mut self, message: &Message) -> bool {
+        if let Some(marker) = &message.metadata.decision_summary {
+            if !marker.items.is_empty() {
+                self.push_blank();
+                for line in super::decisions::marker_lines(marker) {
+                    self.push_line(line);
+                }
+            }
+            return true;
+        }
+        let Some(record) = message
+            .metadata
+            .decision_id
+            .as_ref()
+            .and_then(|id| self.decision_records.get(id))
+            .cloned()
+        else {
+            return false;
+        };
+        self.push_blank();
+        for line in super::decisions::card_lines(&record) {
+            self.push_line(line);
+        }
+        true
+    }
+
     /// Render an agent message into the scrollback.
     pub fn push_message(&mut self, message: &Message, debug: bool) {
+        if self.push_decision_message(message) {
+            return;
+        }
         for content in &message.content {
             match content {
                 MessageContent::Text(t) => {
@@ -481,6 +535,16 @@ impl App {
                         let count = self.scrollback.len() - start;
                         self.last_tool_result =
                             (!debug && !has_artifact && count > 1).then_some((start, count));
+                    }
+                }
+                MessageContent::SystemNotification(note)
+                    if note.notification_type
+                        == biorouter::conversation::message::SystemNotificationType::InlineMessage
+                        && !note.msg.trim().is_empty() =>
+                {
+                    self.push_blank();
+                    for line in note.msg.lines() {
+                        self.push_note(line);
                     }
                 }
                 MessageContent::Thinking(t) => {
@@ -971,6 +1035,7 @@ impl App {
         }
         SLASH_COMMANDS
             .iter()
+            .chain(TUI_ONLY_SLASH_COMMANDS)
             .find(|c| c.starts_with(line.as_str()) && **c != line.as_str())
             .and_then(|c| c.get(line.len()..))
     }
@@ -1341,6 +1406,44 @@ mod tests {
             (observed.from.as_str(), observed.to.as_str()),
             ("EPADS1", "EPAS1")
         );
+    }
+
+    /// `/subagents` and `/attach` ghost like any other command, after the
+    /// shared list: `/s` still means `/schedule`, and the shared list itself
+    /// stays free of commands the classic CLI cannot run.
+    #[test]
+    fn the_ghost_offers_the_tui_only_subagent_commands() {
+        use super::{App, StatusInfo, SLASH_COMMANDS, TUI_ONLY_SLASH_COMMANDS};
+
+        let ghost_of = |typed: &str| {
+            let mut app = App::new(StatusInfo::default());
+            for c in typed.chars() {
+                app.insert_char(c);
+            }
+            app.ghost()
+        };
+        assert_eq!(ghost_of("/su"), Some("bagents"));
+        assert_eq!(ghost_of("/a"), Some("ttach"));
+        assert_eq!(ghost_of("/attach"), None, "a complete command has no ghost");
+        assert_eq!(
+            ghost_of("/s"),
+            Some("chedule"),
+            "the shared list goes first"
+        );
+
+        let mut app = App::new(StatusInfo::default());
+        for c in "/sub".chars() {
+            app.insert_char(c);
+        }
+        app.accept_ghost();
+        assert_eq!(app.input, "/subagents ");
+
+        for command in TUI_ONLY_SLASH_COMMANDS {
+            assert!(
+                !SLASH_COMMANDS.contains(command),
+                "{command} belongs to the TUI only"
+            );
+        }
     }
 
     /// The transcript pane shows what the tool said, not the envelope the

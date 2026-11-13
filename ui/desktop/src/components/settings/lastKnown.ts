@@ -8,6 +8,7 @@ export type LastKnownKey =
   | 'approvalMode'
   | 'maxTurns'
   | 'announceOnly'
+  | 'openSubagentTabs'
   | 'spellcheck'
   | 'menuBarIcon'
   | 'dockIcon'

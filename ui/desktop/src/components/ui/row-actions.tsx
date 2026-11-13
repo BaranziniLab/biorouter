@@ -25,6 +25,7 @@ import {
 } from './dropdown-menu';
 import { isContextMenuKey, openContextMenuFromKeyboard } from './keyboardContextMenu';
 import { Tooltip, TooltipContent, TooltipTrigger } from './Tooltip';
+import { useSurfaceTriggerHint } from './surfaceTriggerHint';
 import { uiCopy } from './copy';
 
 /**
@@ -45,7 +46,9 @@ import { uiCopy } from './copy';
  *   holds focus, or has its menu open, and it is always shown under `(hover: none)`. Only the
  *   opacity changes, so every action stays in the tab order.
  * - One primary icon action at most, then a `⋯` button (ghost round, Tooltip "More actions")
- *   that opens the items as a DropdownMenu.
+ *   that opens the items as a DropdownMenu. The tooltip closes on the press and never comes
+ *   back over the open menu (`useSurfaceTriggerHint`, H2), and the `⋯` holds the kept step
+ *   while the menu is open (`.br-surface-trigger`, main.css).
  * - `RowContextMenu` makes the same items a ContextMenu on the row: right-click, Shift+F10 or
  *   the ContextMenu key (macOS Chromium never turns the keys into `contextmenu`, so the row
  *   dispatches it; see `keyboardContextMenu.ts`).
@@ -218,6 +221,8 @@ export function RowActions({
   'data-testid': testId,
 }: RowActionsProps) {
   const [open, setOpen] = React.useState(false);
+  // "More actions" names the ⋯ on a hover and never comes back over its open menu (H2).
+  const hint = useSurfaceTriggerHint(open);
   const hasMenu = Boolean(menu && menu.length > 0);
   const handleOpenChange = (next: boolean) => {
     setOpen(next);
@@ -234,8 +239,8 @@ export function RowActions({
       {primary}
       {hasMenu ? (
         <DropdownMenu open={open} onOpenChange={handleOpenChange}>
-          <Tooltip>
-            <TooltipTrigger asChild>
+          <Tooltip {...hint.tooltip}>
+            <TooltipTrigger asChild {...hint.trigger}>
               <DropdownMenuTrigger asChild>
                 <Button
                   type="button"
@@ -245,6 +250,8 @@ export function RowActions({
                   aria-label={menuLabel}
                   data-testid={menuTestId}
                   data-row-action=""
+                  // Holds the kept step while its menu is open (main.css).
+                  className="br-surface-trigger"
                   onClick={(event) => event.stopPropagation()}
                 >
                   <MoreHorizontal aria-hidden />

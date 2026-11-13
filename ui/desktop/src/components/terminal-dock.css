@@ -1,0 +1,37 @@
+/* The terminal dock's working folder, beside the pane tabs (TerminalCwd.tsx,
+   in InAppTerminalDock's strip). Authored, not utilities: which piece gives
+   way when the strip is short is load-bearing, and a utility that class
+   scanning missed would silently put the end ellipsis back.
+
+   One line in the strip's 12/16 muted type, at most 38% of the strip, hidden
+   below the `sm` breakpoint (40rem), as it always was. When the path does not
+   fit, the LEADING part shrinks behind its own ellipsis and the folder's name
+   (the last separator and the last name) keeps its width, so the dock reads
+   `~/Desk…/BioRouter` and never `~/Desktop/Bio…`. The name gives way only when
+   it alone is wider than the space. */
+.br-terminal-cwd {
+  display: none;
+  min-width: 0;
+  max-width: 38%;
+  white-space: nowrap;
+}
+
+@media (min-width: 40rem) {
+  .br-terminal-cwd {
+    display: flex;
+  }
+}
+
+.br-terminal-cwd__lead {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.br-terminal-cwd__name {
+  flex: 0 0 auto;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

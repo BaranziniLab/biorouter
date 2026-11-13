@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import bundledExtensions from '../extensions/bundled-extensions.json';
 import { CAPABILITIES, isCapabilityDefaultEnabled, isCapabilityExtension } from './capabilities';
@@ -18,6 +20,7 @@ const expectedDefaults = {
   dictionary: false,
   workspace: true,
   crew: true,
+  decisions: true,
 };
 
 describe('capabilities', () => {
@@ -41,6 +44,26 @@ describe('capabilities', () => {
       'crew',
     ]) {
       expect(isCapabilityExtension({ name }), name).toBe(true);
+    }
+  });
+
+  it('is every platform extension the daemon registers', () => {
+    // A platform extension missing here is listed among the person's installed extensions.
+    const agents = join(process.cwd(), '..', '..', 'crates', 'biorouter', 'src', 'agents');
+    const registry = readFileSync(join(agents, 'extension.rs'), 'utf8');
+    const block = registry.slice(registry.indexOf('pub static PLATFORM_EXTENSIONS'));
+    const modules = [
+      ...block
+        .slice(0, block.indexOf('\n);'))
+        .matchAll(/name: (?:crate::agents::)?(\w+)::EXTENSION_NAME/g),
+    ].map((match) => match[1]);
+    expect(modules).toContain('decisions_extension');
+    expect(modules.length).toBeGreaterThanOrEqual(8);
+    for (const module of modules) {
+      const source = readFileSync(join(agents, `${module}.rs`), 'utf8');
+      const name = source.match(/pub (?:static|const) EXTENSION_NAME: &str = "([^"]+)";/)?.[1];
+      expect(name, module).toBeTruthy();
+      expect(isCapabilityExtension({ name: name! }), name).toBe(true);
     }
   });
 

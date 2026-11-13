@@ -1,10 +1,10 @@
 # Workspace Control capability
 
-> **What this is.** User guide to the built-in Workspace Control capability: the tool surface that lets BioRouter operate the workspace itself — list conversations, open them, read them, inject prompts into them, change what they are allowed to use, and delegate to subagents you can watch in a live tab.
+> **What this is.** User guide to the built-in Workspace Control capability: the tool surface that lets BioRouter operate the workspace itself — list conversations, open them, read them, inject prompts into them, change what they are allowed to use, and delegate to subagents that run in the background, are listed in the chat's side panel, and open as a tab when you want to watch one.
 > **Status:** Current.
 > **Audience:** end users.
 
-Every BioRouter conversation is a session: its own agent, enabled capabilities, loaded extensions, skills, knowledge bases and history, plus its own desktop tab when the app is running. Workspace Control gives the agent tools over that layer. Instead of telling you "open Settings and enable the single-cell skill in that other chat", it can do it; instead of a subagent being an opaque spinner, the child runs in a tab you can read, talk to and stop.
+Every BioRouter conversation is a session: its own agent, enabled capabilities, loaded extensions, skills, knowledge bases and history, plus its own desktop tab when the app is running. Workspace Control gives the agent tools over that layer. Instead of telling you "open Settings and enable the single-cell skill in that other chat", it can do it; instead of a subagent being an opaque spinner, the child is listed in the chat's side panel with its status and setup, and opens as a tab you can read, talk to and stop.
 
 This page is the user-facing account — what each tool is for, what it asks you first, and how its writes are labelled. If you are trying to *arrange* work rather than look a tool up, start with [Workspace control](../../agent-loop/workspace-control.md), which covers the tab/pane/window layout, delegating to subagents, and the terminal path. If you need the exact contract — every argument and default, the precise refusal strings, the caps — that is [the Workspace Control tool reference](../../agent-loop/workspace-control-tools.md), written for developers and for diagnosing a tool that behaved unexpectedly.
 
@@ -17,11 +17,11 @@ Workspace Control **ships on, with its whole surface**. It is a capability rathe
 | Tier | When you get it | What the agent can do |
 |------|----------------|-----------------------|
 | **Full workspace control** (default) | Automatic. The `workspace` capability is enabled out of the box and its tool list is not narrowed. | Everything in the row below, plus `workspace_set_tools` (change another conversation's capabilities, extensions, skills, model, or knowledge bases), `workspace_open`, and `workspace_read_panel` (with `capture: true` for a screenshot). |
-| **Delegation only** | You turned the `workspace` capability off, but the session may still delegate. BioRouter then loads a fixed six-tool list: `subagent`, `workspace_list`, `workspace_read_conversation`, `workspace_send_prompt`, `workspace_close`, `workspace_watch`. | Spawn subagents and supervise them; see which conversations exist and which are running; inject a prompt into one. |
+| **Delegation only** | You turned the `workspace` capability off, but the session may still delegate. BioRouter then loads a fixed eight-tool list: `subagent`, `workspace_list`, `workspace_read_conversation`, `workspace_send_prompt`, `workspace_close`, `workspace_watch`, `workspace_orchestrate`, `workspace_monitor`. | Spawn subagents and supervise them, in phases when you ask for a staged run, with decision-model monitors on them; see which conversations exist and which are running; inject a prompt into one. |
 
-The split is no longer "your own children versus everyone else's" — an injection may go to any conversation the session can see. What separates the tiers now is **capability change versus message**: the delegation tier can *talk to* another conversation, and only the full surface can *re-tool* one or mint and move tabs. Three of the delegation tier's six tools stay child-scoped whatever the write rule says — `workspace_read_conversation`, `workspace_close` and `workspace_watch` are confined to direct subagent children by `refuse_unless_direct_subagent_child`, which is a separate mechanism from the privacy matrix and did not move.
+The split is no longer "your own children versus everyone else's" — an injection may go to any conversation the session can see. What separates the tiers now is **capability change versus message**: the delegation tier can *talk to* another conversation, and only the full surface can *re-tool* one or mint and move tabs. Four of the delegation tier's tools stay child-scoped whatever the write rule says: `workspace_read_conversation`, `workspace_close` and `workspace_watch` are confined to direct subagent children by `refuse_unless_direct_subagent_child`, which is a separate mechanism from the privacy matrix and did not move, and `workspace_monitor` asks the same check on every call. `workspace_orchestrate` reads and writes only the calling chat's own plan.
 
-Concretely, when the capability is off and delegation is permitted by your [permission mode](../../security/permission-modes.md), BioRouter can inject the restricted six-tool Workspace roster as derived session state. An explicit Workspace entry is never downgraded to delegation-only mode.
+Concretely, when the capability is off and delegation is permitted by your [permission mode](../../security/permission-modes.md), BioRouter can inject the restricted Workspace roster as derived session state. An explicit Workspace entry is never downgraded to delegation-only mode.
 
 ### Turning it off, and back on
 
@@ -37,9 +37,9 @@ Choose `Toggle Extensions`, then toggle `workspace`.
 
 > **Note.** Subagents never get Workspace Control themselves, in either tier — a child cannot spawn grandchildren, and cannot steer its own parent.
 
-## The nine tools
+## The tools
 
-Eight `workspace_*` tools plus `subagent`. You do not call these; you ask in plain language and BioRouter picks. The examples show the request and the call it turns into.
+Ten `workspace_*` tools plus `subagent`. The two that supervise delegated work, `workspace_orchestrate` and `workspace_monitor`, come last. You do not call these; you ask in plain language and BioRouter picks. The examples show the request and the call it turns into.
 
 ### `workspace_list`
 
@@ -107,11 +107,35 @@ Reads what the preview panel is showing right now: the rendered document, figure
 
 ### `subagent`
 
-The one spawn tool. Delegates to a fresh agent with its own context window, and — when the app is open — in its own visible tab you can watch and talk to.
+The one spawn tool. Delegates to a fresh agent with its own context window. The child runs **in the background** and opens no tab: when the app is open it is listed in the side panel of the chat that started it (the chat summary), with its status, model and setup, and clicking its row opens it as a tab you can watch and talk to.
 
-> "Delegate checking the test suite to a subagent I can watch." → `subagent { instructions: "Run the test suite and report failures" }`
+> "Delegate checking the test suite to a subagent." → `subagent { instructions: "Run the test suite and report failures" }`
+>
+> "Delegate it to a subagent I can watch in a tab." → `subagent { instructions: "Run the test suite and report failures", visible: true }`
 
-Children are **visible by default**; pass `visible: false` to run one silently, and `placement` to put it in a split or a window. The parent still receives only the child's final summary, which is why it will often follow up with `workspace_read_conversation view:"tool_calls"` to check what the child really did. Full detail in [Subagents](../../agent-loop/subagents.md).
+A tab opens at spawn only when one is asked for or the setting below is on:
+
+- **`visible: true`** asks for a tab.
+- **`placement`** (`tab`, `split` or `window`) asks for a tab in that place, with `visible` left unset.
+- **Settings → App → General → "Open subagent tabs automatically"** opens a tab for every new subagent, as before the side panel. It is stored as `BIOROUTER_WORKSPACE_OPEN_SUBAGENT_TABS` and is **off** by default.
+
+"Never open tabs automatically" ([Focus etiquette](#focus-etiquette)) wins over all three: with it on you get a notification instead of a tab. `visible: false` runs a child with no tab and no badge at all. The parent is told when no tab opened, so it never tells you about one that did not. The parent still receives only the child's final summary, which is why it will often follow up with `workspace_read_conversation view:"tool_calls"` to check what the child really did. Full detail in [Subagents](../../agent-loop/subagents.md).
+
+### `workspace_orchestrate`
+
+Runs delegated work in phases when you ask for a staged run: the agent declares the phases, spawns each subagent into one, and closes a phase once its subagents are done. A phase may carry a decision gate, which holds that phase and every phase after it until a decision model is confident the phase met its goal.
+
+> "Research the options, have two agents implement the best one, then verify it, and don't verify until the tests pass." → `workspace_orchestrate { action: "plan", title: "…", phases: [ …, { id: "build", …, gate: { questions: { tests_pass: "Do the results show every new test passing?" } } }, … ] }`
+
+**A gate binds the agent.** Once a phase has a gate, whoever set it (the agent, you, or the workflow the chat started from), the agent cannot change, remove or skip it, and cannot start, spawn into or complete a phase it holds. Each attempt is refused with a sentence that says what holds it and that nothing was changed. A gate the agent declares needs a threshold of at least 0.50, and its model is checked against the chat when it is declared. Only you can set, replace, remove, pass, skip or retry a gate: from the gate chip in the chat's side panel, with `biorouter session gates`, or over HTTP. Full detail in [Orchestration phases](../../agent-loop/orchestration-phases.md#decision-gates).
+
+### `workspace_monitor`
+
+Puts decision-model monitors on a subagent the agent started, lists them, or takes off the ones the agent set. A monitor is a yes/no question a decision model answers from the subagent's newest messages; when the answer reaches the threshold it stops the subagent's turn or steers it.
+
+> "Keep an eye on that subagent and stop it if it starts editing files outside src/." → `workspace_monitor { action: "add", session_id: "…", monitors: [{ name: "Off task", question: "Is the agent editing files outside src/?", threshold: 0.8, action: "stop" }] }`
+
+It reaches only the agent's own direct subagents. A subagent holds at most 4 monitors set by an agent, within 8 in all, and the agent may change or remove only the ones it set, never yours. Each monitor's model is checked against the subagent's chat before it is stored, and an add from a chat on a model inside your institution to a public subagent shows you the monitors on an approval card first. Full detail in [Workspace Control tool reference](../../agent-loop/workspace-control-tools.md#workspace_monitor) and [Monitors on subagents](../../agent-loop/decision-models.md#monitors-on-subagents).
 
 ## The always-confirm rule
 
@@ -147,13 +171,13 @@ Mutations are also announced live: the target tab gets a toast when another agen
 
 ## Focus etiquette
 
-By default, tabs the agent opens — including subagent tabs — open **in the background**. They never steal the composer you are typing into.
+Tabs the agent opens, including a subagent's tab when one opens at spawn, open **in the background**: they never steal the composer you are typing into. A subagent opens no tab at all unless one was asked for or "Open subagent tabs automatically" is on; see [`subagent`](#subagent).
 
-If you would rather not have tabs appear at all, turn on **Settings → App → General → "Never open tabs automatically"**. With it on, the daemon downgrades every focus-stealing frame (`open_tab`, `open_window`, `activate_tab`) to a notification naming the conversation, and tells the model no tab was opened so it cannot claim otherwise. The work still runs; open it from History when you want it. The setting is stored as `WORKSPACE_ANNOUNCE_ONLY` and is **off** by default.
+If you would rather not have tabs appear at all, turn on **Settings → App → General → "Never open tabs automatically"**. With it on, the daemon downgrades every focus-stealing frame (`open_tab`, `open_window`, `activate_tab`) to a notification naming the conversation, and tells the model no tab was opened so it cannot claim otherwise. The work still runs; open it from the chat's side panel or from History when you want it. It also wins over "Open subagent tabs automatically" and over a spawn's explicit `visible: true` or `placement`. The setting is stored as `WORKSPACE_ANNOUNCE_ONLY` and is **off** by default.
 
-Subagent tabs have a second limit: at most **4** children *running at once* get a tab from the same parent (`BIOROUTER_WORKSPACE_MAX_VISIBLE_CHILD_TABS` to change it). A fan-out of ten spawns is not a tab storm — the fifth child onward runs in the background, is listed in History under its parent, and is readable with `workspace_read_conversation`. A spawn is never refused for this reason, and the parent is told which children did not get a tab.
+When subagents do open tabs at spawn, there is a second limit: at most **4** children *running at once* get a tab from the same parent (`BIOROUTER_WORKSPACE_MAX_VISIBLE_CHILD_TABS` to change it). A fan-out of ten spawns with tabs asked for is not a tab storm: the fifth child onward runs in the background, is listed in the chat's side panel and in History under its parent, and is readable with `workspace_read_conversation`. A spawn is never refused for this reason, and the parent is told which children did not get a tab.
 
-The cap counts live children, not open tabs: a slot is released when its child finishes, so a parent that spawns four, waits, and spawns four more gets tabs both times. It bounds the burst, not how many subagent tabs you can end up with in a long conversation — closing them is yours to do.
+The cap counts live children, not open tabs: a slot is released when its child finishes, so a parent that spawns four, waits, and spawns four more gets tabs both times. It bounds the burst, not how many subagent tabs you can end up with in a long conversation, and closing them is yours to do. Tabs you open yourself from the side panel or from History never count toward it.
 
 ## Without the desktop app
 
@@ -165,7 +189,7 @@ There is nothing GUI-shaped in the contract, but the surface is not identical wi
 
 **Standalone `biorouter` in a terminal, with no daemon.** The tools that *inspect* work — `workspace_list`, `workspace_read_conversation`, `workspace_watch` (which reads the background-handle registry, so it still knows a child is running), `workspace_send_prompt mode:"note"`, and `subagent` itself. The tools that need something to *drive* a session do not, and each refuses by name rather than failing obscurely: starting a new session, `mode:"turn"`, `mode:"steer"`, setting knowledge bases, and `workspace_close` at `turn` or `agent` scope all answer *"requires the BioRouter daemon"*. Start `biorouterd` (or open the app) if you need them.
 
-The CLI covers the same ground from the other side. These are commands *you* run, and they do **not** all sit in the same configuration: the two that only read the session store on disk are fine in the third, while the four that drive a live turn go over HTTP to `biorouterd` and need the second — which is why `session watch` says "requires a running daemon" in its own help.
+The CLI covers the same ground from the other side. These are commands *you* run, and they do **not** all sit in the same configuration: the ones that only read or write the session store on disk are fine in the third (they go through a daemon when one is reachable), while the four that drive a live turn go over HTTP to `biorouterd` and need the second — which is why `session watch` says "requires a running daemon" in its own help.
 
 | Capability | CLI | Needs `biorouterd` |
 |------------|-----|--------------------|
@@ -173,8 +197,10 @@ The CLI covers the same ground from the other side. These are commands *you* run
 | Read a conversation | `biorouter session export --format …` | no |
 | Inject a prompt | `biorouter session send` | yes |
 | Wait for a turn to finish | `biorouter session watch` (exits on Finish/Error; add `--follow` to keep watching past it) | yes |
-| Cancel a turn | `biorouter session cancel` | yes |
+| Cancel a turn, and stop the subagents it started | `biorouter session cancel` | yes |
 | Watch or steer a live session | `biorouter session attach` (`--of` to pick a subagent, `--read-only` to observe without participating) | yes |
+| Set, list or remove a chat's monitors (a subagent's included) | `biorouter session monitors` | no, but copies onto running subagents need it |
+| See, set, remove, pass, skip or retry a phase's gate | `biorouter session gates` | no |
 
 The listing is the one hybrid. Its rows come off disk, so it always prints; only the `● live` / `○ done` marks beside subagent runs are the daemon's to answer, and a run whose state could not be asked for reads `· state unknown` instead of the command failing.
 
@@ -190,7 +216,7 @@ That is why switching Workspace Control on in the desktop app, after having swit
 
 - [Workspace control](../../agent-loop/workspace-control.md) — the how-to companion to this page: arranging tabs, panes and windows, delegating, the caps you will meet, and the terminal path.
 - [Workspace Control tool reference](../../agent-loop/workspace-control-tools.md) — the developer-facing contract for these tools: exact arguments, defaults and clamps, every refusal string, and the two places a tool reports success it did not earn.
-- [Subagents](../../agent-loop/subagents.md) — the glass-box tab, steering a child, the fan-out cap, and the `subagent_status` migration note.
+- [Subagents](../../agent-loop/subagents.md) — the side panel and the subagent tab, steering a child, the fan-out cap, and the `subagent_status` migration note.
 - [Chat Recall capability](chat-recall.md) — the complementary tool for searching past conversations by content.
 - [Tool routing](../../agent-loop/tool-routing.md) — the routing table that separates Workspace Control from Chat Recall, Memory and the knowledge base.
 - [Permission modes](../../security/permission-modes.md) — which modes allow autonomous delegation and how mutating tools are graded.

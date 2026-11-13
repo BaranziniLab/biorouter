@@ -3,6 +3,7 @@ import {
   forwardRef,
   useCallback,
   useContext,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -13,7 +14,10 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 import { cn } from '../../utils';
-import { Button } from '../ui/button';
+import { MoreHorizontal } from '../icons/app-icons';
+import { Button, buttonVariants } from '../ui/button';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '../ui/dropdown-menu';
+import { closeShowingTooltips } from '../ui/surfaceTriggerHint';
 import { Tooltip, TooltipContent, TooltipTrigger, isFocusFromTabKey } from '../ui/Tooltip';
 
 /**
@@ -159,24 +163,51 @@ export const PreviewPanelPresence = PreviewPanelPresenceContext.Provider;
  * honours), so the shared provider is never told a tooltip opened that did not: its skip-delay
  * flag would otherwise stay set and open the next tooltip anywhere with no delay.
  *
+ * A trigger that opens a surface (the header's `⋯`, `PreviewMoreMenu`) passes `surfaceOpen`, and
+ * the tip then follows the rule `useSurfaceTriggerHint` holds for every other menu trigger (H2):
+ * no hint while the surface is open (a pointer that left the open `⋯` and came back used to put
+ * "More actions" over the menu's first item 500ms later, measured in the app), a hint already
+ * showing when the surface opens closes through Radix, and a focus a script handed back (Escape
+ * closing the menu) is refused at the trigger, so the provider keeps the next tooltip's delay.
+ *
  * Takes one trigger element; the tooltip says `content`.
  */
-export function PreviewTip({ content, children }: { content: ReactNode; children: ReactElement }) {
+export function PreviewTip({
+  content,
+  children,
+  surfaceOpen,
+}: {
+  content: ReactNode;
+  children: ReactElement;
+  /** Set on a trigger that opens a menu or popover: whether that surface is open now. */
+  surfaceOpen?: boolean;
+}) {
   const present = useContext(PreviewPanelPresenceContext);
   const presentRef = useRef(present);
   presentRef.current = present;
+  const opensSurface = surfaceOpen !== undefined;
+  const surfaceOpenRef = useRef(Boolean(surfaceOpen));
+  surfaceOpenRef.current = Boolean(surfaceOpen);
   const pressed = useRef(false);
   const [open, setOpen] = useState(false);
   // The exit closes what is open for good, so a panel opened again in the same mount does
   // not bring the label back with it.
   if (!present && open) setOpen(false);
+  // The surface opened while the hint showed (Enter on a trigger Tab reached): the hint goes,
+  // through Radix so the provider hears it, before paint.
+  useLayoutEffect(() => {
+    if (surfaceOpen && open) closeShowingTooltips();
+  }, [surfaceOpen, open]);
 
   const refuse = (event: SyntheticEvent) => {
-    if (pressed.current || !presentRef.current) event.preventDefault();
+    if (pressed.current || !presentRef.current || surfaceOpenRef.current) event.preventDefault();
   };
 
   return (
-    <Tooltip open={open} onOpenChange={(next) => setOpen(next && presentRef.current)}>
+    <Tooltip
+      open={open}
+      onOpenChange={(next) => setOpen(next && presentRef.current && !surfaceOpenRef.current)}
+    >
       <TooltipTrigger
         asChild
         onPointerDown={() => {
@@ -189,14 +220,57 @@ export function PreviewTip({ content, children }: { content: ReactNode; children
         onFocus={(event) => {
           // Tab is the person's keyboard reaching the control: a press still held no
           // longer speaks for it.
-          if (isFocusFromTabKey()) pressed.current = false;
-          if (!presentRef.current) event.preventDefault();
+          const fromTab = isFocusFromTabKey();
+          if (fromTab) pressed.current = false;
+          if (!presentRef.current || surfaceOpenRef.current || (opensSurface && !fromTab)) {
+            event.preventDefault();
+          }
         }}
       >
         {children}
       </TooltipTrigger>
       <TooltipContent side="bottom">{content}</TooltipContent>
     </Tooltip>
+  );
+}
+
+/**
+ * The header's `⋯` and its menu. The menu's open state lives here so its label tooltip can stay
+ * shut over the open menu (`PreviewTip`'s `surfaceOpen`), and so a header that stops offering the
+ * menu unmounts it closed. The open look is `preview-panel.css`'s `aria-expanded` rule.
+ */
+export function PreviewMoreMenu({
+  label,
+  children,
+  'data-testid': testId,
+}: {
+  label: string;
+  /** The menu's items. */
+  children: ReactNode;
+  'data-testid'?: string;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  return (
+    <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+      <PreviewTip content={label} surfaceOpen={menuOpen}>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            aria-label={label}
+            data-testid={testId}
+            className={cn(
+              buttonVariants({ variant: 'ghost', shape: 'round' }),
+              'br-preview-icon-button no-drag'
+            )}
+          >
+            <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+          </button>
+        </DropdownMenuTrigger>
+      </PreviewTip>
+      <DropdownMenuContent align="end" className="min-w-[180px] max-w-[320px]">
+        {children}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

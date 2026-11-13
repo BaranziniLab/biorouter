@@ -7,6 +7,7 @@ import {
   Clock,
   Dictionary,
   Folder,
+  Gauge,
   KnowledgeGraph,
   Pipeline,
   Puzzle,
@@ -36,6 +37,7 @@ export type EntityKind =
   | 'chat'
   | 'model'
   | 'folder'
+  | 'decision'
   | 'dictionary';
 
 export type EntityIcon = React.ComponentType<{
@@ -57,6 +59,10 @@ export const ENTITY_ICONS: Record<EntityKind, EntityIcon> = {
   model: Brain,
   // A working folder. "Open in Finder" is `FolderOpen`, an action, not this.
   folder: Folder,
+  // A decision model's call, or the aggregate of many: the summary's Decisions
+  // section, the per-turn marker, the decision-chat card, the Decision models
+  // group in the picker, the history tab and a `decisions__*` tool row.
+  decision: Gauge,
   // The dictation dictionary (DD-67). Its own glyph: memory and knowledge keep theirs.
   dictionary: Dictionary,
 };

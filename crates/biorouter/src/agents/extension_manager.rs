@@ -1839,6 +1839,10 @@ impl ExtensionManager {
     /// That is the self-sustaining grant this function was written to prevent,
     /// arriving by the other door. Excluding it by name as well as by origin is
     /// what keeps the question honest.
+    ///
+    /// The `decisions` extension is excluded by name for the same reason: it is
+    /// default-on and loads as `Explicit`, so counting it would open the gate in
+    /// every chat whether or not the user enabled anything.
     pub async fn has_non_injected_extensions(&self) -> bool {
         self.extensions
             .lock()
@@ -1846,8 +1850,15 @@ impl ExtensionManager {
             .iter()
             .any(|(name, extension)| {
                 extension.origin != ExtensionOrigin::AutoInjected
-                    && !name.eq_ignore_ascii_case(crate::agents::agent::Agent::SPAWN_EXTENSION)
+                    && !Self::is_not_counted_by_the_delegation_gate(name)
             })
+    }
+
+    /// Default-on extensions that are not a capability the user granted for
+    /// the purpose the delegation gate asks about.
+    fn is_not_counted_by_the_delegation_gate(name: &str) -> bool {
+        name.eq_ignore_ascii_case(crate::agents::agent::Agent::SPAWN_EXTENSION)
+            || name.eq_ignore_ascii_case(crate::agents::decisions_extension::EXTENSION_NAME)
     }
 
     pub async fn add_client(
@@ -4100,6 +4111,23 @@ impl ExtensionManager {
             content.push('\n');
         }
 
+        content.push_str(&self.platform_moim(session_id).await);
+        content.push('\n');
+        content.push_str(MOIM_CLOSE_TAG);
+
+        Some(content)
+    }
+
+    /// Every platform extension's per-turn context, each part on its own line.
+    ///
+    /// Each client is asked with the entry this chat holds
+    /// ([`McpClientTrait::get_moim_for`]), so a part that belongs to a tool the
+    /// entry does not grant is left out by the extension that owns it. This
+    /// replaced a gate here that compared the map key with
+    /// `workspace_extension::EXTENSION_NAME`: the map is keyed by
+    /// `normalize(config.key())`, which lowercases, so `"workspace"` never
+    /// equalled `"Workspace"` and the gate never applied.
+    async fn platform_moim(&self, session_id: &str) -> String {
         let platform_clients: Vec<(String, ExtensionConfig, McpClientBox)> = {
             let extensions = self.extensions.lock().await;
             extensions
@@ -4118,28 +4146,16 @@ impl ExtensionManager {
                 .collect()
         };
 
+        let mut content = String::new();
         for (name, config, client) in platform_clients {
-            if !platform_moim_allowed(&name, &config) {
-                continue;
-            }
-            let client_guard = &*client;
-            if let Some(moim_content) = client_guard.get_moim(session_id).await {
+            if let Some(moim_content) = client.get_moim_for(session_id, &config).await {
                 tracing::debug!("MOIM content from {}: {} chars", name, moim_content.len());
                 content.push('\n');
                 content.push_str(&moim_content);
             }
         }
-
-        content.push('\n');
-        content.push_str(MOIM_CLOSE_TAG);
-
-        Some(content)
+        content
     }
-}
-
-fn platform_moim_allowed(name: &str, config: &ExtensionConfig) -> bool {
-    name != crate::agents::workspace_extension::EXTENSION_NAME
-        || config.is_tool_available("workspace_read_panel")
 }
 
 /// Label appended to every **operator**-disabled entry in
@@ -4283,6 +4299,43 @@ mod tests {
     use rmcp::model::ServerNotification;
 
     use tokio::sync::mpsc;
+
+    /// The delegation gate's condition 5 asks whether the user gave this chat
+    /// at least one real capability. `decisions` is default-on and loads as
+    /// Explicit, so if it counted, every chat would satisfy condition 5 by
+    /// itself and delegation would be on wherever the mode allows it.
+    #[tokio::test]
+    async fn the_default_on_decisions_extension_never_opens_the_delegation_gate_by_itself() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = Arc::new(ExtensionManager::new_without_provider(
+            root.path().to_path_buf(),
+        ));
+        let platform = |name: &str| ExtensionConfig::Platform {
+            name: name.to_string(),
+            description: String::new(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+        manager
+            .add_extension(platform(crate::agents::decisions_extension::EXTENSION_NAME))
+            .await
+            .unwrap();
+        assert!(
+            manager
+                .is_extension_enabled(crate::agents::decisions_extension::EXTENSION_NAME)
+                .await
+        );
+        assert!(
+            !manager.has_non_injected_extensions().await,
+            "decisions alone must not count as a capability the user granted"
+        );
+
+        manager.add_extension(platform("todo")).await.unwrap();
+        assert!(
+            manager.has_non_injected_extensions().await,
+            "an ordinary extension still counts"
+        );
+    }
 
     #[tokio::test]
     async fn external_servers_cannot_impersonate_the_computer_use_approval_namespace() {
@@ -5256,29 +5309,85 @@ mod tests {
         }
     }
 
-    #[test]
-    fn restricted_workspace_does_not_inject_panel_moim() {
+    /// A client that answers with the tools its entry grants, so a test can
+    /// see which entry `platform_moim` asked it with.
+    struct GrantEchoClient;
+
+    #[async_trait::async_trait]
+    impl McpClientTrait for GrantEchoClient {
+        async fn list_tools(
+            &self,
+            _next_cursor: Option<String>,
+            _cancellation_token: CancellationToken,
+        ) -> Result<ListToolsResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: Option<JsonObject>,
+            _meta: McpMeta,
+            _cancellation_token: CancellationToken,
+        ) -> Result<CallToolResult, Error> {
+            Err(Error::TransportClosed)
+        }
+
+        fn get_info(&self) -> Option<&InitializeResult> {
+            None
+        }
+
+        async fn get_moim(&self, _session_id: &str) -> Option<String> {
+            Some("asked without its entry".to_string())
+        }
+
+        async fn get_moim_for(&self, session_id: &str, config: &ExtensionConfig) -> Option<String> {
+            Some(format!(
+                "{session_id}: panel={} plan={}",
+                config.is_tool_available("workspace_read_panel"),
+                config.is_tool_available("workspace_orchestrate"),
+            ))
+        }
+    }
+
+    /// The per-turn context is asked with the entry the chat holds, under the
+    /// key the map really uses. The gate this replaced compared that key with
+    /// `"Workspace"`; the key is `"workspace"`, so a restricted entry was never
+    /// restricted.
+    #[tokio::test]
+    async fn platform_moim_asks_each_client_with_the_entry_the_chat_holds() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
         let restricted = ExtensionConfig::Platform {
             name: crate::agents::workspace_extension::EXTENSION_NAME.to_string(),
             description: "delegation only".to_string(),
             bundled: Some(true),
-            available_tools: vec!["workspace_list".to_string(), "subagent".to_string()],
+            available_tools: vec![
+                "subagent".to_string(),
+                "workspace_watch".to_string(),
+                "workspace_orchestrate".to_string(),
+            ],
         };
-        assert!(!platform_moim_allowed(
-            crate::agents::workspace_extension::EXTENSION_NAME,
-            &restricted
-        ));
+        let key = normalize(&restricted.key());
+        assert_eq!(key, "workspace", "the map key is lowercased");
+        assert_ne!(key, crate::agents::workspace_extension::EXTENSION_NAME);
+        em.add_client(key, restricted, Arc::new(GrantEchoClient), None, None)
+            .await;
 
-        let full = ExtensionConfig::Platform {
-            name: crate::agents::workspace_extension::EXTENSION_NAME.to_string(),
-            description: "delegation and panel control".to_string(),
-            bundled: Some(true),
-            available_tools: vec![],
-        };
-        assert!(platform_moim_allowed(
-            crate::agents::workspace_extension::EXTENSION_NAME,
-            &full
-        ));
+        assert_eq!(
+            em.platform_moim("chat-1").await,
+            "\nchat-1: panel=false plan=true"
+        );
+    }
+
+    /// Only platform entries contribute: a builtin's client is never asked.
+    #[tokio::test]
+    async fn platform_moim_skips_entries_that_are_not_platform_extensions() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        em.add_mock_extension("echo".to_string(), Arc::new(GrantEchoClient))
+            .await;
+        assert_eq!(em.platform_moim("chat-1").await, "");
     }
 
     #[tokio::test]

@@ -1,14 +1,16 @@
-import { useRef } from 'react';
+import { useRef, useState } from 'react';
 import { Plus } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuShortcut,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
+import { useSurfaceTriggerHint } from '../ui/surfaceTriggerHint';
 import { COMPOSER_COPY } from './copy';
 
 const COPY = COMPOSER_COPY.plus;
@@ -22,18 +24,29 @@ export type ComposerTrigger = '@' | '/';
  *
  * A chosen mention or command runs after the menu has closed and declined to
  * hand focus back to the `+`, so the caret lands in the text, not on a button.
+ *
+ * In a chat that exists, a last row opens the chat's decision monitors: the
+ * summary's Decisions section, the other way in, is drawn only once a chat has a
+ * decision call or a monitor, so without this row nothing could add the first.
  */
 export function ComposerPlusMenu({
   onAttachFiles,
   onInsertTrigger,
+  onOpenDecisionMonitors,
 }: {
   /** The files picked in the system dialog, handled exactly like a drop. */
   onAttachFiles: (files: FileList) => void;
   /** Put `@` or `/` at the caret and open the matching menu. */
   onInsertTrigger: (trigger: ComposerTrigger) => void;
+  /** Open the chat's Monitors dialog. Absent (and the row with it) before the chat exists. */
+  onOpenDecisionMonitors?: () => void;
 }) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const chosenTrigger = useRef<ComposerTrigger | null>(null);
+  // Controlled for its whole life, so the label hint can know the menu is open and stay shut
+  // over it (H2).
+  const [menuOpen, setMenuOpen] = useState(false);
+  const hint = useSurfaceTriggerHint(menuOpen);
 
   return (
     <>
@@ -52,9 +65,9 @@ export function ComposerPlusMenu({
           event.target.value = '';
         }}
       />
-      <DropdownMenu>
-        <Tooltip>
-          <TooltipTrigger asChild>
+      <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+        <Tooltip {...hint.tooltip}>
+          <TooltipTrigger asChild {...hint.trigger}>
             <DropdownMenuTrigger asChild>
               <Button
                 type="button"
@@ -63,7 +76,9 @@ export function ComposerPlusMenu({
                 shape="round"
                 aria-label={COPY.label}
                 data-testid="composer-plus"
-                className="text-text-muted hover:text-text-default"
+                // Muted at rest; the kept step while its menu is open, beside the Tools chip's
+                // (`.br-surface-trigger`, main.css).
+                className="br-surface-trigger text-text-muted hover:text-text-default"
               >
                 <Plus aria-hidden />
               </Button>
@@ -101,6 +116,17 @@ export function ComposerPlusMenu({
             {COPY.commands}
             <DropdownMenuShortcut>{COPY.commandsHint}</DropdownMenuShortcut>
           </DropdownMenuItem>
+          {onOpenDecisionMonitors ? (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                data-testid="composer-plus-decision-monitors"
+                onSelect={onOpenDecisionMonitors}
+              >
+                {COPY.decisionMonitors}
+              </DropdownMenuItem>
+            </>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
     </>

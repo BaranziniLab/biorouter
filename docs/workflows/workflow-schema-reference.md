@@ -11,7 +11,7 @@ Workflows are reusable Biorouter configurations that package up instructions and
 - [Workflow file format](#workflow-file-format)
 - [Workflow location](#workflow-location)
 - [Core workflow schema](#core-workflow-schema)
-- [Field specifications](#field-specifications) — [activities](#activities), [extensions](#extensions), [parameters](#parameters), [response](#response), [retry](#retry), [settings](#settings), [subworkflows](#subworkflows)
+- [Field specifications](#field-specifications) — [activities](#activities), [extensions](#extensions), [parameters](#parameters), [response](#response), [retry](#retry), [settings](#settings), [subworkflows](#subworkflows), [supervision](#supervision-decision_settings-and-orchestration_plan)
 - [Desktop metadata fields](#desktop-metadata-fields)
 - [Template support](#template-support)
 - [Validation rules](#validation-rules)
@@ -62,6 +62,8 @@ Workflows follow this schema structure:
 | [`settings`](#settings) | Object | No | Configuration for model provider, model name, and other settings |
 | [`skills`](#skills) | Array | No | Names of skills whose instructions this workflow requires |
 | [`sub_workflows`](#subworkflows) | Array | No | List of subworkflows |
+| [`decision_settings`](#supervision-decision_settings-and-orchestration_plan) | Object | No | The new chat's default decision model and decision-model monitors |
+| [`orchestration_plan`](#supervision-decision_settings-and-orchestration_plan) | Object | No | The phase plan, with its gates and phase monitors, the new chat starts with |
 | `version` | String | No | The workflow format version, defaults to "1.0.0" if omitted |
 
 *At least one of `instructions` or `prompt` must be provided.
@@ -611,6 +613,104 @@ sub_workflows:
     description: "Performs code quality analysis"
 ```
 
+### Supervision: `decision_settings` and `orchestration_plan`
+
+Two optional top-level blocks set up decision-model supervision for the chat a workflow starts: `decision_settings` gives it a default decision model and monitors, and `orchestration_plan` gives it a phase plan whose gates and phase monitors the agent must work within. Each block is named after the record it seeds, and each is applied once, to the new chat, before its first message. What monitors, gates and decision models are is in [Decision models](../agent-loop/decision-models.md) and [Orchestration phases](../agent-loop/orchestration-phases.md).
+
+#### `decision_settings`
+
+The record the Monitors dialog, `biorouter session monitors` and `PUT /sessions/{id}/decision-settings` read and write, exactly as stored: camelCase keys, and any key it does not have is refused (so `on_error` is an error, not a silent default).
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `defaultModel` | Object | `{provider, model}`, the chat's default decision model. Left out, the chat uses the configured one, else the first one it may use |
+| `monitors` | Array | At most 8 monitors, each the stored monitor record: `id`, `name`, `question` (`instructions`, `kind`), and optional `model`, `timing` (`post_iteration` or `turn_end`), `window` (`entries`, `maxChars`, `toolCalls`), `threshold`, `direction` (`at_or_above` or `below`), `option`, `consecutive`, `rearmBelow`, `rearmAbove`, `action` (`notify`, `stop` or `steer`), `onError` (`notify` or `pause`), `maxEvalsPerTurn`, `enabled` and `applyToSubagents` |
+
+A question's kind is written `kind: {binary: {}}` (or `kind: !binary {}`), `{choice: {options: {...}}}` or `{score: {levels: [...]}}`. A workflow's monitors are always the person's, so `setBy`, `setBySession` and `inheritedFrom`, which record who set a monitor in a running chat, are refused. `applyToSubagents: true` is allowed: the monitor is copied onto every subagent the chat starts.
+
+#### `orchestration_plan`
+
+The plan the agent would declare with `workspace_orchestrate action:"plan"`, in a strict copy of the tool's own fields (a misspelling such as `treshold` or `dependsOn` is refused):
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `title` | String | What the plan is for, at most 80 characters |
+| `goal` | String | Optional. What the plan must achieve, at most 500 characters |
+| `phases` | Array | 1 to 12 phases, in order |
+
+Each phase:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | String | A slug unique in the plan: lowercase letters, digits and hyphens, at most 40 characters |
+| `title` | String | At most 80 characters |
+| `kind` | String | Optional: `plan`, `research`, `execution`, `implementation`, `verification`, `testing`, `auditing`, `review`, `meeting`, `synthesis` or `other` |
+| `goal` | String | Optional, at most 500 characters |
+| `depends_on` | Array | Ids of earlier phases whose hand-offs this phase's subagents receive |
+| `gate` | Object | Optional: `questions` (1 to 8 yes/no questions, name to question), `threshold` (0 to 1, default 0.8), `max_attempts` (1 to 5, default 3; `maxAttempts` is accepted), `allow_uncalibrated` (default false; `allowUncalibrated` is accepted) and `model` as `provider/model` |
+| `monitors` | Array | Optional: at most 4 monitors every subagent spawned into the phase starts with, in the `subagent` tool's monitor shape (`name`, `question`, `threshold`, `action`: `stop` or `steer`, and the optional fields) |
+
+A gate a workflow declares belongs to the workflow. It has no 0.50 floor, unlike one the agent declares, and it binds the agent like any gate: the agent cannot change, skip or remove it, and only the person passes, skips or retries it. A plan needs the Autonomous approval mode (Completely Autonomous), where the agent has the `subagent` and `workspace_orchestrate` tools.
+
+#### An example
+
+```yaml
+title: "Cohort screen"
+description: "Screen notes for MS, then verify the cohort"
+prompt: "Screen the notes in ./notes and report the MS cohort."
+decision_settings:
+  monitors:
+    - id: off-task
+      name: Off task
+      question:
+        instructions: "Has the agent started work unrelated to screening the notes?"
+        kind: {binary: {}}
+      threshold: 0.8
+      action: stop
+      onError: pause
+      rearmBelow: 0.4
+      applyToSubagents: true
+orchestration_plan:
+  title: Screen and verify
+  phases:
+    - {id: screen, title: Screen the notes, kind: research}
+    - id: verify
+      title: Verify the cohort
+      kind: verification
+      depends_on: [screen]
+      gate:
+        questions:
+          counted: "Does the hand-off give the number of notes screened and the cohort size?"
+        threshold: 0.8
+        max_attempts: 2
+```
+
+This example names no decision model, so the monitor and the gate use the chat's default decision model, the configured one, or the first one the chat may use. A workflow that names a model is refused on a computer where that model is not installed, or where it may not read the chat (a hosted model for a private chat), so a workflow meant to be shared works on more computers without model names.
+
+#### Rules
+
+- **No parameters inside either block.** Both are applied when the chat is created, before parameter values are filled in: "The workflow's `decision_settings` and `orchestration_plan` cannot use parameters (`{{ topic }}` in monitor `off-task`): they are applied when the chat is created, before parameter values are filled in. Write that text without the parameter, or move it into `instructions`." The parameter checks run first, so a parameter that is not declared under `parameters` is reported as missing before this.
+- **A misplaced key is refused with its place.** `monitors`, `monitor`, `gates`, `phases`, `decisions`, `decisionSettings`, `orchestration` and `orchestrationPlan` at the top level are refused, for example "`monitors` is not a top-level workflow field: monitors go under `decision_settings.monitors`." Without this, the workflow would start with no supervision and no word said. The refusal applies wherever a workflow is read, not only to a file: a JSON body (`POST /agent/start`, `/workflows/save`, `/workflows/to-yaml`), a deeplink ("The workflow in this link cannot be read: " and the sentence), and the YAML or JSON given to the agent's workflow and schedule tools. Outside a file, the sentence may end with the line and column where the key was read. Any other unknown top-level key is still ignored, as before.
+- **Applied once, to a new chat.** The doors that start a workflow's own chat seed both blocks into it in one transaction, before anything else is installed: `biorouter run --workflow`, a scheduled run, and `POST /agent/start` (Workflows in the app, a deeplink, a workflow id). The workflow's monitors are merged into the chat's settings, where the chat's own default decision model and a chat monitor with the same id win; a chat that already has a plan is refused. Nothing re-applies them later: not a restart, a change to the workflow, its parameter values, an import, a copy or a diverge. A chat that already has messages is never seeded, and `biorouter run --workflow --resume` says so.
+- **Every model is checked first,** each monitor's, each gate's and each phase monitor's, the way a person's save is, with nothing of the chat sent ([What a save checks](../agent-loop/decision-models.md#what-a-save-checks)).
+- **Nothing is written on any refusal,** and the door does not start the run. Its sentence follows "The workflow was not started: ".
+
+| Refusal | Status at `POST /agent/start` |
+|---|---|
+| A block that is malformed, uses a parameter, or holds more than 12 phases ("A plan may have at most 12 phases; this one has 13. Merge some phases, or split the work across two workflows.") | 400 |
+| More than 8 monitors once merged with the chat's | 400 |
+| A plan for a chat that already has one ("This chat already has a phase plan; start the workflow in a new chat.") | 400 |
+| A start that carried no proof that a person acted, on a daemon that holds a user-action key (`WORKFLOW_SUPERVISION_NEED_USER`), or on a desktop daemon whose key never arrived; a keyless `biorouter serve` daemon admits it | 403 |
+| A decision model that is missing, cannot take the question, will not load, or may not read the chat | 422 |
+| The chat's monitors changed while the workflow was starting | 422 |
+| A plan outside the Autonomous approval mode ("it declares a phased plan, which runs only in the Autonomous approval mode, …; Biorouter is in the Manual approval mode. Switch the approval mode to Autonomous, then start it again.") | 409 |
+
+The CLI prints the same sentence, removes the chat it made (never one it resumed) and exits 1. A scheduled run records it as the schedule's last error and leaves no chat. A slash command for a workflow that declares either block is refused before anything is sent, because it runs in an existing chat: "/screen declares monitors or a phased plan, which apply only when the workflow starts its own chat. Start it from Workflows in the app or with `biorouter run --workflow /path/to/screen.yaml`; nothing was sent." A sub-workflow is different: its `decision_settings` monitors are put on the subagent spawned from it ([Subworkflows](subworkflows.md#monitors-on-a-subworkflows-subagent)), and a sub-workflow that declares an `orchestration_plan` cannot be spawned.
+
+**Making a workflow from a chat.** "Create workflow from this chat" carries the chat's default decision model and the person's monitors (a copy of a parent chat's monitor becomes the workflow's own, and a monitor an agent set is left out), and the plan's skeleton: its phases, kinds, goals and `depends_on`, each gate's questions, threshold, attempts and model, and each phase's monitors. It fills each block only when the generated workflow has none, and leaves a block out when nothing is left to put in it.
+
+**Seeing them before a run.** `biorouter run --workflow <file> --explain` prints a "Supervision:" section with the default model, one line per monitor, the plan and each gate. In the app, the warning shown before a workflow starts has a Supervision panel with the same, and the workflow editor shows it read only, with "Monitors and phase gates are edited in the workflow file; saving here keeps them." ([A workflow's supervision](../desktop-ui/decision-models.md#a-workflows-supervision)).
+
 ## Desktop metadata fields
 
 Workflows saved from Biorouter Desktop include additional metadata fields. These fields are used by the Desktop app for organization and management but are ignored by CLI operations.
@@ -763,6 +863,7 @@ Validation rules from `crates/biorouter/src/workflow/validate_workflow.rs` ([sou
 
 - `validate_prompt_or_instructions` - At least one of `instructions` or `prompt` must be present
 - `validate_json_schema` - JSON response schema must be valid if `response.json_schema` is specified
+- `supervision::validate` - `decision_settings` and `orchestration_plan` must be valid as a chat would take them, use no parameters, and no top-level key may belong inside them (see [Supervision](#supervision-decision_settings-and-orchestration_plan))
 
 ### Parameter validation
 
@@ -954,6 +1055,7 @@ Common errors to watch for:
 - Missing required fields
 - Invalid extension configurations
 - Invalid retry configuration (missing required fields, invalid shell commands)
+- A `decision_settings` or `orchestration_plan` block that is malformed, uses a parameter, or cannot be applied to the new chat (see [Supervision](#supervision-decision_settings-and-orchestration_plan))
 
 When these occur, Biorouter will provide helpful error messages indicating what needs to be fixed.
 

@@ -3111,12 +3111,26 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
 /* @ws WS-MOTION end: tab overflow menu filter */
 
 /* @ws WS-MOTION begin: overflow button fill */
-/* Hover and open on the band's fill step (R-27), the step the band's other
-   pressed controls (summary, terminal) use. */
-.br-tabstrip__overflow:hover,
-.br-tabstrip__overflow[data-state='open'] {
+/* Hover peeks, click pins (H4): the pointer gives the ▾ the ghost hover every
+   control in the band answers with (`--overlay-hover`), and only an OPEN menu
+   holds the band's fill step (R-27), the step the band's other pressed
+   controls (summary, terminal) use. It was the fill for both, so a hovered ▾
+   looked like an open one. "Open" is `aria-expanded`, which only the menu
+   sets: a tooltip wrapped around a trigger would write its own `data-state`
+   over the menu's (`pickers.css`). The press comes last, so a press on the
+   open ▾ (which closes it) still answers at once. */
+.br-tabstrip__overflow:hover {
+  background: var(--overlay-hover);
+  color: var(--text-default);
+}
+
+.br-tabstrip__overflow[aria-expanded='true'] {
   background: var(--background-fill-strong);
   color: var(--text-default);
+}
+
+.br-tabstrip__overflow:active {
+  background: var(--overlay-pressed);
 }
 /* @ws WS-MOTION end: overflow button fill */
 
@@ -5307,9 +5321,32 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
   pointer-events: none;
 }
 
+/* The trigger's states, "hover peeks, click pins" (docs/desktop-ui/shared-controls.md, H4), all
+   on the 20px mark box. A PREVIEW leaves the trigger at rest: what a hover or a Tab opened is
+   marked only by the pointer or the focus that opened it, so the one mark that outlives the
+   pointer means "this stays until you close it".
+     - pointer on it: the neutral hover wash, the default ink;
+     - KEPT (`data-pinned`, a click, tap, Enter or Space): the strong fill and the default ink,
+       held whether or not the pointer is on it. Kept against hover is a subtle step (1.10:1 in
+       light, 1.08:1 in dark) and against rest 1.21:1 and 1.23:1 (Parchment, measured in
+       `ui/infoTip.browser.test.tsx`); that the tip stays is the main difference;
+     - a press: the pressed wash, at once;
+     - keyboard focus (D-15, below) wins over all of them. */
 .br-info-tip:hover,
-.br-info-tip[data-state='open'] {
+.br-info-tip[data-pinned] {
   color: var(--text-default);
+}
+
+.br-info-tip:hover::before {
+  background-color: var(--overlay-hover);
+}
+
+.br-info-tip[data-pinned]::before {
+  background-color: var(--background-fill-strong);
+}
+
+.br-info-tip:active::before {
+  background-color: var(--overlay-pressed);
 }
 
 /* D-15: focus is a surface shift plus an inset edge, never a ring. Both are drawn on the 20px
@@ -5343,6 +5380,31 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
   cursor: help;
 }
 
+/* Its states, the glyph's in a form that sits on any target. A target's own fill and ink are its
+   meaning (a status tone, Private's ink against Public's, a neutral badge that already rests on
+   the strong fill, where the glyph's kept fill would change nothing), so no state repaints them.
+   Each state is an ink wash laid OVER the target and 2px past it instead: the inset shadow paints
+   above the target's own fill and under its words, the spread carries the plate 2px out, as the
+   glyph's mark box sits 3px round its glyph, and both follow the corner. The hover wash under the
+   pointer; KEPT (`data-pinned`) and a press take the pressed wash, which off the page ground is
+   the step the strong fill takes (1.21:1 in light, 1.31:1 in dark, measured in
+   `ui/infoTip.browser.test.tsx`), so a kept badge reads as held down. Keyboard focus (below)
+   takes the shadow back, so its outline is the one mark while it is there. */
+.br-info-tip-target:hover {
+  border-radius: var(--radius-inner);
+  box-shadow:
+    0 0 0 2px var(--overlay-hover),
+    inset 0 0 0 100vmax var(--overlay-hover);
+}
+
+.br-info-tip-target[data-pinned],
+.br-info-tip-target:active {
+  border-radius: var(--radius-inner);
+  box-shadow:
+    0 0 0 2px var(--overlay-pressed),
+    inset 0 0 0 100vmax var(--overlay-pressed);
+}
+
 .br-info-tip-target:focus-visible {
   outline: 2px solid var(--border-focus);
   outline-offset: 2px;
@@ -5353,6 +5415,24 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
      takes back the region's own 1px inset edge. The outline is the whole indicator and the
      chip's ground stays as it was. */
   box-shadow: none;
+}
+
+/* Forced colours repaint every fill as Canvas and drop shadows, so the kept fill and the plate
+   vanish there. A kept trigger draws a 1px CanvasText edge instead: on the glyph's 20px mark box,
+   inside it, where the OS focus ring (2 to 4px inside the hit box, above) covers it when focus is
+   there too; round an `asChild` target, 1px out, where its plate reached, because a target with
+   no padding of its own (the 12px padlock) would lose a pixel of its glyph to an inside edge. The
+   OS ring on a focused target is `!important`, so focus still wins. */
+@media (forced-colors: active) {
+  .br-info-tip[data-pinned]::before {
+    outline: 1px solid CanvasText;
+    outline-offset: -1px;
+  }
+
+  .br-info-tip-target[data-pinned] {
+    outline: 1px solid CanvasText;
+    outline-offset: 1px;
+  }
 }
 
 .br-info-tip-content {
@@ -5901,6 +5981,25 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
   .br-row-actions-meta {
     opacity: 1 !important;
   }
+}
+
+/* A ghost trigger whose menu a click opened holds the kept step while the menu is open (H4,
+   "hover peeks, click pins"): `--background-fill-strong` with `--text-default`, whether or not
+   the pointer is on it, as the composer chips, the tab overflow ▾ and the artifact preview's `⋯`
+   do. Worn by the composer's `+`, a row's `⋯` (RowActions, History) and the sidebar's chat-row
+   and folder `⋯`, which rested transparent and muted beside an open menu while the Tools chip
+   next to the `+` held its fill. "Open" is `aria-expanded`: the label tooltip around each
+   trigger writes its own `data-state` over the menu's. The shorthand also clears the ghost
+   button's hover tint (a background-image), so a pointer on the open trigger does not deepen
+   the fill; a press shows the pressed overlay at once. Before `.biorouter-focus-surface` in this
+   file, so keyboard focus (D-15) still wins. */
+.br-surface-trigger[aria-expanded='true'] {
+  background: var(--background-fill-strong);
+  color: var(--text-default);
+}
+
+.br-surface-trigger[aria-expanded='true']:active {
+  background: var(--overlay-pressed);
 }
 
 /* Spinner: one glyph, one period (`--dur-slow × 2`), linear; still under reduced motion. */

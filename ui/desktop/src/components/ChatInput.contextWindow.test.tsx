@@ -14,10 +14,16 @@ const mocks = vi.hoisted(() => ({
   getProviders: vi.fn(),
   read: vi.fn(),
   getCurrentModelAndProvider: vi.fn(),
+  // The app's cached provider catalog (`ConfigContext.providersList`).
+  providersList: undefined as unknown,
 }));
 
 vi.mock('./ConfigContext', () => ({
-  useConfig: () => ({ getProviders: mocks.getProviders, read: mocks.read }),
+  useConfig: () => ({
+    getProviders: mocks.getProviders,
+    read: mocks.read,
+    providersList: mocks.providersList,
+  }),
 }));
 vi.mock('./ModelAndProviderContext', () => ({
   useModelAndProvider: () => ({
@@ -97,6 +103,7 @@ afterAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.providersList = undefined;
   mocks.read.mockResolvedValue(null);
   // The chat has no pin yet, so the first lookup measures the app's selection.
   mocks.getCurrentModelAndProvider.mockResolvedValue({
@@ -261,5 +268,26 @@ describe('ChatInput context window while a chat opens (V2-R4-1, round 5)', () =>
     expect(ring()).toHaveAccessibleName(/of 1M$/);
     // The lookup made while the chat loaded was for this same model: no second one.
     expect(mocks.getProviders).toHaveBeenCalledTimes(1);
+  });
+});
+
+// The app's cached catalog draws the window before the lookup's own fetch
+// answers (see ChatInput.contextWindowReload.test.tsx for the reload it fixes).
+// What the cache must never do is be undone by a fetch that brings no news.
+describe('ChatInput context window from the cached catalog', () => {
+  it('keeps the cached window when its own fetch then throws', async () => {
+    mocks.providersList = PROVIDERS;
+    const own = deferred();
+    mocks.getProviders.mockReturnValueOnce(own.promise);
+
+    render(chat(PINNED));
+    await waitFor(() => expect(ring()).toHaveAccessibleName(/of 200k$/));
+
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await act(async () => own.reject(new Error('offline')));
+    logged.mockRestore();
+
+    expect(ring()).toHaveAccessibleName(/of 200k$/);
+    expect(ring()).not.toHaveAccessibleName(/of 128k$/);
   });
 });

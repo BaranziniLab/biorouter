@@ -372,6 +372,52 @@ describe('ProviderCatalog — institutions', () => {
     expect(screen.getByTestId('catalog-section-unaffiliated')).toBeInTheDocument();
   });
 
+  /**
+   * The decision providers `GET /config/providers` serves (`baseten_decision`,
+   * `ollama_decision`) are not chat providers needing setup: no row, no Configure, no Use. The
+   * tab their tier puts them in says where they are instead, in Settings only.
+   */
+  it('shows no row for a decision provider, and says where decision models are', () => {
+    const providers = [
+      provider('baseten'),
+      provider('baseten_decision', { is_configured: false }, 'Baseten decision models'),
+      provider('ollama', PRIVATE_LOCAL, 'Ollama'),
+      provider('ollama_decision', PRIVATE_LOCAL, 'Ollama decision models'),
+    ];
+    render(<ProviderCatalog providers={providers} mode="settings" configuredProvider={null} />);
+
+    clickTab('local');
+    expect(screen.queryByText('Ollama decision models', { exact: true })).toBeNull();
+    const local = screen.getByTestId('catalog-decision-models-local');
+    expect(local).toHaveTextContent(catalogCopy.decisionModels(['Ollama decision models']));
+    expect(
+      within(local).getByRole('button', { name: `About ${catalogCopy.decisionModelsLabel}` })
+    ).toBeInTheDocument();
+
+    clickTab('commercial');
+    expect(
+      screen.queryByRole('button', { name: catalogCopy.configureRow('Baseten decision models') })
+    ).toBeNull();
+    expect(screen.queryByText('Baseten decision models', { exact: true })).toBeNull();
+    expect(screen.getByTestId('catalog-decision-models-commercial')).toHaveTextContent(
+      catalogCopy.decisionModels(['Baseten decision models'])
+    );
+    expect(screen.queryByTestId('catalog-decision-models-local')).toBeNull();
+  });
+
+  it('says nothing about decision models on first run', () => {
+    render(
+      <ProviderCatalog
+        providers={[provider('ollama_decision', PRIVATE_LOCAL, 'Ollama decision models')]}
+        mode="onboarding"
+        configuredProvider={null}
+      />
+    );
+    clickTab('local');
+    expect(screen.queryByTestId('catalog-decision-models-local')).toBeNull();
+    expect(screen.queryByText('Ollama decision models', { exact: true })).toBeNull();
+  });
+
   it('always explains where other institutions come from', () => {
     render(<ProviderCatalog providers={[]} mode="settings" configuredProvider={null} />);
     clickTab('institutional');

@@ -79,6 +79,7 @@ const REAL_TOOLS: Record<ToolGlyphKind, string[]> = {
     'evidence__report_evidence',
   ],
   agent: ['workspace__subagent', 'agent_drafter__consult'],
+  decision: ['decisions__decide', 'decisions__decision_models'],
   workspace: [
     'workspace__workspace_list',
     'workspace__workspace_read_conversation',
@@ -314,6 +315,7 @@ describe('one glyph per concept', () => {
     expect(TOOL_GLYPHS.extension).toBe(ENTITY_ICONS.extension);
     expect(TOOL_GLYPHS.app).toBe(ENTITY_ICONS.application);
     expect(TOOL_GLYPHS.agent).toBe(ENTITY_ICONS.agent);
+    expect(TOOL_GLYPHS.decision).toBe(ENTITY_ICONS.decision);
   });
 
   /** `read` and `document` share FileText on purpose (a document tool reads or
@@ -365,6 +367,7 @@ describe('one glyph per concept', () => {
     expect(extensionGlyphFor('Code Execution').kind).toBe('code');
     expect(extensionGlyphFor('Chat Recall').kind).toBe('recall');
     expect(extensionGlyphFor('Extension Manager').kind).toBe('extension');
+    expect(extensionGlyphFor('decisions').kind).toBe('decision');
   });
 });
 
@@ -525,6 +528,18 @@ describe('every built-in server tool has a real glyph', () => {
     expect(names.length).toBeGreaterThan(0);
     for (const name of names) {
       expect(['unknown', 'extension'], name).not.toContain(toolGlyphKind(name));
+    }
+  });
+
+  it('decision tools', () => {
+    const src = read('biorouter/src/agents/decisions_extension.rs');
+    const names = [...src.matchAll(/_TOOL_NAME:\s*&str\s*=\s*"(decisions__\w+)"/g)].map(
+      (m) => m[1]
+    );
+    expect(names.length).toBeGreaterThan(0);
+    for (const name of names) {
+      expect(toolGlyphKind(name), name).toBe('decision');
+      expect(toolGlyphFor(name).Icon, name).toBe(ENTITY_ICONS.decision);
     }
   });
 });

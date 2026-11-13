@@ -45,6 +45,8 @@ pub enum LoopPhase {
     SupervisionWait = 10,
     /// Persisting what the turn leaves behind.
     Settling = 11,
+    /// A decision-model monitor is being evaluated (`decision::monitor`).
+    Monitoring = 12,
 }
 
 impl LoopPhase {
@@ -62,6 +64,7 @@ impl LoopPhase {
             Self::ExitGates => "exit_gates",
             Self::SupervisionWait => "supervision_wait",
             Self::Settling => "settling",
+            Self::Monitoring => "monitoring",
         }
     }
 
@@ -78,6 +81,7 @@ impl LoopPhase {
             9 => Self::ExitGates,
             10 => Self::SupervisionWait,
             11 => Self::Settling,
+            12 => Self::Monitoring,
             _ => Self::Idle,
         }
     }
@@ -148,5 +152,28 @@ mod tests {
         let (phase, age) = cell.snapshot();
         assert_eq!(phase, LoopPhase::Streaming);
         assert!(age < 5_000);
+    }
+
+    #[test]
+    fn every_phase_round_trips_through_its_byte_and_has_a_name() {
+        for phase in [
+            LoopPhase::Idle,
+            LoopPhase::Prologue,
+            LoopPhase::AutoCompaction,
+            LoopPhase::ProviderOpen,
+            LoopPhase::Streaming,
+            LoopPhase::Gating,
+            LoopPhase::ApprovalWait,
+            LoopPhase::ToolBatch,
+            LoopPhase::LiveAckWait,
+            LoopPhase::ExitGates,
+            LoopPhase::SupervisionWait,
+            LoopPhase::Settling,
+            LoopPhase::Monitoring,
+        ] {
+            assert_eq!(LoopPhase::from_u8(phase as u8), phase);
+            assert!(!phase.as_str().is_empty());
+        }
+        assert_eq!(LoopPhase::Monitoring.as_str(), "monitoring");
     }
 }

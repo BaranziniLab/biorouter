@@ -57,6 +57,17 @@ import { SummaryHeaderButton } from './summary/SummaryHeaderButton';
 import { summaryCopy } from './summary/copy';
 import { collectCodeDelta } from './summary/codeDelta';
 import { useSessionTodos } from '../hooks/useSessionTodos';
+import { useSessionSubagents } from '../hooks/useSessionSubagents';
+import { useSessionDecisions } from '../hooks/useSessionDecisions';
+import { MonitorsDialog } from './decisions/MonitorsDialog';
+import { PhaseGateDialog } from './decisions/PhaseGateDialog';
+import {
+  decisionHistoryArtifact,
+  firedMonitorIds,
+  type DecisionGateSource,
+  type DecisionHistoryFilter,
+} from '../utils/sessionDecisions';
+import { isActiveStatus, openSubagentTab, type PhaseStatus } from '../utils/sessionSubagents';
 import { summaryRailChat, useSummaryRail } from '../hooks/useSummaryRail';
 import { useLoadingChat } from './summary/useLoadingChat';
 import { composerFollowsUp, useFirstSend } from './summary/useFirstSend';
@@ -523,6 +534,9 @@ function artifactKey(artifact: ArtifactSource) {
       const blobLength = typeof resource.blob === 'string' ? resource.blob.length : 0;
       return `resource:${resource.uri}:${resource.mimeType ?? ''}:${textLength}:${blobLength}`;
     }
+    case 'decisions':
+      // One decision history tab per chat; never collected from a transcript.
+      return `decisions:${artifact.sessionId}`;
   }
 }
 
@@ -2029,7 +2043,13 @@ function BaseChatContent({
     return submitAndReturnToBottom({ sessionId, submit: heldSubmit }, textValue, attachments);
   };
 
-  const { sessionCosts, modelRows, ledgerSettled } = useCostTracking({ session });
+  // `tokenState` is what moves in a live chat: `session` is the row the chat was
+  // opened with, so keyed on it alone the ledger, and the footer's cost and By
+  // model list, stayed as they were on open until a reload.
+  const { sessionCosts, modelRows, ledgerSettled } = useCostTracking({
+    session,
+    liveTokens: tokenState,
+  });
   // The footer prices this chat's ledger, or its counters when the ledger has no
   // rows; never the counters while the ledger is still to answer, or the cost
   // it shows is withdrawn a moment later (vision V2-R5-5).
@@ -2460,6 +2480,75 @@ function BaseChatContent({
       (reviewOpen || summaryRail.shown || (summaryActive && isRunningState(chatState)))
   );
 
+  // The chat's subagents and its phase plan, on the to-do list's gate (shown,
+  // or a turn running), plus one of their own: the roster keeps polling while a
+  // background child runs, so it stays current after the turn that started it
+  // ended. A row opens its child as a tab and makes it the active one.
+  const sessionSubagents = useSessionSubagents(sessionId, messages, {
+    visible: !chatLoading && (reviewOpen || summaryRail.shown),
+    turnRunning: !chatLoading && summaryActive && isRunningState(chatState),
+  });
+  // The chat's decision-model activity, aggregated per source (never one row
+  // per call), on the same gate as the roster: shown, or a turn running. While
+  // a turn runs it polls the settings (other writers change them), and the
+  // summary too in a chat with monitors or decision calls.
+  const sessionDecisions = useSessionDecisions(sessionId, messages, {
+    visible: !chatLoading && (reviewOpen || summaryRail.shown),
+    turnRunning: !chatLoading && summaryActive && isRunningState(chatState),
+  });
+  const [monitorsOpen, setMonitorsOpen] = useState(false);
+  const openDecisionHistory = useCallback(
+    (filter: DecisionHistoryFilter) => {
+      // The popover belongs to the chat; the history opens beside it.
+      setReviewOpen(false);
+      void handleOpenArtifact(decisionHistoryArtifact(sessionId, filter));
+    },
+    [handleOpenArtifact, sessionId]
+  );
+  const openMonitors = useCallback(() => {
+    setReviewOpen(false);
+    setMonitorsOpen(true);
+  }, []);
+  // A phase's gate dialog: the person's controls over the gate (pass, skip,
+  // retry, edit, remove) and, inside it, the gate's decision history. A phase
+  // with no gate opens it on its editor ("Add gate"). Mounted here, beside the
+  // Monitors dialog, for the same reason: the summary's popover form unmounts
+  // when it closes.
+  const [gatePhaseId, setGatePhaseId] = useState<string | null>(null);
+  const openPhaseGate = useCallback((phaseId: string) => {
+    setReviewOpen(false);
+    setGatePhaseId(phaseId);
+  }, []);
+  const gatePhase = useMemo(
+    () => sessionSubagents.data?.plan?.phases.find((phase) => phase.id === gatePhaseId) ?? null,
+    [sessionSubagents.data, gatePhaseId]
+  );
+  // With each phase's status, so a gate row can tell a pass that closed its
+  // phase from one that stands until the phase's subagents finish.
+  const decisionGates = useMemo<(DecisionGateSource & { status: PhaseStatus })[]>(
+    () =>
+      (sessionSubagents.data?.plan?.phases ?? []).flatMap((phase) =>
+        phase.gate
+          ? [{ phaseId: phase.id, title: phase.title, gate: phase.gate, status: phase.status }]
+          : []
+      ),
+    [sessionSubagents.data]
+  );
+  const firedMonitors = useMemo(() => firedMonitorIds(messages), [messages]);
+  const chatGroupsDispatch = chatGroups?.dispatch;
+  const openSubagent = useCallback(
+    (childSessionId: string, title?: string) => {
+      // The popover belongs to this tab; it is not left open behind the child's.
+      setReviewOpen(false);
+      openSubagentTab(
+        { dispatch: chatGroupsDispatch, pathname: location.pathname, navigate },
+        childSessionId,
+        title
+      );
+    },
+    [chatGroupsDispatch, location.pathname, navigate]
+  );
+
   // The window widened under an open popover: the button is the rail's now, in
   // rail mode it never opens a popover, so a stale one closes.
   useEffect(() => {
@@ -2496,6 +2585,15 @@ function BaseChatContent({
       codeDelta,
     }),
     todos: chatLoading ? { ...sessionTodos, loading: true } : sessionTodos,
+    subagents: { ...sessionSubagents, onOpen: openSubagent, onOpenGate: openPhaseGate },
+    decisions: {
+      ...sessionDecisions,
+      sessionId,
+      onOpenHistory: openDecisionHistory,
+      onOpenMonitors: openMonitors,
+      gates: decisionGates,
+      fired: firedMonitors,
+    },
     hasWorkflow: !!(workflow ?? loadingChatRow?.workflow),
     onWorkflow: handleWorkflowReviewAction,
     onDiagnostics: handleDiagnosticsReviewAction,
@@ -2512,6 +2610,11 @@ function BaseChatContent({
           total: sessionTodos.items.length,
         }
       : null;
+  // The same dot, and a count in the button's name, while subagents run with
+  // the rail folded away.
+  const summaryRunningSubagents = summaryRail.shown
+    ? 0
+    : (sessionSubagents.data?.subagents.filter((row) => isActiveStatus(row.status)).length ?? 0);
 
   const renderSessionHeaderActions = () => (
     <div
@@ -2552,6 +2655,7 @@ function BaseChatContent({
         popoverOpen={reviewOpen}
         onPopoverOpenChange={setReviewOpen}
         progress={summaryProgress}
+        runningSubagents={summaryRunningSubagents}
         summary={summaryProps}
       />
     </div>
@@ -2807,6 +2911,9 @@ function BaseChatContent({
             // so callers can still override.
             onWorkingDirChange={setPendingWorkingDir}
             autoFocus={autoFocusComposer}
+            // The first monitor's way in: the summary's Decisions section is
+            // drawn only once the chat has decision calls or monitors.
+            onOpenDecisionMonitors={sessionId ? openMonitors : undefined}
             {...customChatInputProps}
           />
         </PendingChatModelContext.Provider>
@@ -3208,6 +3315,54 @@ function BaseChatContent({
             )}
           </div>
 
+          {/* The chat's monitors. Mounted here, not inside the summary: the
+              popover form of the summary unmounts when it closes, and the
+              dialog would go with it. */}
+          <MonitorsDialog
+            open={monitorsOpen}
+            onOpenChange={setMonitorsOpen}
+            sessionId={sessionId}
+            chatTier={
+              session?.privacy_tier === 'private'
+                ? 'private'
+                : session?.privacy_tier === 'public'
+                  ? 'public'
+                  : null
+            }
+            settings={sessionDecisions.data?.settings ?? null}
+            // A subagent's own monitors never reach subagents of its own, so the
+            // dialog offers no "Also watch the subagents" there.
+            isSubagentChat={subagentChatKind === 'subagent'}
+            onSaved={(stored) => {
+              sessionDecisions.applySettings(stored);
+              sessionDecisions.refresh();
+            }}
+          />
+
+          <PhaseGateDialog
+            open={gatePhaseId !== null}
+            onOpenChange={(open) => {
+              if (!open) setGatePhaseId(null);
+            }}
+            sessionId={sessionId}
+            phase={gatePhase}
+            phases={sessionSubagents.data?.plan?.phases}
+            chatTier={
+              session?.privacy_tier === 'private'
+                ? 'private'
+                : session?.privacy_tier === 'public'
+                  ? 'public'
+                  : null
+            }
+            onOpenHistory={openDecisionHistory}
+            onChanged={() => {
+              // The plan changed (a phase closed, a gate went or came): read it,
+              // and the gate rows of the Decisions section with it.
+              sessionSubagents.refresh();
+              sessionDecisions.refresh();
+            }}
+          />
+
           {/* Rung 0: the docked summary, its own grid column between the
               conversation and the preview (summary/summaryRail.css). */}
           {summaryRail.rendered && (
@@ -3304,6 +3459,11 @@ function BaseChatContent({
             title: workflow.title,
             description: workflow.description,
             instructions: workflow.instructions || undefined,
+            // The monitors and phase plan the workflow starts this chat with.
+            supervision: {
+              decisionSettings: workflow.decision_settings,
+              orchestrationPlan: workflow.orchestration_plan,
+            },
           }}
           hasSecurityWarnings={hasWorkflowSecurityWarnings}
         />

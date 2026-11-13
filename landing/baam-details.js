@@ -241,14 +241,15 @@ window.BAAM_DETAILS = {
   },
   'folklore-clinical-variant-interpretation-mcp': {
     domain: 'Genomics & omics',
-    what: 'Connects to Folklore, a hosted service from Helena Bioinformatics that it can only read from. You give it one public GRCh38 germline SNV or simple indel, as HGVS, an rsID or an allele. It returns the resolved variant, an automated ACMG/AMP classification with the criteria it applied, source versions and the uncertainty it states, and it never chooses between ambiguous candidates for you. It also finds papers linked to the variant, returns full bibliographic records for the PMIDs it finds, and searches its literature corpus in plain language.',
+    what: 'Biorouter rebuild of the Folklore MCP 2.0.0 anonymous bridge to the hosted service from Helena Bioinformatics. It classifies one public GRCh38 germline SNV or simple indel under ACMG/AMP, retaining the applied criteria, source versions and uncertainty without choosing between ambiguous candidates. It also resolves genes, retrieves gene profiles and ClinGen gene-disease associations, finds disease-associated genes, and searches variant, gene and scientific literature. Results require qualified professional review and are not a diagnosis or treatment recommendation.',
     asks: [
       'What does NM_007294.4:c.68_69del mean under ACMG/AMP?',
       'Review the evidence for this VUS and show which criteria were applied.',
+      'Resolve BRCA1, then retrieve its gene profile and ClinGen gene-disease associations.',
       'Find papers that mention this variant and give me the abstract of the most relevant one.'
     ],
-    tools: ['search_variant_evidence', 'search_variant_literature', 'get_publication_details', 'search_literature_corpus'],
-    needs: 'No account, API key or environment variable. Outbound HTTPS to https://api.helena.bio/folklore/v1/mcp. Send it public variant data only, with no patient, phenotype, family or segregation details. A qualified professional must review the results.',
+    tools: ['classify_germline_variant', 'search_variant_literature', 'get_publication_details', 'search_literature_corpus', 'support_helena', 'get_gene_disease_associations', 'search_disease_genes', 'resolve_gene', 'get_gene_profile', 'get_gene_section', 'search_gene_literature'],
+    needs: 'No account, API key or environment variable. Outbound HTTPS to https://api.helena.bio/folklore/v1/mcp. Send public variant, gene and disease identifiers and scientific literature questions only, with no patient, private case, phenotype, family or segregation details. A qualified professional must review the results.',
     sources: [
       'Folklore API by Helena Bioinformatics (api.helena.bio)',
       'The Folklore genetics literature corpus, drawn from PubMed',

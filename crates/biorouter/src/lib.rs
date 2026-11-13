@@ -24,6 +24,7 @@ pub mod config;
 pub mod context_budget;
 pub mod context_mgmt;
 pub mod conversation;
+pub mod decision;
 pub mod dictation;
 pub mod execution;
 pub mod extension_install;

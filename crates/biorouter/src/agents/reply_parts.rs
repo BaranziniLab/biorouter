@@ -319,6 +319,13 @@ pub(crate) fn survives_code_execution_filter(
         // The checklist: exact names, never a `todo__` prefix — see
         // `TODO_TOOL_NAMES` for why the prefix is not the builtin's to claim.
         || crate::agents::todo_extension::is_todo_tool_name(tool_name)
+        // The decision tools: exact names. Called from a script, `decide`'s
+        // nested question shape is flattened to `questions: object` in the
+        // module signature, so a model guessed field names and failed until it
+        // read the module (measured live), and the call left no `decide` card
+        // in the transcript, only a script run. Directly callable, the model
+        // sees the full schema and the batch summary card is drawn.
+        || crate::agents::decisions_extension::is_decision_tool_name(tool_name)
 }
 
 fn code_execution_mode_is_active(loaded: bool, tools: &[Tool]) -> bool {
@@ -1726,6 +1733,24 @@ mod tests {
         }
         assert!(!survives_code_execution_filter(
             "dictionary__unexpected_tool",
+            &prefix,
+            &no_frontend
+        ));
+        // … the decision tools, by exact name: from a script `decide`'s
+        // nested question shape is only `questions: object`, and its batch
+        // card never reaches the transcript …
+        assert!(survives_code_execution_filter(
+            crate::agents::decisions_extension::DECIDE_TOOL_NAME,
+            &prefix,
+            &no_frontend
+        ));
+        assert!(survives_code_execution_filter(
+            crate::agents::decisions_extension::DECISION_MODELS_TOOL_NAME,
+            &prefix,
+            &no_frontend
+        ));
+        assert!(!survives_code_execution_filter(
+            "decisions__something_else",
             &prefix,
             &no_frontend
         ));

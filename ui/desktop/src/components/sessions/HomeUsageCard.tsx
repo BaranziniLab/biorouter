@@ -8,6 +8,7 @@ import { isBrowserSurface } from '../../utils/surface';
 import {
   DEFAULT_USAGE_RANGE,
   USAGE_RANGES,
+  decisionModelName,
   deriveUsageStats,
   expectedHeatmapWeeks,
   favoriteModel,
@@ -132,8 +133,10 @@ function useModelReport(end: string, range: UsageRange): ReportState {
  * off (`gpt-5.5-2026-04-24` reads `gpt-5.5`). The full `provider/modelId`
  * stays in the tooltip.
  */
-function modelName(modelId: string | null | undefined): string {
-  return modelId ? friendlyModelName(getModelDisplayName(modelId)) : copy.notRecorded;
+function modelName(modelId: string | null | undefined, decision = false): string {
+  if (!modelId) return copy.notRecorded;
+  if (decision) return decisionModelName(modelId);
+  return friendlyModelName(getModelDisplayName(modelId));
 }
 
 function modelTitle(row: { modelId?: string | null; provider?: string | null }) {
@@ -237,7 +240,7 @@ function ModelRow({ model }: { model: ModelUsage }) {
       </li>
     );
   }
-  const name = model.other ? copy.other : modelName(model.modelId);
+  const name = model.other ? copy.other : modelName(model.modelId, model.decision);
   const share = model.share ?? 0;
   const width = `${Math.max(0, Math.min(100, share * 100))}%`;
   return (

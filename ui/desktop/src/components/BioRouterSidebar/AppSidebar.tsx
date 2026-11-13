@@ -35,6 +35,7 @@ import { hasUsableModel, useDictationStatus } from '../dictation/dictationStore'
 import { DICTIONARY_LABELS } from '../dictionary/copy';
 import { useDictionaryWaitingCount } from '../dictionary/useDictionary';
 import { StatusDot } from '../ui/status-dot';
+import { homeFolder } from '../../utils/folderPath';
 import './sidebar.css';
 
 function preloadHome(): void {
@@ -216,7 +217,10 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
       new Set(runningChats.filter((entry) => !entry.completedAt).map((entry) => entry.sessionId)),
     [runningChats]
   );
-  const homeDir = (window.appConfig?.get('BIOROUTER_HOME_DIR') as string | undefined) ?? null;
+  // The one rule for writing a folder (utils/folderPath.ts): `~` only while the daemon is this
+  // machine's, so a folder group, its path and a chat's hover card read as the composer footer,
+  // History and the terminal dock write the same folder. It changes labels, never group keys.
+  const homeDir = homeFolder();
   const isMac = window.electron?.platform === 'darwin';
   const showShortcutHint = !isBrowserSurface();
 

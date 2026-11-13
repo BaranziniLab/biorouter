@@ -38,7 +38,7 @@ import { detectInterruption } from '../utils/interruptionDetector';
 import { getSession, Message } from '../api';
 import { userActionHeaders } from '../utils/userAction';
 import { liveContextWindow } from '../utils/liveContextWindow';
-import type { SessionClassification } from '../api/types.gen';
+import type { ProviderDetails, SessionClassification } from '../api/types.gen';
 import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUtils';
 import { getSteerShortcutText } from '../utils/keyboardShortcuts';
 import { COMPOSER_COPY } from './composer/copy';
@@ -111,6 +111,8 @@ import {
   subscribeQueuedOfferReturns,
   type QueuedMessage,
 } from '../utils/composerQueues';
+import { DecisionComposer, DECISION_CHAT_PLACEHOLDER } from './decisions/DecisionComposer';
+import { isDecisionProvider } from './decisions/decisionWire';
 
 /**
  * Queued messages as a draft, for a composer with no chat to keep a queue for.
@@ -209,6 +211,22 @@ const MAX_IMAGE_SIZE_MB = 3;
 
 // The context window assumed until the model's own is known.
 const TOKEN_LIMIT_DEFAULT = 128000; // fallback for custom models that the backend doesn't know about
+
+/**
+ * The context window a provider catalog names for `model`, or `null` when it
+ * names none. One reader for the two catalogs the composer consults: the app's
+ * cached copy and the fetch its own lookup starts (see `loadProviderDetails`).
+ */
+function catalogContextLimit(
+  catalog: readonly ProviderDetails[] | undefined,
+  provider: string,
+  model: string
+): number | null {
+  const limit = catalog
+    ?.find((row) => row.name === provider)
+    ?.metadata?.known_models?.find((known) => known.name === model)?.context_limit;
+  return typeof limit === 'number' && limit > 0 ? limit : null;
+}
 
 // Manual compact trigger message - must match backend constant
 const MANUAL_COMPACT_TRIGGER = '/compact';
@@ -419,6 +437,13 @@ interface ChatInputProps {
    * the left pane, the caret and the focused pane were the right pane's chat.
    */
   autoFocus?: boolean;
+  /**
+   * Open this chat's decision monitors (BaseChat's `MonitorsDialog`), from the
+   * `+` menu. The menu offers it only while the composer names a chat
+   * (`sessionId`): a chat that has not been created has nothing to attach a
+   * monitor to.
+   */
+  onOpenDecisionMonitors?: () => void;
 }
 
 export default function ChatInput({
@@ -454,6 +479,7 @@ export default function ChatInput({
   supportsVisionOverride,
   supportedInputMimeTypesOverride,
   autoFocus = true,
+  onOpenDecisionMonitors,
 }: ChatInputProps) {
   const [anonymousReasoningDraftKey] = useState(() => crypto.randomUUID());
   // A new chat's unsent message, as its tab last held it. Read ONCE, in the
@@ -556,7 +582,11 @@ export default function ChatInput({
   const lastInterruptionRef = useRef(lastInterruption);
   lastInterruptionRef.current = lastInterruption;
 
-  const { getProviders, read } = useConfig();
+  const { getProviders, read, providersList } = useConfig();
+  // The app's one cached copy of the provider catalog, for the window lookup
+  // to read at call time (see loadProviderDetails).
+  const providersListRef = useRef(providersList);
+  providersListRef.current = providersList;
   const {
     getCurrentModelAndProvider,
     currentModel,
@@ -578,6 +608,11 @@ export default function ChatInput({
   const [isTokenLimitLoaded, setIsTokenLimitLoaded] = useState(false);
   // Counts window lookups so only the newest one may settle (see loadProviderDetails).
   const tokenLimitRequestRef = useRef(0);
+  // While a lookup waits on its own catalog fetch: how it reads the app's cached
+  // catalog when that lands or moves first (see loadProviderDetails).
+  const catalogWaitRef = useRef<((catalog: readonly ProviderDetails[] | undefined) => void) | null>(
+    null
+  );
   // The chat's state one render ago, so the idle re-read below fires once per
   // finished turn rather than on every render.
   const previousGaugeChatStateRef = useRef(chatState);
@@ -1493,6 +1528,10 @@ export default function ChatInput({
       setIsTokenLimitLoaded(loaded);
       setTokenLimitModel(forModel);
     };
+    // Whether a provider catalog has already named this model's window, so a
+    // later fetch that names nothing (a failed one reads as an empty catalog)
+    // cannot replace it with a guess.
+    let fromCatalog = false;
     try {
       // Reset token limit loaded state
       setIsTokenLimitLoaded(false);
@@ -1519,6 +1558,12 @@ export default function ChatInput({
         settle(0, false);
         return;
       }
+      // A decision chat draws no context ring (each message is asked on its
+      // own), so there is no window to look up.
+      if (isDecisionProvider(provider)) {
+        settle(0, false);
+        return;
+      }
 
       // Local models (Llama Server, Ollama): the real context window is a
       // property of the running server, not of the model's name. Prefer it over
@@ -1539,19 +1584,38 @@ export default function ChatInput({
         return;
       }
 
-      const providers = await getProviders(true);
-      if (!current()) return;
-
-      // Find the provider details for the current provider
-      const currentProvider = providers.find((p) => p.name === provider);
-      if (currentProvider?.metadata?.known_models) {
-        // Find the model's token limit from the backend response
-        const modelConfig = currentProvider.metadata.known_models.find((m) => m.name === model);
-        if (modelConfig?.context_limit) {
-          settle(modelConfig.context_limit, true);
-          return;
-        }
+      // The provider catalog. The app holds one cached copy (`ConfigContext`),
+      // and the window is drawn from THAT the moment it names the model: from
+      // the copy already in hand, or from the copy landing while this lookup's
+      // own fetch is still out. The fetch still runs, so a window that changed
+      // on the daemon replaces the cached one when it answers.
+      //
+      // Measured on a full reload of an open chat (2026-11-05): about a dozen
+      // components fetch the catalog in the first 1.5 s while the cache is
+      // empty, Chromium serialises identical GETs to one URL, and the daemon
+      // takes about 0.8 s per answer. Waiting on its own fetch put this lookup
+      // last in that line, so the ring appeared 11 to 24 s after load, while
+      // the app's catalog had named the window at about 2 s.
+      const takeCatalog = (catalog: readonly ProviderDetails[] | undefined): boolean => {
+        const limit = catalogContextLimit(catalog, provider, model);
+        if (limit === null || !current()) return false;
+        fromCatalog = true;
+        settle(limit, true);
+        return true;
+      };
+      takeCatalog(providersListRef.current);
+      catalogWaitRef.current = takeCatalog;
+      let providers: ProviderDetails[];
+      try {
+        providers = await getProviders(true);
+      } finally {
+        if (catalogWaitRef.current === takeCatalog) catalogWaitRef.current = null;
       }
+      if (!current()) return;
+      // The fresher answer wins. One that names nothing keeps a window a catalog
+      // already named (a stale window is bad, an erased one is worse) and,
+      // with nothing named, falls back as it always has.
+      if (takeCatalog(providers) || fromCatalog) return;
 
       // Fallback: Use pattern matching logic if no exact model match was found
       const modelLimit = await getModelLimits();
@@ -1565,8 +1629,8 @@ export default function ChatInput({
       settle(TOKEN_LIMIT_DEFAULT, true);
     } catch (err) {
       console.error('Error loading providers or token limit:', err);
-      // Set default limit on error
-      settle(TOKEN_LIMIT_DEFAULT, true);
+      // Set default limit on error, unless a catalog already named the window.
+      if (!fromCatalog) settle(TOKEN_LIMIT_DEFAULT, true);
     }
   };
 
@@ -1576,6 +1640,13 @@ export default function ChatInput({
     loadProviderDetails();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentModel, currentProvider, effectiveModel?.provider, effectiveModel?.model]);
+
+  // The app's cached catalog landed or moved: a lookup still waiting on its own
+  // fetch reads it now. It only settles; it never starts a fetch, so a cache
+  // refresh cannot set off another one.
+  useEffect(() => {
+    catalogWaitRef.current?.(providersList);
+  }, [providersList]);
 
   useEffect(() => {
     const previous = previousGaugeChatStateRef.current;
@@ -2463,6 +2534,13 @@ export default function ChatInput({
     effectiveModel?.provider ?? currentProvider
   );
 
+  /**
+   * The chat's main model is a decision model: there is no LLM loop, each message
+   * is the state the chat's question is asked of, and the reply is one decision
+   * card. The question is set above the text box (`DecisionComposer`).
+   */
+  const decisionChat = isDecisionProvider(effectiveModel?.provider ?? currentProvider);
+
   // Why a chat whose Crew access lapsed cannot send, for Enter to say instead of doing nothing.
   const crewHold = useCrewComposerHold(sessionId);
 
@@ -3118,6 +3196,12 @@ export default function ChatInput({
   };
 
   /**
+   * The composer card. The footer's folder card hangs above it, so a card a
+   * hover opened never covers the draft, `+` or Tools.
+   */
+  const composerCardRef = useRef<HTMLDivElement>(null);
+
+  /**
    * "Switch model" in the vision notice opens the model chip's own menu, so the
    * fix is one choice away and nothing navigates.
    */
@@ -3243,6 +3327,7 @@ export default function ChatInput({
       onDragLeave={handleLocalDragLeave}
     >
       <div
+        ref={composerCardRef}
         // The page ground with a resting hairline (R-32); the focus and working
         // edges turn that 1px border the accent. `composer/composerCard.ts`.
         className={composerCardClassName({ isDraggingOver })}
@@ -3325,6 +3410,8 @@ export default function ChatInput({
           onRemoveFile={handleRemoveDroppedFile}
         />
 
+        {decisionChat && <DecisionComposer sessionId={sessionId} />}
+
         <form id={composerFormId} onSubmit={onFormSubmit} className="relative flex min-w-0">
           {/* The field grows with what is typed by itself (`field-sizing:
               content` in `composer.css`, as Crew's fields do), up to ten lines,
@@ -3346,9 +3433,11 @@ export default function ChatInput({
               (dictation.listening ? DICTATION_LABELS.listening : null) ??
               (composerCommand
                 ? CHIP_COMMANDS[composerCommand].placeholder
-                : (followUp ?? (messagesLength ?? 0) > 0)
-                  ? COMPOSER_COPY.placeholderFollowUp
-                  : COMPOSER_COPY.placeholderEmpty)
+                : decisionChat
+                  ? DECISION_CHAT_PLACEHOLDER
+                  : (followUp ?? (messagesLength ?? 0) > 0)
+                    ? COMPOSER_COPY.placeholderFollowUp
+                    : COMPOSER_COPY.placeholderEmpty)
             }
             // The prose after the command chip: every textarea offset is a
             // prose offset (`utils/composerCommand.ts`).
@@ -3374,7 +3463,11 @@ export default function ChatInput({
         {/* THE CONTROLS ROW: what to add, what the agent can reach, which model
             answers, and Send at the end, Crew's `.crew-compose-controls`. */}
         <div data-testid="chat-input-toolbar" className="br-composer-controls">
-          <ComposerPlusMenu onAttachFiles={attachPickedFiles} onInsertTrigger={insertTrigger} />
+          <ComposerPlusMenu
+            onAttachFiles={attachPickedFiles}
+            onInsertTrigger={insertTrigger}
+            onOpenDecisionMonitors={sessionId ? onOpenDecisionMonitors : undefined}
+          />
           <ToolsChip
             sessionId={sessionId}
             privacyTier={sessionPrivacyTier}
@@ -3406,9 +3499,10 @@ export default function ChatInput({
 
       {/* THE FOOTER LINE: the folder on the left, the context ring and the cost
           on the right, 12px muted, on the canvas under the card. The ring and
-          the cost show only inside a chat. */}
+          the cost show only inside a chat, and a decision chat has no ring. */}
       <ComposerFooter
         className="br-composer-footer"
+        composerRef={composerCardRef}
         sessionId={sessionId}
         workingDir={composerWorkingDir}
         workingDirLocked={workingDirIsLocked}
@@ -3418,6 +3512,8 @@ export default function ChatInput({
         }}
         onRestartStart={() => setChatState?.(ChatState.RestartingAgent)}
         onRestartEnd={() => setChatState?.(ChatState.Idle)}
+        showContext={!decisionChat}
+        costFromLedgerOnly={decisionChat}
         totalTokens={totalTokens}
         tokenLimit={tokenLimit}
         isTokenLimitLoaded={isTokenLimitLoaded}

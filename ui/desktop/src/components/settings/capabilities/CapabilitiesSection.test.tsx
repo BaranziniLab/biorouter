@@ -40,13 +40,14 @@ describe('CapabilitiesSection', () => {
   it('shows all capabilities and uses their declared defaults while config loads', () => {
     render(<CapabilitiesSection />);
 
-    expect(screen.getAllByRole('switch')).toHaveLength(CAPABILITIES.length);
+    expect(screen.getAllByRole('switch')).toHaveLength(16);
     expect(screen.getByRole('switch', { name: 'Auto Visualiser' })).toBeChecked();
     expect(screen.getByRole('switch', { name: 'Code Execution' })).toBeChecked();
     expect(screen.getByRole('switch', { name: 'Biorouter Copilot' })).toBeChecked();
     expect(screen.getByRole('switch', { name: 'Agent Drafter' })).toBeChecked();
     expect(screen.getByRole('switch', { name: 'Chat Recall' })).not.toBeChecked();
     expect(screen.getByRole('switch', { name: 'Crew' })).toBeChecked();
+    expect(screen.getByRole('switch', { name: 'Decisions' })).toBeChecked();
   });
 
   // Spec 2.6: a switch is named by its row's visible label, never by "Toggle …" and never by its
@@ -65,7 +66,7 @@ describe('CapabilitiesSection', () => {
   it('prints one line per row: the description is help, not a paragraph', () => {
     const { container } = render(<CapabilitiesSection />);
 
-    expect(container.querySelectorAll('.biorouter-settings-row')).toHaveLength(CAPABILITIES.length);
+    expect(container.querySelectorAll('.biorouter-settings-row')).toHaveLength(16);
     expect(container.querySelectorAll('p')).toHaveLength(0);
     // Each row carries its explanation as an InfoTip, named after the row.
     expect(screen.getByRole('button', { name: 'About Developer' })).toBeInTheDocument();

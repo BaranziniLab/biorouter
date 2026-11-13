@@ -61,7 +61,6 @@ import {
   Globe,
   Image,
   Lock,
-  MoreHorizontal,
   RefreshCw,
   Search,
   TextQuote,
@@ -81,7 +80,7 @@ import {
   DropdownMenuTrigger,
   MENU_ROW_TRAILING_CLASS_NAME,
 } from '../ui/dropdown-menu';
-import { Button, buttonVariants } from '../ui/button';
+import { Button } from '../ui/button';
 import { InfoTip } from '../ui/info-tip';
 import { SegmentedControl } from '../ui/segmented-control';
 import { artifactCardKind } from '../MCPUIResourceRenderer';
@@ -97,8 +96,8 @@ import {
   PreviewBarScope,
   PreviewIconButton,
   PreviewPanelPresence,
+  PreviewMoreMenu,
   PreviewSkeleton,
-  PreviewTip,
 } from './PreviewBar';
 import './preview-panel.css';
 import AnnotationOverlay, { type SelectedRegion } from './AnnotationOverlay';
@@ -108,6 +107,7 @@ import DocumentPreview from './DocumentPreview';
 import MarkdownDocument from './MarkdownDocument';
 import WebPagePreview, { type LiveBrowserShare } from './WebPagePreview';
 import NotebookPreview from './NotebookPreview';
+import DecisionHistory from '../decisions/DecisionHistory';
 import type {
   ArtifactFileEntry,
   ArtifactFilePreview,
@@ -326,6 +326,8 @@ type HtmlPreview = { kind: 'html'; html: string };
 type ExternalPreview = { kind: 'externalUrl'; url: string; managedApp: boolean };
 type FilePreview = { kind: 'file'; preview: ArtifactFilePreview };
 type McpPreview = { kind: 'mcpResource' };
+/** A chat's decision history: the view loads its own pages, so there is nothing to preload. */
+type DecisionsPreview = { kind: 'decisions' };
 type LoadingPreview = { kind: 'loading' };
 type ErrorPreview = { kind: 'error'; message: string };
 type PreviewState =
@@ -333,6 +335,7 @@ type PreviewState =
   | ExternalPreview
   | FilePreview
   | McpPreview
+  | DecisionsPreview
   | LoadingPreview
   | ErrorPreview;
 
@@ -407,6 +410,8 @@ function artifactSourceKey(artifact: ArtifactSource) {
   if (artifact.kind === 'html') {
     return `html:${artifact.title}:${artifact.html.length}:${artifact.html.slice(0, 80)}`;
   }
+  // One decision history tab per chat: another filter re-filters it.
+  if (artifact.kind === 'decisions') return `decisions:${artifact.sessionId}`;
   const resource = artifact.resource as {
     uri?: string;
     mimeType?: string;
@@ -500,6 +505,8 @@ export function iconForArtifact(
 ) {
   if (!artifact) return File;
   if (artifact.kind === 'externalUrl') return Globe;
+  // The decision-model mark the summary's Decisions section draws.
+  if (artifact.kind === 'decisions') return ENTITY_ICONS.decision;
   if (artifact.kind === 'file') {
     switch (loadedKind) {
       case 'gitDirectory':
@@ -1244,6 +1251,11 @@ export default function ArtifactViewer({
         return;
       }
 
+      if (activeArtifact.kind === 'decisions') {
+        show({ kind: 'decisions' });
+        return;
+      }
+
       try {
         // No cast: the preload IPC contract and the shared ArtifactFilePreview
         // union are kept in lockstep, so the result assigns structurally.
@@ -1871,7 +1883,7 @@ export default function ArtifactViewer({
                 <span className="br-preview-update-dot" aria-hidden="true" />
               </PreviewIconButton>
             )}
-            {activeArtifact.kind !== 'mcpResource' && (
+            {activeArtifact.kind !== 'mcpResource' && activeArtifact.kind !== 'decisions' && (
               <PreviewIconButton label={PREVIEW_COPY.openExternally} onClick={openStandalone}>
                 <ExternalLink className="h-4 w-4" aria-hidden="true" />
               </PreviewIconButton>
@@ -1890,71 +1902,54 @@ export default function ArtifactViewer({
               </PreviewIconButton>
             )}
             {showMoreMenu && (
-              <DropdownMenu>
-                <PreviewTip content={PREVIEW_COPY.moreActions}>
-                  <DropdownMenuTrigger asChild>
-                    <button
-                      type="button"
-                      aria-label={PREVIEW_COPY.moreActions}
-                      data-testid="artifact-more-actions"
-                      className={cn(
-                        buttonVariants({ variant: 'ghost', shape: 'round' }),
-                        'br-preview-icon-button no-drag'
-                      )}
-                    >
-                      <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
-                    </button>
-                  </DropdownMenuTrigger>
-                </PreviewTip>
-                <DropdownMenuContent align="end" className="min-w-[180px] max-w-[320px]">
-                  {canQuote && (
-                    // The same action as the header's Quote icon, kept in the menu
-                    // for a reader who reaches the selection from the keyboard. Only
-                    // while a selection exists: an item that can do nothing is noise.
-                    <DropdownMenuItem
-                      data-testid="artifact-quote-menu-item"
-                      onSelect={quoteSelectionToChat}
-                    >
-                      {PREVIEW_COPY.quoteSelection}
-                    </DropdownMenuItem>
-                  )}
-                  {sessionId && (
-                    // Annotation is available on EVERY preview kind, not just one:
-                    // a researcher reads a generated report and needs to point at
-                    // something in it. For this audience the report IS the artifact.
-                    <DropdownMenuItem
-                      data-testid="artifact-annotate"
-                      disabled={annotateUnavailable !== null}
-                      onSelect={() => void toggleAnnotation()}
-                      // The name stays the action; the reason it is off is the
-                      // item's description, and it stays visible (principle 2:
-                      // a refusal says why before the item is ever pressed).
-                      aria-label={PREVIEW_COPY.annotate}
-                      aria-describedby={annotateUnavailable ? annotateReasonId : undefined}
-                      className="flex-col items-start gap-0.5"
-                    >
-                      <span>{PREVIEW_COPY.annotate}</span>
-                      {annotateUnavailable && (
-                        <span id={annotateReasonId} className="text-supporting text-text-muted">
-                          {annotateUnavailable}
-                        </span>
-                      )}
-                    </DropdownMenuItem>
-                  )}
-                  {activeArtifact.kind === 'file' && (
-                    <DropdownMenuItem
-                      data-testid="artifact-reveal"
-                      onSelect={() =>
-                        void window.electron.openDirectoryInExplorer(
-                          dirnameFromPath(activeArtifact.path)
-                        )
-                      }
-                    >
-                      {revealLabel}
-                    </DropdownMenuItem>
-                  )}
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <PreviewMoreMenu label={PREVIEW_COPY.moreActions} data-testid="artifact-more-actions">
+                {canQuote && (
+                  // The same action as the header's Quote icon, kept in the menu
+                  // for a reader who reaches the selection from the keyboard. Only
+                  // while a selection exists: an item that can do nothing is noise.
+                  <DropdownMenuItem
+                    data-testid="artifact-quote-menu-item"
+                    onSelect={quoteSelectionToChat}
+                  >
+                    {PREVIEW_COPY.quoteSelection}
+                  </DropdownMenuItem>
+                )}
+                {sessionId && (
+                  // Annotation is available on EVERY preview kind, not just one:
+                  // a researcher reads a generated report and needs to point at
+                  // something in it. For this audience the report IS the artifact.
+                  <DropdownMenuItem
+                    data-testid="artifact-annotate"
+                    disabled={annotateUnavailable !== null}
+                    onSelect={() => void toggleAnnotation()}
+                    // The name stays the action; the reason it is off is the
+                    // item's description, and it stays visible (principle 2:
+                    // a refusal says why before the item is ever pressed).
+                    aria-label={PREVIEW_COPY.annotate}
+                    aria-describedby={annotateUnavailable ? annotateReasonId : undefined}
+                    className="flex-col items-start gap-0.5"
+                  >
+                    <span>{PREVIEW_COPY.annotate}</span>
+                    {annotateUnavailable && (
+                      <span id={annotateReasonId} className="text-supporting text-text-muted">
+                        {annotateUnavailable}
+                      </span>
+                    )}
+                  </DropdownMenuItem>
+                )}
+                {activeArtifact.kind === 'file' && (
+                  <DropdownMenuItem
+                    data-testid="artifact-reveal"
+                    onSelect={() =>
+                      void window.electron.openDirectoryInExplorer(
+                        dirnameFromPath(activeArtifact.path)
+                      )
+                    }
+                  >
+                    {revealLabel}
+                  </DropdownMenuItem>
+                )}
+              </PreviewMoreMenu>
             )}
             {onToggleFold && (
               // Rendered in both layouts and hidden beside the conversation by
@@ -2239,6 +2234,19 @@ function ArtifactPreviewBody({
           }}
         />
       </>
+    );
+  }
+
+  if (preview.kind === 'decisions' && artifact.kind === 'decisions') {
+    // The one place individual decision calls are listed. Keyed by the open, so
+    // a row clicked in the summary applies its filter even to an open tab.
+    return (
+      <DecisionHistory
+        key={artifact.sessionId}
+        sessionId={artifact.sessionId}
+        filter={artifact.filter}
+        filterKey={artifact.openedAt}
+      />
     );
   }
 

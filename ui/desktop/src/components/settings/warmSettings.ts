@@ -7,7 +7,7 @@ import {
   approvalModeFromConfig,
   maxTurnsFromConfig,
 } from './mode/storedSettings';
-import { ANNOUNCE_ONLY_KEY } from './app/WorkspaceSettingsSection';
+import { ANNOUNCE_ONLY_KEY, OPEN_SUBAGENT_TABS_KEY } from './app/WorkspaceSettingsSection';
 import { COST_TRACKING_ENABLED } from '../../updates';
 import { warmUsageSnapshot } from './usage/loadUsage';
 
@@ -45,6 +45,7 @@ export function warmSettings(read: ReadConfig): void {
   ask('approvalMode', async () => approvalModeFromConfig(await read(APPROVAL_MODE_KEY, false)));
   ask('maxTurns', async () => maxTurnsFromConfig(await read(MAX_TURNS_KEY, false)));
   ask('announceOnly', async () => (await read(ANNOUNCE_ONLY_KEY, false)) === true);
+  ask('openSubagentTabs', async () => (await read(OPEN_SUBAGENT_TABS_KEY, false)) === true);
   ask('menuBarIcon', () => window.electron.getMenuBarIconState());
   ask('wakelock', () => window.electron.getWakelockState());
   ask('spellcheck', () => window.electron.getSpellcheckState());

@@ -106,6 +106,44 @@ describe('getOrderedProviderGroups', () => {
       'versa_azure',
     ]);
   });
+
+  /**
+   * Decision-model providers are served on purpose but are not chat providers: a row's "Use" or
+   * default-model step would make every chat a decision chat, and ingest cannot run on one. They
+   * leave the rows, and come back per tab, by the daemon's own tier, so the catalog can say where
+   * they are.
+   */
+  it('keeps decision providers out of the rows and hands them back by tier', () => {
+    const groups = getOrderedProviderGroups([
+      provider('openai'),
+      provider('baseten'),
+      provider('baseten_decision', {}, 'Baseten decision models'),
+      provider('ollama', PRIVATE_LOCAL),
+      provider('ollama_decision', PRIVATE_LOCAL, 'Ollama decision models'),
+    ]);
+    const all = groups.flatMap((group) => [
+      ...names(group.providers),
+      ...group.sections.flatMap((section) => names(section.providers)),
+    ]);
+    expect(all).not.toContain('baseten_decision');
+    expect(all).not.toContain('ollama_decision');
+    const byKey = Object.fromEntries(groups.map((group) => [group.key, group]));
+    expect(names(byKey.local!.decisionProviders)).toEqual(['ollama_decision']);
+    expect(names(byKey.commercial!.decisionProviders)).toEqual(['baseten_decision']);
+    expect(byKey.institutional!.decisionProviders).toEqual([]);
+    // Their chat siblings, which set them up, keep their rows.
+    expect(names(byKey.local!.providers)).toEqual(['ollama']);
+    expect(names(byKey.commercial!.providers).sort()).toEqual(['baseten', 'openai']);
+  });
+
+  it('follows the daemon when an instance of a decision provider is public', () => {
+    const groups = getOrderedProviderGroups([
+      provider('ollama_decision', { tier: 'public', runs_locally: true }),
+    ]);
+    expect(names(groups.find((group) => group.key === 'commercial')!.decisionProviders)).toEqual([
+      'ollama_decision',
+    ]);
+  });
 });
 
 describe('the public tab: AI agents first, then pinned, then alphabetical', () => {

@@ -17,6 +17,7 @@ import { Badge, type BadgeTone } from './ui/badge';
 import { InfoTip } from './ui/info-tip';
 import { PREVIEW_COPY, TOOL_ROW_COPY } from './toolCallCopy';
 import { folderAccessLifetime } from '../utils/folderAccessLifetime';
+import { PathSegments } from './ui/path-segments';
 
 type ToolConfirmationData = Extract<ActionRequired['data'], { actionType: 'toolConfirmation' }>;
 export type ToolConfirmationPreview = NonNullable<ToolConfirmationData['preview']>;
@@ -266,7 +267,12 @@ export function ToolCallPreview({ preview }: { preview: ToolPreview }) {
     case 'folderAccess':
       return (
         <div data-testid="folder-access-preview" className="space-y-2 text-body">
-          <p className="break-all font-mono">{preview.folder}</p>
+          {/* The folder is the exact argument of this decision, so it stays absolute and mono
+              (no `~`, unlike everywhere a folder is only read). It breaks after a separator,
+              never mid-name unless one name is wider than the card (`.br-tool-preview-path`). */}
+          <p dir="ltr" data-path={preview.folder} className="br-tool-preview-path font-mono">
+            <PathSegments path={preview.folder} />
+          </p>
           <p>
             {preview.access} access. A session grant includes subfolders. {folderAccessLifetime()}
           </p>
@@ -277,8 +283,8 @@ export function ToolCallPreview({ preview }: { preview: ToolPreview }) {
           </p>
           <ul className="list-disc pl-5">
             {preview.files.map((file) => (
-              <li className="break-all font-mono" key={file}>
-                {file}
+              <li dir="ltr" data-path={file} className="br-tool-preview-path font-mono" key={file}>
+                <PathSegments path={file} />
               </li>
             ))}
           </ul>

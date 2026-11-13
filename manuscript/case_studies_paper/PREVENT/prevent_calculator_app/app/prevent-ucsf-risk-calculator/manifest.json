@@ -1,0 +1,120 @@
+{
+  "id": "prevent-ucsf-risk-calculator",
+  "title": "PREVENT UCSF Risk Calculator",
+  "description": "Interactive PREVENT 10-year CVD, ASCVD and heart-failure risk calculator for UCSF research, with the published and a calibrated risk (MOCK reference and calibration data in this public copy), reference-cohort position, what-if scenarios and age projection.",
+  "kind": "agentic",
+  "entry": "index.html",
+  "created_at": 1790967133,
+  "updated_at": 1790976314,
+  "agent": {
+    "system_prompt": "You are the embedded agent for PREVENT UCSF, a research calculator for the 2023 American Heart Association PREVENT equations.\n\nRules:\n- Research use only; no clinical advice or treatment recommendations.\n- The app computes PREVENT itself, for one patient or for every member of a cohort. Never compute PREVENT risks yourself and never estimate treatment effects; do not add values that are not in the data.\n- Never display row-level OMOP data or identifiers in the chat. Results you show are aggregate counts only; counts from 1 to 10 are shown as \"<11\".\n- Use the UCSFOMOPAgent extension for OMOP, with each user's own credentials; the app stores none. Follow the OMOP rules text passed by the app.\n- For load_patient_from_omop: query the one requested person privately and return only the 11 PREVENT inputs, their source and date, and the missing ones, through display_loaded_patient({patient, sources, missing}). Do not write the person_id in the visible answer.\n\nCohort selection (the \"Select a cohort\" chat):\n1. Help the user define the cohort: purpose, criteria, codes (resolve them with the concept search), as-of date.\n2. Show the definition (criteria and codes) and the cohort size from aggregate SQL, and wait for the user's confirmation.\n3. If the OMOP tools are not available in this app session, say so plainly and suggest selecting the cohort in a Biorouter chat with the skill prevent-calculator-handoff, which sends the cohort to this app's Cohort tab.",
+    "greeting": "Enter values by hand, open the synthetic demo patient, load a patient from OMOP, or describe a cohort to study.",
+    "extensions": [
+      "ucsfomopagent"
+    ],
+    "skills": [
+      "ucsfomopagent-query-jobs"
+    ],
+    "max_turns": 24,
+    "capabilities": {
+      "memory": {
+        "mode": "off",
+        "distill": false
+      },
+      "tracing": {
+        "enabled": false,
+        "redact": true
+      },
+      "ui": {
+        "enabled": true,
+        "allow_theme": true,
+        "allow_layout": true,
+        "allow_ask": true,
+        "allow_signals": true,
+        "worker_ui": false,
+        "allow_html": false,
+        "allow_autorun": false,
+        "max_panels": 12,
+        "ask_timeout_s": 300
+      }
+    },
+    "orchestration": {
+      "lazy_tools": false
+    },
+    "requires": [
+      {
+        "kind": "extension",
+        "id": "ucsfomopagent",
+        "reason": "Read-only UCSF OMOP queries using each user's own credentials"
+      }
+    ]
+  },
+  "built_at": 1790976314,
+  "sdk_hash": "627b2cfc0f67b1c9",
+  "session_id": "20261002_4",
+  "surface": {
+    "state_schema": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "state_initial": {
+      "patient": {
+        "age": 58,
+        "sex": "female",
+        "sbp": 132,
+        "total_cholesterol_mg_dl": 198,
+        "hdl_mg_dl": 54,
+        "bmi": 28.4,
+        "egfr": 82,
+        "diabetes": false,
+        "current_smoker": false,
+        "bp_treatment": true,
+        "statin": false
+      },
+      "sources": {},
+      "missing": {},
+      "scenarios": [],
+      "cohort": null
+    },
+    "actions": [
+      {
+        "name": "display_loaded_patient",
+        "description": "Populate the patient form with de-identified aggregate-safe OMOP-derived PREVENT inputs",
+        "effect": "mutate",
+        "writes": [
+          "/patient",
+          "/sources",
+          "/missing"
+        ]
+      },
+      {
+        "name": "display_cohort_result",
+        "description": "Render aggregate cohort risk distribution and patient position",
+        "effect": "mutate",
+        "writes": [
+          "/cohort"
+        ]
+      }
+    ],
+    "signals": [
+      {
+        "name": "patient_changed",
+        "payload": {
+          "type": "object"
+        },
+        "coalesce_ms": 250,
+        "autorun": false,
+        "eager": true
+      },
+      {
+        "name": "scenario_saved",
+        "payload": {
+          "type": "object"
+        },
+        "coalesce_ms": 250,
+        "autorun": false,
+        "eager": true
+      }
+    ]
+  }
+}

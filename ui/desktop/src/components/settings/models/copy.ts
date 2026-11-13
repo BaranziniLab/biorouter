@@ -394,4 +394,14 @@ export const switchModelCopy = {
   /** The confirm's name: pinned by every SwitchModelModal test. */
   select: 'Select model',
   switching: 'Switching…',
+  /**
+   * The provider menu's group for decision models: models that answer with a choice and its
+   * probabilities, not text, kept apart from the chat models above them.
+   */
+  decisionGroup: 'Decision models',
+  decisionDetail: 'Answers with a choice and its probabilities, not text',
+  decisionPrivate: 'Private',
+  decisionPublic: 'Public',
+  /** The model menu's line under a decision model, and the composer chip's menu line. */
+  decisionModel: 'Decision model',
 } as const;
