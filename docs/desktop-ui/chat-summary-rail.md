@@ -206,7 +206,7 @@ body's own scroll position (a CSS scroll timeline), so it needs no listener and 
 and a focused body drops it so its focus edge is drawn whole. Two type sizes only, 13px for rows
 and 12px for labels.
 
-**Red is rare, and text reads solid** (owner direction, 2026-11-12; `design.md` 9.13 and 9.14).
+**Red is rare, and text reads solid** (owner direction, 2026-11-12; `design.md` 9.14 and 9.15).
 Nothing in the summary is drawn in a danger or warning ink. A failed subagent, a gate that did
 not pass and a decision check that errored are found by their shape and their word ("Failed",
 "Not passed", "Error"); a run or a gate that needs the person by its half fill or its accent and

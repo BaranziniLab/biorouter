@@ -531,7 +531,7 @@ describe('the subagents keep the summary’s rules', () => {
   });
 
   /**
-   * Owner direction, 2026-11-12: red is rare (design.md 9.13). A failed mark is the outline with
+   * Owner direction, 2026-11-12: red is rare (design.md 9.14). A failed mark is the outline with
    * a small cross in the muted ink, and a mark waiting for the person (or stalled) the half fill
    * in the default ink, so neither reaches for a danger or warning hue; the word says which.
    */

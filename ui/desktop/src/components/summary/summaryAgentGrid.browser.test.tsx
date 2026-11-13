@@ -585,7 +585,7 @@ describe('the agent grid in the summary card, in a real layout engine', () => {
         ['running', 'waiting', 'failed', 'done'].map((kind) => byKind.get(kind)!.color)
       );
       expect(inks.size).toBe(4);
-      // Never red (owner direction, 2026-11-12; design.md 9.13): no mark, word or gate in the
+      // Never red (owner direction, 2026-11-12; design.md 9.14): no mark, word or gate in the
       // Plan or the Decisions section computes to the danger or warning ink, and the failed mark
       // is the muted ink. Once the theme maps the danger tone onto the ink itself (the
       // ui-readability lane does), a match says nothing, so only a hue that is not an ink counts.
