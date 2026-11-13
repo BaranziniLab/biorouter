@@ -1803,6 +1803,25 @@ async fn take_structured_final_output_action(
     })
 }
 
+/// What a bridged coding agent, and the transcript card that shows its call, is
+/// told when a spawn it asked for fails: the error's own sentence.
+///
+/// The spawn's refusals are sentences written to be read as they stand ("This
+/// chat is running on a public model, so it cannot delegate to a private one
+/// ..."). `ErrorData`'s `Display` puts the JSON-RPC code in front of the
+/// sentence, and this used to put the tool's name in front of that, so the
+/// child and the person read "`workspace__subagent` failed: -32602: This chat
+/// ...". The child knows which tool it called, and the code is a wire detail.
+/// The call still fails the same way: this changes only the words.
+fn bridged_spawn_error_text(error: &ErrorData) -> String {
+    let said = error.message.trim();
+    if said.is_empty() {
+        "The subagent could not start.".to_string()
+    } else {
+        said.to_string()
+    }
+}
+
 struct ChatBridgeDispatch {
     extensions: Arc<ExtensionManager>,
     session_manager: Arc<SessionManager>,
@@ -1922,7 +1941,6 @@ impl ChatBridgeDispatch {
 
     async fn dispatch_subagent(
         &self,
-        name: &str,
         call: CallToolRequestParams,
         cancel: CancellationToken,
     ) -> std::result::Result<CallToolResult, String> {
@@ -1955,7 +1973,7 @@ impl ChatBridgeDispatch {
         )
         .result
         .await
-        .map_err(|error| format!("`{name}` failed: {error}"))
+        .map_err(|error| bridged_spawn_error_text(&error))
     }
 
     async fn dispatch_ingest_source(
@@ -2236,7 +2254,7 @@ impl coding_agent_bridge::BridgeToolDispatch for ChatBridgeDispatch {
         let name = call.name.to_string();
         self.enforce_tool_access(session_id, &call).await?;
         if is_spawn_tool_call(&name) {
-            return self.dispatch_subagent(&name, call, cancel).await;
+            return self.dispatch_subagent(call, cancel).await;
         }
         if name == PLATFORM_INGEST_SOURCE_TOOL_NAME {
             return self
@@ -2996,21 +3014,17 @@ pub(crate) const GOAL_NOT_JUDGED_AT_USAGE_LIMIT: &str = "The /goal was not check
 ///
 /// It used to be `Model call failed: {error}. Retrying (1/1)…`, which gave
 /// `…your provider administrator.. Retrying` (the error's own full stop, then
-/// the frame's), and which a clinician read as her message having been
-/// flagged. A content-filter failure is said plainly; any other error keeps
-/// its own words, with one full stop.
+/// the frame's). The error keeps its own words, with one full stop.
+///
+/// A content filter never reaches this notice. `formats::openai` reads a
+/// filter that failed to run as an annotation and goes on reading the reply,
+/// and words a filter that blocked a reply or a request as "… content filter
+/// blocked this …", which `ProviderError::kind` classifies as a policy refusal
+/// that is never retried (`a_content_filter_block_is_never_retried`). The
+/// branches that matched its old markers (`content_filter_error`,
+/// `(content_filter)`) matched nothing any more, and are gone.
 fn provider_retry_notice(error: &ProviderError, attempt: u32, limit: u32) -> String {
     let said = error.to_string();
-    if said.contains("content_filter_error") {
-        return format!(
-            "The provider's content filter interrupted the reply. Trying again ({attempt}/{limit})…"
-        );
-    }
-    if said.contains("(content_filter)") {
-        return format!(
-            "The provider's safety filter stopped the reply. Trying again ({attempt}/{limit})…"
-        );
-    }
     let reason = said.trim_end().trim_end_matches(['.', '!', '?']).trim_end();
     format!("The model call failed: {reason}. Trying again ({attempt}/{limit})…")
 }
@@ -3109,18 +3123,60 @@ mod provider_retry_notice_tests {
             "The model call failed: Server error: Server error (502 Bad Gateway): upstream. \
              Trying again (1/2)…"
         );
-        assert_eq!(
-            provider_retry_notice(
-                &ProviderError::RequestFailed(
-                    "Provider safety filter blocked the response (content_filter). Revise the \
-                     request or contact your provider administrator."
-                        .to_string()
-                ),
-                1,
-                1
+        // The in-stream server fault `formats::openai` reports, which IS
+        // retried: its own sentence, one full stop, and no filter wording.
+        let fault = provider_retry_notice(
+            &ProviderError::ServerError(
+                crate::providers::formats::openai::IN_STREAM_SERVER_FAULT.to_string(),
             ),
-            "The provider's safety filter stopped the reply. Trying again (1/1)…"
+            1,
+            1,
         );
+        assert!(
+            fault.starts_with(
+                "The model call failed: Server error: The model server reported an internal \
+                 error partway through its reply."
+            ),
+            "{fault}"
+        );
+        assert!(fault.ends_with("records the error's code and type. Trying again (1/1)…"));
+        assert!(!fault.contains(".."), "{fault}");
+        assert!(!fault.contains("filter"), "{fault}");
+    }
+
+    /// Why the notice has no content-filter branch: every content-filter
+    /// error `formats::openai` makes now is a policy refusal, so the reply loop
+    /// stops on it with its own sentence instead of announcing a retry.
+    #[test]
+    fn a_content_filter_block_is_never_retried() {
+        let filtered_reply = crate::providers::formats::openai::content_filter_stopped_reply();
+        let filtered_request = crate::providers::formats::openai::azure_content_filter_refusal(
+            400,
+            &serde_json::json!({
+                "error": {
+                    "code": "content_filter",
+                    "innererror": {
+                        "content_filter_result": { "violence": { "filtered": true } }
+                    }
+                }
+            }),
+        )
+        .expect("Azure's prompt filter refusal");
+        for error in [filtered_reply, filtered_request] {
+            assert!(
+                error.to_string().contains("content filter blocked"),
+                "{error}"
+            );
+            assert_eq!(
+                error.kind(),
+                crate::providers::errors::ProviderErrorKind::Policy,
+                "{error}"
+            );
+            assert!(
+                !crate::agents::mistakes::is_recoverable(&error),
+                "a content filter block was retried: {error}"
+            );
+        }
     }
 }
 
@@ -9511,6 +9567,33 @@ impl Agent {
         }
     }
 
+    /// Crew's check before each model request the reply loop sends.
+    ///
+    /// `request_provider` is what the request runs on, so the grant's binding
+    /// and the workspace's fresh admission are asked of it. At a non-Normal
+    /// effort it is a provider [`Self::provider_with_effort`] rebuilt around the
+    /// language model alone, so the tier that check read is the model's, not
+    /// the chat's (DR-33). The chat's is the slot's, and Crew is asked about
+    /// that one too, as a Normal-effort request already is, where the two are
+    /// one provider. Both carry one binding, so the second check reuses the
+    /// admission the first made rather than asking the workspace again.
+    async fn check_crew_before_request(
+        &self,
+        session_id: &str,
+        request_provider: &Arc<dyn Provider>,
+        rebuilt_for_effort: bool,
+    ) -> Result<()> {
+        let crew = crate::crew::manager()?;
+        crew.check_provider_dispatch(session_id, request_provider.as_ref())
+            .await?;
+        if rebuilt_for_effort {
+            if let Some(bound) = self.bound_provider_unchecked().await {
+                crew.check_provider_use(session_id, bound.as_ref()).await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn persist_composite_provider_state(
         &self,
         session_id: &str,
@@ -9640,6 +9723,17 @@ impl Agent {
             .collect()
     }
 
+    /// What a bridged child's spawn starts from.
+    ///
+    /// ⚠ DR-33: the spawn reads the parent's effective tier off
+    /// `task_config.provider` (`subagent_tool::resolve_child_privacy`), and here
+    /// that is the request's provider, which at a non-Normal effort carries the
+    /// model's own tier rather than the chat's. It equals the slot's on all
+    /// three axes only because every provider that needs a bridge is Public
+    /// (`every_bridge_provider_is_public_so_a_fold_cannot_change_it`): a fold
+    /// leaves a Public model Public, gives it no affiliation and names no cause
+    /// for it. A private bridge provider would have to take the slot's provider
+    /// here first.
     async fn coding_agent_bridge_subagent_context(
         &self,
         iteration_provider: &Arc<dyn Provider>,
@@ -9783,6 +9877,10 @@ impl Agent {
         bridged
     }
 
+    /// The bridge's dispatcher. Its `ingest_provider` runs the bridged knowledge
+    /// ingests, and their knowledge base ratchet reads its tier
+    /// (`ProviderCompleter::paired_factory`); the DR-33 caveat on
+    /// [`Self::coding_agent_bridge_subagent_context`] applies word for word.
     fn chat_bridge_dispatch(
         &self,
         iteration_provider: &Arc<dyn Provider>,
@@ -9799,6 +9897,22 @@ impl Agent {
         }
     }
 
+    /// The plan for this turn's coding-agent bridge, or `None` when
+    /// `iteration_provider` needs no bridge.
+    ///
+    /// ⚠ DR-33: WHETHER there is a bridge is the request's provider's answer;
+    /// how far the bridge reaches is the chat's. At a non-Normal effort
+    /// [`Self::provider_with_effort`] rebuilds the request's provider around the
+    /// language model alone, without the decision-bound wrapper, so its tier is
+    /// the model's and not the chat's. The capability is therefore sampled from
+    /// the provider in the agent's own slot whenever that one is Public (a
+    /// decision model, or a person's switch, made the chat public), and from the
+    /// request's provider only while the slot is Private, where no decision
+    /// model lowered anything. That is the lesser of the two and never wider
+    /// than either: sampling the slot alone would widen a public coding agent's
+    /// bridge to a private model someone switched to while the turn ran.
+    /// `the_turn_provider_never_decides_a_tier` in
+    /// `tests/privacy_guard_wiring.rs` holds the rest of the turn to this.
     pub(super) async fn prepare_coding_agent_bridge_plan(
         &self,
         iteration_provider: &Arc<dyn Provider>,
@@ -9808,8 +9922,11 @@ impl Agent {
             return None;
         }
 
-        let pinned_provider: SharedProvider =
-            Arc::new(Mutex::new(Some(Arc::clone(iteration_provider))));
+        let judged = match self.bound_provider_unchecked().await {
+            Some(bound) if !bound.tier().is_private() => bound,
+            _ => Arc::clone(iteration_provider),
+        };
+        let pinned_provider: SharedProvider = Arc::new(Mutex::new(Some(judged)));
         let capability = crate::privacy::CallCapability::sample(&pinned_provider).await;
         let targets = self.enabled_coding_agent_bridge_targets().await;
         let workspace_enabled = targets
@@ -12126,8 +12243,16 @@ impl Agent {
         // the threshold (31,052 of 32,768 read "94.8%, compact"). The two checks
         // now see the same inputs whenever the answer would be "compact", and a
         // turn that stays under the threshold still assembles nothing.
-        let usage_may_be_truncated =
-            crate::providers::utils::runs_on_this_machine(self.provider().await?.as_ref());
+        //
+        // Asked of the language model itself, unwrapped (DR-33): where the
+        // model runs is not a tier question, and the slot's decision-bound
+        // wrapper reads Public for a local model whose chat names a public
+        // decision model, which would hide a truncated local usage from this
+        // check.
+        let usage_may_be_truncated = crate::providers::utils::runs_on_this_machine(
+            crate::providers::decision_bound::unwrap_decision_bound(self.provider().await?)
+                .as_ref(),
+        );
         let cold_path_tools_and_prompt = if session.total_tokens.is_none() || usage_may_be_truncated
         {
             // Boxed, both here and below: the deepest await of the prologue (`reply`'s note).
@@ -14099,9 +14224,16 @@ impl Agent {
         let session_manager = self.config.session_manager.clone();
         let provider_conversation = crate::conversation::without_bedrock_reasoning(&conversation);
         let effort = self.resolve_effort(&session_config).await;
+        // ⚠ DR-33: at a non-Normal effort `turn_provider` is rebuilt around the
+        // language model alone, without the decision-bound wrapper, so its tier
+        // is the model's and not the chat's. Nothing on this turn's path judges
+        // a tier, an affiliation or a decision model's cause off it, or off
+        // `reply_provider` / `iteration_provider`, which may be it; every gate
+        // reads the agent's slot (`the_turn_provider_never_decides_a_tier`).
         let turn_provider = self.provider_with_effort(effort).await?;
-        let reply_provider = match &turn_provider {
-            Some(provider) => Arc::clone(provider),
+        let rebuilt_for_effort = turn_provider.is_some();
+        let reply_provider = match turn_provider {
+            Some(provider) => provider,
             None => self.provider().await?,
         };
         let context = self
@@ -14742,9 +14874,9 @@ impl Agent {
                 };
 
                 let iteration_provider = Arc::clone(&reply_provider);
-                crate::crew::manager()?.check_provider_dispatch(
-                    &session_config.id, iteration_provider.as_ref()
-                ).await?;
+                Box::pin(self.check_crew_before_request(
+                    &session_config.id, &iteration_provider, rebuilt_for_effort
+                )).await?;
                 let usage_event_key = uuid::Uuid::new_v4().to_string();
                 // A coding-agent provider drives a child process that has to call
                 // back in to use Biorouter's tools. The lease lives exactly as long
@@ -24987,6 +25119,86 @@ mod tests {
         }
     }
 
+    /// A spawn the bridge refuses reaches the coding agent, and the transcript
+    /// card that shows its call, as the refusal's own sentence: not
+    /// "`workspace__subagent` failed: -32602: …". The call still fails.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_refused_bridged_spawn_reads_as_its_own_sentence() {
+        struct ClearWorkspaceServicesOverride;
+        impl Drop for ClearWorkspaceServicesOverride {
+            fn drop(&mut self) {
+                crate::workspace_services::clear_test_override();
+            }
+        }
+        crate::workspace_services::set_for_tests(None);
+        let _clear_workspace_services = ClearWorkspaceServicesOverride;
+        coding_agent_bridge::publish_base_url("http://127.0.0.1:1");
+
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let iteration_provider: Arc<dyn Provider> =
+            Arc::new(BridgedChildProvider { name: "codex" });
+        agent
+            .update_provider(Arc::clone(&iteration_provider), &session_id)
+            .await
+            .expect("bind the coding-agent-shaped provider");
+        let tools = agent.list_tools(&session_id, None).await;
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, true)
+            .await
+            .expect("read the parent session");
+        let conversation = session
+            .conversation
+            .clone()
+            .unwrap_or_else(Conversation::empty);
+        let lease =
+            issue_test_tool_bridge(&agent, &iteration_provider, &session, &conversation, &tools)
+                .await
+                .expect("coding-agent providers need a live grant");
+        let nonce = lease.url().rsplit('/').next().expect("a bridge nonce");
+        let grant = coding_agent_bridge::lookup(nonce).expect("the grant is live");
+
+        let refused = grant
+            .call(CallToolRequestParams {
+                name: "workspace__subagent".into(),
+                arguments: Some(object!({
+                    "instructions": "inherit the shell",
+                    "extensions": ["developer"]
+                })),
+                meta: None,
+                task: None,
+            })
+            .await
+            .expect_err("a bridged child cannot inherit Developer");
+        assert!(
+            refused.starts_with("Subscription-backed coding-agent subagents cannot inherit"),
+            "{refused}"
+        );
+        assert!(!refused.contains("-32602"), "{refused}");
+        assert!(!refused.contains("failed:"), "{refused}");
+    }
+
+    /// The text a bridged spawn's error becomes, for the refusal a public chat
+    /// gets when it asks for a private child (R4): the sentence alone, where
+    /// `ErrorData`'s `Display` carries the JSON-RPC code.
+    #[test]
+    fn a_spawn_refusal_through_the_bridge_is_only_its_sentence() {
+        let sentence =
+            crate::privacy::PrivacyRefusal::spawn_upgrade(ProviderTier::Private).to_string();
+        let error = ErrorData::new(ErrorCode::INVALID_PARAMS, sentence.clone(), None);
+        assert!(
+            error.to_string().starts_with("-32602: "),
+            "the code this removes"
+        );
+        assert_eq!(bridged_spawn_error_text(&error), sentence);
+        assert_eq!(
+            bridged_spawn_error_text(&ErrorData::new(ErrorCode::INTERNAL_ERROR, "  ", None)),
+            "The subagent could not start."
+        );
+    }
+
     /// Decision 21: a session with subagents enabled and NO explicit workspace
     /// entry still gets a spawn tool. This is the regression that would
     /// otherwise break every existing config when Task 19 lands.
@@ -28578,15 +28790,16 @@ mod gate_b_turn_tests {
 
     // ─── T3-SH-9: a retry that succeeded leaves no failure above its answer ──
 
-    /// Fails once with Azure's content-filter failure, then answers.
-    struct FilteredOnceProvider {
+    /// Fails once with the in-stream server fault `formats::openai` reports
+    /// (a retried error), then answers.
+    struct FaultsOnceProvider {
         calls: Arc<AtomicUsize>,
     }
 
     #[async_trait]
-    impl Provider for FilteredOnceProvider {
+    impl Provider for FaultsOnceProvider {
         fn metadata() -> ProviderMetadata {
-            ProviderMetadata::new("filtered", "Filtered", "", "gpt-5.5", vec![], "", vec![])
+            ProviderMetadata::new("faulty", "Faulty", "", "gpt-5.5", vec![], "", vec![])
         }
 
         fn get_name(&self) -> &str {
@@ -28606,9 +28819,7 @@ mod gate_b_turn_tests {
         ) -> Result<(Message, ProviderUsage), ProviderError> {
             if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
                 return Err(ProviderError::ServerError(
-                    "Provider content filter failed (content_filter_error). Retry the request or \
-                     contact your provider administrator."
-                        .to_string(),
+                    crate::providers::formats::openai::IN_STREAM_SERVER_FAULT.to_string(),
                 ));
             }
             Ok((
@@ -28623,9 +28834,9 @@ mod gate_b_turn_tests {
     }
 
     #[tokio::test]
-    async fn a_retried_content_filter_failure_is_said_plainly_and_does_not_stay() {
+    async fn a_retried_server_fault_is_said_plainly_and_does_not_stay() {
         let calls = Arc::new(AtomicUsize::new(0));
-        let provider: Arc<dyn Provider> = Arc::new(FilteredOnceProvider {
+        let provider: Arc<dyn Provider> = Arc::new(FaultsOnceProvider {
             calls: Arc::clone(&calls),
         });
         let (_dir, agent, s) = agent_on(provider).await;
@@ -28658,9 +28869,10 @@ mod gate_b_turn_tests {
             .find(|(_, msg)| msg.contains("Trying again (1/"))
             .unwrap_or_else(|| panic!("the retry is announced:\n{}", rendered(&events)));
         assert!(
-            retry
-                .1
-                .starts_with("The provider's content filter interrupted the reply."),
+            retry.1.starts_with(
+                "The model call failed: Server error: The model server reported an internal \
+                 error partway through its reply."
+            ),
             "{}",
             retry.1
         );
@@ -31564,3 +31776,9 @@ mod decision_axes_agent_tests {
         );
     }
 }
+
+/// DR-33 at every reasoning effort: the chat's tier, never the effort-rebuilt
+/// provider's, is what a turn is judged on.
+#[cfg(test)]
+#[path = "agent_effort_tier_tests.rs"]
+mod effort_tier_tests;

@@ -1875,6 +1875,539 @@ fn save_checks_and_raise_comparators_read_the_bound_model_tier() {
 }
 
 // ---------------------------------------------------------------------------
+// DR-33: the provider a turn's requests run on never decides a tier.
+// ---------------------------------------------------------------------------
+
+/// What a function on a turn's path does with the provider the turn's
+/// requests run on, when it hands that provider to something else.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HandOff {
+    /// Another holder in [`TURN_PROVIDER_HOLDERS`]; the census follows it.
+    Follow,
+    /// The provider keeps going under a name this holder already follows,
+    /// or is the request itself. Nothing reads a tier there.
+    Carry,
+    /// Something that reads the provider's tier, affiliation or decision
+    /// model's cause, allowed only for the reason written beside it.
+    Reader,
+}
+
+/// One function that holds the turn's request provider.
+struct TurnProviderHolder {
+    file: &'static str,
+    /// The text that opens the function, unique in the file's production code.
+    signature: &'static str,
+    /// The names the provider has inside it.
+    names: &'static [&'static str],
+    /// Every callee the provider is handed to, measured and declared equal.
+    hand_offs: &'static [(&'static str, HandOff, &'static str)],
+}
+
+/// Where the provider the reply loop sends requests on goes, from
+/// `reply_internal` down.
+///
+/// At a non-Normal reasoning effort `Agent::provider_with_effort` rebuilds that
+/// provider around the language model ALONE, without the decision-bound
+/// wrapper `install_bound_provider` puts in the slot, so its `tier()`,
+/// `affiliation()` and `decision_lowered_by()` are the model's and not the
+/// chat's. A gate that judged with it would let a private model with a public
+/// decision model (DR-33's Versa plus Baseten) reach private data at Quick or
+/// Deep effort and not at Normal. Every gate reads the slot instead; this keeps
+/// it that way. A new hand-off has to be classified here before it lands.
+const TURN_PROVIDER_HOLDERS: &[TurnProviderHolder] = &[
+    TurnProviderHolder {
+        file: "crates/biorouter/src/agents/agent.rs",
+        signature: "async fn reply_internal(",
+        names: &["turn_provider", "reply_provider", "iteration_provider"],
+        hand_offs: &[
+            (
+                "match",
+                HandOff::Carry,
+                "binds `reply_provider`: the effort-rebuilt provider when there is one, else the \
+                 slot's own (`self.provider()`)",
+            ),
+            (
+                "let iteration_provider",
+                HandOff::Carry,
+                "one request's pin of `reply_provider`",
+            ),
+            ("prepare_reply_context", HandOff::Follow, ""),
+            ("prepare_tools_and_prompt_for_provider", HandOff::Follow, ""),
+            ("check_crew_before_request", HandOff::Follow, ""),
+            ("issue_tool_bridge", HandOff::Follow, ""),
+            ("persist_composite_provider_state", HandOff::Follow, ""),
+            ("stream_response_from_provider", HandOff::Follow, ""),
+        ],
+    },
+    TurnProviderHolder {
+        file: "crates/biorouter/src/agents/agent.rs",
+        signature: "async fn prepare_reply_context(",
+        names: &["provider"],
+        hand_offs: &[("prepare_tools_and_prompt_for_provider", HandOff::Follow, "")],
+    },
+    TurnProviderHolder {
+        file: "crates/biorouter/src/agents/reply_parts.rs",
+        signature: "pub(super) async fn prepare_tools_and_prompt_for_provider(",
+        names: &["provider"],
+        hand_offs: &[
+            ("prepare_model_tool_surface", HandOff::Follow, ""),
+            (
+                "runs_on_this_machine",
+                HandOff::Reader,
+                "asks where inference runs, to pick the system prompt's variant and clock: a \
+                 property of the model the request runs on, which no privacy decision reads",
+            ),
+        ],
+    },
+    TurnProviderHolder {
+        file: "crates/biorouter/src/agents/reply_parts.rs",
+        signature: "async fn prepare_model_tool_surface(",
+        names: &["provider"],
+        hand_offs: &[("prepare_coding_agent_bridge_plan", HandOff::Follow, "")],
+    },
+    TurnProviderHolder {
+        file: "crates/biorouter/src/agents/agent.rs",
+        signature: "pub(super) async fn prepare_coding_agent_bridge_plan(",
+        names: &["iteration_provider", "judged"],
+        hand_offs: &[
+            (
+                "match arm",
+                HandOff::Carry,
+                "`judged` is the slot's provider whenever that one is Public, and the request's \
+                 only while the slot is Private, where no decision model lowered the chat",
+            ),
+            (
+                "Mutex::new",
+                HandOff::Reader,
+                "the bridge's capability, sampled once off `judged`: the lesser of the chat's \
+                 (the slot's) and the request's provider's, so never wider than either",
+            ),
+        ],
+    },
+    TurnProviderHolder {
+        file: "crates/biorouter/src/agents/agent.rs",
+        signature: "async fn check_crew_before_request(",
+        names: &["request_provider"],
+        hand_offs: &[(
+            "check_provider_dispatch",
+            HandOff::Reader,
+            "Crew's binding and fresh workspace admission are about the model the request runs \
+             on. The tier half of it reads the model's own tier at a non-Normal effort, so the \
+             same function then asks Crew about the slot's provider (`check_provider_use` on \
+             `bound_provider_unchecked()`), which a Normal-effort request is already checked on",
+        )],
+    },
+    TurnProviderHolder {
+        file: "crates/biorouter/src/agents/agent.rs",
+        signature: "async fn issue_tool_bridge(",
+        names: &["iteration_provider"],
+        hand_offs: &[
+            ("coding_agent_bridge_subagent_context", HandOff::Follow, ""),
+            ("chat_bridge_dispatch", HandOff::Follow, ""),
+        ],
+    },
+    TurnProviderHolder {
+        file: "crates/biorouter/src/agents/agent.rs",
+        signature: "async fn coding_agent_bridge_subagent_context(",
+        names: &["iteration_provider"],
+        hand_offs: &[(
+            "TaskConfig::new",
+            HandOff::Reader,
+            "a bridged child's spawn reads the parent's effective tier off it. Only a provider \
+             that needs a bridge gets here, and every one is Public, so a fold cannot change \
+             its tier, affiliation or cause \
+             (`every_bridge_provider_is_public_so_a_fold_cannot_change_it`)",
+        )],
+    },
+    TurnProviderHolder {
+        file: "crates/biorouter/src/agents/agent.rs",
+        signature: "fn chat_bridge_dispatch(",
+        names: &["iteration_provider"],
+        hand_offs: &[(
+            "field ingest_provider",
+            HandOff::Reader,
+            "a bridged knowledge ingest runs on it and ratchets the base by its tier. Only a \
+             bridge provider gets here, and every one is Public \
+             (`every_bridge_provider_is_public_so_a_fold_cannot_change_it`)",
+        )],
+    },
+    TurnProviderHolder {
+        file: "crates/biorouter/src/agents/agent.rs",
+        signature: "async fn persist_composite_provider_state(",
+        names: &["provider"],
+        hand_offs: &[],
+    },
+    TurnProviderHolder {
+        file: "crates/biorouter/src/agents/reply_parts.rs",
+        signature: "pub(crate) async fn stream_response_from_provider(",
+        names: &["provider"],
+        hand_offs: &[(
+            "let provider",
+            HandOff::Carry,
+            "re-binds the same provider under the same name to move it into the stream",
+        )],
+    },
+];
+
+/// Methods that read what DR-33 folds, and which nothing may ask of the
+/// turn's request provider.
+const FOLDED_READS: &[&str] = &["tier", "affiliation", "decision_lowered_by"];
+
+/// Calls and methods that hand the value straight through; the walk looks at
+/// whatever receives their result instead.
+const PASS_THROUGH_CALLS: &[&str] = &["Arc::clone", "clone", "Some", ""];
+const PASS_THROUGH_METHODS: &[&str] = &["as_ref", "clone"];
+
+/// How one occurrence of a holder's name is used.
+#[derive(Debug, PartialEq, Eq)]
+enum ProviderUse {
+    /// A parameter, a `let` or a field pattern: where the name is bound.
+    Bound,
+    /// `name.method(..)` for a method that reads no folded value.
+    Method,
+    /// `name.tier()` and the other two, possibly after `.as_ref()`.
+    FoldedRead(String),
+    /// The value is handed to this callee.
+    HandedTo(String),
+}
+
+fn skip_space(c: &[char], mut i: usize) -> usize {
+    while i < c.len() && c[i].is_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+fn closing_paren(c: &[char], open: usize) -> usize {
+    let mut depth = 0usize;
+    for (i, ch) in c.iter().enumerate().skip(open) {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            _ => {}
+        }
+    }
+    c.len()
+}
+
+/// `Type::name` when the path names a type's function, else the last segment.
+fn callee_name(path: &str) -> String {
+    let segments: Vec<&str> = path.split("::").filter(|s| !s.is_empty()).collect();
+    match segments.as_slice() {
+        [] => String::new(),
+        [only] => (*only).to_string(),
+        [.., owner, last] if owner.starts_with(char::is_uppercase) && *owner != "Self" => {
+            format!("{owner}::{last}")
+        }
+        [.., last] => (*last).to_string(),
+    }
+}
+
+/// Who receives the value whose expression starts at `start`.
+fn receiver_of(c: &[char], start: usize) -> String {
+    let mut pos = start;
+    loop {
+        let mut depth = 0usize;
+        let mut i = pos;
+        let mut open = None;
+        while i > 0 {
+            i -= 1;
+            let ch = c[i];
+            if depth == 0 {
+                match ch {
+                    '(' => {
+                        open = Some(i);
+                        break;
+                    }
+                    '{' | '[' | '}' | ';' => break,
+                    ')' | ']' => depth += 1,
+                    _ => {}
+                }
+            } else {
+                match ch {
+                    ')' | ']' | '}' => depth += 1,
+                    '(' | '[' | '{' => depth -= 1,
+                    _ => {}
+                }
+            }
+        }
+        let Some(open) = open else {
+            let before: String = c[..pos].iter().collect();
+            let before = before.trim_end().trim_end_matches('&').trim_end();
+            let last_word = |text: &str| {
+                text.trim_end()
+                    .rsplit(|ch: char| !is_word(ch))
+                    .next()
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            return if before.ends_with("=>") {
+                "match arm".to_string()
+            } else if before.ends_with('=') {
+                format!("let {}", last_word(before.trim_end_matches('=')))
+            } else if before.ends_with(':') && !before.ends_with("::") {
+                format!("field {}", last_word(before.trim_end_matches(':')))
+            } else if last_word(before) == "match" {
+                "match".to_string()
+            } else {
+                "statement".to_string()
+            };
+        };
+        let mut j = open;
+        while j > 0 && c[j - 1].is_whitespace() {
+            j -= 1;
+        }
+        let end = j;
+        while j > 0 && (is_word(c[j - 1]) || c[j - 1] == ':' || c[j - 1] == '!') {
+            j -= 1;
+        }
+        let path: String = c[j..end].iter().collect();
+        let callee = callee_name(&path);
+        if PASS_THROUGH_CALLS.contains(&callee.as_str()) {
+            pos = j;
+            continue;
+        }
+        return callee;
+    }
+}
+
+/// Classify the occurrence of a name spanning `start..end`.
+fn provider_use(c: &[char], start: usize, end: usize) -> ProviderUse {
+    let mut i = skip_space(c, end);
+    if c.get(i) == Some(&':') && c.get(i + 1) != Some(&':') {
+        return ProviderUse::Bound;
+    }
+    if c.get(i) == Some(&'=') && !matches!(c.get(i + 1), Some('=') | Some('>')) {
+        return ProviderUse::Bound;
+    }
+    while c.get(i) == Some(&'.') {
+        let at = skip_space(c, i + 1);
+        let mut k = at;
+        while k < c.len() && is_word(c[k]) {
+            k += 1;
+        }
+        let method: String = c[at..k].iter().collect();
+        let paren = skip_space(c, k);
+        if c.get(paren) != Some(&'(') {
+            // `.await`, or a field of the provider: no folded value either way.
+            return ProviderUse::Method;
+        }
+        if FOLDED_READS.contains(&method.as_str()) {
+            return ProviderUse::FoldedRead(method);
+        }
+        if !PASS_THROUGH_METHODS.contains(&method.as_str()) {
+            return ProviderUse::Method;
+        }
+        i = skip_space(c, closing_paren(c, paren) + 1);
+    }
+    ProviderUse::HandedTo(receiver_of(c, start))
+}
+
+/// Every use of `names` in `body`, skipping a name that is a field or a path
+/// segment of something else (`self.provider`, `usage.provider`).
+fn provider_uses(body: &str, names: &[&str]) -> Vec<(String, ProviderUse)> {
+    let c: Vec<char> = body.chars().collect();
+    let mut out = Vec::new();
+    for name in names {
+        let pat: Vec<char> = name.chars().collect();
+        let mut i = 0usize;
+        while i + pat.len() <= c.len() {
+            let whole = c[i..i + pat.len()] == pat[..]
+                && (i == 0 || !is_word(c[i - 1]))
+                && (i + pat.len() == c.len() || !is_word(c[i + pat.len()]));
+            if !whole {
+                i += 1;
+                continue;
+            }
+            let of_something_else = i > 0 && (c[i - 1] == '.' || c[i - 1] == ':');
+            if !of_something_else {
+                out.push((name.to_string(), provider_use(&c, i, i + pat.len())));
+            }
+            i += pat.len();
+        }
+    }
+    out
+}
+
+/// The production text of the function `signature` opens, from the signature
+/// to its closing brace.
+fn function_text(tree: &Tree, rel: &str, signature: &str) -> String {
+    let text: String = tree
+        .production
+        .get(rel)
+        .unwrap_or_else(|| panic!("{rel} is not in the production tree"))
+        .iter()
+        .map(|(_, t)| t.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_eq!(
+        text.matches(signature).count(),
+        1,
+        "`{signature}` must open exactly one function in {rel}"
+    );
+    let start = text.find(signature).unwrap();
+    let open = start
+        + text
+            .get(start..)
+            .and_then(|rest| rest.find('{'))
+            .expect("a function body");
+    let mut depth = 0usize;
+    for (at, ch) in text.get(open..).unwrap_or_default().char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return text
+                        .get(start..=open + at)
+                        .expect("a function on character boundaries")
+                        .to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("`{signature}` in {rel} never closes");
+}
+
+/// The instrument, on code it must catch. A census that cannot fail passes on
+/// any tree.
+#[test]
+fn the_turn_provider_census_catches_what_it_is_for() {
+    let uses = |src: &str| provider_uses(src, &["iteration_provider"]);
+    assert_eq!(
+        uses("let t = iteration_provider.tier();"),
+        vec![(
+            "iteration_provider".into(),
+            ProviderUse::FoldedRead("tier".into())
+        )]
+    );
+    assert_eq!(
+        uses("x(iteration_provider\n    .as_ref()\n    .affiliation())"),
+        vec![(
+            "iteration_provider".into(),
+            ProviderUse::FoldedRead("affiliation".into())
+        )]
+    );
+    assert_eq!(
+        uses("let s: SharedProvider = Arc::new(Mutex::new(Some(Arc::clone(iteration_provider))));"),
+        vec![(
+            "iteration_provider".into(),
+            ProviderUse::HandedTo("Mutex::new".into())
+        )],
+        "the throwaway slot the bridge plan used to sample"
+    );
+    assert_eq!(
+        uses("crew.check_provider_dispatch(id, iteration_provider.as_ref()).await?;"),
+        vec![(
+            "iteration_provider".into(),
+            ProviderUse::HandedTo("check_provider_dispatch".into())
+        )]
+    );
+    assert_eq!(
+        uses("f(iteration_provider: &Arc<dyn Provider>) { iteration_provider.get_name(); }"),
+        vec![
+            ("iteration_provider".into(), ProviderUse::Bound),
+            ("iteration_provider".into(), ProviderUse::Method)
+        ]
+    );
+    assert_eq!(
+        uses("let p = self.iteration_provider.tier();"),
+        vec![],
+        "a field of something else is not the name"
+    );
+}
+
+/// DR-33: nothing on a turn's path reads `tier()`, `affiliation()` or
+/// `decision_lowered_by()`, or samples a `CallCapability`, off the provider the
+/// turn's requests run on, except the readers [`TURN_PROVIDER_HOLDERS`] names
+/// with a reason. See that table for why.
+#[test]
+fn the_turn_provider_never_decides_a_tier() {
+    let tree = scan_tree();
+    let holders: Vec<String> = TURN_PROVIDER_HOLDERS
+        .iter()
+        .map(|holder| {
+            let name = holder.signature.split("fn ").nth(1).unwrap_or_default();
+            name.trim_end_matches('(').to_string()
+        })
+        .collect();
+    let mut failures = Vec::new();
+    for holder in TURN_PROVIDER_HOLDERS {
+        let body = function_text(&tree, holder.file, holder.signature);
+        let uses = provider_uses(&body, holder.names);
+        assert!(
+            uses.iter().any(|(_, kind)| *kind != ProviderUse::Bound),
+            "`{}` in {} no longer uses {:?}; the census would pass on nothing",
+            holder.signature,
+            holder.file,
+            holder.names
+        );
+        let mut measured = std::collections::BTreeSet::new();
+        for (name, kind) in &uses {
+            match kind {
+                ProviderUse::FoldedRead(method) => failures.push(format!(
+                    "`{}` ({}) reads `{name}.{method}()`: at a non-Normal effort that is the \
+                     model's value, not the chat's. Read the slot (`self.provider`)",
+                    holder.signature, holder.file
+                )),
+                ProviderUse::HandedTo(callee) => {
+                    measured.insert(callee.clone());
+                }
+                ProviderUse::Bound | ProviderUse::Method => {}
+            }
+        }
+        // A capability sampled straight off one of the names, with no slot
+        // in between, is the same read.
+        let squeezed: String = body.chars().filter(|ch| !ch.is_whitespace()).collect();
+        for name in holder.names {
+            for spelling in [format!("sample(&{name})"), format!("sample({name})")] {
+                if squeezed.contains(&spelling) {
+                    failures.push(format!(
+                        "`{}` ({}) samples a capability off `{name}`",
+                        holder.signature, holder.file
+                    ));
+                }
+            }
+        }
+        let declared: std::collections::BTreeSet<String> = holder
+            .hand_offs
+            .iter()
+            .map(|(callee, ..)| callee.to_string())
+            .collect();
+        if measured != declared {
+            failures.push(format!(
+                "`{}` ({}) hands the turn's provider to {measured:?}, but the census declares \
+                 {declared:?}. Classify each new receiver in TURN_PROVIDER_HOLDERS: follow it \
+                 as a holder, or say why what it reads is not a tier decision",
+                holder.signature, holder.file
+            ));
+        }
+        for (callee, kind, reason) in holder.hand_offs {
+            let is_holder = holders.iter().any(|h| h.as_str() == *callee);
+            match kind {
+                HandOff::Follow if !is_holder => failures.push(format!(
+                    "`{callee}` is followed but is not in TURN_PROVIDER_HOLDERS"
+                )),
+                HandOff::Carry | HandOff::Reader if is_holder => failures.push(format!(
+                    "`{callee}` is a holder, so it must be followed, not excused"
+                )),
+                HandOff::Carry | HandOff::Reader if reason.trim().is_empty() => failures.push(
+                    format!("`{callee}` in `{}` has no reason", holder.signature),
+                ),
+                _ => {}
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+// ---------------------------------------------------------------------------
 // The scanner.
 // ---------------------------------------------------------------------------
 
