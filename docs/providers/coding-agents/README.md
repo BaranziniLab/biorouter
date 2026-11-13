@@ -19,8 +19,9 @@ gate that enforces it.
 **They get every built-in capability, on the same terms as any other provider.**
 Developer (shell, text editor, analyze, image processor),
 Biorouter Copilot (the sole native desktop observation and control capability), Web & Documents, Knowledge, Workspace, Skills, Extension Manager, Memory,
-To Do, Chat Recall, Agent Drafter and Auto Visualiser all reach the child over
-the bridge. What still does *not* is a **third-party** extension's tools, which
+To Do, Chat Recall, the Dictionary, Agent Drafter and Auto Visualiser all reach the
+child over the bridge. A coding-agent chat is public, so the Dictionary's tools see and
+add only public terms there, as for any public model. What still does *not* is a **third-party** extension's tools, which
 remain admitted case by case rather than wholesale.
 
 ⚠ **This changed, and the previous text described the old behaviour.** The

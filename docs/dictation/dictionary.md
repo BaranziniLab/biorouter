@@ -1173,6 +1173,8 @@ The capability's row in **Settings > Chat** toggles it through `POST /config/ext
 
 The capability counts toward delegation condition 5 only when enabled, like any other extension.
 
+In a Claude Code or Codex chat the capability's three tools reach the coding agent over the tool bridge, like every other built-in capability (`CODING_AGENT_BRIDGE_ALLOWED_DICTIONARY_TOOLS` in `crates/biorouter/src/agents/agent.rs`; owner decision 2026-11-13: access follows the privacy match, never the provider). Each call dispatches with the chat's capability, and a coding-agent chat is public, so it sees, adds and removes only public rows; `on_request` reads the person's latest message in the chat as it does for any model. `coding_agent_bridge_offers_the_dictionary_and_only_its_public_rows` pins both.
+
 ### Where the capability is absent
 
 | Session or surface | How it is kept out |

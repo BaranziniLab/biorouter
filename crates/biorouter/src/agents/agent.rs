@@ -1168,6 +1168,18 @@ const CODING_AGENT_BRIDGE_ALLOWED_TODO_TOOLS: &[&str] = &[
 
 const CODING_AGENT_BRIDGE_ALLOWED_CHAT_RECALL_TOOLS: &[&str] = &["chatrecall__chatrecall"];
 
+/// The Dictionary's three tools (DD-51), offered to a Claude Code or Codex chat exactly as
+/// to any provider's chat (owner decision 2026-11-13: access follows the privacy match,
+/// never the provider). Nothing here widens what a chat sees: each call dispatches with the
+/// bridge plan's capability, a coding-agent chat is public, so `list_terms` and
+/// `remove_added_terms` reach only the public rows and an add lands public; and
+/// `on_request` still activates a term only from the person's latest message.
+const CODING_AGENT_BRIDGE_ALLOWED_DICTIONARY_TOOLS: &[&str] = &[
+    "dictionary__add_terms",
+    "dictionary__list_terms",
+    "dictionary__remove_added_terms",
+];
+
 const CODING_AGENT_BRIDGE_REQUIRED_COLLECTOR_TOOLS: &[&str] = &[
     "workspace__workspace_watch",
     "workspace__workspace_read_conversation",
@@ -1306,6 +1318,11 @@ const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
         capability_name: "Chat Recall",
         target_name: "chatrecall",
         tools: CODING_AGENT_BRIDGE_ALLOWED_CHAT_RECALL_TOOLS,
+    },
+    CodingAgentBridgePolicy {
+        capability_name: "Dictionary",
+        target_name: "dictionary",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_DICTIONARY_TOOLS,
     },
     CodingAgentBridgePolicy {
         capability_name: "Knowledge",
@@ -21934,6 +21951,112 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{name} must dispatch: {error}"));
             assert_eq!(result.is_error, Some(false), "{name}: {result:?}");
         }
+    }
+
+    /// Dictionary parity on the coding-agent bridge (owner decision 2026-11-13): a Claude
+    /// Code or Codex chat is offered the Dictionary's tools like any provider's chat, and a
+    /// call through the relay sees only what the chat's tier may see. A coding-agent chat
+    /// is public, so a private row never crosses the bridge.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn coding_agent_bridge_offers_the_dictionary_and_only_its_public_rows() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        coding_agent_bridge::publish_base_url("http://127.0.0.1:1");
+        let path_root = tempfile::TempDir::new().expect("an isolated dictionary root");
+        let _root = crate::test_sandbox::relocate_path_root(
+            path_root.path().to_str().expect("a UTF-8 temporary path"),
+        );
+        {
+            use crate::security::dictionary_store::{open_store, store};
+            open_store()
+                .write(|file| {
+                    let now = store::schema::now();
+                    file.add(
+                        store::NewTerm::person("Tachyzoite", store::EntryTier::Public),
+                        store::Reach::All,
+                        now,
+                    )?;
+                    file.add(
+                        store::NewTerm::person("Xylophagy", store::EntryTier::Private),
+                        store::Reach::All,
+                        now,
+                    )?;
+                    Ok(())
+                })
+                .expect("seed one public and one private term");
+        }
+
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let dictionary =
+            resolve_bundled_extension("dictionary").expect("the Dictionary capability");
+        agent
+            .add_extension(dictionary.into_config("Dictionary bridge parity".into()))
+            .await
+            .expect("enable the Dictionary capability");
+        let iteration_provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider {
+            name: "claude_code",
+        });
+        agent
+            .update_provider(Arc::clone(&iteration_provider), &session_id)
+            .await
+            .expect("bind a coding-agent-shaped provider");
+
+        let tools = agent.list_tools(&session_id, None).await;
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, true)
+            .await
+            .expect("read the bridge parent");
+        let conversation = session
+            .conversation
+            .clone()
+            .unwrap_or_else(Conversation::empty);
+        let lease =
+            issue_test_tool_bridge(&agent, &iteration_provider, &session, &conversation, &tools)
+                .await
+                .expect("coding-agent providers need a live grant");
+        let nonce = lease
+            .url()
+            .rsplit('/')
+            .next()
+            .expect("the bridge URL ends in its nonce");
+        let grant = coding_agent_bridge::lookup(nonce).expect("the bridge grant is live");
+        for expected in CODING_AGENT_BRIDGE_ALLOWED_DICTIONARY_TOOLS {
+            assert!(
+                grant
+                    .tools()
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == *expected),
+                "{expected} must cross the bridge like any provider's tool"
+            );
+        }
+
+        let listed = grant
+            .call(CallToolRequestParams {
+                name: "dictionary__list_terms".into(),
+                arguments: Some(object!({"status": "all"})),
+                meta: None,
+                task: None,
+            })
+            .await
+            .expect("list_terms must dispatch across the bridge");
+        assert_eq!(listed.is_error, Some(false), "{listed:?}");
+        let text = listed
+            .content
+            .iter()
+            .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
+            .collect::<String>();
+        assert!(
+            text.contains("Tachyzoite"),
+            "the public term is listed: {text}"
+        );
+        assert!(
+            !text.contains("Xylophagy"),
+            "a public coding-agent chat must never receive a private row: {text}"
+        );
     }
 
     #[tokio::test]
