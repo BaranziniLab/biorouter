@@ -296,7 +296,7 @@ fn dim(text: &str, color: bool) -> String {
 
 /// What a phase row says about its gate and the gate that holds it, said to
 /// the person reading: ` · gate set by the agent, passed by you · needs you`,
-/// ` · waits for Research's gate`. Empty for an ungated phase nothing holds.
+/// ` · waits for the gate after Research`. Empty for an ungated phase nothing holds.
 /// A held phase names its holder by title, as the row names phases.
 pub fn gate_suffix(phase: &PhaseSnapshot, titles: &HashMap<&str, &str>) -> String {
     use super::session_gates::{decision_words, held_words, owner_words};
@@ -1173,10 +1173,10 @@ mod tests {
         );
         assert_eq!(
             lines[3],
-            "  ○ Write     0/0 done · waits for Research's gate"
+            "  ○ Write     0/0 done · waits for the gate after Research"
         );
         assert_eq!(
-            lines[4], "  ○ Verify    0/0 done · gate set by you · waits for gone's gate",
+            lines[4], "  ○ Verify    0/0 done · gate set by you · waits for the gate after gone",
             "a holder the plan does not list is named by its id"
         );
     }
