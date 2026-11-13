@@ -26,12 +26,12 @@ const NOTE = readFileSync(join(__dirname, '../components/ui/note.tsx'), 'utf8');
 
 describe('the note clamp', () => {
   it('declares `--note-max-height` beside the other geometry tokens', () => {
-    expect(CSS).toMatch(/--note-max-height:\s*148px;/);
+    expect(CSS).toMatch(/--note-max-height:\s*68px;/);
   });
 
   it('derives the ceiling from the type role rather than picking a number', () => {
-    // Eight lines of `--text-supporting` plus the note's own 2 × 10px padding.
-    // If either moves, the comment is what says the 148 has to move with it.
+    // Three lines of `--text-supporting` plus the note's own 2 × 10px padding
+    // (design.md 9.16). If either moves, the comment says the 68 moves with it.
     expect(CSS).toMatch(/--text-supporting--line-height:\s*16px;/);
   });
 

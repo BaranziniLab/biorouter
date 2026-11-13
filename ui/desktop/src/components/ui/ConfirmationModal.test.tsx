@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { ConfirmationModal } from './ConfirmationModal';
+import { CONFIRMATION_DETAILS_LABEL, ConfirmationModal } from './ConfirmationModal';
 import { uiCopy } from './copy';
 
 afterEach(cleanup);
@@ -87,5 +87,26 @@ describe('ConfirmationModal', () => {
       />
     );
     expect(screen.getByRole('button', { name: uiCopy.processing })).toBeDisabled();
+  });
+
+  // Owner, 2026-11-13: the message is one sentence; the rest folds under it.
+  it('says one sentence and folds `details` under it, outside the description', () => {
+    render(
+      <ConfirmationModal
+        isOpen
+        title="Load it anyway?"
+        message="It may run slowly here."
+        details="On Apple Silicon, unified memory is the relevant budget."
+        detailsLabel="Why?"
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />
+    );
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveAccessibleDescription('It may run slowly here.');
+    expect(screen.queryByText(/unified memory/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Why?' }));
+    expect(screen.getByText(/unified memory/)).toBeInTheDocument();
+    expect(CONFIRMATION_DETAILS_LABEL).toBe('Details');
   });
 });

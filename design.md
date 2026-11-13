@@ -1897,6 +1897,7 @@ stay at `--row-height` 40px, because A-03's 36px is not part of this pass.
 2. **Say it once, then hide the explanation.** A visible line is a label, a value or a state word.
    Explanations live in an `InfoTip`. These always stay visible: errors, refusals, privacy disclosures,
    the consequence of a destructive action at the moment of decision, and empty-state one-liners.
+   No solid block of text anywhere (owner, 2026-11-13; 9.16): one visible line, the rest folded.
 3. **Five sizes, two visible weights, two families.** Regular (400) and strong (600). 500 never carries
    a state alone. Mono is for machine strings read as data only: code, IDs, versions, terminal text, a
    tool's argument, a decision's exact folder. A folder shown as where something lives is a name with a
@@ -2375,8 +2376,30 @@ Crew timeline and the terminal. Syntax colours are unchanged.
   (Consolas), Linux (Liberation Mono) and a `biorouter serve` browser follow the stack as Codex's does, and
   Safari reaches SF Mono on its own.
 - **12 / 20, Codex's code size.** SF Mono at 13px read wide beside the 13 to 14px text, so code blocks, inline
-  code, tool arguments and output, and the terminal moved to 12px on the same 20px line (`--text-code`,
-  `CODE_FONT_SIZE`, `TERMINAL_FONT_SIZE`), still byte-identical to each other.
+  code, tool arguments and output, the terminal and Crew's sign-in terminal moved to 12px on the same 20px line
+  (`--text-code`, `CODE_FONT_SIZE`, `TERMINAL_FONT_SIZE`), still byte-identical to each other.
 - **Nothing waits for it.** The face registers in the background after launch; code draws in the fallback for
   the moment the local file takes. A terminal opened before then re-measures its cells once the face is ready.
+
+### 9.16 · One line, then helper text
+
+The owner, 2026-11-13: large, solid chunks of text impede reading. A surface shows the one line a person needs, a
+label, a question or a state word, and everything else is helper text that waits until it is asked for. There is
+almost always a way to fold a paragraph; finding it is part of designing the surface.
+
+- **The layers.** The visible line; then an `InfoTip` right beside it (the small circled icon, at most two full
+  sentences, about 160 characters); then a Details disclosure (`ui/disclosure.tsx`) for anything longer or for a
+  list; then a page or dialog of its own. A hover card that already exists on a surface may carry the same detail.
+- **The example.** The folder access card shows "Allow access to this external folder?", an info icon beside it
+  with what a grant covers and how long it lasts, the folder path, and "Files in this operation (N)" folded. The
+  daemon's long prompt, which only restated the preview, is not drawn.
+- **What stays visible**, as principle 2 already says: the first line of an error that just happened, a refusal's
+  reason, a privacy disclosure whose full text is mandated (`Note` with `unclamped`, DR-17), and one line of
+  consequence for an irreversible action. Their extra sentences may still fold.
+- **Move, never lose.** Folded text is still reachable by pointer, keyboard and screen reader: the InfoTip trigger
+  is focusable and, where it explains a control, it stays that control's accessible description.
+- **The primitives carry it.** A `Note` clamps at three lines (`--note-max-height` 68px, was eight) and takes a
+  `details` slot that folds extra text behind a closed Details disclosure; `ConfirmationModal` and
+  `DangerousConfirmDialog` take `details` too; an `Alert` takes `help` for its info icon. Reach for these before
+  writing a second paragraph.
 

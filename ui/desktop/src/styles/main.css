@@ -535,13 +535,16 @@
   --row-height: 40px; /* D-12·B — one row rhythm, no compact mode. A-03 retunes to 36px in phase 8. */
 
   /* The ceiling on an in-place prose block (`components/ui/note.tsx`). DERIVED:
-     eight lines of `--text-supporting` (8 × 16px) plus the note's own 2 × 10px
+     three lines of `--text-supporting` (3 × 16px) plus the note's own 2 × 10px
      vertical padding. Above that a notice has stopped being a notice and has
      become a document, which is the shape the settings audit reported as
      "banners that are essentially just a long block of text" — so the note
      clamps here and offers "Show more" instead. The precedent for clamping
-     rather than truncating is `utils/messageClamp.ts`. */
-  --note-max-height: 148px;
+     rather than truncating is `utils/messageClamp.ts`. It was eight lines
+     (148px) until 2026-11-13, when the owner ruled out solid blocks of text
+     anywhere (design.md 9.16); a note says its point in a line or two and folds
+     the rest. */
+  --note-max-height: 68px;
 
   /* Overlay widths (§3.6/§3.7). Three dialog widths and one full-screen replace
      the fifteen distinct `max-w` values in use; `full` is not a token because it

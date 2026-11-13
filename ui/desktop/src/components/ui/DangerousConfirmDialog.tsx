@@ -1,6 +1,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { ModalShell } from '../ModalShell';
 import { Button } from './button';
+import { Disclosure } from './disclosure';
 import { Input } from './input';
 import { lastInputWasKey } from './inputTrail';
 
@@ -51,8 +52,19 @@ import { lastInputWasKey } from './inputTrail';
 export interface DangerousConfirmDialogProps {
   open: boolean;
   title: string;
-  /** One sentence saying what will happen and that it is not reversible. */
+  /**
+   * One sentence saying what will happen and that it is not reversible. It stays visible: it is the
+   * consequence, said at the moment of decision.
+   */
   description?: React.ReactNode;
+  /**
+   * The prose a caller has beyond that one sentence (why, what else it touches, how to undo the
+   * parts that can be undone), folded behind a closed disclosure under the description (owner,
+   * 2026-11-13). Never the consequence itself.
+   */
+  details?: React.ReactNode;
+  /** The disclosure's words: "Details", or a better name for this detail. */
+  detailsLabel?: string;
   /**
    * The exact string the user must retype. Omit for a dangerous action that is
    * confirmed by a single click — the component still refuses to confirm on a
@@ -87,6 +99,8 @@ export function DangerousConfirmDialog({
   open,
   title,
   description,
+  details,
+  detailsLabel = 'Details',
   phrase,
   fieldLabel,
   confirmLabel,
@@ -155,6 +169,16 @@ export function DangerousConfirmDialog({
         </p>
       ) : null}
 
+      {details !== undefined && details !== null && details !== '' ? (
+        <Disclosure label={detailsLabel}>
+          {typeof details === 'string' ? (
+            <p className="text-body text-text-muted">{details}</p>
+          ) : (
+            details
+          )}
+        </Disclosure>
+      ) : null}
+
       {children}
 
       {phrase !== undefined && (
@@ -180,7 +204,9 @@ export function DangerousConfirmDialog({
               onKeyDown={(event) => {
                 if (event.key === 'Enter') event.preventDefault();
               }}
-              className="min-w-0 flex-1 font-mono"
+              // The code role, as the phrase chip beside it: one face and one size in the pair the
+              // person compares.
+              className="min-w-0 flex-1 font-mono text-code"
             />
             {/* Beside the field, so the user is comparing against the thing
                 itself rather than remembering it from the prose above. */}

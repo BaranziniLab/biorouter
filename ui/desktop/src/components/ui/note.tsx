@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { cn } from '../../utils';
 import { Button } from './button';
+import { Disclosure } from './disclosure';
 
 /**
  * The one in-place prose block: a warning, a disclosure, an inline error, an
@@ -36,6 +37,13 @@ import { Button } from './button';
  *    {@link NoteProps.unclamped} opts out and has exactly one caller: a
  *    disclosure whose whole text is mandated (DR-17 requirement 3), where
  *    hiding half of it behind a control would defeat the requirement.
+ *
+ * 4. **One line up front, the rest folded** (owner, 2026-11-13). A note says
+ *    the sentence a person needs in `children`; anything a reader may want
+ *    after it (the reason, the figures, a second warning) goes in
+ *    {@link NoteProps.details}, behind a closed "Details" disclosure under the
+ *    body. The ceiling above is the backstop for a note that did not do that;
+ *    `details` is how a note avoids reaching it.
  *
  * The clamp itself is AUTHORED CSS (`.biorouter-note-clamp` in `main.css`), not
  * a Tailwind arbitrary value, for the reason `.br-swatch-ring` already records:
@@ -90,8 +98,20 @@ export interface NoteProps extends Omit<React.ComponentProps<'div'>, 'role' | 'c
    * a "Show more" you find inelegant; that control is the point.
    */
   unclamped?: boolean;
+  /**
+   * What a reader may want after the note's one sentence: the reason, the figures, a second
+   * warning. Rendered behind a closed disclosure under the body, so the note shows its first line
+   * and the rest is one click away (owner, 2026-11-13). Never the only carrier of an error, a
+   * refusal or a privacy disclosure: those stay in `children`.
+   */
+  details?: React.ReactNode;
+  /** The disclosure's words. "Details" unless the detail has a better name ("Why?"). */
+  detailsLabel?: string;
   children?: React.ReactNode;
 }
+
+/** The words on a note's detail disclosure, when the caller names none. */
+export const NOTE_DETAILS_LABEL = 'Details';
 
 export function Note({
   tone = 'neutral',
@@ -100,6 +120,8 @@ export function Note({
   role,
   testId,
   unclamped = false,
+  details,
+  detailsLabel = NOTE_DETAILS_LABEL,
   className,
   children,
   ...props
@@ -164,6 +186,12 @@ export function Note({
             {expanded ? 'Show less' : 'Show more'}
           </Button>
         )}
+        {/* Outside the clamped node, so the folded detail is always reachable. */}
+        {details !== undefined && details !== null && details !== '' ? (
+          <Disclosure label={detailsLabel} className="mt-1">
+            {typeof details === 'string' ? <p>{details}</p> : details}
+          </Disclosure>
+        ) : null}
       </div>
       {/* Centred on the FIRST line, not hung from the top of the box (`.br-note-action`). */}
       {action ? <div className="br-note-action">{action}</div> : null}

@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DangerousConfirmDialog } from './DangerousConfirmDialog';
@@ -195,5 +195,31 @@ describe('DangerousConfirmDialog', () => {
     );
 
     expect(screen.getByRole('dialog')).not.toHaveAttribute('aria-describedby');
+  });
+
+  // Owner, 2026-11-13: the consequence stays the description; extra prose folds under it.
+  it('keeps the consequence visible and folds `details`, with the field and chip in one face', () => {
+    render(
+      <DangerousConfirmDialog
+        open
+        title="Make this chat public?"
+        description="Its contents can then reach any model. This cannot be undone."
+        details="Chats it already shared with stay as they are."
+        phrase="def456"
+        fieldLabel="Type the last 6 characters of this chat's ID"
+        confirmLabel="Make public"
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />
+    );
+    expect(screen.getByRole('dialog')).toHaveAccessibleDescription(
+      'Its contents can then reach any model. This cannot be undone.'
+    );
+    expect(screen.queryByText(/already shared/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+    expect(screen.getByText(/already shared/)).toBeInTheDocument();
+    // The typed field and the phrase beside it share the code role, so they compare at one size.
+    expect(screen.getByRole('textbox')).toHaveClass('font-mono', 'text-code');
+    expect(screen.getByText('def456')).toHaveClass('font-mono', 'text-code');
   });
 });

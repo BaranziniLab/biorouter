@@ -49,6 +49,27 @@ describe('AlertBox', () => {
       expect(screen.getByText('Test warning message')).toBeInTheDocument();
     });
 
+    it('keeps the message as the one visible line and folds its help behind an info icon', () => {
+      const alert: Alert = {
+        type: AlertType.Warning,
+        message: 'This chat can call 61 tools.',
+        help: 'Too many tools can degrade performance. Capability defaults apply to a new chat.',
+      };
+
+      render(<AlertBox alert={alert} />);
+      // The help is not drawn as text beside the message (design.md 9.16), only in the info
+      // icon's description, so a screen reader still hears it.
+      expect(screen.getByText('This chat can call 61 tools.')).toBeVisible();
+      const about = screen.getByRole('button', { name: 'About this warning' });
+      expect(about).toHaveAccessibleDescription(alert.help!);
+      expect(screen.getByText(alert.help!)).toHaveClass('sr-only');
+    });
+
+    it('draws no info icon for an alert without help', () => {
+      render(<AlertBox alert={{ type: AlertType.Info, message: 'Plain notice' }} />);
+      expect(screen.queryByRole('button', { name: /^About / })).toBeNull();
+    });
+
     it('should render an error message on a neutral surface with an error chip', () => {
       const alert: Alert = {
         type: AlertType.Error,
