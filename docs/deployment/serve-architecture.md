@@ -4,7 +4,8 @@
 > daemon serves the interface, how a browser is authenticated, and which pieces of the old
 > reverse-proxying front door were deleted rather than moved.
 > **Status:** Current. Describes shipped code; every mechanism below is in the tree and
-> exercised by the `serve` job in `.github/workflows/rust.yml`.
+> exercised by the serve steps of the `integration (ubuntu, 3/3)` job in
+> `.github/workflows/rust.yml`.
 > **Audience:** developers working on `biorouter-server`, `biorouter-cli`, or the renderer.
 
 Biorouter's interface is a single-page application. The desktop application loads it inside

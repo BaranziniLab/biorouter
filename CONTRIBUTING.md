@@ -137,20 +137,24 @@ npm run test:run    # vitest unit tests
 npm run lint:check  # typecheck + eslint (zero warnings) + theme codegen + contrast + token mirrors
 ```
 
-`npm run test:run` is **required to merge** — it is the `Unit tests (vitest)`
-status check on `main`, and it runs on every pull request whether or not you
+`npm run test:run` is **required to merge**. The required `Unit tests (vitest)`
+check is a gate over three vitest shards plus the `Static checks` and
+`Registry generator` jobs, and it runs on every pull request whether or not you
 touched `ui/desktop`. `npm run lint:check` covers most of the CI `Static checks`
 job; that job additionally runs the packaged-dependency isolation tests
 (`node --test scripts/verify-packaged-dependencies.test.cjs scripts/npm-command.test.cjs scripts/prepare-native-dependencies.test.cjs`)
-and reports every gate rather than stopping at the first failure. It runs on
-every pull request but is *not* a required check, so it will not block a merge
-on its own.
+and reports every gate rather than stopping at the first failure.
 
 Rust changes are gated by the `test (ubuntu-latest)`, `test (macos-latest)` and
-`test (windows-latest)` checks from `.github/workflows/rust.yml`, which run
-`cargo test --workspace --lib --bins` on each OS. All three are required, so a
-failure on Windows alone blocks the merge; there is no way to run only the OS you
-develop on.
+`test (windows-latest)` checks from `.github/workflows/rust.yml`. On a pull
+request ubuntu runs the whole workspace (unit tests, bin targets and every
+integration binary, in parallel jobs), while macOS and Windows run their
+OS-specific subset unless your change touches code specific to that OS, in
+which case they run their full suite. All three are required, so a failure on
+Windows alone blocks the merge. To run the full macOS and Windows suites on a
+pull request anyway, add the `ci:full` label and push.
+[`docs/testing/continuous-integration.md`](docs/testing/continuous-integration.md)
+says what runs when.
 
 ### Running every check at once
 
