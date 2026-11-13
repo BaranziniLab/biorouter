@@ -441,8 +441,10 @@ describe('the + popover keeps its segmented control above the + (R-25)', () => {
           expect(m.control.top, `${where}: control under the list`).toBeGreaterThanOrEqual(
             m.list.bottom - EPSILON
           );
-          // Opened from the `+`'s left edge, at the width that keeps four whole words.
-          near(m.popover.left, m.plus.left, `${where}: popover left`);
+          // Opened on the composer card's left edge, 9px left of the `+` (the card's 1px border
+          // and 8px padding, `PLUS_INSET_IN_CARD` in ComposerPlusMenu.tsx), at the width that
+          // keeps four whole words.
+          near(m.popover.left, m.plus.left - 9, `${where}: popover left`);
           near(m.popover.width, 344, `${where}: popover width`);
           // ...and not one pixel away from where it was on the first list.
           near(m.control.top, first.control.top, `${where}: control top`);

@@ -43,6 +43,13 @@ const SEGMENTS: ReadonlyArray<SegmentedOption<PlusSegment>> = [
  */
 export const TOOLS_POPOVER_COLLISION_PADDING = { top: 52, right: 8, bottom: 8, left: 8 } as const;
 
+/**
+ * How far the `+` sits inside the composer card: the card's 1px border and its
+ * 8px padding (`.br-composer-chat-card`, composer.css). The popover's left edge
+ * is pulled back by this much so it starts on the card's own left edge.
+ */
+export const PLUS_INSET_IN_CARD = 9;
+
 export interface ComposerPlusMenuProps {
   /** The focused chat, or `null` on Home and in a chat that has not started. */
   sessionId: string | null;
@@ -237,6 +244,10 @@ export function ComposerPlusMenu({
         <PopoverContent
           side="top"
           align="start"
+          // On the composer card's left edge, not the `+`'s: the `+` sits 9px in
+          // (the card's 1px border and 8px padding), and a popover 9px inside the
+          // box it belongs to read as off the grid (vision review, 2026-11-13).
+          alignOffset={-PLUS_INSET_IN_CARD}
           // Never flipped below the `+` and never slid: the bottom edge, and the
           // segmented control on it, stay put (R-25). The room above caps the height.
           avoidCollisions={false}
