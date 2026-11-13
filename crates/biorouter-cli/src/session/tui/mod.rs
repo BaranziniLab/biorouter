@@ -4342,6 +4342,33 @@ mod tests {
         assert_eq!(app.input, "draft");
     }
 
+    /// The `/decisions` overlay takes every key first, so the dictation key does not
+    /// start a recording under it, in the composer or while a turn streams.
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn the_decisions_overlay_keeps_the_dictation_key() {
+        let Some(key) = dictation_chord() else {
+            return;
+        };
+        let mut app = App::new(StatusInfo::default());
+        app.decisions = Some(decisions::DecisionsOverlay::new(SessionDecisionSummary {
+            total: 0,
+            aggregates: vec![],
+            recent_turns: vec![],
+        }));
+        assert_eq!(on_key(&mut app, ctrl(key)), None);
+        assert!(
+            app.dictation.is_none(),
+            "a recording started under the overlay"
+        );
+        assert!(app.decisions.is_some(), "the chord closed the overlay");
+        assert!(matches!(
+            on_key_streaming(&mut app, ctrl(key)),
+            StreamAction::None
+        ));
+        assert!(app.dictation.is_none());
+    }
+
     /// The dictation key never names a letter this interface already binds.
     #[cfg(feature = "dictation")]
     #[test]

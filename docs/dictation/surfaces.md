@@ -335,6 +335,8 @@ DD-60. One component, `components/dictation/DictationButton.tsx`, a ghost round 
 | Crew's channel composer | `ui/desktop/src/components/crew/composer/Composer.tsx` | after `.crew-compose-spacer`, before `.crew-compose-send` | `crew` |
 | Crew's **Ask my agent** box | `ui/desktop/src/components/crew/pane/AgentTaskPane.tsx` | immediately left of the submit button **Start my agent and allow posting here**, in the pane's `flex justify-end` row [C] | `crew` |
 
+A decision chat (a chat whose model is a decision model) keeps the microphone in the same place, immediately left of **Send**, even where its controls row hides other controls, because dictation is input rather than a model feature (owner decision, 2026-11-12). A subagent's tab mounts the same `ChatInput` on the desktop; in a `biorouter serve` browser that tab shows its read-only reason in place of the composer, so it has no microphone there.
+
 ```tsx
 // ui/desktop/src/components/dictation/DictationButton.tsx
 export type DictationPhase =

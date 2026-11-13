@@ -1446,6 +1446,28 @@ mod tests {
         }
     }
 
+    /// The dictation commands sit after `/diverge`, so the ghosts people already
+    /// know keep their meaning: `/d` and `/di` still mean `/diverge`, `/de` still
+    /// means `/decisions`, and `/dic` reaches the dictation commands.
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn dictation_commands_leave_the_d_ghosts_alone() {
+        use super::{App, StatusInfo};
+
+        let ghost_of = |typed: &str| {
+            let mut app = App::new(StatusInfo::default());
+            for c in typed.chars() {
+                app.insert_char(c);
+            }
+            app.ghost()
+        };
+        assert_eq!(ghost_of("/d"), Some("iverge"));
+        assert_eq!(ghost_of("/di"), Some("verge"));
+        assert_eq!(ghost_of("/de"), Some("cisions"));
+        assert_eq!(ghost_of("/dic"), Some("tate"));
+        assert_eq!(ghost_of("/dicti"), Some("onary add"));
+    }
+
     /// The transcript pane shows what the tool said, not the envelope the
     /// guardrail wrapped it in for the model.
     ///

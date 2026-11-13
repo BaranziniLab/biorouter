@@ -25,6 +25,8 @@ pub(crate) const SLASH_COMMANDS: &[&str] = &[
     "/folder-access",
     "/clear",
     "/compact",
+    "/diverge",
+    // After `/diverge`, so `/d` and `/di` still ghost to it and `/dic` reaches these.
     #[cfg(feature = "dictation")]
     "/dictate",
     #[cfg(feature = "dictation")]
@@ -37,7 +39,6 @@ pub(crate) const SLASH_COMMANDS: &[&str] = &[
     "/dictionary add",
     #[cfg(feature = "dictation")]
     "/dictionary review",
-    "/diverge",
     "/rename",
     "/goal",
     "/loop",

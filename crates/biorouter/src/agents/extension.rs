@@ -969,7 +969,7 @@ mod tests {
     /// be made on purpose rather than noticed later.
     #[test]
     fn workspace_is_a_default_on_capability_granting_its_whole_surface() {
-        assert_eq!(PLATFORM_EXTENSIONS.len(), 8);
+        assert_eq!(PLATFORM_EXTENSIONS.len(), 9);
         assert!(
             PLATFORM_EXTENSIONS["workspace"].default_enabled,
             "workspace is a capability now, so it ships on"
@@ -978,7 +978,9 @@ mod tests {
 
     #[test]
     fn platform_extension_defaults_match_capabilities() {
-        assert_eq!(PLATFORM_EXTENSIONS.len(), 8);
+        // todo, chatrecall, workspace, extensionmanager, skills, code_execution,
+        // decisions, dictionary and crew.
+        assert_eq!(PLATFORM_EXTENSIONS.len(), 9);
         assert!(PLATFORM_EXTENSIONS["todo"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["decisions"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["extensionmanager"].default_enabled);
@@ -986,6 +988,7 @@ mod tests {
         assert!(PLATFORM_EXTENSIONS["code_execution"].default_enabled);
         assert!(PLATFORM_EXTENSIONS["crew"].default_enabled);
         assert!(!PLATFORM_EXTENSIONS["chatrecall"].default_enabled);
+        assert!(!PLATFORM_EXTENSIONS["dictionary"].default_enabled);
     }
 
     /// Crew is a capability, not an extension: the desktop lists it in Settings → Chat →

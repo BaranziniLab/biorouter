@@ -66,6 +66,12 @@ vi.mock('./bottom_menu/ComposerFooter', () => ({
   ),
 }));
 vi.mock('./MessageQueue', () => ({ default: () => null }));
+// A decision chat's question editor reads the daemon through the generated client;
+// these tests are about where the composer puts things, so it is a stub here.
+vi.mock('./decisions/DecisionComposer', () => ({
+  DecisionComposer: () => <div data-testid="decision-composer-stub" />,
+  DECISION_CHAT_PLACEHOLDER: 'Text for the decision model',
+}));
 vi.mock('./MentionPopover', () => {
   const MentionPopoverMock = React.forwardRef(() => null);
   MentionPopoverMock.displayName = 'MentionPopoverMock';
@@ -197,6 +203,20 @@ describe('the composer is one card and one footer line', () => {
   it('tells the footer whether there is a chat, so Home shows no ring or cost', () => {
     renderComposer({ sessionId: null });
     expect(screen.getByTestId('composer-footer')).toHaveAttribute('data-session', 'none');
+  });
+});
+
+describe('a decision chat', () => {
+  // Owner decision, 2026-11-12: a decision chat shows the microphone. Dictation is
+  // input, not a model feature, so it stays immediately left of Send there too.
+  it('keeps the microphone beside Send', () => {
+    renderComposer({ effectiveModel: { provider: 'baseten_decision', model: 'joey-1' } });
+    expect(screen.getByTestId('decision-composer-stub')).toBeInTheDocument();
+    const controls = within(card()).getByTestId('chat-input-toolbar');
+    const send = within(controls).getByRole('button', { name: COMPOSER_COPY.send.label });
+    const mic = within(controls).getByTestId('dictation-button');
+    expect(controls.lastElementChild?.contains(send)).toBe(true);
+    expect(controls.lastElementChild?.previousElementSibling?.contains(mic)).toBe(true);
   });
 });
 

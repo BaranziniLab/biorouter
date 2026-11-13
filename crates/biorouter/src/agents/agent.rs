@@ -12703,10 +12703,18 @@ impl Agent {
             None => self.provider().await?,
         };
         // DD-57: the chat extractor stamps this turn's messages and steers with the
-        // provider the turn really uses, never the mutable provider slot.
+        // chat's reach as this turn starts, pinned once here so a later change of the
+        // slot never restamps them. The slot is what the privacy gates read (DR-33
+        // folds a chat's decision models into it); an effort rebuild of the model
+        // (`provider_with_effort`) is the same model without that fold, so it is only
+        // the fallback when nothing is bound.
+        let origin_provider = self
+            .bound_provider_unchecked()
+            .await
+            .unwrap_or_else(|| Arc::clone(&reply_provider));
         self.pin_dictionary_turn_origin(
             &session_config.id,
-            (reply_provider.tier(), reply_provider.affiliation()),
+            (origin_provider.tier(), origin_provider.affiliation()),
         );
         if let Some((text, stamp)) = dictionary_pending {
             self.queue_dictionary_observation(&session_config.id, text, stamp);
