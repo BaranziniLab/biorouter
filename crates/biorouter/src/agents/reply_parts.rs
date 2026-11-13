@@ -910,6 +910,11 @@ impl Agent {
             .map_or_else(|| effective_tools.as_slice(), |plan| plan.tools.as_slice());
         add_core_platform_capability(&mut extensions_info, prompt_tools);
         attach_effective_tool_rosters(&mut extensions_info, prompt_tools, &tools);
+        if active_bridge_plan.is_some() {
+            // A capability the bridge withholds on purpose says why, rather
+            // than reading as loaded with nothing to call.
+            crate::agents::agent::note_capabilities_withheld_from_the_bridge(&mut extensions_info);
+        }
         if extensions_info.iter().any(|info| {
             info.classification == crate::agents::extension::ExtensionClassification::Capability
                 && info.name.eq_ignore_ascii_case("skills")

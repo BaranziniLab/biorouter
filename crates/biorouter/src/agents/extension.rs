@@ -868,6 +868,15 @@ pub struct ExtensionInfo {
     /// attached operating guidance is incomplete rather than treating silence
     /// as a complete description of the capability.
     pub instructions_degraded: bool,
+    /// Set when this capability is loaded but withheld from this turn's tools
+    /// on purpose, with the sentence the model reads in its place: why it is
+    /// unavailable, and what the person can do instead. While it is set the
+    /// capability's own instructions are not rendered, because they describe
+    /// tools the model was not offered. The coding-agent bridge sets it for
+    /// the capabilities it withholds (`CODING_AGENT_BRIDGE_EXCLUSIONS`), and
+    /// for a bridged one none of whose tools crosses this turn
+    /// (`CODING_AGENT_BRIDGE_EMPTY_NOTES`).
+    pub withheld_note: Option<String>,
 }
 
 impl ExtensionInfo {
@@ -904,6 +913,7 @@ impl ExtensionInfo {
             available_tools: Vec::new(),
             directly_callable_tools: Vec::new(),
             instructions_degraded: false,
+            withheld_note: None,
         }
     }
 }

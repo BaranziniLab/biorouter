@@ -23,7 +23,9 @@ earlier messages or tool calls.
 
 {% if capability.instructions_degraded %}Context-budget notice: some operating guidance for this capability was omitted or shortened. Its effective tool roster below is still authoritative; use the listed schemas conservatively, do not invent missing behavior, and tell the user if the omitted guidance prevents safe completion.
 {% endif %}
-{% if not capability.tool_roster_known %}
+{% if capability.withheld_note %}
+{{capability.withheld_note}}
+{% elif not capability.tool_roster_known %}
 {% if capability.instructions %}### Instructions
 {{capability.instructions}}{% endif %}
 {% elif capability.available_tools %}
