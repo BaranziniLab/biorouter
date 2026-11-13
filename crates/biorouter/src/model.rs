@@ -135,6 +135,10 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("claude-haiku-4-5-20251001", 200_000),
         ("claude-haiku-4-5@20251001", 200_000),
         ("claude-haiku-4.5", 200_000),
+        // Claude Haiku 5.5: 1M context, 128K output (Anthropic's model table),
+        // and UCSF's Bedrock gateway named the same 1,000,000-token limit for
+        // `us.anthropic.claude-haiku-5-5` on 2026-11-12.
+        ("claude-haiku-5-5", 1_000_000),
         ("claude-opus-4-1", 200_000),
         ("claude-opus-4-5", 200_000),
         ("claude-opus-4-5-20251101", 200_000),
@@ -157,6 +161,7 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("claude-sonnet-5", 1_000_000),
         ("claude-sonnet-5-5", 1_000_000),
         ("us.anthropic.claude-haiku-4-5-20251001-v1:0", 200_000),
+        ("us.anthropic.claude-haiku-5-5", 1_000_000),
         ("us.anthropic.claude-opus-4-5-20251101-v1:0", 200_000),
         ("us.anthropic.claude-opus-4-6-v1", 1_000_000),
         ("us.anthropic.claude-opus-4-7", 1_000_000),

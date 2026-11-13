@@ -565,8 +565,11 @@ pub fn create_request(
 /// functional) and still accept temperature, so they stay on the legacy path
 /// below along with everything older. Opus 5.5 and Fable 5.1 / Mythos 5.1
 /// (September 2026) are covered by the `opus-5` / `fable-5` / `mythos-5`
-/// patterns, which is correct: they removed both as well. Dotted variants
-/// cover OpenRouter/Copilot-style ids.
+/// patterns, which is correct: they removed both as well. So is Haiku 5.5
+/// (`haiku-5`): adaptive thinking only, and any temperature is a 400, which
+/// UCSF's Bedrock gateway answered on 2026-11-12 with "`temperature` is
+/// deprecated for this model". Dotted variants cover OpenRouter/Copilot-style
+/// ids.
 ///
 /// The OpenAI-compatible and Databricks builders ask this too, through
 /// `formats::openai::model_rejects_sampling_params`, so a gateway that serves
@@ -574,7 +577,8 @@ pub fn create_request(
 /// case-sensitive; that caller lower-cases the id first.
 pub(crate) fn uses_adaptive_thinking(model_name: &str) -> bool {
     const ADAPTIVE_ONLY: &[&str] = &[
-        "opus-5", "sonnet-5", "fable-5", "mythos-5", "opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8",
+        "opus-5", "sonnet-5", "haiku-5", "fable-5", "mythos-5", "opus-4-7", "opus-4.7", "opus-4-8",
+        "opus-4.8",
     ];
     ADAPTIVE_ONLY
         .iter()
@@ -588,7 +592,12 @@ pub(crate) fn uses_adaptive_thinking(model_name: &str) -> bool {
 pub const THINKING_BINDING_CONTROLS_BETA: &str = "thinking-binding-controls-2026-08-01";
 
 /// Models whose thinking blocks are bound to the conversation that produced
-/// them ("preserved thinking"): Claude Opus 5.5, Sonnet 5.5 and Fable 5.1.
+/// them ("preserved thinking"): Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 and
+/// Fable 5.1. Haiku 5.5 runs the same history-editing check (Anthropic's Haiku
+/// 5.5 migration guide, "editing earlier turns invalidates thinking blocks",
+/// read 2026-11-12), and its `block_binding` likewise works only inside
+/// `{"type": "adaptive"}`, which is how [`apply_thinking_block_binding`] sends
+/// it.
 ///
 /// Mythos 5.1 is matched too, but Anthropic's preserved-thinking page says it
 /// does NOT run the prefix check (checked 2026-09-25). Keeping it here costs
@@ -625,6 +634,8 @@ pub fn uses_preserved_thinking(model_name: &str) -> bool {
         "opus-5.5",
         "sonnet-5-5",
         "sonnet-5.5",
+        "haiku-5-5",
+        "haiku-5.5",
         "fable-5-1",
         "fable-5.1",
         "mythos-5-1",
@@ -1578,6 +1589,9 @@ mod tests {
         let adaptive_only = [
             "claude-opus-5-5",
             "us.anthropic.claude-opus-5-5",
+            "claude-haiku-5-5",
+            "us.anthropic.claude-haiku-5-5",
+            "anthropic/claude-haiku-5.5",
             "claude-fable-5-1",
             "claude-opus-5",
             "anthropic/claude-opus-5",
@@ -1609,6 +1623,8 @@ mod tests {
             "us.anthropic.claude-opus-4-5-20251101-v1:0",
             "claude-opus-4-1-20250805",
             "claude-haiku-4-5",
+            "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            "claude-3-5-haiku-20241022",
             "claude-sonnet-4-20250514",
             // Boundary negatives: contain "opus-4-6" / "sonnet-4" as
             // substrings but are unknown tiers — they must stay on the
@@ -1689,6 +1705,10 @@ mod tests {
             "us.anthropic.claude-sonnet-5-5",
             "global.anthropic.claude-sonnet-5-5",
             "Claude-Sonnet-5-5",
+            "claude-haiku-5-5",
+            "anthropic/claude-haiku-5.5",
+            "us.anthropic.claude-haiku-5-5",
+            "global.anthropic.claude-haiku-5-5",
         ] {
             assert!(uses_preserved_thinking(model), "{model}");
         }
@@ -1702,6 +1722,7 @@ mod tests {
             "claude-opus-4-5",
             "us.anthropic.claude-opus-4-5-20251101-v1:0",
             "claude-haiku-4-5",
+            "us.anthropic.claude-haiku-4-5-20251001-v1:0",
         ] {
             assert!(!uses_preserved_thinking(model), "{model}");
         }
@@ -1709,7 +1730,7 @@ mod tests {
 
     #[test]
     fn block_binding_rides_inside_adaptive_thinking() -> Result<()> {
-        for model in ["claude-opus-5-5", "claude-sonnet-5-5"] {
+        for model in ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"] {
             let mut config =
                 ModelConfig::new_or_fail(model).with_reasoning_effort(Some(ReasoningEffort::Deep));
             config.max_tokens = Some(8000);

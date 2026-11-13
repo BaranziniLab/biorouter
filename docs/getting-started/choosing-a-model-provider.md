@@ -1,7 +1,7 @@
 # Choosing a model provider
 
 > **What this is.** A reference of Biorouter's supported LLM providers: the credentials each one needs, its default model, a representative model list, and how to switch provider or override the choice per session.
-> **Status:** Current. The provider list, default models and model lists below were checked against `crates/biorouter/src/providers/` on 2026-09-25, except the two local providers (Llama Server and Ollama), checked on 2026-10-10, and the Versa API Azure and Versa API Bedrock lists, which were checked against the code and the UCSF gateway on 2026-10-05 (the Versa API Azure default and list order against the code on 2026-10-07; the Versa API Bedrock list again on 2026-10-22, when Claude Opus 5.5 and Sonnet 5.5 were added). The Baseten section was checked against the code and Baseten's `GET /v1/models` on 2026-10-18. The provider panel section was checked against [`ui/desktop/src/components/settings/providers/providerOrdering.ts`](../../ui/desktop/src/components/settings/providers/providerOrdering.ts) on 2026-10-10.
+> **Status:** Current. The provider list, default models and model lists below were checked against `crates/biorouter/src/providers/` on 2026-09-25, except the two local providers (Llama Server and Ollama), checked on 2026-10-10, and the Versa API Azure and Versa API Bedrock lists, which were checked against the code and the UCSF gateway on 2026-10-05 (the Versa API Azure default and list order against the code on 2026-10-07; the Versa API Bedrock list again on 2026-10-22, when Claude Opus 5.5 and Sonnet 5.5 were added, and on 2026-11-12, when Claude Haiku 5.5 was added and Claude Opus 5.5 became the default). The Anthropic and Amazon Bedrock lists gained Claude Sonnet 5.5 and Haiku 5.5 on 2026-11-12. The Baseten section was checked against the code and Baseten's `GET /v1/models` on 2026-10-18. The provider panel section was checked against [`ui/desktop/src/components/settings/providers/providerOrdering.ts`](../../ui/desktop/src/components/settings/providers/providerOrdering.ts) on 2026-10-10.
 > **Audience:** end users
 
 Biorouter connects to a wide range of LLM providers: commercial cloud APIs, institution-hosted services, and local models. You select and configure providers in the provider panel of the app: open **Settings** > **Models**, then choose **Manage…** on the **Providers** row.
@@ -107,18 +107,22 @@ A chat already bound to `o4-mini-2025-04-16`, `gpt-4.1-2025-04-14` or `gpt-4.1-m
 
 Provider id `versa_bedrock`. The UCSF-hosted Anthropic models, served through Amazon Bedrock. Only the access key pair is asked for; the UCSF endpoint and the region are preconfigured.
 
-Default model: `us.anthropic.claude-opus-4-8`
+Default model: `us.anthropic.claude-opus-5-5`
 
 Available models:
 
+- `us.anthropic.claude-opus-5-5` (Claude Opus 5.5), `us.anthropic.claude-sonnet-5-5` (Claude Sonnet 5.5), `us.anthropic.claude-haiku-5-5` (Claude Haiku 5.5)
 - `us.anthropic.claude-opus-4-8` (Claude Opus 4.8)
-- `us.anthropic.claude-opus-5-5` (Claude Opus 5.5), `us.anthropic.claude-sonnet-5-5` (Claude Sonnet 5.5)
 - `us.anthropic.claude-sonnet-5` (Claude Sonnet 5)
 - `us.anthropic.claude-opus-4-6-v1` (Claude Opus 4.6), `us.anthropic.claude-sonnet-4-6` (Claude Sonnet 4.6)
 - `us.anthropic.claude-opus-4-5-20251101-v1:0` (Claude Opus 4.5)
 - `us.anthropic.claude-haiku-4-5-20251001-v1:0` (Claude Haiku 4.5)
 
-The contributor reports successful gateway calls for Claude Opus 5.5 and Sonnet 5.5 on 2026-10-22 in [PR #434](https://github.com/BaranziniLab/biorouter/pull/434). The other listed models answered on 2026-10-05. These are account-specific availability checks. The new models' 1M context windows and base/cache prices follow [Anthropic's model specifications](https://platform.claude.com/docs/en/models/overview) and [pricing](https://platform.claude.com/docs/en/about-claude/pricing); the gateway checks did not measure the full 1M window.
+`us.anthropic.claude-opus-5-5` is the default from 2026-11-12. Up to then it was `us.anthropic.claude-opus-4-8`, which is still offered. An existing configuration keeps the model it names, and a chat keeps the model it is bound to.
+
+Claude Opus 5.5, Sonnet 5.5 and Haiku 5.5 each answered a request and made a tool call through the UCSF gateway on 2026-11-12. For each one the gateway named a 1,000,000-token prompt limit and a 128,000-token output limit when a request went over them, which matches [Anthropic's model specifications](https://platform.claude.com/docs/en/models/overview). Opus 5.5 and Sonnet 5.5 were first reported working on 2026-10-22 in [PR #434](https://github.com/BaranziniLab/biorouter/pull/434). The other listed models answered on 2026-10-05. These are checks of what UCSF's account may use, and UCSF can change that.
+
+Prices follow [Anthropic's pricing](https://platform.claude.com/docs/en/about-claude/pricing): Opus 5.5 is $4 per million input tokens and $20 per million output tokens, and Sonnet 5.5 is $2 and $10. Haiku 5.5 has two rates chosen by the size of the prompt: $0.10 and $0.50 for a prompt of 100,000 tokens or fewer, and $0.50 and $2.50 above that. Biorouter's cost estimate uses the lower Haiku 5.5 rate for every request, so a turn with a longer prompt reads low. None of the three accepts a temperature setting, so Biorouter does not send one to them.
 
 UCSF does not offer Claude Opus 5, Opus 4.7, Sonnet 4.5, Sonnet 4, Fable 5.1 or Fable 5 through Versa. Bedrock refuses requests for them from the UCSF account, so they are not listed. A chat still set to one of them stops with a message that names the models above; your access key pair is not the problem. Claude Fable models would stay off the list even if UCSF enabled them, because Bedrock serves Fable only to accounts whose data retention mode is `aws_review`. Claude Opus 4.1 still answers, but Amazon has marked it legacy and ends it on 2027-01-08, so it is not offered either. Claude Opus 4 and the Claude 3 models are retired on Bedrock.
 
@@ -134,7 +138,7 @@ Default model: `claude-opus-4-8`. Fast model, used for background calls such as 
 
 Available models include:
 
-- `claude-opus-5-5`, `claude-fable-5-1`
+- `claude-opus-5-5`, `claude-fable-5-1`, `claude-sonnet-5-5`, `claude-haiku-5-5`
 - `claude-opus-5`, `claude-sonnet-5`
 - `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`
 - `claude-haiku-4-5`
@@ -234,7 +238,7 @@ Default model: `us.anthropic.claude-sonnet-4-6`
 
 Available models include:
 
-- `us.anthropic.claude-opus-5-5`, `us.anthropic.claude-fable-5-1`
+- `us.anthropic.claude-opus-5-5`, `us.anthropic.claude-sonnet-5-5`, `us.anthropic.claude-haiku-5-5`, `us.anthropic.claude-fable-5-1`
 - `us.anthropic.claude-opus-5`, `us.anthropic.claude-sonnet-5`
 - `us.anthropic.claude-opus-4-8`, `us.anthropic.claude-sonnet-4-6`, `us.anthropic.claude-opus-4-6-v1`
 - `us.anthropic.claude-opus-4-5-20251101-v1:0`, `us.anthropic.claude-sonnet-4-5-20250929-v1:0`, `us.anthropic.claude-haiku-4-5-20251001-v1:0`
