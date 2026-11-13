@@ -198,6 +198,35 @@ fn shell_status_activity(result: &CallToolResult) -> JobActivity {
     JobActivity::Unknown
 }
 
+/// The line the developer shell's `shell_status` puts before the output its
+/// job printed since the last call.
+const SHELL_NEW_OUTPUT_MARKER: &str = "\nnew output since last check:\n";
+
+/// Whether `tool_name` hands out its job's output once: the developer shell's
+/// `shell_status` returns only what the job printed since the last call, then
+/// moves past it, so a later call cannot return it again.
+pub fn hands_out_output_once(tool_name: &str) -> bool {
+    tool_name.rsplit("__").next() == Some("shell_status")
+}
+
+/// The new output in one result of a tool that hands its output out once
+/// ([`hands_out_output_once`]). A caller that checks such a tool repeatedly
+/// (`wait_for`, `watch_job`) keeps it or loses it. `None` for any other tool,
+/// a result of another shape, or a check with nothing new.
+pub fn new_output_in<'a>(tool_name: &str, text: &'a str) -> Option<&'a str> {
+    if !hands_out_output_once(tool_name) || !text.starts_with("job ") {
+        return None;
+    }
+    let (_, body) = text.split_once(SHELL_NEW_OUTPUT_MARKER)?;
+    // `shell_status` with a timeout adds a closing paragraph of its own.
+    let body = ["\n\nThe job has finished.", "\n\nStill running after "]
+        .iter()
+        .find_map(|closing| body.rfind(closing).map(|at| &body[..at]))
+        .unwrap_or(body);
+    let trimmed = body.trim();
+    (!trimmed.is_empty() && trimmed != "(no new output)").then_some(body.trim_end())
+}
+
 /// What a whole tool result says about the job it reports on.
 ///
 /// A failed call says nothing about the job (the lookup failed, not
@@ -385,5 +414,46 @@ mod tests {
         assert!(identified_active_job("x__status", None, &with_id));
         let without = text(json!({"status": "running"}));
         assert!(!identified_active_job("x__status", None, &without));
+    }
+
+    /// `shell_status` hands each piece of output out once, so a caller that
+    /// checks it repeatedly has to keep what each check returned.
+    #[test]
+    fn shell_status_new_output_is_read_and_nothing_else_is() {
+        let tool = "developer__shell_status";
+        let check = |status: &str, body: &str| {
+            format!(
+                "job job-1 [make], status: {status} (5s elapsed)\nnew output since last check:\n{body}"
+            )
+        };
+        assert_eq!(
+            new_output_in(tool, &check("running", "compiling a\ncompiling b\n")),
+            Some("compiling a\ncompiling b")
+        );
+        assert_eq!(
+            new_output_in(tool, &check("running", "(no new output)")),
+            None
+        );
+        assert_eq!(
+            new_output_in(
+                tool,
+                &format!("{}\n\nThe job has finished.", check("exited 1", "error: b"))
+            ),
+            Some("error: b")
+        );
+        assert_eq!(
+            new_output_in(
+                tool,
+                &format!(
+                    "{}\n\nStill running after 30s. The job was NOT killed.",
+                    check("running", "step 3")
+                )
+            ),
+            Some("step 3")
+        );
+        assert_eq!(new_output_in("cdw__status", &check("running", "x")), None);
+        assert_eq!(new_output_in(tool, "no such background job: job-9"), None);
+        assert!(hands_out_output_once("shell_status"));
+        assert!(!hands_out_output_once("developer__shell"));
     }
 }

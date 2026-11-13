@@ -625,9 +625,17 @@ async fn compact_messages_with_window(
     // An honoured pin is skipped here: it already survives verbatim in place, so
     // re-appending a fresh copy would duplicate it (and the copy would carry no
     // marker, so the duplicate would then be summarized away next time).
+    //
+    // Only a message the person can see qualifies. A model-only user row (a
+    // post-edit diagnostics note, a hook's context, a loop-guard warning, a
+    // stall nudge) is stored right after the tool results it follows, so it is
+    // often the newest text-only user row when this runs between tool rounds.
+    // Preserving it would show that internal text in the transcript as if the
+    // person had typed it, and hide the person's real request in the summary.
     let (preserved_user_message, is_most_recent) = if !manual_compact {
         let found_msg = messages.iter().enumerate().rev().find(|(idx, msg)| {
             msg.is_agent_visible()
+                && msg.is_user_visible()
                 && matches!(msg.role, rmcp::model::Role::User)
                 && has_text_only(msg)
                 && !pins.is_honoured(*idx)
@@ -712,7 +720,12 @@ async fn compact_messages_with_window(
             // changes what the model is told: text another session's agent
             // injected would carry on as an ordinary, unattributed user
             // instruction the moment a context overflow happened to intervene.
-            let mut preserved = Message::user().with_text(&text);
+            // The copy also takes the source's visibility, so it can never be
+            // shown to an audience the original was hidden from.
+            let mut preserved = Message::user().with_text(&text).with_visibility(
+                user_msg.metadata.user_visible,
+                user_msg.metadata.agent_visible,
+            );
             preserved
                 .metadata
                 .provenance
@@ -1250,12 +1263,19 @@ pub fn eager_compaction_enabled() -> bool {
 /// alone fills: a 32k local window under the ~31k bootstrap reported ~96% after
 /// each turn, and each exchange was summarised away in the background, on the
 /// one-slot local server the next message then queued behind.
+///
+/// `can_read_saved_output` is whether the chat has a tool to read a file back
+/// with (the Developer extension is loaded). When it does, the larger tool
+/// results the summary replaces are saved under the session's working folder
+/// and the summary names their files, exactly as the turn-start, mid-turn and
+/// overflow compactions do (`Agent::with_saved_tool_outputs`).
 pub async fn run_eager_compaction(
     provider: Arc<dyn Provider>,
     session_manager: Arc<crate::session::SessionManager>,
     session_config: crate::agents::types::SessionConfig,
     threshold: f64,
     fixed_prompt: Option<(&str, &[Tool])>,
+    can_read_saved_output: bool,
     on_before_compact: impl FnOnce(),
 ) -> Result<EagerCompactionOutcome> {
     let (session, basis) = session_manager
@@ -1302,6 +1322,20 @@ pub async fn run_eager_compaction(
             }
         };
 
+    // Name the files holding the tool results the summary replaced. This is
+    // the compaction most chats get (it runs after every turn that ends over
+    // the trigger), and without the list a model asked to look at files ran
+    // the tools again after it, which is the loop the list exists to stop.
+    let saved = elision::save_outputs_for_compaction(
+        &session_manager,
+        &session_config.id,
+        &stored_conversation,
+        &session.working_dir,
+        can_read_saved_output,
+    )
+    .await;
+    let compacted = with_saved_output_index(compacted, &stored_conversation, &saved);
+
     // Swap under the store's own freshness guard: anything a concurrent turn
     // appended while we summarized is carried over instead of being clobbered,
     // and a snapshot whose basis moved is refused.
@@ -1332,7 +1366,9 @@ pub async fn run_eager_compaction(
         return Ok(EagerCompactionOutcome::Aborted);
     }
 
-    let usage_event_key = uuid::Uuid::new_v4().to_string();
+    // A compaction's own key, so its row is never the next request's basis
+    // (`spend::last_request_usage`).
+    let usage_event_key = crate::session::session_manager::compaction_event_key();
     crate::agents::reply_parts::apply_compaction_metrics(
         &session_manager,
         &session_config,
@@ -2936,6 +2972,81 @@ mod tests {
         );
     }
 
+    /// A model-only user row (here a post-edit diagnostics note, stored right
+    /// after the tool result it follows) is never the message a summarize-all
+    /// compaction preserves. Preserving it re-emitted the internal text as a
+    /// user-visible message, as if the person had typed it, and left the
+    /// person's real request only in the summary. Between tool rounds this
+    /// is the shape the newest rows usually have.
+    #[tokio::test]
+    async fn summarize_all_never_preserves_a_model_only_user_row() {
+        let provider = MockProvider::new(Message::assistant().with_text("<mock summary>"), 100_000);
+        let prompt = "Please fix the bug in parser.rs";
+        let diagnostics = "Diagnostics after the edit: 2 warnings in parser.rs";
+        let messages = vec![
+            Message::user().with_text(prompt),
+            Message::assistant().with_tool_request(
+                "call_1",
+                Ok(CallToolRequestParams {
+                    task: None,
+                    name: "developer__text_editor".into(),
+                    arguments: None,
+                    meta: None,
+                }),
+            ),
+            Message::user().with_tool_response(
+                "call_1",
+                Ok(rmcp::model::CallToolResult {
+                    content: vec![RawContent::text("edited").no_annotation()],
+                    structured_content: None,
+                    is_error: Some(false),
+                    meta: None,
+                }),
+            ),
+            Message::user()
+                .with_text(diagnostics)
+                .with_visibility(false, true),
+        ];
+        let conversation = Conversation::new_unvalidated(messages);
+
+        let (compacted, _) = compact_messages_with_recovery(
+            &provider,
+            &conversation,
+            OverflowRecovery::SummarizeAll,
+        )
+        .await
+        .unwrap();
+
+        for message in compacted.messages() {
+            if message.as_concat_text().contains(diagnostics) {
+                assert!(
+                    !message.is_user_visible(),
+                    "a model-only row must never become user-visible: {message:?}"
+                );
+            }
+        }
+        let preserved = compacted.messages().last().expect("the preserved prompt");
+        assert_eq!(preserved.as_concat_text(), prompt);
+        assert!(preserved.is_user_visible() && preserved.is_agent_visible());
+        assert!(
+            compacted
+                .messages()
+                .iter()
+                .any(|m| m.as_concat_text() == TOOL_LOOP_CONTINUATION_TEXT),
+            "the person's prompt is not the newest row, so the tool loop continues"
+        );
+        // The prompt appears once to the model: the original is hidden, the
+        // copy carries it.
+        assert_eq!(
+            compacted
+                .agent_visible_messages()
+                .iter()
+                .filter(|m| m.as_concat_text() == prompt)
+                .count(),
+            1
+        );
+    }
+
     /// BR-13: the last-resort drop-oldest stage produces a valid conversation
     /// (oldest turns dropped, remainder summarized) instead of dead-ending.
     #[tokio::test]
@@ -3275,6 +3386,7 @@ mod tests {
             eager_session_config(&id),
             0.8,
             None,
+            false,
             || before_compact.store(true, std::sync::atomic::Ordering::SeqCst),
         )
         .await
@@ -3303,6 +3415,47 @@ mod tests {
         );
     }
 
+    /// The end-of-turn compaction is billed under a compaction key, like every
+    /// other compaction, so its summarization request (the whole old history)
+    /// never becomes the basis of the next request's usage-limit projection.
+    /// Under a plain key a chat near its limit was paused on the old history's
+    /// size although the next prompt is only the summary.
+    #[tokio::test]
+    async fn eager_compaction_is_never_the_next_requests_basis() {
+        let mut messages = Vec::new();
+        for i in 0..6 {
+            messages.push(Message::user().with_text(format!("question {i}")));
+            messages.push(Message::assistant().with_text(format!("answer {i}")));
+        }
+        let (_temp, manager, id) = eager_test_session(messages, 90).await;
+        let provider: Arc<dyn Provider> = Arc::new(
+            MockProvider::new(Message::assistant().with_text("<mock summary>"), 100)
+                .with_usage(Usage::new(Some(1_000), Some(50), Some(1_050))),
+        );
+        let outcome = run_eager_compaction(
+            provider,
+            Arc::clone(&manager),
+            eager_session_config(&id),
+            0.8,
+            None,
+            false,
+            || {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, EagerCompactionOutcome::Swapped);
+        let spend = manager.spend_snapshot(&id, false).await.unwrap();
+        assert!(
+            spend.chat_tokens >= 1_050,
+            "the compaction is billed: {spend:?}"
+        );
+        assert_eq!(
+            manager.last_request_usage(&id).await.unwrap(),
+            None,
+            "a compaction row is never the basis"
+        );
+    }
+
     /// A validated retry is two provider requests, so it is two ledger rows,
     /// each priced at its own prompt size. Summed into one row it read as one
     /// request of twice the size, and long-context pricing billed it at a rate
@@ -3326,6 +3479,7 @@ mod tests {
             eager_session_config(&id),
             0.8,
             None,
+            false,
             || {},
         )
         .await
@@ -3456,6 +3610,7 @@ mod tests {
             eager_session_config(&id),
             0.8,
             None,
+            false,
             || {},
         )
         .await
@@ -3513,6 +3668,7 @@ mod tests {
             eager_session_config(&id),
             0.8,
             None,
+            false,
             || {},
         )
         .await
@@ -3560,6 +3716,7 @@ mod tests {
             eager_session_config(&id),
             0.8,
             None,
+            false,
             || before_compact.store(true, std::sync::atomic::Ordering::SeqCst),
         )
         .await
@@ -3613,6 +3770,7 @@ mod tests {
             eager_session_config(&id),
             0.8,
             Some((system.as_str(), tools.as_slice())),
+            false,
             || before_compact.store(true, std::sync::atomic::Ordering::SeqCst),
         )
         .await
@@ -3638,6 +3796,7 @@ mod tests {
             eager_session_config(&id),
             0.8,
             None,
+            false,
             || {},
         )
         .await
@@ -3998,6 +4157,7 @@ mod pin_tests {
             eager_session_config(&id),
             0.8,
             None,
+            false,
             || {},
         )
         .await
@@ -4321,6 +4481,85 @@ mod saved_output_tests {
             with_saved_output_index(compacted.clone(), &original, &none),
             compacted
         );
+    }
+
+    /// The background compaction that runs after a turn ending over the
+    /// trigger saves the larger tool results and names their files in its
+    /// summary, like every other compaction. It used to swap in a summary
+    /// with no list, so the model ran the tools again on the next turn.
+    /// Without a tool to read a file back it saves and names nothing.
+    #[tokio::test]
+    async fn eager_compaction_names_the_files_of_the_results_it_replaced() {
+        for can_read in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let sm = Arc::new(SessionManager::new(dir.path().join("sessions")));
+            let work = dir.path().join("work");
+            std::fs::create_dir_all(&work).unwrap();
+            let session = sm
+                .create_session(work.clone(), "c".into(), SessionType::User)
+                .await
+                .unwrap();
+            let wide = format!("WIDE HEADER\n{}", "alpha beta\n".repeat(300));
+            let mut messages = vec![Message::user().with_text("Show me wide.txt.")];
+            messages.extend(round("call_1", "wide.txt", &wide));
+            for message in &messages {
+                sm.add_message(&session.id, message).await.unwrap();
+            }
+            // context_limit 100, total_tokens 90: over the 0.8 threshold.
+            sm.update(&session.id)
+                .total_tokens(Some(90))
+                .apply()
+                .await
+                .unwrap();
+            let provider: Arc<dyn Provider> = Arc::new(MockProvider::new(
+                Message::assistant().with_text("<mock summary>"),
+                100,
+            ));
+
+            let outcome = run_eager_compaction(
+                provider,
+                Arc::clone(&sm),
+                super::tests::eager_session_config(&session.id),
+                0.8,
+                None,
+                can_read,
+                || {},
+            )
+            .await
+            .unwrap();
+            assert_eq!(outcome, EagerCompactionOutcome::Swapped);
+
+            let stored = sm
+                .get_session(&session.id, true)
+                .await
+                .unwrap()
+                .conversation
+                .unwrap();
+            let summary = stored
+                .messages()
+                .iter()
+                .find(|m| m.as_concat_text().contains("<mock summary>"))
+                .expect("the summary")
+                .as_concat_text();
+            let handles = work.join(".biorouter/tool-output");
+            if can_read {
+                assert!(summary.contains(SAVED_OUTPUT_INDEX_HEADER), "{summary}");
+                assert!(summary.contains("cat wide.txt"), "{summary}");
+                let saved: Vec<_> = std::fs::read_dir(&handles)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .collect();
+                assert_eq!(saved.len(), 1, "{saved:?}");
+                assert!(
+                    summary.contains(&saved[0].display().to_string()),
+                    "{summary}"
+                );
+                assert_eq!(std::fs::read_to_string(&saved[0]).unwrap(), wide);
+            } else {
+                assert!(!summary.contains(SAVED_OUTPUT_INDEX_HEADER), "{summary}");
+                assert!(!handles.exists());
+            }
+        }
     }
 
     /// A result the compaction kept verbatim (the recent window) is still in

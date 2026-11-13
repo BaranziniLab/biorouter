@@ -4283,15 +4283,26 @@ impl CodeExecutionClient {
                     continue;
                 }
             };
-            let (result, _reading) = Self::dispatch_and_record(
-                &session_id,
-                cap,
-                &tool_name,
-                &arguments,
-                extension_manager.as_ref(),
-                &collected_artifacts,
-                &cancellation_token,
-                PacingMode::DelayQuietly,
+            // A repeated status check of a running job is held before it
+            // runs (`tool_monitor::poll_pacing`). The hold does no work, so it
+            // hands back the script's dispatch permit, as `sleep()` does; this
+            // handler is spawned, so the handle is installed here rather than
+            // inherited from the `execute_code` body.
+            let permit = judge
+                .as_ref()
+                .and_then(|judge| judge.gate.parked_permit_handle());
+            let (result, _reading) = crate::agents::tool_dispatch_limits::with_parking_handle(
+                permit,
+                Self::dispatch_and_record(
+                    &session_id,
+                    cap,
+                    &tool_name,
+                    &arguments,
+                    extension_manager.as_ref(),
+                    &collected_artifacts,
+                    &cancellation_token,
+                    PacingMode::DelayQuietly,
+                ),
             )
             .await;
             let _ = response_tx.send(result);
@@ -9214,5 +9225,85 @@ mod wait_tests {
         let (other, third) = dispatch("j-direct-other").await;
         assert!(other < Duration::from_millis(250), "{other:?}");
         assert_eq!(third.content.len(), 1, "a different job is not held");
+    }
+
+    /// A script's status check that the pacing holds waits holding no
+    /// dispatch permit: the script's `execute_code` permit is handed back for
+    /// the hold, as its `sleep()` does, and taken back for the call itself.
+    #[tokio::test]
+    async fn a_scripts_held_status_check_hands_its_dispatch_permit_back() {
+        use crate::agents::script_call_gate::test_support::gate;
+
+        let harness = harness(vec![job("running")]).await;
+        let arguments = serde_json::json!({ "job_id": "j-held-script" });
+        // The same check ran just now: the next one waits out its interval.
+        crate::tool_monitor::poll_pacing::remember_for_test(
+            &harness.session_id,
+            "fixture__status",
+            arguments.as_object(),
+            Duration::from_millis(300),
+        );
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let guard = crate::agents::tool_dispatch_limits::ToolDispatchGuard::for_test(Arc::clone(
+            &semaphore,
+        ))
+        .await;
+        let dir = tempfile::TempDir::new().expect("a scratch directory");
+        let hooks = Arc::new(crate::hooks::HooksManager::new(Arc::new(
+            tokio::sync::Mutex::new(None),
+        )));
+        let (gate, _permissions) =
+            gate(dir.path(), crate::config::BioRouterMode::Auto, hooks, false).await;
+        gate.hold_dispatch_permit(Some(guard.parking_handle()));
+        let judge = ScriptJudge {
+            gate: Arc::new(gate),
+            risks: crate::permission::tool_risk::ToolRiskRegistry::new(),
+        };
+        let collected = Arc::new(Mutex::new(CollectedArtifacts::default()));
+        let (call_tx, call_rx) = mpsc::unbounded_channel();
+        let handler = tokio::spawn(CodeExecutionClient::run_tool_handler(
+            harness.session_id.clone(),
+            crate::privacy::CallCapability::for_test_restricted(),
+            Some(judge),
+            call_rx,
+            Some(Arc::downgrade(&harness.manager)),
+            Arc::clone(&collected),
+            CancellationToken::new(),
+            None,
+        ));
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        call_tx
+            .send((
+                "fixture__status".to_string(),
+                arguments.to_string(),
+                response_tx,
+            ))
+            .unwrap();
+        let mut freed = false;
+        for _ in 0..100 {
+            if semaphore.available_permits() == 1 {
+                freed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert!(freed, "a held script call must hold no dispatch permit");
+        let answer = tokio::time::timeout(Duration::from_secs(5), response_rx)
+            .await
+            .expect("the held call completes")
+            .unwrap();
+        assert!(answer.is_ok(), "{:?}", answer.err().map(|e| e.message));
+        assert_eq!(
+            semaphore.available_permits(),
+            0,
+            "the permit is taken back before the call runs"
+        );
+        assert_eq!(collected.lock().await.held_checks, 1, "the call was held");
+        drop(call_tx);
+        tokio::time::timeout(Duration::from_secs(5), handler)
+            .await
+            .expect("the handler drains")
+            .unwrap();
+        drop(guard);
     }
 }

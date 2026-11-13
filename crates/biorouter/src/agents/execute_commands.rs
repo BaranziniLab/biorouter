@@ -259,6 +259,16 @@ impl Agent {
             )));
         }
         let session_id = session_config.id.as_str();
+        // A compaction is a billed model request over the whole history, so a
+        // chat at a usage limit (or whose next request would pass one) is not
+        // compacted: the person gets the paused notice instead, and the reply
+        // stores it with their message.
+        if let Some(hit) = self.usage_limit_hold(session_id).await {
+            return Ok(Some(Message::assistant().with_system_notification(
+                SystemNotificationType::InlineMessage,
+                crate::agents::usage_limit::stop_notice(&hit),
+            )));
+        }
         let manager = self.config.session_manager.clone();
         let (session, basis) = manager.snapshot_for_rewrite(session_id).await?;
         let stored_conversation = session
@@ -274,7 +284,7 @@ impl Agent {
             None,
         );
 
-        let usage_event_key = uuid::Uuid::new_v4().to_string();
+        let usage_event_key = crate::session::session_manager::compaction_event_key();
         let (compacted_conversation, summarization_usage) = compact_messages(
             self.provider().await?.as_ref(),
             &conversation,

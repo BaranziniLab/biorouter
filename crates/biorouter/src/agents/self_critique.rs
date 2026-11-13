@@ -160,12 +160,23 @@ impl Agent {
     /// The judge's model call is charged to `session_id` as a side call. The
     /// critique payload carries no session id, so without it the spend could
     /// not be attributed, and the cost card and the usage limits would miss it.
+    ///
+    /// It is a model request, so it is skipped while a usage limit holds the
+    /// chat's next request (`Agent::usage_limit_hold`): the turn finishes, and
+    /// its end stores the stop notice that says why.
     pub(crate) async fn run_self_critique_in_session(
         &self,
         session_id: Option<&str>,
         conversation: &Conversation,
     ) -> Option<String> {
         let tail = crate::agents::goal::transcript_tail(conversation)?;
+
+        if let Some(session_id) = session_id {
+            if self.usage_limit_hold(session_id).await.is_some() {
+                tracing::debug!("self-critique skipped: a usage limit is reached");
+                return None;
+            }
+        }
 
         let provider = match self.provider().await {
             Ok(provider) => provider,

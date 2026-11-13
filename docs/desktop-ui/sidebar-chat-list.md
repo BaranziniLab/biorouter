@@ -158,7 +158,9 @@ Last activity is the daemon's `updated_at`. Since R-30 it moves when something i
 chat, and coordinator ruling 16 lists what counts: a message is stored or a turn runs (its token
 accounting stamps as it goes), the conversation is compacted, edited or rewound, or the person
 renames the chat, switches it to a model it does not already record, toggles its extensions or
-skills from its composer, aims `workspace_set_tools` at it, or grants Crew access on it. Picking a
+skills from its composer, aims `workspace_set_tools` at it, grants Crew access on it, or sets,
+changes or clears its own usage limit from the cost card (`usage_limit::set_for_session`; see
+[Usage limits](../agent-loop/usage-limits.md)). Picking a
 folder for an empty chat in the desktop is a change to that chat as well, and stamps it.
 
 Opening a chat is not activity, and neither is any side effect of opening it. Resuming it,

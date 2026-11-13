@@ -2825,6 +2825,12 @@ fn inline_notice_user_only<S: Into<String>>(text: S) -> Message {
     inline_notice(text).user_only()
 }
 
+/// Said when a turn ends with a `/goal` active and a usage limit holding the
+/// chat's next request: the goal's judge is a model request, so it did not
+/// run, and an unjudged goal is not cleared.
+pub(crate) const GOAL_NOT_JUDGED_AT_USAGE_LIMIT: &str = "The /goal was not checked, because a \
+     usage limit is reached and checking it is a model request. It stays active.";
+
 /// T3-SH-9 — what the chat says while a failed model call is tried again.
 ///
 /// It used to be `Model call failed: {error}. Retrying (1/1)…`, which gave
@@ -5448,6 +5454,7 @@ async fn run_background_compaction(
     working_dir: std::path::PathBuf,
     threshold: f64,
     fixed_prompt: Option<(String, Vec<Tool>)>,
+    can_read_saved_output: bool,
 ) {
     let session_id = session_config.id.clone();
     // A compaction is spend. A chat (or the month) at its usage limit makes no
@@ -5525,6 +5532,7 @@ async fn run_background_compaction(
         session_config,
         threshold,
         fixed_prompt,
+        can_read_saved_output,
         on_before_compact,
     )
     .await
@@ -8677,6 +8685,7 @@ impl Agent {
 
         let session_manager = self.config.session_manager.clone();
         let hooks_manager = Arc::clone(&self.hooks_manager);
+        let extension_manager = Arc::clone(&self.extension_manager);
         let in_flight = Arc::clone(&self.eager_compactions);
         let session_config = session_config.clone();
         let working_dir = working_dir.to_path_buf();
@@ -8694,6 +8703,9 @@ impl Agent {
                 session_id: session_id.clone(),
                 in_flight,
             };
+            // The same test `with_saved_tool_outputs` makes: save and name
+            // tool output only when the chat can read a file back.
+            let can_read_saved_output = extension_manager.is_extension_enabled("developer").await;
 
             run_background_compaction(
                 provider,
@@ -8703,6 +8715,7 @@ impl Agent {
                 working_dir,
                 threshold,
                 fixed_prompt,
+                can_read_saved_output,
             )
             .await;
         });
@@ -9593,10 +9606,18 @@ impl Agent {
                         }
                         _ => Some(SIDECAR_NOT_APPLIED_ON_FAILURE.to_string()),
                     };
-                    if let (Some(note), Ok(done)) = (note, outcome.as_mut()) {
-                        done.content.push(
+                    match (note, outcome.as_mut()) {
+                        (Some(note), Ok(done)) => done.content.push(
                             Content::text(note).with_audience(vec![rmcp::model::Role::Assistant]),
-                        );
+                        ),
+                        // A tool that fails with an error rather than an
+                        // `is_error` result (the text editor does): the
+                        // sentence rides on the error, as it does when the
+                        // call is refused before it runs.
+                        (Some(note), Err(error)) => {
+                            error.message = format!("{} ({note})", error.message).into();
+                        }
+                        (None, _) => {}
                     }
                     outcome
                 }));
@@ -10060,23 +10081,33 @@ impl Agent {
                         id = %exec_request_id,
                         "TOOL_EXEC_START"
                     );
-                    let inner_result = match script_gate {
-                        Some(gate) => {
-                            // #246 review, finding 2: since F7 a script's own
-                            // calls can park on an approval card, inside this
-                            // body, holding one of the eight shared dispatch
-                            // permits. Hand it back for the parked interval
-                            // instead of exempting `execute_code` by name — in
-                            // the shipped Code Execution default it is nearly
-                            // the only tool, so an exemption would leave the
-                            // semaphore bounding nothing.
-                            gate.hold_dispatch_permit(_dispatch_guard.as_ref().map(
-                                super::tool_dispatch_limits::ToolDispatchGuard::parking_handle,
-                            ));
-                            super::script_call_gate::judging_script_calls(gate, inner).await
-                        }
-                        None => inner.await,
-                    };
+                    let inner_result =
+                        match script_gate {
+                            Some(gate) => {
+                                // #246 review, finding 2: since F7 a script's own
+                                // calls can park on an approval card, inside this
+                                // body, holding one of the eight shared dispatch
+                                // permits. Hand it back for the parked interval
+                                // instead of exempting `execute_code` by name — in
+                                // the shipped Code Execution default it is nearly
+                                // the only tool, so an exemption would leave the
+                                // semaphore bounding nothing.
+                                gate.hold_dispatch_permit(_dispatch_guard.as_ref().map(
+                                    super::tool_dispatch_limits::ToolDispatchGuard::parking_handle,
+                                ));
+                                super::script_call_gate::judging_script_calls(gate, inner).await
+                            }
+                            // A repeated status check of a running job is held
+                            // inside the body (`tool_monitor::poll_pacing`), and
+                            // hands this permit back for the hold.
+                            None => super::tool_dispatch_limits::with_parking_handle(
+                                _dispatch_guard.as_ref().map(
+                                    super::tool_dispatch_limits::ToolDispatchGuard::parking_handle,
+                                ),
+                                inner,
+                            )
+                            .await,
+                        };
                     let dur_ms = exec_started.elapsed().as_millis() as u64;
                     debug!(
                         name = %exec_tool_name,
@@ -11687,7 +11718,7 @@ impl Agent {
                     "auto",
                     None,
                 );
-                let usage_event_key = uuid::Uuid::new_v4().to_string();
+                let usage_event_key = crate::session::session_manager::compaction_event_key();
                 self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::AutoCompaction);
                 match compact_messages(self.provider().await?.as_ref(), &conversation_to_compact, false).await {
                     Ok((compacted_conversation, summarization_usage)) => {
@@ -12008,11 +12039,27 @@ impl Agent {
                     let previous = self.usage_limit_reply.previous_prompt_estimate(session_id);
                     self.usage_limit_reply
                         .record_prompt_estimate(session_id, estimate);
+                    // A reply's first request also carries what came after the
+                    // previous request's answer (the new message, a paste),
+                    // which the previous request plus its answer leaves out.
+                    let added = previous.is_none().then(|| {
+                        let after = next
+                            .messages
+                            .iter()
+                            .rposition(|message| {
+                                message.role == rmcp::model::Role::Assistant
+                                    && message.is_agent_visible()
+                            })
+                            .map_or(0, |at| at + 1);
+                        crate::context_mgmt::estimate_request_size(&next.messages[after..], "", &[])
+                            as u64
+                    });
                     usage_limit::NextRequestInputs {
                         provider: Some(next.provider.to_string()),
                         model: Some(next.model),
                         prompt_estimate: Some(estimate),
                         previous_prompt_estimate: previous,
+                        added_estimate: added,
                     }
                 })
                 .await
@@ -12031,6 +12078,7 @@ impl Agent {
         };
         if let Some(hit) = check.reached.clone() {
             self.usage_limit_reply.take_stop();
+            self.usage_limit_reply.mark_interrupted();
             self.record_turn_exit(TurnExit::Final);
             crate::agents::subagent_handle::begin_parent_closing(session_id);
             warn!(
@@ -12066,13 +12114,36 @@ impl Agent {
                     None,
                     Some(hit.amount.axis()),
                 );
-                UsageLimitGate::Notices(vec![AgentEvent::Message(
-                    self.durable_notice(session_id, usage_limit::warning_notice(&hit))
-                        .await,
-                )])
+                match self
+                    .usage_limit_warning_notice(session_id, &check, &hit)
+                    .await
+                {
+                    Some(notice) => UsageLimitGate::Notices(vec![AgentEvent::Message(notice)]),
+                    None => UsageLimitGate::Proceed,
+                }
             }
             None => UsageLimitGate::Proceed,
         }
+    }
+
+    /// Store the near-limit warning `hit` in the chat whose limit it is (the
+    /// billing chat, where [`Self::usage_limit_warning_due`] remembers it was
+    /// given): a subagent's warning about its parent's limit goes into the
+    /// parent's transcript, where the person reads, not the subagent's. The
+    /// stored row is returned for this stream only when it is this chat's.
+    async fn usage_limit_warning_notice(
+        &self,
+        session_id: &str,
+        check: &crate::agents::usage_limit::LimitCheck,
+        hit: &crate::agents::usage_limit::LimitHit,
+    ) -> Option<Message> {
+        let notice = self
+            .durable_notice(
+                &check.billing_session_id,
+                crate::agents::usage_limit::warning_notice(hit),
+            )
+            .await;
+        (check.billing_session_id == session_id).then_some(notice)
     }
 
     /// The near-limit warning `check` makes due, once per crossing as the
@@ -12122,29 +12193,51 @@ impl Agent {
         }
     }
 
+    /// The limit that holds this chat's next model request, as the composer
+    /// and the prologue estimate it: reached, or the next request (the
+    /// previous one plus its answer) estimated to pass it. Nothing is stored
+    /// or recorded. `None` when the chat may go on, or when the check fails
+    /// (logged). The prologue asks it, and so do the model calls a turn makes
+    /// at its end (self-critique, the `/goal` judge, prompt Stop hooks) and
+    /// `/compact`, each before a model request of its own.
+    pub(super) async fn usage_limit_hold(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::agents::usage_limit::LimitHit> {
+        use crate::agents::usage_limit;
+        let config = crate::config::UsageLimits::load();
+        let inputs = self.usage_limit_resting_inputs().await;
+        match usage_limit::check_next(&self.config.session_manager, session_id, &config, || inputs)
+            .await
+        {
+            Ok(check) => check.reached,
+            Err(e) => {
+                warn!(
+                    session_id,
+                    "usage limit check failed, not enforced this time: {e:#}"
+                );
+                None
+            }
+        }
+    }
+
+    /// Whether a usage limit cut this agent's last reply short: its gate
+    /// stopped the reply before a model request it was about to make, or the
+    /// message was sent to a paused chat. A turn that finished and then
+    /// stored the stop notice for the request after it was not cut short. The
+    /// scheduler reads it once a run's reply has ended.
+    pub fn usage_limit_interrupted_reply(&self) -> bool {
+        self.usage_limit_reply.interrupted()
+    }
+
     /// The prologue's half of the usage limit: a message sent to a chat that is
     /// already at a limit, or whose next request is estimated to pass one, is
     /// stored by the caller and gets this durable notice, and no model request
     /// is made. `None` when the chat may go on.
     async fn usage_limit_paused_notice(&self, session_id: &str) -> Option<Message> {
         use crate::agents::usage_limit;
-        let config = crate::config::UsageLimits::load();
-        let inputs = self.usage_limit_resting_inputs().await;
-        let hit =
-            match usage_limit::check_next(&self.config.session_manager, session_id, &config, || {
-                inputs
-            })
-            .await
-            {
-                Ok(check) => check.reached?,
-                Err(e) => {
-                    warn!(
-                        session_id,
-                        "usage limit check failed, not enforced this time: {e:#}"
-                    );
-                    return None;
-                }
-            };
+        let hit = self.usage_limit_hold(session_id).await?;
+        self.usage_limit_reply.mark_interrupted();
         self.record_turn_exit(TurnExit::Final);
         emit_loop_safety(
             LoopSafetyKind::UsageLimitStop,
@@ -12194,10 +12287,8 @@ impl Agent {
             );
         }
         let hit = self.usage_limit_warning_due(&check).await?;
-        Some(
-            self.durable_notice(session_id, usage_limit::warning_notice(&hit))
-                .await,
-        )
+        self.usage_limit_warning_notice(session_id, &check, &hit)
+            .await
     }
 
     /// A user-visible notice that OUTLIVES the stream it was yielded on.
@@ -13263,21 +13354,31 @@ impl Agent {
             }
         }
 
+        // A prompt Stop hook (the `/goal` judge is one) is a model request,
+        // so it is skipped while a usage limit holds the chat's next request;
+        // command hooks still run. The turn finishes, and its end stores the
+        // stop notice that says why.
+        let limit_held = self.usage_limit_hold(session_id).await.is_some();
         let transcript_tail = crate::agents::goal::transcript_tail(conversation);
         match self
             .hooks_manager
-            .stop(session_id, working_dir, transcript_tail)
+            .stop_with(session_id, working_dir, transcript_tail, !limit_held)
             .await
         {
             crate::hooks::StopHookVerdict::Proceed => {
                 // An active goal whose evaluator let the stop proceed is met:
-                // clear it and tell the user.
+                // clear it and tell the user. One whose evaluator did not run
+                // was not judged, so it stays.
                 if let Some(goal) = active_goal {
-                    self.clear_goal(session_id).await;
-                    notices.push(inline_notice_user_only(format!(
-                        "🎯 Goal met and cleared: {}",
-                        crate::agents::goal::ellipsize(&goal.condition, 200)
-                    )));
+                    if limit_held {
+                        notices.push(inline_notice_user_only(GOAL_NOT_JUDGED_AT_USAGE_LIMIT));
+                    } else {
+                        self.clear_goal(session_id).await;
+                        notices.push(inline_notice_user_only(format!(
+                            "🎯 Goal met and cleared: {}",
+                            crate::agents::goal::ellipsize(&goal.condition, 200)
+                        )));
+                    }
                 }
                 TurnStop::Finish { notices }
             }
@@ -13333,7 +13434,7 @@ impl Agent {
                 session_config,
                 usage,
                 persisted && i == last,
-                &uuid::Uuid::new_v4().to_string(),
+                &crate::session::session_manager::compaction_event_key(),
             )
             .await?;
         }
@@ -19749,7 +19850,19 @@ mod tests {
                 .as_ref()
                 .and_then(|args| args.get("command"))
                 .is_some_and(|command| command == "exit 1");
+            // `raise` fails with an error instead, the way the text editor does.
+            let raises = arguments
+                .as_ref()
+                .and_then(|args| args.get("command"))
+                .is_some_and(|command| command == "raise");
             self.seen.lock().unwrap().push(arguments);
+            if raises {
+                return Err(rmcp::ServiceError::McpError(ErrorData::new(
+                    ErrorCode::INVALID_PARAMS,
+                    "no match for old_str",
+                    None,
+                )));
+            }
             Ok(CallToolResult {
                 content: vec![Content::text(if fails { "exit status 1" } else { "ran" })],
                 structured_content: None,
@@ -20059,6 +20172,143 @@ mod tests {
             "{:?}",
             checklist_of(&stored)
         );
+    }
+
+    /// A tool that fails with an error rather than an `is_error` result (the
+    /// text editor's way) applies nothing either, and its error says so.
+    #[tokio::test]
+    async fn a_sidecar_on_a_call_that_fails_with_an_error_says_it_was_not_applied() {
+        let (agent, session_id, session, _seen) = sidecar_fixture().await;
+        let (_, seeded) = agent
+            .dispatch_tool_call(
+                shell_call_with_todo(serde_json::json!({"add": ["load", "fit"]})),
+                "call-1".to_string(),
+                None,
+                &session,
+            )
+            .await;
+        seeded.expect("dispatched").result.await.unwrap();
+
+        let mut raising = shell_call_with_todo(serde_json::json!({"done": [1]}));
+        raising
+            .arguments
+            .as_mut()
+            .unwrap()
+            .insert("command".into(), serde_json::json!("raise"));
+        let (_, dispatched) = agent
+            .dispatch_tool_call(raising, "call-2".to_string(), None, &session)
+            .await;
+        let error = dispatched
+            .expect("dispatched")
+            .result
+            .await
+            .expect_err("the tool raised");
+        assert!(
+            error.message.starts_with("no match for old_str"),
+            "{}",
+            error.message
+        );
+        assert!(
+            error.message.contains(SIDECAR_NOT_APPLIED_ON_FAILURE),
+            "{}",
+            error.message
+        );
+        let stored = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        assert!(
+            checklist_of(&stored)
+                .iter()
+                .all(|(_, status)| *status == crate::session::extension_data::TodoStatus::Pending),
+            "a failed call ticks nothing: {:?}",
+            checklist_of(&stored)
+        );
+    }
+
+    /// A fixture whose `status` records whether the dispatch body it runs in
+    /// can hand its dispatch permit back (`tool_dispatch_limits::park`).
+    struct PermitProbeClient {
+        in_reach: Arc<std::sync::Mutex<Vec<bool>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::agents::mcp_client::McpClientTrait for PermitProbeClient {
+        async fn list_tools(
+            &self,
+            _next_cursor: Option<String>,
+            _cancel_token: CancellationToken,
+        ) -> Result<rmcp::model::ListToolsResult, rmcp::ServiceError> {
+            Ok(rmcp::model::ListToolsResult {
+                tools: vec![bridge_test_tool("status")],
+                next_cursor: None,
+                meta: None,
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: Option<rmcp::model::JsonObject>,
+            _meta: crate::agents::mcp_client::McpMeta,
+            _cancel_token: CancellationToken,
+        ) -> Result<CallToolResult, rmcp::ServiceError> {
+            self.in_reach
+                .lock()
+                .unwrap()
+                .push(crate::agents::tool_dispatch_limits::permit_in_reach());
+            Ok(CallToolResult::success(vec![Content::text("ok")]))
+        }
+
+        fn get_info(&self) -> Option<&rmcp::model::InitializeResult> {
+            None
+        }
+    }
+
+    /// A direct call's body has its dispatch permit in reach, so a repeated
+    /// status check that the pacing holds (`tool_monitor::poll_pacing`) hands
+    /// the permit back for the hold instead of sleeping on one of the eight.
+    #[tokio::test]
+    async fn a_direct_calls_body_can_hand_its_dispatch_permit_back() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let in_reach = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let probe =
+            ExtensionConfig::stdio("probe", "unused-fixture-command", "probe fixture", 30_u64);
+        agent
+            .extension_manager
+            .add_client(
+                probe.key(),
+                probe,
+                Arc::new(PermitProbeClient {
+                    in_reach: Arc::clone(&in_reach),
+                }),
+                None,
+                None,
+            )
+            .await;
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .unwrap();
+        let (_, dispatched) = agent
+            .dispatch_tool_call(
+                rmcp::model::CallToolRequestParams {
+                    task: None,
+                    meta: None,
+                    name: "probe__status".into(),
+                    arguments: Some(rmcp::object!({"job_id": "a"})),
+                },
+                "call-1".to_string(),
+                None,
+                &session,
+            )
+            .await;
+        dispatched.expect("dispatched").result.await.unwrap();
+        assert_eq!(*in_reach.lock().unwrap(), vec![true]);
     }
 
     /// Models send `start: 0` or `start: ""` to mean "none": treated as absent,
@@ -27447,6 +27697,7 @@ mod usage_limit_compaction_tests {
             dir.path().to_path_buf(),
             0.8,
             None,
+            false,
         )
         .await;
         assert_eq!(
@@ -27468,6 +27719,7 @@ mod usage_limit_compaction_tests {
             dir.path().to_path_buf(),
             0.8,
             None,
+            false,
         )
         .await;
         assert!(

@@ -1,5 +1,7 @@
 //! `biorouter usage` — per-day / per-model token + cost usage reports and a
-//! month-to-date summary against the configured (display-only) monthly budget.
+//! month-to-date summary against the configured monthly limits. Those limits
+//! are enforced by the reply loop, not only shown here (see
+//! `docs/agent-loop/usage-limits.md`).
 //!
 //! Cost is computed through the same shared
 //! [`biorouter::providers::pricing::model_cost`] helper the server and GUI use,

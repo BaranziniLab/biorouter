@@ -47,6 +47,7 @@
 //!   * `BIOROUTER_TOOL_RESULT_ELISION_MIN_PRUNABLE_TOKENS` (default 25,000).
 //!   * `BIOROUTER_TOOL_RESULT_ELISION_MIN_CHARS` (default 1,500).
 
+use crate::agents::large_response_handler::{create_private_dir, write_private_file};
 use crate::config::Config;
 use crate::conversation::message::{Message, MessageContent, ToolResponse};
 use crate::conversation::Conversation;
@@ -501,21 +502,23 @@ fn write_handle(
     let in_workspace = working_dir.join(HANDLE_DIR);
     if prepare_handle_dir(&in_workspace).is_ok() {
         let path = in_workspace.join(&filename);
-        if std::fs::write(&path, candidate.text.as_bytes()).is_ok() {
+        if write_private_file(&path, candidate.text.as_bytes()).is_ok() {
             return Ok(path);
         }
     }
     // The large-response handler's own fallback: an awkward place beats losing
-    // the text.
-    std::fs::create_dir_all(fallback_dir)?;
+    // the text. Private like the folder in the workspace, since the temp dir
+    // is shared by every account on the machine.
+    create_private_dir(fallback_dir)?;
     let path = fallback_dir.join(&filename);
-    std::fs::write(&path, candidate.text.as_bytes())?;
+    write_private_file(&path, candidate.text.as_bytes())?;
     Ok(path)
 }
 
-/// Create the folder and keep it out of git, as `large_response_handler` does.
+/// Create the folder (private to its owner) and keep it out of git, as
+/// `large_response_handler` does.
 fn prepare_handle_dir(dir: &Path) -> std::io::Result<()> {
-    std::fs::create_dir_all(dir)?;
+    create_private_dir(dir)?;
     if let Some(parent) = dir.parent() {
         let gitignore = parent.join(".gitignore");
         if !gitignore.exists() {
@@ -1232,6 +1235,65 @@ mod tests {
             &ToolResultElisions::default(),
         );
         assert_eq!(applied.messages(), &messages);
+    }
+
+    /// A saved result is a plaintext copy of what the tool returned (query
+    /// rows, file contents), so its folder and its file are private to their
+    /// owner, in the working folder and in the shared temp-dir fallback alike.
+    /// A folder or file an older build left open is tightened, and the
+    /// `.biorouter/` folder above, which holds shared project files, keeps
+    /// its mode.
+    #[cfg(unix)]
+    #[test]
+    fn saved_results_are_private_to_their_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let open = |p: &Path, m: u32| {
+            std::fs::set_permissions(p, std::fs::Permissions::from_mode(m)).unwrap()
+        };
+        let messages = chat(12, 1_000, "query");
+        let planned = plan_elision(&messages, &ToolResultElisions::default(), &params());
+        assert!(!planned.is_empty());
+        let dir = tempfile::tempdir().unwrap();
+
+        // In the working folder, over a folder and a file left open.
+        let work = dir.path().join("work");
+        let handles = work.join(HANDLE_DIR);
+        std::fs::create_dir_all(&handles).unwrap();
+        open(&handles, 0o755);
+        open(&work.join(".biorouter"), 0o755);
+        let stale = handles.join(format!("elided-query-s1-{}.txt", planned[0].id));
+        std::fs::write(&stale, "an older copy").unwrap();
+        open(&stale, 0o644);
+        let saved = save_candidates(planned.clone(), "s1", &work, &dir.path().join("unused"));
+        assert_eq!(saved.len(), planned.len());
+        assert_eq!(mode(&handles), 0o700);
+        assert_eq!(mode(&work.join(".biorouter")), 0o755);
+        assert!(saved.iter().any(|(_, e)| Path::new(&e.path) == stale));
+        for (_, entry) in &saved {
+            assert!(
+                Path::new(&entry.path).starts_with(&handles),
+                "{}",
+                entry.path
+            );
+            assert_eq!(mode(Path::new(&entry.path)), 0o600, "{}", entry.path);
+        }
+
+        // In the temp-dir fallback, when the working folder cannot be written.
+        let blocker = dir.path().join("not-a-dir");
+        std::fs::write(&blocker, "x").unwrap();
+        let fallback = dir.path().join("fallback");
+        let saved = save_candidates(planned, "s1", &blocker, &fallback);
+        assert!(!saved.is_empty());
+        assert_eq!(mode(&fallback), 0o700);
+        for (_, entry) in &saved {
+            assert!(
+                Path::new(&entry.path).starts_with(&fallback),
+                "{}",
+                entry.path
+            );
+            assert_eq!(mode(Path::new(&entry.path)), 0o600, "{}", entry.path);
+        }
     }
 
     #[test]

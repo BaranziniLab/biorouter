@@ -312,8 +312,10 @@ fn write_refusal(session: &Session, headers: &HeaderMap) -> Option<Response> {
 /// `body` with the month's all-chat totals taken out. The month figures sum
 /// every billable chat, private and deleted ones included, so like
 /// `GET /usage/summary` only a caller that proved it is the person receives
-/// them. What stays (the limits, `paused`, `reason`, `warn`) is what the chat's
-/// own stop notice says anyway.
+/// them. What stays (the limits, `paused`, `reason`, `warn`) is no more than a
+/// monthly notice stored in the chat says: it names the monthly limit and
+/// whether it is near or reached, never the month's total, a percent of it or
+/// what is left (`usage_limit::stop_notice`, `usage_limit::warning_notice`).
 fn without_month_totals(mut body: SessionUsageLimitResponse) -> SessionUsageLimitResponse {
     body.used.month_tokens = None;
     body.used.month_usd = None;

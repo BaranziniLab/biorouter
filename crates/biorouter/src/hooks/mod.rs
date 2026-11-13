@@ -441,6 +441,20 @@ impl HooksManager {
         payload: &HookPayload,
         working_dir: &Path,
     ) -> HookAggregate {
+        self.dispatch_where(event, matcher_key, payload, working_dir, true)
+            .await
+    }
+
+    /// [`Self::dispatch`], leaving out every prompt hook (a model request)
+    /// unless `model_hooks`.
+    async fn dispatch_where(
+        &self,
+        event: HookEvent,
+        matcher_key: Option<&str>,
+        payload: &HookPayload,
+        working_dir: &Path,
+        model_hooks: bool,
+    ) -> HookAggregate {
         // Existing agents retain their hook configuration after a human grants
         // Crew access, so construction-time project-hook settings are insufficient.
         match Self::crew_hooks_allowed(&payload.session_id).await {
@@ -473,6 +487,9 @@ impl HooksManager {
 
         // Runtime session-scoped hooks always match (no matcher).
         definitions.extend(self.session_definitions(&payload.session_id, event).await);
+        if !model_hooks {
+            definitions.retain(|definition| !matches!(definition, HookDefinition::Prompt { .. }));
+        }
 
         if definitions.is_empty() {
             return HookAggregate::default();
@@ -1082,6 +1099,21 @@ impl HooksManager {
         working_dir: &Path,
         transcript_tail: Option<String>,
     ) -> StopHookVerdict {
+        self.stop_with(session_id, working_dir, transcript_tail, true)
+            .await
+    }
+
+    /// [`Self::stop`], with the prompt hooks (each a model request, the
+    /// `/goal` judge among them) left out unless `model_hooks`: the reply loop
+    /// passes `false` while a usage limit holds the chat's next request, so
+    /// command hooks still run and no model is asked.
+    pub async fn stop_with(
+        &self,
+        session_id: &str,
+        working_dir: &Path,
+        transcript_tail: Option<String>,
+        model_hooks: bool,
+    ) -> StopHookVerdict {
         if !self.has_hooks(HookEvent::Stop, None, working_dir).await
             && !self.has_session_hooks(session_id, HookEvent::Stop).await
         {
@@ -1103,7 +1135,7 @@ impl HooksManager {
         payload.stop_hook_active = Some(blocks_so_far > 0);
         payload.transcript_tail = transcript_tail;
         let aggregate = self
-            .dispatch(HookEvent::Stop, None, &payload, working_dir)
+            .dispatch_where(HookEvent::Stop, None, &payload, working_dir, model_hooks)
             .await;
         match aggregate.decision {
             Some(HookDecision::Deny { reason }) => {

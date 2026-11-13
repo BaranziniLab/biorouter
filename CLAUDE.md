@@ -279,7 +279,7 @@ is not dead code.
     the row records, at every door. What counts as activity is coordinator ruling 16: a
     message or turn, a rename, an explicit switch to a different model, a composer
     extension or skill toggle, `workspace_set_tools` aimed at the chat, a Crew grant on
-    it. ⚠ The scope does not follow a `tokio::spawn`, so a door awaits its setup writes
+    it, a change to its own usage limit (`usage_limit::set_for_session`). ⚠ The scope does not follow a `tokio::spawn`, so a door awaits its setup writes
     inline, and `only_the_opening_and_housekeeping_doors_enter_a_scope` counts every door
     that enters one (six files, measured 2026-10-11): wrapping a deliberate change in a
     scope fails that census rather than quietly freezing a chat. The renderer shows a

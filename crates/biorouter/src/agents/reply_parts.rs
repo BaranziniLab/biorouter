@@ -340,14 +340,21 @@ fn code_execution_mode_is_active(loaded: bool, tools: &[Tool]) -> bool {
 ///
 /// The field is the same on every request, so it stays inside the cached
 /// prefix: its cost is the schema text, under 200 tokens per listed tool.
-pub(crate) fn add_todo_sidecar(tools: &mut [Tool]) {
+///
+/// Returns whether the host's field is on at least one schema afterwards. The
+/// system prompt tells the model to use the field only then
+/// (`SystemPromptBuilder::with_todo_sidecar`): a bridge surface, a roster
+/// without the checklist tools, or one without any workhorse tool has no
+/// field, and a prompt naming one invites updates nothing applies.
+pub(crate) fn add_todo_sidecar(tools: &mut [Tool]) -> bool {
     if !tools
         .iter()
         .any(|tool| crate::agents::todo_extension::is_todo_tool_name(&tool.name))
     {
-        return;
+        return false;
     }
     let schema = crate::agents::todo_extension::todo_sidecar_schema();
+    let mut offered = false;
     for tool in tools.iter_mut() {
         if !crate::agents::todo_extension::tool_takes_todo_sidecar(&tool.name) {
             continue;
@@ -359,15 +366,24 @@ pub(crate) fn add_todo_sidecar(tools: &mut [Tool]) {
         let Some(properties) = properties.as_object_mut() else {
             continue;
         };
-        if properties.contains_key(crate::agents::todo_extension::TODO_SIDECAR_FIELD) {
-            continue;
+        match properties.get(crate::agents::todo_extension::TODO_SIDECAR_FIELD) {
+            // The host's, from an earlier pass.
+            Some(existing) if *existing == schema => {
+                offered = true;
+                continue;
+            }
+            // The tool's own: not the host's to take.
+            Some(_) => continue,
+            None => {}
         }
         properties.insert(
             crate::agents::todo_extension::TODO_SIDECAR_FIELD.to_string(),
             schema.clone(),
         );
         tool.input_schema = Arc::new(input_schema);
+        offered = true;
     }
+    offered
 }
 
 /// Does this call carry a checklist sidecar the host should take before
@@ -390,6 +406,8 @@ struct PreparedModelToolSurface {
     bridge_plan: Option<crate::agents::agent::CodingAgentBridgePlan>,
     bridge_replaces_tool_surface: bool,
     code_execution_active: bool,
+    /// [`add_todo_sidecar`] put the checklist field on at least one tool.
+    todo_sidecar_offered: bool,
 }
 
 /// What the toolshim has seen of one streamed reply.
@@ -796,9 +814,7 @@ impl Agent {
         tools.sort_by(|a, b| a.name.cmp(&b.name));
         // Not on a bridge surface: a coding agent's calls reach tools through
         // the relay, never through the agent's dispatch that strips the field.
-        if active_bridge_plan.is_none() {
-            add_todo_sidecar(&mut tools);
-        }
+        let todo_sidecar_offered = active_bridge_plan.is_none() && add_todo_sidecar(&mut tools);
 
         PreparedModelToolSurface {
             directly_callable_tools: tools,
@@ -806,6 +822,7 @@ impl Agent {
             bridge_plan,
             bridge_replaces_tool_surface,
             code_execution_active,
+            todo_sidecar_offered,
         }
     }
 
@@ -850,6 +867,7 @@ impl Agent {
         let bridge_plan = surface.bridge_plan;
         let bridge_replaces_tool_surface = surface.bridge_replaces_tool_surface;
         let code_execution_active = surface.code_execution_active;
+        let todo_sidecar_offered = surface.todo_sidecar_offered;
         // Only actual turn preparation may replace shared execution policy.
         // Read-only consumers such as the callable-count route must not change
         // how an already-running turn grades or approves a tool call.
@@ -929,6 +947,7 @@ impl Agent {
             .with_frontend_instructions(self.frontend_instructions.lock().await.clone())
             .with_code_execution_mode(code_execution_active)
             .with_checklist_enforcement(checklist_enforcement)
+            .with_todo_sidecar(todo_sidecar_offered)
             .with_enable_subagents(enable_subagents)
             .with_prompt_variant(prompt_variant);
         let mut system_prompt = if crew_scoped {
@@ -3134,7 +3153,7 @@ mod todo_sidecar_tests {
     #[test]
     fn the_workhorse_tools_get_the_todo_field_and_nothing_else_does() {
         let mut tools = roster();
-        add_todo_sidecar(&mut tools);
+        assert!(add_todo_sidecar(&mut tools), "the field is offered");
         let field = |tool: &Tool| {
             tool.input_schema
                 .get("properties")
@@ -3158,9 +3177,10 @@ mod todo_sidecar_tests {
             serde_json::json!(["code"])
         );
         assert!(tools[0].input_schema["properties"]["code"].is_object());
-        // Idempotent: a second pass changes nothing.
+        // Idempotent: a second pass changes nothing, and still reports the
+        // field as offered.
         let once = serde_json::to_string(&*tools[0].input_schema).unwrap();
-        add_todo_sidecar(&mut tools);
+        assert!(add_todo_sidecar(&mut tools));
         assert_eq!(
             once,
             serde_json::to_string(&*tools[0].input_schema).unwrap()
@@ -3173,7 +3193,7 @@ mod todo_sidecar_tests {
             .into_iter()
             .filter(|tool| !tool.name.starts_with("todo__"))
             .collect();
-        add_todo_sidecar(&mut tools);
+        assert!(!add_todo_sidecar(&mut tools), "nothing offers the field");
         assert!(tools.iter().all(|tool| tool
             .input_schema
             .get("properties")
@@ -3191,8 +3211,24 @@ mod todo_sidecar_tests {
             ),
             tool("todo__todo_write", serde_json::json!({"type": "object"})),
         ];
-        add_todo_sidecar(&mut tools);
+        assert!(
+            !add_todo_sidecar(&mut tools),
+            "the tool's own `todo` is not the host's field"
+        );
         assert_eq!(tools[0].input_schema["properties"]["todo"], own);
+    }
+
+    /// The system prompt names the field only when this says it is offered,
+    /// so the checklist tools with no workhorse tool beside them offer none.
+    #[test]
+    fn checklist_tools_without_a_workhorse_tool_offer_no_field() {
+        let mut tools: Vec<Tool> = roster()
+            .into_iter()
+            .filter(|tool| {
+                !crate::agents::todo_extension::tool_takes_todo_sidecar(tool.name.as_ref())
+            })
+            .collect();
+        assert!(!add_todo_sidecar(&mut tools));
     }
 
     #[test]
