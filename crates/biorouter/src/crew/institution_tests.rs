@@ -1,4 +1,4 @@
-use super::{institution, ClusterMode, Connection, CrewRefusal, RunPolicy};
+use super::{institution, ClusterMode, Connection, CrewRefusal, ModelPrivacy, RunPolicy};
 use crate::conversation::message::Message;
 use crate::model::ModelConfig;
 use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};
@@ -270,7 +270,8 @@ fn public_admission_has_no_owner_taint() {
     };
     let admission = institution::admission(
         connection(ClusterMode::Public, None, None),
-        &provider,
+        &ModelPrivacy::of(&provider),
+        &provider.get_model_config().model_name,
         &RunPolicy::default(),
         &snapshot(json!(null), ClusterMode::Public, 3, json!([])),
         false,
@@ -288,7 +289,8 @@ fn legacy_unlabelled_private_admission_is_denied() {
     };
     let error = match institution::admission(
         connection(ClusterMode::Private, None, None),
-        &provider,
+        &ModelPrivacy::of(&provider),
+        &provider.get_model_config().model_name,
         &RunPolicy::default(),
         &snapshot(json!(null), ClusterMode::Private, 3, json!([])),
         false,
@@ -313,7 +315,8 @@ fn admission_rejects_stale_epoch_and_connection_workspace_institution_mismatch()
     };
     let stale_error = match institution::admission(
         connection(ClusterMode::Public, None, None),
-        &provider,
+        &ModelPrivacy::of(&provider),
+        &provider.get_model_config().model_name,
         &stale,
         &snapshot(json!(null), ClusterMode::Public, 3, json!([])),
         false,
@@ -325,7 +328,8 @@ fn admission_rejects_stale_epoch_and_connection_workspace_institution_mismatch()
 
     let mismatch = match institution::admission(
         connection(ClusterMode::Private, Some("ucsf"), None),
-        &provider,
+        &ModelPrivacy::of(&provider),
+        &provider.get_model_config().model_name,
         &RunPolicy::default(),
         &snapshot(json!("stanford"), ClusterMode::Private, 3, json!([])),
         false,
@@ -367,7 +371,8 @@ fn public_model_refusals_are_typed_and_plain() {
     };
     let private_workspace = match institution::admission(
         connection(ClusterMode::Public, None, None),
-        &public,
+        &ModelPrivacy::of(&public),
+        &public.get_model_config().model_name,
         &RunPolicy::default(),
         &snapshot(json!(null), ClusterMode::Private, 3, json!([])),
         false,
@@ -381,7 +386,8 @@ fn public_model_refusals_are_typed_and_plain() {
     );
     let restricted = match institution::admission(
         connection(ClusterMode::Public, None, None),
-        &public,
+        &ModelPrivacy::of(&public),
+        &public.get_model_config().model_name,
         &RunPolicy::default(),
         &snapshot(json!(null), ClusterMode::Public, 3, json!([])),
         true,
@@ -423,7 +429,8 @@ fn the_model_institution_refusal_is_typed_with_its_details() {
     };
     let refused = match institution::admission(
         connection(ClusterMode::Private, Some("ucsf"), None),
-        &stanford,
+        &ModelPrivacy::of(&stanford),
+        &stanford.get_model_config().model_name,
         &RunPolicy::default(),
         &snapshot(json!("ucsf"), ClusterMode::Private, 3, json!([])),
         false,

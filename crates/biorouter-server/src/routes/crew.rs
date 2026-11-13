@@ -1115,7 +1115,7 @@ fn run_policy(body: &StartRunRequest, origin: &RunOrigin) -> biorouter::crew::Ru
     request_body = StartRunRequest,
     responses(
         (status = 200, description = "The task, running. The same `request_id` with the same request answers the same task again", body = RunView),
-        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a request the daemon refuses (no posting grant, an empty or too long task, too many channels, four tasks already active, a model Crew cannot isolate) or the workspace refused (with `broker_code`); `crew_mode_mismatch` (`actual_mode`, `expected_mode`); `crew_institution_mismatch` (`institution_refusal` for the model); `crew_public_model_refused` (a public model and Private, restricted or institution-owned context; `workspace`); `crew_channel_not_in_workspace` (`workspace`); `crew_credential_store_unavailable` or `crew_credential_store_refused`", body = CrewError),
+        (status = 400, description = "`crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a request the daemon refuses (no posting grant, an empty or too long task, too many channels, four tasks already active) or the workspace refused (with `broker_code`); `crew_mode_mismatch` (`actual_mode`, `expected_mode`); `crew_institution_mismatch` (`institution_refusal` for the model); `crew_public_model_refused` (a public model and Private, restricted or institution-owned context; `workspace`); `crew_channel_not_in_workspace` (`workspace`); `crew_credential_store_unavailable` or `crew_credential_store_refused`", body = CrewError),
         (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
@@ -1196,7 +1196,8 @@ pub(crate) async fn start_owned_run(
         ModelConfig::new(&body.model).map_err(anyhow::Error::from)?,
     )
     .await?;
-    require_valid(!provider.uses_tool_bridge(), "This provider controls external tools that Crew cannot isolate. Choose a provider using BioRouter's scoped tools.")?;
+    // Admission decides by privacy alone, for every provider (design CP-1): a task on Claude
+    // Code or Codex is a public model's, admitted where any public model is.
     if let Err(error) = manager()?
         .preflight_run(
             &id,

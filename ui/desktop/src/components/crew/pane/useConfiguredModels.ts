@@ -26,7 +26,8 @@ export interface ConfiguredModels {
   defaults: ModelChoice | null;
   /**
    * The model a Crew task starts on (OW-11): `CREW_TASK_MODEL`, else the app's default, each only
-   * when it names a configured provider that can run a Crew task (never Claude Code or Codex).
+   * when it names a configured provider. Claude Code and Codex count like any other provider; a
+   * workspace admits or refuses the model by privacy when the task starts.
    */
   taskDefault: ModelChoice | null;
   /** Where `taskDefault` came from, or `null` with it. */

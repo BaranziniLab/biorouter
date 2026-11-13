@@ -1,5 +1,4 @@
 import type { ProviderDetails } from '../../../api';
-import { CODING_AGENT_ORDER } from '../../onboarding/codingAgentStatus';
 
 /**
  * The model Crew tasks start on (design OW-11): the config key `CREW_TASK_MODEL`, an object
@@ -43,22 +42,20 @@ export function parseTaskModel(value: unknown): TaskModelChoice | null {
 }
 
 /**
- * Whether a configured provider can run a Crew task at all. Claude Code and Codex never can: the
- * daemon refuses a tool-bridge provider for every Crew task (`uses_tool_bridge`), so offering one
- * as the default would make every `@agent` fail.
+ * Whether a provider can be offered as a Crew task's model: it is configured. Every configured
+ * provider qualifies, Claude Code and Codex included (coding-agent parity, CP-1). Crew admits a
+ * task's model by privacy alone, so a model that does not fit a workspace (a public model in a
+ * private workspace, or a model from another institution) is refused by the daemon when the task
+ * starts, with the same sentence a model chosen in the pane would get.
  */
 export function crewTaskModelUsable(provider: ProviderDetails | undefined): boolean {
-  return (
-    provider !== undefined &&
-    provider.is_configured === true &&
-    !(CODING_AGENT_ORDER as readonly string[]).includes(provider.name)
-  );
+  return provider !== undefined && provider.is_configured === true;
 }
 
 /**
- * The model a Crew task starts on: `CREW_TASK_MODEL` when it names a usable configured provider,
- * else the app's `BIOROUTER_PROVIDER` / `BIOROUTER_MODEL` under the same rule, else `null`. The
- * source says which, so Settings can say "Same as new chats".
+ * The model a Crew task starts on: `CREW_TASK_MODEL` when it names a configured provider, else the
+ * app's `BIOROUTER_PROVIDER` / `BIOROUTER_MODEL` under the same rule, else `null`. The source says
+ * which, so Settings can say "Same as new chats".
  */
 export function resolveTaskModel({
   crew,

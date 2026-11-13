@@ -1,3 +1,4 @@
+use super::model_match::{self, CrewPlace, ModelPrivacy};
 use super::refusal::{self, CrewRefusal};
 use super::{ClusterMode, Connection, RunPolicy};
 use crate::privacy::affiliation::{owners_compatible, InstitutionId, ModelAffiliation};
@@ -122,12 +123,27 @@ pub(super) fn save_mismatch(given: &str, label: &str, theirs: &str) -> anyhow::E
     .into()
 }
 
+/// Whether a model of `tier` and `affiliation` may read Crew content `institutions` own: the
+/// owned half of [`model_match::check`], which decides (design CP-2). Kept by this name for the
+/// callers that hold a tier and an affiliation rather than a [`ModelPrivacy`].
 pub(super) fn check_provider(
     tier: ProviderTier,
     affiliation: Option<ModelAffiliation>,
     institutions: &BTreeSet<String>,
 ) -> Result<()> {
-    if tier == ProviderTier::Public {
+    model_match::check(
+        &ModelPrivacy::new(tier, affiliation),
+        CrewPlace::Owned {
+            institution_ids: institutions,
+        },
+    )
+}
+
+/// [`CrewPlace::Owned`]'s rule, for [`model_match::check`] alone: a public model may read
+/// content no institution owns, and a private one content its affiliation covers every owner
+/// of.
+pub(super) fn owned_by(model: &ModelPrivacy, institutions: &BTreeSet<String>) -> Result<()> {
+    if model.is_public() {
         if !institutions.is_empty() {
             return Err(CrewRefusal::public_model(format!(
                 "This chat's Crew context belongs to {}, so a public model can't read it. \
@@ -142,7 +158,7 @@ pub(super) fn check_provider(
         .iter()
         .map(|id| normalize(id).map(|id| InstitutionId::new(&id)))
         .collect::<Result<BTreeSet<_>>>()?;
-    if !owners_compatible(affiliation, &owners) {
+    if !owners_compatible(model.affiliation(), &owners) {
         return Err(CrewRefusal::new(refusal::INSTITUTION_MISMATCH, AFFILIATION_REFUSAL).into());
     }
     Ok(())
@@ -257,9 +273,12 @@ pub(super) fn protected_sources(
     Ok(protected.iter().any(|id| selected.contains(id.as_str())))
 }
 
+/// The workspace's answer to a run's admission (design CP-2): `model` is the privacy of the
+/// model the run would bind, `model_name` its name for a refusal's details.
 pub(super) fn admission(
     connection: Connection,
-    provider: &dyn Provider,
+    model: &ModelPrivacy,
+    model_name: &str,
     policy: &RunPolicy,
     snapshot: &Value,
     protected_context: bool,
@@ -282,17 +301,18 @@ pub(super) fn admission(
     );
     let workspace_mode: ClusterMode = serde_json::from_value(workspace["mode"].clone())?;
     let label = workspace_label(&connection, snapshot);
-    if provider.tier() == ProviderTier::Public && workspace_mode != ClusterMode::Public {
-        return Err(CrewRefusal::public_model(format!(
-            "{label} is Private, so a public model can't read it. Choose a private model."
-        ))
-        .with("workspace", json!(label))
-        .into());
-    }
+    model_match::check(
+        model,
+        CrewPlace::Workspace {
+            label: &label,
+            mode: workspace_mode,
+            restricted: false,
+        },
+    )?;
     let details = || {
         refusal_details(
-            &provider.get_model_config().model_name,
-            provider.affiliation(),
+            model_name,
+            model.affiliation(),
             Some(label.clone()),
             workspace_institution_id.clone(),
         )
@@ -324,14 +344,15 @@ pub(super) fn admission(
         || workspace_mode == ClusterMode::Private
         || policy.origin_restricted
         || protected_context
-        || (provider.tier() != ProviderTier::Public && connection.remote_root.is_some());
-    if protected && provider.tier() == ProviderTier::Public {
-        return Err(CrewRefusal::public_model(format!(
-            "Restricted channels in {label} can't be read by a public model. Choose a private model."
-        ))
-        .with("workspace", json!(label))
-        .into());
-    }
+        || (!model.is_public() && connection.remote_root.is_some());
+    model_match::check(
+        model,
+        CrewPlace::Workspace {
+            label: &label,
+            mode: workspace_mode,
+            restricted: protected,
+        },
+    )?;
     if protected {
         ensure!(workspace_institution_id.is_some(), "Confirm this workspace's institution before granting an agent; unlabelled private workspaces allow human collaboration only");
         ensure!(
@@ -344,8 +365,13 @@ pub(super) fn admission(
         institution_ids.extend(connection.institution_id.iter().cloned());
         institution_ids.extend(workspace_institution_id.iter().cloned());
     }
-    check_provider(provider.tier(), provider.affiliation(), &institution_ids)
-        .map_err(|error| with_details(error, details))?;
+    model_match::check(
+        model,
+        CrewPlace::Owned {
+            institution_ids: &institution_ids,
+        },
+    )
+    .map_err(|error| with_details(error, details))?;
     Ok(Admission {
         connection,
         workspace_institution_id,

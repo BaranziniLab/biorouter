@@ -24,6 +24,8 @@ import { joinModelValue } from '../defaultModelValue';
 /** What the row read from the daemon: the configured providers and the three keys it resolves. */
 interface Read {
   providers: ProviderDetails[];
+  /** Every provider the daemon listed, configured or not: only to name a stored model's provider. */
+  known: ProviderDetails[];
   crew: unknown;
   appProvider: unknown;
   appModel: unknown;
@@ -35,9 +37,9 @@ const failureText = (failure: unknown) =>
 /**
  * Settings › Models › Default model › **Crew tasks** (design OW-11): the model Ask my agent and
  * `@agent` start a Crew task on. "Same as new chats" while `CREW_TASK_MODEL` is unset, else the
- * model with its tier mark; **Change…** opens a picker of the configured providers that can run a
- * Crew task (never Claude Code or Codex, which the daemon refuses for every Crew task) with "Same
- * as new chats" first.
+ * model with its tier mark; **Change…** opens a picker of every configured provider's models,
+ * Claude Code and Codex included, with "Same as new chats" first. Crew admits a task's model by
+ * privacy when the task starts, so a model a workspace does not admit is refused there, not here.
  *
  * A model is written with `upsert('CREW_TASK_MODEL', {provider, model})` and "Same as new chats"
  * removes the key, each announced to every window (`ConfigContext`), so an open Crew pane or
@@ -65,11 +67,11 @@ export function CrewTaskModelRow() {
         read('BIOROUTER_MODEL', false),
       ]);
       if (mine !== ticket.current) return;
-      const providers = (Array.isArray(items) ? items : []).filter(
-        (item): item is ProviderDetails =>
-          Boolean(item) && typeof item.name === 'string' && item.is_configured === true
+      const known = (Array.isArray(items) ? items : []).filter(
+        (item): item is ProviderDetails => Boolean(item) && typeof item.name === 'string'
       );
-      setState({ providers, crew, appProvider, appModel });
+      const providers = known.filter((item) => item.is_configured === true);
+      setState({ providers, known, crew, appProvider, appModel });
     } catch (error) {
       if (mine === ticket.current) console.error('Could not read the model for Crew tasks:', error);
     }
@@ -91,7 +93,7 @@ export function CrewTaskModelRow() {
   const stored = state ? parseTaskModel(state.crew) : null;
   const own = resolved?.source === 'crew' ? resolved.choice : null;
   const providerOf = (choice: TaskModelChoice) =>
-    state?.providers.find((item) => item.name === choice.provider);
+    state?.known.find((item) => item.name === choice.provider);
   const named = (choice: TaskModelChoice) => {
     const shown = modelDisplay(choice, providerOf(choice));
     return joinModelValue(shown.model, shown.provider);
@@ -108,8 +110,8 @@ export function CrewTaskModelRow() {
       crewTaskModelCopy.sameAsNewChats
     );
   }
-  // A stored choice that names a provider no longer set up (or one Crew refuses) is not the one
-  // tasks start on, and the row says so rather than reading "Same as new chats" alone.
+  // A stored choice that names a provider no longer set up is not the one tasks start on, and the
+  // row says so rather than reading "Same as new chats" alone.
   const status =
     failure ??
     (stored && resolved?.source !== 'crew' ? crewTaskModelCopy.unavailable(named(stored)) : null);

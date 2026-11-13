@@ -7,7 +7,8 @@ import { CrewTaskModelRow } from './CrewTaskModelRow';
 
 /**
  * Settings › Models › Default model › Crew tasks (Crew design OW-11): the model Ask my agent and
- * `@agent` start a Crew task on, stored as `CREW_TASK_MODEL`, never Claude Code or Codex.
+ * `@agent` start a Crew task on, stored as `CREW_TASK_MODEL`. Every configured provider is offered,
+ * Claude Code and Codex included (coding-agent parity).
  */
 
 const mocks = vi.hoisted(() => ({
@@ -91,7 +92,7 @@ describe('the Crew tasks row (OW-11)', () => {
     expect(row()).not.toHaveTextContent(crewTaskModelCopy.sameAsNewChats);
   });
 
-  it('offers "Same as new chats" first, then every model but Claude Code’s and Codex’s', async () => {
+  it('offers "Same as new chats" first, then every configured model, Claude Code’s and Codex’s included', async () => {
     const user = userEvent.setup();
     render(<CrewTaskModelRow />);
     await waitFor(() => expect(change()).toBeEnabled());
@@ -102,10 +103,24 @@ describe('the Crew tasks row (OW-11)', () => {
     expect(options[0]).toHaveAttribute('aria-selected', 'true');
     expect(within(list).getByRole('option', { name: /^gpt-5\.5/ })).toBeInTheDocument();
     expect(within(list).getByRole('option', { name: /^qwen3\.8:27b/ })).toBeInTheDocument();
-    expect(within(list).queryByRole('option', { name: /^opus/ })).toBeNull();
-    expect(within(list).queryByRole('option', { name: /^gpt-6-sol/ })).toBeNull();
-    expect(within(list).queryByText('Claude Code')).toBeNull();
-    expect(within(list).queryByText('Codex')).toBeNull();
+    expect(within(list).getByRole('option', { name: /^opus/ })).toBeInTheDocument();
+    expect(within(list).getByRole('option', { name: /^gpt-6-sol/ })).toBeInTheDocument();
+  });
+
+  it('saves Claude Code as the model for Crew tasks and names it with its public mark', async () => {
+    const user = userEvent.setup();
+    render(<CrewTaskModelRow />);
+    await waitFor(() => expect(change()).toBeEnabled());
+    await user.click(change());
+    await user.click(await screen.findByRole('option', { name: /^opus/ }));
+    expect(mocks.upsert).toHaveBeenCalledWith(
+      'CREW_TASK_MODEL',
+      { provider: 'claude_code', model: 'opus' },
+      false
+    );
+    await waitFor(() => expect(row()).toHaveTextContent('opus · Claude Code'));
+    expect(row().querySelector('[data-crew-model-tier="public"]')).not.toBeNull();
+    expect(row()).not.toHaveTextContent(crewTaskModelCopy.unavailable('opus · Claude Code'));
   });
 
   it('saves a chosen model as {provider, model}, and says it', async () => {
@@ -134,8 +149,9 @@ describe('the Crew tasks row (OW-11)', () => {
     await waitFor(() => expect(row()).toHaveTextContent(crewTaskModelCopy.sameAsNewChats));
   });
 
-  it('says a stored model that Crew cannot use is not the one tasks start on', async () => {
+  it('says a stored model whose provider is not set up is not the one tasks start on', async () => {
     mocks.values.CREW_TASK_MODEL = { provider: 'claude_code', model: 'opus' };
+    mocks.providers = [versa, ollama, { ...claudeCode, is_configured: false }, codex];
     render(<CrewTaskModelRow />);
     await waitFor(() =>
       expect(row()).toHaveTextContent(crewTaskModelCopy.unavailable('opus · Claude Code'))
