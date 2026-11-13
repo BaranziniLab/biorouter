@@ -41,6 +41,12 @@ use tower::ServiceExt;
 
 const SECRET: &str = "dictation-routes-secret";
 const USER_KEY: &str = "dictation-routes-user-action-key";
+/// How long a wait may take before it counts as a hang. It bounds a hang and is not a
+/// speed claim: a busy CI runner stalls a process for seconds, so a test asserts what
+/// ended a wait (a count, a status, a read answering before its own limit) instead of a
+/// wall clock margin. It stays under the production idle expiry (60 s), so a stream that
+/// ignored the tests' shortened idle time still fails the wait.
+const HANG_GUARD: Duration = Duration::from_secs(30);
 
 fn fixture(relative: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -868,22 +874,30 @@ async fn a_pass_that_cuts_nothing_waits_for_new_audio() {
     );
     assert_eq!(delete(&app, &id).await.status, StatusCode::NO_CONTENT);
 
-    // Left alone after the stall, the stream expires on its idle time.
+    // Left alone after the stall, the stream expires on its idle time. What held it open
+    // before was a pass started again for as long as nothing came, each one counted as
+    // work, so the proof is the count of passes, read on every poll: at most two while
+    // nothing arrives. The wait for the expiry is a hang guard, not a speed claim: a pass
+    // still running at the idle deadline rightly adds another idle period, and a loaded
+    // runner can stretch a pass past one (an 8 s bound here was a margin of that kind).
+    assert!(HANG_GUARD < dictation::IDLE_TIMEOUT);
     let id = open(&app, Caller::SecretOnly, request("external")).await;
     let mut seq = 0;
     put_all(&app, &id, &mut seq, first).await;
     let sent = Instant::now();
-    let mut passes = 0;
     while let Some(now) = state.dictation.progress(&id) {
-        passes = now.detector_passes;
         assert!(
-            sent.elapsed() < Duration::from_secs(8),
+            now.detector_passes <= 2,
+            "{} passes while nothing arrived: {now:?}",
+            now.detector_passes
+        );
+        assert!(
+            sent.elapsed() < HANG_GUARD,
             "a 3 s idle stream still open after {:?}: {now:?}",
             sent.elapsed()
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(passes <= 2, "{passes} passes while nothing arrived");
     let gone = put(&app, &id, seq, speech(1.0)).await;
     assert_eq!(gone.status, StatusCode::GONE);
 }
@@ -916,12 +930,30 @@ async fn a_slow_tail_answers_202_then_a_held_read_and_a_lost_worker_answers_500(
     let still = read(&app, &id, 200).await;
     assert_eq!(still.status, StatusCode::ACCEPTED);
     signal(pid, "CONT");
-    let resumed = Instant::now();
-    let done = read(&app, &id, dictation::MAX_READ_WAIT_MS).await;
+    // A held read that waits for the transcript answers it before its own limit; one that
+    // slept to its limit and then looked could answer no sooner than the limit. So the
+    // bound is the read's own limit, not a guess at how fast the resumed worker decodes:
+    // when a loaded runner keeps the transcript past one read's limit, that read answers
+    // 202 and the next held read is the one judged. (A 2 s bound from SIGCONT here was a
+    // margin, not this property.)
+    let deadline = Instant::now() + HANG_GUARD;
+    let (done, waited) = loop {
+        let asked = Instant::now();
+        let answer = read(&app, &id, dictation::MAX_READ_WAIT_MS).await;
+        let waited = asked.elapsed();
+        if answer.status != StatusCode::ACCEPTED {
+            break (answer, waited);
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no transcript within {HANG_GUARD:?} of SIGCONT"
+        );
+    };
     assert_eq!(done.status, StatusCode::OK, "{:?}", done.body);
     assert!(
-        resumed.elapsed() < Duration::from_secs(2),
-        "the held read answered when the transcript was ready, not at its limit"
+        waited < Duration::from_millis(dictation::MAX_READ_WAIT_MS),
+        "the held read answered {waited:?} after it was asked, at its limit, not when the \
+         transcript was ready"
     );
     delete(&app, &id).await;
 

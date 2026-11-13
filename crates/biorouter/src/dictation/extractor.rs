@@ -348,20 +348,77 @@ mod tests {
     }
 
     /// PR-24 (DD-57): a large text whose every hit sits in a protected span is read only
-    /// to the cap, in one pass over its spans. Checking every span for every hit over the
-    /// whole text, as `candidates` once did, takes far longer than the bound here. A term
-    /// before the cap is still found and one after it is not.
+    /// to the cap, in one pass over its spans. A term before the cap is still found and one
+    /// after it is not.
+    ///
+    /// The time is compared with the time for other sizes, never with a wall clock bound:
+    /// a slow runner is slow for every size alike, while the two regressions this guards
+    /// change how the time grows. The timed texts are as dense in spans as 16 KiB allows,
+    /// each span holding a hit, so that checking every span for every hit, as `candidates`
+    /// once did, shows past the regex scans that grow with the text either way. Measured on
+    /// a debug build on 2026-11-13 (M4 Max), 16 times the spans cost 14.8 times as much in
+    /// one pass and 36.2 times with every span checked for every hit; the bound is 24. A
+    /// text 40 times the cap cost 1.0 times what a text the size of the cap costs, and 30.1
+    /// times when its spans were found past the cap; the bound is 4. Each figure is the
+    /// fastest per call of several interleaved rounds, so a stall in one round does not
+    /// carry it, and a measurement that misses a bound is taken again, up to three times.
+    /// A 2 s bound here before measured the runner as much as the code.
     #[test]
-    fn a_large_text_full_of_protected_spans_is_read_quickly_up_to_the_cap() {
+    fn a_large_text_full_of_protected_spans_is_read_in_one_pass_up_to_the_cap() {
         let text = format!("EPAS1 {} PASTCAP24", "`HIF2A` ".repeat(64 * 1024));
         assert!(text.len() > 32 * MAX_OBSERVED_BYTES);
-        let started = std::time::Instant::now();
-        let found = candidates(&text);
-        let took = started.elapsed();
-        assert_eq!(found, vec!["EPAS1"]);
+        assert_eq!(candidates(&text), vec!["EPAS1"]);
+
+        // `A1` in code, 5 bytes a span: as many as the cap holds, a sixteenth of them,
+        // and 40 times as many.
+        let spans = |n: usize| format!("EPAS1 {} PASTCAP24", "`A1` ".repeat(n));
+        let per_cap = (MAX_OBSERVED_BYTES - 16) / 5;
+        let (sixteenth, full, past_cap) =
+            (spans(per_cap / 16), spans(per_cap), spans(per_cap * 40));
+        assert!(full.len() <= MAX_OBSERVED_BYTES);
+        // The sixteenth runs 16 calls a round, so every sample is about as long.
+        let timed = [
+            (sixteenth.as_str(), 16u32),
+            (full.as_str(), 1),
+            (past_cap.as_str(), 1),
+        ];
+        // Up to three measurements, the first within both bounds counting: a machine
+        // starved for every round of one measurement (seen once in twenty under a load
+        // average of 180) is not the code, while either regression changes the ratios on
+        // every measurement and fails all three.
+        let measure = || {
+            let mut fastest = [f64::MAX; 3];
+            for _ in 0..9 {
+                for ((text, calls), best) in timed.iter().zip(fastest.iter_mut()) {
+                    let started = std::time::Instant::now();
+                    for _ in 0..*calls {
+                        std::hint::black_box(candidates(std::hint::black_box(text)));
+                    }
+                    *best = best.min(started.elapsed().as_secs_f64() / f64::from(*calls));
+                }
+            }
+            fastest
+        };
+        let mut attempt = measure();
+        for _ in 1..3 {
+            let [sixteenth, full, past_cap] = attempt;
+            if full / sixteenth < 24.0 && past_cap / full < 4.0 {
+                break;
+            }
+            attempt = measure();
+        }
+        let [sixteenth, full, past_cap] = attempt;
+        let growth = full / sixteenth;
+        let level = past_cap / full;
         assert!(
-            took < Duration::from_secs(2),
-            "{took:?} for a text the cap bounds"
+            growth < 24.0,
+            "16 times the spans took {growth:.1} times as long per call ({full:.5} s and \
+             {sixteenth:.5} s), more than one pass over them allows"
+        );
+        assert!(
+            level < 4.0,
+            "a text 40 times the cap took {level:.1} times as long as one the size of the cap \
+             ({past_cap:.5} s and {full:.5} s): not read only to the cap"
         );
     }
 

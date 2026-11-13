@@ -712,6 +712,12 @@ mod tests {
     use std::io::{PipeReader, PipeWriter};
     use std::time::{Duration, Instant};
 
+    /// How long [`PipeWorker::exit_code`] waits for the frame loop to return before it
+    /// counts as a hang. It bounds a hang and is not a speed claim: a busy CI runner stalls
+    /// a thread for seconds, so these tests assert the exit code and what was written,
+    /// not how fast the loop returned.
+    const HANG_GUARD: Duration = Duration::from_secs(30);
+
     /// A worker on two pipes, as the supervisor sees one.
     struct PipeWorker {
         to_worker: Option<PipeWriter>,
@@ -751,12 +757,18 @@ mod tests {
             self.to_worker = None;
         }
 
+        /// The frame loop's exit code, waiting at most [`HANG_GUARD`] for it to return.
         fn exit_code(&mut self) -> i32 {
-            self.thread
-                .take()
-                .expect("running")
-                .join()
-                .expect("no panic")
+            let thread = self.thread.take().expect("running");
+            let deadline = Instant::now() + HANG_GUARD;
+            while !thread.is_finished() {
+                assert!(
+                    Instant::now() < deadline,
+                    "the frame loop did not return within {HANG_GUARD:?}"
+                );
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            thread.join().expect("no panic")
         }
     }
 
@@ -1141,16 +1153,24 @@ mod tests {
         assert_eq!(worker.exit_code(), exit::OK);
     }
 
+    /// End of file is what ends a loaded worker, cleanly: the frame loop is still running
+    /// when stdin closes, then returns `exit::OK`, which only end of file and `shutdown`
+    /// give (no `shutdown` is sent), and writes nothing more. There is no wall clock
+    /// bound: one held the return to 1 s from the close, which on a busy runner measures
+    /// the load rather than the end of file path. [`PipeWorker::exit_code`] holds the wait
+    /// to [`HANG_GUARD`].
     #[test]
-    fn end_of_file_ends_a_loaded_worker_at_once() {
+    fn end_of_file_ends_a_loaded_worker_cleanly() {
         let _lock = engine_lock();
         let mut worker = PipeWorker::start();
         worker.send(&ToWorker::Load(fixture_load()), &[]);
         assert!(matches!(worker.recv(), FromWorker::Loaded(_)));
-        let started = Instant::now();
+        assert!(
+            !worker.thread.as_ref().expect("running").is_finished(),
+            "the frame loop returned before stdin closed"
+        );
         worker.close_stdin();
         assert_eq!(worker.exit_code(), exit::OK);
-        assert!(started.elapsed() < Duration::from_secs(1));
         // Nothing more was written.
         assert!(matches!(
             read_frame_blocking(&mut worker.from_worker),

@@ -280,22 +280,76 @@ fn frames_round_trip_from_probe_to_stopped() {
     assert!(fake.stopped.load(Ordering::SeqCst), "the device was closed");
 }
 
-/// Stdin's end of file stops the stream as `stop` does, within 2 s.
+/// How long a test waits for the child to return before it counts as a hang. It bounds a
+/// hang and is not a speed claim: a busy CI runner stalls a thread for seconds, so a test
+/// asserts why the child ended (its exit code, its last frame), not how fast.
+const HANG_GUARD: Duration = Duration::from_secs(30);
+
+/// [`run_child`] with the child on a thread of its own, waited for at most
+/// [`HANG_GUARD`], for a test of how a child ends: a child that never returned would hang
+/// [`run_child`] for good. The backend comes back for the test's own checks.
+fn run_child_within_hang_guard<B: Backend + Send + 'static>(
+    mut backend: B,
+    script: impl FnOnce(&mut io::PipeWriter) + Send + 'static,
+) -> (i32, Vec<(FromCapture, Vec<u8>)>, B) {
+    let (reader, mut writer) = io::pipe().unwrap();
+    let feeder = std::thread::spawn(move || script(&mut writer));
+    let child = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let code = serve(&mut backend, reader, &mut out, false);
+        (code, out, backend)
+    });
+    let deadline = Instant::now() + HANG_GUARD;
+    while !child.is_finished() {
+        assert!(
+            Instant::now() < deadline,
+            "the child did not return within {HANG_GUARD:?}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    feeder.join().unwrap();
+    let (code, out, backend) = child.join().unwrap();
+    (code, read_all(&out), backend)
+}
+
+/// Stdin's end of file stops a recording stream as `stop` does, and is what stops it: the
+/// device is still delivering when stdin closes, no `stop` is sent, the last frame is
+/// `stopped` with the count of every sample that went out, the device is closed, and the
+/// child returns 0. There is no wall clock bound: one held the return to 2 s from the
+/// close, which on a busy runner measures the load rather than the end of file path. The
+/// wait is held to [`HANG_GUARD`].
 #[test]
-fn end_of_file_stops_within_two_seconds() {
-    let mut fake = Fake::new();
-    let (code, frames, after_close) = run_child(&mut fake, false, |w| {
+fn end_of_file_stops_a_recording_stream_cleanly() {
+    let fake = Fake::new();
+    let (queued, device_closed) = (Arc::clone(&fake.queued_samples), Arc::clone(&fake.stopped));
+    let (code, frames, fake) = run_child_within_hang_guard(fake, move |w| {
         w.write_all(&frame(&ToCapture::Start { device: None }))
             .unwrap();
-        std::thread::sleep(Duration::from_millis(150));
+        let deadline = Instant::now() + HANG_GUARD;
+        while queued.load(Ordering::SeqCst) == 0 {
+            assert!(Instant::now() < deadline, "the device never delivered");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            !device_closed.load(Ordering::SeqCst),
+            "the device closed before stdin did"
+        );
+        // Returning drops the writer: end of file, and no `stop`.
     });
     assert_eq!(code, exit::OK);
-    assert!(matches!(
-        frames.last().unwrap().0,
-        FromCapture::Stopped { .. }
-    ));
-    assert!(after_close < Duration::from_secs(2), "{after_close:?}");
-    assert!(fake.stopped.load(Ordering::SeqCst));
+    assert!(matches!(&frames[1].0, FromCapture::Ready(_)), "{frames:?}");
+    let (last, _) = frames.last().unwrap();
+    let FromCapture::Stopped { frames: counted } = last else {
+        panic!("the last frame is {last:?}");
+    };
+    let sent: u64 = frames
+        .iter()
+        .filter(|(message, _)| matches!(message, FromCapture::Audio))
+        .map(|(_, payload)| samples_of(payload).len() as u64)
+        .sum();
+    assert_eq!(*counted, sent);
+    assert!(sent > 0, "the device delivered before stdin closed");
+    assert!(fake.stopped.load(Ordering::SeqCst), "the device was closed");
 }
 
 /// Without `start` no device is opened: a probe only, for `devices` and `status`.
@@ -444,14 +498,14 @@ fn a_recorder_command_is_read_as_s16le() {
     assert_eq!(ready.rate, 16_000);
     let mut got = Vec::new();
     while got.len() < pcm.len() {
-        match rx.recv_timeout(Duration::from_secs(5)) {
+        match rx.recv_timeout(HANG_GUARD) {
             Ok(Event::Samples(samples)) => got.extend(samples),
             _ => break,
         }
     }
     let want: Vec<f32> = pcm.iter().map(|&s| f32::from(s) / 32_768.0).collect();
     assert_eq!(got, want);
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + HANG_GUARD;
     while !recorder.lost() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }

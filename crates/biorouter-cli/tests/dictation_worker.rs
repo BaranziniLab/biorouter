@@ -3,10 +3,12 @@
 //!
 //! * a worker killed in the middle of a 600 s `vad_segments` gives `WorkerExited`, and
 //!   the next job runs in a new worker;
-//! * a model whose header asks for an impossible vocabulary is refused within 2 s, and
-//!   the worker that refused it then loads the fixture with a peak resident size within
-//!   64 MiB of a worker that loaded only the fixture;
-//! * end of file on stdin ends a loaded worker within 1 s;
+//! * a model whose header asks for an impossible vocabulary is refused by the header
+//!   check, in Rust before whisper.cpp reads it, and the worker that refused it then
+//!   loads the fixture with a peak resident size within 64 MiB of a worker that loaded
+//!   only the fixture;
+//! * end of file on stdin ends a loaded worker cleanly: it was running when stdin
+//!   closed, exits 0 and writes nothing more;
 //! * on Unix the worker leads a process group of its own, so a terminal's Ctrl-C to the
 //!   parent's group does not reach it;
 //! * a worker run leaves the child's `BIOROUTER_PATH_ROOT` byte identical, a corrupt
@@ -29,6 +31,10 @@
 //!
 //! The worker's environment (no daemon secret, `GGML_NO_BACKTRACE=1`) is checked where
 //! the command is built, in `biorouter::dictation::service`.
+//!
+//! The tests that run in CI assert why something ended (an exit code, a refusal's
+//! reason), never how fast: their waits are held to [`HANG_GUARD`], which only turns a
+//! hang into a failure.
 #![cfg(feature = "local-dictation")]
 
 // Redirects this binary's Biorouter data/config/state dirs at a throwaway root before
@@ -55,6 +61,14 @@ use biorouter_dictation::supervisor::{
 };
 use biorouter_dictation::worker::WORKER_MARKER;
 use biorouter_dictation::ENGINE_COMPILED;
+
+/// How long a wait in the tests that run in CI may take before it counts as a hang. It
+/// bounds a hang and is not a speed claim: a busy GitHub macOS runner stalls a process for
+/// seconds, and on 2026-11-13 took 2.47 s for a header refusal that takes milliseconds on
+/// an idle machine, so these tests assert the cause of an exit or a refusal instead of
+/// its time. The worker's start is held apart, to the supervisor's 60 s `hello` deadline
+/// (see [`first_worker_done`]).
+const HANG_GUARD: Duration = Duration::from_secs(30);
 
 fn biorouter() -> PathBuf {
     PathBuf::from(env!("CARGO_BIN_EXE_biorouter"))
@@ -126,7 +140,7 @@ fn jfk() -> Arc<[i16]> {
 /// while workers started about 45 s later reached `hello` within about 0.2 s. It still
 /// keeps the first compile from running in every parallel test at once against the 60 s
 /// `hello` deadline, but no clock here may include a worker's start on Apple Silicon: the
-/// corrupt header test times from `hello`.
+/// corrupt header test waits for `hello` before its [`HANG_GUARD`] starts.
 fn first_worker_done() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -170,7 +184,7 @@ async fn a_killed_worker_gives_a_typed_error_and_the_next_job_a_new_worker() {
         PcmSlice::whole(long),
         VadOptions::dd48(),
     );
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + HANG_GUARD;
     while !supervisor.status().busy {
         assert!(Instant::now() < deadline, "the job was never dispatched");
         tokio::time::sleep(Duration::from_millis(2)).await;
@@ -222,16 +236,21 @@ fn corrupt_model(dir: &Path) -> (PathBuf, u64) {
     (model, bytes.len() as u64)
 }
 
-/// The 2 s bound is on the refusal: from the moment the worker can take a `load` (its
-/// `hello`) to the `error` that answers it. The header is read and refused in Rust before
-/// any ggml call, so nothing in that span depends on the machine's Metal cache. The
-/// worker's start before `hello` is held to the supervisor's 60 s `hello` deadline; on
-/// Apple Silicon it includes the shader library compile whenever the per user Metal cache
-/// lacks it, which took 16 to 46 s on GitHub's runner (see [`first_worker_done`]). Where
-/// a worker's start compiles no shaders, the whole span from the spawn to the refusal is
-/// held to the same 2 s.
+/// The header check refuses the corrupt model, in Rust before whisper.cpp or ggml reads
+/// a byte of it. The proof is the reason the supervisor reports: the header check's own
+/// sentence (`EngineError::ModelHeader`), where a refusal by whisper.cpp reads only
+/// "model could not be loaded" (`EngineError::ModelLoad`). That a refused header leaves
+/// no large allocation behind is [`a_refused_header_leaves_no_large_allocation_behind`].
+///
+/// There is no wall clock bound. One held the refusal to 2 s from the worker's `hello`,
+/// and on 2026-11-13 a busy GitHub macOS runner took 2.47 s while the pull request run on
+/// the same commit passed: it measured the runner's load, not where the refusal happened.
+/// The load is held to [`HANG_GUARD`]. The worker's start is waited for first, apart,
+/// because on Apple Silicon it compiles the Metal shader library whenever the per user
+/// cache lacks it, which took 16 to 46 s on GitHub's runner (see [`first_worker_done`]);
+/// it is held to the supervisor's 60 s `hello` deadline.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_corrupt_model_header_is_refused_within_2_s() {
+async fn a_corrupt_model_header_is_refused_by_the_header_check() {
     if !ENGINE_COMPILED {
         return;
     }
@@ -245,28 +264,18 @@ async fn a_corrupt_model_header_is_refused_within_2_s() {
     };
     first_worker_done();
     let supervisor = Supervisor::start(spawner(), SupervisorConfig::default());
-    let spawned = Instant::now();
     supervisor.spawn_ahead();
     wait_for_hello(&supervisor).await;
-    let to_hello = spawned.elapsed();
-    let started = Instant::now();
-    let result = supervisor.prepare(Arc::new(spec)).await;
-    let took = started.elapsed();
-    let whole = spawned.elapsed();
+    let result = tokio::time::timeout(HANG_GUARD, supervisor.prepare(Arc::new(spec)))
+        .await
+        .unwrap_or_else(|_| panic!("the load was not answered within {HANG_GUARD:?}"));
     let Err(SupervisorError::ModelLoadFailed(reason)) = result else {
         panic!("{result:?}")
     };
-    assert!(reason.starts_with("model could not be loaded"), "{reason}");
-    assert!(
-        took < Duration::from_secs(2),
-        "{took:?} from hello to the refusal ({to_hello:?} from the spawn to hello)"
+    assert_eq!(
+        reason, "model could not be loaded: the vocabulary is not a Whisper vocabulary",
+        "the header check refuses the model, not whisper.cpp"
     );
-    if !cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-        assert!(
-            whole < Duration::from_secs(2),
-            "{whole:?} from the spawn to the refusal ({to_hello:?} to hello)"
-        );
-    }
 }
 
 /// A frame client over the real worker's pipes.
@@ -344,7 +353,7 @@ impl Worker {
     /// Closes stdin and waits for the exit.
     fn finish(mut self) {
         self.stdin = None;
-        assert_eq!(self.exit_within(Duration::from_secs(5)), Some(0));
+        assert_eq!(self.exit_within(HANG_GUARD), Some(0));
     }
 
     /// The exit code, waiting at most `limit`.
@@ -423,17 +432,28 @@ async fn the_worker_leads_a_process_group_of_its_own() {
     supervisor.unload().await;
 }
 
+/// End of file on stdin ends a loaded worker cleanly, and is what ends it: the worker is
+/// still running when stdin closes, and then exits with code 0, which only its own end of
+/// file and `shutdown` paths return (no `shutdown` is sent here). A kill or a crash by a
+/// signal has no exit code, and a panic exits 70. Nothing follows on stdout.
+///
+/// There is no wall clock bound. One held the exit to 1 s from the close, and on a busy
+/// GitHub macOS runner the worker exited 0 inside the helper's own 1 s wait while the
+/// outer check read just over a second: it measured the runner's load, not the end of
+/// file path. The wait is held to [`HANG_GUARD`].
 #[test]
-fn end_of_file_ends_a_loaded_worker_within_1_s() {
+fn end_of_file_ends_a_loaded_worker_cleanly() {
     if !ENGINE_COMPILED {
         return;
     }
     let mut worker = Worker::start(None);
     worker.load_fixture();
-    let started = Instant::now();
+    assert!(
+        worker.child.try_wait().expect("try_wait").is_none(),
+        "the loaded worker exited before its stdin closed"
+    );
     worker.stdin = None;
-    assert_eq!(worker.exit_within(Duration::from_secs(1)), Some(0));
-    assert!(started.elapsed() < Duration::from_secs(1));
+    assert_eq!(worker.exit_within(HANG_GUARD), Some(0));
     let mut rest = Vec::new();
     worker.stdout.read_to_end(&mut rest).expect("read");
     assert!(rest.is_empty(), "nothing follows end of file");
@@ -488,7 +508,7 @@ fn a_worker_run_leaves_configuration_and_the_legacy_marker_alone() {
     );
     assert!(matches!(worker.recv(), FromWorker::Result(r) if r.id == 1));
     worker.send(&ToWorker::Shutdown, &[]);
-    assert_eq!(worker.exit_within(Duration::from_secs(5)), Some(0));
+    assert_eq!(worker.exit_within(HANG_GUARD), Some(0));
 
     assert_eq!(
         snapshot(root.path()),

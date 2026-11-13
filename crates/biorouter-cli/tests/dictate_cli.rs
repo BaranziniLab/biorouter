@@ -7,8 +7,8 @@
 //! * the capture child answers a probe without opening anything, never with the Null
 //!   backend, and with no `ALSA lib` line on its stderr, even when ALSA's configuration
 //!   fails (Linux); frames round trip from `ready` to `stopped` with every sample counted;
-//!   stdin's end of file ends it within 2 s; a killed child leaves nothing behind for the
-//!   next; it refuses `start` in an agent's shell;
+//!   stdin's end of file ends it with `stopped` and exit 0; a killed child leaves nothing
+//!   behind for the next; it refuses `start` in an agent's shell;
 //! * `dictate` refuses without a terminal (MSG-NO-TTY) and in an agent's shell
 //!   (MSG-AGENT-SHELL), both exit 2; `--private-terms` is refused with
 //!   MSG-PRIVATE-TERMS-REFUSED without a terminal, in an agent's shell and with no private
@@ -419,9 +419,19 @@ fn frames_round_trip_through_the_capture_child() {
     assert_eq!(status.code(), Some(0));
 }
 
-/// Stdin's end of file ends a recording child within 2 s, with `stopped`.
+/// How long a wait for a child may take before it counts as a hang. It bounds a hang and
+/// is not a speed claim: a busy CI runner stalls a process for seconds, so a test asserts
+/// why a child ended (its exit code, its last frame), not how fast.
+const HANG_GUARD: Duration = Duration::from_secs(30);
+
+/// Stdin's end of file ends a recording child cleanly, and is what ends it: the child is
+/// still recording when stdin closes, its last frame is `stopped` (no `stop` was sent),
+/// and it exits 0. A kill or a crash by a signal has no exit code and writes no
+/// `stopped`. There is no wall clock bound: one held this to 2 s from the close, which on
+/// a busy runner measures the load rather than the end of file path. The wait is held to
+/// [`HANG_GUARD`].
 #[test]
-fn end_of_file_ends_the_capture_child_within_two_seconds() {
+fn end_of_file_ends_the_capture_child_cleanly() {
     if !cfg!(debug_assertions) {
         return;
     }
@@ -435,18 +445,31 @@ fn end_of_file_ends_the_capture_child_within_two_seconds() {
         Some((FromCapture::Ready(_), _))
     ));
     std::thread::sleep(Duration::from_millis(250));
-    let closed = Instant::now();
-    drop(child.stdin.take());
-    let mut last = None;
-    while let Some((message, _)) = receive(&mut out) {
-        last = Some(message);
-    }
-    let status = child.wait().unwrap();
     assert!(
-        closed.elapsed() < Duration::from_secs(2),
-        "{:?}",
-        closed.elapsed()
+        child.try_wait().unwrap().is_none(),
+        "the recording child exited before its stdin closed"
     );
+    drop(child.stdin.take());
+    let reader = std::thread::spawn(move || {
+        let mut last = None;
+        while let Some((message, _)) = receive(&mut out) {
+            last = Some(message);
+        }
+        last
+    });
+    let deadline = Instant::now() + HANG_GUARD;
+    let status = loop {
+        if let Some(status) = child.try_wait().unwrap() {
+            break status;
+        }
+        if Instant::now() > deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("the capture child did not exit within {HANG_GUARD:?} of end of file");
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let last = reader.join().unwrap();
     assert_eq!(status.code(), Some(0));
     assert!(
         matches!(last, Some(FromCapture::Stopped { .. })),
