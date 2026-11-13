@@ -1551,26 +1551,30 @@ async fn subagent_slash(session: &CliSession, app: &mut App, text: &str) {
     }
 }
 
+/// A row `/dictionary review` offers: a suggestion, or an agent row the person has not kept,
+/// and never a chat extractor suggestion still waiting for more chats (`seen` below 2), which
+/// no route, page or command lists either ("Auto rows with `seen` below 2 are never listed").
+#[cfg(feature = "dictation")]
+fn waiting_for_review(entry: &biorouter::security::dictionary_store::store::Entry) -> bool {
+    use biorouter::security::dictionary_store::store::{EntrySource, EntryStatus};
+    let pending = entry.status == EntryStatus::Suggested
+        || entry.source == EntrySource::Agent && !entry.reviewed;
+    pending && !(entry.source == EntrySource::Auto && entry.seen < 2)
+}
+
 /// Handle slash commands that the TUI services locally. Returns true if handled.
 /// (`/compact` is handled in `submit` since it drives a turn.)
 #[cfg(feature = "dictation")]
 async fn review_dictionary(app: &mut App, tui: &mut Tui, rx: &mut Events) -> Result<()> {
     use crate::commands::dictionary::{authorize_session_action, dismiss_pending, Action};
-    use biorouter::security::dictionary_store::{
-        open_store,
-        store::{Entry, EntrySource, EntryStatus},
-    };
+    use biorouter::security::dictionary_store::{open_store, store::Entry};
     authorize_session_action(&Action::Dismiss { ids: Vec::new() }).map_err(anyhow::Error::msg)?;
-    fn pending(entry: &Entry) -> bool {
-        entry.status == EntryStatus::Suggested
-            || entry.source == EntrySource::Agent && !entry.reviewed
-    }
     let store = open_store();
     let rows: Vec<Entry> = store
         .view()?
         .entries()
         .iter()
-        .filter(|entry| pending(entry))
+        .filter(|entry| waiting_for_review(entry))
         .cloned()
         .collect();
     if rows.is_empty() {
@@ -3272,6 +3276,35 @@ mod tests {
         assert_eq!(app.dictated_spans.len(), 1);
         app.set_input("older message".into());
         assert!(app.dictated_spans.is_empty());
+    }
+
+    /// `/dictionary review` never offers a chat extractor suggestion found in one chat only,
+    /// which the page and `biorouter dictionary suggestions` do not list either (the live
+    /// check of #491 found the review offering one).
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn the_review_offers_no_chat_suggestion_still_waiting_for_more_chats() {
+        use biorouter::security::dictionary_store::store::{
+            EntrySource, EntryTier, NewTerm, Reach, StoreFile,
+        };
+        let at = biorouter::security::dictionary_store::store::schema::now();
+        let mut file = StoreFile::default();
+        file.observe_auto_suggestion("ONCE5X", EntryTier::Public, "a", None, at)
+            .unwrap();
+        for chat in ["a", "b"] {
+            file.observe_auto_suggestion("TWICE5X", EntryTier::Public, chat, None, at)
+                .unwrap();
+        }
+        let mut agent = NewTerm::person("AGENT5X", EntryTier::Public);
+        agent.source = EntrySource::Agent;
+        file.add(agent, Reach::All, at).unwrap();
+        let offered: Vec<&str> = file
+            .entries
+            .iter()
+            .filter(|entry| super::waiting_for_review(entry))
+            .map(|entry| entry.written.as_str())
+            .collect();
+        assert_eq!(offered, ["TWICE5X", "AGENT5X"], "seen once is not offered");
     }
 
     /// After a dictionary review that kept or dismissed anything, the TUI notes the offer

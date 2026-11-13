@@ -141,7 +141,7 @@ export const DICTATION_MESSAGES = {
   'MSG-SETUP':
     "Dictation turns your speech into text <where>. It needs a speech model: <name> (<size>), downloaded once from the Baranzini Lab's model repository on GitHub into <folder>. Audio is not saved.",
   'MSG-SETUP-SUGGEST':
-    'The agent and Biorouter can propose terms they see in your chats. Biorouter also looks for terms in every message you write, on this computer. A term can go into your dictionary when you ask the agent to add it, or reply to its offer naming that term, even if you decline; everything else waits for you to accept it.',
+    'The agent and Biorouter can propose terms they see in your chats. Biorouter also suggests words you type in chats on public models, on this computer. A term can go into your dictionary when you ask the agent to add it, or reply to its offer naming that term, even if you decline; everything else waits for you to accept it.',
   'MSG-PRIVATE-DRAFT':
     'This message was dictated with your private dictionary terms turned on, so it may contain them, and <model> is a public model. Send it anyway?',
   'MSG-PRIVATE-DRAFT-SWITCH':
