@@ -1783,7 +1783,7 @@ mod tests {
     /// The card is the person's alone: the model never reads it, and it is never stored.
     #[test]
     fn a_crew_step_card_is_user_only_and_ephemeral() {
-        let card = request_message("req-1", &crew_sign_in());
+        let card = request_message("req-1", &crew_sign_in(), None);
         assert!(card.is_user_visible());
         assert!(!card.is_agent_visible());
         assert!(is_ephemeral_card(&card));
@@ -1988,21 +1988,21 @@ mod tests {
     /// never reads it.
     #[test]
     fn a_changed_host_key_is_a_stored_notice_and_an_unknown_one_is_a_question() {
-        let notice = request_message("n-1", &host_key(true));
+        let notice = request_message("n-1", &host_key(true), None);
         assert!(!is_ephemeral_card(&notice));
         assert_eq!(ephemeral_card_id(&notice), None);
         assert!(notice.is_user_visible());
         assert!(!notice.is_agent_visible());
 
-        let question = request_message("q-1", &host_key(false));
+        let question = request_message("q-1", &host_key(false), None);
         assert!(is_ephemeral_card(&question));
         assert_eq!(ephemeral_card_id(&question), Some("q-1"));
         assert_eq!(
-            ephemeral_card_id(&request_message("a-1", &approval("developer__shell"))),
+            ephemeral_card_id(&request_message("a-1", &approval("developer__shell"), None)),
             Some("a-1")
         );
         assert_eq!(
-            ephemeral_card_id(&request_message("c-1", &secrets())),
+            ephemeral_card_id(&request_message("c-1", &secrets(), None)),
             Some("c-1")
         );
     }
