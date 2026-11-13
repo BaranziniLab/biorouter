@@ -69,6 +69,7 @@ path of its executable, which defaults to `claude` and `codex` respectively.
 > | `claude-opus-5-5` (the Claude Code default) | `claude` **2.1.280** |
 > | `claude-fable-5-1` | `claude` **2.1.257** |
 > | `claude-sonnet-5` | `claude` **2.1.197** |
+> | `claude-sonnet-5-5`, `claude-haiku-5-5` | not measured; both answered on `claude` 2.1.321 |
 > | `gpt-6-astra` (the Codex default) | `codex-cli` **0.153.4** |
 > | `gpt-6-sol`, `gpt-6-luna` | `codex-cli` **0.156.1** |
 >

@@ -26,7 +26,7 @@ compliance boundary is on [the compliance page](compliance.md).
 | Config key naming the executable | `CLAUDE_CODE_COMMAND` | `CODEX_COMMAND` |
 | Surface driven | `claude -p` (headless) | `codex app-server` (JSON-RPC over stdio) |
 | Default model | `claude-opus-5-5` | `gpt-6-astra` |
-| Advertised models | `claude-opus-5-5`, `claude-fable-5-1`, `claude-sonnet-5` (1,000,000 each), `claude-haiku-4-5` (200,000). All accept images. | `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (258,400 each, the window Codex gives a ChatGPT sign-in). All accept images. |
+| Advertised models | `claude-opus-5-5`, `claude-fable-5-1`, `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-sonnet-5` (1,000,000 each), `claude-haiku-4-5` (200,000). All accept images. | `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna` (258,400 each, the window Codex gives a ChatGPT sign-in). All accept images. |
 | Unlisted models | Accepted — a user may type an alias such as `sonnet` by hand | Accepted |
 | Vendor documentation | [Claude Code headless mode](https://code.claude.com/docs/en/headless) | [Codex CLI](https://developers.openai.com/codex/cli) |
 | Privacy tier | `Public`, not `runs_locally` | `Public`, not `runs_locally` |
@@ -62,6 +62,7 @@ The floors are the vendor's, not BioRouter's:
 | `claude-opus-5-5` (the default) | `claude` **2.1.280** | The same `claude_code_version_too_old` 400 as the next row, naming 2.1.280. Not captured for this model, because the CLI used for the 2026-09-25 probe was signed out; the shape is Anthropic's documented one. |
 | `claude-fable-5-1` | `claude` **2.1.257** | `400 Claude Code 2.1.235 does not support this model; version 2.1.251 or newer is required. Run 'claude update', or update the Claude desktop app, then try again.` |
 | `claude-sonnet-5` | `claude` **2.1.197** | The same 400. |
+| `claude-sonnet-5-5`, `claude-haiku-5-5` | not measured | Both answered on `claude` 2.1.321 (2026-11-12), each with a 1,000,000 window and 128,000 output. An older CLI that predates them gets the same 400. |
 | `gpt-6-astra` (the default) | `codex-cli` **0.153.4** | `The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.` |
 | `gpt-6-sol`, `gpt-6-luna` | `codex-cli` **0.156.1** | `The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account.` BioRouter adds the floor and the update command, because this sentence does not say that an update fixes it. |
 
@@ -86,7 +87,8 @@ Opus 5.5.
 
 Aliases still work. On `claude` 2.1.280 they land where you would expect: `opus` resolves to
 `claude-opus-5-5`, `fable` and `best` to `claude-fable-5-1`, `sonnet` to `claude-sonnet-5`, and
-`haiku` to `claude-haiku-4-5`. From 2.1.219 through 2.1.279, `opus` means `claude-opus-5`. Advertising
+`haiku` to `claude-haiku-4-5`. By 2.1.321 (measured 2026-11-12) `sonnet` runs `claude-sonnet-5-5`
+and `haiku` runs `claude-haiku-5-5`. From 2.1.219 through 2.1.279, `opus` means `claude-opus-5`. Advertising
 concrete ids rather than these aliases is the context-window decision above, not a claim that
 aliases are unsupported.
 
