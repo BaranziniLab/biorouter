@@ -36,6 +36,7 @@ export const connection: CrewConnection = {
   remote_execution: false,
   remote_access: 'folder' as const,
   workspace_deleted: false,
+  new_devices: [],
 };
 
 export const alice = {

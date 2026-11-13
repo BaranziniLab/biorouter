@@ -8,10 +8,11 @@ import { useCrewGrants, type CrewGrantsView } from './useCrewGrants';
  * The selected connection's grants, for the surfaces inside the Crew view (the Access tab, the
  * Agent access tab, the Agents section, the header chip and the Chat access pane).
  *
- * Besides {@link useCrewGrants}'s own triggers (open, every grant action, `refetch()`), the list is
- * read again after a manual refresh of the workspace and after a task starts — the two moments the
- * daemon's list can change without anything in this module having acted. It never polls, except
- * while it lists a revoke still waiting for the workspace (`useCrewGrants`, F3).
+ * Besides {@link useCrewGrants}'s own triggers (open, every grant action, `refetch()`, and Crew's
+ * change feed, which reports a grant a chat, another window or the terminal revoked or made: WI-15),
+ * the list is read again after a manual refresh of the workspace and after a task starts here. It
+ * never polls the grants route, except while it lists a revoke still waiting for the workspace
+ * (`useCrewGrants`, F3).
  *
  * While it shows grants it also records the names of the channels they post in, so the ordinary
  * chat can say "Crew · #general" rather than an ID (see `chatCrewAccess.ts`).

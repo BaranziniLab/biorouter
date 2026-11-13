@@ -1514,7 +1514,7 @@ impl CodeExecutionClient {
             );
         }
         // The reach a script has, as for wait_for.
-        let catalogue = self.get_catalogue(Some(cap)).await;
+        let catalogue = self.get_catalogue(Some(cap), session_id).await;
         let known = catalogue.iter().any(|t| t.name.as_ref() == tool.trim());
         // `start_watch` gives a better reason for a name it refuses outright
         // (code_execution's own tools, platform tools, a bare name).

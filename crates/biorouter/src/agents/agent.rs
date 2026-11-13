@@ -1168,6 +1168,18 @@ const CODING_AGENT_BRIDGE_ALLOWED_TODO_TOOLS: &[&str] = &[
 
 const CODING_AGENT_BRIDGE_ALLOWED_CHAT_RECALL_TOOLS: &[&str] = &["chatrecall__chatrecall"];
 
+/// The Dictionary's three tools (DD-51), offered to a Claude Code or Codex chat exactly as
+/// to any provider's chat (owner decision 2026-11-13: access follows the privacy match,
+/// never the provider). Nothing here widens what a chat sees: each call dispatches with the
+/// bridge plan's capability, a coding-agent chat is public, so `list_terms` and
+/// `remove_added_terms` reach only the public rows and an add lands public; and
+/// `on_request` still activates a term only from the person's latest message.
+const CODING_AGENT_BRIDGE_ALLOWED_DICTIONARY_TOOLS: &[&str] = &[
+    "dictionary__add_terms",
+    "dictionary__list_terms",
+    "dictionary__remove_added_terms",
+];
+
 const CODING_AGENT_BRIDGE_REQUIRED_COLLECTOR_TOOLS: &[&str] = &[
     "workspace__workspace_watch",
     "workspace__workspace_read_conversation",
@@ -1266,6 +1278,20 @@ const CODING_AGENT_BRIDGE_ALLOWED_EXTENSION_MANAGER_TOOLS: &[&str] = &[
     "extensionmanager__remove_extension",
 ];
 
+// Crew's two person tools, by the owner's D3 ruling: a Claude Code or Codex chat that is the
+// person's own may read and change Crew as they can, exactly as any other model in that chat.
+//
+// ⚠ This list says only what MAY cross. Whether a chat gets either tool is still
+// `CrewToolStanding::offers`, the rule its own roster follows: the bridge takes Crew tools
+// from that roster and never from the registry (`prepare_coding_agent_bridge_plan`), and
+// dispatch asks the same rule again inside the bridged call. So an app's chat, a subagent, a
+// chat a Crew grant restricts and a process with no host get none, and `crew__change` needs
+// a person's proof. Every change parks its own proof-backed card (the permission inspector
+// leaves both tools to it), and a read takes the bridge's capability, Public for both coding
+// agents, so it returns only Public content. The grant's worker tools (`crew__connections`,
+// `crew__request`) are deliberately absent.
+const CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS: &[&str] = &["crew__read", "crew__change"];
+
 const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
     CodingAgentBridgePolicy {
         capability_name: "Developer",
@@ -1308,6 +1334,11 @@ const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
         tools: CODING_AGENT_BRIDGE_ALLOWED_CHAT_RECALL_TOOLS,
     },
     CodingAgentBridgePolicy {
+        capability_name: "Dictionary",
+        target_name: "dictionary",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_DICTIONARY_TOOLS,
+    },
+    CodingAgentBridgePolicy {
         capability_name: "Knowledge",
         target_name: "knowledge",
         tools: CODING_AGENT_BRIDGE_ALLOWED_KNOWLEDGE_TOOLS,
@@ -1326,6 +1357,11 @@ const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
         capability_name: "Workspace Control",
         target_name: "workspace",
         tools: CODING_AGENT_BRIDGE_ALLOWED_WORKSPACE_TOOLS,
+    },
+    CodingAgentBridgePolicy {
+        capability_name: "Crew",
+        target_name: "crew",
+        tools: CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS,
     },
 ];
 
@@ -9530,7 +9566,7 @@ impl Agent {
             .any(|target| target.target.key() == Self::SPAWN_EXTENSION);
 
         let mut bridge_candidates = tools.to_vec();
-        let registry_tools = match self
+        let mut registry_tools = match self
             .extension_manager
             .get_prefixed_tools_for_capability(capability)
             .await
@@ -9541,6 +9577,11 @@ impl Agent {
                 Vec::new()
             }
         };
+        // Crew's tools come only from `tools`, the chat's own roster, which the Crew standing
+        // already narrowed (AO-12; D3). The registry lists every Crew tool whatever the chat
+        // is, so recovering one from it would offer a subagent or an app's chat a person tool
+        // that dispatch then refuses.
+        registry_tools.retain(|tool| !crate::agents::crew_extension::is_crew_tool(&tool.name));
         let extension_targets = self
             .enabled_coding_agent_bridge_extension_targets(&registry_tools)
             .await;
@@ -10125,7 +10166,12 @@ impl Agent {
             working_dir: session.working_dir.clone(),
             tool_name: tool_call.name.to_string(),
         };
-        let inner = result.result;
+        // AO-12: a Crew person tool's host learns which tool call it serves.
+        let inner = crate::crew::tool_host::scope_tool_call_id(
+            tool_call.name.as_ref(),
+            &request_id,
+            result.result,
+        );
 
         // BR-58: the returned future is what `select_all` drives concurrently, so
         // this is the choke point that must bound total tool parallelism and
@@ -10897,12 +10943,23 @@ impl Agent {
         if matches!(audience, ToolAudience::Model) {
             match crate::crew::manager() {
                 Ok(crew) => {
+                    // AO-12: which Crew tools this chat is offered (a granted chat its two
+                    // worker tools, any other chat the person tools it may use), sampled once
+                    // for the whole list. Dispatch and the tool itself ask the same rule.
+                    let crew_tools = crate::agents::crew_extension::roster_standing(
+                        &crew,
+                        &self.extension_manager,
+                        session_id,
+                        &prefixed_tools,
+                    )
+                    .await;
                     let mut admitted = Vec::with_capacity(prefixed_tools.len());
                     for tool in prefixed_tools {
                         if crew
                             .authorize_session_tool(session_id, tool.name.as_ref())
                             .await
                             .is_ok()
+                            && crew_tools.is_none_or(|crew_tools| crew_tools.offers(&tool.name))
                         {
                             admitted.push(tool);
                         }
@@ -11822,8 +11879,9 @@ impl Agent {
             crate::providers::utils::runs_on_this_machine(self.provider().await?.as_ref());
         let cold_path_tools_and_prompt = if session.total_tokens.is_none() || usage_may_be_truncated
         {
+            // Boxed, both here and below: the deepest await of the prologue (`reply`'s note).
             Some(
-                self.prepare_tools_and_prompt(&session_config.id, &session.working_dir)
+                Box::pin(self.prepare_tools_and_prompt(&session_config.id, &session.working_dir))
                     .await?,
             )
         } else {
@@ -11843,9 +11901,9 @@ impl Agent {
         )
         .await?;
         if needs_auto_compact && cold_path_tools_and_prompt.is_none() {
-            let (tools, _toolshim, system_prompt) = self
-                .prepare_tools_and_prompt(&session_config.id, &session.working_dir)
-                .await?;
+            let (tools, _toolshim, system_prompt) =
+                Box::pin(self.prepare_tools_and_prompt(&session_config.id, &session.working_dir))
+                    .await?;
             needs_auto_compact = check_if_compaction_needed(
                 self.provider().await?.as_ref(),
                 &conversation,
@@ -11999,7 +12057,8 @@ impl Agent {
                 }
             };
 
-            let mut reply_stream = self.reply_internal(final_conversation, rewrite_basis, session_config, session, cancel_token, planning_signal, dictionary_pending.take()).await?;
+            // Boxed: this generator's frame sits under the whole agent loop (`reply`'s note).
+            let mut reply_stream = Box::pin(self.reply_internal(final_conversation, rewrite_basis, session_config, session, cancel_token, planning_signal, dictionary_pending.take())).await?;
             while let Some(event) = reply_stream.next().await {
                 yield event?;
             }
@@ -13782,12 +13841,13 @@ impl Agent {
         // chat's reach as this turn starts, pinned once here so a later change of the
         // slot never restamps them. The slot is what the privacy gates read (DR-33
         // folds a chat's decision models into it); an effort rebuild of the model
-        // (`provider_with_effort`) is the same model without that fold, so it is only
-        // the fallback when nothing is bound.
+        // (`provider_with_effort`) is the same model without that fold, and is never read
+        // here: the slot is bound whenever a turn reaches this line (both reads above go
+        // through `self.provider()`, which errors on an empty slot).
         let origin_provider = self
             .bound_provider_unchecked()
             .await
-            .unwrap_or_else(|| Arc::clone(&reply_provider));
+            .ok_or_else(|| anyhow!("Provider not set"))?;
         self.pin_dictionary_turn_origin(
             &session_config.id,
             (origin_provider.tier(), origin_provider.affiliation()),
@@ -17536,6 +17596,34 @@ mod tests {
         }
     }
 
+    /// The stack cliff's outer edge: every caller lays `reply`'s future out inside its own (a
+    /// scheduled run five frames deep), and each debug frame holds copies of it. The prologue
+    /// is boxed inside `reply`, so the future stays near 1 KiB; inline it added 22 KiB, and the
+    /// frames above `reply` in a scheduled run summed to 1.2 MB instead of 0.2 MB.
+    #[tokio::test]
+    async fn the_reply_future_stays_small_for_every_caller() {
+        let agent = Agent::new();
+        let reply = agent.reply(
+            Message::user().with_text("hello"),
+            SessionConfig {
+                id: "stack-cliff".to_string(),
+                schedule_id: None,
+                max_turns: None,
+                max_tool_calls: None,
+                budget: None,
+                retry_config: None,
+                reasoning_effort: None,
+            },
+            None,
+        );
+        // Measured on arm64 debug, 2026-11-06: 1,248 bytes boxed; 21,944 more inline.
+        let size = std::mem::size_of_val(&reply);
+        assert!(
+            size <= 8 * 1024,
+            "`Agent::reply`'s future is {size} bytes: is the prologue awaited inline again?"
+        );
+    }
+
     #[test]
     fn same_turn_catalog_refresh_covers_every_mutating_manager_tool_only() {
         for name in [
@@ -20992,6 +21080,9 @@ mod tests {
             // `render_figure{kind:"volcano"}`, never as a tool of its own.
             "autovisualiser__render_volcano",
             "autovisualiser__show_chart",
+            // A Crew grant's worker tools: a granted chat is not the person's (AO-12, D3).
+            "crew__connections",
+            "crew__request",
         ] {
             assert!(
                 !coding_agent_bridge_policy_allows_tool(blocked),
@@ -21022,6 +21113,9 @@ mod tests {
             "skills__setSkillEnabled",
             "extensionmanager__install_extension",
             "extensionmanager__manage_extensions",
+            // D3: the person tools, offered only where the chat's own roster offers them.
+            "crew__read",
+            "crew__change",
         ] {
             assert!(coding_agent_bridge_policy_allows_tool(allowed), "{allowed}");
         }
@@ -21449,6 +21543,226 @@ mod tests {
             refusal.contains("not in this turn's coding-agent bridge"),
             "{refusal}"
         );
+    }
+
+    /// A Crew host that records what each person-tool call handed it.
+    #[derive(Default)]
+    struct CrewHostSpy {
+        calls: std::sync::Mutex<Vec<(String, Option<String>, crate::privacy::CallCapability)>>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::crew::tool_host::CrewToolHost for CrewHostSpy {
+        async fn call(
+            &self,
+            call: crate::crew::tool_host::PersonToolCall,
+        ) -> anyhow::Result<serde_json::Value> {
+            let crate::crew::tool_host::PersonToolCall {
+                action,
+                tool_call_id,
+                capability,
+                ..
+            } = call;
+            let answer = serde_json::json!({ "ran": action });
+            self.calls
+                .lock()
+                .unwrap()
+                .push((action, tool_call_id, capability));
+            Ok(answer)
+        }
+    }
+
+    impl CrewHostSpy {
+        fn installed(self: &Arc<Self>) -> Option<Arc<dyn crate::crew::tool_host::CrewToolHost>> {
+            Some(Arc::clone(self) as Arc<dyn crate::crew::tool_host::CrewToolHost>)
+        }
+    }
+
+    /// An `Agent` with the Crew extension over a session of `session_type` named `name`.
+    async fn crew_agent_for_tests(
+        session_type: crate::session::session_manager::SessionType,
+        name: &str,
+    ) -> (Agent, String) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session = sm
+            .create_session(temp.path().to_path_buf(), name.into(), session_type)
+            .await
+            .unwrap();
+        std::mem::forget(temp); // keep the sqlite file alive for the test
+        let agent = Agent::with_config(AgentConfig::new(
+            sm,
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+        agent
+            .add_extension(ExtensionConfig::Platform {
+                name: "crew".into(),
+                description: "Crew".into(),
+                bundled: Some(true),
+                available_tools: vec![],
+            })
+            .await
+            .unwrap();
+        (agent, session.id)
+    }
+
+    /// The Crew tools a coding agent's child is bridged in `session_id`, sorted.
+    async fn bridged_crew_tools(
+        agent: &Agent,
+        session_id: &str,
+        provider: &Arc<dyn Provider>,
+    ) -> Vec<String> {
+        let tools = agent.list_tools(session_id, None).await;
+        let plan = agent
+            .prepare_coding_agent_bridge_plan(provider, &tools)
+            .await
+            .expect("a coding agent needs a bridge plan");
+        let mut names: Vec<String> = plan
+            .tools
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .filter(|name| crate::agents::crew_extension::is_crew_tool(name))
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// Owner ruling D3: a Claude Code or Codex child is bridged Crew's two person tools in the
+    /// person's own chat, and no Crew tool anywhere else: not in an app's chat, a subagent or a
+    /// scheduled run, and not where no host is installed. The bridge takes them from the chat's
+    /// own roster, never from the registry, which lists every Crew tool whatever the chat is.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_coding_agent_child_is_bridged_the_person_tools_only_in_a_persons_chat() {
+        use crate::session::session_manager::SessionType;
+        assert_eq!(
+            CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS,
+            crate::crew::tool_host::PersonTool::ALL.map(crate::crew::tool_host::PersonTool::name),
+            "the bridge's Crew list is exactly the person tools"
+        );
+        let host = Arc::new(CrewHostSpy::default());
+        for provider_name in ["claude_code", "codex"] {
+            let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider {
+                name: provider_name,
+            });
+            for (session_type, name, expected) in [
+                (
+                    SessionType::User,
+                    "A chat",
+                    &["crew__change", "crew__read"][..],
+                ),
+                (SessionType::User, "app:lab-notebook", &[][..]),
+                (SessionType::SubAgent, "A subagent", &[][..]),
+                (SessionType::Scheduled, "A scheduled run", &[][..]),
+            ] {
+                let (agent, session_id) = crew_agent_for_tests(session_type, name).await;
+                let bridged = crate::crew::tool_host::with_host_for_tests(
+                    host.installed(),
+                    bridged_crew_tools(&agent, &session_id, &provider),
+                )
+                .await;
+                assert_eq!(bridged, expected, "{provider_name}, {name}");
+            }
+            let (agent, session_id) = crew_agent_for_tests(SessionType::User, "A chat").await;
+            let without_a_host = crate::crew::tool_host::with_host_for_tests(
+                None,
+                bridged_crew_tools(&agent, &session_id, &provider),
+            )
+            .await;
+            assert!(without_a_host.is_empty(), "{without_a_host:?}");
+        }
+        assert!(host.calls.lock().unwrap().is_empty());
+    }
+
+    /// D3, the call itself: a bridged person-tool call in the person's own chat passes the
+    /// bridge's access check and reaches the host on the bridge's capability (Public, for a
+    /// coding agent) with the child's own id for the call as its tool-call id. In an app's chat
+    /// or a subagent the same call is refused at dispatch and reaches nothing.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_bridged_crew_call_acts_as_the_person_only_in_their_own_chat() {
+        use crate::session::session_manager::SessionType;
+        let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider {
+            name: "claude_code",
+        });
+        let host = Arc::new(CrewHostSpy::default());
+        let bridged_call = |agent: Agent, session_id: String| {
+            let provider = Arc::clone(&provider);
+            async move {
+                let tools = agent.list_tools(&session_id, None).await;
+                let plan = agent
+                    .prepare_coding_agent_bridge_plan(&provider, &tools)
+                    .await
+                    .expect("a coding agent needs a bridge plan");
+                let capability = plan.capability;
+                let dispatch = agent.chat_bridge_dispatch(&provider, None, plan);
+                let call = CallToolRequestParams {
+                    name: "crew__change".into(),
+                    arguments: Some(object!({
+                        "action": "send",
+                        "params": {"channel": "#general", "text": "hi"}
+                    })),
+                    meta: None,
+                    task: None,
+                };
+                dispatch.enforce_tool_access(&session_id, &call).await?;
+                coding_agent_bridge::with_call_budget_for_test(
+                    coding_agent_bridge::child_tool_call_budget(),
+                    crate::agents::crew_extension::with_bridged_call_id(
+                        "crew__change",
+                        Some("toolu_01AbC"),
+                        coding_agent_bridge::BridgeToolDispatch::dispatch(
+                            &dispatch,
+                            &session_id,
+                            call,
+                            capability,
+                            CancellationToken::new(),
+                        ),
+                    ),
+                )
+                .await
+            }
+        };
+
+        let (agent, session_id) = crew_agent_for_tests(SessionType::User, "A chat").await;
+        let result = crate::crew::tool_host::with_host_for_tests(
+            host.installed(),
+            bridged_call(agent, session_id),
+        )
+        .await
+        .expect("the person's own chat reaches the host");
+        assert_eq!(result.is_error, Some(false), "{result:?}");
+        {
+            let calls = host.calls.lock().unwrap();
+            let [(action, tool_call_id, capability)] = calls.as_slice() else {
+                panic!("one call, got {}", calls.len());
+            };
+            assert_eq!(action, "send");
+            assert_eq!(tool_call_id.as_deref(), Some("toolu_01AbC"));
+            assert_eq!(capability.tier(), crate::privacy::ProviderTier::Public);
+        }
+
+        for (session_type, name) in [
+            (SessionType::User, "app:lab-notebook"),
+            (SessionType::SubAgent, "A subagent"),
+        ] {
+            let (agent, session_id) = crew_agent_for_tests(session_type, name).await;
+            let refused = crate::crew::tool_host::with_host_for_tests(
+                host.installed(),
+                bridged_call(agent, session_id),
+            )
+            .await
+            .expect_err("refused at dispatch");
+            assert!(
+                refused.contains(crate::agents::crew_extension::PERSON_TOOL_NOT_A_PERSONS_CHAT),
+                "{name}: {refused}"
+            );
+        }
+        assert_eq!(host.calls.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -21932,6 +22246,112 @@ mod tests {
                 .unwrap_or_else(|error| panic!("{name} must dispatch: {error}"));
             assert_eq!(result.is_error, Some(false), "{name}: {result:?}");
         }
+    }
+
+    /// Dictionary parity on the coding-agent bridge (owner decision 2026-11-13): a Claude
+    /// Code or Codex chat is offered the Dictionary's tools like any provider's chat, and a
+    /// call through the relay sees only what the chat's tier may see. A coding-agent chat
+    /// is public, so a private row never crosses the bridge.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn coding_agent_bridge_offers_the_dictionary_and_only_its_public_rows() {
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        coding_agent_bridge::publish_base_url("http://127.0.0.1:1");
+        let path_root = tempfile::TempDir::new().expect("an isolated dictionary root");
+        let _root = crate::test_sandbox::relocate_path_root(
+            path_root.path().to_str().expect("a UTF-8 temporary path"),
+        );
+        {
+            use crate::security::dictionary_store::{open_store, store};
+            open_store()
+                .write(|file| {
+                    let now = store::schema::now();
+                    file.add(
+                        store::NewTerm::person("Tachyzoite", store::EntryTier::Public),
+                        store::Reach::All,
+                        now,
+                    )?;
+                    file.add(
+                        store::NewTerm::person("Xylophagy", store::EntryTier::Private),
+                        store::Reach::All,
+                        now,
+                    )?;
+                    Ok(())
+                })
+                .expect("seed one public and one private term");
+        }
+
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let dictionary =
+            resolve_bundled_extension("dictionary").expect("the Dictionary capability");
+        agent
+            .add_extension(dictionary.into_config("Dictionary bridge parity".into()))
+            .await
+            .expect("enable the Dictionary capability");
+        let iteration_provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider {
+            name: "claude_code",
+        });
+        agent
+            .update_provider(Arc::clone(&iteration_provider), &session_id)
+            .await
+            .expect("bind a coding-agent-shaped provider");
+
+        let tools = agent.list_tools(&session_id, None).await;
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, true)
+            .await
+            .expect("read the bridge parent");
+        let conversation = session
+            .conversation
+            .clone()
+            .unwrap_or_else(Conversation::empty);
+        let lease =
+            issue_test_tool_bridge(&agent, &iteration_provider, &session, &conversation, &tools)
+                .await
+                .expect("coding-agent providers need a live grant");
+        let nonce = lease
+            .url()
+            .rsplit('/')
+            .next()
+            .expect("the bridge URL ends in its nonce");
+        let grant = coding_agent_bridge::lookup(nonce).expect("the bridge grant is live");
+        for expected in CODING_AGENT_BRIDGE_ALLOWED_DICTIONARY_TOOLS {
+            assert!(
+                grant
+                    .tools()
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == *expected),
+                "{expected} must cross the bridge like any provider's tool"
+            );
+        }
+
+        let listed = grant
+            .call(CallToolRequestParams {
+                name: "dictionary__list_terms".into(),
+                arguments: Some(object!({"status": "all"})),
+                meta: None,
+                task: None,
+            })
+            .await
+            .expect("list_terms must dispatch across the bridge");
+        assert_eq!(listed.is_error, Some(false), "{listed:?}");
+        let text = listed
+            .content
+            .iter()
+            .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
+            .collect::<String>();
+        assert!(
+            text.contains("Tachyzoite"),
+            "the public term is listed: {text}"
+        );
+        assert!(
+            !text.contains("Xylophagy"),
+            "a public coding-agent chat must never receive a private row: {text}"
+        );
     }
 
     #[tokio::test]

@@ -5,7 +5,7 @@ import { CrewHttpError } from '../crewApi';
 import { CREW_INVITATION_INVALID } from '../api/errors';
 import type { CrewInvitationPreview } from '../api/join';
 import { INSTITUTION_ID_PATTERN } from '../identity';
-import { joinCopy, setupCopy } from './copy';
+import { fullAccessHost, joinCopy, setupCopy } from './copy';
 import { readJoinContext, resetJoinContextForTests } from './joinContext';
 import { resetMemberSetupRequestsForTests, takeMemberSetupRequest, type SetupRun } from './setup';
 import {
@@ -1318,6 +1318,41 @@ describe('JoinDialog sets Crew up in the account (OW-9)', () => {
     }
   );
 
+  it('tells the Not set up pane the workspace this account hosts, for As me alone (W2)', async () => {
+    const join = async (inviteeUsername: string, radio: RegExp) => {
+      mocks.previewInvitation.mockResolvedValue({ ...PREVIEW, invitee_username: inviteeUsername });
+      const saved = fakeConnection({ id: 'conn-new', status: 'disconnected' });
+      mocks.saveFromInvitation.mockResolvedValue(saved);
+      const updateConnection = vi.fn(async (_id: string, body: object) => ({ ...saved, ...body }));
+      const view = renderDialog({ updateConnection });
+      await paste();
+      await screen.findByTestId('crew-join-summary');
+      fireEvent.click(screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') }));
+      fireEvent.click(screen.getByRole('radio', { name: radio }));
+      fireEvent.change(screen.getByLabelText(joinCopy.remoteFolder), {
+        target: { value: '/work/lab' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Join lab' }));
+      await waitFor(() => expect(view.crew().selectConnection).toHaveBeenCalledWith('conn-new'));
+      view.update({ connectionId: 'conn-new', connections: [saved], connection: saved });
+      await waitFor(() =>
+        expect(view.crew().connect).toHaveBeenCalledWith({ userInitiated: true })
+      );
+      const request = takeMemberSetupRequest('conn-new');
+      view.unmount();
+      return request;
+    };
+    // Alice adds another computer of her own, as herself on the server: she hosts lab.
+    expect(await join('alice', /^As me on the server/)).toEqual({
+      agentAccess: 'full',
+      hostWorkspace: 'lab',
+    });
+    // Bob joins Alice's workspace: nothing to add.
+    expect(await join('bob', /^As me on the server/)).toEqual({ agentAccess: 'full' });
+    // Alice in a folder: the host's sentence goes with As me only.
+    expect(await join('alice', /^In a folder/)).toEqual({ agentAccess: 'folder' });
+  });
+
   it('shows As me on the server’s one warning before Join, with its row folded (OW-6)', async () => {
     mocks.previewInvitation.mockResolvedValue(PREVIEW);
     renderDialog();
@@ -1332,6 +1367,26 @@ describe('JoinDialog sets Crew up in the account (OW-9)', () => {
     fireEvent.click(row);
     fireEvent.click(screen.getByRole('radio', { name: /^Off/ }));
     expect(screen.queryByTestId('crew-onboard-full-warning')).toBeNull();
+  });
+
+  it('adds the host’s sentence only when the invitation’s host is the account that joins', async () => {
+    // Bob joins Alice's workspace: the warning has no host sentence.
+    mocks.previewInvitation.mockResolvedValue(PREVIEW);
+    const first = renderDialog();
+    await paste();
+    await screen.findByTestId('crew-join-summary');
+    expect(screen.getByTestId('crew-onboard-full-warning')).not.toHaveTextContent(
+      /act as the host/
+    );
+    first.unmount();
+    // Alice adds another computer of her own: full access there reaches lab's own files.
+    mocks.previewInvitation.mockResolvedValue({ ...PREVIEW, invitee_username: 'alice' });
+    renderDialog();
+    await paste();
+    await screen.findByTestId('crew-join-summary');
+    const warning = screen.getByTestId('crew-onboard-full-warning');
+    expect(warning).toHaveTextContent(joinCopy.fullWarning('alice', 'hpc.ucsf.edu'));
+    expect(warning).toHaveTextContent(fullAccessHost('lab'));
   });
 
   it('saves As me with a folder typed as full access, and needs no setup for it', async () => {

@@ -28,6 +28,8 @@ pub mod validate_workflow;
 mod workflow_extension_adapter;
 pub mod yaml_format_utils;
 
+pub use runtime::WorkflowCapabilities;
+
 pub const BUILT_IN_WORKFLOW_DIR_PARAM: &str = "workflow_dir";
 pub const WORKFLOW_FILE_EXTENSIONS: &[&str] = &["yaml", "json"];
 
@@ -74,6 +76,13 @@ pub struct Workflow {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub skills: Option<Vec<String>>,
+
+    /// `explicit`: the workflow's chats get exactly `extensions`. Absent, a
+    /// workflow that lists extensions also keeps the capabilities turned on
+    /// for every chat on this computer (`runtime::ensure_required_extensions`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(inline)]
+    pub capabilities: Option<WorkflowCapabilities>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub settings: Option<Settings>, // settings for the workflow
@@ -680,6 +689,7 @@ impl WorkflowBuilder {
             extensions: self.extensions,
             knowledge_bases: self.knowledge_bases,
             skills: self.skills,
+            capabilities: None,
             settings: self.settings,
             activities: self.activities,
             author: self.author,
@@ -1025,6 +1035,7 @@ isGlobal: true"#;
             extensions: None,
             knowledge_bases: None,
             skills: None,
+            capabilities: None,
             settings: None,
             activities: Some(vec!["clean activity 1".to_string()]),
             author: None,

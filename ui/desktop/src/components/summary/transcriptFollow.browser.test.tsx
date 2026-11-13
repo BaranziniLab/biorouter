@@ -183,10 +183,13 @@ describe('the live transcript follows its newest line through a resize (V2-R6-1)
    */
   const resizeFrame = async (
     tab: Page,
-    size: { width?: number; height?: number; measure?: boolean }
+    size: { width?: number; height?: number; measure?: boolean; keepPlace?: boolean }
   ) => {
-    await tab.evaluate(({ width, height, measure }) => {
+    await tab.evaluate(({ width, height, measure, keepPlace }) => {
       const frame = document.getElementById('frame')!;
+      if (keepPlace) {
+        (window as unknown as { chat: { keepPlace(): void } }).chat.keepPlace();
+      }
       if (width !== undefined) frame.style.width = `${width}px`;
       if (height !== undefined) frame.style.height = `${height}px`;
       if (measure) document.getElementById('row-30')!.getBoundingClientRect();
@@ -298,8 +301,8 @@ describe('the live transcript follows its newest line through a resize (V2-R6-1)
   it('keeps a clicked card in place for one width change, then follows again', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await openChat();
-    await call(tab, 'keepPlace');
-    await resizeFrame(tab, { width: 560 });
+    // Keep both in one browser task, as in the app's layout effect.
+    await resizeFrame(tab, { width: 560, keepPlace: true });
     const held = await place(tab);
     expect(held.gap, 'the held change leaves the end where the reflow put it').toBeGreaterThan(0);
     // Back at the end, the next width change follows again: the hold has expired.

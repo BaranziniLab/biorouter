@@ -280,37 +280,63 @@ impl Drop for Tui {
     }
 }
 
-/// Run the interactive session in the full-screen TUI.
-pub async fn run(session: &mut CliSession, initial_prompt: Option<String>) -> Result<()> {
-    let mut tui = Tui::new()?;
-    let mut app = App::new(status_from_session(session));
-    #[cfg(feature = "dictation")]
-    {
-        app.dictation_session = Some(session.session_id.clone());
-        app.dictation_affiliation = session
-            .agent
-            .provider()
+/// Ready `app` to dictate into this chat: each recording carries the chat and its
+/// model's institution, and the dictation hint shows only when policy and the terminal
+/// admit it (checked without opening a device) and a speech model resolves.
+#[cfg(feature = "dictation")]
+async fn prepare_dictation(session: &CliSession, app: &mut App) {
+    app.dictation_session = Some(session.session_id.clone());
+    app.dictation_affiliation = session
+        .agent
+        .provider()
+        .await
+        .ok()
+        .and_then(|provider| provider.affiliation());
+    app.dictation_available = crate::dictation::frontend::hint_admitted_without_device()
+        && biorouter::dictation::service::service()
+            .resolve_for(
+                None,
+                Some(&biorouter::dictation::service::configured_language()),
+            )
             .await
-            .ok()
-            .and_then(|provider| provider.affiliation());
-        app.dictation_available = crate::dictation::frontend::hint_admitted_without_device()
-            && biorouter::dictation::service::service()
-                .resolve_for(
-                    None,
-                    Some(&biorouter::dictation::service::configured_language()),
-                )
-                .await
-                .is_ok();
-    }
-    app.set_catalog(build_catalog(session).await);
-    greeting_into(&mut app);
-    push_startup_notices(&mut app).await;
-    #[cfg(feature = "dictation")]
+            .is_ok();
+}
+
+/// Say so at startup when the dictation key is also the newline key.
+#[cfg(feature = "dictation")]
+fn note_dictation_key_clash(app: &mut App) {
     if let Some(key) = dictation_chord()
         .filter(|key| key_collision(Some(*key), crate::session::input::get_newline_key()))
     {
         app.push_note(&crate::dictation::messages::msg_key_clash(key));
     }
+}
+
+/// The next event from the recording in progress; never ready while none runs. It
+/// borrows only the frontend's event channel, so it can wait in `select!` beside the
+/// child view's stream.
+#[cfg(feature = "dictation")]
+async fn next_dictation_event(
+    frontend: Option<&mut crate::dictation::frontend::Frontend>,
+) -> Option<crate::dictation::frontend::Event> {
+    let events = frontend.map(|frontend| &mut frontend.events);
+    match events {
+        Some(events) => events.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
+/// Run the interactive session in the full-screen TUI.
+pub async fn run(session: &mut CliSession, initial_prompt: Option<String>) -> Result<()> {
+    let mut tui = Tui::new()?;
+    let mut app = App::new(status_from_session(session));
+    #[cfg(feature = "dictation")]
+    prepare_dictation(session, &mut app).await;
+    app.set_catalog(build_catalog(session).await);
+    greeting_into(&mut app);
+    push_startup_notices(&mut app).await;
+    #[cfg(feature = "dictation")]
+    note_dictation_key_clash(&mut app);
     refresh_context(session, &mut app).await;
 
     // Single dedicated reader task → channel (see `Events`).
@@ -352,15 +378,7 @@ pub async fn run(session: &mut CliSession, initial_prompt: Option<String>) -> Re
         // Dictation's events borrow only `app.dictation`, so the child view's
         // stream below can borrow `app.child` beside them.
         #[cfg(feature = "dictation")]
-        let dictation_event = {
-            let events = app.dictation.as_mut().map(|frontend| &mut frontend.events);
-            async move {
-                match events {
-                    Some(events) => events.recv().await,
-                    None => std::future::pending().await,
-                }
-            }
-        };
+        let dictation_event = next_dictation_event(app.dictation.as_mut());
         #[cfg(not(feature = "dictation"))]
         let dictation_event = std::future::pending::<()>();
         tokio::select! {
@@ -1672,15 +1690,18 @@ fn note_suggestion_offer(
     }
 }
 
-async fn handle_slash(
+/// The `/dictate` and `/dictionary` commands, checked before every other slash
+/// command and handled here in full. `text` is already trimmed; returns false when
+/// it is none of them.
+#[cfg(feature = "dictation")]
+async fn dictation_slash(
     session: &mut CliSession,
     app: &mut App,
     tui: &mut Tui,
     rx: &mut Events,
     text: &str,
 ) -> bool {
-    match text.trim() {
-        #[cfg(feature = "dictation")]
+    match text {
         "/dictate status" => {
             let note = if app.dictation_state.paused() {
                 crate::dictation::messages::MSG_PAUSED.into()
@@ -1692,12 +1713,10 @@ async fn handle_slash(
             app.push_note(&note);
             true
         }
-        #[cfg(feature = "dictation")]
         "/dictate retry" => {
             app.retry_dictation();
             true
         }
-        #[cfg(feature = "dictation")]
         s if s == "/dictate install" || s.starts_with("/dictate install ") => {
             let model = s
                 .strip_prefix("/dictate install")
@@ -1733,7 +1752,6 @@ async fn handle_slash(
             }
             true
         }
-        #[cfg(feature = "dictation")]
         s if s.starts_with("/dictionary add ") => {
             let term = s.trim_start_matches("/dictionary add ").trim();
             let model = session
@@ -1748,13 +1766,28 @@ async fn handle_slash(
             }
             true
         }
-        #[cfg(feature = "dictation")]
         "/dictionary review" => {
             if let Err(reason) = review_dictionary(app, tui, rx).await {
                 app.push_error(&reason.to_string());
             }
             true
         }
+        _ => false,
+    }
+}
+
+async fn handle_slash(
+    session: &mut CliSession,
+    app: &mut App,
+    tui: &mut Tui,
+    rx: &mut Events,
+    text: &str,
+) -> bool {
+    #[cfg(feature = "dictation")]
+    if dictation_slash(session, app, tui, rx, text.trim()).await {
+        return true;
+    }
+    match text.trim() {
         s if s == "/folder-access" || s.starts_with("/folder-access ") => {
             app.push_note(&session.folder_access_command(
                 s.strip_prefix("/folder-access").unwrap_or_default().trim(),

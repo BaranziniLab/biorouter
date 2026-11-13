@@ -128,8 +128,12 @@ export const connectionBarCopy = {
   unlock: 'Unlock',
   unlockFailed: 'Crew couldn’t unlock the vault.',
   reconnecting: (workspace: string) => `Reconnecting to ${workspace}…`,
-  newDevice: (date: string) => `A new device was added to your account on ${date}.`,
-  newDeviceUndated: 'A new device was added to your account.',
+  /**
+   * A daemon from before AO-10, which names no computer: this computer's own record says one is
+   * new. Worded as the daemon's notice (`newDevicesCopy.one`) and the CLI say it.
+   */
+  newDevice: (date: string) => `New computer on your account, added ${date}.`,
+  newDeviceUndated: 'New computer on your account.',
   review: 'Review',
-  reviewName: 'Review devices',
+  reviewName: 'Review computers',
 } as const;

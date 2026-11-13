@@ -104,7 +104,23 @@ export type CrewJoinStatus =
   | 'expired'
   | 'joined'
   | 'unsupported'
+  /** Account ownership (AO-9): the account may join with no code; Join claims it. */
+  | 'ready'
+  /** Account ownership (AO-9): the workspace removed this account; only a new invitation helps. */
+  | 'removed'
   | (string & {});
+
+/**
+ * What "Open a workspace on a server" starts with (account ownership, "Desktop"): the SSH login and
+ * route it looks with, when another surface already knows them (the Host dialog's name-in-use
+ * answer, a version notice's Update Crew). `check` starts looking at once.
+ */
+export interface OpenWorkspaceRoute {
+  ssh_target: string;
+  port?: number | null;
+  identity_file?: string | null;
+  proxy_jump?: string | null;
+}
 
 export type WorkspaceSettingsTab = 'general' | 'people' | 'privacy' | 'context' | 'agent-access';
 export type DetailsTab = 'about' | 'members' | 'files' | 'access';
@@ -128,6 +144,8 @@ export type ConfirmIntent =
 export type DialogIntent =
   | { kind: 'join' }
   | { kind: 'host' }
+  /** Open a workspace on a server (account ownership): look for the account's workspaces there. */
+  | { kind: 'open-workspace'; route?: OpenWorkspaceRoute; check?: boolean }
   | { kind: 'connection-settings'; connectionId: string }
   | { kind: 'workspace-settings'; tab?: WorkspaceSettingsTab }
   | { kind: 'invite-people' }

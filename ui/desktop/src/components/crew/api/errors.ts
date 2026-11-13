@@ -54,6 +54,23 @@ export const CREW_JOIN_UNSUPPORTED = 'crew_join_unsupported' satisfies CrewError
 /** Join (S3a): the host approved a different device code than this computer's. */
 export const CREW_JOIN_CODE_MISMATCH = 'crew_join_code_mismatch' satisfies CrewErrorCode;
 
+// Account ownership (docs/crew/design/account-ownership.md, "Codes").
+/** This computer no longer has its key for the workspace: Add this computer again (AO-9). */
+export const CREW_DEVICE_KEY_MISSING = 'crew_device_key_missing' satisfies CrewErrorCode;
+/** The workspace no longer knows this computer, but the account is a member: Add it again. */
+export const CREW_DEVICE_NOT_RECOGNIZED = 'crew_device_not_recognized' satisfies CrewErrorCode;
+/** The workspace's server runs a Crew from before account ownership; the sentence is by role. */
+export const CREW_ACCOUNT_UNSUPPORTED = 'crew_account_unsupported' satisfies CrewErrorCode;
+/** The workspace removed this account (AO-2); only a new invitation helps. */
+export const CREW_JOIN_REMOVED = 'crew_join_removed' satisfies CrewErrorCode;
+/** Hosting: the account already hosts a workspace of that name on the server (AO-9). */
+export const CREW_HOST_NAME_IN_USE = 'crew_host_name_in_use' satisfies CrewErrorCode;
+/** The codes Add this computer again answers (AO-9). */
+export const CREW_REJOIN_CODES: readonly string[] = [
+  CREW_DEVICE_KEY_MISSING,
+  CREW_DEVICE_NOT_RECOGNIZED,
+];
+
 /**
  * A request-carrying route (W2-DMN-7, 503): the bridge was lost after the request was written, so
  * whether the workspace applied it is not known. The request's own idempotency key makes sending

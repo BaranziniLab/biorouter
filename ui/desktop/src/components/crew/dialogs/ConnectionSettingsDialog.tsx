@@ -807,7 +807,8 @@ function WorkspaceDetails({
     // Without a fingerprint to show, the key it would be computed from is still one click away.
     ...(fingerprint ? [] : [{ what: 'workspace key', value: connection.workspace_public_key }]),
     { what: 'socket path', value: connection.socket_path },
-    { what: 'device ID', value: connection.device_id },
+    // The protocol's device ID, named as a person says it: "Copy computer ID".
+    { what: 'computer ID', value: connection.device_id },
     { what: 'cluster ID', value: connection.cluster_connection_id },
   ];
   const present = ids.filter(

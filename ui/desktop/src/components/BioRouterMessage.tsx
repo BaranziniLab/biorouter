@@ -13,12 +13,14 @@ import {
   getToolConfirmationContent,
   getElicitationContent,
   getSecretRequestContent,
+  getCrewStepContent,
   NotificationEvent,
 } from '../types/message';
 import { Message } from '../api';
 import ToolCallConfirmation from './ToolCallConfirmation';
 import ElicitationRequest from './ElicitationRequest';
 import SecretRequestCard from './SecretRequestCard';
+import CrewStepCard from './crew/chat/CrewStepCard';
 import MessageCopyLink from './MessageCopyLink';
 import MessageDivergeLink from './MessageDivergeLink';
 import { MessageActions } from './MessageMeta';
@@ -109,6 +111,7 @@ export default function BioRouterMessage({
   const toolConfirmationContent = getToolConfirmationContent(message);
   const elicitationContent = getElicitationContent(message);
   const secretRequestContent = getSecretRequestContent(message);
+  const crewStepContent = getCrewStepContent(message);
   // The thought is all there is so far: the answer has not started, and the
   // model has not moved on to a tool call or a question either. A thought that
   // is followed by a running tool is over ("Thought"); the tool row beside it
@@ -119,7 +122,8 @@ export default function BioRouterMessage({
     toolRequests.length === 0 &&
     toolConfirmationContent === undefined &&
     elicitationContent === undefined &&
-    secretRequestContent === undefined;
+    secretRequestContent === undefined &&
+    crewStepContent === undefined;
   // "Thinking · 8s" while it lasts, "Thought · 8s" after, when this view
   // watched it happen; a thought read from history has no measured length.
   const thought = useThoughtDuration(!!cotText && thinkingNow);
@@ -357,7 +361,8 @@ export default function BioRouterMessage({
             so they sit 8px under anything above them in this message. */}
         {(hasToolConfirmation ||
           (hasElicitation && submitElicitationResponse) ||
-          secretRequestContent) && (
+          secretRequestContent ||
+          crewStepContent) && (
           <div
             className={cn(
               'flex flex-col gap-2',
@@ -391,6 +396,19 @@ export default function BioRouterMessage({
               <SecretRequestCard
                 isCancelledMessage={false}
                 actionRequiredContent={secretRequestContent}
+              />
+            )}
+
+            {/* The owner's D1 ruling: a Crew step only the person can take. Like
+              the credential card it takes no submit callback; it opens the
+              person's own window and can only be dismissed. Its buttons need
+              a running turn: a read-only surface passes none, so a saved or
+              imported card draws one fixed line. */}
+            {crewStepContent && (
+              <CrewStepCard
+                sessionId={sessionId}
+                actionRequiredContent={crewStepContent}
+                turnActive={turnActive}
               />
             )}
           </div>

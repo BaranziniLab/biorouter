@@ -1949,6 +1949,11 @@ fn format_message_for_compacting(msg: &Message) -> String {
                 ActionRequiredData::SecretRequest { keys, .. } => {
                     format!("action_required(secret_request): {} key(s)", keys.len())
                 }
+                // The kind only: no server, login or fingerprint reaches a summary the model
+                // reads. The card is user-only, so `is_agent_visible` keeps it out first.
+                ActionRequiredData::CrewStep { step, .. } => {
+                    format!("action_required(crew_step): {}", step.kind())
+                }
             },
             MessageContent::FrontendToolRequest(req) => {
                 if let Ok(call) = &req.tool_call {
@@ -2210,6 +2215,45 @@ mod tests {
             .iter()
             .flat_map(|message| &message.content)
             .any(|content| matches!(content, MessageContent::RedactedThinking(redacted) if redacted.data == "encrypted reasoning secret")));
+    }
+
+    /// The owner's D1 ruling: a Crew step card is the person's. Even when a session row
+    /// carries one, the summarizer's payload, which a model reads, never holds its server,
+    /// login or fingerprint, and even the kind-only line is withheld while the card is
+    /// user-only.
+    #[tokio::test]
+    async fn a_crew_step_card_never_reaches_the_summarizer() {
+        use crate::conversation::message::{CrewSignInTarget, CrewStepRequest};
+        let provider = MockProvider::new(Message::assistant().with_text("<mock summary>"), 100_000);
+        let card = MessageContent::action_required_crew_step(
+            "card-1",
+            CrewStepRequest::SignIn {
+                target: CrewSignInTarget::Setup {
+                    job_id: "job-1".into(),
+                },
+                server: "secret-server.example.edu".into(),
+                login: "canary-login@secret-server.example.edu".into(),
+            },
+        );
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("set up crew"),
+            Message::assistant().with_content(card.clone()).user_only(),
+            Message::assistant().with_text("ordinary answer remains"),
+        ]);
+
+        let _ = compact_messages(&provider, &conversation, true)
+            .await
+            .unwrap();
+
+        let payload = provider.last_summarizer_payload();
+        assert!(payload.contains("ordinary answer remains"));
+        assert!(!payload.contains("secret-server"), "{payload}");
+        assert!(!payload.contains("canary-login"), "{payload}");
+        assert!(!payload.contains("crew_step"), "{payload}");
+
+        // Were one ever agent-visible, the line it would contribute names its kind only.
+        let line = format_message_for_compacting(&Message::assistant().with_content(card));
+        assert_eq!(line, "[assistant]: action_required(crew_step): sign_in");
     }
 
     /// BR-71: `MessageProvenance` documents itself as "never suppressible", and

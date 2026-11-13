@@ -57,6 +57,17 @@
 //! emitted ahead of a gapped backlog. A client keyed on `seq` must ignore
 //! ordering for those and simply apply them.
 //!
+//! # Cards (WI-17)
+//!
+//! A decision prompt (an approval, a credential card, a Crew step) is never stored, so a
+//! client that re-attaches learns of it only from this log, and the log keeps the frame after
+//! the card has been answered. So the pump logs each card's end
+//! ([`MessageEvent::ActionRequiredEnded`]), and a reader never hands its client a card whose end
+//! is in the log, whether the end came before the attach or before the card itself (a card the
+//! chat's loop drew after it had already ended). A frame left out still counts as delivered:
+//! `seq` is a high-water mark, not a promise of contiguity. The end frames themselves go only to
+//! a client that asked for them ([`TurnStream::attach_for`]).
+//!
 //! # Concurrency
 //!
 //! All state lives behind one `std::sync::Mutex` held for a few instructions at
@@ -215,6 +226,33 @@ pub fn orphan_timeout() -> Duration {
 pub struct SeqFrame {
     pub seq: u64,
     json: Arc<str>,
+    /// What this frame says about a card (WI-17), so a reader can leave out a card that has
+    /// already ended without parsing the frame again.
+    card: CardMark,
+}
+
+/// A frame's part in a card's life (WI-17).
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum CardMark {
+    /// Nothing about a card.
+    None,
+    /// It draws the decision prompt with this ID (`pending_user_action::ephemeral_card_id`).
+    Shows(Arc<str>),
+    /// It says a card ended ([`MessageEvent::ActionRequiredEnded`]).
+    Ends,
+}
+
+impl CardMark {
+    fn of(event: &MessageEvent) -> Self {
+        match event {
+            MessageEvent::Message { message, .. } => {
+                biorouter::pending_user_action::ephemeral_card_id(message)
+                    .map_or(Self::None, |id| Self::Shows(Arc::from(id)))
+            }
+            MessageEvent::ActionRequiredEnded { .. } => Self::Ends,
+            _ => Self::None,
+        }
+    }
 }
 
 impl SeqFrame {
@@ -300,6 +338,11 @@ struct Inner {
     /// When `observers` last fell to zero, if it is zero now. `None` while
     /// somebody is watching.
     idle_since: Option<Instant>,
+    /// The cards this turn has logged an end for (WI-17). A reader never hands its client a
+    /// frame that draws one of them: a renderer that reloads, or opens the chat in a second
+    /// window, is shown only the cards still waiting, and a card the chat's loop drew after it
+    /// had already ended is never drawn at all. One entry per card, so a turn's set is tiny.
+    ended_cards: std::collections::HashSet<Arc<str>>,
 }
 
 /// A turn's frame log: append-only, sequence-numbered, replayable, fanned out.
@@ -356,6 +399,7 @@ impl TurnStream {
                 observers: 0,
                 ever_attached: false,
                 idle_since: None,
+                ended_cards: std::collections::HashSet::new(),
             }),
             observers: AtomicU64::new(0),
             reaped: std::sync::atomic::AtomicBool::new(false),
@@ -566,6 +610,7 @@ impl TurnStream {
         let _ = self.tx.send(SeqFrame {
             seq: u64::MAX,
             json: Arc::from("{}"),
+            card: CardMark::None,
         });
     }
 
@@ -581,6 +626,14 @@ impl TurnStream {
     /// walked back. Honouring the hint is an optimisation; honouring it out of
     /// range is not optional.
     pub fn attach(self: &Arc<Self>, from_seq: u64) -> StreamReader {
+        self.attach_for(from_seq, true)
+    }
+
+    /// [`Self::attach`] for a client that did (`card_endings`) or did not ask to be told when a
+    /// card ends ([`crate::routes::reply::CARD_ENDINGS_HEADER`]): without it, the
+    /// [`MessageEvent::ActionRequiredEnded`] frames are left out, so a client that predates them
+    /// never meets one. Either way a card that has already ended is never handed over.
+    pub fn attach_for(self: &Arc<Self>, from_seq: u64, card_endings: bool) -> StreamReader {
         let mut inner = self.lock();
         let from_seq = from_seq.min(inner.next_seq);
         let rx = self.tx.subscribe();
@@ -609,7 +662,13 @@ impl TurnStream {
             gap,
             closed,
             counted: true,
+            card_endings,
         }
+    }
+
+    /// Whether this turn has logged the end of the card `id` (WI-17).
+    fn card_has_ended(&self, id: &str) -> bool {
+        self.lock().ended_cards.contains(id)
     }
 
     /// Cancel the turn once it has been observerless for `timeout`.
@@ -775,7 +834,16 @@ fn append_locked(
     }
     let seq = inner.next_seq;
     let json: Arc<str> = Arc::from(encode_frame(event, seq, turn_id));
-    let frame = SeqFrame { seq, json };
+    let frame = SeqFrame {
+        seq,
+        json,
+        card: CardMark::of(event),
+    };
+    if let MessageEvent::ActionRequiredEnded { id, .. } = event {
+        // Under the append's lock, so no reader can take the card's frame after this end is in
+        // the log and still believe the card waits.
+        inner.ended_cards.insert(Arc::from(id.as_str()));
+    }
 
     inner.next_seq += 1;
     if matches!(
@@ -887,6 +955,8 @@ pub struct StreamReader {
     /// whose client has stopped draining stops counting (see
     /// [`Self::mark_stalled`]) without detaching, so `Drop` must know which.
     counted: bool,
+    /// Whether this reader's client asked to be told when a card ends ([`TurnStream::attach_for`]).
+    card_endings: bool,
 }
 
 impl StreamReader {
@@ -931,6 +1001,27 @@ impl StreamReader {
     /// drained — never a hang, which is what makes attaching to an
     /// already-finished turn safe.
     pub async fn recv(&mut self) -> ReaderEvent {
+        loop {
+            match self.next_frame().await {
+                ReaderEvent::Frame(frame, _) if self.leaves_out(&frame) => continue,
+                event => return event,
+            }
+        }
+    }
+
+    /// Whether this reader leaves `frame` out (WI-17): a card that has ended by the time it would
+    /// be handed over, or a card's end for a client that did not ask for those. Its seq still
+    /// counts as delivered, so nothing is re-read for it.
+    fn leaves_out(&self, frame: &SeqFrame) -> bool {
+        match &frame.card {
+            CardMark::None => false,
+            CardMark::Ends => !self.card_endings,
+            CardMark::Shows(id) => self.stream.card_has_ended(id),
+        }
+    }
+
+    /// The next frame, from the backlog first and then live, before [`Self::leaves_out`].
+    async fn next_frame(&mut self) -> ReaderEvent {
         loop {
             if let Some(frame) = self.backlog.pop_front() {
                 self.next = frame.seq + 1;
@@ -1097,11 +1188,13 @@ mod tests {
         let empty = SeqFrame {
             seq: 0,
             json: Arc::from("{}"),
+            card: CardMark::None,
         };
         assert_eq!(empty.replay_sse(), "data: {\"replay\":true}\n\n");
         let not_an_object = SeqFrame {
             seq: 0,
             json: Arc::from("\"scalar\""),
+            card: CardMark::None,
         };
         assert_eq!(not_an_object.replay_sse(), not_an_object.live_sse());
     }
@@ -1535,5 +1628,122 @@ mod tests {
         assert_eq!(parse("banana"), DEFAULT_ORPHAN_TIMEOUT);
         assert_eq!(parse("250"), Duration::from_millis(250));
         assert_eq!(orphan_timeout(), DEFAULT_ORPHAN_TIMEOUT);
+    }
+
+    // ------------------------------------------------------------------ WI-17: cards
+
+    /// A Crew step card as the chat's loop draws it: user-only, never stored.
+    fn card(id: &str) -> MessageEvent {
+        use biorouter::conversation::message::{CrewStepRequest, CrewVaultAction, MessageContent};
+        MessageEvent::Message {
+            message: Message::assistant()
+                .with_content(MessageContent::action_required_crew_step(
+                    id,
+                    CrewStepRequest::Vault {
+                        action: CrewVaultAction::Unlock,
+                    },
+                ))
+                .user_only(),
+            token_state: TokenState::default(),
+        }
+    }
+
+    fn card_ended(id: &str) -> MessageEvent {
+        MessageEvent::ActionRequiredEnded {
+            id: id.to_string(),
+            ending: crate::routes::reply::ActionRequiredEnding::Dismissed,
+        }
+    }
+
+    /// What a reader hands its client, to the end of the log: the IDs of the cards it draws
+    /// and of the cards it says ended, in order.
+    async fn cards_seen(mut reader: StreamReader) -> (Vec<String>, Vec<String>) {
+        let (mut drawn, mut ends) = (Vec::new(), Vec::new());
+        while let ReaderEvent::Frame(frame, _) = reader.recv().await {
+            let json = frame.live_sse();
+            let value: serde_json::Value =
+                serde_json::from_str(json.strip_prefix("data: ").unwrap().trim_end()).unwrap();
+            match value["type"].as_str() {
+                Some("Message") => drawn.extend(
+                    value["message"]["content"][0]["data"]["id"]
+                        .as_str()
+                        .map(str::to_string),
+                ),
+                Some("ActionRequiredEnded") => {
+                    assert_eq!(
+                        value.as_object().map(|frame| {
+                            let mut keys: Vec<&str> = frame.keys().map(String::as_str).collect();
+                            keys.sort_unstable();
+                            keys
+                        }),
+                        Some(vec!["ending", "id", "seq", "turn_id", "type"]),
+                        "an end carries the card's ID and how it ended, never a value: {value}"
+                    );
+                    ends.push(value["id"].as_str().unwrap_or_default().to_string());
+                }
+                _ => {}
+            }
+        }
+        (drawn, ends)
+    }
+
+    /// (a) and (b): a renderer that reloads mid-turn, or a second window that opens the chat,
+    /// attaches from seq 0 and is replayed the turn's log. Before WI-17 it was handed every card
+    /// the turn ever drew, answered or not, so a card that had ended came back with its buttons.
+    /// Now it is handed exactly the cards still waiting: one whose end is in the log is left out,
+    /// and so is one the loop drew after it had already ended. The end frames go only to a
+    /// client that asked for them.
+    #[tokio::test]
+    async fn a_late_reader_is_handed_only_the_cards_still_waiting() {
+        let stream = TurnStream::new("s", "turn-cards");
+        stream.publish(&card("still-waiting"));
+        stream.publish(&card("answered"));
+        stream.publish(&text_frame("the turn goes on"));
+        stream.publish(&card_ended("answered"));
+        stream.publish(&card_ended("drawn-late"));
+        stream.publish(&card("drawn-late"));
+        stream.publish(&finish());
+        stream.close();
+
+        let (drawn, ends) = cards_seen(stream.attach(0)).await;
+        assert_eq!(drawn, ["still-waiting"]);
+        assert_eq!(ends, ["answered", "drawn-late"]);
+
+        let (drawn, ends) = cards_seen(stream.attach_for(0, false)).await;
+        assert_eq!(drawn, ["still-waiting"]);
+        assert!(ends.is_empty(), "{ends:?}");
+    }
+
+    /// (d): a reader that holds a card is told, live, the moment it ends; a card that ends
+    /// between a reader's attach and its delivery is not handed over at all.
+    #[tokio::test]
+    async fn a_live_reader_is_told_when_a_card_it_holds_ends() {
+        let stream = TurnStream::new("s", "turn-live");
+        let reader = stream.attach(0);
+        stream.publish(&card("live"));
+        stream.publish(&card("ends-before-delivery"));
+        stream.publish(&card_ended("ends-before-delivery"));
+        stream.publish(&card_ended("live"));
+        stream.publish(&finish());
+        stream.close();
+        let (drawn, ends) = cards_seen(reader).await;
+        // The reader had not taken either card when both ends were logged.
+        assert!(drawn.is_empty(), "{drawn:?}");
+        assert_eq!(ends, ["ends-before-delivery", "live"]);
+
+        let stream = TurnStream::new("s", "turn-live-2");
+        let mut reader = stream.attach(0);
+        stream.publish(&card("held"));
+        let ReaderEvent::Frame(frame, _) = reader.recv().await else {
+            panic!("the card arrives");
+        };
+        assert!(frame.live_sse().contains("\"held\""));
+        stream.publish(&card_ended("held"));
+        stream.publish(&finish());
+        stream.close();
+        assert_eq!(
+            cards_seen(reader).await,
+            (Vec::new(), vec!["held".to_string()])
+        );
     }
 }

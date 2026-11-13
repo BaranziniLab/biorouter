@@ -264,6 +264,20 @@ asked for it — while the daemon retains only its digest.
 
 Use `session attach` rather than `session --resume` on a session that is running right now: resuming opens a second agent on the same conversation, and the two do not share the daemon's turn lock.
 
+`watch` and `attach` print every card the session shows, one line each, and never a card's arguments:
+
+| Card | The line |
+|---|---|
+| A tool approval | `[approval] crew__change: Create #methods (Analysis Lab) in lab on hpc.example.edu as you`, the tool and the first line of its prompt |
+| A question | `[question]` and its first line. What you answer is never printed. |
+| A request for keys | `[credentials]`, the prompt's first line and the key names, then where to answer it |
+| A Crew step (sign in, vault, a server's key) | `[crew] Sign in to bob`, `[crew] Unlock Crew's vault` or `[crew] Can't verify hpc.example.edu yet`, then where to answer it, never by typing here |
+| One this build does not know | `[waiting] This chat is waiting for your answer.` and where to answer it |
+
+In `attach` without `--read-only`, an approval is asked in the terminal too: its prompt lines, its risk, a redacted command or the file it edits, and its arguments with every value that looks like a password, key or token shown as `(hidden)`. Then `Type allow_once or deny, then press Enter. Your next line answers this request and is not sent to the chat.` A permission for a chat to read a Crew workspace as you asks for `allow` or `deny` instead, and lasts until you revoke it with `biorouter crew grants revoke SESSION --reads`. The answer goes to `POST /action-required/tool-confirmation` with the user-action key, on its own task, so the stream keeps flowing. Several approvals queue oldest first. One answered somewhere else, such as in the desktop app, is retired when its tool result arrives, and the turn's end retires the rest. While an approval waits, a line that answers nothing is not sent to the chat. A Crew change's card, which the daemon parks under its own ID, is not retired that way when answered elsewhere: until the turn ends, a typed line answers `Not sent to the chat. A request is waiting`, and typing `deny` frees the line with `[not answered] This request is no longer waiting, so nothing was approved here.` A question, a request for keys and a Crew step are answered only in the desktop app or in a `biorouter session --shared-daemon` chat of that session, so what you type for them never passes through `attach`.
+
+`attach --read-only` prints the same lines and says where to answer, and answers nothing.
+
 ### The desktop app's daemon is not the one your terminal finds
 
 This is the single likeliest way those four commands fail, and the mental model almost everyone arrives with — *the app is open, so a daemon is running, so the CLI can talk to it* — is precisely the wrong one. Read this before concluding the commands are broken.

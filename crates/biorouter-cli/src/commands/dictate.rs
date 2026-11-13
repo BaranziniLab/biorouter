@@ -292,10 +292,14 @@ mod live {
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
+    use biorouter::dictation::recognize::correct::Change;
     use biorouter::dictation::service::{self, TranscribeRequest};
-    use biorouter::dictation::{DictationError, DictionaryRequest};
-    use biorouter_dictation_capture::ErrorCode;
+    use biorouter::dictation::{DictationError, DictionaryRequest, LoadSpec, Loaded};
+    use biorouter::managed::DictationPolicy;
+    use biorouter_dictation_capture::{ErrorCode, Probe, Ready};
     use futures::StreamExt;
+    use tokio::sync::oneshot;
+    use tokio::task::JoinHandle;
     use tokio_util::sync::CancellationToken;
 
     use super::*;
@@ -303,7 +307,8 @@ mod live {
     use crate::dictation::clipboard;
     use crate::dictation::consent::{self, CaptureConsent, PrivateTermsAsk};
     use crate::dictation::controller::{
-        self, wipe, Ended, FixedText, LiveDecode, Notice, Recorder, ServiceEngine, StopReason,
+        self, wipe, Decoded, Ended, FixedText, LiveDecode, Notice, Pcm, Recorder, ServiceEngine,
+        StopReason,
     };
     use crate::dictation::environment::{self, CaptureVerdict, Environment};
 
@@ -326,15 +331,119 @@ mod live {
     pub async fn run(args: DictateArgs) -> Result<(), Failure> {
         let started = Instant::now();
         let mut timings = DictateTimings::default();
+        let Admitted {
+            managed,
+            agent_shell,
+            interactive,
+            private_ask,
+            consent,
+            env,
+            language,
+        } = admit(&args).await?;
+        let policy = managed.dictation();
 
+        // The capture child and the worker start together; the probe, the model's
+        // resolution and then its load overlap each other and the person's speech.
+        let mut child = CaptureChild::spawn()
+            .map_err(|_| Failure::new(Outcome::NoMicrophone, messages::MSG_NO_DEVICE))?;
+        let svc = service::service();
+        svc.spawn_ahead().map_err(failure_of)?;
+        let resolve = {
+            let model = args.model.clone();
+            let language = language.clone();
+            tokio::spawn(async move {
+                let spec = svc.resolve_for(model.as_deref(), Some(&language)).await;
+                (spec, started.elapsed())
+            })
+        };
+
+        // Step 7: the capture child's probe, before the model.
+        let probe = child.probe().await;
+        timings.probe_ms = started.elapsed().as_millis() as u64;
+        refuse_without_capture(&env, probe)?;
+
+        // Step 8: a model.
+        let spec = resolved_model(resolve, &mut timings).await?;
+        let model_id = service::model_id(&spec);
+        // The load (and its warm up) runs while the person speaks.
+        let prepared = {
+            let spec = spec.clone();
+            tokio::spawn(async move {
+                let loaded = svc.prepare_with(spec).await;
+                (loaded, started.elapsed())
+            })
+        };
+        let dictionary =
+            start_dictionary(&args, private_ask, policy, agent_shell, interactive).await;
+
+        // Step 9: the device.
+        let device = std::env::var(DEVICE_ENV).ok().filter(|d| !d.is_empty());
+        let ready = open_device(&mut child, &consent, device).await?;
+        timings.device_ready_ms = started.elapsed().as_millis() as u64;
+        timings.device_rate = ready.device_rate;
+
+        // The recording. The terminal is in raw mode until the review, so a key is read
+        // the moment it is pressed; the guard restores it on every way out.
+        let cancel = CancellationToken::new();
+        let (shared_request, request_rx) =
+            decode_request(language.clone(), cancel.clone(), dictionary);
+        let engine = engine_for(&spec);
+        let mut live = LiveDecode::new(engine, shared_request);
+        let mut recorder = Recorder::new(args.seconds);
+        let mut screen = Screen::new();
+        let mut keys = crossterm::event::EventStream::new();
+        let take = record(
+            &mut child,
+            &mut live,
+            &mut recorder,
+            &mut screen,
+            &mut keys,
+            started,
+        )
+        .await?;
+        timings.first_audio_ms = take.first_audio.map_or(0, |d| d.as_millis() as u64);
+
+        // The stop: the child sends what it holds, then `stopped`, then closes the device.
+        if !take.lost {
+            drain(&mut child, &mut recorder).await;
+        }
+        timings.stop_to_last_frame_ms = take.stopped_at.elapsed().as_millis() as u64;
+        let closing = tokio::spawn(child.close());
+        let (screen, pcm, audio_ms) = ended(&take, screen, recorder, &env)?;
+        let stopped = Stopped {
+            language,
+            model_id,
+            prepared,
+            cancel,
+            request_rx,
+            live,
+            screen,
+            keys,
+            stopped_at: take.stopped_at,
+            closing,
+            audio_ms,
+            pcm,
+        };
+        finish(&args, stopped, timings).await
+    }
+
+    /// What the refusals that need nothing started leave for the run.
+    struct Admitted {
+        managed: Arc<biorouter::managed::ManagedPolicy>,
+        agent_shell: bool,
+        interactive: bool,
+        private_ask: Option<PrivateTermsAsk>,
+        consent: CaptureConsent,
+        env: Environment,
+        language: String,
+    }
+
+    /// Steps 2 to 6 of the detection order, and the language: every refusal that needs
+    /// nothing started.
+    async fn admit(args: &DictateArgs) -> Result<Admitted, Failure> {
         // Step 2: the managed policy.
         let managed = biorouter::managed::ManagedPolicy::load();
-        let policy = managed.dictation();
-        for rule in [&policy.enabled, &policy.capture] {
-            if let Some(reason) = rule.reason() {
-                return Err(Failure::new(Outcome::Policy, reason));
-            }
-        }
+        refuse_by_policy(managed.dictation())?;
         // `--private-terms` where DD-77 cannot admit it is refused with its own sentence,
         // before the terminal checks would give a more general one (O-8).
         let agent_shell = std::env::var_os(consent::AGENT_SHELL_ENV).is_some_and(|v| !v.is_empty());
@@ -368,21 +477,10 @@ mod live {
             ));
         }
         // Steps 3 and 4: a person at this terminal.
-        let consent = CaptureConsent::at_this_terminal().map_err(|verdict| {
-            let outcome = match verdict {
-                CaptureVerdict::AgentShell => Outcome::AgentShell,
-                _ => Outcome::NoTerminal,
-            };
-            Failure::lines(outcome, verdict.sentences(&Environment::default()))
-        })?;
+        let consent = terminal_consent()?;
         let env = Environment::sample();
         // Step 5: macOS over SSH.
-        if env.mac_over_ssh() {
-            return Err(Failure::lines(
-                Outcome::NoMicrophone,
-                CaptureVerdict::MacOverSsh.sentences(&env),
-            ));
-        }
+        refuse_mac_over_ssh(&env)?;
         // Step 6: the processor.
         if let Some(refusal) = service::spawn_refusal() {
             return Err(failure_of(refusal));
@@ -392,41 +490,75 @@ mod live {
             None => service::configured_language(),
         };
         service::check_language_code(&language).map_err(failure_of)?;
+        Ok(Admitted {
+            managed,
+            agent_shell,
+            interactive,
+            private_ask,
+            consent,
+            env,
+            language,
+        })
+    }
 
-        // The capture child and the worker start together; the probe, the model's
-        // resolution and then its load overlap each other and the person's speech.
-        let mut child = CaptureChild::spawn()
-            .map_err(|_| Failure::new(Outcome::NoMicrophone, messages::MSG_NO_DEVICE))?;
-        let svc = service::service();
-        svc.spawn_ahead().map_err(failure_of)?;
-        let resolve = {
-            let model = args.model.clone();
-            let language = language.clone();
-            tokio::spawn(async move {
-                let spec = svc.resolve_for(model.as_deref(), Some(&language)).await;
-                (spec, started.elapsed())
-            })
-        };
+    /// Step 2: the managed policy's `enabled` and `capture` rules.
+    fn refuse_by_policy(policy: &DictationPolicy) -> Result<(), Failure> {
+        for rule in [&policy.enabled, &policy.capture] {
+            if let Some(reason) = rule.reason() {
+                return Err(Failure::new(Outcome::Policy, reason));
+            }
+        }
+        Ok(())
+    }
 
-        // Step 7: the capture child's probe, before the model.
-        let probe = child.probe().await;
-        timings.probe_ms = started.elapsed().as_millis() as u64;
+    /// Steps 3 and 4: a person at this terminal, not an agent's shell.
+    fn terminal_consent() -> Result<CaptureConsent, Failure> {
+        CaptureConsent::at_this_terminal().map_err(|verdict| {
+            let outcome = match verdict {
+                CaptureVerdict::AgentShell => Outcome::AgentShell,
+                _ => Outcome::NoTerminal,
+            };
+            Failure::lines(outcome, verdict.sentences(&Environment::default()))
+        })
+    }
+
+    /// Step 5: macOS over SSH, where no microphone of this terminal's can be reached.
+    fn refuse_mac_over_ssh(env: &Environment) -> Result<(), Failure> {
+        if env.mac_over_ssh() {
+            return Err(Failure::lines(
+                Outcome::NoMicrophone,
+                CaptureVerdict::MacOverSsh.sentences(env),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Step 7: the capture child's probe, which must have answered and found a way to
+    /// capture on this host.
+    fn refuse_without_capture(env: &Environment, probe: Option<Probe>) -> Result<(), Failure> {
         let Some(probe) = probe else {
             return Err(Failure::new(Outcome::NoMicrophone, messages::MSG_NO_DEVICE));
         };
-        if let Some(reason) = environment::no_capture_reason(&env, &probe) {
+        if let Some(reason) = environment::no_capture_reason(env, &probe) {
             return Err(Failure::lines(
                 Outcome::NoMicrophone,
-                CaptureVerdict::NoCapture(reason).sentences(&env),
+                CaptureVerdict::NoCapture(reason).sentences(env),
             ));
         }
+        Ok(())
+    }
 
-        // Step 8: a model.
+    /// Step 8: the model the resolution found, or MSG-NO-MODEL-CLI naming the catalog's
+    /// default for this host when none is installed.
+    async fn resolved_model(
+        resolve: JoinHandle<(Result<LoadSpec, DictationError>, Duration)>,
+        timings: &mut DictateTimings,
+    ) -> Result<LoadSpec, Failure> {
         let (spec, resolved) = resolve
             .await
             .map_err(|_| Failure::new(Outcome::EngineFailed, messages::MSG_ENGINE_FAILED))?;
         timings.resolve_ms = resolved.as_millis() as u64;
-        let spec = spec.map_err(|error| match error {
+        spec.map_err(|error| match error {
             DictationError::NoModel { host, account } => {
                 let entry =
                     biorouter::dictation::catalog::CATALOG.default_for(service::host_class());
@@ -441,21 +573,21 @@ mod live {
                 )
             }
             other => failure_of(other),
-        })?;
-        let model_id = service::model_id(&spec);
-        // The load (and its warm up) runs while the person speaks.
-        let prepared = {
-            let spec = spec.clone();
-            tokio::spawn(async move {
-                let loaded = svc.prepare_with(spec).await;
-                (loaded, started.elapsed())
-            })
-        };
+        })
+    }
 
-        // The dictionary: public terms, unless the person includes private ones for this
-        // one recording (O-8), or `--session` names a private chat (DD-77). Asked before
-        // the microphone opens, and prepared while the person speaks. The question reads
-        // stdin on a blocking thread, so the model's load goes on while the person decides.
+    /// The dictionary: public terms, unless the person includes private ones for this
+    /// one recording (O-8), or `--session` names a private chat (DD-77). Asked before
+    /// the microphone opens, and prepared while the person speaks.
+    async fn start_dictionary(
+        args: &DictateArgs,
+        private_ask: Option<PrivateTermsAsk>,
+        policy: &DictationPolicy,
+        agent_shell: bool,
+        interactive: bool,
+    ) -> JoinHandle<Option<Arc<DictionaryRequest>>> {
+        // The question reads stdin on a blocking thread, so the model's load goes on while
+        // the person decides.
         let included = match private_ask {
             Some(ask) => tokio::task::spawn_blocking(consent::ask_private_terms)
                 .await
@@ -464,21 +596,26 @@ mod live {
             None => None,
         };
         let no_dictionary = args.no_dictionary || !policy.dictionary.is_allowed();
-        let dictionary = tokio::spawn(prepare_dictionary(
+        tokio::spawn(prepare_dictionary(
             no_dictionary,
             args.session.clone(),
             included,
             agent_shell,
             interactive,
-        ));
+        ))
+    }
 
-        // Step 9: the device.
-        let device = std::env::var(DEVICE_ENV).ok().filter(|d| !d.is_empty());
+    /// Step 9: the device opened, and streaming within [`READY_DEADLINE`].
+    async fn open_device(
+        child: &mut CaptureChild,
+        consent: &CaptureConsent,
+        device: Option<String>,
+    ) -> Result<Ready, Failure> {
         child
-            .start(&consent, device)
+            .start(consent, device)
             .await
             .map_err(|_| Failure::new(Outcome::MicrophoneBusy, messages::MSG_MIC_BUSY))?;
-        let ready = tokio::time::timeout(READY_DEADLINE, async {
+        tokio::time::timeout(READY_DEADLINE, async {
             loop {
                 match child.next().await {
                     CaptureEvent::Ready(ready) => return Ok(ready),
@@ -490,44 +627,72 @@ mod live {
         })
         .await
         .unwrap_or(Err(ErrorCode::StartFailed))
-        .map_err(device_failure)?;
-        timings.device_ready_ms = started.elapsed().as_millis() as u64;
-        timings.device_rate = ready.device_rate;
+        .map_err(device_failure)
+    }
 
-        // The recording. The terminal is in raw mode until the review, so a key is read
-        // the moment it is pressed; the guard restores it on every way out.
-        let cancel = CancellationToken::new();
-        let request = {
-            let language = language.clone();
-            let cancel = cancel.clone();
-            let dictionary = dictionary;
-            async move {
-                let dictionary = dictionary.await.ok().flatten();
-                TranscribeRequest {
-                    language,
-                    cancel,
-                    dictionary,
-                    decode: None,
-                }
+    /// The decode request, ready once the dictionary is prepared (the first decode waits
+    /// for it, the recording does not), and a receiver for a copy of it, which the
+    /// correction after the decode reads.
+    fn decode_request(
+        language: String,
+        cancel: CancellationToken,
+        dictionary: JoinHandle<Option<Arc<DictionaryRequest>>>,
+    ) -> (
+        impl std::future::Future<Output = TranscribeRequest> + Send + 'static,
+        oneshot::Receiver<TranscribeRequest>,
+    ) {
+        let request = async move {
+            let dictionary = dictionary.await.ok().flatten();
+            TranscribeRequest {
+                language,
+                cancel,
+                dictionary,
+                decode: None,
             }
         };
-        let (request_tx, request_rx) = tokio::sync::oneshot::channel::<TranscribeRequest>();
+        let (request_tx, request_rx) = oneshot::channel::<TranscribeRequest>();
         let shared_request = async move {
             let request = request.await;
             let _ = request_tx.send(request.clone());
             request
         };
-        let engine: Arc<dyn controller::Engine> = match controller::test_text() {
+        (shared_request, request_rx)
+    }
+
+    /// The engine the live decode uses: the worker's model, or the fixed text of a test.
+    fn engine_for(spec: &LoadSpec) -> Arc<dyn controller::Engine> {
+        match controller::test_text() {
             Some(text) => Arc::new(FixedText { text }),
             None => Arc::new(ServiceEngine {
                 spec: spec.clone(),
                 stream: STREAM,
             }),
-        };
-        let mut live = LiveDecode::new(engine, shared_request);
-        let mut recorder = Recorder::new(args.seconds);
-        let mut screen = Screen::new();
-        let mut keys = crossterm::event::EventStream::new();
+        }
+    }
+
+    /// How a recording ended.
+    struct Take {
+        stopped_at: Instant,
+        first_audio: Option<Duration>,
+        /// The recorder found the audio denied (exact zeros).
+        denied: bool,
+        /// The device was lost.
+        lost: bool,
+        /// The recording reached its cap.
+        capped: bool,
+    }
+
+    /// The recording: audio into the recorder and the live decode, the level on the status
+    /// line, until Enter, the recorder's stop, a denial or a lost device. Escape or Ctrl-C
+    /// cancels it.
+    async fn record(
+        child: &mut CaptureChild,
+        live: &mut LiveDecode,
+        recorder: &mut Recorder,
+        screen: &mut Screen,
+        keys: &mut crossterm::event::EventStream,
+        started: Instant,
+    ) -> Result<Take, Failure> {
         let mut peaks: VecDeque<f32> = VecDeque::from(vec![0.0; 5]);
         let mut tick = tokio::time::interval(Duration::from_millis(250));
         let mut first_audio = None;
@@ -568,7 +733,7 @@ mod live {
                     CaptureEvent::Level(level) => {
                         peaks.pop_front();
                         peaks.push_back(level.peak);
-                        draw(&mut screen, &recorder, &peaks);
+                        draw(screen, recorder, &peaks);
                     }
                     CaptureEvent::Error(_) | CaptureEvent::Exited | CaptureEvent::Stopped(_) => {
                         lost = true;
@@ -590,47 +755,61 @@ mod live {
                         _ => {}
                     },
                 },
-                _ = tick.tick() => draw(&mut screen, &recorder, &peaks),
+                _ = tick.tick() => draw(screen, recorder, &peaks),
             }
         };
-        timings.first_audio_ms = first_audio.map_or(0, |d| d.as_millis() as u64);
+        Ok(Take {
+            stopped_at,
+            first_audio,
+            denied,
+            lost,
+            capped,
+        })
+    }
 
-        // The stop: the child sends what it holds, then `stopped`, then closes the device.
-        if !lost {
-            child.stop().await;
-            let _ = tokio::time::timeout(DRAIN_DEADLINE, async {
-                loop {
-                    match child.next().await {
-                        CaptureEvent::Audio(mut samples) => {
-                            recorder.push(&samples);
-                            wipe(&mut samples);
-                        }
-                        CaptureEvent::Stopped(_)
-                        | CaptureEvent::Exited
-                        | CaptureEvent::Error(_) => {
-                            return;
-                        }
-                        _ => {}
+    /// The stop: the child sends what it holds, then `stopped`, then closes the device.
+    /// Its last frames go into the recorder, for at most [`DRAIN_DEADLINE`].
+    async fn drain(child: &mut CaptureChild, recorder: &mut Recorder) {
+        child.stop().await;
+        let _ = tokio::time::timeout(DRAIN_DEADLINE, async {
+            loop {
+                match child.next().await {
+                    CaptureEvent::Audio(mut samples) => {
+                        recorder.push(&samples);
+                        wipe(&mut samples);
                     }
+                    CaptureEvent::Stopped(_) | CaptureEvent::Exited | CaptureEvent::Error(_) => {
+                        return;
+                    }
+                    _ => {}
                 }
-            })
-            .await;
-        }
-        timings.stop_to_last_frame_ms = stopped_at.elapsed().as_millis() as u64;
-        let closing = tokio::spawn(child.close());
-        if lost {
+            }
+        })
+        .await;
+    }
+
+    /// The recording as it ended: a note for a lost device or the cap, then the screen
+    /// back with the recording and its length in milliseconds. A recording that was
+    /// denied, too short or silent ends the run, with the terminal restored first.
+    fn ended(
+        take: &Take,
+        mut screen: Screen,
+        recorder: Recorder,
+        env: &Environment,
+    ) -> Result<(Screen, Pcm, u64), Failure> {
+        if take.lost {
             screen.note(messages::MSG_NO_DEVICE);
         }
-        if capped {
+        if take.capped {
             screen.note(messages::MSG_CAP_STOPPED);
         }
         let audio_ms = recorder.duration_ms();
-        if denied {
+        if take.denied {
             screen.clear();
             drop(screen);
             return Err(Failure::new(
                 Outcome::Silence,
-                environment::zero_sentence(&env),
+                environment::zero_sentence(env),
             ));
         }
         let pcm = match recorder.finish() {
@@ -645,10 +824,51 @@ mod live {
                 drop(screen);
                 return Err(Failure::new(
                     Outcome::Silence,
-                    environment::zero_sentence(&env),
+                    environment::zero_sentence(env),
                 ));
             }
         };
+        Ok((screen, pcm, audio_ms))
+    }
+
+    /// What the stop leaves for the text: the live decode with the open tail still to
+    /// decode, the recording, and the terminal, still in raw mode.
+    struct Stopped {
+        language: String,
+        model_id: String,
+        prepared: JoinHandle<(Result<Loaded, DictationError>, Duration)>,
+        cancel: CancellationToken,
+        request_rx: oneshot::Receiver<TranscribeRequest>,
+        live: LiveDecode,
+        screen: Screen,
+        keys: crossterm::event::EventStream,
+        stopped_at: Instant,
+        closing: JoinHandle<Option<i32>>,
+        audio_ms: u64,
+        pcm: Pcm,
+    }
+
+    /// After the stop: the open tail decoded, the dictionary's corrections, the review
+    /// (DD-76), and the text out.
+    async fn finish(
+        args: &DictateArgs,
+        stopped: Stopped,
+        mut timings: DictateTimings,
+    ) -> Result<(), Failure> {
+        let Stopped {
+            language,
+            model_id,
+            prepared,
+            cancel,
+            request_rx,
+            live,
+            mut screen,
+            mut keys,
+            stopped_at,
+            closing,
+            audio_ms,
+            pcm,
+        } = stopped;
 
         // The open tail, decoded; Escape or Ctrl-C cancels.
         screen.status(&messages::line_transcribing(audio_ms));
@@ -686,43 +906,13 @@ mod live {
         };
         timings.correct_us = correcting.elapsed().as_micros() as u64;
         timings.stop_to_text_ms = stopped_at.elapsed().as_millis() as u64;
-        timings.tail_ms = decoded.tail_ms;
-        timings.tail_audio_s = decoded.tail_audio_s;
-        timings.segments = decoded.segments;
-        timings.segments_while_speaking = decoded.segments_while_speaking;
-        timings.encode_ms = decoded.encode_ms;
-        timings.decode_ms = decoded.decode_ms;
-        if let Ok((Ok(loaded), at)) = prepared.await {
-            timings.model_ready_ms = at.as_millis() as u64;
-            timings.load_ms = loaded.load_ms;
-            timings.warmup_ms = loaded.warmup_ms;
-            timings.backend = loaded.backend;
-        }
+        add_decode_timings(&mut timings, &decoded, prepared).await;
         screen.clear();
 
-        if text.trim().is_empty() {
+        if let Some(message) = nothing_to_send(args.copy, &text, dictionary.as_deref()) {
             drop(screen);
             let _ = closing.await;
-            return Err(Failure::new(
-                Outcome::NoSpeech,
-                if args.copy {
-                    messages::MSG_CLIPBOARD_NOTHING
-                } else {
-                    messages::MSG_NO_SPEECH
-                },
-            ));
-        }
-        if args.copy
-            && dictionary
-                .as_deref()
-                .is_some_and(|d| only_prompt_words(&text, &d.prompt_terms()))
-        {
-            drop(screen);
-            let _ = closing.await;
-            return Err(Failure::new(
-                Outcome::NoSpeech,
-                messages::MSG_CLIPBOARD_ECHO,
-            ));
+            return Err(Failure::new(Outcome::NoSpeech, message));
         }
 
         // The review (DD-76): nothing leaves before the person has seen it.
@@ -743,7 +933,79 @@ mod live {
             }
         };
         let _ = closing.await;
+        let report = Report {
+            raw_text,
+            changes,
+            decoded,
+            model_id,
+            language,
+            audio_ms,
+            timings,
+        };
+        deliver(args, text, dictionary, report)
+    }
 
+    /// The decode's own timings, and the model's load once it has finished.
+    async fn add_decode_timings(
+        timings: &mut DictateTimings,
+        decoded: &Decoded,
+        prepared: JoinHandle<(Result<Loaded, DictationError>, Duration)>,
+    ) {
+        timings.tail_ms = decoded.tail_ms;
+        timings.tail_audio_s = decoded.tail_audio_s;
+        timings.segments = decoded.segments;
+        timings.segments_while_speaking = decoded.segments_while_speaking;
+        timings.encode_ms = decoded.encode_ms;
+        timings.decode_ms = decoded.decode_ms;
+        if let Ok((Ok(loaded), at)) = prepared.await {
+            timings.model_ready_ms = at.as_millis() as u64;
+            timings.load_ms = loaded.load_ms;
+            timings.warmup_ms = loaded.warmup_ms;
+            timings.backend = loaded.backend;
+        }
+    }
+
+    /// The sentence for a text with nothing to send: none heard (MSG-NO-SPEECH, or
+    /// MSG-CLIPBOARD-NOTHING with `--copy`), or, with `--copy`, only words the dictionary's
+    /// prompt already holds (MSG-CLIPBOARD-ECHO).
+    fn nothing_to_send(
+        copy: bool,
+        text: &str,
+        dictionary: Option<&DictionaryRequest>,
+    ) -> Option<&'static str> {
+        if text.trim().is_empty() {
+            return Some(if copy {
+                messages::MSG_CLIPBOARD_NOTHING
+            } else {
+                messages::MSG_NO_SPEECH
+            });
+        }
+        if copy && dictionary.is_some_and(|d| only_prompt_words(text, &d.prompt_terms())) {
+            return Some(messages::MSG_CLIPBOARD_ECHO);
+        }
+        None
+    }
+
+    /// What `--format json` reports beside the text.
+    struct Report {
+        raw_text: String,
+        changes: Vec<Change>,
+        decoded: Decoded,
+        model_id: String,
+        language: String,
+        audio_ms: u64,
+        timings: DictateTimings,
+    }
+
+    /// The text out: to the clipboard with `--copy` (printed on stdout, exit 5, when no
+    /// clipboard can be reached), as one schema 1 object with `--format json`, or on
+    /// stdout.
+    fn deliver(
+        args: &DictateArgs,
+        text: String,
+        dictionary: Option<Arc<DictionaryRequest>>,
+        report: Report,
+    ) -> Result<(), Failure> {
         // The text goes out, and only then does the dictionary learn which terms it used.
         let destination;
         if args.copy {
@@ -772,45 +1034,7 @@ mod live {
             destination = "stdout";
         }
         if args.format == DictateFormat::Json {
-            let json = DictateJson {
-                schema: crate::dictation::SCHEMA,
-                text: text.clone(),
-                raw_text,
-                changes: changes
-                    .iter()
-                    .map(|c| JsonChange {
-                        start: c.start,
-                        end: c.end,
-                        from: c.from.clone(),
-                        to: c.to.clone(),
-                        stage: c.stage.as_str().to_string(),
-                        entry_id: Some(c.entry_id.clone()),
-                    })
-                    .collect(),
-                segments: decoded
-                    .pieces
-                    .iter()
-                    .map(|p| JsonSegment {
-                        t0: p.t0_ms as f64 / 1_000.0,
-                        t1: p.t1_ms as f64 / 1_000.0,
-                        text: p.text.clone(),
-                    })
-                    .collect(),
-                model: model_id,
-                language,
-                audio_s: audio_ms as f64 / 1_000.0,
-                elapsed_ms: timings.stop_to_text_ms,
-                bias_scope: dictionary
-                    .as_deref()
-                    .map_or("public", |d| d.scope().as_str())
-                    .into(),
-                retried: decoded.retried.map(|reason| JsonRetried {
-                    reason: reason.as_str().into(),
-                }),
-                no_speech: false,
-                destination: destination.into(),
-                timings,
-            };
+            let json = dictate_json(&text, report, dictionary.as_deref(), destination);
             let mut out = std::io::stdout().lock();
             let _ = serde_json::to_writer_pretty(&mut out, &json);
             let _ = writeln!(out);
@@ -831,64 +1055,133 @@ mod live {
         Ok(())
     }
 
+    /// `--format json`'s object for `text`, sent to `destination`.
+    fn dictate_json(
+        text: &str,
+        report: Report,
+        dictionary: Option<&DictionaryRequest>,
+        destination: &str,
+    ) -> DictateJson {
+        let Report {
+            raw_text,
+            changes,
+            decoded,
+            model_id,
+            language,
+            audio_ms,
+            timings,
+        } = report;
+        DictateJson {
+            schema: crate::dictation::SCHEMA,
+            text: text.to_string(),
+            raw_text,
+            changes: changes
+                .iter()
+                .map(|c| JsonChange {
+                    start: c.start,
+                    end: c.end,
+                    from: c.from.clone(),
+                    to: c.to.clone(),
+                    stage: c.stage.as_str().to_string(),
+                    entry_id: Some(c.entry_id.clone()),
+                })
+                .collect(),
+            segments: decoded
+                .pieces
+                .iter()
+                .map(|p| JsonSegment {
+                    t0: p.t0_ms as f64 / 1_000.0,
+                    t1: p.t1_ms as f64 / 1_000.0,
+                    text: p.text.clone(),
+                })
+                .collect(),
+            model: model_id,
+            language,
+            audio_s: audio_ms as f64 / 1_000.0,
+            elapsed_ms: timings.stop_to_text_ms,
+            bias_scope: dictionary.map_or("public", |d| d.scope().as_str()).into(),
+            retried: decoded.retried.map(|reason| JsonRetried {
+                reason: reason.as_str().into(),
+            }),
+            no_speech: false,
+            destination: destination.into(),
+            timings,
+        }
+    }
+
     /// `dictation test`: steps 2 to 5 and 7 of the detection order (it needs no model and
     /// no engine), then `seconds` of audio, measured and dropped.
     pub async fn microphone_test(seconds: u32) -> Result<(), Failure> {
         let managed = biorouter::managed::ManagedPolicy::load();
-        let policy = managed.dictation();
-        for rule in [&policy.enabled, &policy.capture] {
-            if let Some(reason) = rule.reason() {
-                return Err(Failure::new(Outcome::Policy, reason));
-            }
-        }
-        let consent = CaptureConsent::at_this_terminal().map_err(|verdict| {
-            let outcome = match verdict {
-                CaptureVerdict::AgentShell => Outcome::AgentShell,
-                _ => Outcome::NoTerminal,
-            };
-            Failure::lines(outcome, verdict.sentences(&Environment::default()))
-        })?;
+        refuse_by_policy(managed.dictation())?;
+        let consent = terminal_consent()?;
         let env = Environment::sample();
-        if env.mac_over_ssh() {
-            return Err(Failure::lines(
-                Outcome::NoMicrophone,
-                CaptureVerdict::MacOverSsh.sentences(&env),
-            ));
-        }
+        refuse_mac_over_ssh(&env)?;
         let mut child = CaptureChild::spawn()
             .map_err(|_| Failure::new(Outcome::NoMicrophone, messages::MSG_NO_DEVICE))?;
-        let Some(probe) = child.probe().await else {
-            return Err(Failure::new(Outcome::NoMicrophone, messages::MSG_NO_DEVICE));
-        };
-        if let Some(reason) = environment::no_capture_reason(&env, &probe) {
-            return Err(Failure::lines(
-                Outcome::NoMicrophone,
-                CaptureVerdict::NoCapture(reason).sentences(&env),
-            ));
-        }
+        refuse_without_capture(&env, child.probe().await)?;
         let device = std::env::var(DEVICE_ENV).ok().filter(|d| !d.is_empty());
         let asked = Instant::now();
-        child
-            .start(&consent, device)
-            .await
-            .map_err(|_| Failure::new(Outcome::MicrophoneBusy, messages::MSG_MIC_BUSY))?;
-        let ready = tokio::time::timeout(READY_DEADLINE, async {
-            loop {
-                match child.next().await {
-                    CaptureEvent::Ready(ready) => return Ok(ready),
-                    CaptureEvent::Error(code) => return Err(code),
-                    CaptureEvent::Exited => return Err(ErrorCode::StartFailed),
-                    _ => continue,
-                }
-            }
-        })
-        .await
-        .unwrap_or(Err(ErrorCode::StartFailed))
-        .map_err(device_failure)?;
+        let ready = open_device(&mut child, &consent, device).await?;
         let opened = Instant::now();
         let mut recorder = Recorder::new(Some(seconds));
         let mut screen = Screen::new();
         let mut keys = crossterm::event::EventStream::new();
+        let measured = measure(&mut child, &mut recorder, &mut screen, &mut keys, asked).await?;
+        let wall = opened.elapsed();
+        child.stop().await;
+        let _ = child.close().await;
+        screen.clear();
+        drop(screen);
+        if measured.denied {
+            return Err(Failure::new(
+                Outcome::Silence,
+                environment::zero_sentence(&env),
+            ));
+        }
+        let samples = measured.samples;
+        let rms = if samples > 0 {
+            (measured.energy / samples as f64).sqrt() as f32
+        } else {
+            0.0
+        };
+        for line in test_report(&TestRecording {
+            device: ready.device,
+            backend: ready.backend,
+            device_rate: ready.device_rate,
+            samples,
+            wall,
+            first_audio_ms: measured.first_audio_ms.unwrap_or(0),
+            peak: measured.peak,
+            rms,
+        }) {
+            println!("{line}");
+        }
+        Ok(())
+    }
+
+    /// What `dictation test`'s recording measured.
+    struct Measured {
+        /// From the `start` request to the first audio frame.
+        first_audio_ms: Option<u64>,
+        peak: f32,
+        /// The sum of the squared samples.
+        energy: f64,
+        samples: u64,
+        /// The recorder found the audio denied (exact zeros).
+        denied: bool,
+    }
+
+    /// `dictation test`'s recording: the level on the status line and the audio measured,
+    /// until Enter or the recorder's stop. Escape or Ctrl-C cancels it, and a lost device
+    /// ends it with MSG-NO-DEVICE.
+    async fn measure(
+        child: &mut CaptureChild,
+        recorder: &mut Recorder,
+        screen: &mut Screen,
+        keys: &mut crossterm::event::EventStream,
+        asked: Instant,
+    ) -> Result<Measured, Failure> {
         let mut keys_open = true;
         let mut peaks: VecDeque<f32> = VecDeque::from(vec![0.0; 5]);
         let mut first_audio_ms = None;
@@ -921,7 +1214,7 @@ mod live {
                     CaptureEvent::Level(level) => {
                         peaks.pop_front();
                         peaks.push_back(level.peak);
-                        draw(&mut screen, &recorder, &peaks);
+                        draw(screen, recorder, &peaks);
                     }
                     CaptureEvent::Error(_) | CaptureEvent::Exited | CaptureEvent::Stopped(_) => {
                         screen.clear();
@@ -945,35 +1238,13 @@ mod live {
                 },
             }
         }
-        let wall = opened.elapsed();
-        child.stop().await;
-        let _ = child.close().await;
-        screen.clear();
-        drop(screen);
-        if denied {
-            return Err(Failure::new(
-                Outcome::Silence,
-                environment::zero_sentence(&env),
-            ));
-        }
-        let rms = if samples > 0 {
-            (energy / samples as f64).sqrt() as f32
-        } else {
-            0.0
-        };
-        for line in test_report(&TestRecording {
-            device: ready.device,
-            backend: ready.backend,
-            device_rate: ready.device_rate,
-            samples,
-            wall,
-            first_audio_ms: first_audio_ms.unwrap_or(0),
+        Ok(Measured {
+            first_audio_ms,
             peak,
-            rms,
-        }) {
-            println!("{line}");
-        }
-        Ok(())
+            energy,
+            samples,
+            denied,
+        })
     }
 
     /// The terminal's dictionary for this recording (DD-36, DD-77, O-8): public terms, the

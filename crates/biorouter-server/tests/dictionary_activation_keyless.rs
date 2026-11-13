@@ -104,3 +104,52 @@ async fn keyless_daemon_does_not_attach_the_dictionary_to_a_chat() {
         "{text}"
     );
 }
+
+// DD-56 at the new-chat door on a daemon that holds no key: a start that names the
+// Dictionary is sent to the server, like the activation choice, and leaves no chat.
+#[tokio::test]
+async fn keyless_daemon_does_not_start_a_chat_with_the_dictionary() {
+    let state = AppState::new().await.unwrap();
+    let app = biorouter_server::routes::agent::routes(Arc::clone(&state)).layer(
+        axum::middleware::from_fn_with_state(
+            SECRET.to_string(),
+            biorouter_server::auth::check_token,
+        ),
+    );
+    let before = state.session_manager().list_sessions().await.unwrap().len();
+    let body = json!({
+        "working_dir": std::env::temp_dir().to_string_lossy(),
+        "extension_overrides": [
+            {"type": "platform", "name": "dictionary", "description": "", "bundled": true}
+        ]
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/agent/start")
+                .header("X-Secret-Key", SECRET)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert!(
+        text.contains(&dictionary::msg_dictionary_host_settings(
+            "--suggest-from-chats on"
+        )),
+        "{text}"
+    );
+    assert_eq!(
+        state.session_manager().list_sessions().await.unwrap().len(),
+        before,
+        "a refused start leaves no chat behind"
+    );
+}

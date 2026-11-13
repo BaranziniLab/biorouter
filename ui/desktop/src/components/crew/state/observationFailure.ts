@@ -1,3 +1,4 @@
+import { CREW_DEVICE_KEY_MISSING, CREW_DEVICE_NOT_RECOGNIZED } from '../api/errors';
 import { CrewHttpError } from '../crewApi';
 import { crewObservationCopy } from './copy';
 
@@ -56,6 +57,11 @@ export const ANSWERED_OBSERVATION_CODES: readonly string[] = [
   'response_too_large',
   // The host deleted the workspace (OW-5): the broker answered, and only removal is left.
   'workspace_deleted',
+  // This computer's key is gone, or the workspace no longer knows it (AO-9): the daemon answered
+  // for it, and the connection bar offers Add this computer again from the live view. Taken for a
+  // dropped connection, the code was cleared before the bar could read it.
+  CREW_DEVICE_KEY_MISSING,
+  CREW_DEVICE_NOT_RECOGNIZED,
 ];
 
 /** The broker's code for every request to a workspace its host deleted (OW-5). */

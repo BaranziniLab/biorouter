@@ -1,7 +1,7 @@
 # Getting started with Crew
 
 > **What this is.** The first page of the Crew user manual: what you need, the background service, the first screen, the parts of the Crew view, and the terms the manual uses.
-> **Status:** Current. Checked against the Crew code on 2026-10-16.
+> **Status:** Current. Checked against the Crew code on 2026-11-06, after the account ownership change ([design](design/account-ownership.md)).
 > **Audience:** Lab members who are new to Crew, including people who have never used SSH or a terminal.
 
 Crew is the part of the Biorouter desktop app where your lab chats, shares files and runs AI agents. Open it from **Crew** in the Biorouter sidebar, below **New chat**. As in Slack, a workspace holds channels where you post messages and files. Teams group channels, and agents read and post in a channel when you allow it. You see only the channels you are in. In an open workspace, **Browse channels** lists the others, and you join them yourself. In a managed workspace, ask a channel's owner to add you. The host can also add you, but only to a team or channel the host is in.
@@ -18,14 +18,14 @@ A word in braces is a name Crew fills in: "Connect to {workspace}" appears as "C
 |---|---|
 | The Biorouter desktop app ([Installation and setup](../getting-started/installation.md)) | You or IT |
 | An account on the lab's Linux server, with its SSH key, password or verification code | Your IT team |
-| The server's identity in your [known hosts file](#glossary-of-crew-terms) ([Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer)). Crew never accepts a new server by itself. | You, with the fingerprint from IT |
+| The server's identity in your [known hosts file](#glossary-of-crew-terms) ([Verify the server on this computer](joining-a-workspace.md#verify-the-server-on-this-computer)). Crew never accepts a new server by itself: you compare the fingerprint, then choose **Trust this key** or add the key in a terminal. | You, with the fingerprint from IT |
 | `biorouter-crew` in your own account on the server. Biorouter installs it when you join or host ([Install Crew in your server account](joining-a-workspace.md#install-crew-in-your-server-account)). | Biorouter, or you or IT |
 | The host's invitation message, valid for 24 hours | The host |
 | For a Private workspace, your institution's short ID, such as `ucsf`. The invitation usually fills it in. | The host |
 
 ### Signing in to the server
 
-When the server asks for a password or a code, the Sign in window opens. Type it there. Nothing you type is saved. Setting Crew up in your server account uses the same window, and one sign-in covers the install and the connection after it. For help, choose **Trouble signing in?** there, or see [Sign in to the server](connections-and-troubleshooting.md#sign-in-to-the-server). In a terminal, `biorouter crew auth` signs you in instead ([Sign in and stay connected](command-line.md#sign-in-and-stay-connected)).
+When the server asks for a password or a code, the Sign in window opens. Type it there. Nothing you type is saved. Setting Crew up in your server account uses the same window, and one sign-in covers the install and the connection after it. For help, choose **Trouble signing in?** there, or see [Sign in to the server](connections-and-troubleshooting.md#sign-in-to-the-server). In a terminal, `biorouter crew auth` signs you in instead ([Sign in and stay connected](command-line.md#sign-in-and-stay-connected)). When a chat sets Crew up for you, it shows a **Sign in** card that opens the same window, and what you type there never reaches the chat ([Sign in, unlock and check a server's key](agents-and-chat-access.md#sign-in-unlock-and-check-a-servers-key)).
 
 ### Jump hosts
 
@@ -43,10 +43,14 @@ If a "Biorouter Error" window appears when you open Biorouter, its message names
 
 ## The first screen
 
-The first time, Crew shows "Work together in Crew" with a **Join a workspace** button and a **Host a new workspace** link. Most people join.
+The first time, Crew shows "Work together in Crew" with a **Join a workspace** button and two links, **Open a workspace on a server** and **Host a new workspace**. Most people join.
 
-- To join, follow [Joining a workspace](joining-a-workspace.md).
+- To join with an invitation, follow [Joining a workspace](joining-a-workspace.md).
+- To open a workspace your server account already has, such as on a new computer, follow [Open a workspace on a server](joining-a-workspace.md#open-a-workspace-on-a-server).
 - To host, follow [Hosting a workspace](hosting-a-workspace.md).
+- To do any of these from a chat instead, ask an ordinary Biorouter chat, such as "Set up Crew on lab.example.edu as bob and host a workspace called chen-lab", or paste your invitation and ask it to join. Each step waits for you on a card in the chat ([Set up Crew from a chat](agents-and-chat-access.md#set-up-crew-from-a-chat)).
+
+Crew knows you by your account on the lab server. Every computer that signs in to the server as your account is you in Crew ([You are your server account](joining-a-workspace.md#you-are-your-server-account)).
 
 After that, the main area shows what to do next. [What each status means](connections-and-troubleshooting.md#what-each-status-means) explains each connection status, and [When joining does not work](joining-a-workspace.md#when-joining-does-not-work) covers the screens you may see while you join.
 
@@ -59,12 +63,12 @@ After that, the main area shows what to do next. [What each status means](connec
 | "Invitations", "Waiting to join", "Joined, not in your teams" | Invitations for you (**Join**). For the host, and every member of an open workspace, people to let in (**Let in…**) or add to a team (**Add to a team…**). |
 | Teams and channels | Bold names with a count have unread messages. A pencil marks unsent text, and the count takes its place while the channel has unread messages ([Find your way around the sidebar](teams-channels-and-people.md#find-your-way-around-the-sidebar)). In an open workspace, **Browse channels** under a team lists channels you can join. |
 | Agents | Your unfinished tasks and chats with access. "Needs you" marks a task that waits for your approval ([See which agents have access](agents-and-chat-access.md#see-which-agents-have-access)). |
-| You row | **Edit profile…**, **Copy my username** and **Keys and security…**, which lists your devices and where your keys are stored. Only a new Crew profile can use an [encrypted vault](privacy-and-security.md#use-an-encrypted-vault) instead of the system keychain. |
+| You row | **Edit profile…**, **Copy my username** and **Keys and security…**, which lists your computers and where your keys are stored. Only a new Crew profile can use an [encrypted vault](privacy-and-security.md#use-an-encrypted-vault) instead of the system keychain. |
 | Channel header | The channel name opens the channel menu. A "Restricted" or "Public-safe" badge follows. **Channel details** opens the **About**, **Members**, **Files** and **Agent access** tabs. |
-| Connection bar | Under the channel header. It shows a problem with **Retry**, **Try again** or **Dismiss**, a locked vault with **Unlock**, or a new device with **Review** ([Messages and what to do](connections-and-troubleshooting.md#messages-and-what-to-do)). |
+| Connection bar | Under the channel header. It shows a problem with **Retry**, **Try again** or **Dismiss**, a locked vault with **Unlock**, a new computer on your account with **Review** and **Acknowledge**, or a lost key with **Add this computer again** ([Messages and what to do](connections-and-troubleshooting.md#messages-and-what-to-do)). |
 | Message box | Enter sends. Shift+Enter adds a line. **Attach** adds a file of up to 1 GB or a server path, shared when you press Send. **Ask my agent**, or a message that starts with `@agent`, `/agent` or `/task`, starts a task everyone in the channel sees ([Messages and files](messages-and-files.md), [Agents and chat access](agents-and-chat-access.md#start-a-task-from-the-message-box)). |
 
-Outside Crew, the **Crew** item in the app sidebar shows how many unread messages you have, and new messages raise a system notification ([Unread messages](messages-and-files.md#unread-messages)). A chat with access shows a **Crew · #{channel}** chip. Choose it to manage that access.
+Outside Crew, the **Crew** item in the app sidebar shows how many unread messages you have, and new messages raise a system notification ([Unread messages](messages-and-files.md#unread-messages)). A chat with access shows a **Crew · #{channel}** chip. Choose it to manage that access. A chat that may read a workspace as you shows "Reads {workspace} as you" with **Revoke** instead ([Use Crew from a chat](agents-and-chat-access.md#use-crew-from-a-chat)).
 
 ### The privacy chip
 
@@ -89,9 +93,9 @@ If support staff ask for an ID, **Copy for support** in the menu of that person,
 | Chat access | Lets an ordinary chat read and post in a channel after you type `/crew` in it. It ends when you revoke it, or after an hour. |
 | Connection | This computer's saved link to one workspace: your server login, SSH settings, privacy choice and institution. Change it in **Connection settings…**. |
 | Crew profile | Your Crew keys and saved workspaces on this computer. A new one has no keys yet. |
-| Device | A computer where you use Crew, each with its own key. **Keys and security…** lists yours. |
+| Device key | The key one of your computers holds for a workspace. Each computer where you use Crew has its own. **Keys and security…** lists your computers, and removes one ([Your computers](privacy-and-security.md#your-computers)). |
 | Fingerprint | A value you compare with a trusted copy to confirm an identity. Workspace and server fingerprints differ. Neither is your code. |
-| Host | The lab member who runs the workspace in their server account. Only the host removes people from the workspace, changes its privacy or governance, renames it or deletes it. In a managed workspace, only the host invites people and lets them in. |
+| Host | The lab member who runs the workspace in their server account, from any computer that signs in as that account. Only the host removes people from the workspace, changes its privacy or governance, renames it or deletes it. In a managed workspace, only the host invites people and lets them in. |
 | Institution | Your organization's short ID, such as `ucsf`. A Private workspace needs it before agents can work there. |
 | Invitation | The host's message that lets you join. It is valid for 24 hours. |
 | Jump host | A server you pass through to reach the lab server. See [Jump hosts](#jump-hosts). |
@@ -105,7 +109,8 @@ If support staff ask for an ID, **Copy for support** in the menu of that person,
 | Vault | An encrypted file on this computer, with its own passphrase, that holds your Crew keys in place of the system keychain. |
 | Workspace | Your lab's shared space on the server, with its people, teams and channels. |
 | Workspace context | A short Markdown document about the workspace and its server, such as where data lives and how jobs run, that every member's agent reads. It informs agents and never tells them to do anything. See [The workspace context](agents-and-chat-access.md#the-workspace-context). |
-| Your code | 16 letters and numbers (`XXXX-XXXX-XXXX-XXXX`) that the host enters with **Let in…**. It stays the same when you reconnect or close the app, and never contains I, L, O or U. |
+| Your code | 16 letters and numbers (`XXXX-XXXX-XXXX-XXXX`) that the host enters with **Let in…**, on a server with an older Crew. A current Crew needs no code. It stays the same when you reconnect or close the app, and never contains I, L, O or U. |
+| Your server account | Your login on the lab server, such as `bob`. Crew knows you by it: whoever signs in to the server as it is you in Crew. |
 
 ## Related documentation
 

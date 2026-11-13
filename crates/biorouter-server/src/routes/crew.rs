@@ -48,6 +48,13 @@ const MAX_QUEUED_RUN_PROJECTIONS: usize = 256;
 const RUN_PROJECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(50);
 static RUN_SLOTS: LazyLock<Arc<Semaphore>> =
     LazyLock::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_RUNS)));
+/// A task start refused because [`RUN_SLOTS`] has no slot left.
+const RUN_SLOTS_FULL: &str =
+    "Four Crew tasks are already active on this computer. Finish or cancel one first.";
+/// A cancel naming a task this computer's ledger does not hold on that connection.
+const TASK_NOT_OWNED: &str = "This task is not owned by this computer and connection.";
+/// A Crew task refused, or stopped, at a usage limit (#483's limits).
+pub(crate) const CREW_USAGE_LIMIT_REACHED: &str = "crew_usage_limit_reached";
 static LEDGERS: LazyLock<Mutex<HashMap<PathBuf, Arc<RunLedger>>>> = LazyLock::new(Mutex::default);
 struct RunLedger {
     path: PathBuf,
@@ -253,6 +260,12 @@ impl CrewRouteError {
         }
     }
 
+    /// The refusal's code and sentence, for a caller that words it itself (a chat's person
+    /// tools, `routes::crew_tools`).
+    pub(crate) fn code_and_sentence(&self) -> (&str, &str) {
+        (&self.code, &self.error)
+    }
+
     /// Add a field beside `code` and `error`, which it can never replace.
     fn with(mut self, key: &str, value: impl Serialize) -> Self {
         if key != "code" && key != "error" {
@@ -377,7 +390,7 @@ fn require_person(headers: &HeaderMap) -> Result<(), CrewRouteError> {
 /// `biorouter::crew::server_label`), and `last_error_code`, which types `last_error` when the
 /// daemon has a code for it (Q3-12: `crew_membership_ended`), so a client never has to match
 /// the sentence.
-async fn connection_view(
+pub(crate) async fn connection_view(
     connection: &biorouter::crew::Connection,
 ) -> anyhow::Result<CrewConnectionView> {
     let crew = manager()?;
@@ -387,6 +400,10 @@ async fn connection_view(
     let mut view = saved_connection_view(connection, last_error_code, server_label, server_storage);
     view.server_access = crew.server_access(&connection.id);
     view.workspace_deleted = crew.workspace_deleted(&connection.id);
+    // AO-10. Only a connection removed meanwhile is refused here; it reports nothing new.
+    view.new_devices = crew.new_devices(&connection.id).await.unwrap_or_default();
+    view.account_identity = crew.account_identity(&connection.id);
+    view.server_version = crew.server_version(&connection.id);
     Ok(view)
 }
 
@@ -405,6 +422,9 @@ fn saved_connection_view(
         server_storage,
         server_access: None,
         workspace_deleted: false,
+        new_devices: Vec::new(),
+        account_identity: None,
+        server_version: None,
     }
 }
 
@@ -413,7 +433,7 @@ fn saved_connection_view(
     operation_id = "crew_list_connections",
     path = "/crew/connections",
     responses(
-        (status = 200, description = "Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`. `server_storage` says when a connected workspace's server has stopped saving changes (`code` `storage_full` or `storage_failed`, `since` when); `null` while it saves or when that is not known. `server_access` says what agents can do on the server as the last connect found (whether full access is available, whether commands can be confined, the bridge's version, account and home); `null` before the first connect. `workspace_deleted` is `true` once the workspace answered `crew_workspace_deleted`: its host deleted it, so the person can only remove it from this computer", body = CrewConnectionList),
+        (status = 200, description = "Every connection saved on this computer, each with `server_label`, the person's own name for its server (their SSH alias when one maps to the address, else the host; display only), and `last_error_code` when the daemon has a code for `last_error`: `crew_membership_ended` (the workspace refused this computer or its person as no longer a member, so the daemon stops dialling it), an SSH failure's code or `crew_workspace_identity_mismatch`. `server_storage` says when a connected workspace's server has stopped saving changes (`code` `storage_full` or `storage_failed`, `since` when); `null` while it saves or when that is not known. `server_access` says what agents can do on the server as the last connect found (whether full access is available, whether commands can be confined, the bridge's version, account and home); `null` before the first connect. `workspace_deleted` is `true` once the workspace answered `crew_workspace_deleted`: its host deleted it, so the person can only remove it from this computer. `new_devices` lists devices of the person's account added since this computer last saw them, with how and when each was added, until `POST /crew/connections/{id}/devices/acknowledge`. `account_identity` is `true` when the workspace's server takes joining by account (any computer that signs in to the server as the account can open the workspace again, so removing the host's last computer no longer ends the host controls), `false` for an older server, and `null` while not connected. `server_version` is the workspace broker's version as its last verified `hello` said (unsigned, display only), `null` while not connected or from an older broker that does not say", body = CrewConnectionList),
         (status = 400, description = "`crew_request_refused`: Crew's saved settings could not be read", body = CrewError),
         (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError)
     ),
@@ -427,6 +447,34 @@ pub async fn list_connections(headers: HeaderMap) -> CrewResult<CrewConnectionLi
         .into_iter()
         .collect::<anyhow::Result<Vec<_>>>()?;
     Ok(Json(CrewConnectionList { connections }))
+}
+
+/// One saved connection, as `GET /crew/connections` lists it.
+#[utoipa::path(
+    get,
+    operation_id = "crew_get_connection",
+    path = "/crew/connections/{id}",
+    params(("id" = String, Path, description = "The saved connection")),
+    responses(
+        (status = 200, description = "The connection, in the shape `GET /crew/connections` lists it, `new_devices`, `account_identity` and `server_version` included", body = CrewConnectionView),
+        (status = 403, description = "No proof that a person asked: `crew_user_action_required`, or `crew_human_authority_unavailable` on a daemon that holds no user-action key", body = CrewError),
+        (status = 404, description = "`crew_connection_not_found`: no saved connection has that ID", body = CrewError)
+    ),
+    tag = "Crew"
+)]
+pub async fn get_connection(
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> CrewResult<CrewConnectionView> {
+    require_person(&headers)?;
+    let connection = manager()?.connection(&id).await.map_err(|_| {
+        CrewRouteError::new(
+            StatusCode::NOT_FOUND,
+            "crew_connection_not_found",
+            "This computer has no saved Crew connection with that ID.",
+        )
+    })?;
+    Ok(Json(connection_view(&connection).await?))
 }
 
 #[utoipa::path(
@@ -880,7 +928,7 @@ fn empty_object() -> Value {
         (status = 413, description = "`crew_request_invalid`: the body is larger than the route takes", body = CrewError),
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
-        (status = 409, description = "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent. `crew_workspace_deleted`: the workspace's host deleted it, so it answers nothing else and the connection can only be removed from this computer; `workspace` names it", body = CrewError),
+        (status = 409, description = "`crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent. `crew_workspace_deleted`: the workspace's host deleted it, so it answers nothing else and the connection can only be removed from this computer; `workspace` names it. `crew_device_key_missing`: this computer no longer holds its device key for the workspace, so nothing was sent; `crew_device_not_recognized`: the workspace no longer recognizes this computer's device while the account is still its host or a member. For both, `POST /crew/connections/{id}/rejoin` adds this computer again; `workspace` names it", body = CrewError),
         (status = 503, description = "The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (the bridge was lost after the request was written, so whether the workspace applied it is not known; retry with `request_id`, its idempotency key, to apply it at most once) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)", body = CrewError)
     ),
     tag = "Crew"
@@ -940,6 +988,52 @@ struct RunLifetime {
     _permit: OwnedSemaphorePermit,
 }
 
+/// The usage limit's refusal for a Crew task about to start, as both doors answer it: at the
+/// month's limit for any task, and at the asking chat's own for a chat's `tasks_ask`
+/// ([`biorouter::agents::usage_limit::crew_task_refusal`]).
+pub(crate) async fn refuse_at_usage_limit(
+    state: &AppState,
+    asking_chat: Option<&str>,
+) -> Result<(), CrewRouteError> {
+    match biorouter::agents::usage_limit::crew_task_refusal(
+        state.session_manager(),
+        asking_chat,
+        &biorouter::config::usage::UsageLimits::load(),
+    )
+    .await
+    {
+        Some(refusal) => Err(CrewRouteError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            CREW_USAGE_LIMIT_REACHED,
+            refusal,
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Whether this exact task request was admitted before: an idempotent retry, which
+/// [`start_owned_run`] answers with the task it already started. A usage limit reached since
+/// must not hide that task, so `tasks_ask` asks this before it refuses at a limit. A ledger that
+/// cannot be read answers `false`: the caller then refuses as it would for a new request.
+pub(crate) async fn already_admitted(connection_id: &str, body: &StartRunRequest) -> bool {
+    let (Ok(ledger), Ok((key, hash))) = (
+        run_ledger().await,
+        run_request_identity(connection_id, body),
+    ) else {
+        return false;
+    };
+    let stored = ledger.state.lock().await;
+    admitted_before(&stored.requests, &key, &hash)
+}
+
+/// [`already_admitted`]'s decision: a receipt under `key` for the same payload. A receipt for a
+/// different payload is a conflict, which [`start_owned_run`] refuses on its own.
+fn admitted_before(requests: &HashMap<String, StartReceipt>, key: &str, hash: &str) -> bool {
+    requests
+        .get(key)
+        .is_some_and(|receipt| receipt.payload_hash == hash)
+}
+
 fn run_request_identity(
     connection_id: &str,
     body: &StartRunRequest,
@@ -992,12 +1086,23 @@ fn check_run_channels(
     )
 }
 
-fn run_policy(body: &StartRunRequest) -> biorouter::crew::RunPolicy {
+/// Where a task's request came from, as the run's policy carries it. The route starts a task for
+/// the person and says nothing more; a chat's `tasks_ask` (`routes::crew_tools`) starts one for
+/// a chat, which a Private chat marks `restricted`, with its affiliations, so a public model is
+/// refused as a grant to that chat would be (AO-12).
+#[derive(Clone, Default)]
+pub(crate) struct RunOrigin {
+    pub(crate) restricted: bool,
+    pub(crate) institution_ids: std::collections::BTreeSet<String>,
+}
+
+fn run_policy(body: &StartRunRequest, origin: &RunOrigin) -> biorouter::crew::RunPolicy {
     biorouter::crew::RunPolicy {
+        origin_restricted: origin.restricted,
         expected_mode: body.expected_mode,
         expected_policy_epoch: body.expected_policy_epoch,
         expected_workspace_policy_epoch: body.expected_workspace_policy_epoch,
-        ..Default::default()
+        origin_institution_ids: origin.institution_ids.clone(),
     }
 }
 
@@ -1016,6 +1121,7 @@ fn run_policy(body: &StartRunRequest) -> biorouter::crew::RunPolicy {
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
         (status = 409, description = "`crew_idempotency_conflict`: the `request_id` belongs to a different task request; `crew_start_outcome_unknown`: that request was admitted but its setup did not complete, so inspect it before starting another; `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent", body = CrewError),
+        (status = 429, description = "`crew_usage_limit_reached`: this month's usage limit is reached, so no task was started; `error` says where the limit is raised. A chat's Crew tools answer it too when the asking chat's own limit is reached. A retry of a request already admitted is answered with its task instead", body = CrewError),
         (status = 503, description = "The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (the bridge was lost after the request was written; retry with `request_id`, its idempotency key) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)", body = CrewError)
     ),
     tag = "Crew"
@@ -1027,6 +1133,17 @@ pub async fn start_run(
     CrewJson(body): CrewJson<StartRunRequest>,
 ) -> CrewResult<RunView> {
     require_person(&headers)?;
+    start_owned_run(state, id, body, RunOrigin::default()).await
+}
+
+/// [`start_run`] once a person's proof is checked: the route's whole start, shared with a
+/// chat's `tasks_ask`, which passes the chat as the task's `origin`.
+pub(crate) async fn start_owned_run(
+    state: Arc<AppState>,
+    id: String,
+    body: StartRunRequest,
+    origin: RunOrigin,
+) -> CrewResult<RunView> {
     require_valid(
         body.posting_grant,
         "Grant this task permission to publish in the selected channel.",
@@ -1070,11 +1187,10 @@ pub async fn start_run(
             "Crew task history has reached its 4096-request safety limit",
         )?;
     }
-    let permit = Arc::clone(&RUN_SLOTS).try_acquire_owned().map_err(|_| {
-        anyhow::anyhow!(
-            "Four Crew tasks are already active on this device. Finish or cancel one first."
-        )
-    })?;
+    refuse_at_usage_limit(&state, None).await?;
+    let permit = Arc::clone(&RUN_SLOTS)
+        .try_acquire_owned()
+        .map_err(|_| anyhow::anyhow!(RUN_SLOTS_FULL))?;
     let provider = biorouter::providers::create(
         &body.provider,
         ModelConfig::new(&body.model).map_err(anyhow::Error::from)?,
@@ -1087,7 +1203,7 @@ pub async fn start_run(
             &body.channel_id,
             &body.context_channels,
             provider.as_ref(),
-            &run_policy(&body),
+            &run_policy(&body, &origin),
         )
         .await
     {
@@ -1113,6 +1229,7 @@ pub async fn start_run(
         state,
         id,
         body,
+        origin,
         ledger.clone(),
         request_key,
         provider,
@@ -1332,10 +1449,12 @@ async fn record_admission_affiliation(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn launch_run(
     state: Arc<AppState>,
     id: String,
     body: StartRunRequest,
+    origin: RunOrigin,
     ledger: Arc<RunLedger>,
     request_key: String,
     provider: Arc<dyn biorouter::providers::base::Provider>,
@@ -1345,7 +1464,7 @@ async fn launch_run(
     let agent = state.agent_manager.new_scoped_agent();
     agent.ensure_crew_compatible()?;
     let crew = manager()?;
-    let policy = run_policy(&body);
+    let policy = run_policy(&body, &origin);
     let admission = match crew
         .begin_run_with_policy(
             &session_id,
@@ -1707,6 +1826,11 @@ async fn execute_run(
     .await?;
     if cancel.is_cancelled() {
         anyhow::bail!("Task cancelled by its owner.");
+    }
+    // The usage limit gate ends a reply on a stop notice and a normal end of stream, so only
+    // the agent can say it cut this one short; such a task has no result to post.
+    if agent.usage_limit_interrupted_reply() {
+        anyhow::bail!(biorouter::agents::usage_limit::CREW_TASK_STOPPED_AT_LIMIT);
     }
     publish_run_result(state, &crew, &view.session_id, cancel).await
 }
@@ -2159,13 +2283,18 @@ pub async fn cancel_run(
     Path((id, run_id)): Path<(String, String)>,
 ) -> CrewResult<CrewRunCancellation> {
     require_person(&headers)?;
+    cancel_owned_task(&id, &run_id).await
+}
+
+/// [`cancel_run`] once a person's proof is checked, shared with a chat's `tasks_cancel`.
+pub(crate) async fn cancel_owned_task(id: &str, run_id: &str) -> CrewResult<CrewRunCancellation> {
     // No run this daemon started has any other shape (RENDERER-2).
     require_valid(
-        biorouter::crew::is_run_id(&run_id),
+        biorouter::crew::is_run_id(run_id),
         "Crew run IDs contain only letters, digits, hyphens and underscores",
     )?;
     let ledger = run_ledger().await?;
-    cancellation_response(cancel_owned_run(&ledger, &id, &run_id).await?)
+    cancellation_response(cancel_owned_run(&ledger, id, run_id).await?)
 }
 
 /// What stopping one of this device's owned tasks achieved.
@@ -2324,7 +2453,7 @@ async fn reserve_cancellation(
         .runs
         .get_mut(run_id)
         .filter(|run| run.view.connection_id == connection_id)
-        .ok_or_else(|| anyhow::anyhow!("This task is not owned by this device and connection."))?;
+        .ok_or_else(|| anyhow::anyhow!(TASK_NOT_OWNED))?;
     if matches!(
         run.view.status.as_str(),
         "completed" | "failed" | "cancelled"
@@ -2573,7 +2702,9 @@ pub fn routes(state: Arc<AppState>) -> Router {
         )
         .route(
             "/crew/connections/{id}",
-            axum::routing::patch(update_connection).delete(remove_connection),
+            get(get_connection)
+                .patch(update_connection)
+                .delete(remove_connection),
         )
         .route("/crew/connections/{id}/connect", post(connect))
         .route("/crew/connections/{id}/disconnect", post(disconnect))
@@ -2619,7 +2750,7 @@ mod tests {
         reserve_cancellation, run_with_deadline, settle_confirmed_revocations,
         transition_run_status, CancelReservation, LedgerState, OwnedCancellation, OwnedRun,
         RunLedger, RunProjection, RunStatusUpdate, RunView, StartRunRequest,
-        COMPLETED_REVOCATION_UNCONFIRMED, MAX_QUEUED_RUN_PROJECTIONS,
+        COMPLETED_REVOCATION_UNCONFIRMED, MAX_QUEUED_RUN_PROJECTIONS, RUN_SLOTS_FULL,
     };
     use biorouter::agents::AgentEvent;
     use biorouter::conversation::message::Message;
@@ -3060,6 +3191,27 @@ mod tests {
         }
         assert_eq!(persisted_status(&ledger.path), "completed");
         assert_eq!(final_reason(&ledger, &view).await, "complete");
+    }
+
+    /// C1: a cancel for a task this computer's ledger does not hold on that connection, and a
+    /// start with no task slot left, call the person's machine "this computer".
+    #[tokio::test]
+    async fn task_refusals_call_the_persons_machine_this_computer() {
+        let (_temp, ledger, _view) = ledger_fixture("running", false).await;
+        for (connection, run) in [("connection-2", "run-1"), ("connection-1", "run-unknown")] {
+            let refused = reserve_cancellation(&ledger, connection, run)
+                .await
+                .err()
+                .expect("a task this computer does not own is refused");
+            assert_eq!(
+                refused.to_string(),
+                "This task is not owned by this computer and connection."
+            );
+        }
+        assert_eq!(
+            RUN_SLOTS_FULL,
+            "Four Crew tasks are already active on this computer. Finish or cancel one first."
+        );
     }
 
     #[tokio::test]
@@ -4069,8 +4221,12 @@ mod provenance_tests {
 
 #[cfg(test)]
 mod grant_rollback_tests {
-    use super::finish_grant_or_revoke;
+    use super::{
+        admitted_before, finish_grant_or_revoke, run_request_identity, StartReceipt,
+        StartRunRequest,
+    };
     use serde_json::json;
+    use std::collections::HashMap;
 
     /// DAEMON-2: a grant whose setup fails after the workspace admitted it is revoked, whatever
     /// step failed, and the person reads the setup's own error. Only the first step used to be
@@ -4112,6 +4268,104 @@ mod grant_rollback_tests {
         .await
         .unwrap();
         assert_eq!(revoked.load(Ordering::SeqCst), 0);
+    }
+
+    /// Usage limits at a Crew task's two doors (#483): `start_owned_run` refuses at the monthly
+    /// limit after an idempotent replay is answered and before a run slot or a ledger receipt is
+    /// taken, and `execute_run` ends a task the limit gate cut short as stopped, never publishing
+    /// its partial reply as the result. [`biorouter::agents::usage_limit::crew_task_refusal`] is
+    /// tested where it lives.
+    #[test]
+    fn a_crew_task_honours_the_usage_limit_at_start_and_at_the_end() {
+        let source = include_str!("crew.rs");
+        let start = crate::routes::body_of(source, "pub(crate) async fn start_owned_run(");
+        let refusal = start
+            .find("refuse_at_usage_limit(&state, None).await?;")
+            .expect("start_owned_run asks the usage limit for the month only");
+        let helper = crate::routes::body_of(source, "pub(crate) async fn refuse_at_usage_limit(");
+        assert!(
+            helper.contains("usage_limit::crew_task_refusal("),
+            "{helper}"
+        );
+        assert!(helper.contains("CREW_USAGE_LIMIT_REACHED"), "{helper}");
+        for later in ["RUN_SLOTS", "stored.requests.insert(", "launch_run("] {
+            let at = start.find(later).unwrap_or_else(|| panic!("{later}"));
+            assert!(refusal < at, "the limit is asked before {later}");
+        }
+        let replay = start
+            .find("return Ok(Json(view));")
+            .expect("an admitted request is answered again");
+        assert!(replay < refusal, "a replay is answered even at the limit");
+
+        let run = crate::routes::body_of(source, "async fn execute_run(");
+        let interrupted = run
+            .find("agent.usage_limit_interrupted_reply()")
+            .expect("execute_run reads the usage limit gate");
+        let published = run
+            .find("publish_run_result(")
+            .expect("execute_run publishes the result");
+        assert!(interrupted < published, "{run}");
+        let between = run.get(interrupted..published).unwrap_or_default();
+        assert!(between.contains("CREW_TASK_STOPPED_AT_LIMIT"), "{run}");
+    }
+
+    /// A retried task request is recognised by its key and payload, so a usage limit reached
+    /// since its start does not hide the task it started: the same request is admitted, while
+    /// another request ID, another payload or an empty ledger is not.
+    #[test]
+    fn a_retried_task_request_is_recognised_as_admitted() {
+        let body = StartRunRequest {
+            expected_mode: None,
+            expected_policy_epoch: None,
+            expected_workspace_policy_epoch: None,
+            request_id: Some("chat-call-0".to_string()),
+            channel_id: "c-methods".to_string(),
+            prompt: "Summarise the week".to_string(),
+            provider: "versa_azure".to_string(),
+            model: "gpt-5.6-luna-2026-07-09".to_string(),
+            context_channels: Vec::new(),
+            posting_grant: true,
+        };
+        let (key, hash) =
+            run_request_identity("conn-lab", &body).unwrap_or_else(|_| panic!("a valid request"));
+        let mut requests = HashMap::new();
+        assert!(
+            !admitted_before(&requests, &key, &hash),
+            "nothing admitted yet"
+        );
+        requests.insert(
+            key.clone(),
+            StartReceipt {
+                payload_hash: hash.clone(),
+                run_id: Some("run-1".to_string()),
+                session_id: Some("task-chat".to_string()),
+            },
+        );
+        let (retry_key, retry_hash) =
+            run_request_identity("conn-lab", &body).unwrap_or_else(|_| panic!("a valid request"));
+        assert!(
+            admitted_before(&requests, &retry_key, &retry_hash),
+            "a retry"
+        );
+
+        let mut changed = body.clone();
+        changed.prompt = "Something else".to_string();
+        let (changed_key, changed_hash) = run_request_identity("conn-lab", &changed)
+            .unwrap_or_else(|_| panic!("a valid request"));
+        assert_eq!(changed_key, key, "the same request ID");
+        assert!(
+            !admitted_before(&requests, &changed_key, &changed_hash),
+            "another payload under the same ID is a conflict, not a retry"
+        );
+
+        let mut other = body.clone();
+        other.request_id = Some("chat-call-1".to_string());
+        let (other_key, other_hash) =
+            run_request_identity("conn-lab", &other).unwrap_or_else(|_| panic!("a valid request"));
+        assert!(
+            !admitted_before(&requests, &other_key, &other_hash),
+            "a new request"
+        );
     }
 
     /// The grant route sends every step after admission through [`finish_grant_or_revoke`]:

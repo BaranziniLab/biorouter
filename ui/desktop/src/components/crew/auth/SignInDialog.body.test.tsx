@@ -1,13 +1,17 @@
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fakeConnection, makeCrew, renderWithCrew } from '../onboarding/testCrew';
+import { notSetUpCopy } from '../onboarding/copy';
 import { signInCopy } from './copy';
 import { SignInDialog } from './SignInDialog';
+
+/** What the desktop bridge tells the terminal when its session ends. */
+type TerminalExit = { sessionId: string; exitCode: number | null; code?: string };
 
 // The real terminal body, with xterm and the desktop bridge stood in: the dialog holds the
 // terminal, its one alert, "Trouble signing in?" and the body's own Close.
 const mocks = vi.hoisted(() => {
-  const exitListeners: ((event: { sessionId: string; exitCode: number | null }) => void)[] = [];
+  const exitListeners: ((event: TerminalExit) => void)[] = [];
   return {
     exitListeners,
     config: {} as Record<string, unknown>,
@@ -17,12 +21,10 @@ const mocks = vi.hoisted(() => {
       resizeTerminalSession: vi.fn().mockResolvedValue(undefined),
       writeTerminalSession: vi.fn().mockResolvedValue(undefined),
       onTerminalData: vi.fn(() => vi.fn()),
-      onTerminalExit: vi.fn(
-        (listener: (event: { sessionId: string; exitCode: number | null }) => void) => {
-          exitListeners.push(listener);
-          return vi.fn();
-        }
-      ),
+      onTerminalExit: vi.fn((listener: (event: TerminalExit) => void) => {
+        exitListeners.push(listener);
+        return vi.fn();
+      }),
     },
   };
 });
@@ -92,6 +94,10 @@ describe('SignInDialog with its terminal', () => {
     expect(
       within(dialog).getByRole('button', { name: `Copy ${signInCopy.knownHostsLabel}` })
     ).toBeInTheDocument();
+    // "known hosts", as the command line and the manual's glossary write it.
+    expect(
+      within(dialog).getByRole('button', { name: 'Copy known hosts path' })
+    ).toBeInTheDocument();
   });
 
   it('names the isolated profile’s own known-hosts file in a development profile', async () => {
@@ -120,5 +126,48 @@ describe('SignInDialog with its terminal', () => {
     fireEvent.click(close);
     expect(crew.closeSignIn).toHaveBeenCalledOnce();
     expect(mocks.electron.disposeTerminalSession).toHaveBeenCalledWith('s-1');
+  });
+});
+
+describe('SignInDialog for a connection outside the Crew view (a chat’s sign-in card)', () => {
+  async function signInFoundCrewMissing(onBridgeMissing?: () => void) {
+    const onClose = vi.fn();
+    renderWithCrew(
+      <SignInDialog
+        target={{ kind: 'connection', id: 'conn-1' }}
+        open
+        host="hpc.ucsf.edu"
+        onClose={onClose}
+        onBridgeMissing={onBridgeMissing}
+      />,
+      makeCrew({ signIn: { open: false, reason: null } })
+    );
+    await waitFor(() => expect(mocks.exitListeners.length).toBeGreaterThan(0));
+    await waitFor(() => expect(mocks.electron.resizeTerminalSession).toHaveBeenCalled());
+    await act(async () =>
+      mocks.exitListeners[0]({ sessionId: 's-1', exitCode: 1, code: 'crew_bridge_missing' })
+    );
+    return onClose;
+  }
+
+  it('says what the Crew view says when the sign-in finds Crew missing, not that it ended', async () => {
+    const onBridgeMissing = vi.fn();
+    const onClose = await signInFoundCrewMissing(onBridgeMissing);
+    expect(onBridgeMissing).toHaveBeenCalledOnce();
+    const said = await screen.findByRole('status');
+    expect(said).toHaveTextContent(notSetUpCopy.title('hpc.ucsf.edu'));
+    expect(said).toHaveTextContent(notSetUpCopy.body);
+    expect(screen.queryByText(/SSH authentication ended/)).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    // The dialog still closes only through the terminal's own Close.
+    fireEvent.click(screen.getByRole('button', { name: signInCopy.closeName }));
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it('says the same with no listener of its own', async () => {
+    await signInFoundCrewMissing();
+    expect(await screen.findByRole('status')).toHaveTextContent(notSetUpCopy.title('hpc.ucsf.edu'));
+    expect(screen.queryByText(/SSH authentication ended/)).toBeNull();
   });
 });

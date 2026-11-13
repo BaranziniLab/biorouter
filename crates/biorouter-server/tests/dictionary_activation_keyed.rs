@@ -122,3 +122,49 @@ async fn attaching_the_dictionary_to_a_chat_needs_the_persons_proof_on_a_keyed_d
         "the person's attach was refused: {body}"
     );
 }
+
+// DD-56 at the new-chat door: `POST /agent/start` that names the Dictionary in its
+// overrides asks for the person before any chat exists, so a refusal leaves no chat.
+#[tokio::test]
+async fn starting_a_chat_with_the_dictionary_needs_the_persons_proof_on_a_keyed_daemon() {
+    let digest: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(USER_KEY.as_bytes()).into();
+    biorouter_server::auth::install_user_action_digest(Some(digest));
+    let state = AppState::new().await.unwrap();
+    let app = biorouter_server::routes::agent::routes(Arc::clone(&state)).layer(
+        axum::middleware::from_fn_with_state(
+            SECRET.to_string(),
+            biorouter_server::auth::check_token,
+        ),
+    );
+    let before = state.session_manager().list_sessions().await.unwrap().len();
+    let body = json!({
+        "working_dir": std::env::temp_dir().to_string_lossy(),
+        "extension_overrides": [
+            {"type": "platform", "name": "dictionary", "description": "", "bundled": true}
+        ]
+    });
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/agent/start")
+                .header("X-Secret-Key", SECRET)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&bytes);
+    assert_eq!(status, StatusCode::FORBIDDEN, "{text}");
+    assert!(text.contains(dictionary::MSG_DICTIONARY_AGENT), "{text}");
+    assert_eq!(
+        state.session_manager().list_sessions().await.unwrap().len(),
+        before,
+        "a refused start leaves no chat behind"
+    );
+}

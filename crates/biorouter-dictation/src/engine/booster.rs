@@ -224,9 +224,34 @@ impl BonusTable {
     }
 
     fn apply_inner(&self, tokens: &[i32], logits: &mut [f32]) {
-        let p = &self.params;
         // 1. The byte tail: back to the last special or timestamp token, and no further
         // than a form can span plus one byte for the boundary check.
+        let mut tail = [0u8; TAIL_BYTES];
+        let (tail_len, at_start) = self.byte_tail(tokens, &mut tail);
+        let text_seen = tokens.iter().any(|&id| (0..self.eot).contains(&id));
+        let tail = &tail[..tail_len];
+
+        // 2. The row's best logit: the gates are relative to what the decoder would pick.
+        let (best, argmax) = best_of(logits);
+        if !best.is_finite() {
+            return;
+        }
+
+        // 3. Candidates, the largest bonus per id.
+        let mut cand = [(0u32, 0f32); MAX_CANDIDATES];
+        let n_cand = self.candidates(logits, best, tail, at_start, text_seen, &mut cand);
+
+        // 4. Apply, the largest bonus per id clamped to `cap`.
+        if n_cand == 0 {
+            return;
+        }
+        self.apply_bonuses(&cand[..n_cand], argmax, logits);
+    }
+
+    /// Step 1 of [`Self::apply_inner`]: walks back over the window's trailing text tokens
+    /// and copies their bytes, oldest first, into `tail`. Returns how many bytes `tail`
+    /// holds and whether the walk stopped at the window's start or a special token.
+    fn byte_tail(&self, tokens: &[i32], tail: &mut [u8; TAIL_BYTES]) -> (usize, bool) {
         let mut ids = [0i32; TAIL_TOKENS];
         let mut n_ids = 0;
         let mut len = 0usize;
@@ -246,8 +271,6 @@ impl BonusTable {
         }
         // `j` is now the index after the token that stopped the walk.
         let at_start = j == 0 || tokens.get(j - 1).is_some_and(|&id| id >= self.eot);
-        let text_seen = tokens.iter().any(|&id| (0..self.eot).contains(&id));
-        let mut tail = [0u8; TAIL_BYTES];
         let mut tail_len = 0;
         for &id in ids[..n_ids].iter().rev() {
             let bytes = self.vocab.token(id).unwrap_or_default();
@@ -258,16 +281,22 @@ impl BonusTable {
                 }
             }
         }
-        let tail = &tail[..tail_len];
+        (tail_len, at_start)
+    }
 
-        // 2. The row's best logit: the gates are relative to what the decoder would pick.
-        let (best, argmax) = best_of(logits);
-        if !best.is_finite() {
-            return;
-        }
-
-        // 3. Candidates, the largest bonus per id.
-        let mut cand = [(0u32, 0f32); MAX_CANDIDATES];
+    /// Step 3 of [`Self::apply_inner`]: gathers into `cand` the start and continuation ids
+    /// whose gate passes against `best`, keeping the largest bonus per id, and returns how
+    /// many it holds.
+    fn candidates(
+        &self,
+        logits: &[f32],
+        best: f32,
+        tail: &[u8],
+        at_start: bool,
+        text_seen: bool,
+        cand: &mut [(u32, f32); MAX_CANDIDATES],
+    ) -> usize {
+        let p = &self.params;
         let mut n_cand = 0usize;
         let mut consider = |id: u32, bonus: f32, gate: f32| {
             let Some(&l) = logits.get(id as usize) else {
@@ -320,21 +349,24 @@ impl BonusTable {
                 consider(id, p.b_cont * r, p.gate_cont * r);
             }
         }
+        n_cand
+    }
 
-        // 4. Apply, the largest bonus per id clamped to `cap`. The prefix steal guard: when
-        // the model's choice is not a candidate but extends a candidate's bytes (` PhD`
-        // against the start ` Ph`), boosting the shorter piece only moves the decoder onto
-        // another spelling of the same word, so such a candidate is skipped.
-        if n_cand == 0 {
-            return;
-        }
-        let argmax_is_candidate = cand[..n_cand].iter().any(|(c, _)| i64::from(*c) == argmax);
+    /// Step 4 of [`Self::apply_inner`]: adds each candidate's bonus, clamped to `cap`, to
+    /// its logit.
+    fn apply_bonuses(&self, cand: &[(u32, f32)], argmax: i64, logits: &mut [f32]) {
+        let p = &self.params;
+        // The prefix steal guard: when the model's choice is not a candidate but extends a
+        // candidate's bytes (` PhD` against the start ` Ph`), boosting the shorter piece
+        // only moves the decoder onto another spelling of the same word, so such a
+        // candidate is skipped.
+        let argmax_is_candidate = cand.iter().any(|(c, _)| i64::from(*c) == argmax);
         let top: Option<&[u8]> = (p.prefix_guard && !argmax_is_candidate)
             .then(|| i32::try_from(argmax).ok())
             .flatten()
             .filter(|&id| id >= 0 && id < self.eot)
             .and_then(|id| self.vocab.token(id));
-        for &(id, bonus) in &cand[..n_cand] {
+        for &(id, bonus) in cand {
             let Ok(signed) = i32::try_from(id) else {
                 continue;
             };

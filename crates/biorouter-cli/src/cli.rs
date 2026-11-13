@@ -2248,6 +2248,15 @@ enum Command {
         )]
         history: bool,
 
+        /// Run the chat in this process even when the shared daemon is running
+        #[arg(
+            long,
+            conflicts_with = "shared_daemon",
+            help = "Run the chat in this terminal only, not on the shared Biorouter daemon",
+            long_help = "Run the chat in this terminal only. Without it, an interactive chat runs on the shared Biorouter daemon when one is running, so it can use Crew as you and shows in the desktop app."
+        )]
+        local: bool,
+
         #[command(flatten)]
         session_opts: SessionOptions,
 
@@ -3004,14 +3013,15 @@ fn reject_shared_fields(fields: &[(&str, bool)]) -> Result<()> {
     Ok(())
 }
 
-fn shared_conversation_options(
+/// The options only a chat in this process takes, each with whether it was given. A shared
+/// daemon chat refuses them, and an interactive `biorouter session` given one stays in this
+/// process (D4).
+fn in_process_fields(
     identifier: &Option<Identifier>,
-    resume: bool,
     session: &SessionOptions,
     extensions: &ExtensionOptions,
-    model: &ModelOptions,
-) -> Result<crate::commands::shared_conversation::SharedConversationOptions> {
-    reject_shared_fields(&[
+) -> [(&'static str, bool); 8] {
+    [
         (
             "--name",
             identifier.as_ref().is_some_and(|id| id.name.is_some()),
@@ -3032,7 +3042,17 @@ fn shared_conversation_options(
             !extensions.streamable_http_extensions.is_empty(),
         ),
         ("--with-builtin", !extensions.builtins.is_empty()),
-    ])?;
+    ]
+}
+
+fn shared_conversation_options(
+    identifier: &Option<Identifier>,
+    resume: bool,
+    session: &SessionOptions,
+    extensions: &ExtensionOptions,
+    model: &ModelOptions,
+) -> Result<crate::commands::shared_conversation::SharedConversationOptions> {
+    reject_shared_fields(&in_process_fields(identifier, session, extensions))?;
     let session_id = identifier.as_ref().and_then(|id| id.session_id.clone());
     anyhow::ensure!(
         !resume || session_id.is_some(),
@@ -3115,7 +3135,9 @@ async fn handle_shared_run(
     crate::commands::shared_conversation::run(options).await
 }
 
-/// `biorouter session` — both of its forms, dispatched in one place.
+/// `biorouter session` — both of its forms, dispatched in one place. The interactive form
+/// runs its chat on the shared daemon when one is running and answers its saved key, and in
+/// this process otherwise or with `--local` (D4, [`shared_daemon_for`]).
 ///
 /// ⚠ **Extracted from `cli()` rather than inlined, and the reason is mechanical.**
 /// Task 31 (issue #56) gave the interactive form a seventh field, `model_opts`,
@@ -3123,53 +3145,225 @@ async fn handle_shared_run(
 /// ceiling (`too_many_lines`, 103/100 — a NEW violation against
 /// `scripts/clippy-lint.sh`'s baseline, so CI fails on it). The honest fix is to
 /// move the arm's body out, not to `#[allow]` the lint on a function that has
-/// been growing an arm per feature for years.
-async fn handle_session_command(
-    command: Option<SessionCommand>,
-    identifier: Option<Identifier>,
-    resume: bool,
-    history: bool,
-    session_opts: SessionOptions,
-    extension_opts: ExtensionOptions,
-    model_opts: ModelOptions,
-) -> Result<()> {
-    if session_opts.shared.shared_daemon {
+/// been growing an arm per feature for years. The chat's fields travel as one
+/// [`SessionChat`] since D4 added an eighth, `local`.
+async fn handle_session_command(command: Option<SessionCommand>, chat: SessionChat) -> Result<()> {
+    if chat.session_opts.shared.shared_daemon {
         anyhow::ensure!(command.is_none(), "--shared-daemon on session does not support local session subcommands; use an exact --resume --session-id for a daemon conversation");
-        let mut options = shared_conversation_options(
-            &identifier,
-            resume,
-            &session_opts,
-            &extension_opts,
-            &model_opts,
-        )?;
-        options.interactive = !options.create_only;
-        options.history = history;
-        return crate::commands::shared_conversation::run(options).await;
+        return handle_shared_session(chat).await;
     }
     match command {
         Some(cmd) => handle_session_subcommand(cmd).await,
-        None => {
-            handle_interactive_session(
-                identifier,
-                resume,
-                history,
-                session_opts,
-                extension_opts,
-                model_opts,
-            )
-            .await
-        }
+        None => match shared_daemon_for(&chat).await {
+            Some(client) => run_default_shared_session(client, chat).await,
+            None => handle_interactive_session(chat).await,
+        },
     }
 }
 
-async fn handle_interactive_session(
+/// What `biorouter session` without a subcommand was asked for: one chat, opened here.
+#[derive(Default)]
+struct SessionChat {
     identifier: Option<Identifier>,
     resume: bool,
     history: bool,
+    /// `--local`: the chat runs in this process even when the shared daemon is running.
+    local: bool,
     session_opts: SessionOptions,
     extension_opts: ExtensionOptions,
     model_opts: ModelOptions,
+}
+
+/// What [`crate::commands::session::shared_daemon_for_chat`] decides on for `chat`, read from
+/// its options and this process.
+fn chat_request(chat: &SessionChat) -> crate::commands::session::ChatRequest {
+    use crate::commands::session::{chat_model, configured_model, ChatRequest};
+    let session_id = chat
+        .identifier
+        .as_ref()
+        .and_then(|id| id.session_id.as_deref());
+    let (provider, model) = (
+        chat.model_opts.provider.as_deref(),
+        chat.model_opts.model.as_deref(),
+    );
+    let model_known = match session_id {
+        // A chat resumed by its ID keeps its own model unless both are named.
+        Some(_) => provider.is_some() == model.is_some(),
+        None => chat_model(provider, model, configured_model).is_some(),
+    };
+    ChatRequest {
+        local: chat.local,
+        at_a_terminal: crate::commands::session::at_a_terminal(),
+        // `--session-id` without `--resume` is refused by the chat in this process.
+        in_process_option: (session_id.is_some() && !chat.resume)
+            || in_process_fields(&chat.identifier, &chat.session_opts, &chat.extension_opts)
+                .iter()
+                .any(|(_, given)| *given),
+        model_known,
+        agent_shell: crate::commands::needs_terminal::in_agent_shell(),
+    }
+}
+
+/// D4: the shared daemon an interactive `chat` runs on, or `None` to run it in this process.
+async fn shared_daemon_for(chat: &SessionChat) -> Option<crate::daemon_client::CrewClient> {
+    crate::commands::session::shared_daemon_for_chat(&chat_request(chat)).await
+}
+
+/// Run `chat` on the shared daemon `client` reached (D4): the chat `--session-id` names, the
+/// latest one for `--resume` alone (found as an in-process chat finds it), or a new one.
+async fn run_default_shared_session(
+    client: crate::daemon_client::CrewClient,
+    chat: SessionChat,
 ) -> Result<()> {
+    use crate::commands::session::{chat_model, configured_model, latest_chat_id};
+    eprintln!("{}", crate::commands::session::RUNS_ON_THE_SHARED_DAEMON);
+    let SessionChat {
+        identifier,
+        resume,
+        history,
+        model_opts,
+        ..
+    } = chat;
+    let mut session_id = identifier.and_then(|id| id.session_id);
+    if resume && session_id.is_none() {
+        session_id = latest_chat_id().await?;
+        if session_id.is_none() {
+            eprintln!("No previous chat to resume; starting a new chat.");
+        }
+    }
+    let (provider, model) = match &session_id {
+        Some(_) => (model_opts.provider, model_opts.model),
+        None => chat_model(
+            model_opts.provider.as_deref(),
+            model_opts.model.as_deref(),
+            configured_model,
+        )
+        .unzip(),
+    };
+    let options = crate::commands::shared_conversation::SharedConversationOptions {
+        session_id,
+        working_dir: std::env::current_dir()?,
+        provider,
+        model,
+        prompt: None,
+        interactive: true,
+        create_only: false,
+        history,
+        approval_key_stdin: false,
+        no_start: true,
+        quiet: false,
+        output_format: "text".into(),
+    };
+    run_shared_chat(options, Some(client)).await
+}
+
+/// `biorouter session --shared-daemon`. A new interactive chat starts on the configured
+/// provider and model when neither `--provider` nor `--model` is given, as an in-process chat
+/// does; `--create-only` still needs both.
+async fn handle_shared_session(chat: SessionChat) -> Result<()> {
+    let SessionChat {
+        identifier,
+        resume,
+        history,
+        session_opts,
+        extension_opts,
+        model_opts,
+        ..
+    } = chat;
+    let new_interactive_chat = !session_opts.shared.create_only
+        && !resume
+        && identifier.as_ref().is_none_or(|id| id.session_id.is_none());
+    let model_opts = new_chat_model(
+        model_opts,
+        new_interactive_chat,
+        crate::commands::session::configured_model,
+    );
+    let mut options = shared_conversation_options(
+        &identifier,
+        resume,
+        &session_opts,
+        &extension_opts,
+        &model_opts,
+    )?;
+    options.interactive = !options.create_only;
+    options.history = history;
+    run_shared_chat(options, None).await
+}
+
+/// `model_opts` for a `biorouter session --shared-daemon` chat: a new interactive chat given
+/// neither `--provider` nor `--model` takes the `configured` pair, as an in-process chat does.
+/// Anything else keeps what was given, and the conversation checks it.
+fn new_chat_model(
+    model_opts: ModelOptions,
+    new_interactive_chat: bool,
+    configured: impl FnOnce() -> (Option<String>, Option<String>),
+) -> ModelOptions {
+    if !new_interactive_chat || model_opts.provider.is_some() || model_opts.model.is_some() {
+        return model_opts;
+    }
+    match crate::commands::session::chat_model(None, None, configured) {
+        Some((provider, model)) => ModelOptions {
+            provider: Some(provider),
+            model: Some(model),
+        },
+        None => model_opts,
+    }
+}
+
+/// The provider and model of a new chat this command starts on the shared daemon itself
+/// ([`run_shared_chat`]): a new interactive chat at a terminal (`at_a_terminal`: standard
+/// input and error) that names both. `None` leaves the chat to the conversation exactly as
+/// given, which refuses one it cannot hold before it creates anything.
+fn starts_here(
+    options: &crate::commands::shared_conversation::SharedConversationOptions,
+    at_a_terminal: bool,
+) -> Option<(String, String)> {
+    if options.session_id.is_some()
+        || !options.interactive
+        || options.approval_key_stdin
+        || !at_a_terminal
+    {
+        return None;
+    }
+    Some((options.provider.clone()?, options.model.clone()?))
+}
+
+/// Run a shared daemon conversation. A new interactive chat ([`starts_here`]) is started first,
+/// in this folder with the configured extensions as an in-process chat starts
+/// ([`crate::commands::session::start_daemon_chat`]), and then opened by its ID.
+async fn run_shared_chat(
+    mut options: crate::commands::shared_conversation::SharedConversationOptions,
+    client: Option<crate::daemon_client::CrewClient>,
+) -> Result<()> {
+    use std::io::IsTerminal;
+    let at_a_terminal = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
+    if let Some((provider, model)) = starts_here(&options, at_a_terminal) {
+        let client = match client {
+            Some(client) => client,
+            None => crate::daemon_client::CrewClient::connect(options.no_start).await?,
+        };
+        let id = crate::commands::session::start_daemon_chat(
+            &client,
+            &options.working_dir,
+            &provider,
+            &model,
+        )
+        .await?;
+        options.session_id = Some(id);
+    }
+    crate::commands::shared_conversation::run(options).await
+}
+
+async fn handle_interactive_session(chat: SessionChat) -> Result<()> {
+    let SessionChat {
+        identifier,
+        resume,
+        history,
+        session_opts,
+        extension_opts,
+        model_opts,
+        ..
+    } = chat;
     let session_start = std::time::Instant::now();
     let session_type = if resume { "resumed" } else { "new" };
 
@@ -3648,6 +3842,126 @@ async fn handle_extension_subcommand(command: ExtensionCommand) -> Result<()> {
     }
 }
 
+/// Run one `biorouter dictation` subcommand (speech models, devices, the microphone test).
+async fn handle_dictation_subcommand(command: DictationCommand) -> Result<()> {
+    match command {
+        DictationCommand::Status { format, verbose } => {
+            crate::commands::dictation::handle_status(&format, verbose).await
+        }
+        DictationCommand::List { format } => crate::commands::dictation::handle_list(&format).await,
+        DictationCommand::Install {
+            model,
+            from,
+            system,
+            yes,
+            suggest_from_chats,
+            no_suggest_from_chats,
+        } => {
+            crate::commands::dictation::handle_install_with_choice(
+                crate::commands::dictation::InstallArgs {
+                    model,
+                    from,
+                    system,
+                    yes,
+                },
+                if suggest_from_chats {
+                    Some(true)
+                } else if no_suggest_from_chats {
+                    Some(false)
+                } else {
+                    None
+                },
+            )
+            .await
+        }
+        DictationCommand::Remove { model, system, yes } => {
+            crate::commands::dictation::handle_remove(&model, system, yes).await
+        }
+        DictationCommand::Use { model } => crate::commands::dictation::handle_use(&model).await,
+        DictationCommand::Urls { model } => {
+            crate::commands::dictation::handle_urls(model.as_deref())
+        }
+        DictationCommand::Verify {} => crate::commands::dictation::handle_verify().await,
+        DictationCommand::Bench { format } => {
+            crate::commands::dictation::handle_bench(&format).await
+        }
+        DictationCommand::WarmUp { model } => {
+            crate::commands::dictation::handle_warm_up(&model).await
+        }
+        DictationCommand::Devices { format } => {
+            crate::commands::dictation::handle_devices(&format).await
+        }
+        DictationCommand::Test { seconds } => {
+            crate::commands::dictate::handle_microphone_test(seconds).await
+        }
+    }
+}
+
+/// Run `biorouter dictate`. [`dispatch`] hands over the whole `Command::Dictate` so its
+/// table stays one arm per verb; no other variant is routed here.
+async fn handle_dictate_command(command: Command) -> Result<()> {
+    let Command::Dictate {
+        copy,
+        no_history,
+        format,
+        seconds,
+        session,
+        private_terms,
+        language,
+        model,
+        no_dictionary,
+        no_review,
+        yes,
+        file,
+    } = command
+    else {
+        unreachable!("dispatch routes only `Command::Dictate` here");
+    };
+    crate::commands::dictate::handle_dictate(crate::commands::dictate::DictateArgs {
+        copy,
+        no_history,
+        format: crate::commands::dictate::DictateFormat::parse(&format),
+        seconds,
+        session,
+        private_terms,
+        language,
+        model,
+        no_dictionary,
+        no_review: no_review || yes,
+        file,
+    })
+    .await
+}
+
+/// Run `biorouter transcribe`. [`dispatch`] hands over the whole `Command::Transcribe` so
+/// its table stays one arm per verb; no other variant is routed here.
+async fn handle_transcribe_command(command: Command) -> Result<()> {
+    let Command::Transcribe {
+        input,
+        format,
+        output,
+        language,
+        model,
+        session,
+        context_file,
+        no_dictionary,
+    } = command
+    else {
+        unreachable!("dispatch routes only `Command::Transcribe` here");
+    };
+    crate::commands::transcribe::handle_transcribe(crate::commands::transcribe::TranscribeArgs {
+        input,
+        format: crate::commands::transcribe::OutputFormat::parse(&format),
+        output,
+        language,
+        model,
+        session,
+        context_file,
+        no_dictionary,
+    })
+    .await
+}
+
 async fn handle_dictionary_subcommand(command: DictionaryCommand) -> Result<()> {
     crate::commands::dictionary::handle(command.into_action()).await
 }
@@ -3797,6 +4111,11 @@ async fn handle_default_session() -> Result<()> {
     if !Config::global().exists() {
         return handle_configure().await;
     }
+    // `biorouter` alone is a new `biorouter session`, and runs where that would (D4).
+    let chat = SessionChat::default();
+    if let Some(client) = shared_daemon_for(&chat).await {
+        return run_default_shared_session(client, chat).await;
+    }
 
     let session_id = get_or_create_session_id(None, false, false, None, None).await?;
 
@@ -3892,6 +4211,15 @@ pub async fn cli(command_line: CommandLine) -> anyhow::Result<()> {
     dispatch(cli.command).await
 }
 
+/// Mark this process as the terminal surface for the dictation and dictionary code that
+/// reads `activation::process_surface` (the first surface set wins). `session` and `run`
+/// call it before they start.
+fn mark_cli_surface() {
+    biorouter::dictation::activation::set_process_surface(
+        biorouter::dictation::activation::Surface::Cli,
+    );
+}
+
 /// Run the named command.
 ///
 /// Split out of [`cli`] so that adding a verb grows a function that is nothing
@@ -3922,23 +4250,22 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
             identifier,
             resume,
             history,
+            local,
             session_opts,
             extension_opts,
             model_opts,
         }) => {
-            biorouter::dictation::activation::set_process_surface(
-                biorouter::dictation::activation::Surface::Cli,
-            );
-            handle_session_command(
-                command,
+            mark_cli_surface();
+            let chat = SessionChat {
                 identifier,
                 resume,
                 history,
+                local,
                 session_opts,
                 extension_opts,
                 model_opts,
-            )
-            .await
+            };
+            handle_session_command(command, chat).await
         }
         // Both already return `anyhow::Result<()>`, so `?` followed by `Ok(())`
         // was a six-line restatement of the value the call hands back.
@@ -3953,9 +4280,7 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
             output_opts,
             model_opts,
         }) => {
-            biorouter::dictation::activation::set_process_surface(
-                biorouter::dictation::activation::Surface::Cli,
-            );
+            mark_cli_surface();
             handle_run_command(
                 input_opts,
                 identifier,
@@ -3987,112 +4312,9 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
         Some(Command::Workflow { command }) => handle_workflow_subcommand(command),
         Some(Command::Decide(options)) => crate::commands::decide::handle_decide(options).await,
         Some(Command::Models { command }) => handle_models_subcommand(command).await,
-        Some(Command::Dictation { command }) => match command {
-            DictationCommand::Status { format, verbose } => {
-                crate::commands::dictation::handle_status(&format, verbose).await
-            }
-            DictationCommand::List { format } => {
-                crate::commands::dictation::handle_list(&format).await
-            }
-            DictationCommand::Install {
-                model,
-                from,
-                system,
-                yes,
-                suggest_from_chats,
-                no_suggest_from_chats,
-            } => {
-                crate::commands::dictation::handle_install_with_choice(
-                    crate::commands::dictation::InstallArgs {
-                        model,
-                        from,
-                        system,
-                        yes,
-                    },
-                    if suggest_from_chats {
-                        Some(true)
-                    } else if no_suggest_from_chats {
-                        Some(false)
-                    } else {
-                        None
-                    },
-                )
-                .await
-            }
-            DictationCommand::Remove { model, system, yes } => {
-                crate::commands::dictation::handle_remove(&model, system, yes).await
-            }
-            DictationCommand::Use { model } => crate::commands::dictation::handle_use(&model).await,
-            DictationCommand::Urls { model } => {
-                crate::commands::dictation::handle_urls(model.as_deref())
-            }
-            DictationCommand::Verify {} => crate::commands::dictation::handle_verify().await,
-            DictationCommand::Bench { format } => {
-                crate::commands::dictation::handle_bench(&format).await
-            }
-            DictationCommand::WarmUp { model } => {
-                crate::commands::dictation::handle_warm_up(&model).await
-            }
-            DictationCommand::Devices { format } => {
-                crate::commands::dictation::handle_devices(&format).await
-            }
-            DictationCommand::Test { seconds } => {
-                crate::commands::dictate::handle_microphone_test(seconds).await
-            }
-        },
-        Some(Command::Dictate {
-            copy,
-            no_history,
-            format,
-            seconds,
-            session,
-            private_terms,
-            language,
-            model,
-            no_dictionary,
-            no_review,
-            yes,
-            file,
-        }) => {
-            crate::commands::dictate::handle_dictate(crate::commands::dictate::DictateArgs {
-                copy,
-                no_history,
-                format: crate::commands::dictate::DictateFormat::parse(&format),
-                seconds,
-                session,
-                private_terms,
-                language,
-                model,
-                no_dictionary,
-                no_review: no_review || yes,
-                file,
-            })
-            .await
-        }
-        Some(Command::Transcribe {
-            input,
-            format,
-            output,
-            language,
-            model,
-            session,
-            context_file,
-            no_dictionary,
-        }) => {
-            crate::commands::transcribe::handle_transcribe(
-                crate::commands::transcribe::TranscribeArgs {
-                    input,
-                    format: crate::commands::transcribe::OutputFormat::parse(&format),
-                    output,
-                    language,
-                    model,
-                    session,
-                    context_file,
-                    no_dictionary,
-                },
-            )
-            .await
-        }
+        Some(Command::Dictation { command }) => handle_dictation_subcommand(command).await,
+        Some(command @ Command::Dictate { .. }) => handle_dictate_command(command).await,
+        Some(command @ Command::Transcribe { .. }) => handle_transcribe_command(command).await,
         Some(Command::Dictionary { command }) => handle_dictionary_subcommand(command).await,
         Some(Command::Knowledge { command }) => handle_knowledge_subcommand(command).await,
         Some(Command::Extension { command }) => handle_extension_subcommand(command).await,
@@ -4621,6 +4843,185 @@ mod cli_tests {
         assert!(error
             .to_string()
             .contains("requires both --provider and --model"));
+    }
+
+    /// The `biorouter session` chat a command line describes.
+    fn session_chat(argv: &[&str]) -> SessionChat {
+        let Some(Command::Session {
+            command: None,
+            identifier,
+            resume,
+            history,
+            local,
+            session_opts,
+            extension_opts,
+            model_opts,
+        }) = Cli::try_parse_from(argv).expect("parses").command
+        else {
+            panic!("an interactive session expected: {argv:?}");
+        };
+        SessionChat {
+            identifier,
+            resume,
+            history,
+            local,
+            session_opts,
+            extension_opts,
+            model_opts,
+        }
+    }
+
+    /// D4: `--local` is a `biorouter session` option only, and cannot be combined with
+    /// `--shared-daemon`; `biorouter run` stays in this process and has no such option.
+    #[test]
+    fn local_is_a_session_option_that_excludes_the_shared_daemon() {
+        assert!(session_chat(&["biorouter", "session", "--local"]).local);
+        assert!(!session_chat(&["biorouter", "session"]).local);
+        let both = Cli::try_parse_from(["biorouter", "session", "--local", "--shared-daemon"])
+            .err()
+            .expect("--local and --shared-daemon conflict");
+        assert_eq!(both.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let run = Cli::try_parse_from(["biorouter", "run", "--local", "--text", "hi"])
+            .err()
+            .expect("run has no --local");
+        assert_eq!(run.kind(), clap::error::ErrorKind::UnknownArgument);
+    }
+
+    /// D4: what decides where a chat runs, read from its command line. An option only a chat in
+    /// this process takes keeps it here, and so does `--session-id` without `--resume`; a chat
+    /// resumed by its ID needs both model flags or neither.
+    #[test]
+    fn a_session_command_line_says_where_its_chat_may_run() {
+        let request = |argv: &[&str]| chat_request(&session_chat(argv));
+        let plain = request(&["biorouter", "session"]);
+        assert!(!plain.local && !plain.in_process_option);
+        assert!(request(&["biorouter", "session", "--local"]).local);
+        for option in [
+            &["--debug"][..],
+            &["--name", "notes"],
+            &["--max-turns", "3"],
+            &["--max-tool-repetitions", "2"],
+            &["--with-builtin", "developer"],
+            &["--with-extension", "echo"],
+            &["--with-streamable-http-extension", "http://127.0.0.1:9/mcp"],
+            &["--session-id", "20261107_1"],
+        ] {
+            let argv: Vec<&str> = ["biorouter", "session"]
+                .iter()
+                .chain(option)
+                .copied()
+                .collect();
+            assert!(request(&argv).in_process_option, "{argv:?}");
+        }
+        let resumed = request(&[
+            "biorouter",
+            "session",
+            "--resume",
+            "--session-id",
+            "20261107_1",
+        ]);
+        assert!(!resumed.in_process_option && resumed.model_known);
+        let rebound = [
+            "biorouter",
+            "session",
+            "--resume",
+            "--session-id",
+            "20261107_1",
+            "--provider",
+            "p",
+            "--model",
+            "m",
+        ];
+        assert!(request(&rebound).model_known);
+        let half = [
+            "biorouter",
+            "session",
+            "--resume",
+            "--session-id",
+            "20261107_1",
+            "--provider",
+            "p",
+        ];
+        assert!(!request(&half).model_known);
+        assert!(request(&["biorouter", "session", "--provider", "p", "--model", "m"]).model_known);
+        assert!(!request(&["biorouter", "session", "--provider", "p"]).model_known);
+    }
+
+    /// `biorouter session --shared-daemon` with neither model flag starts a new interactive
+    /// chat on the configured pair; `--create-only`, a named chat or a given flag keep what was
+    /// given, so the conversation still refuses a pair that is incomplete.
+    #[test]
+    fn a_new_shared_daemon_chat_takes_the_configured_model() {
+        let configured = || {
+            (
+                Some("cfg-provider".to_owned()),
+                Some("cfg-model".to_owned()),
+            )
+        };
+        let filled = new_chat_model(ModelOptions::default(), true, configured);
+        assert_eq!(filled.provider.as_deref(), Some("cfg-provider"));
+        assert_eq!(filled.model.as_deref(), Some("cfg-model"));
+        let kept = new_chat_model(ModelOptions::default(), false, configured);
+        assert!(kept.provider.is_none() && kept.model.is_none());
+        let named = ModelOptions {
+            provider: Some("p".into()),
+            model: None,
+        };
+        let kept = new_chat_model(named, true, configured);
+        assert_eq!(kept.provider.as_deref(), Some("p"));
+        assert!(kept.model.is_none());
+        let unconfigured = new_chat_model(ModelOptions::default(), true, || (None, None));
+        assert!(unconfigured.provider.is_none() && unconfigured.model.is_none());
+    }
+
+    /// Only a new interactive chat at a terminal that names its model is started by this
+    /// command (with the configured extensions); every other shape goes to the conversation as
+    /// given, which refuses it before creating anything.
+    #[test]
+    fn only_a_new_interactive_chat_at_a_terminal_is_started_here() {
+        use crate::commands::shared_conversation::SharedConversationOptions;
+        fn new_chat() -> SharedConversationOptions {
+            SharedConversationOptions {
+                session_id: None,
+                working_dir: PathBuf::from("/tmp"),
+                provider: Some("p".into()),
+                model: Some("m".into()),
+                prompt: None,
+                interactive: true,
+                create_only: false,
+                history: false,
+                approval_key_stdin: false,
+                no_start: true,
+                quiet: false,
+                output_format: "text".into(),
+            }
+        }
+        let with = |change: fn(&mut SharedConversationOptions)| {
+            let mut options = new_chat();
+            change(&mut options);
+            starts_here(&options, true)
+        };
+        assert_eq!(
+            starts_here(&new_chat(), true),
+            Some(("p".into(), "m".into()))
+        );
+        assert_eq!(starts_here(&new_chat(), false), None, "no terminal");
+        assert_eq!(
+            with(|o| o.session_id = Some("20261107_1".into())),
+            None,
+            "resumed"
+        );
+        assert_eq!(
+            with(|o| o.interactive = false),
+            None,
+            "create-only or one prompt"
+        );
+        assert_eq!(
+            with(|o| o.approval_key_stdin = true),
+            None,
+            "stdin is taken"
+        );
+        assert_eq!(with(|o| o.model = None), None, "no model");
     }
 
     #[tokio::test]

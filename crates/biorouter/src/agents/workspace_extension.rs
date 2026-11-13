@@ -911,7 +911,8 @@ struct WorkspaceOpenNew {
     /// really is somewhere else — the user is told when it differs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     working_dir: Option<String>,
-    /// Extension names; same semantics as /agent/start extension_overrides.
+    /// Extension names. The new conversation gets these plus the capabilities turned on
+    /// for every chat on this computer. Leave it out for that whole enabled set.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     extensions: Option<Vec<String>>,
     /// Knowledge bases to activate for the new conversation (issue #45).
@@ -7433,6 +7434,20 @@ pub(crate) mod tests {
     use super::*;
     use crate::agents::extension::PlatformExtensionContext;
     use std::time::Duration;
+
+    /// WI-10: the model reads this field's doc as schema text, and a named set now keeps the
+    /// capabilities turned on for every chat, so the doc must say so.
+    #[test]
+    fn the_new_conversation_s_extensions_say_they_keep_the_capabilities() {
+        let schema = serde_json::to_string(&schema_for!(WorkspaceOpenNew)).unwrap();
+        for words in [
+            "plus the capabilities turned on",
+            "for every chat on this computer",
+        ] {
+            assert!(schema.contains(words), "{words}: {schema}");
+        }
+        assert!(!schema.contains("/agent/start"), "{schema}");
+    }
 
     #[test]
     fn panel_capture_becomes_image_content_and_consumes_the_temp_file() {

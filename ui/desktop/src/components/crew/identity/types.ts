@@ -90,6 +90,12 @@ export interface CrewPerson {
   readonly serverName: string | null;
   readonly avatar: string | null;
   readonly isFormer: boolean;
+  /**
+   * A former principal whose username an active member holds now: the same server account let in
+   * again under another principal (account ownership AO-1: the account is the person). It stays
+   * former for every list and action, but its messages are not labelled "former member".
+   */
+  readonly rejoined?: boolean;
   readonly isHost: boolean;
   /** This person is the viewer. Rendering does not act on it unless asked (`you` prop/option). */
   readonly isYou: boolean;

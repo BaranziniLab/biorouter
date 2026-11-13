@@ -359,6 +359,16 @@ impl BioRouterAcpAgent {
     }
 
     pub async fn with_config(config: BioRouterAcpConfig) -> Result<Self> {
+        // ⚠ An ACP process can never prove that a person made a decision. The
+        // protocol cannot tell an editor's click from an auto-allow policy, so
+        // every card is answered with `DecisionAuthority::unproven()`
+        // (`handle_tool_permission_request`), and a proof-backed approval refuses an allow
+        // from it forever. A tool whose approval needs that proof must then not
+        // be offered at all (SD-8): crew__change, the skill and extension
+        // installers, the bug reporter. The flag is process-global and defaults
+        // to true, so it is set here, before any extension or roster is built.
+        // Only an ACP process builds this agent (`biorouter acp`, and the tests).
+        biorouter::pending_user_action::set_user_proof_available(false);
         let session_manager = Arc::new(SessionManager::new(config.data_dir));
         // The decision log follows this agent's store, as the CLI's session
         // builder and the daemon install it. Without it a decision made in an
@@ -437,6 +447,17 @@ impl BioRouterAcpAgent {
     /// diagnostics and tests.
     pub async fn list_extensions(&self) -> Vec<String> {
         self.agent.list_extensions().await
+    }
+
+    /// Names of the tools the model is offered in `session_id`, by the same rule
+    /// a turn lists them with. Exposed for diagnostics and tests.
+    pub async fn list_tool_names(&self, session_id: &str) -> Vec<String> {
+        self.agent
+            .list_tools(session_id, None)
+            .await
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .collect()
     }
 
     fn convert_acp_prompt_to_message(prompt: Vec<ContentBlock>) -> Message {
@@ -1029,18 +1050,15 @@ impl BioRouterAcpAgent {
         Ok(LoadSessionResponse::new())
     }
 
-    async fn on_prompt(
+    /// Answer the dictation a prompt carries before the agent sees it: a lone `/dictate`
+    /// gets MSG-ACP-DICTATE where the command is offered, and audio blocks get
+    /// MSG-ACP-NOTE. Returns the response that ends the turn there (`/dictate`, or a
+    /// prompt of nothing but audio), or `None` when the prompt goes on to the agent.
+    fn answer_dictation_in_prompt(
         &self,
-        args: PromptRequest,
+        args: &PromptRequest,
         cx: &JrConnectionCx<AgentToClient>,
-    ) -> Result<PromptResponse, sacp::Error> {
-        let session_id = args.session_id.0.to_string();
-        if !self.sessions.lock().await.contains_key(&session_id) {
-            return Err(
-                sacp::Error::invalid_params().data(format!("Session not found: {}", session_id))
-            );
-        }
-
+    ) -> Result<Option<PromptResponse>, sacp::Error> {
         if self.dictate_available
             && matches!(
                 args.prompt.as_slice(),
@@ -1048,12 +1066,12 @@ impl BioRouterAcpAgent {
             )
         {
             cx.send_notification(SessionNotification::new(
-                args.session_id,
+                args.session_id.clone(),
                 SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
                     TextContent::new(MSG_ACP_DICTATE),
                 ))),
             ))?;
-            return Ok(PromptResponse::new(StopReason::EndTurn));
+            return Ok(Some(PromptResponse::new(StopReason::EndTurn)));
         }
 
         let has_audio = args
@@ -1072,8 +1090,26 @@ impl BioRouterAcpAgent {
                 .iter()
                 .all(|block| matches!(block, ContentBlock::Audio(_)))
             {
-                return Ok(PromptResponse::new(StopReason::EndTurn));
+                return Ok(Some(PromptResponse::new(StopReason::EndTurn)));
             }
+        }
+        Ok(None)
+    }
+
+    async fn on_prompt(
+        &self,
+        args: PromptRequest,
+        cx: &JrConnectionCx<AgentToClient>,
+    ) -> Result<PromptResponse, sacp::Error> {
+        let session_id = args.session_id.0.to_string();
+        if !self.sessions.lock().await.contains_key(&session_id) {
+            return Err(
+                sacp::Error::invalid_params().data(format!("Session not found: {}", session_id))
+            );
+        }
+
+        if let Some(response) = self.answer_dictation_in_prompt(&args, cx)? {
+            return Ok(response);
         }
 
         let cancel_token = CancellationToken::new();

@@ -271,6 +271,24 @@ fn agent_loop_tool_refusal(named: &str) -> String {
     )
 }
 
+/// What a script is told when it reaches for one of Crew's person tools (AO-12), which the
+/// catalogue strips as a POLICY (`reply_parts::runs_only_from_the_agent_loop`): the host keys
+/// each change on the agent loop's id for the tool call, and a script's sub-call has none.
+///
+/// Without it the miss read "Module not found: crew" or "Tool not found: crew/change", the
+/// dead end `kb_delete_base` recorded (GPT-5.5 then told the person it could not be done),
+/// with no pointer to the direct call that works. Like [`agent_loop_tool_refusal`] it must
+/// not promise the tools are on the list: a granted chat, a subagent, `biorouter serve` and
+/// a process with no host are not offered them, so the wording is true either way.
+fn person_tool_script_refusal(named: &str) -> String {
+    format!(
+        "`{named}` can't be imported or called from a script. Crew's tools that act as the \
+         person are direct calls, so each change gets its own approval and a retried call is \
+         applied once. If `crew__read` and `crew__change` are on your tool list, call them \
+         directly. If they are not, this chat can't use them."
+    )
+}
+
 fn panic_payload_message(payload: &(dyn Any + Send)) -> Option<&str> {
     payload
         .downcast_ref::<&str>()
@@ -3051,11 +3069,17 @@ impl CodeExecutionClient {
     /// states, that "a script's tool call inherits the script's permission". A
     /// resample here would let a model switch mid-turn and change what a running
     /// script can import. `get_moim` is the one caller with nothing to inherit.
+    ///
+    /// `session_id` is the chat the catalogue is for, so the tools whose offer depends on the
+    /// chat follow that chat's own standing, as its tool list does: Crew's (AO-12) are a
+    /// granted chat's two worker tools. A person tool is never importable; a person's own chat
+    /// calls it directly (`reply_parts::runs_only_from_the_agent_loop`).
     async fn get_tool_infos(
         &self,
         admitted: Option<crate::privacy::CallCapability>,
+        session_id: &str,
     ) -> Vec<ToolInfo> {
-        self.get_catalogue(admitted)
+        self.get_catalogue(admitted, session_id)
             .await
             .iter()
             .filter_map(ToolInfo::from_mcp_tool)
@@ -3068,6 +3092,7 @@ impl CodeExecutionClient {
     async fn get_catalogue(
         &self,
         admitted: Option<crate::privacy::CallCapability>,
+        session_id: &str,
     ) -> Vec<McpTool> {
         let Some(manager) = self
             .context
@@ -3079,7 +3104,7 @@ impl CodeExecutionClient {
         };
 
         manager
-            .get_prefixed_tools_excluding(EXTENSION_NAME, admitted)
+            .get_prefixed_tools_excluding_for(EXTENSION_NAME, admitted, Some(session_id))
             .await
             .unwrap_or_default()
     }
@@ -3138,7 +3163,7 @@ impl CodeExecutionClient {
             .ok_or("Missing required parameter: code")?
             .to_string();
 
-        let catalogue = self.get_catalogue(Some(cap)).await;
+        let catalogue = self.get_catalogue(Some(cap), session_id).await;
         let tools: Vec<ToolInfo> = catalogue
             .iter()
             .filter_map(ToolInfo::from_mcp_tool)
@@ -3233,6 +3258,7 @@ impl CodeExecutionClient {
         &self,
         arguments: Option<JsonObject>,
         cap: crate::privacy::CallCapability,
+        session_id: &str,
     ) -> Result<Vec<Content>, String> {
         let path = arguments
             .as_ref()
@@ -3240,7 +3266,7 @@ impl CodeExecutionClient {
             .and_then(|v| v.as_str())
             .ok_or("Missing required parameter: module_path")?;
 
-        let tools = self.get_tool_infos(Some(cap)).await;
+        let tools = self.get_tool_infos(Some(cap), session_id).await;
         let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
 
         // Issue #141: `platform` is *permanently* absent from this catalogue,
@@ -3261,6 +3287,15 @@ impl CodeExecutionClient {
         // knowledge/kb_delete_base", which reads as a spelling mistake — the
         // exact failure mode issue #141 recorded — and the remedy (a direct
         // call, which does work) is not in the message.
+        // Crew's person tools are the other POLICY strip, and a person's own chat imports
+        // nothing from `crew` at all, so both the bare module and a person tool's leaf get
+        // the direct-call explanation (`person_tool_script_refusal`).
+        let names_a_person_tool = parts.first()
+            == Some(&crate::agents::crew_extension::EXTENSION_NAME)
+            && (parts.len() == 1
+                || parts.last().is_some_and(|leaf| {
+                    crate::crew::tool_host::PersonTool::from_tool_name(leaf).is_some()
+                }));
         let explain_platform = |failed: &str| {
             if parts.first() == Some(&platform_tools::PLATFORM_EXTENSION_NAME) {
                 agent_loop_tool_refusal(path)
@@ -3268,6 +3303,8 @@ impl CodeExecutionClient {
                 crate::security::knowledge_delete::is_knowledge_delete_tool(leaf)
             }) {
                 crate::security::knowledge_delete::sandbox_import_refusal(path)
+            } else if names_a_person_tool {
+                person_tool_script_refusal(path)
             } else {
                 failed.to_string()
             }
@@ -3307,6 +3344,7 @@ impl CodeExecutionClient {
         &self,
         arguments: Option<JsonObject>,
         cap: crate::privacy::CallCapability,
+        session_id: &str,
     ) -> Result<Vec<Content>, String> {
         let terms = arguments
             .as_ref()
@@ -3355,7 +3393,7 @@ impl CodeExecutionClient {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let tools = self.get_tool_infos(Some(cap)).await;
+        let tools = self.get_tool_infos(Some(cap), session_id).await;
         Self::handle_search(&tools, &terms_vec, use_regex)
     }
 
@@ -3916,6 +3954,17 @@ impl CodeExecutionClient {
         {
             return Some(("workspace_tier_crossing", refusal));
         }
+        // AO-12, as DEFENCE IN DEPTH: the catalogue never lists Crew's person tools, so no
+        // binding reaches here today (`reply_parts::runs_only_from_the_agent_loop`). If one
+        // ever did, the host would key the change on a fresh id each run, because a script's
+        // sub-call carries no tool-call id, and a retried script could act as the person
+        // twice. Asked last, so no check above moves.
+        if crate::crew::tool_host::PersonTool::from_name(tool_name).is_some() {
+            return Some((
+                "person_tool_in_script",
+                person_tool_script_refusal(tool_name),
+            ));
+        }
         None
     }
 
@@ -4369,7 +4418,7 @@ impl CodeExecutionClient {
         let plan = wait::WaitPlan::from_params(params, wait::MAX_TIMEOUT_SECS)?;
         // The reach a script has: a tool missing from the importable catalogue
         // (Gate E, `kb_delete_base`, the spawn tool) is missing here too.
-        let catalogue = self.get_catalogue(Some(cap)).await;
+        let catalogue = self.get_catalogue(Some(cap), session_id).await;
         if !catalogue.iter().any(|tool| tool.name.as_ref() == plan.tool) {
             return Err(format!(
                 "wait_for: `{}` is not a tool this chat can call from code_execution. Name \
@@ -4820,8 +4869,14 @@ impl McpClientTrait for CodeExecutionClient {
         let content = match name {
             // Issue #56 Gate E: these two ARE the discovery surface, so they see
             // the world the capability this call was admitted on may see.
-            "read_module" => self.handle_read_module(arguments, meta.capability).await,
-            "search_modules" => self.handle_search_modules(arguments, meta.capability).await,
+            "read_module" => {
+                self.handle_read_module(arguments, meta.capability, &meta.session_id)
+                    .await
+            }
+            "search_modules" => {
+                self.handle_search_modules(arguments, meta.capability, &meta.session_id)
+                    .await
+            }
             _ => Err(format!("Unknown tool: {name}")),
         };
 
@@ -4837,10 +4892,10 @@ impl McpClientTrait for CodeExecutionClient {
         Some(&self.info)
     }
 
-    async fn get_moim(&self, _session_id: &str) -> Option<String> {
+    async fn get_moim(&self, session_id: &str) -> Option<String> {
         // The one catalogue read with no admitted call to inherit from: MOIM is
         // assembled for the prompt, not inside a tool call, so it samples.
-        let tools = self.get_tool_infos(None).await;
+        let tools = self.get_tool_infos(None, session_id).await;
         if tools.is_empty() {
             return None;
         }
@@ -5120,6 +5175,7 @@ mod tests {
                 .handle_read_module(
                     Some(object!({ "module_path": path })),
                     crate::privacy::CallCapability::for_test_restricted(),
+                    "test-session-id",
                 )
                 .await
                 .expect_err("there is no importable platform module");
@@ -5137,6 +5193,7 @@ mod tests {
             .handle_read_module(
                 Some(object!({ "module_path": "platformish" })),
                 crate::privacy::CallCapability::for_test_restricted(),
+                "test-session-id",
             )
             .await
             .expect_err("an unknown module is still unknown");
@@ -6827,6 +6884,7 @@ record_result({ status: out.trim() });"#,
             .handle_read_module(
                 Some(args),
                 crate::privacy::CallCapability::for_test_restricted(),
+                "test-session-id",
             )
             .await;
         assert!(result.is_err());
@@ -9448,5 +9506,264 @@ mod wait_tests {
             .expect("the handler drains")
             .unwrap();
         drop(guard);
+    }
+}
+
+/// AO-12 in Code Execution, which is on by default: a script imports from `crew` only the Crew
+/// tools its own chat is offered, so no binding is listed that dispatch would refuse, and never a
+/// person tool, which the model calls directly so the host gets the loop's tool-call id.
+#[cfg(test)]
+mod crew_catalogue_tests {
+    use super::*;
+    use crate::agents::extension::ExtensionConfig;
+    use crate::agents::{Agent, AgentConfig};
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::crew::tool_host::{CrewToolHost, PersonToolCall};
+    use crate::session::session_manager::SessionType;
+    use crate::session::{Session, SessionManager};
+    use std::sync::Arc;
+
+    /// A host that is installed and is never called here.
+    struct InstalledHost;
+
+    #[async_trait::async_trait]
+    impl CrewToolHost for InstalledHost {
+        async fn call(&self, _call: PersonToolCall) -> anyhow::Result<Value> {
+            anyhow::bail!("not in this test")
+        }
+    }
+
+    fn host() -> Option<Arc<dyn CrewToolHost>> {
+        Some(Arc::new(InstalledHost))
+    }
+
+    /// A person's own chat, in a store of its own, whose agent carries the Crew extension.
+    async fn crew_chat(name: &str) -> (Agent, Session) {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sessions = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let session = sessions
+            .create_session(temp.path().to_path_buf(), name.into(), SessionType::User)
+            .await
+            .unwrap();
+        std::mem::forget(temp); // keep the sqlite file alive for the test
+        let agent = Agent::with_config(AgentConfig::new(
+            sessions,
+            PermissionManager::instance(),
+            None,
+            BioRouterMode::Auto,
+        ));
+        agent
+            .add_extension(ExtensionConfig::Platform {
+                name: crate::agents::crew_extension::EXTENSION_NAME.into(),
+                description: "Crew".into(),
+                bundled: Some(true),
+                available_tools: vec![],
+            })
+            .await
+            .unwrap();
+        (agent, session)
+    }
+
+    /// What a script in `session` may import from `crew`, as `read_module`, `search_modules` and
+    /// `execute_code` read the catalogue.
+    async fn crew_module(agent: &Agent, session: &Session) -> Vec<String> {
+        let client = CodeExecutionClient::new(PlatformExtensionContext {
+            extension_manager: Some(Arc::downgrade(&agent.extension_manager)),
+            session_manager: Arc::clone(&agent.config.session_manager),
+        })
+        .unwrap();
+        let capability =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true);
+        let mut names: Vec<String> = client
+            .get_tool_infos(Some(capability), &session.id)
+            .await
+            .into_iter()
+            .filter(|tool| tool.server_name == crate::agents::crew_extension::EXTENSION_NAME)
+            .map(|tool| tool.tool_name)
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A person's own chat with no grant imports no Crew tool. Not the grant's `connections` or
+    /// `request`, which it would be refused (the live run's finding: `read_module("crew")`
+    /// listed all four in such a chat), and not `read` or `change` either: those are direct
+    /// calls, because a script's sub-call has no tool-call id and a retried script would get a
+    /// fresh idempotency key each run (`reply_parts::runs_only_from_the_agent_loop`).
+    #[tokio::test]
+    async fn a_persons_chat_without_a_grant_imports_no_crew_tool() {
+        let (agent, session) = crew_chat("A chat").await;
+        let (listed, offered) = crate::crew::tool_host::with_host_for_tests(host(), async {
+            let offered: Vec<String> = agent
+                .list_tools(&session.id, None)
+                .await
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .filter(|name| name.starts_with("crew__"))
+                .collect();
+            (crew_module(&agent, &session).await, offered)
+        })
+        .await;
+        assert!(listed.is_empty(), "{listed:?}");
+        // Not vacuous: the chat is offered both person tools, just never from a script.
+        assert!(
+            offered.iter().any(|name| name == "crew__read")
+                && offered.iter().any(|name| name == "crew__change"),
+            "{offered:?}"
+        );
+    }
+
+    /// What `read_module(path)` answers a script in `session`.
+    async fn read_module(agent: &Agent, session: &Session, path: &str) -> Result<String, String> {
+        let client = CodeExecutionClient::new(PlatformExtensionContext {
+            extension_manager: Some(Arc::downgrade(&agent.extension_manager)),
+            session_manager: Arc::clone(&agent.config.session_manager),
+        })
+        .unwrap();
+        let mut args = JsonObject::new();
+        args.insert("module_path".into(), Value::String(path.into()));
+        let capability =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true);
+        client
+            .handle_read_module(Some(args), capability, &session.id)
+            .await
+            .map(|content| match &content[0].raw {
+                RawContent::Text(text) => text.text.clone(),
+                _ => panic!("expected text"),
+            })
+    }
+
+    /// A script that reaches for a person tool is told to call it directly, not "Module not
+    /// found", the dead end that made GPT-5.5 tell the person a `kb_delete_base` could not be
+    /// done. A worker tool's miss keeps its plain answer, and a granted chat's `crew` module
+    /// still lists its worker tools.
+    #[tokio::test]
+    async fn a_script_reaching_for_a_person_tool_is_told_to_call_it_directly() {
+        let (agent, session) = crew_chat("A chat").await;
+        let answers = crate::crew::tool_host::with_host_for_tests(host(), async {
+            let mut answers = Vec::new();
+            for path in ["crew", "crew/change", "crew/read", "crew/connections"] {
+                answers.push(read_module(&agent, &session, path).await);
+            }
+            answers
+        })
+        .await;
+        for (path, answer) in ["crew", "crew/change", "crew/read"].iter().zip(&answers) {
+            let refusal = answer.as_ref().expect_err("nothing to import");
+            assert!(refusal.contains(&format!("`{path}`")), "{refusal}");
+            assert!(refusal.contains("call them directly"), "{refusal}");
+            assert!(!refusal.contains('\u{2014}') && !refusal.contains('\u{2013}'));
+        }
+        assert_eq!(
+            answers[3].as_ref().map_err(String::as_str),
+            Err("Tool not found: crew/connections")
+        );
+
+        let (granted, granted_session) = crew_chat("A granted chat").await;
+        let crew = crate::crew::install_test_scope(&granted_session.id, None).await;
+        let (module, change) = crate::crew::tool_host::with_host_for_tests(host(), async {
+            (
+                read_module(&granted, &granted_session, "crew").await,
+                read_module(&granted, &granted_session, "crew/change").await,
+            )
+        })
+        .await;
+        crate::crew::remove_test_scope(&crew, &granted_session.id).await;
+        let module = module.expect("a granted chat imports its worker tools");
+        assert!(
+            module.contains("connections") && module.contains("request"),
+            "{module}"
+        );
+        assert!(change
+            .expect_err("never a person tool")
+            .contains("call them directly"));
+    }
+
+    /// Defence in depth: should a binding for a person tool ever reach the sub-call door, it is
+    /// refused before dispatch, ahead of the permission judge, with the same direct-call
+    /// sentence. Today the catalogue strip means none can.
+    #[tokio::test]
+    async fn a_script_call_of_a_person_tool_is_refused_before_dispatch() {
+        let capability =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true);
+        let cancel = CancellationToken::new();
+        for tool in crate::crew::tool_host::PersonTool::ALL {
+            let refusal = CodeExecutionClient::admit_sub_call(
+                "a-chat",
+                capability,
+                None,
+                tool.name(),
+                r##"{"action":"send","params":{"channel":"#general","text":"hi"}}"##,
+                &cancel,
+            )
+            .await
+            .expect_err("a person tool never runs from a script");
+            assert_eq!(refusal.kind, "person_tool_in_script");
+            assert!(
+                refusal.error.contains("call them directly"),
+                "{}",
+                refusal.error
+            );
+        }
+        // A grant's worker tool is not a person tool: it passes this door.
+        assert!(CodeExecutionClient::admit_sub_call(
+            "a-chat",
+            capability,
+            None,
+            "crew__request",
+            "{}",
+            &cancel,
+        )
+        .await
+        .is_ok());
+    }
+
+    /// A chat holding a Crew grant imports exactly the grant's two worker tools, and never a
+    /// person tool, which gate B-1 refuses it.
+    #[tokio::test]
+    async fn a_granted_chat_imports_only_the_grant_s_worker_tools() {
+        let (agent, session) = crew_chat("A granted chat").await;
+        let crew = crate::crew::install_test_scope(&session.id, None).await;
+        let listed =
+            crate::crew::tool_host::with_host_for_tests(host(), crew_module(&agent, &session))
+                .await;
+        crate::crew::remove_test_scope(&crew, &session.id).await;
+        assert_eq!(listed, ["connections", "request"]);
+    }
+
+    /// Any other session, a subagent here, imports no Crew tool at all.
+    #[tokio::test]
+    async fn a_subagent_imports_no_crew_tool() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sessions = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let session = sessions
+            .create_session(
+                temp.path().to_path_buf(),
+                "A subagent".into(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        std::mem::forget(temp);
+        let agent = Agent::with_config(AgentConfig::new(
+            sessions,
+            PermissionManager::instance(),
+            None,
+            BioRouterMode::Auto,
+        ));
+        agent
+            .add_extension(ExtensionConfig::Platform {
+                name: crate::agents::crew_extension::EXTENSION_NAME.into(),
+                description: "Crew".into(),
+                bundled: Some(true),
+                available_tools: vec![],
+            })
+            .await
+            .unwrap();
+        let listed =
+            crate::crew::tool_host::with_host_for_tests(host(), crew_module(&agent, &session))
+                .await;
+        assert!(listed.is_empty(), "{listed:?}");
     }
 }

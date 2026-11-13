@@ -6,6 +6,7 @@ import {
   approveRefusalText,
   canonicalHint,
   directAddRefusalText,
+  HOST_ONLY_REFUSAL,
   inviteRefusal,
   isAlreadyApproved,
   isNameRefusal,
@@ -171,9 +172,14 @@ const SENTENCES: [code: string, broker: string, shown: string][] = [
     'This server spells the account @alice. Invite @alice.',
   ],
   [
-    'already_member',
+    'already_member (older broker)',
     'already_member: @bob is already a member. Choose Add device to add another computer for them.',
-    '@bob is already a member. Choose Add device to add another computer for them.',
+    refusalCopy.alreadyMember('bob'),
+  ],
+  [
+    'already_member',
+    'already_member: @bob is already a member. To add another computer for them, choose Add another computer.',
+    '@bob is already a member. To add another computer for them, choose Add another computer.',
   ],
   [
     'already_approved',
@@ -196,9 +202,19 @@ const SENTENCES: [code: string, broker: string, shown: string][] = [
     'This server account changed since the host invited it. Ask the host to invite you again.',
   ],
   [
-    'code_mismatch',
+    'code_mismatch (older broker)',
     "code_mismatch: The host hasn't let this device in. Send the host the code shown on your screen.",
-    "The host hasn't let this device in. Send the host the code shown on your screen.",
+    "The host hasn't let this computer in. Send the host the code shown on your screen.",
+  ],
+  [
+    'code_mismatch',
+    "code_mismatch: The host hasn't let this computer in. Send the host the code shown on your screen.",
+    refusalCopy.codeMismatch,
+  ],
+  [
+    'forbidden (host only)',
+    'forbidden: workspace host device required',
+    'Only the workspace host can do this.',
   ],
   [
     'forbidden (not reworded)',
@@ -324,6 +340,82 @@ describe('storage-full fixtures', () => {
         refusalText(`quota_exceeded: ${sentence}`)
       );
     }
+  });
+});
+
+describe('a person’s machine is a computer, whatever broker the workspace runs', () => {
+  /** The current broker's join refusals, read back so these words cannot drift from it. */
+  const join = readFileSync(
+    resolve(__dirname, '../../../../../../crates/biorouter-crew/src/broker/join.rs'),
+    'utf8'
+  );
+
+  it('words code_mismatch as the current broker and the CLI do, from an older broker too', () => {
+    expect(join).toContain(`"code_mismatch: ${refusalCopy.codeMismatch}"`);
+    for (const older of [
+      "code_mismatch: The host hasn't let this device in. Send the host the code shown on your screen.",
+      'code_mismatch: something a future broker says differently',
+    ]) {
+      expect(refusalText(older)).toBe(refusalCopy.codeMismatch);
+      expect(refusalText(legacy(older))).toBe(refusalCopy.codeMismatch);
+    }
+  });
+
+  it('words already_member as the current broker does, and never names Add device', () => {
+    expect(join).toContain(
+      `"already_member: @{} is already a member. To add another computer for them, choose Add another computer."`
+    );
+    expect(refusalCopy.alreadyMember('j.doe')).toBe(
+      '@j.doe is already a member. To add another computer for them, choose Add another computer.'
+    );
+    const older =
+      'already_member: @j.doe is already a member. Choose Add device to add another computer for them.';
+    for (const text of [older, legacy(older)]) {
+      expect(refusalText(text)).toBe(refusalCopy.alreadyMember('j.doe'));
+      expect(refusalText(text)).not.toMatch(/Add device/);
+    }
+  });
+});
+
+describe('host-only refusals', () => {
+  const crates = resolve(__dirname, '../../../../../../crates');
+  const read = (path: string) => readFileSync(resolve(crates, path), 'utf8');
+  const broker = `${read('biorouter-crew/src/broker.rs')}${read('biorouter-crew/src/broker/lifecycle.rs')}`;
+  /** The broker's host-only texts, each of which the CLI words as `HOST_ONLY_REFUSAL`. */
+  const HOST_ONLY = [
+    'forbidden: workspace host device required',
+    'forbidden: human host policy decision required',
+    'forbidden: human host decision required',
+    'forbidden: only host account can stop broker',
+  ];
+
+  it.each(HOST_ONLY)('words %s as the CLI does, from either daemon', (text) => {
+    expect(broker).toContain(`"${text}"`);
+    expect(refusalText(text)).toBe(HOST_ONLY_REFUSAL);
+    expect(refusalText(legacy(text))).toBe(HOST_ONLY_REFUSAL);
+    expect(nameRefusalText(text, 'workspace')).toBe(HOST_ONLY_REFUSAL);
+    expect(directAddRefusalText(text)).toBe(HOST_ONLY_REFUSAL);
+  });
+
+  it('is the CLI’s and the chat’s sentence, byte for byte', () => {
+    expect(HOST_ONLY_REFUSAL).toBe('Only the workspace host can do this.');
+    const cli = read('biorouter-cli/src/commands/crew/output.rs');
+    expect(cli).toContain(`=> "${HOST_ONLY_REFUSAL}".to_owned()`);
+    for (const text of HOST_ONLY) expect(cli).toContain(`"${text.slice('forbidden: '.length)}"`);
+    expect(read('biorouter/src/crew/mod.rs')).toContain(`"${HOST_ONLY_REFUSAL}",`);
+  });
+
+  it('keeps a forbidden text that only starts like one, and the daemon’s own message', () => {
+    expect(refusalText('forbidden: workspace host device required for this team')).toBe(
+      'forbidden: workspace host device required for this team'
+    );
+    expect(refusalText('unauthorized: workspace host device required')).toBe(
+      'unauthorized: workspace host device required'
+    );
+    // The joinText checks read the daemon's message, which is unchanged.
+    expect(parseRefusal('forbidden: workspace host device required').text).toBe(
+      'forbidden: workspace host device required'
+    );
   });
 });
 

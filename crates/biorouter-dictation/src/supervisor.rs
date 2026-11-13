@@ -1290,28 +1290,7 @@ impl Actor {
 
     async fn on_command(&mut self, command: Command) {
         match command {
-            Command::Prepare { spec, reply } => {
-                self.idle_since = Instant::now();
-                if let Some(missing) = &self.unsupported {
-                    let _ = reply.send(Err(SupervisorError::UnsupportedCpu {
-                        missing: missing.clone(),
-                    }));
-                    return;
-                }
-                let wanted = self.effective(&spec);
-                if matches!(self.phase, Phase::Ready | Phase::Busy) {
-                    if let Some(worker) = &self.worker {
-                        if let Some((loaded_spec, loaded)) = &worker.loaded {
-                            if loaded_spec.same_model(&wanted) {
-                                let _ = reply.send(Ok(loaded.clone()));
-                                return;
-                            }
-                        }
-                    }
-                }
-                self.waiters.push((spec, reply));
-                self.make_progress();
-            }
+            Command::Prepare { spec, reply } => self.on_prepare(spec, reply),
             Command::SpawnAhead => {
                 if self.unsupported.is_none()
                     && self.worker.is_none()
@@ -1320,48 +1299,8 @@ impl Actor {
                     self.start_worker();
                 }
             }
-            Command::InstallBias(table) => {
-                self.bias_tables
-                    .retain(|t| !(t.scope == table.scope && t.revision == table.revision));
-                self.bias_tables.push_back(Arc::clone(&table));
-                while self.bias_tables.len() > BIAS_TABLES {
-                    self.bias_tables.pop_front();
-                }
-                // A worker with its model loaded builds it now, behind any decode it is
-                // running; one still loading gets it when `loaded` arrives.
-                if matches!(self.phase, Phase::Ready | Phase::Busy) {
-                    if let Some(worker) = self.worker.as_mut().filter(|w| w.loaded.is_some()) {
-                        worker.give_bias(&table, false);
-                    }
-                }
-                // A standby that has loaded holds every table before it takes over.
-                if let Some(standby) = self.standby.as_mut() {
-                    if standby.worker.loaded.is_some() {
-                        standby.worker.give_bias(&table, false);
-                    }
-                }
-            }
-            Command::Submit(job) => {
-                let job = *job;
-                self.idle_since = Instant::now();
-                if let Some(missing) = &self.unsupported {
-                    job.fail(SupervisorError::UnsupportedCpu {
-                        missing: missing.clone(),
-                    });
-                    return;
-                }
-                match job.stream() {
-                    None => self.vad_queue.push_back(job),
-                    Some(stream) => {
-                        let queue = self.streams.entry(stream).or_default();
-                        if queue.is_empty() && !self.rotation.contains(&stream) {
-                            self.rotation.push_back(stream);
-                        }
-                        queue.push_back(job);
-                    }
-                }
-                self.make_progress();
-            }
+            Command::InstallBias(table) => self.on_install_bias(table),
+            Command::Submit(job) => self.on_submit(*job),
             Command::Cancel(id) => {
                 if let Some(job) = self.remove_queued(|job| job.id == id).pop() {
                     job.fail(SupervisorError::Cancelled);
@@ -1374,40 +1313,120 @@ impl Actor {
                 }
                 self.cancel_running(|job| job.stream() == Some(stream));
             }
-            Command::Unload(reply) => {
-                // An unload asked for is an unload: a return to the GPU under way stops too.
-                self.retire_standby();
-                for job in self.remove_queued(|_| true) {
-                    job.fail(SupervisorError::Cancelled);
-                }
-                for (_, waiter) in self.waiters.drain(..) {
-                    let _ = waiter.send(Err(SupervisorError::Cancelled));
-                }
-                if let Some(running) = self.running.take() {
-                    if let Some(worker) = &self.worker {
-                        worker.send(&ToWorker::Cancel { id: running.job.id });
-                    }
-                    // Answered now; the worker's late answer is ignored.
-                    running.job.fail(SupervisorError::Cancelled);
-                }
-                if self.worker.is_some() {
-                    if self.phase != Phase::Draining {
-                        self.begin_drain();
-                    }
-                    self.unload_waiters.push(reply);
-                } else {
-                    if self.phase != Phase::Unsupported {
-                        self.phase = Phase::Stopped;
-                    }
-                    self.clear_gpu_fault();
-                    let _ = reply.send(());
-                }
-            }
+            Command::Unload(reply) => self.on_unload(reply),
             Command::KillWorker => {
                 if let Some(worker) = &mut self.worker {
                     let _ = worker.child.start_kill();
                 }
             }
+        }
+    }
+
+    /// [`Command::Prepare`]: answers at once from a worker that already holds the model,
+    /// or refuses on an unsupported processor; otherwise queues the waiter and moves on.
+    fn on_prepare(
+        &mut self,
+        spec: Arc<LoadSpec>,
+        reply: oneshot::Sender<Result<Loaded, SupervisorError>>,
+    ) {
+        self.idle_since = Instant::now();
+        if let Some(missing) = &self.unsupported {
+            let _ = reply.send(Err(SupervisorError::UnsupportedCpu {
+                missing: missing.clone(),
+            }));
+            return;
+        }
+        let wanted = self.effective(&spec);
+        if matches!(self.phase, Phase::Ready | Phase::Busy) {
+            if let Some(worker) = &self.worker {
+                if let Some((loaded_spec, loaded)) = &worker.loaded {
+                    if loaded_spec.same_model(&wanted) {
+                        let _ = reply.send(Ok(loaded.clone()));
+                        return;
+                    }
+                }
+            }
+        }
+        self.waiters.push((spec, reply));
+        self.make_progress();
+    }
+
+    /// [`Command::InstallBias`]: keeps the newest [`BIAS_TABLES`] tables and hands this
+    /// one to the worker and the standby that have their model loaded.
+    fn on_install_bias(&mut self, table: Arc<SetBias>) {
+        self.bias_tables
+            .retain(|t| !(t.scope == table.scope && t.revision == table.revision));
+        self.bias_tables.push_back(Arc::clone(&table));
+        while self.bias_tables.len() > BIAS_TABLES {
+            self.bias_tables.pop_front();
+        }
+        // A worker with its model loaded builds it now, behind any decode it is
+        // running; one still loading gets it when `loaded` arrives.
+        if matches!(self.phase, Phase::Ready | Phase::Busy) {
+            if let Some(worker) = self.worker.as_mut().filter(|w| w.loaded.is_some()) {
+                worker.give_bias(&table, false);
+            }
+        }
+        // A standby that has loaded holds every table before it takes over.
+        if let Some(standby) = self.standby.as_mut() {
+            if standby.worker.loaded.is_some() {
+                standby.worker.give_bias(&table, false);
+            }
+        }
+    }
+
+    /// [`Command::Submit`]: queues the job (detector jobs in one queue, decodes per
+    /// stream in rotation), or fails it on an unsupported processor.
+    fn on_submit(&mut self, job: Job) {
+        self.idle_since = Instant::now();
+        if let Some(missing) = &self.unsupported {
+            job.fail(SupervisorError::UnsupportedCpu {
+                missing: missing.clone(),
+            });
+            return;
+        }
+        match job.stream() {
+            None => self.vad_queue.push_back(job),
+            Some(stream) => {
+                let queue = self.streams.entry(stream).or_default();
+                if queue.is_empty() && !self.rotation.contains(&stream) {
+                    self.rotation.push_back(stream);
+                }
+                queue.push_back(job);
+            }
+        }
+        self.make_progress();
+    }
+
+    /// [`Command::Unload`]: cancels everything queued, waiting and running, then drains
+    /// the worker (answering `reply` when it has gone) or, with none, answers at once.
+    fn on_unload(&mut self, reply: oneshot::Sender<()>) {
+        // An unload asked for is an unload: a return to the GPU under way stops too.
+        self.retire_standby();
+        for job in self.remove_queued(|_| true) {
+            job.fail(SupervisorError::Cancelled);
+        }
+        for (_, waiter) in self.waiters.drain(..) {
+            let _ = waiter.send(Err(SupervisorError::Cancelled));
+        }
+        if let Some(running) = self.running.take() {
+            if let Some(worker) = &self.worker {
+                worker.send(&ToWorker::Cancel { id: running.job.id });
+            }
+            // Answered now; the worker's late answer is ignored.
+            running.job.fail(SupervisorError::Cancelled);
+        }
+        if self.worker.is_some() {
+            if self.phase != Phase::Draining {
+                self.begin_drain();
+            }
+            self.unload_waiters.push(reply);
+        } else {
+            if self.phase != Phase::Unsupported {
+                self.phase = Phase::Stopped;
+            }
+            self.clear_gpu_fault();
+            let _ = reply.send(());
         }
     }
 

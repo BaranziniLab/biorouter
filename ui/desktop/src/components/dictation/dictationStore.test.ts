@@ -501,3 +501,116 @@ describe('external HTTP acknowledgement', () => {
     expect(normalizeRemoteHttpBackendUrl('http://127.0.0.1:8765')).toBeNull();
   });
 });
+
+/**
+ * Checklist row S17.4: with an external backend, `status.policy` is the backend host's, so the
+ * store also reads this computer's own policy from Electron main and the microphone shows it.
+ */
+describe("this computer's own managed policy (S17)", () => {
+  const anywhere = (captureAllowed: boolean, reason: 'MSG-POLICY' | 'MSG-POLICY-CAPTURE') => ({
+    enabled: false,
+    shortcut: null,
+    disclosureShown: false,
+    tray: true,
+    gnomeWayland: false,
+    captureAllowed,
+    capturePolicyReason: reason,
+  });
+  const env = { secure: true, surface: 'desktop' as const };
+  const snapshotWith = (
+    laptopPolicy: DictationStatusSnapshot['laptopPolicy'],
+    data: DictationStatus | null = status()
+  ): DictationStatusSnapshot => ({
+    load: data ? 'loaded' : 'absent',
+    status: data,
+    micStatus: 'granted',
+    laptopPolicy,
+  });
+
+  it('leaves the microphone unavailable with the laptop policy’s sentence', () => {
+    expect(
+      resolveDictationPhase(
+        snapshotWith({ captureAllowed: false, reasonId: 'MSG-POLICY-CAPTURE' }),
+        env
+      )
+    ).toEqual({
+      phase: 'unavailable',
+      reasonId: 'MSG-POLICY-CAPTURE',
+      reason: DICTATION_MESSAGES['MSG-POLICY-CAPTURE'],
+    });
+    expect(
+      resolveDictationPhase(snapshotWith({ captureAllowed: false, reasonId: 'MSG-POLICY' }), env)
+    ).toMatchObject({ phase: 'unavailable', reason: DICTATION_MESSAGES['MSG-POLICY'] });
+    expect(
+      resolveDictationPhase(snapshotWith({ captureAllowed: true, reasonId: 'MSG-POLICY' }), env)
+        .phase
+    ).toBe('idle');
+    expect(resolveDictationPhase(snapshotWith(null), env).phase).toBe('idle');
+  });
+
+  it('gives the daemon’s own reason first, and its own before MSG-REMOTE-OLD', () => {
+    const base = status();
+    const daemonOff = status({
+      policy: { ...base.policy, capture: { allowed: false, reason: 'The server says no.' } },
+    });
+    expect(
+      resolveDictationPhase(
+        snapshotWith({ captureAllowed: false, reasonId: 'MSG-POLICY' }, daemonOff),
+        env
+      ).reason
+    ).toBe('The server says no.');
+    // Updating a server from before dictation would not help on this computer.
+    expect(
+      resolveDictationPhase(
+        snapshotWith({ captureAllowed: false, reasonId: 'MSG-POLICY-CAPTURE' }, null),
+        { ...env, host: 'lab', appVersion: '1.95.0' }
+      )
+    ).toMatchObject({ phase: 'unavailable', reasonId: 'MSG-POLICY-CAPTURE' });
+  });
+
+  it('is read with the status, and again when the window regains focus', async () => {
+    const dictationAnywhereGet = vi.fn(async () => anywhere(false, 'MSG-POLICY-CAPTURE'));
+    Object.assign(window, {
+      electron: { dictationMicStatus: vi.fn(async () => 'granted'), dictationAnywhereGet },
+    });
+    const { api } = fakeApi([ok(status())]);
+    resetDictationStoreForTests(api);
+    await ensureDictationStatus();
+    expect(getDictationStatusSnapshot().laptopPolicy).toEqual({
+      captureAllowed: false,
+      reasonId: 'MSG-POLICY-CAPTURE',
+    });
+    expect(resolveDictationPhase(getDictationStatusSnapshot(), env)).toMatchObject({
+      phase: 'unavailable',
+      reasonId: 'MSG-POLICY-CAPTURE',
+    });
+
+    // The administrator lifts it; the next focus reads it again.
+    dictationAnywhereGet.mockResolvedValue(anywhere(true, 'MSG-POLICY'));
+    window.dispatchEvent(new Event('focus'));
+    await vi.waitFor(() =>
+      expect(getDictationStatusSnapshot().laptopPolicy?.captureAllowed).toBe(true)
+    );
+    expect(resolveDictationPhase(getDictationStatusSnapshot(), env).phase).toBe('idle');
+  });
+
+  it('reads nothing in a browser, or from a window main does not answer', async () => {
+    const dictationAnywhereGet = vi.fn(async () => anywhere(false, 'MSG-POLICY'));
+    Object.assign(window, { electron: { dictationAnywhereGet } });
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    try {
+      resetDictationStoreForTests(fakeApi([ok(status())]).api);
+      await ensureDictationStatus();
+      expect(dictationAnywhereGet).not.toHaveBeenCalled();
+      expect(getDictationStatusSnapshot().laptopPolicy).toBeNull();
+    } finally {
+      delete document.documentElement.dataset.biorouterSurface;
+    }
+    // The hidden capture window: main answers `null`, and the daemon decides.
+    dictationAnywhereGet.mockResolvedValue(null as never);
+    resetDictationStoreForTests(fakeApi([ok(status())]).api);
+    await ensureDictationStatus();
+    expect(getDictationStatusSnapshot().laptopPolicy).toBeNull();
+    expect(resolveDictationPhase(getDictationStatusSnapshot(), env).phase).toBe('idle');
+  });
+});

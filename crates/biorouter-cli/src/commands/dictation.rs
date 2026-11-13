@@ -818,30 +818,7 @@ pub async fn handle_list(format: &str) -> Result<()> {
         service::configured_model().as_deref(),
         host.class,
     );
-    let default = CATALOG.default_for(host.class);
-    let rows: Vec<Value> = CATALOG
-        .entries
-        .iter()
-        .map(|entry| {
-            let bench = service::current_bench(entry.id);
-            let found = inventory.get(entry.id);
-            json!({
-                "id": entry.id,
-                "name": entry.display_name,
-                "kind": if entry.is_speech() { "speech" } else { "vad" },
-                "bytes": entry.size_bytes,
-                "languages": entry.languages.as_str(),
-                "suitability": hardware::rate(&CATALOG, entry, &host, bench.as_ref()),
-                "recommended": default.is_some_and(|d| d.id == entry.id),
-                "installed": found.is_some(),
-                "location": found.map(|f| f.location),
-                "path": found.map(|f| f.path.display().to_string()),
-                "superseded": found.is_some_and(|f| f.superseded),
-                "active": active.is_some_and(|a| a.id == entry.id),
-                "allowed": policy.model(entry.id).allowed || !entry.is_speech(),
-            })
-        })
-        .collect();
+    let rows = list_rows(&inventory, &policy, &host, active);
     let strays: Vec<Value> = inventory
         .strays
         .iter()
@@ -858,12 +835,52 @@ pub async fn handle_list(format: &str) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
     }
+    print_list(&inventory, &rows);
+    Ok(())
+}
+
+/// `list`'s row for each catalog file, as `--format json` writes it.
+fn list_rows(
+    inventory: &Inventory,
+    policy: &DictationPolicy,
+    host: &HostFacts,
+    active: Option<&SttCatalogEntry>,
+) -> Vec<Value> {
+    let default = CATALOG.default_for(host.class);
+    CATALOG
+        .entries
+        .iter()
+        .map(|entry| {
+            let bench = service::current_bench(entry.id);
+            let found = inventory.get(entry.id);
+            json!({
+                "id": entry.id,
+                "name": entry.display_name,
+                "kind": if entry.is_speech() { "speech" } else { "vad" },
+                "bytes": entry.size_bytes,
+                "languages": entry.languages.as_str(),
+                "suitability": hardware::rate(&CATALOG, entry, host, bench.as_ref()),
+                "recommended": default.is_some_and(|d| d.id == entry.id),
+                "installed": found.is_some(),
+                "location": found.map(|f| f.location),
+                "path": found.map(|f| f.path.display().to_string()),
+                "superseded": found.is_some_and(|f| f.superseded),
+                "active": active.is_some_and(|a| a.id == entry.id),
+                "allowed": policy.model(entry.id).allowed || !entry.is_speech(),
+            })
+        })
+        .collect()
+}
+
+/// `list` as text: a line per catalog file with its notes, then the files no catalog file
+/// claims.
+fn print_list(inventory: &Inventory, rows: &[Value]) {
     println!(
         "  {} {}",
         style("▌").fg(ACCENT),
         style("Speech models").bold()
     );
-    for (entry, row) in CATALOG.entries.iter().zip(&rows) {
+    for (entry, row) in CATALOG.entries.iter().zip(rows) {
         let mut notes = Vec::new();
         if row["recommended"] == true {
             notes.push("recommended for this computer".to_string());
@@ -911,7 +928,6 @@ pub async fn handle_list(format: &str) -> Result<()> {
             }
         );
     }
-    Ok(())
 }
 
 /// What `install` was asked.
@@ -932,34 +948,7 @@ pub async fn handle_install_with_choice(
     args: InstallArgs,
     suggest_from_chats_choice: Option<bool>,
 ) -> Result<()> {
-    if in_agent_shell() {
-        return Err(refuse(MSG_INSTALL_SHELL));
-    }
-    if let Some(refusal) = service::spawn_refusal() {
-        return Err(refuse(refusal.to_string()));
-    }
-    let policy = ManagedPolicy::load().dictation().clone();
-    if !policy.enabled.is_allowed() {
-        return Err(refuse(
-            policy.enabled.allowance().reason.unwrap_or_default(),
-        ));
-    }
-    if args.system && !models::running_as_administrator() {
-        return Err(refuse(MSG_SYSTEM_ROOT));
-    }
-    let roots = Roots::current();
-    let target = match install_target(&roots, args.system) {
-        Ok(target) => target,
-        Err(TargetRefusal::NoSharedFolder) => return Err(refuse(MSG_NO_SHARED_FOLDER)),
-        Err(TargetRefusal::OnlyManaged) => {
-            return Err(refuse(policy.model_downloads.reason().unwrap_or_default()))
-        }
-    };
-    if args.system {
-        if let Some(why) = models::system_folder_problem(&target) {
-            return Err(refuse(InstallError::UnsafeFolder(why).to_string()));
-        }
-    }
+    let (policy, roots, target) = install_gates(&args)?;
     let account = service::account();
     let terminal = needs_terminal::prompt_can_run();
     if let Some(sentence) = other_account_service() {
@@ -970,34 +959,8 @@ pub async fn handle_install_with_choice(
     } else {
         WriteMode::User
     };
-    // DD-56: the question belongs to the first verified install alone, as the setup
-    // popover's box does. Once the marker records a choice, no later install asks again,
-    // and `activate_first_install` below leaves that choice as it is.
-    let chosen_before = !matches!(
-        biorouter::config::Config::global()
-            .get_param::<u8>(biorouter::dictation::activation::ACTIVATION_VERSION_KEY),
-        Err(biorouter::config::ConfigError::NotFound(_))
-    );
-    // Such a later install given either flag says, once it is verified, that the recorded
-    // choice stands (MSG-SUGGEST-KEPT) rather than dropping the flag without a word.
-    let flag_kept = chosen_before && suggest_from_chats_choice.is_some();
-    // Managed `dictionary_agent_writes: false` refuses turning the capability on, as
-    // `dictionary settings --suggest-from-chats on` and the desktop's hidden box do: the
-    // question is not asked, and an explicit flag is answered with the policy's reason.
-    let managed_refusal = policy.dictionary_agent_writes.reason();
-    let suggest_from_chats = match (suggest_from_chats_choice, &managed_refusal) {
-        (Some(true), Some(reason)) if !chosen_before => {
-            eprintln!("{}", style(reason).yellow());
-            false
-        }
-        (_, Some(_)) => false,
-        (Some(value), None) => value,
-        (None, None) if args.yes || chosen_before => false,
-        (None, None) if terminal => cliclack::confirm("Suggest dictionary words from your chats?")
-            .initial_value(true)
-            .interact()?,
-        (None, None) => false,
-    };
+    let (suggest_from_chats, flag_kept) =
+        suggest_choice(&policy, suggest_from_chats_choice, args.yes, terminal)?;
     if let Some(from) = &args.from {
         let installed = install_from(&policy, from, &target, mode, terminal, args.yes)?;
         if installed {
@@ -1045,8 +1008,103 @@ pub async fn handle_install_with_choice(
         }
         return Ok(());
     }
+    if !confirm_install(&args, entry, &host, &files, &target, &account, terminal)? {
+        return Ok(());
+    }
+    download(&args, entry, &files, &target, mode)
+        .await
+        .and_then(|()| record_suggest_choice(suggest_from_chats, flag_kept))
+}
+
+/// The gates before anything is asked, in the installer's order: an agent's shell, a
+/// processor the engine cannot run on, the managed policy, `--system` without
+/// administrator rights, and a folder the install may not write. Returns the policy, the
+/// model folders, and the folder the install writes.
+fn install_gates(args: &InstallArgs) -> Result<(DictationPolicy, Roots, PathBuf)> {
+    if in_agent_shell() {
+        return Err(refuse(MSG_INSTALL_SHELL));
+    }
+    if let Some(refusal) = service::spawn_refusal() {
+        return Err(refuse(refusal.to_string()));
+    }
+    let policy = ManagedPolicy::load().dictation().clone();
+    if !policy.enabled.is_allowed() {
+        return Err(refuse(
+            policy.enabled.allowance().reason.unwrap_or_default(),
+        ));
+    }
+    if args.system && !models::running_as_administrator() {
+        return Err(refuse(MSG_SYSTEM_ROOT));
+    }
+    let roots = Roots::current();
+    let target = match install_target(&roots, args.system) {
+        Ok(target) => target,
+        Err(TargetRefusal::NoSharedFolder) => return Err(refuse(MSG_NO_SHARED_FOLDER)),
+        Err(TargetRefusal::OnlyManaged) => {
+            return Err(refuse(policy.model_downloads.reason().unwrap_or_default()))
+        }
+    };
+    if args.system {
+        if let Some(why) = models::system_folder_problem(&target) {
+            return Err(refuse(InstallError::UnsafeFolder(why).to_string()));
+        }
+    }
+    Ok((policy, roots, target))
+}
+
+/// Whether a verified install turns on suggesting dictionary words from chats (DD-56),
+/// and whether a flag asked for a choice an earlier install already recorded.
+fn suggest_choice(
+    policy: &DictationPolicy,
+    suggest_from_chats_choice: Option<bool>,
+    yes: bool,
+    terminal: bool,
+) -> Result<(bool, bool)> {
+    // DD-56: the question belongs to the first verified install alone, as the setup
+    // popover's box does. Once the marker records a choice, no later install asks again,
+    // and `activate_first_install` below leaves that choice as it is.
+    let chosen_before = !matches!(
+        biorouter::config::Config::global()
+            .get_param::<u8>(biorouter::dictation::activation::ACTIVATION_VERSION_KEY),
+        Err(biorouter::config::ConfigError::NotFound(_))
+    );
+    // Such a later install given either flag says, once it is verified, that the recorded
+    // choice stands (MSG-SUGGEST-KEPT) rather than dropping the flag without a word.
+    let flag_kept = chosen_before && suggest_from_chats_choice.is_some();
+    // Managed `dictionary_agent_writes: false` refuses turning the capability on, as
+    // `dictionary settings --suggest-from-chats on` and the desktop's hidden box do: the
+    // question is not asked, and an explicit flag is answered with the policy's reason.
+    let managed_refusal = policy.dictionary_agent_writes.reason();
+    let suggest_from_chats = match (suggest_from_chats_choice, &managed_refusal) {
+        (Some(true), Some(reason)) if !chosen_before => {
+            eprintln!("{}", style(reason).yellow());
+            false
+        }
+        (_, Some(_)) => false,
+        (Some(value), None) => value,
+        (None, None) if yes || chosen_before => false,
+        (None, None) if terminal => cliclack::confirm("Suggest dictionary words from your chats?")
+            .initial_value(true)
+            .interact()?,
+        (None, None) => false,
+    };
+    Ok((suggest_from_chats, flag_kept))
+}
+
+/// The plan (each missing file, its source and the folder), then the person's go ahead: a
+/// slow or under-sized computer's warning asked with No as the default, otherwise the
+/// install itself with Yes. `--yes` answers both, saying the warning it passed.
+fn confirm_install(
+    args: &InstallArgs,
+    entry: &'static SttCatalogEntry,
+    host: &HostFacts,
+    files: &[&'static SttCatalogEntry],
+    target: &Path,
+    account: &str,
+    terminal: bool,
+) -> Result<bool> {
     let bench = service::current_bench(entry.id);
-    let warning = match hardware::rate(&CATALOG, entry, &host, bench.as_ref()) {
+    let warning = match hardware::rate(&CATALOG, entry, host, bench.as_ref()) {
         Suitability::TooSlow => Some(match &bench {
             Some(record) => msg_turbo_cpu(
                 record.elapsed_ms as f64 / 1000.0,
@@ -1063,7 +1121,7 @@ pub async fn handle_install_with_choice(
         style("▌").fg(ACCENT),
         style("Install a speech model").bold()
     );
-    for file in &files {
+    for file in files {
         println!(
             "    {:<29} {} B  sha256 {}",
             file.id,
@@ -1082,7 +1140,7 @@ pub async fn handle_install_with_choice(
     }
     if let Some(warning) = &warning {
         if !args.yes && !cliclack::confirm(warning).initial_value(false).interact()? {
-            return Ok(());
+            return Ok(false);
         }
         if args.yes {
             eprintln!("{warning} (--yes)");
@@ -1094,9 +1152,21 @@ pub async fn handle_install_with_choice(
             .initial_value(true)
             .interact()?
     {
-        return Ok(());
+        return Ok(false);
     }
+    Ok(true)
+}
 
+/// The download of `files` into `target`, with its progress on stderr; Ctrl-C cancels it.
+/// Once verified, each file's path is printed, and a speech model this process placed is
+/// warmed up in the background.
+async fn download(
+    args: &InstallArgs,
+    entry: &'static SttCatalogEntry,
+    files: &[&'static SttCatalogEntry],
+    target: &Path,
+    mode: WriteMode,
+) -> Result<()> {
     let (tx, rx) = tokio::sync::watch::channel(Progress {
         id: String::new(),
         phase: Phase::Connecting,
@@ -1116,7 +1186,7 @@ pub async fn handle_install_with_choice(
         }
     };
     let result = tokio::select! {
-        result = models::install_files(&target, &files, &options) => result,
+        result = models::install_files(target, files, &options) => result,
         () = interrupted => Err(InstallError::Cancelled),
     };
     drop(options);
@@ -1137,10 +1207,9 @@ pub async fn handle_install_with_choice(
             if outcomes.iter().any(|o| o.id == entry.id && o.downloaded) {
                 start_warm_up(entry, args.system);
             }
-            record_suggest_choice(suggest_from_chats, flag_kept)?;
             Ok(())
         }
-        Err(InstallError::Offline) => Err(anyhow!(msg_offline(&target))),
+        Err(InstallError::Offline) => Err(anyhow!(msg_offline(target))),
         Err(error) => Err(anyhow!(error.to_string())),
     }
 }

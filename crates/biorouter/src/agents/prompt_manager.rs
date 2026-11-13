@@ -334,6 +334,11 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             todo_sidecar,
             variant,
         } = self;
+        let mut extensions_info = extensions_info;
+        name_crew_without_a_host(
+            &mut extensions_info,
+            crate::crew::tool_host::get().is_some(),
+        );
         let (extensions_info, hints) =
             prepare_injected_context(extensions_info, frontend_instructions, hints);
         let config = Config::global();
@@ -350,6 +355,38 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
         context.todo_sidecar = todo_sidecar;
         let base_prompt = render_base_prompt(manager, variant, &context);
         append_system_prompt_extras(manager, base_prompt, hints, biorouter_mode)
+    }
+}
+
+/// What the model is told about Crew in place of "no effective tools" where this process has no
+/// Crew tool host (an in-process terminal chat, WI-9): no chat here can be offered the person
+/// tools, so the sentence names the two places that can.
+pub const CREW_NEEDS_THE_DAEMON: &str =
+    "Crew actions as you need the desktop app or biorouter session --shared-daemon.";
+
+/// Give the Crew capability [`CREW_NEEDS_THE_DAEMON`] in place of the template's "loaded but has
+/// no effective tools" sentence, when `crew_host` is false and its effective roster is empty.
+/// With a host the empty roster has another cause (a subagent, an app's chat, a scheduled run)
+/// and keeps the template's sentence; a roster with any tool keeps its guidance.
+///
+/// The entry is replaced by one that carries only the sentence and no roster, which the
+/// template renders as the capability's instructions, so Crew's guidance for tools this chat
+/// cannot have goes with it. Nothing asks `capability_has_tool` about Crew, so the missing
+/// roster changes nothing else.
+fn name_crew_without_a_host(extensions_info: &mut [ExtensionInfo], crew_host: bool) {
+    if crew_host {
+        return;
+    }
+    let crew = prompt_name_key(crate::agents::crew_extension::EXTENSION_NAME);
+    for info in extensions_info.iter_mut() {
+        if info.classification == ExtensionClassification::Capability
+            && prompt_name_key(&info.name) == crew
+            && info.tool_roster_known
+            && info.available_tools.is_empty()
+        {
+            *info =
+                ExtensionInfo::capability(&info.name, CREW_NEEDS_THE_DAEMON, info.has_resources);
+        }
     }
 }
 
@@ -1013,6 +1050,129 @@ mod tests {
         assert!(
             !prompt.contains("built-in **Soul**") && !prompt.contains("about-biorouter"),
             "conditional guidance must disappear with its capability: {prompt}"
+        );
+    }
+
+    /// The Crew section of `prompt`, from its heading to the next heading of its level or above.
+    fn crew_section(prompt: &str) -> &str {
+        let start = prompt
+            .find("## crew")
+            .expect("the Crew capability is listed");
+        let rest = prompt
+            .get(start + 2..)
+            .expect("a match starts on a char boundary");
+        let length = ["\n## ", "\n# "]
+            .iter()
+            .filter_map(|heading| rest.find(heading))
+            .min()
+            .unwrap_or(rest.len());
+        prompt
+            .get(start..start + 2 + length)
+            .expect("a heading ends on a char boundary")
+    }
+
+    /// Crew as an in-process chat has it: enabled, its roster joined, and no tool in it.
+    fn crew_with_no_tools() -> ExtensionInfo {
+        let mut crew = ExtensionInfo::capability(
+            "crew",
+            "Never ask for a password, code, passphrase or host key in a message.",
+            false,
+        );
+        crew.tool_roster_known = true;
+        crew
+    }
+
+    /// A Crew tool host that is never called: these tests only ask whether one is installed.
+    struct UnusedHost;
+
+    #[async_trait::async_trait]
+    impl crate::crew::tool_host::CrewToolHost for UnusedHost {
+        async fn call(
+            &self,
+            _call: crate::crew::tool_host::PersonToolCall,
+        ) -> anyhow::Result<serde_json::Value> {
+            unreachable!("no test here calls a person tool")
+        }
+    }
+
+    fn build_with(manager: &PromptManager, extensions: Vec<ExtensionInfo>) -> String {
+        manager
+            .builder()
+            .with_extensions(extensions.into_iter())
+            .build()
+    }
+
+    /// WI-9: where no Crew host is installed (an in-process terminal chat), Crew's empty roster
+    /// is said as the step that gives the person Crew actions, and Crew's guidance for tools
+    /// the chat cannot have is gone with the stock sentence.
+    #[tokio::test]
+    async fn crew_without_a_host_names_the_daemon_instead_of_no_effective_tools() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        let prompt = crate::crew::tool_host::with_host_for_tests(None, async {
+            build_with(&manager, vec![crew_with_no_tools()])
+        })
+        .await;
+        let crew = crew_section(&prompt);
+        assert!(crew.contains(CREW_NEEDS_THE_DAEMON), "{crew}");
+        assert!(!crew.contains("no effective tools"), "{crew}");
+        assert!(
+            !prompt.contains("Never ask for a password"),
+            "Crew's guidance must not survive an empty roster: {prompt}"
+        );
+        assert_eq!(
+            prompt.matches(CREW_NEEDS_THE_DAEMON).count(),
+            1,
+            "said once: {prompt}"
+        );
+    }
+
+    /// With a host installed, an empty Crew roster has another cause (a subagent, an app's chat,
+    /// a scheduled run), so it keeps the stock sentence and never points at the daemon.
+    #[tokio::test]
+    async fn crew_with_a_host_keeps_the_stock_sentence() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        let host: std::sync::Arc<dyn crate::crew::tool_host::CrewToolHost> =
+            std::sync::Arc::new(UnusedHost);
+        let prompt = crate::crew::tool_host::with_host_for_tests(Some(host), async {
+            build_with(&manager, vec![crew_with_no_tools()])
+        })
+        .await;
+        let crew = crew_section(&prompt);
+        assert!(
+            crew.contains("loaded but has no effective tools for this turn"),
+            "{crew}"
+        );
+        assert!(!prompt.contains(CREW_NEEDS_THE_DAEMON), "{prompt}");
+    }
+
+    /// The sentence needs Crew enabled: without the capability, or with tools in its roster,
+    /// nothing points at the daemon, even with no host. Another capability's empty roster keeps
+    /// the stock sentence.
+    #[tokio::test]
+    async fn the_daemon_sentence_needs_crew_enabled_with_an_empty_roster() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        let mut developer = ExtensionInfo::capability("developer", "developer guidance", false);
+        developer.tool_roster_known = true;
+        let granted = capability_with_tools("crew", &["connections", "request"]);
+        let (without_crew, with_tools) = crate::crew::tool_host::with_host_for_tests(None, async {
+            (
+                build_with(&manager, vec![developer]),
+                build_with(&manager, vec![granted]),
+            )
+        })
+        .await;
+        assert!(
+            !without_crew.contains(CREW_NEEDS_THE_DAEMON),
+            "{without_crew}"
+        );
+        assert!(
+            without_crew.contains("loaded but has no effective tools for this turn"),
+            "{without_crew}"
+        );
+        assert!(!with_tools.contains(CREW_NEEDS_THE_DAEMON), "{with_tools}");
+        assert!(
+            crew_section(&with_tools).contains("focused capability guidance"),
+            "{with_tools}"
         );
     }
 

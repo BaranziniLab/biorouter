@@ -193,6 +193,8 @@ const DICTATION_CHANNELS: Record<string, Array<keyof typeof SENDER_CHECKS>> = {
   'dictation:anywhere:private-choice': ['review'],
   'dictation:anywhere:review-copy': ['review'],
   'dictation:anywhere:review-get': ['review'],
+  // **Retry** on the card, for a recording the capture page holds (owner decision, 2026-11-13).
+  'dictation:anywhere:review-retry': ['review'],
   'dictation:anywhere:set': ['app'],
   'dictation:anywhere:settings-ready': ['app'],
   'dictation:busy': ['app'],
@@ -368,6 +370,19 @@ describe('the main process answers dictation IPC only from a Biorouter window', 
   it('the busy record lives outside main.ts, so the updater can import it without a cycle', () => {
     expect(main).not.toMatch(/export function isDictationBusy/);
     expect(read(join(src, 'utils/dictationBusy.ts'))).toMatch(/export function isDictationBusy\(/);
+  });
+
+  it('the review card asks for Retry with no argument, so it cannot name what is retried', () => {
+    const preload = read(join(src, 'preload.ts'));
+    expect(preload).toMatch(
+      /^ {2}dictationAnywhereReviewRetry: \(\) => ipcRenderer\.invoke\('dictation:anywhere:review-retry'\),$/m
+    );
+    expect(preload.match(/dictation:anywhere:review-retry/g)).toHaveLength(1);
+    // Main's handler takes nothing from the card but the click: the hold is main's own record.
+    const start = main.indexOf("ipcMain.handle('dictation:anywhere:review-retry'");
+    expect(flat(main.slice(start, main.indexOf('\n});', start)))).toBe(
+      "ipcMain.handle('dictation:anywhere:review-retry', (event) => { if (!isDictationReviewSender(event)) return false; return retryAnywhere();"
+    );
   });
 
   it('a new document tells main that its window dictates nothing yet', () => {

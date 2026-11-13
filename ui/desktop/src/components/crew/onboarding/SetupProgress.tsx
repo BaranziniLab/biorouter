@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { Check } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
@@ -12,9 +12,16 @@ import { hostCopy, setupCopy } from './copy';
 import { useMounted } from './fields';
 import { Spinner } from './parts';
 import {
+  HOST_KEY_CODES,
+  SetupHostKeyHelp,
+  SetupWorkspaceList,
+  workspacesNoteText,
+} from './SetupWorkspaces';
+import {
   manualInstallCommands,
   plainStage,
   plainStages,
+  plainStagesFor,
   readSetup,
   readSetupArtifact,
   setupActive,
@@ -24,9 +31,11 @@ import {
   stopSetup,
   type PlainSetupStage,
   type SetupArtifact,
+  setupRouteOf,
   type SetupInput,
   type SetupIntent,
   type SetupRun,
+  type SetupTarget,
 } from './setup';
 
 /**
@@ -74,6 +83,8 @@ export interface SetupJob {
   askedToSignIn: boolean;
   /** Starting, or the daemon's to finish: nothing may start another. */
   busy: boolean;
+  /** What the last job was started on, for a host key it stopped on (`setupRouteOf`). */
+  target: SetupTarget | null;
   start(input: SetupInput): Promise<SetupStartResult>;
   /**
    * Start the last job again. `replaceExisting` answers `crew_install_incompatible`, and
@@ -131,6 +142,7 @@ export function useSetupJob({
   const [problem, setProblem] = useState<SetupProblem | null>(null);
   const [signingIn, setSigningIn] = useState(false);
   const [askedToSignIn, setAskedToSignIn] = useState(false);
+  const [target, setTarget] = useState<SetupTarget | null>(null);
   /** Each answer that comes back schedules the next read. */
   const [reads, setReads] = useState(0);
   const inFlight = useRef(false);
@@ -181,6 +193,7 @@ export function useSetupJob({
       if (inFlight.current) return 'busy';
       inFlight.current = true;
       lastInput.current = input;
+      setTarget(input.target);
       signInClosedFor.current = null;
       setProblem(null);
       setRun(null);
@@ -284,6 +297,7 @@ export function useSetupJob({
     signingIn,
     askedToSignIn,
     busy: phase === 'starting' || phase === 'running',
+    target,
     start,
     retry,
     stop,
@@ -295,13 +309,36 @@ export function useSetupJob({
 
 type StepState = 'done' | 'current' | 'next' | 'failed';
 
-/** The plain steps to show: Signing in only for a job that asked for it. */
+/**
+ * A check, and an install from Open a workspace on a server, are there to list the server's
+ * workspaces (AO-8): one that finished without listing them (`workspaces_unlisted`) did not get
+ * where it was going. Its Looking for workspaces step reads as failed, and it never says Ready
+ * (live QA: a Crew in the account too old to list them ended at a green Ready).
+ */
+function listingFailed(intent: SetupIntent, job: SetupJob): boolean {
+  return (
+    (intent === 'check' || intent === 'install') &&
+    job.phase === 'finished' &&
+    Boolean(job.run?.workspacesUnlisted)
+  );
+}
+
+/**
+ * The plain steps to show: Signing in only for a job that asked for it, and Looking for workspaces
+ * and Updating running workspaces where the job has them (AO-8, `plainStagesFor`). A job whose
+ * listing failed ends at Looking for workspaces.
+ */
 function shownStages(intent: SetupIntent, job: SetupJob): PlainSetupStage[] {
   const signIn = job.run?.stages.find((stage) => stage.name === 'sign_in');
   const signedIn =
     job.askedToSignIn ||
     (signIn !== undefined && signIn.state !== 'skipped' && signIn.state !== 'pending');
-  return plainStages(intent).filter((stage) => stage !== 'signing-in' || signedIn);
+  const keep = (stage: PlainSetupStage) => stage !== 'signing-in' || signedIn;
+  if (listingFailed(intent, job)) {
+    const stages = plainStages(intent).filter(keep);
+    return stages.slice(0, stages.indexOf('finding') + 1);
+  }
+  return plainStagesFor(intent, job.run).filter(keep);
 }
 
 /**
@@ -315,23 +352,42 @@ export function SetupProgress({
   intent,
   server,
   testId,
+  showWorkspaces = true,
+  problemAction,
+  connections = [],
 }: {
   job: SetupJob;
   intent: SetupIntent;
   server: string;
   testId?: string;
+  /**
+   * The saved connections, so a job started on one reads and trusts a host key with its login
+   * and never behind its jump host (`setupRouteOf`).
+   */
+  connections?: readonly { id: string; ssh_target: string; proxy_jump?: string | null }[];
+  /**
+   * List the workspaces the job found on the server (AO-8), under its steps, or say why they could
+   * not be listed. Off where the caller does both itself, with its own actions (Open a workspace
+   * on a server).
+   */
+  showWorkspaces?: boolean;
+  /** One more way on beside Try again, for a refusal the caller can answer (Open, AO-9). */
+  problemAction?: ReactNode;
 }) {
   const fixHintId = useId();
   if (job.phase === 'idle' || job.phase === 'outdated') return null;
   const stages = shownStages(intent, job);
+  const unlisted = listingFailed(intent, job);
   const current: PlainSetupStage =
     job.phase === 'starting' || !job.run
       ? 'checking'
-      : job.phase === 'finished'
-        ? 'ready'
-        : plainStage(job.run);
+      : unlisted
+        ? 'finding'
+        : job.phase === 'finished'
+          ? 'ready'
+          : plainStage(job.run);
   const index = Math.max(0, stages.indexOf(current));
-  const failed = job.phase === 'failed';
+  const failed = job.phase === 'failed' || unlisted;
   const outcome = job.run?.outcome ?? null;
   const installedDetail =
     outcome?.installedVersion && outcome.reused
@@ -351,7 +407,7 @@ export function SetupProgress({
       <ol className="crew-setup-steps" aria-label={setupCopy.stepsLabel}>
         {stages.map((stage, position) => {
           const state: StepState =
-            job.phase === 'finished' || position < index
+            (job.phase === 'finished' && !unlisted) || position < index
               ? 'done'
               : position === index
                 ? failed
@@ -424,6 +480,7 @@ export function SetupProgress({
                   {setupCopy.fixStorage}
                 </Button>
               ) : null}
+              {problemAction}
               <Button type="button" variant="secondary" size="sm" onClick={() => void job.retry()}>
                 {setupCopy.tryAgain}
               </Button>
@@ -437,6 +494,24 @@ export function SetupProgress({
             </p>
           ) : null}
         </Note>
+      ) : null}
+      {/* The server's host key could not be verified: how to verify it, as Join's trust pane
+          says (Crew never accepts a key). */}
+      {job.problem?.code && HOST_KEY_CODES.includes(job.problem.code) ? (
+        <SetupHostKeyHelp
+          code={job.problem.code}
+          detail={job.problem.output}
+          server={server}
+          route={job.target ? setupRouteOf(job.target, connections) : null}
+        />
+      ) : null}
+      {showWorkspaces && job.run?.workspaces ? (
+        <SetupWorkspaceList workspaces={job.run.workspaces} label={setupCopy.foundLabel(server)} />
+      ) : null}
+      {showWorkspaces && workspacesNoteText(job.run?.workspacesNote ?? null) ? (
+        <p className="text-supporting text-text-muted" data-testid="crew-setup-workspaces-note">
+          {workspacesNoteText(job.run?.workspacesNote ?? null)}
+        </p>
       ) : null}
       {job.problem?.output ? (
         <Disclosure label={setupCopy.output}>

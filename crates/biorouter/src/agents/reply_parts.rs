@@ -247,6 +247,10 @@ fn coerce_tool_arguments(
 ///   catalogue builder strips it on the way out, for the same reason it is
 ///   exempted here.
 ///
+/// The catalogue also strips, as a POLICY, the tools a script may not run
+/// ([`runs_only_from_the_agent_loop`]: `kb_delete_base` and Crew's person
+/// tools), and this keeps them by asking the same predicate.
+///
 /// The remaining `workspace__*` tools are in the catalogue and exempted anyway,
 /// because operating the daemon and the GUI from inside the sandbox is not what
 /// that surface is for. That is deliberate and safe: an exemption may be a
@@ -305,17 +309,14 @@ pub(crate) fn survives_code_execution_filter(
         // shape to test, because a frontend tool is named by whichever client
         // registered it.
         || frontend_tool_names.contains(tool_name)
-        // `kb_delete_base`: a fifth family, and the first one that is absent
-        // from the catalogue because the sandbox may not RUN it rather than
-        // because the sandbox cannot reach it. Deleting a knowledge base is
-        // shown to the user for approval first, and a script call is dispatched
-        // with no inspector chain to raise that approval — so the catalogue
-        // strips it (`ExtensionManager::get_prefixed_tools_excluding`) and this
-        // keeps it directly callable. The same predicate answers both, so the
+        // The tools the sandbox may not RUN, as opposed to the ones it cannot
+        // reach: `kb_delete_base` and Crew's two person tools. The catalogue
+        // strips them (`ExtensionManager::get_prefixed_tools_excluding_for`)
+        // and this keeps them directly callable, by the one predicate, so the
         // pair cannot drift into "dropped from the catalogue, dropped from the
-        // roster" — which is the state that reaches nowhere, and the state this
-        // tool shipped in for exactly one live run.
-        || crate::security::knowledge_delete::is_knowledge_delete_tool(tool_name)
+        // roster" — the state that reaches nowhere, and the state
+        // `kb_delete_base` shipped in for exactly one live run.
+        || runs_only_from_the_agent_loop(tool_name)
         // The checklist: exact names, never a `todo__` prefix — see
         // `TODO_TOOL_NAMES` for why the prefix is not the builtin's to claim.
         || crate::agents::todo_extension::is_todo_tool_name(tool_name)
@@ -326,6 +327,27 @@ pub(crate) fn survives_code_execution_filter(
         // in the transcript, only a script run. Directly callable, the model
         // sees the full schema and the batch summary card is drawn.
         || crate::agents::decisions_extension::is_decision_tool_name(tool_name)
+}
+
+/// The tools a Code Execution script may never call, which the model therefore calls
+/// directly. ONE predicate answers both lists:
+/// [`ExtensionManager::get_prefixed_tools_excluding_for`] strips these from the script
+/// catalogue, and [`survives_code_execution_filter`] keeps them on the model's roster. A tool
+/// stripped from the first and not kept by the second reaches nowhere.
+///
+/// * `kb_delete_base`: deleting a knowledge base shows the person an approval naming the base
+///   first, and a script's call is dispatched with no inspector chain to raise it.
+/// * Crew's person tools, `crew__read` and `crew__change` (AO-12): the host keys each change
+///   on the agent loop's id for the tool call (the daemon's `idempotency_key`), so a retried
+///   call is applied once. A script's sub-call carries no such id, so every run of a retried
+///   script would get a fresh key and could act as the person twice (post one message twice).
+///   Called directly, the change also draws its own row and card rather than an
+///   `execute_code` row.
+///
+/// [`ExtensionManager::get_prefixed_tools_excluding_for`]: crate::agents::ExtensionManager::get_prefixed_tools_excluding_for
+pub(crate) fn runs_only_from_the_agent_loop(tool_name: &str) -> bool {
+    crate::security::knowledge_delete::is_knowledge_delete_tool(tool_name)
+        || crate::crew::tool_host::PersonTool::from_name(tool_name).is_some()
 }
 
 fn code_execution_mode_is_active(loaded: bool, tools: &[Tool]) -> bool {
@@ -2053,6 +2075,199 @@ mod tests {
         ));
     }
 
+    /// AO-12: Crew's two person tools stay direct calls in Code Execution mode, by the same
+    /// predicate that strips them from the script catalogue. The grant's worker tools are not
+    /// person tools: a granted chat still reaches them from a script.
+    #[test]
+    fn the_code_execution_filter_keeps_the_person_tools_directly_callable() {
+        let prefix = format!("{CODE_EXECUTION_EXTENSION}__");
+        let no_frontend = HashSet::new();
+        for tool in crate::crew::tool_host::PersonTool::ALL {
+            assert!(
+                runs_only_from_the_agent_loop(tool.name()),
+                "{}",
+                tool.name()
+            );
+            assert!(
+                survives_code_execution_filter(tool.name(), &prefix, &no_frontend),
+                "{} is never importable, so it must stay a direct call",
+                tool.name()
+            );
+        }
+        for name in ["crew__connections", "crew__request", "crew__something_else"] {
+            assert!(!runs_only_from_the_agent_loop(name), "{name}");
+            assert!(
+                !survives_code_execution_filter(name, &prefix, &no_frontend),
+                "{name}"
+            );
+        }
+        // The knowledge base deletion keeps its place in the same predicate.
+        assert!(runs_only_from_the_agent_loop("knowledge__kb_delete_base"));
+        assert!(!runs_only_from_the_agent_loop("knowledge__kb_search"));
+    }
+
+    /// A Crew host that records, for each call, the base of the key the daemon's host applies
+    /// a change under (`crew_tools::idempotency_key`): the agent loop's id for the tool call,
+    /// or a fresh one when the call has none, as a script's sub-call has none.
+    #[derive(Default)]
+    struct KeyRecordingHost {
+        keys: std::sync::Mutex<Vec<String>>,
+        from_the_loop: std::sync::Mutex<Vec<bool>>,
+    }
+
+    #[async_trait]
+    impl crate::crew::tool_host::CrewToolHost for KeyRecordingHost {
+        async fn call(
+            &self,
+            call: crate::crew::tool_host::PersonToolCall,
+        ) -> anyhow::Result<serde_json::Value> {
+            self.from_the_loop
+                .lock()
+                .unwrap()
+                .push(call.tool_call_id.is_some());
+            let key = call
+                .tool_call_id
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+            self.keys.lock().unwrap().push(key);
+            Ok(json!({ "ran": call.action }))
+        }
+    }
+
+    /// A person's own chat with Crew, Code Execution and Todo loaded, in a store of its own.
+    async fn a_code_execution_crew_chat() -> anyhow::Result<(Agent, crate::session::Session)> {
+        let store = tempfile::TempDir::new()?;
+        let sessions = Arc::new(crate::session::SessionManager::new(
+            store.path().to_path_buf(),
+        ));
+        let session = sessions
+            .create_session(
+                store.path().to_path_buf(),
+                "A chat".into(),
+                SessionType::User,
+            )
+            .await?;
+        std::mem::forget(store); // keep the sqlite file alive for the test
+        let agent = Agent::with_config(crate::agents::AgentConfig::new(
+            sessions,
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        ));
+        for name in [
+            crate::agents::crew_extension::EXTENSION_NAME,
+            CODE_EXECUTION_EXTENSION,
+            "todo",
+        ] {
+            agent
+                .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                    name: name.into(),
+                    description: name.into(),
+                    bundled: Some(true),
+                    available_tools: vec![],
+                })
+                .await?;
+        }
+        Ok((agent, session))
+    }
+
+    /// WI-6: with Code Execution on (the default), the person tools are on the model's roster
+    /// and absent from the script catalogue, so a change runs from the agent loop with the
+    /// loop's id for the tool call. A retry of that call reaches the host under the same key,
+    /// so the daemon applies it once. Before, the person tools were reachable only from a
+    /// script, whose sub-call has no id, and every retried run got a fresh key.
+    #[tokio::test]
+    async fn with_code_execution_a_person_tool_is_a_direct_call_with_a_stable_key(
+    ) -> anyhow::Result<()> {
+        let (agent, session) = a_code_execution_crew_chat().await?;
+        let provider: Arc<dyn Provider> = Arc::new(MockProvider {
+            model_config: ModelConfig::new("test-model")?,
+        });
+        let host = Arc::new(KeyRecordingHost::default());
+        let installed: Arc<dyn crate::crew::tool_host::CrewToolHost> = host.clone();
+        let (surface, catalogue) =
+            crate::crew::tool_host::with_host_for_tests(Some(installed), async {
+                let surface = agent
+                    .prepare_model_tool_surface(&session.id, &provider)
+                    .await;
+                let catalogue: Vec<String> = agent
+                    .extension_manager
+                    .get_prefixed_tools_excluding_for(
+                        CODE_EXECUTION_EXTENSION,
+                        None,
+                        Some(&session.id),
+                    )
+                    .await?
+                    .into_iter()
+                    .map(|tool| tool.name.to_string())
+                    .collect();
+                // The change the model sends, and the same tool call again: a retry.
+                for _ in 0..2 {
+                    let (id, dispatched) = agent
+                        .dispatch_tool_call(
+                            rmcp::model::CallToolRequestParams {
+                                task: None,
+                                meta: None,
+                                name: "crew__change".into(),
+                                arguments: json!({
+                                    "action": "send",
+                                    "params": { "channel": "#general", "text": "hello from chat" }
+                                })
+                                .as_object()
+                                .cloned(),
+                            },
+                            "call_7".to_owned(),
+                            None,
+                            &session,
+                        )
+                        .await;
+                    assert_eq!(id, "call_7");
+                    let answered = dispatched
+                        .map_err(|error| anyhow::anyhow!(error.message.to_string()))?
+                        .result
+                        .await
+                        .map_err(|error| anyhow::anyhow!(error.message.to_string()))?;
+                    assert_eq!(answered.is_error, Some(false), "{answered:?}");
+                }
+                anyhow::Ok((surface, catalogue))
+            })
+            .await?;
+
+        assert!(
+            surface.code_execution_active,
+            "precondition: Code Execution narrowing must be in force, else this proves nothing"
+        );
+        let callable: Vec<String> = surface
+            .directly_callable_tools
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        for tool in crate::crew::tool_host::PersonTool::ALL {
+            assert!(
+                callable.iter().any(|name| name == tool.name()),
+                "{} must be on the model's roster: {callable:?}",
+                tool.name()
+            );
+            assert!(
+                !catalogue.iter().any(|name| name == tool.name()),
+                "{} must not be importable by a script: {catalogue:?}",
+                tool.name()
+            );
+        }
+        assert!(
+            catalogue.iter().any(|name| name.starts_with("todo__")),
+            "an empty catalogue proves nothing: {catalogue:?}"
+        );
+
+        assert_eq!(*host.from_the_loop.lock().unwrap(), [true, true]);
+        let keys = host.keys.lock().unwrap();
+        assert_eq!(
+            keys.as_slice(),
+            ["call_7", "call_7"],
+            "one key across a retry"
+        );
+        Ok(())
+    }
+
     #[test]
     fn computer_use_actions_stay_directly_callable_without_a_javascript_approval_wrapper() {
         let frontend = HashSet::new();
@@ -2123,7 +2338,7 @@ mod tests {
             "BIOROUTER_SESSION_BLOB_LAZY_LOAD".to_string(),
             "true".to_string(),
         )]);
-        crate::config::with_config_overrides(overrides, async {
+        let guarded = crate::config::with_config_overrides(overrides, async {
             let store = tempfile::TempDir::new().expect("an isolated session store");
             let session_manager = Arc::new(crate::session::SessionManager::new(
                 store.path().to_path_buf(),
@@ -2153,6 +2368,17 @@ mod tests {
                 })
                 .await
                 .expect("add the ordinary extension");
+            // … Crew, whose person tools a script may not run (a host is installed
+            // around this whole test, so the roster offers them) …
+            agent
+                .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                    name: crate::agents::crew_extension::EXTENSION_NAME.into(),
+                    description: "Crew".into(),
+                    bundled: Some(true),
+                    available_tools: vec![],
+                })
+                .await
+                .expect("add Crew");
             // … Knowledge, which is what opens two of the platform tools …
             for name in ["knowledge", "code_execution", "dictionary"] {
                 let target = crate::agents::extension_manager::resolve_bundled_extension(name)
@@ -2265,6 +2491,10 @@ mod tests {
                 // Listed here so removing the catalogue strip cannot quietly retire
                 // the obligation below along with it.
                 "knowledge__kb_delete_base",
+                // The same policy for Crew's person tools: a script's sub-call has no
+                // tool-call id, so the host's idempotency key would change on every run.
+                "crew__read",
+                "crew__change",
             ] {
                 assert!(
                     uncatalogued.iter().any(|name| name == expected),
@@ -2293,8 +2523,10 @@ mod tests {
                     "`{name}` survives the predicate but is missing from the prepared roster"
                 );
             }
-        })
-        .await;
+        });
+        let host: Arc<dyn crate::crew::tool_host::CrewToolHost> =
+            Arc::new(KeyRecordingHost::default());
+        crate::crew::tool_host::with_host_for_tests(Some(host), guarded).await;
     }
 
     #[test]

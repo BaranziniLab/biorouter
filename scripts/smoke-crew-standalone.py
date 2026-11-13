@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the actual standalone Crew refusal with an externally prepared provider profile."""
+"""Audit a hidden standalone CLI run that completes without invoking any tool."""
 
 import argparse
 import json
@@ -14,18 +14,21 @@ import subprocess
 import sys
 import threading
 import time
-import xml.etree.ElementTree as ET
 
 
-REQUEST = {'method': 'messages.history', 'params': {
-    'channel_id': '00000000-0000-4000-8000-0000000002e5', 'limit': 1}}
-DENIAL = "This chat isn't connected to a Crew channel. To connect it, type /crew in this chat."
+CONTRACT = 'hidden_cli_no_invocation_v1'
+FIXED_RESPONSE = 'CREW_STANDALONE_NO_INVOCATION_OK'
+PROMPT = ('Reply with exactly CREW_STANDALONE_NO_INVOCATION_OK. Do not call any tools. '
+          'Do not make Crew requests, discover connections, use grants, read files '
+          'or channel messages, or add explanations. This asks only for a fixed '
+          'synthetic response; it does not ask you to report which tools you have.')
+LIMITATIONS = {'effective_model_roster': 'NOT OBSERVABLE',
+               'forged_call_denial': 'NOT OBSERVABLE',
+               'separate_rust_evidence_required': True}
 
 
 class EvidenceError(Exception):
-    def __init__(self, reason, schema=None):
-        super().__init__(reason)
-        self.schema = schema
+    pass
 
 
 def require(condition, reason):
@@ -33,127 +36,75 @@ def require(condition, reason):
         raise EvidenceError(reason)
 
 
-def exact_arguments(value):
-    return json.loads(value) if isinstance(value, str) else value
-
-
-def protocol_schema(value):
-    def kind(item):
-        if item is None:
-            return 'null'
-        return {dict: 'object', list: 'array', str: 'string', bool: 'boolean',
-                int: 'number', float: 'number'}.get(type(item), 'other')
-
-    known = {'content', 'isError', 'structuredContent', '_meta'}
-    schema = {'known_fields': {key: kind(value[key]) for key in sorted(known & value.keys())},
-              'unknown_field_count': len(value.keys() - known)}
-    if isinstance(value.get('content'), list):
-        schema['content_item_fields'] = [
-            sorted({'type', 'text', 'resource', 'data', 'mimeType', 'annotations', '_meta'} & item.keys())
-            for item in value['content'][:4] if isinstance(item, dict)]
-    if isinstance(value.get('content'), list):
-        schema['content_item_types'] = [
-            item.get('type') if item.get('type') in {'text', 'image', 'audio', 'resource', 'resource_link'}
-            else 'other' for item in value['content'][:4] if isinstance(item, dict)]
-    if isinstance(value.get('isError'), bool) or value.get('isError') is None:
-        schema['isError'] = value.get('isError')
-    return schema
-
-
-def tool_text(value):
-    require(set(value) <= {'content', 'isError', '_meta', 'structuredContent'},
-            'unexpected additional tool payload')
-    require(value.get('isError') is False or value.get('isError') is None, 'tool result is an error')
-    require(value.get('structuredContent') is None or value.get('structuredContent') == {},
-            'tool result contains structured payload')
-    content = value.get('content')
-    require(isinstance(content, list) and len(content) == 1 and content[0].get('type') == 'text'
-            and set(content[0]) == {'type', 'text'},
-            'extra or nontext tool content')
-    text = content[0]['text'].strip()
-    if text.startswith('<tool-output'):
-        wrapper = ET.fromstring(text)
-        require(wrapper.tag == 'tool-output' and len(wrapper) == 0 and not wrapper.tail,
-                'unexpected tool-output payload')
-        text = (wrapper.text or '').strip()
-    return text
+def unique_fields(pairs):
+    result = {}
+    for name, value in pairs:
+        require(name not in result, 'duplicate structured-output field')
+        result[name] = value
+    return result
 
 
 def validate_trace(output):
-    requests, responses = [], []
+    chunks = []
+    seen_user = False
+    completed = False
     for line in output.splitlines():
         if not line.strip():
             continue
-        event = json.loads(line)
-        for item in event.get('message', {}).get('content', []):
-            if item.get('type') == 'toolRequest':
-                requests.append(item)
-            elif item.get('type') == 'toolResponse':
-                responses.append(item)
-    require(len(requests) == len(responses) and 1 <= len(requests) <= 2,
-            'unexpected request or response count')
-    response_ids = [item['id'] for item in responses]
-    require(len(set(response_ids)) == len(response_ids), 'duplicate response IDs')
-    request_ids = [item['id'] for item in requests]
-    require(len(set(request_ids)) == len(request_ids) and set(request_ids) == set(response_ids),
-            'tool response ID mismatch')
-    pairs = {item['id']: item for item in responses}
-    planning = 0
-    crew_value, crew_name, crew_arguments = None, None, None
-    for request in requests:
-        response = pairs[request['id']]
-        call, result = request['toolCall'], response['toolResult']
-        require(call['status'] == result['status'] == 'success', 'tool transport failed')
-        name, arguments = call['value']['name'], call['value']['arguments']
-        value = result['value']
-        if name == 'todo__todo_write':
-            require(planning == 0 and crew_value is None, 'unexpected local planning call')
-            require(isinstance(arguments, dict) and set(arguments) == {'content'} and
-                    isinstance(arguments['content'], str) and len(arguments['content']) <= 2048,
-                    'unexpected planning arguments')
-            require(not (value.get('_meta') or {}).get('biorouter/tool-calls'),
-                    'planning response contains nested calls')
-            summary = re.fullmatch(r'Todo list set: ([0-9]+) item\(s\)', tool_text(value))
-            require(summary is not None and int(summary[1]) <= 200,
-                    'unexpected local planning result')
-            planning += 1
+        require(not completed, 'event after completion')
+        event = json.loads(line, object_pairs_hook=unique_fields)
+        require(isinstance(event, dict), 'invalid stream event')
+        if event.get('type') == 'complete':
+            require(set(event) == {'type', 'total_tokens'}, 'unexpected completion payload')
+            tokens = event['total_tokens']
+            require(tokens is None or (type(tokens) is int and tokens >= 0),
+                    'invalid completion token count')
+            completed = True
             continue
-        require(crew_value is None, 'multiple Crew calls')
-        crew_value, crew_name, crew_arguments = value, name, arguments
-    require(crew_value is not None, 'missing Crew request')
-    value, name, arguments = crew_value, crew_name, crew_arguments
-    nested = (value.get('_meta') or {}).get('biorouter/tool-calls')
-    if name == 'crew__request':
-        require(exact_arguments(arguments) == REQUEST, 'request arguments mismatch')
-    else:
-        require(name == 'code_execution__execute_code', 'unexpected outer tool')
-        graph = arguments.get('tool_graph')
-        require(isinstance(graph, list) and len(graph) == 1, 'unexpected tool graph')
-        require(graph[0].get('tool') == 'crew/request' and not graph[0].get('depends_on'),
-                'unexpected tool graph entry')
-        require(nested is not None, 'missing nested request evidence')
-    if nested is not None:
-        require(isinstance(nested, list) and len(nested) == 1, 'unexpected nested call count')
-        require(nested[0].get('tool') == 'crew__request' and nested[0].get('status') == 'ok',
-                'unexpected nested tool')
-        require(exact_arguments(nested[0].get('args')) == REQUEST, 'nested arguments mismatch')
-    text = tool_text(value)
-    if name == 'code_execution__execute_code' and text.startswith('Result: '):
-        try:
-            text = json.loads(text[len('Result: '):])
-        except json.JSONDecodeError as error:
-            raise EvidenceError('invalid runtime result scalar') from error
-        if isinstance(text, dict):
-            if not set(text) <= {'content', 'isError', '_meta', 'structuredContent'}:
-                raise EvidenceError('unexpected returned MCP result object', protocol_schema(text))
-            require(not text.get('_meta'), 'returned MCP result has metadata payload')
-            text = tool_text(text)
+        require(event.get('type') == 'message' and set(event) == {'type', 'message'},
+                'unexpected stream event')
+        message = event['message']
+        require(isinstance(message, dict)
+                and {'role', 'content'} <= set(message)
+                and set(message) <= {'id', 'role', 'created', 'content', 'metadata'}
+                and message['role'] in ('user', 'assistant'), 'unexpected message payload')
+        require(message.get('id') is None or isinstance(message['id'], str), 'invalid message ID')
+        require('created' not in message or type(message['created']) is int,
+                'invalid message timestamp')
+        metadata = message.get('metadata', {})
+        require(isinstance(metadata, dict)
+                and set(metadata) <= {'userVisible', 'agentVisible', 'pinned', 'provenance',
+                                      'steerOutcome', 'decisionId', 'decisionSummary'},
+                'unexpected message metadata')
+        require(all(metadata.get(key, True) is True for key in ('userVisible', 'agentVisible'))
+                and metadata.get('pinned', False) is False
+                and all(metadata.get(key) is None for key in
+                        ('provenance', 'steerOutcome', 'decisionId', 'decisionSummary')),
+                'unexpected message metadata content')
+        content = message['content']
+        require(isinstance(content, list) and content, 'missing message content')
+        texts = []
+        for item in content:
+            require(isinstance(item, dict)
+                    and {'type', 'text'} <= set(item)
+                    and set(item) <= {'type', 'text', 'annotations', '_meta'}
+                    and item['type'] == 'text' and isinstance(item['text'], str),
+                    'tool call or nontext content is outside this contract')
+            require(item.get('annotations') in (None, {}) and item.get('_meta') in (None, {}),
+                    'unexpected text payload')
+            texts.append(item['text'])
+        if message['role'] == 'user':
+            require(not seen_user and not chunks and len(texts) == 1 and texts[0] == PROMPT,
+                    'unexpected user prompt')
+            seen_user = True
         else:
-            require(isinstance(text, str), 'runtime result is not a scalar string')
-    require(text == DENIAL, 'tool returned more than the exact no-channel denial')
-    return {'request_count': 1, 'local_planning_calls': planning,
-            'exact_arguments': True, 'response_id_matches': True,
-            'exact_denial': True, 'channel_content_returned': False}
+            chunks.extend(texts)
+    require(completed, 'missing completion event')
+    require(chunks and ''.join(chunks).strip() == FIXED_RESPONSE,
+            'missing or additional synthetic response content')
+    return {'contract': CONTRACT, 'tool_request_count': 0, 'tool_response_count': 0,
+            'fixed_response': True, 'completed': True, 'channel_content_returned': False,
+            'limitations': dict(LIMITATIONS)}
 
 
 def owned(path, directory=False, mode=None):
@@ -372,7 +323,7 @@ def run(args):
     require(not runtime_paths(profile), 'provider-only fixture already has runtime state')
     env = {'PATH': str(cli.parent) + os.pathsep + os.defpath,
            'BIOROUTER_PATH_ROOT': str(profile), 'BIOROUTER_DISABLE_KEYRING': '1',
-           'BIOROUTER_TELEMETRY_ENABLED': 'false'}
+           'BIOROUTER_TELEMETRY_ENABLED': 'false', 'OLLAMA_HOST': 'http://127.0.0.1:1'}
     common = [str(cli), 'run', '--no-session', '--provider', args.provider,
               '--model', args.model, '--max-turns', '2', '--quiet', '--output-format', 'stream-json',
               '-i', '-']
@@ -384,21 +335,10 @@ def run(args):
         home.mkdir(mode=0o700)
         env['HOME'] = str(home)
         command = common if label == 'ordinary' else common + ['--with-builtin', 'crew']
-        prompt = 'Reply exactly OK. Do not call any tools.' if label == 'ordinary' else (
-            'Make one simple Crew MCP request; do not use Todo or planning tools. Exact arguments omit connection_id: '
-            + json.dumps(REQUEST) + '. Use crew/request through code execution if that is its '
-            'advertised form. Do not discover connections, retry, create grants, or use another '
-            'tool. If using code execution, pass the returned value directly to record_result; '
-            'do not wrap it in an object or add fields or explanations. '
-            'After the tool returns, stop. No message content is authorized.')
+        prompt = PROMPT
         outputs[label], samples[label] = invoke(command, prompt, env, cwd, profile, workdir,
                                                lsof, args.timeout)
-    for line in outputs['ordinary'].splitlines():
-        if line.strip():
-            event = json.loads(line)
-            require(not any(item.get('type') in ('toolRequest', 'toolResponse')
-                            for item in event.get('message', {}).get('content', [])),
-                    'ordinary baseline invoked a tool')
+    validate_trace(outputs['ordinary'])
     verdict = validate_trace(outputs['crew'])
     require(owned(profile / 'config/secrets.yaml', mode=0o600) == secrets_before,
             'provider secret file mutated')
@@ -425,8 +365,6 @@ def main():
         print(json.dumps({'result': 'PASS', **verdict}, sort_keys=True))
     except EvidenceError as error:
         failure = {'result': 'FAIL', 'reason': str(error)}
-        if error.schema is not None:
-            failure['protocol_schema'] = error.schema
         print(json.dumps(failure, sort_keys=True))
         return 1
     except Exception:

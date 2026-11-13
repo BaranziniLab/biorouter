@@ -1493,6 +1493,16 @@ fn partial_len(partial: &Path) -> u64 {
     fs::metadata(partial).map_or(0, |m| m.len())
 }
 
+/// An attempt that added nothing and names no server wait; `reached` as in
+/// [`Attempt::Retry`].
+fn retry(reached: bool) -> Attempt {
+    Attempt::Retry {
+        progress: false,
+        after: None,
+        reached,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn one_attempt(
     client: &reqwest::Client,
@@ -1516,7 +1526,7 @@ async fn one_attempt(
     let had = have;
     let meta = read_partial_meta(meta_path).filter(|m| m.sha256 == entry.sha256);
     let etag = meta.as_ref().and_then(|m| m.etag.clone());
-    let Ok(mut url) = reqwest::Url::parse(start) else {
+    let Ok(url) = reqwest::Url::parse(start) else {
         return Attempt::Fatal(InstallError::Internal(
             "a catalog URL does not parse".into(),
         ));
@@ -1526,84 +1536,23 @@ async fn one_attempt(
         final_hosts.push(host_of(&url));
     }
     opts.report(entry.id, Phase::Connecting, have, size);
-    let retry = |reached| Attempt::Retry {
-        progress: false,
-        after: None,
-        reached,
-    };
-    let mut hop = 0usize;
-    let response = loop {
-        if opts.network.https_only && url.scheme() != "https" {
-            return Attempt::Fatal(InstallError::Redirect(format!(
-                "{} is not an https address",
-                host_of(&url)
-            )));
-        }
-        let mut request = client.get(url.clone());
-        if have > 0 {
-            request = request.header(reqwest::header::RANGE, format!("bytes={have}-"));
-            if let Some(etag) = &etag {
-                request = request.header(reqwest::header::IF_RANGE, etag);
-            }
-        }
-        let response = match request.send().await {
-            Ok(response) => response,
-            Err(error) => {
-                return match send_failure(&error) {
-                    SendFailure::Tls => Attempt::Fatal(InstallError::Tls {
-                        host: host_of(&url),
-                    }),
-                    // No host that serves the bytes answered, whether or not github.com
-                    // redirected first.
-                    SendFailure::Network => retry(false),
-                };
-            }
+    let (response, hop) =
+        match send_following_redirects(client, url, have, etag.as_ref(), opts).await {
+            Ok(answered) => answered,
+            Err(attempt) => return attempt,
         };
-        let status = response.status();
-        if status.is_redirection() {
-            if hop >= opts.network.max_redirects {
-                return Attempt::Fatal(InstallError::Redirect(format!(
-                    "more than {} redirects",
-                    opts.network.max_redirects
-                )));
-            }
-            let Some(next) = response
-                .headers()
-                .get(reqwest::header::LOCATION)
-                .and_then(|l| l.to_str().ok())
-                .and_then(|l| url.join(l).ok())
-            else {
-                return Attempt::Fatal(InstallError::Redirect(
-                    "a redirect without a location".into(),
-                ));
-            };
-            url = next;
-            hop += 1;
-            continue;
-        }
-        break response;
-    };
     let status = response.status().as_u16();
     let came_through_redirect = hop > 0;
     let host = host_of(response.url());
     let reached = final_hosts.contains(&host);
-    match status {
-        200 | 206 | 416 => {}
-        // A signed URL that expired: request the github.com URL again.
-        403 | 404 | 410 if came_through_redirect => return retry(reached),
-        408 | 425 | 429 | 500..=599 | 403 => {
-            return Attempt::Retry {
-                progress: false,
-                after: retry_after(response.headers()),
-                reached,
-            }
-        }
-        other => return Attempt::Fatal(InstallError::Http { status: other }),
-    }
-    if !reached {
-        return Attempt::Fatal(InstallError::Redirect(format!(
-            "{host} is not one of GitHub's asset hosts"
-        )));
+    if let Some(attempt) = status_verdict(
+        status,
+        came_through_redirect,
+        reached,
+        &host,
+        response.headers(),
+    ) {
+        return attempt;
     }
     if status == 416 {
         // The server has nothing past our partial: it is whole, or it is wrong.
@@ -1630,8 +1579,141 @@ async fn one_attempt(
     } else {
         0
     };
-    let new_etag = response
-        .headers()
+    let file = match open_partial_for_body(
+        response.headers(),
+        etag,
+        resume_from,
+        entry,
+        partial,
+        meta_path,
+        root,
+    ) {
+        Ok(file) => file,
+        Err(attempt) => return attempt,
+    };
+    receive_body(
+        response,
+        file,
+        resume_from,
+        had,
+        source,
+        entry,
+        partial,
+        meta_path,
+        root,
+        opts,
+    )
+    .await
+}
+
+/// Requests `url` (from byte `have` on, `If-Range` on `etag`, when the partial holds
+/// any) and follows redirects up to the network's limit. Returns the first answer that
+/// is not a redirect and how many redirects led to it, or how the attempt ends.
+async fn send_following_redirects(
+    client: &reqwest::Client,
+    mut url: reqwest::Url,
+    have: u64,
+    etag: Option<&String>,
+    opts: &InstallOptions,
+) -> Result<(reqwest::Response, usize), Attempt> {
+    let mut hop = 0usize;
+    let response = loop {
+        if opts.network.https_only && url.scheme() != "https" {
+            return Err(Attempt::Fatal(InstallError::Redirect(format!(
+                "{} is not an https address",
+                host_of(&url)
+            ))));
+        }
+        let mut request = client.get(url.clone());
+        if have > 0 {
+            request = request.header(reqwest::header::RANGE, format!("bytes={have}-"));
+            if let Some(etag) = etag {
+                request = request.header(reqwest::header::IF_RANGE, etag);
+            }
+        }
+        let response = match request.send().await {
+            Ok(response) => response,
+            Err(error) => {
+                return Err(match send_failure(&error) {
+                    SendFailure::Tls => Attempt::Fatal(InstallError::Tls {
+                        host: host_of(&url),
+                    }),
+                    // No host that serves the bytes answered, whether or not github.com
+                    // redirected first.
+                    SendFailure::Network => retry(false),
+                });
+            }
+        };
+        let status = response.status();
+        if status.is_redirection() {
+            if hop >= opts.network.max_redirects {
+                return Err(Attempt::Fatal(InstallError::Redirect(format!(
+                    "more than {} redirects",
+                    opts.network.max_redirects
+                ))));
+            }
+            let Some(next) = response
+                .headers()
+                .get(reqwest::header::LOCATION)
+                .and_then(|l| l.to_str().ok())
+                .and_then(|l| url.join(l).ok())
+            else {
+                return Err(Attempt::Fatal(InstallError::Redirect(
+                    "a redirect without a location".into(),
+                )));
+            };
+            url = next;
+            hop += 1;
+            continue;
+        }
+        break response;
+    };
+    Ok((response, hop))
+}
+
+/// What the final answer's status and host settle on their own: `None` when the body
+/// (or a 416) from a host that serves the bytes is to be read, else how the attempt ends.
+fn status_verdict(
+    status: u16,
+    came_through_redirect: bool,
+    reached: bool,
+    host: &str,
+    headers: &reqwest::header::HeaderMap,
+) -> Option<Attempt> {
+    match status {
+        200 | 206 | 416 => {}
+        // A signed URL that expired: request the github.com URL again.
+        403 | 404 | 410 if came_through_redirect => return Some(retry(reached)),
+        408 | 425 | 429 | 500..=599 | 403 => {
+            return Some(Attempt::Retry {
+                progress: false,
+                after: retry_after(headers),
+                reached,
+            })
+        }
+        other => return Some(Attempt::Fatal(InstallError::Http { status: other })),
+    }
+    if !reached {
+        return Some(Attempt::Fatal(InstallError::Redirect(format!(
+            "{host} is not one of GitHub's asset hosts"
+        ))));
+    }
+    None
+}
+
+/// Records the partial's metadata (the answer's `ETag`, else the one the request
+/// resumed on) and opens the partial cut to `resume_from` and positioned there.
+fn open_partial_for_body(
+    headers: &reqwest::header::HeaderMap,
+    etag: Option<String>,
+    resume_from: u64,
+    entry: &SttCatalogEntry,
+    partial: &Path,
+    meta_path: &Path,
+    root: &Path,
+) -> Result<File, Attempt> {
+    let size = entry.size_bytes;
+    let new_etag = headers
         .get(reqwest::header::ETAG)
         .and_then(|e| e.to_str().ok())
         .map(str::to_string);
@@ -1642,20 +1724,56 @@ async fn one_attempt(
         sha256: entry.sha256.to_string(),
     };
     if let Err(e) = write_partial_meta(meta_path, &record) {
-        return Attempt::Fatal(io_failure(e, root, entry.id, size - resume_from));
+        return Err(Attempt::Fatal(io_failure(
+            e,
+            root,
+            entry.id,
+            size - resume_from,
+        )));
     }
     let mut file = match open_no_follow(partial) {
         Ok(file) => file,
-        Err(e) => return Attempt::Fatal(io_failure(e, root, entry.id, size - resume_from)),
+        Err(e) => {
+            return Err(Attempt::Fatal(io_failure(
+                e,
+                root,
+                entry.id,
+                size - resume_from,
+            )))
+        }
     };
     if let Err(e) = file
         .set_len(resume_from)
         .and_then(|()| file.seek(SeekFrom::Start(resume_from)).map(|_| ()))
     {
-        return Attempt::Fatal(io_failure(e, root, entry.id, size - resume_from));
+        return Err(Attempt::Fatal(io_failure(
+            e,
+            root,
+            entry.id,
+            size - resume_from,
+        )));
     }
+    Ok(file)
+}
+
+/// Streams the answer's body into `file` from `resume_from`, reporting progress, and
+/// says how the attempt ends: complete, cancelled, a body longer than the model, an I/O
+/// failure, or a retry whose progress is measured against `had`.
+#[allow(clippy::too_many_arguments)]
+async fn receive_body(
+    mut response: reqwest::Response,
+    mut file: File,
+    resume_from: u64,
+    had: u64,
+    source: Source,
+    entry: &SttCatalogEntry,
+    partial: &Path,
+    meta_path: &Path,
+    root: &Path,
+    opts: &InstallOptions,
+) -> Attempt {
+    let size = entry.size_bytes;
     let mut written = resume_from;
-    let mut response = response;
     opts.report(entry.id, Phase::Downloading, written, size);
     loop {
         if opts.cancelled() {

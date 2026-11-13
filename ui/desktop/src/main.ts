@@ -147,6 +147,7 @@ import {
 import { inlineArtifactCdnAssets } from './utils/artifactCdnAssets';
 import { isFilePathAllowedForPreview, previewFileRoots } from './utils/pathContainment';
 import { writeFileWithinRoots } from './utils/writeFileWithinRoots';
+import { NativeSaveFileGrants } from './utils/nativeSaveFileGrants';
 import { attachedDaemonKey } from './utils/attachedDaemonKey';
 import { findBrxtArgument, isBrxtFile } from './utils/launchArguments';
 import log, { logStartupFailure } from './utils/logger';
@@ -229,9 +230,11 @@ import {
 } from './utils/embeddedBrowser';
 import {
   DEFAULT_ANYWHERE_SETTINGS,
+  HELD_FOR_RETRY_MS,
   INITIAL_ANYWHERE_STATE,
   REVIEW_TEXT_MS,
   clipboardOutcome,
+  keepsFailedRecording,
   nextAnywhereState,
   parseAnywhereSettings,
   reviewTextBeforeExpiry,
@@ -3603,6 +3606,18 @@ let anywhereReviewMessage = '';
 let anywhereReviewPrivateChoice: ((include: boolean | null) => void) | null = null;
 let anywhereReviewTimer: ReturnType<typeof setTimeout> | null = null;
 let anywherePreviewTarget: { owner: BrowserWindow; viewId: string } | null = null;
+// A failed tray or shortcut dictation whose recording the capture page keeps for **Retry**
+// (owner decision, 2026-11-13; `keepsFailedRecording`), as the composer keeps one. Main owns the
+// hold: it ends at `HELD_FOR_RETRY_MS`, when Retry runs, when the card closes or shows something
+// else, when a new dictation starts and when the switch turns off, and then the page drops the
+// audio (`drop`). The capture window stays open while it lasts, since closing it loses the audio.
+let anywhereHeld: {
+  generation: number;
+  source: AnywhereSource;
+  timer: ReturnType<typeof setTimeout>;
+} | null = null;
+// Whether the card's current sentence is the failure the held recording belongs to.
+let anywhereReviewRetry = false;
 
 function anywhereStorePath(): string {
   return path.join(biorouterConfigDir(), 'dictation', 'anywhere.json');
@@ -3669,6 +3684,7 @@ function anywhereReviewPayload() {
     expiresAt: anywhereReviewExpiresAt,
     revision: anywhereReviewRevision,
     confirmPrivate: anywhereReviewPrivateChoice !== null,
+    retry: anywhereReviewRetry && anywhereHeld !== null,
   };
 }
 
@@ -3682,11 +3698,42 @@ function closeCaptureAfterIdle() {
       win === anywhereCaptureWindow &&
       generation === anywhereGeneration &&
       anywhereAtRest(anywhereState.phase) &&
+      anywhereHeld === null &&
       !win.isDestroyed()
     )
       win.close();
     anywhereCaptureIdleTimer = null;
   }, 15_000);
+}
+
+/** Keep a failed recording for **Retry** until `HELD_FOR_RETRY_MS` passes. */
+function holdAnywhereRecording(generation: number, source: AnywhereSource) {
+  dropAnywhereHeld();
+  const timer = setTimeout(() => {
+    if (anywhereHeld?.timer === timer) endAnywhereHold();
+  }, HELD_FOR_RETRY_MS);
+  anywhereHeld = { generation, source, timer };
+}
+
+/** Drop a held recording: the capture page zeroes the audio, and an idle window may close. */
+function dropAnywhereHeld(): boolean {
+  const held = anywhereHeld;
+  if (!held) return false;
+  clearTimeout(held.timer);
+  anywhereHeld = null;
+  if (anywhereCaptureWindow && !anywhereCaptureWindow.isDestroyed())
+    anywhereCaptureWindow.webContents.send('dictation:anywhere:capture-command', { type: 'drop' });
+  if (anywhereAtRest(anywhereState.phase)) closeCaptureAfterIdle();
+  return true;
+}
+
+/** The hold ended while the card shows its failure: the sentence stays, without **Retry**. */
+function endAnywhereHold() {
+  if (!dropAnywhereHeld()) return;
+  anywhereReviewRetry = false;
+  anywhereReviewRevision += 1;
+  if (anywhereReviewWindow && !anywhereReviewWindow.isDestroyed())
+    anywhereReviewWindow.webContents.send('dictation:anywhere:review', anywhereReviewPayload());
 }
 
 function stopAnywherePowerBlocker() {
@@ -3798,6 +3845,16 @@ function sameAnywhereBackend(expected: AnywhereBackendIdentity): boolean {
   return actual !== null && actual.managed === expected.managed && actual.url === expected.url;
 }
 
+/** Whether `win` was opened on the backend `backend` names, so its streams go there. */
+function windowOnAnywhereBackend(win: BrowserWindow, backend: AnywhereBackendIdentity): boolean {
+  const daemon = windowDaemons.get(win.id);
+  return Boolean(
+    daemon &&
+    daemon.result.managed === backend.managed &&
+    (backend.managed || effectiveBackendUrl(daemon.baseUrl) === backend.url)
+  );
+}
+
 async function anywhereAvailability(
   expected: AnywhereBackendIdentity
 ): Promise<'ready' | 'policy' | 'no-model'> {
@@ -3891,12 +3948,17 @@ async function createAnywhereWindow(
         anywhereState.phase === 'transcribing'
       )
         cancelAnywhere();
+      // The held recording went with the page; the card loses **Retry**.
+      endAnywhereHold();
     }
     if (anywhereReviewWindow === win) {
       anywhereReviewWindow = null;
       const resolve = anywhereReviewPrivateChoice;
       anywhereReviewPrivateChoice = null;
       resolve?.(null);
+      // Closing the card dismisses its **Retry**, so the recording goes too.
+      anywhereReviewRetry = false;
+      dropAnywhereHeld();
     }
   });
   const url = rendererEntryUrl();
@@ -3908,8 +3970,13 @@ async function createAnywhereWindow(
 async function showAnywhereReview(
   message: string,
   text: string | null = null,
-  confirmPrivate = false
+  confirmPrivate = false,
+  retry = false
 ) {
+  // **Retry** belongs to the one failure it was shown for: anything else the card shows next
+  // takes it away, and with it the held recording, which nothing could then reach.
+  anywhereReviewRetry = retry;
+  if (!retry) dropAnywhereHeld();
   clearAnywhereReview();
   anywhereReviewText = text;
   anywhereReviewExpiresAt = text ? Date.now() + REVIEW_TEXT_MS : null;
@@ -4110,6 +4177,8 @@ async function startAnywhere(
   const generation = ++anywhereGeneration;
   const settingsRevision = anywhereSettingsRevision;
   anywhereState = nextAnywhereState(anywhereState, { type: 'start', source, privateConfirmed });
+  // A new dictation ends the last one's hold; the page gets `drop` before this one's `start`.
+  endAnywhereHold();
   anywherePendingStart = {
     source,
     privateConfirmed,
@@ -4195,12 +4264,7 @@ async function startAnywhere(
     return false;
   }
   const captureWindow = anywhereCaptureWindow;
-  const captureDaemon = windowDaemons.get(captureWindow.id);
-  if (
-    !captureDaemon ||
-    captureDaemon.result.managed !== backend.managed ||
-    (!backend.managed && effectiveBackendUrl(captureDaemon.baseUrl) !== backend.url)
-  ) {
+  if (!windowOnAnywhereBackend(captureWindow, backend)) {
     if (current()) cancelAnywhere();
     return false;
   }
@@ -4228,6 +4292,7 @@ function cancelAnywhere() {
   anywherePendingStart = null;
   anywhereStartSentGeneration = null;
   stopAnywherePowerBlocker();
+  endAnywhereHold();
   closeCaptureAfterIdle();
   updateTrayMenu(getUpdateAvailable());
 }
@@ -4357,9 +4422,19 @@ ipcMain.on('dictation:anywhere:capture-reply', (event, reply: unknown) => {
     stopAnywherePowerBlocker();
     anywherePendingStart = null;
     anywherePreviewTarget = null;
+    const source = anywhereState.source;
     anywhereState = nextAnywhereState(anywhereState, { type: 'refuse', reason: 'capture-failed' });
-    void showAnywhereReview('Biorouter could not finish dictation. Try again.');
-    closeCaptureAfterIdle();
+    // A transcription failure the page kept the recording for offers **Retry** while it is held
+    // (owner decision, 2026-11-13). A refusal before capture, a microphone that never started and
+    // a preview dictation have nothing held, and keep the plain sentence.
+    const retry = result.held === true && keepsFailedRecording(source, true);
+    if (retry && source) holdAnywhereRecording(anywhereGeneration, source);
+    else if (result.held === true)
+      anywhereCaptureWindow?.webContents.send('dictation:anywhere:capture-command', {
+        type: 'drop',
+      });
+    void showAnywhereReview('Biorouter could not finish dictation. Try again.', null, false, retry);
+    if (!retry) closeCaptureAfterIdle();
   } else if (result.type === 'cancelled') {
     stopAnywherePowerBlocker();
     anywherePendingStart = null;
@@ -4380,8 +4455,10 @@ ipcMain.handle('dictation:anywhere:set', async (event, raw: unknown) => {
   const next = parseAnywhereSettings(raw);
   if (!next.enabled) {
     anywhereOffRequested = true;
-    // Off ends a tray or shortcut dictation at once; a preview dictation goes on.
+    // Off ends a tray or shortcut dictation at once; a preview dictation goes on. A recording
+    // held for **Retry** is always a tray or shortcut one, so it goes too.
     if (switchGovernsSource(anywhereState.source)) cancelAnywhere();
+    endAnywhereHold();
     registerAnywhereShortcut();
     updateTrayMenu(getUpdateAvailable());
   }
@@ -4490,6 +4567,51 @@ ipcMain.handle('dictation:anywhere:private-choice', (event, include: unknown) =>
   anywhereReviewWindow?.hide();
   resolve(include);
   return true;
+});
+
+// **Retry** on the review card: the held recording is transcribed again, and a success writes
+// the clipboard exactly as a first one does (the `finished` reply above). Only while the hold for
+// the current dictation lasts, nothing else runs, and the policy and backend it began under hold.
+function retryAnywhere(): boolean {
+  const held = anywhereHeld;
+  const captureWindow = anywhereCaptureWindow;
+  if (!held || !anywhereReviewRetry) return false;
+  const backend = anywhereBackendIdentity();
+  if (
+    held.generation !== anywhereGeneration ||
+    !captureWindow ||
+    captureWindow.isDestroyed() ||
+    !anywhereCaptureReady ||
+    !canStartAnywhere(
+      anywhereState.phase,
+      held.source,
+      anywhereSettings.enabled && !anywhereOffRequested
+    ) ||
+    !laptopDictationCaptureAllowed() ||
+    !backend ||
+    !windowOnAnywhereBackend(captureWindow, backend)
+  ) {
+    endAnywhereHold();
+    return false;
+  }
+  clearTimeout(held.timer);
+  anywhereHeld = null;
+  anywhereReviewRetry = false;
+  anywhereReviewRevision += 1;
+  // The card goes while the text comes; a success is the copy notification, and a failure
+  // shows the card again.
+  anywhereReviewWindow?.webContents.send('dictation:anywhere:review', anywhereReviewPayload());
+  anywhereReviewWindow?.hide();
+  anywhereState = nextAnywhereState(anywhereState, { type: 'retry', source: held.source });
+  anywhereCaptureBlocker = powerSaveBlocker.start('prevent-app-suspension');
+  captureWindow.webContents.send('dictation:anywhere:capture-command', { type: 'retry' });
+  updateTrayMenu(getUpdateAvailable());
+  return true;
+}
+
+ipcMain.handle('dictation:anywhere:review-retry', (event) => {
+  if (!isDictationReviewSender(event)) return false;
+  return retryAnywhere();
 });
 
 ipcMain.handle('dictation:anywhere:review-copy', (event) => {
@@ -5555,10 +5677,46 @@ ipcMain.handle('check-file-paths', async (event, requests: unknown) => {
   );
 });
 
+const nativeSaveFileGrants = new NativeSaveFileGrants<Electron.WebContents>();
+const nativeSaveOwners = new WeakSet<Electron.WebContents>();
+
+function nativeSaveOwner(event: Electron.IpcMainInvokeEvent): BrowserWindow | undefined {
+  const owner = BrowserWindow.fromWebContents(event.sender);
+  const frame = event.senderFrame;
+  if (
+    !owner ||
+    owner.isDestroyed() ||
+    windowMap.get(owner.id) !== owner ||
+    owner.webContents !== event.sender ||
+    !frame ||
+    frame !== event.sender.mainFrame ||
+    !isAppOrigin(frame.url, rendererEntryUrl())
+  ) {
+    return undefined;
+  }
+  return owner;
+}
+
+function trackNativeSaveOwner(contents: Electron.WebContents): void {
+  if (nativeSaveOwners.has(contents)) return;
+  nativeSaveOwners.add(contents);
+  contents.on('did-start-navigation', (details) => {
+    if (details.isMainFrame && !details.isSameDocument) nativeSaveFileGrants.revoke(contents);
+  });
+  contents.on('render-process-gone', () => nativeSaveFileGrants.revoke(contents));
+  contents.once('destroyed', () => nativeSaveFileGrants.revoke(contents));
+}
+
 ipcMain.handle('write-file', async (event, filePath: unknown, content: unknown) => {
   try {
     if (typeof filePath !== 'string') return false;
     const expandedPath = expandBiorouterPath(filePath);
+    if (
+      nativeSaveOwner(event) &&
+      (await nativeSaveFileGrants.write(event.sender, expandedPath, content))
+    ) {
+      return true;
+    }
     await writeFileWithinRoots(expandedPath, content, allowedFileRoots(workingDirForSender(event)));
     return true;
   } catch (error) {
@@ -5655,8 +5813,30 @@ ipcMain.handle('show-message-box', async (_event, options) => {
   return dialog.showMessageBox(options);
 });
 
-ipcMain.handle('show-save-dialog', async (_event, options) => {
-  return dialog.showSaveDialog(options);
+ipcMain.handle('show-save-dialog', async (event, options) => {
+  const owner = nativeSaveOwner(event);
+  if (!owner) return { canceled: true };
+  trackNativeSaveOwner(event.sender);
+  const token = nativeSaveFileGrants.begin(event.sender);
+  try {
+    const parent = panelParent(owner);
+    const result = parent
+      ? await dialog.showSaveDialog(parent, options)
+      : await dialog.showSaveDialog(options);
+    if (nativeSaveOwner(event) !== owner) {
+      nativeSaveFileGrants.revoke(event.sender);
+      return { canceled: true };
+    }
+    const selected = await nativeSaveFileGrants.select(
+      event.sender,
+      token,
+      result.canceled ? undefined : result.filePath
+    );
+    return selected ? result : { canceled: true };
+  } catch (error) {
+    nativeSaveFileGrants.revoke(event.sender);
+    throw error;
+  }
 });
 
 ipcMain.handle(

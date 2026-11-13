@@ -432,7 +432,8 @@ fn action_required_id(message: &Message) -> Option<String> {
         MessageContent::ActionRequired(action) => match &action.data {
             ActionRequiredData::ToolConfirmation { id, .. }
             | ActionRequiredData::Elicitation { id, .. }
-            | ActionRequiredData::SecretRequest { id, .. } => Some(id.clone()),
+            | ActionRequiredData::SecretRequest { id, .. }
+            | ActionRequiredData::CrewStep { id, .. } => Some(id.clone()),
             ActionRequiredData::ElicitationResponse { .. } => None,
         },
         _ => None,
