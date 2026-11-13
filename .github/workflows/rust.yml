@@ -171,7 +171,7 @@ jobs:
           export CROSS_REGISTRY_MOUNT="$PWD/.cross-cache/registry"
           export CROSS_TARGET_MOUNT="$PWD/.cross-cache/target/${{ matrix.target }}"
           . scripts/cross-env.sh
-          cross_windows "cargo clippy --workspace --lib --bins --locked -- -D clippy::disallowed_methods" /cross-target
+          cross_windows "./scripts/ci/clippy-disallowed-methods.sh" /cross-target
 
   # The socket gate for the target where the bug it guards against lives:
   # `cfg(windows)` production code is compiled only here, so a Windows-only
