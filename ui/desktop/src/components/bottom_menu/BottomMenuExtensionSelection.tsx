@@ -118,8 +118,9 @@ export interface ExtensionRow {
 
 /**
  * The composer's extension list: state, fetches and toggles, without any
- * trigger. `ToolsChip` holds it for the whole time the composer is mounted, so
- * the count on the chip is right before the list is ever opened.
+ * trigger. `useToolsLists` (`bottom_menu/toolsLists.tsx`, held by the composer's
+ * `+`) keeps it for the whole time the composer is mounted, so the `+`'s counts
+ * are right before the list is ever opened.
  *
  * @param open whether the list is on screen; opening re-reads the chat's list.
  * @param onOpenRequest called when the app asks to show this chat's extensions

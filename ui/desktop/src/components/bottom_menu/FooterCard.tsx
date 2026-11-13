@@ -28,7 +28,7 @@ import {
 /**
  * How close a card may come to the window's edges: off the 44px window-drag band at the top
  * (`--chrome-height`, plus 8px), where a click on a button in the card would be eaten by the drag
- * region, as for the Tools popover (`TOOLS_POPOVER_COLLISION_PADDING`).
+ * region, as for the `+` popover (`TOOLS_POPOVER_COLLISION_PADDING`).
  */
 export const FOOTER_CARD_COLLISION_PADDING = { top: 52, right: 8, bottom: 8, left: 8 } as const;
 

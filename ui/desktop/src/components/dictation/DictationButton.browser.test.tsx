@@ -5,14 +5,17 @@
  *
  * jsdom lays nothing out and runs no Tailwind, so the component tests can say which phase the
  * microphone is in but not how big it is. Here the real `DictationButton` is bundled with
- * esbuild into the composer card's controls row (the card's own class list, the real `Button`),
- * `styles/main.css` is compiled by Tailwind with the classes the bundle uses, `composer.css` is
+ * esbuild into the composer card's ONE row as `ChatInput` draws it (owner, 2026-11-13: `+`, the
+ * text, the microphone and Send, each control in its 32px slot; the card's own class list, the
+ * real `Button`), with the model chip on the footer line under the card, `styles/main.css` is
+ * compiled by Tailwind with the classes the bundle uses, `pickers.css` and `composer.css` are
  * appended as written, and Chromium lays it out in panes of 760, 440 and 360px:
  *
- *  - at rest the microphone is the 28px ghost round button, immediately left of Send, and Send
- *    still ends the row on the card's inner right edge;
- *  - recording, it is a 28px pill with five level bars and the `m:ss` timer, inside the card,
- *    with the timer dropped in a pane narrower than 440px;
+ *  - at rest the microphone is the 28px ghost round button, immediately left of Send on the
+ *    text's centre line, and Send still ends the row on the card's inner right edge;
+ *  - recording, it is a 28px pill with five level bars and the `m:ss` timer, inside the card, on
+ *    the same line, the text giving way to it, with the timer dropped in a pane narrower than
+ *    440px;
  *  - the bars follow the level through one custom property, and stand still under
  *    `prefers-reduced-motion`.
  */
@@ -49,7 +52,7 @@ import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import { composerCardClassName } from '../composer/composerCard';
 import { Button } from '../ui/button';
-import { ArrowUp } from '../icons/app-icons';
+import { ArrowUp, Plus } from '../icons/app-icons';
 import { DictationButton } from './DictationButton';
 import { setDictationLevelForTests, setDictationSnapshotForTests } from './dictationSession';
 
@@ -67,21 +70,38 @@ const control = (key) => ({
 
 function Card({ id }) {
   return (
-    <div id={id} className={composerCardClassName({ isDraggingOver: false })}>
-      <textarea rows={1} aria-label="Message" className="br-composer-input block w-full resize-none border-none bg-transparent px-0 py-1.5" />
-      <div className="br-composer-controls">
-        <span className="br-composer-controls__spacer" />
-        <div className="br-composer-controls__model">
-          <button type="button" className="br-picker-chip" data-kind="model">
-            <span className="br-picker-chip__name">gpt-5.6-sol-with-a-long-model-name · Deep</span>
-          </button>
+    <div className="relative flex w-full flex-col gap-1">
+      <div id={id} className={composerCardClassName({ isDraggingOver: false })}>
+        <div className="br-composer-row">
+          <span className="br-composer-row__slot">
+            <Button id={id + '-plus'} type="button" variant="ghost" size="default" shape="round" aria-label="Add files and tools" className="br-composer-plus">
+              <Plus aria-hidden className="br-composer-plus__glyph" />
+            </Button>
+          </span>
+          <form className="br-composer-row__field">
+            <textarea id={id + '-text'} rows={1} aria-label="Message" className="br-composer-input block w-full resize-none border-none bg-transparent px-0 py-1.5 text-body" />
+          </form>
+          <span className="br-composer-row__slot">
+            <DictationButton control={control(id)} setView={() => {}} />
+          </span>
+          <span className="br-composer-row__slot">
+            <span className="flex-shrink-0">
+              <Button id={id + '-send'} type="button" size="default" shape="round" variant="secondary" aria-label="Send" className="br-composer-send">
+                <span className="br-composer-send__glyph"><ArrowUp className="size-4" /></span>
+              </Button>
+            </span>
+          </span>
         </div>
-        <DictationButton control={control(id)} setView={() => {}} />
-        <span className="flex-shrink-0">
-          <Button id={id + '-send'} type="button" size="default" shape="round" variant="secondary" aria-label="Send">
-            <ArrowUp className="size-4" />
-          </Button>
-        </span>
+      </div>
+      <div className="br-footline br-composer-footer">
+        <div className="br-footline__side" />
+        <div className="br-footline__side" data-side="end">
+          <div className="br-footline__model">
+            <button type="button" className="br-picker-chip" data-kind="model">
+              <span className="br-picker-chip__name">gpt-5.6-sol-with-a-long-model-name · Deep</span>
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -142,8 +162,9 @@ describe('the microphone in a real layout engine', () => {
     });
     css =
       compiler.build(new Scanner({}).scanFiles([{ content: script, extension: 'js' }])) +
-      readFileSync(resolve(here, '../composer/composer.css'), 'utf8') +
-      readFileSync(resolve(here, '../bottom_menu/pickers.css'), 'utf8');
+      // In the order `ComposerPlusMenu` imports them: the composer's rules re-cut the footer's.
+      readFileSync(resolve(here, '../bottom_menu/pickers.css'), 'utf8') +
+      readFileSync(resolve(here, '../composer/composer.css'), 'utf8');
   }, 180_000);
 
   afterAll(async () => {
@@ -188,6 +209,9 @@ describe('the microphone in a real layout engine', () => {
           card.getBoundingClientRect().right -
           parseFloat(cs.borderRightWidth) -
           parseFloat(cs.paddingRight),
+        row: rect('#card .br-composer-row')!,
+        plus: rect('#card-plus')!,
+        text: rect('#card-text')!,
         mic: rect('[data-testid="dictation-button"]')!,
         send: rect('#card-send')!,
         model: rect('[data-kind="model"]')!,
@@ -215,13 +239,21 @@ describe('the microphone in a real layout engine', () => {
       if (!browser) return ctx.skip();
       const tab = await open(width);
       try {
+        const middle = (r: { top: number; height: number }) => r.top + r.height / 2;
         const rest = await geometry(tab);
         expect(rest.card.width).toBe(width - CHAT_COLUMN_CHROME);
+        expect(rest.row.height).toBe(32);
         expect([rest.mic.width, rest.mic.height]).toEqual([28, 28]);
         expect(rest.mic.right).toBeLessThanOrEqual(rest.send.left);
         expect(rest.send.left - rest.mic.right).toBe(4);
-        expect(rest.model.right).toBeLessThanOrEqual(rest.mic.left + 0.5);
+        // On the text's line: one centre for the text, the microphone and Send.
+        expect(middle(rest.mic)).toBe(middle(rest.text));
+        expect(middle(rest.send)).toBe(middle(rest.text));
+        // The text runs up to the microphone (the row's 4px gap), never under it.
+        expect(rest.mic.left - rest.text.right).toBe(4);
         expect(Math.round(rest.innerRight - rest.send.right)).toBe(0);
+        // The model is no longer in the row: it sits on the footer line under the card.
+        expect(rest.model.top).toBeGreaterThanOrEqual(rest.card.bottom);
         expect(rest.name.width, 'the model name keeps room for its ellipsis').toBeGreaterThan(12);
 
         await record(tab);
@@ -231,6 +263,12 @@ describe('the microphone in a real layout engine', () => {
         expect(pill.mic.left).toBeGreaterThanOrEqual(pill.card.left);
         expect(pill.send.right).toBeLessThanOrEqual(pill.innerRight + 0.5);
         expect(pill.mic.right).toBeLessThanOrEqual(pill.send.left);
+        expect(pill.send.left - pill.mic.right).toBe(4);
+        // The pill keeps the row's line and height, and the text gives way to it.
+        expect(pill.row.height).toBe(32);
+        expect(middle(pill.mic)).toBe(middle(pill.text));
+        expect(pill.mic.left - pill.text.right).toBe(4);
+        expect(pill.plus.right).toBeLessThanOrEqual(pill.text.left);
         if (width < 440) {
           expect(pill.timer, 'the timer is dropped under a 440px pane').toBeNull();
         } else {

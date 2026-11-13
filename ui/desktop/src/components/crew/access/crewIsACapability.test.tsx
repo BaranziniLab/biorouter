@@ -57,7 +57,7 @@ vi.mock('../../../toasts', () => ({ toastService: { success: vi.fn(), error: vi.
 function ChatWithMenu({ sessionId }: { sessionId: string | null }) {
   // What BaseChat does: the chat looks its grant up.
   const access = useChatCrewAccess(sessionId);
-  // The Tools popover's extensions list, as ToolsChip holds it (spec 3.7).
+  // The `+` popover's extensions list, as `useToolsLists` holds it (owner, 2026-11-13).
   const picker = useExtensionPicker(sessionId, { open: true });
   return (
     <>

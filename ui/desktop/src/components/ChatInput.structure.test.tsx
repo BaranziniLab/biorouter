@@ -1,14 +1,18 @@
 /**
- * The composer's shape (spec 3.7, owner message 8): ONE card holding the text
- * and its controls, and ONE muted footer line under it.
+ * The composer's shape (owner, 2026-11-13): a ONE-LINE card and ONE muted
+ * footer line under it.
  *
- *   card    [queue] [notices] [chips] text
- *           [+] [Tools]                 [model · effort] (Send)
- *   footer  folder                                  ring   cost
+ *   card    [queue] [notices] [chips]
+ *           (+) text…                                   (mic) (Send)
+ *   footer  folder                      model · effort   ring   cost
  *
- * The pickers inside the controls row and the footer's insides belong to
- * `bottom_menu/` (WS-PICKERS); they are stubbed by path here, so these tests
- * are about where the composer puts things, not what the pickers draw.
+ * The `+` holds attach, mention, commands and the three tool lists (there is no
+ * Tools chip), and the model chip moved out of the card onto the footer line.
+ * The tool lists and the footer's insides belong to `bottom_menu/`
+ * (WS-PICKERS); they are stubbed by path here, so these tests are about where
+ * the composer puts things, not what the pickers draw. The footer stub renders
+ * the `model` slot `ChatInput` hands it, so the model chip's place is pinned
+ * here and its order on the line in `ComposerFooter.test.tsx`.
  */
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -34,8 +38,9 @@ vi.mock('./ModelAndProviderContext', () => ({
 }));
 vi.mock('../hooks/useDiverge', () => ({ useDiverge: () => ({ diverge: vi.fn() }) }));
 const modelMenuOpened = vi.hoisted(() => vi.fn());
-vi.mock('./bottom_menu/ToolsChip', () => ({
-  ToolsChip: () => <button data-testid="tools-chip-stub">Tools</button>,
+vi.mock('./bottom_menu/toolsLists', () => ({
+  useToolsLists: () => ({ shown: null, clearQueries: () => {} }),
+  ToolsListPanel: () => null,
 }));
 vi.mock('./bottom_menu/ModelEffortChip', () => ({
   ModelEffortChip: () => (
@@ -54,15 +59,19 @@ vi.mock('./bottom_menu/ComposerFooter', () => ({
   ComposerFooter: ({
     sessionId,
     workingDirLocked,
+    model,
   }: {
     sessionId: string | null;
     workingDirLocked?: boolean;
+    model?: React.ReactNode;
   }) => (
     <div
       data-testid="composer-footer"
       data-session={sessionId ?? 'none'}
       data-locked={String(workingDirLocked)}
-    />
+    >
+      {model}
+    </div>
   ),
 }));
 vi.mock('./MessageQueue', () => ({ default: () => null }));
@@ -140,33 +149,45 @@ function renderComposer(
 }
 
 const card = () => document.querySelector('.biorouter-composer-card') as HTMLElement;
+const row = () => within(card()).getByTestId('chat-input-toolbar');
 const sendButton = () => screen.getByRole('button', { name: COMPOSER_COPY.send.label });
 
-describe('the composer is one card and one footer line', () => {
-  it('holds the text and every control inside the card, Send last', () => {
+describe('the composer is a one-line card and one footer line', () => {
+  it('holds +, the text, the microphone and Send in ONE row inside the card, Send last', () => {
     renderComposer();
-    const controls = within(card()).getByTestId('chat-input-toolbar');
-    expect(within(card()).getByTestId('chat-input')).toBeInTheDocument();
+    const controls = row();
+    expect(controls).toHaveClass('br-composer-row');
+    expect(card().contains(controls)).toBe(true);
 
-    const order = [
-      within(controls).getByTestId('composer-plus'),
-      within(controls).getByTestId('tools-chip-stub'),
-      within(controls).getByTestId('model-chip-stub'),
-      // The microphone, immediately left of Send (DD-60).
-      within(controls).getByTestId('dictation-button'),
-      within(controls).getByRole('button', { name: COMPOSER_COPY.send.label }),
-    ];
-    for (let i = 1; i < order.length; i++) {
-      expect(
-        order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING
-      ).toBeTruthy();
-    }
+    const plus = within(controls).getByTestId('composer-plus');
+    const field = within(controls).getByTestId('chat-input');
+    // The microphone, immediately left of Send (DD-60).
+    const mic = within(controls).getByTestId('dictation-button');
+    const send = within(controls).getByRole('button', { name: COMPOSER_COPY.send.label });
+
+    // Four children, one per slot, in this order: nothing else shares the line.
+    const children = [...controls.children] as HTMLElement[];
+    expect(children).toHaveLength(4);
+    expect(children[0]).toHaveClass('br-composer-row__slot');
+    expect(children[0].contains(plus)).toBe(true);
+    expect(children[1].tagName).toBe('FORM');
+    expect(children[1]).toHaveClass('br-composer-row__field');
+    expect(children[1].contains(field)).toBe(true);
+    expect(children[2]).toHaveClass('br-composer-row__slot');
+    expect(children[2].contains(mic)).toBe(true);
     // Send stays the row's last child: the footer inset and the geometry tests
     // are derived from its edge.
-    const send = within(controls).getByRole('button', { name: COMPOSER_COPY.send.label });
-    expect(controls.lastElementChild?.contains(send)).toBe(true);
-    const mic = within(controls).getByTestId('dictation-button');
-    expect(controls.lastElementChild?.previousElementSibling?.contains(mic)).toBe(true);
+    expect(children[3]).toHaveClass('br-composer-row__slot');
+    expect(children[3].contains(send)).toBe(true);
+    // The text is the form Send submits, wherever the composer is drawn.
+    expect(send).toHaveAttribute('form', children[1].id);
+  });
+
+  it('has no second row of controls: no Tools chip, and no model in the card', () => {
+    renderComposer();
+    expect(card().querySelector('.br-composer-controls')).toBeNull();
+    expect(screen.queryByTestId('composer-tools-chip')).toBeNull();
+    expect(within(card()).queryByTestId('model-chip-stub')).toBeNull();
   });
 
   it('puts the footer line under the card, outside it', () => {
@@ -174,6 +195,20 @@ describe('the composer is one card and one footer line', () => {
     const footer = screen.getByTestId('composer-footer');
     expect(card().contains(footer)).toBe(false);
     expect(card().compareDocumentPosition(footer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('hands the model chip to the footer line, in a chat and on Home', () => {
+    renderComposer();
+    const chip = within(screen.getByTestId('composer-footer')).getByTestId('model-chip-stub');
+    // Wrapped in the element "Switch model" finds it by.
+    expect(chip.parentElement).toHaveClass('br-footline__model');
+    cleanup();
+
+    renderComposer({ sessionId: null });
+    expect(
+      within(screen.getByTestId('composer-footer')).getByTestId('model-chip-stub')
+    ).toBeInTheDocument();
+    expect(within(card()).queryByTestId('model-chip-stub')).toBeNull();
   });
 
   it('has no rows above the card any more', () => {
@@ -207,21 +242,32 @@ describe('the composer is one card and one footer line', () => {
 });
 
 describe('a decision chat (B-3)', () => {
-  it('offers no + and no Tools: a decision model attaches nothing and calls no tools', () => {
+  it('offers no +: a decision model attaches nothing and calls no tools', () => {
     renderComposer({ effectiveModel: { provider: 'ollama_decision', model: 'tev1:0.8b' } });
-    const controls = within(card()).getByTestId('chat-input-toolbar');
-    expect(within(controls).queryByTestId('composer-plus')).toBeNull();
-    expect(within(controls).queryByTestId('tools-chip-stub')).toBeNull();
-    // The model chip and Send stay.
-    expect(within(controls).getByTestId('model-chip-stub')).toBeInTheDocument();
+    const controls = row();
+    // The `+` is the only way to attach, mention, run a command or switch tools,
+    // so without it none of those is in the composer.
+    expect(screen.queryByTestId('composer-plus')).toBeNull();
+    expect(screen.queryByTestId('composer-file-input')).toBeNull();
+    // The row says so, and the text starts the line.
+    expect(controls).toHaveAttribute('data-plus', 'none');
+    expect(controls.firstElementChild).toHaveClass('br-composer-row__field');
+    expect(
+      within(controls.firstElementChild as HTMLElement).getByTestId('chat-input')
+    ).toBeInTheDocument();
+    // Send stays in the row, and the model chip on the footer line names the
+    // decision model.
     expect(within(controls).getByRole('button', { name: COMPOSER_COPY.send.label })).toBeTruthy();
+    expect(
+      within(screen.getByTestId('composer-footer')).getByTestId('model-chip-stub')
+    ).toBeInTheDocument();
   });
 
-  it('keeps both in an ordinary chat', () => {
+  it('keeps the + in an ordinary chat, first on the line', () => {
     renderComposer({ effectiveModel: { provider: 'versa_azure', model: 'gpt-5.6-sol' } });
-    const controls = within(card()).getByTestId('chat-input-toolbar');
-    expect(within(controls).getByTestId('composer-plus')).toBeInTheDocument();
-    expect(within(controls).getByTestId('tools-chip-stub')).toBeInTheDocument();
+    const controls = row();
+    expect(controls).not.toHaveAttribute('data-plus');
+    expect(controls.firstElementChild?.contains(screen.getByTestId('composer-plus'))).toBe(true);
   });
 
   // Owner decision, 2026-11-12: a decision chat shows the microphone. Dictation is
@@ -229,7 +275,7 @@ describe('a decision chat (B-3)', () => {
   it('keeps the microphone beside Send', () => {
     renderComposer({ effectiveModel: { provider: 'baseten_decision', model: 'joey-1' } });
     expect(screen.getByTestId('decision-composer-stub')).toBeInTheDocument();
-    const controls = within(card()).getByTestId('chat-input-toolbar');
+    const controls = row();
     const send = within(controls).getByRole('button', { name: COMPOSER_COPY.send.label });
     const mic = within(controls).getByTestId('dictation-button');
     expect(controls.lastElementChild?.contains(send)).toBe(true);
@@ -445,7 +491,11 @@ describe('notices inside the card', () => {
     ).toHaveAccessibleDescription(COMPOSER_COPY.vision.help);
     expect(sendButton()).toBeDisabled();
 
+    // "Switch model" opens the model chip's menu, which lives on the footer line.
     fireEvent.click(within(notice).getByRole('button', { name: COMPOSER_COPY.vision.action }));
     expect(modelMenuOpened).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(
+      within(screen.getByTestId('composer-footer')).getByTestId('model-chip-stub')
+    );
   });
 });

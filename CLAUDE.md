@@ -1518,8 +1518,8 @@ value's *location* is as load-bearing as the number.
     available-height variable in `.br-picker-popover`'s `max-height`
     (`pickers.css`) and `TOOLS_POPOVER_COLLISION_PADDING`, whose 52px top keeps
     the search field off the 44px drag band. DOM order is the visual order, so
-    Tab walks top to bottom. `toolsPopover.browser.test.tsx` measures the control
-    14px above the chip in every list at two window heights.
+    Tab walks top to bottom. `composer/plusPopover.browser.test.tsx` measures the
+    control 14px above the `+` in every list at two window heights.
   - **Effort is a three-stop slider** (R-26): `bottom_menu/EffortSection.tsx` in
     the model menu (`settings/models/bottom_bar/ModelsBottomBar.tsx`, opened from
     `bottom_menu/ModelEffortChip.tsx`), Quick, Normal and Deep, applying at once

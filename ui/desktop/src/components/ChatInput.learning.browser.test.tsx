@@ -14,7 +14,7 @@ const stubs: Record<string, string> = {
   userAction: `export const USER_ACTION_REFUSAL_MARKER = "is the user's decision, not yours"; export const userActionHeaders = async () => ({ 'X-User-Action': 'proof' });`,
   liveContextWindow: `export const liveContextWindow = async () => null;`,
   ComposerChips: `export const ComposerChips = () => null;`,
-  ToolsChip: `export const ToolsChip = () => null;`,
+  toolsLists: `export const useToolsLists = () => ({ shown: null, clearQueries: () => {} }); export const ToolsListPanel = () => null;`,
   ModelEffortChip: `export const ModelEffortChip = () => null;`,
   ComposerFooter: `export const ComposerFooter = () => null;`,
   ComposerPlusMenu: `export const ComposerPlusMenu = () => null;`,

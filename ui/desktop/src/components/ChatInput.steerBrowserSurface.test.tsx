@@ -53,7 +53,10 @@ vi.mock('../hooks/useDiverge', () => ({
 }));
 // The pickers and the footer are WS-PICKERS' modules, mocked by path; their
 // insides are tested where they live.
-vi.mock('./bottom_menu/ToolsChip', () => ({ ToolsChip: () => null }));
+vi.mock('./bottom_menu/toolsLists', () => ({
+  useToolsLists: () => ({ shown: null, clearQueries: () => {} }),
+  ToolsListPanel: () => null,
+}));
 vi.mock('./bottom_menu/ModelEffortChip', () => ({ ModelEffortChip: () => null }));
 vi.mock('./bottom_menu/ComposerFooter', () => ({ ComposerFooter: () => null }));
 vi.mock('./MentionPopover', () => {

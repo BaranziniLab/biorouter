@@ -25,8 +25,9 @@ vi.mock('./ModelAndProviderContext', () => ({
   }),
 }));
 vi.mock('../hooks/useDiverge', () => ({ useDiverge: () => ({ diverge: vi.fn() }) }));
-vi.mock('./bottom_menu/ToolsChip', () => ({
-  ToolsChip: () => <button data-testid="tools-chip-stub">Tools</button>,
+vi.mock('./bottom_menu/toolsLists', () => ({
+  useToolsLists: () => ({ shown: null, clearQueries: () => {} }),
+  ToolsListPanel: () => null,
 }));
 vi.mock('./bottom_menu/ModelEffortChip', () => ({
   ModelEffortChip: () => <button data-testid="model-chip-stub">model</button>,

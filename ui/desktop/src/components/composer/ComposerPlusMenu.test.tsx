@@ -185,7 +185,7 @@ describe('ComposerPlusMenu', () => {
     await user.click(await screen.findByRole('radio', { name: 'Extensions' }));
 
     // The control is the popover's last child: it sits on the bottom edge, which
-    // is the edge pinned above the `+` (geometry: toolsPopover.browser.test.tsx).
+    // is the edge pinned above the `+` (geometry: plusPopover.browser.test.tsx).
     const popover = await screen.findByTestId('composer-plus-popover');
     const tabs = screen.getByTestId('composer-tools-tabs');
     expect(popover.lastElementChild).toBe(tabs);

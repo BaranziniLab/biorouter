@@ -31,7 +31,10 @@ vi.mock('../hooks/useDiverge', () => ({
 }));
 // The pickers are WS-PICKERS' modules, mocked by path. The footer is real:
 // the folder chip it holds is what this suite drives.
-vi.mock('./bottom_menu/ToolsChip', () => ({ ToolsChip: () => null }));
+vi.mock('./bottom_menu/toolsLists', () => ({
+  useToolsLists: () => ({ shown: null, clearQueries: () => {} }),
+  ToolsListPanel: () => null,
+}));
 vi.mock('./bottom_menu/ModelEffortChip', () => ({ ModelEffortChip: () => null }));
 vi.mock('./bottom_menu/CostTracker', () => ({
   CostTracker: () => null,

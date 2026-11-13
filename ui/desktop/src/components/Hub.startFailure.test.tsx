@@ -49,7 +49,10 @@ vi.mock('../hooks/useDiverge', () => ({
 }));
 // The pickers and the footer are WS-PICKERS' modules, mocked by path; their
 // insides are tested where they live.
-vi.mock('./bottom_menu/ToolsChip', () => ({ ToolsChip: () => null }));
+vi.mock('./bottom_menu/toolsLists', () => ({
+  useToolsLists: () => ({ shown: null, clearQueries: () => {} }),
+  ToolsListPanel: () => null,
+}));
 // The model chip is a probe over the real effort store: these tests are about
 // which scope the composer hands it (Home's draft, a tab's draft, the new
 // chat's), not about how the picker draws.
@@ -79,7 +82,11 @@ vi.mock('./bottom_menu/ModelEffortChip', async () => {
   }
   return { ModelEffortChip };
 });
-vi.mock('./bottom_menu/ComposerFooter', () => ({ ComposerFooter: () => null }));
+// The footer draws only the model chip `ChatInput` hands it: the chip sits on
+// the footer line since the one-line composer (owner, 2026-11-13).
+vi.mock('./bottom_menu/ComposerFooter', () => ({
+  ComposerFooter: ({ model }: { model?: React.ReactNode }) => <>{model}</>,
+}));
 vi.mock('./MessageQueue', () => ({ default: () => null }));
 vi.mock('./MentionPopover', () => {
   const MentionPopoverMock = React.forwardRef(() => null);

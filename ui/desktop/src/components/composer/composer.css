@@ -788,10 +788,6 @@
 
 /* ── The footer line under the card ─────────────────────────────────────── */
 
-/* Derived insets, not chosen ones: the footer's items (`.br-footline__item`,
-   WS-PICKERS) hold their 14px glyph 6px in, so 11px puts the folder glyph on
-   the card's text edge (1px border + 16px padding = 17px), and 7px puts the
-   last readout's ink under Send's right edge (1px border + 12px padding). */
 /* The footer's items line up with the card's controls: the folder glyph under
    the `+` glyph (1px border + 8px padding + the 32px button's 8px inset, less
    the item's 6px), and the last readout's ink on Send's outer edge (1px + 8px,
@@ -802,13 +798,25 @@
 }
 
 /* Both sides may give way now that the model sits on the right: the folder's
-   name and the model's name ellipsize; the ring and the cost never do. */
-.br-composer-footer .br-footline__side {
+   name and the model's name ellipsize; the ring and the cost never do. Written
+   with the `[data-side]` on the end side too, so it outranks pickers.css's
+   `flex: none` by specificity rather than by stylesheet order. */
+.br-composer-footer .br-footline__side,
+.br-composer-footer .br-footline__side[data-side='end'] {
   flex: 0 1 auto;
 }
 
 .br-composer-footer .br-footline__side[data-side='end'] {
   justify-content: flex-end;
+}
+
+/* The ring and the cost keep their whole text at any width: only the model
+   slot (`.br-footline__model`, below) shrinks on this side. Measured in
+   Chromium (`composerCard.browser.test.tsx`): at 440px and 360px they were
+   squeezed under their own text. */
+.br-composer-footer .br-footline__side[data-side='end'] > .br-footline__item,
+.br-composer-footer .br-footline__side[data-side='end'] > :not(.br-footline__model) {
+  flex: none;
 }
 
 /* The model chip, moved out of the card onto the footer line: the footer item's

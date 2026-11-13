@@ -41,7 +41,7 @@ import { TOOLS_COPY } from './copy';
  * both said it once; `inert` on the wrapper did not help. So the option points at
  * its visible text (the title line, then the note) with `aria-labelledby`, or
  * carries `label` as its `aria-label`, and nothing else inside it can reach its
- * name. `toolsPopover.browser.test.tsx` reads Chromium's tree to pin it.
+ * name. `composer/plusPopover.browser.test.tsx` reads Chromium's tree to pin it.
  */
 export interface PickerPanelProps {
   /** The listbox's accessible name ("Extensions"). */

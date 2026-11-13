@@ -4,14 +4,16 @@
  * peeks, click pins").
  *
  * Every trigger below wears a Radix label `Tooltip` around a NON-modal menu or popover trigger:
- * the Tools chip, the model chip, the composer's `+` and a row's `⋯`. A non-modal surface leaves
+ * the model chip, the composer's `+` (whose popover now holds the old Tools chip's lists, owner
+ * 2026-11-13) and a row's `⋯`. A non-modal surface leaves
  * pointer events on the page, so a pointer that leaves the open trigger and comes back fires the
  * tooltip's `pointermove` again, and 500ms later the trigger's own name sat over the surface it
  * had just opened (on the two composer chips, over the popover's or menu's bottom edge, because
  * both open upward). Only real pointer input can show it: jsdom has no shared-provider timing and
  * no hit testing. So the REAL components are bundled with esbuild and driven in Chromium inside
  * the app's own `AppTooltipProvider`. Only the modules that read the daemon are stand-ins: the
- * Tools chip's three lists, and the model chip's config and model contexts and its two dialogs.
+ * `+` popover's three tool lists, and the model chip's config and model contexts and its two
+ * dialogs.
  *
  * The plain button stands for every other tooltip in the app. A refused hint must leave the
  * shared provider's 500ms delay alone: a refusal written as `onOpenChange(true) → ignore` still
@@ -128,7 +130,6 @@ import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import { AppTooltipProvider, Tooltip, TooltipContent, TooltipTrigger } from './Tooltip';
 import { RowActions } from './row-actions';
-import { ToolsChip } from '../bottom_menu/ToolsChip';
 import { ComposerPlusMenu } from '../composer/ComposerPlusMenu';
 import ModelsBottomBar from '../settings/models/bottom_bar/ModelsBottomBar';
 
@@ -147,11 +148,8 @@ function App() {
           <TooltipContent>Plain hint</TooltipContent>
         </Tooltip>
       </Spot>
-      {/* The composer's control row, near the window's bottom edge as in a chat: both
-          chips' surfaces open upward over the space their hints would take. */}
-      <Spot style={{ left: 40, bottom: 64 }}>
-        <ToolsChip sessionId="chat-1" />
-      </Spot>
+      {/* The composer's line and footer, near the window's bottom edge as in a chat:
+          the surfaces open upward over the space their hints would take. */}
       <Spot style={{ left: 200, bottom: 64 }}>
         <ModelsBottomBar
           sessionId="s1"
@@ -162,7 +160,7 @@ function App() {
         />
       </Spot>
       <Spot style={{ left: 520, bottom: 64 }}>
-        <ComposerPlusMenu onAttachFiles={() => {}} onInsertTrigger={() => {}} />
+        <ComposerPlusMenu sessionId="chat-1" onAttachFiles={() => {}} onInsertTrigger={() => {}} />
       </Spot>
       <Spot style={{ left: 700, top: 200 }}>
         <RowActions
@@ -209,13 +207,13 @@ interface Site {
 }
 
 const SITES: Site[] = [
-  {
-    name: 'the Tools chip',
-    trigger: '[data-testid="composer-tools-chip"]',
-    surface: '[data-testid="composer-tools-popover"]',
-  },
   { name: 'the model chip', trigger: '[data-testid="model-chip"]', surface: '[role="menu"]' },
-  { name: 'the composer’s +', trigger: '[data-testid="composer-plus"]', surface: '[role="menu"]' },
+  {
+    // The `+` popover (owner, 2026-11-13): the old `+` menu and the Tools chip in one.
+    name: 'the composer’s +',
+    trigger: '[data-testid="composer-plus"]',
+    surface: '[data-testid="composer-plus-popover"]',
+  },
   { name: 'a row’s ⋯', trigger: '[data-testid="row-more"]', surface: '[role="menu"]' },
 ];
 
@@ -425,8 +423,8 @@ describe('a label hint never comes back over its own open menu or popover (H2)',
   }
 
   // Only a click leaves a mark (H4): while its menu is open the trigger holds the kept step, with
-  // the pointer off it, as the Tools chip beside the `+` does. The `+` and a row's `⋯` rested clear
-  // and muted under their open menus.
+  // the pointer off it, as the model chip does. The `+` and a row's `⋯` rested clear and muted
+  // under their open menus.
   for (const site of SITES.filter((s) => s.trigger.includes('plus') || s.trigger.includes('row'))) {
     it(`${site.name}: holds the kept step while its menu is open, and rests clear once it closes`, async (ctx) => {
       if (!browser) return ctx.skip();
@@ -487,7 +485,7 @@ describe('a label hint never comes back over its own open menu or popover (H2)',
   /**
    * The keyboard's way in: Tab shows the hint, then a key opens the surface. A DropdownMenu opens
    * on the key's keydown (Enter, Space, ArrowDown) and no click follows, so nothing on the trigger
-   * closes the hint before the menu takes focus; the Tools chip is a Popover, which a key opens
+   * closes the hint before the menu takes focus; the `+` is a Popover, which a key opens
    * through the button's own click. A hint hidden there by its parent, rather than closed by
    * Radix, never told the shared provider that a tooltip closed, and the next label tooltip
    * anywhere opened at once (measured on the model chip, the `+` and a row's `⋯`, both keys).

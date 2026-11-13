@@ -52,8 +52,9 @@ vi.mock('./settings/models/bottom_bar/ModelsBottomBar', () => ({
 }));
 // The Tools chip's lists read three daemon endpoints of their own; this file
 // counts the chat-row reads, so the chip is out of the picture.
-vi.mock('./bottom_menu/ToolsChip', () => ({
-  ToolsChip: () => null,
+vi.mock('./bottom_menu/toolsLists', () => ({
+  useToolsLists: () => ({ shown: null, clearQueries: () => {} }),
+  ToolsListPanel: () => null,
 }));
 vi.mock('./bottom_menu/CostTracker', () => ({
   CostTracker: () => null,

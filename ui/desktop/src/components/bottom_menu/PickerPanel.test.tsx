@@ -147,7 +147,7 @@ describe('the picker shell', () => {
       // ...because it is named BY REFERENCE, to its visible text, and never from
       // its content: Chromium reads the hidden switch's name into a name built from
       // content (a focusable button, a `::after`), which jsdom never shows. The
-      // Chromium half is in toolsPopover.browser.test.tsx; this pins what it rests on.
+      // Chromium half is in composer/plusPopover.browser.test.tsx; this pins what it rests on.
       const parts = option.getAttribute('aria-labelledby')!.split(' ');
       expect(parts.map((id) => document.getElementById(id)!.className)).toEqual(
         row.note ? ['br-picker-row__title', 'br-picker-row__note'] : ['br-picker-row__title']
