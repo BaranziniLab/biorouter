@@ -165,7 +165,7 @@ The chat needs a sent message (in a new chat, the `/crew` suggestion reads "Conn
 5. Read what the pane lists under "“Plot review” will be able to" ("This chat will be able to" when the title is unknown), then choose **Allow**.
 6. The pane shows "Connected." and "Active · ends 4:40 PM". Choose **Back to chat**, and ask for what you need.
 
-A chat on Claude Code or Codex connects the same way. Its model is public, so a Public workspace admits it, with no access to the server and only Public-safe channels, and a Private workspace or connection refuses it with the sentence any public model gets, such as "Your connection to {workspace} is Private, so a public model can't read it. Choose a private model."
+A chat on Claude Code or Codex connects the same way. Its model is public, so a Public workspace admits it, with no access to the server and only Public-safe channels, and a Private workspace or connection refuses it with the sentence any public model gets, such as "Your connection to {workspace} is Private, so a public model can't read it. Choose a private model." A chat on a private model, such as Versa, connects to a Private workspace its institution owns, and to a Public one. If that chat is already Private (it has used a private model or read private data), a Public workspace admits it only when the host set the workspace's institution, and its posts there are Restricted ([Privacy and security](privacy-and-security.md)).
 
 ### Another channel or workspace
 
