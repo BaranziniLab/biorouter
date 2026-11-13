@@ -147,5 +147,5 @@ biorouter run --provider versa_azure -t "Summarize ./notes.md"</code></pre>
 <pre><code>settings:
   biorouter_provider: llamacpp
   biorouter_model: qwen3.8-27b</code></pre>
-<p><strong>Lead and worker.</strong> Set <code class="code-token">BIOROUTER_LEAD_MODEL</code> (and <code class="code-token">BIOROUTER_LEAD_PROVIDER</code> if it is another provider) to start each chat on a lead model for its first turns, three by default, before your default model takes over. Biorouter goes back to the lead when the worker fails repeatedly. Both models see the whole chat, so the pair counts as private only when both are private.</p>
+<p><strong>Default worker model.</strong> The chat's model leads, and the subagents it starts run on an optional default worker model, often a lighter one, unless the agent names another model. Choose it in Settings › Models or with <code class="code-token">BIOROUTER_WORKER_PROVIDER</code> and <code class="code-token">BIOROUTER_WORKER_MODEL</code>; with none set, subagents run on the chat's model. A private chat never hands its work to a public default worker: that subagent runs on the chat's model and the agent is told why. An older lead and worker setup moves over once: the lead becomes the chat's model and the worker becomes the default worker.</p>
 </div>
