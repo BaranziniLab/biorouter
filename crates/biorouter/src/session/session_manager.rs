@@ -55,7 +55,9 @@ macro_rules! prompt_band_sql {
             prompt_tokens_sql!($p),
             " > 272000 THEN 272000 WHEN ",
             prompt_tokens_sql!($p),
-            " > 200000 THEN 200000 ELSE 0 END)"
+            " > 200000 THEN 200000 WHEN ",
+            prompt_tokens_sql!($p),
+            " > 100000 THEN 100000 ELSE 0 END)"
         )
     };
 }
