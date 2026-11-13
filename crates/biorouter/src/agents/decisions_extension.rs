@@ -48,7 +48,7 @@ use tokio_util::sync::CancellationToken;
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
 use crate::decision::model::DecisionModelEntry;
-use crate::decision::service::{usable_chunk, UsableChunk};
+use crate::decision::service::{usable_chunk, ModelSource, UsableChunk};
 use crate::decision::types::MAX_CHOICE_OPTIONS;
 use crate::decision::types::{validate_questions, DecisionKindTag};
 use crate::decision::{
@@ -100,6 +100,10 @@ pub const REVIEW_FLOOR: f64 = 0.2;
 /// At or above this pass probability (and the threshold, when it is higher) a
 /// chunk is a clear pass and is not listed for review.
 pub const CLEAR_PASS: f64 = 0.8;
+/// Under this probability of its top answer (the most probable of the answers
+/// offered, whatever the threshold is on), an answer is low confidence, and
+/// its chunk is listed for a second look, when `escalate` sets no other bound.
+pub const LOW_CONFIDENCE: f64 = 0.8;
 
 /// Whether a chunk whose pass probability is `p` must be read before its
 /// answer is reported: it is not a clear no (`p` at least [`REVIEW_FLOOR`])
@@ -120,6 +124,9 @@ const LISTED_ERRORS: usize = 5;
 const LISTED_ERROR_IDS: usize = 10;
 /// The label every `decide` row carries in the decision log.
 pub const DECIDE_ORIGIN_LABEL: &str = "decide";
+/// What a cancelled `decide` call says.
+const CANCELLED: &str =
+    "The decide call was cancelled. Chunks already answered are in the decision history.";
 
 const DECIDE_DESCRIPTION: &str = concat!(
     "Ask a fast decision model typed questions about many pieces of text at once and get ",
@@ -143,6 +150,8 @@ const DECIDE_DESCRIPTION: &str = concat!(
     "options yes and no each say what they mean in one sentence, with a threshold near 0.5 ",
     "and pass_option yes (has_ms below). A higher threshold fails true cases; the review list ",
     "catches the rest.\n",
+    "- To have another model re-check only the unsure answers in the same call, add escalate ",
+    "{\"model\": \"<another decision model>\", \"below\": 0.8}.\n",
     "Example, 600 neurology notes: questions {\"has_ms\": {\"type\": \"choice\", ",
     "\"instructions\": \"Does this note state the patient has multiple sclerosis (MS, RRMS, ",
     "SPMS or PPMS)?\", \"options\": {\"yes\": \"The patient has multiple sclerosis (MS, RRMS, ",
@@ -153,9 +162,11 @@ const DECIDE_DESCRIPTION: &str = concat!(
     "the cohort from the has_ms passes after reading its review list, and read only the ",
     "edss_stated notes to extract the EDSS value.\n",
     "Privacy: a private chat can use only private decision models (on this computer or at ",
-    "the user's institution); a public one is refused before anything is sent.\n",
+    "the user's institution), for escalate too; a public one is refused before anything is ",
+    "sent.\n",
     "The result summarises each question (passes, highest probability, passing ids, ids to ",
-    "review). Every call, with the text it read, is in the chat's decision history."
+    "review) and lists every low-confidence id. Every call, with the text it read, is in the ",
+    "chat's decision history."
 );
 
 const DECISION_MODELS_DESCRIPTION: &str = concat!(
@@ -203,6 +214,30 @@ struct DecideParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schemars(extend("minItems" = 2, "maxItems" = 5))]
     models: Option<Vec<String>>,
+    /// Optional second opinion in the same call: after the first model
+    /// decides every chunk, each answer whose top probability is under
+    /// `below` is asked again of this model, and its answer is final. Not
+    /// with `models`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    escalate: Option<DecideEscalate>,
+    /// Optional: decide only the chunks with these ids, out of `chunks`, for
+    /// example the low-confidence ids an earlier result listed.
+    #[serde(default, alias = "onlyIds", skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("minItems" = 1, "maxItems" = 200))]
+    only_ids: Option<Vec<String>>,
+}
+
+/// `decide`'s `escalate`: the model that answers again where the first was
+/// unsure, and how unsure counts.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct DecideEscalate {
+    /// The second model, named as `model` takes it, for example
+    /// "clef-flash:latest". Not the first model.
+    model: String,
+    /// Optional, above 0 and at most 1 (default 0.8): an answer whose top
+    /// probability is under this is asked again.
+    #[serde(default, alias = "threshold", skip_serializing_if = "Option::is_none")]
+    below: Option<f64>,
 }
 
 /// One question as the model writes it.
@@ -420,9 +455,7 @@ fn build_question(name: &str, input: &DecideQuestion) -> Result<Question, String
 
 /// The service's questions and chunks from `decide`'s arguments, refused with
 /// a sentence the model can act on.
-fn build_batch(
-    params: &DecideParams,
-) -> Result<(IndexMap<String, Question>, Vec<DecisionChunk>), String> {
+fn build_batch(params: &DecideParams) -> Result<(IndexMap<String, Question>, CallChunks), String> {
     if params.questions.is_empty() || params.questions.len() > MAX_TOOL_QUESTIONS {
         return Err(format!(
             "Ask between 1 and {MAX_TOOL_QUESTIONS} questions per call, not {}. Every question \
@@ -465,7 +498,85 @@ fn build_batch(
             context: DecisionContext::Text(chunk.text.clone()),
         });
     }
-    Ok((questions, chunks))
+    Ok((questions, only_chunks(chunks, params.only_ids.as_deref())?))
+}
+
+/// A call's chunks to decide, each with its place in the call's `chunks`
+/// (from 0), which the decision history numbers it by. With `only_ids` some
+/// places are skipped, so a second pass names a chunk by the number the
+/// first gave it.
+type CallChunks = Vec<(usize, DecisionChunk)>;
+
+/// The chunks `only_ids` names, in `chunks` order, or every chunk when it is
+/// left out. An id that is not a chunk of the call, or is named twice, is
+/// refused, so a second pass never silently decides fewer chunks than asked.
+fn only_chunks(chunks: Vec<DecisionChunk>, only: Option<&[String]>) -> Result<CallChunks, String> {
+    let chunks = chunks.into_iter().enumerate();
+    let Some(only) = only else {
+        return Ok(chunks.collect());
+    };
+    let chunks: CallChunks = chunks.collect();
+    let mut wanted = std::collections::HashSet::with_capacity(only.len());
+    for id in only {
+        let id = id.trim();
+        if !chunks.iter().any(|(_, chunk)| chunk.id == id) {
+            return Err(format!(
+                "`only_ids` names `{id}`, which is not the id of a chunk in this call. Send that \
+                 chunk in `chunks`, or leave its id out."
+            ));
+        }
+        if !wanted.insert(id.to_string()) {
+            return Err(format!(
+                "`only_ids` names `{id}` twice; name each chunk once."
+            ));
+        }
+    }
+    if wanted.is_empty() {
+        return Err("`only_ids` names no chunk. Name at least one, or leave it out.".to_string());
+    }
+    Ok(chunks
+        .into_iter()
+        .filter(|(_, chunk)| wanted.contains(&chunk.id))
+        .collect())
+}
+
+/// `escalate`, checked: the model's name as written, and the bound.
+#[derive(Debug, Clone, PartialEq)]
+struct EscalationAsk {
+    model: String,
+    below: f64,
+}
+
+/// `escalate`, when the call gives it: a model name, a bound above 0 and at
+/// most 1 (0.8 when left out), and never with a vote.
+fn escalation_ask(params: &DecideParams) -> Result<Option<EscalationAsk>, String> {
+    let Some(escalate) = &params.escalate else {
+        return Ok(None);
+    };
+    if params.models.is_some() {
+        return Err(
+            "`escalate` asks a second model after one first model, so it does not go with a vote \
+             in `models`. Use one or the other."
+                .to_string(),
+        );
+    }
+    let model = escalate.model.trim();
+    if model.is_empty() {
+        return Err(
+            "`escalate` needs `model`: the decision model to ask again, named as `model` takes it."
+                .to_string(),
+        );
+    }
+    let below = escalate.below.unwrap_or(LOW_CONFIDENCE);
+    if !below.is_finite() || below <= 0.0 || below > 1.0 {
+        return Err(format!(
+            "`escalate`'s `below` is a probability above 0 and at most 1, not {below}."
+        ));
+    }
+    Ok(Some(EscalationAsk {
+        model: model.to_string(),
+        below,
+    }))
 }
 
 /// What a `decide` call returns as structured content: aggregates only, never
@@ -490,6 +601,77 @@ pub struct DecideSummary {
     pub questions: Vec<QuestionSummary>,
     /// The distinct errors, each with the chunks it hit (capped).
     pub error_groups: Vec<ErrorGroup>,
+    /// The probability under which a top answer is low confidence:
+    /// `escalate`'s `below`, else [`LOW_CONFIDENCE`].
+    pub low_confidence_below: f64,
+    /// Every chunk, in call order and never capped, with a final answer whose
+    /// top probability is under `low_confidence_below`: the ids to decide
+    /// again (`only_ids` with another `model`) or to read. After an
+    /// escalation, the ones still unsure.
+    pub low_confidence_ids: Vec<String>,
+    /// What `escalate` did, when the call asked for it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub escalation: Option<EscalationSummary>,
+}
+
+/// What `escalate` did: which chunks the second model was asked about, and
+/// its answers beside the first model's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EscalationSummary {
+    /// The model asked again.
+    pub model: DecisionModelRef,
+    /// Its name as a person reads it (an alias for a Baseten model).
+    pub label: String,
+    pub tier: Option<ProviderTier>,
+    /// The first model's name as a person reads it.
+    pub first_label: String,
+    /// A question whose top answer was less probable than this was asked again.
+    pub below: f64,
+    /// Chunks the first model decided.
+    pub first_decided: usize,
+    /// Chunks asked again, about at least one question.
+    pub escalated: usize,
+    /// Answers asked again (a chunk asked two questions again counts two).
+    pub answers: usize,
+    /// Of those, answers the second model gave.
+    pub decided: usize,
+    /// Of those, answers that differ from the first model's.
+    pub changed: usize,
+    /// Answers asked again that failed: the first model's answer stands.
+    pub errors: usize,
+    /// Every chunk asked again, in call order (at most [`MAX_TOOL_CHUNKS`]).
+    pub items: Vec<EscalatedItem>,
+    /// The second model's distinct errors, each with the chunks it hit.
+    pub error_groups: Vec<ErrorGroup>,
+}
+
+/// One chunk asked again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EscalatedItem {
+    pub chunk_id: String,
+    /// The questions asked again, in question order.
+    pub answers: Vec<EscalatedAnswer>,
+}
+
+/// One answer asked again: the final answer, which model gave it, and the
+/// first model's.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EscalatedAnswer {
+    pub question: String,
+    /// The final answer and the probability of it.
+    pub label: String,
+    pub p: f64,
+    /// The name of the model that gave the final answer: the second model's,
+    /// or the first's when the second failed.
+    pub by: String,
+    pub first_label: String,
+    pub first_p: f64,
+    /// Why the second model gave no answer, when it did not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// One question's aggregate over a batch.
@@ -519,6 +701,11 @@ pub struct QuestionSummary {
     pub max_p: Option<f64>,
     /// choice and score: how many chunks gave each answer, in option order.
     pub answer_counts: Option<IndexMap<String, usize>>,
+    /// choice and score: per answer, in option order, the chunks that gave
+    /// it, at most [`LISTED_IDS`] each (the rest are counted in
+    /// `answer_counts`), so a label can be reported per chunk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answer_ids: Option<IndexMap<String, Vec<String>>>,
     /// The chunks that passed (or, for yes_no with no threshold, answered yes),
     /// at most [`LISTED_IDS`].
     pub passing_ids: Vec<String>,
@@ -686,6 +873,31 @@ fn capped(ids: Vec<String>, cap: usize) -> (Vec<String>, usize) {
     (ids.into_iter().take(cap).collect(), more)
 }
 
+/// How a reviewed question's answers fall into the four confidence groups.
+fn answer_groups<'a>(
+    question: &Question,
+    decisions: impl Iterator<Item = &'a Decision>,
+) -> AnswerGroups {
+    let mut groups = AnswerGroups {
+        yes_confident: 0,
+        yes_review: 0,
+        no_review: 0,
+        no_confident: 0,
+        pass_from: threshold_p(question.threshold.as_ref()).unwrap_or(0.5),
+        confident_from: review_ceiling(threshold_p(question.threshold.as_ref())),
+        review_from: REVIEW_FLOOR,
+    };
+    for decision in decisions {
+        match group_of(question, decision) {
+            Some(Group::YesConfident) => groups.yes_confident += 1,
+            Some(Group::YesReview) => groups.yes_review += 1,
+            Some(Group::NoReview) => groups.no_review += 1,
+            Some(Group::NoConfident) | None => groups.no_confident += 1,
+        }
+    }
+    groups
+}
+
 /// One question's aggregate over a batch's outcomes.
 fn question_summary(
     name: &str,
@@ -735,6 +947,19 @@ fn question_summary(
         }
         counts
     });
+    let answer_ids = answer_counts.as_ref().map(|counts| {
+        let mut ids: IndexMap<String, Vec<String>> = counts
+            .keys()
+            .map(|answer| (answer.clone(), Vec::new()))
+            .collect();
+        for (id, decision) in &answered {
+            let listed = ids.entry(answer_key(decision)).or_default();
+            if listed.len() < cap {
+                listed.push(id.to_string());
+            }
+        }
+        ids
+    });
     let max_p = answered
         .iter()
         .map(|(_, d)| {
@@ -747,26 +972,7 @@ fn question_summary(
         .fold(None, |acc: Option<f64>, p| {
             Some(acc.map_or(p, |a| a.max(p)))
         });
-    let groups = reviewed.then(|| {
-        let mut groups = AnswerGroups {
-            yes_confident: 0,
-            yes_review: 0,
-            no_review: 0,
-            no_confident: 0,
-            pass_from: threshold_p(question.threshold.as_ref()).unwrap_or(0.5),
-            confident_from: review_ceiling(threshold_p(question.threshold.as_ref())),
-            review_from: REVIEW_FLOOR,
-        };
-        for (_, decision) in &answered {
-            match group_of(question, decision) {
-                Some(Group::YesConfident) => groups.yes_confident += 1,
-                Some(Group::YesReview) => groups.yes_review += 1,
-                Some(Group::NoReview) => groups.no_review += 1,
-                Some(Group::NoConfident) | None => groups.no_confident += 1,
-            }
-        }
-        groups
-    });
+    let groups = reviewed.then(|| answer_groups(question, answered.iter().map(|(_, d)| *d)));
     let passed = has_threshold.then_some(passing.len());
     let yes = binary.then(|| answered.iter().filter(|(_, d)| says_yes(d)).count());
     let review_count = reviewed.then_some(review.len());
@@ -783,6 +989,7 @@ fn question_summary(
         review: review_count,
         max_p,
         answer_counts,
+        answer_ids,
         passing_ids,
         more_passing,
         review_ids,
@@ -856,12 +1063,46 @@ fn error_groups(outcomes: &[ChunkOutcome]) -> Vec<ErrorGroup> {
     listed
 }
 
+/// The probability of a decision's top answer: the most probable of the
+/// answers offered, whatever a threshold is on.
+fn top_p(decision: &Decision) -> f64 {
+    decision
+        .probabilities
+        .values()
+        .copied()
+        .fold(0.0_f64, f64::max)
+}
+
+/// Whether a decision's top answer is less probable than `below`.
+fn unsure(decision: &Decision, below: f64) -> bool {
+    top_p(decision) < below
+}
+
+/// Every decided chunk, in call order, with an answer whose top probability
+/// is under `below`. Never capped: an agent that decides exactly these again
+/// (`only_ids`) must be able to name every one.
+fn low_confidence_ids(outcomes: &[ChunkOutcome], below: f64) -> Vec<String> {
+    outcomes
+        .iter()
+        .filter(|outcome| {
+            outcome
+                .decisions
+                .iter()
+                .flatten()
+                .any(|decision| unsure(decision, below))
+        })
+        .map(|outcome| outcome.chunk_id.clone())
+        .collect()
+}
+
 /// The aggregate of one batch. Pure, so the no-flood shape is testable.
+/// `low_below` is the bound under which a top answer is low confidence.
 pub fn summarize(
     questions: &IndexMap<String, Question>,
     outcomes: &[ChunkOutcome],
     batch_id: &str,
     elapsed_ms: u64,
+    low_below: f64,
 ) -> DecideSummary {
     let decided = outcomes.iter().filter(|o| o.decisions.is_some()).count();
     let first = outcomes
@@ -890,7 +1131,199 @@ pub fn summarize(
             })
             .collect(),
         error_groups: error_groups(outcomes),
+        low_confidence_below: low_below,
+        low_confidence_ids: low_confidence_ids(outcomes, low_below),
+        escalation: None,
     }
+}
+
+/// The name a result gives a decision model: its bare name or alias
+/// (`tev1:0.8b`, `joey-1`), which `model` also takes.
+fn model_label(model: &DecisionModelRef) -> String {
+    decision_model_short_name(model)
+}
+
+/// What the escalation stage was asked and answered, before it is merged.
+struct EscalationRun {
+    model: DecisionModelRef,
+    tier: Option<ProviderTier>,
+    below: f64,
+    /// The second model's outcome for each chunk asked again, in call order,
+    /// each with only the questions asked again.
+    outcomes: Vec<ChunkOutcome>,
+}
+
+/// Per decided chunk, in call order, the questions whose top answer is less
+/// probable than `below`: what `escalate` asks the second model again.
+fn escalation_targets(
+    questions: &IndexMap<String, Question>,
+    outcomes: &[ChunkOutcome],
+    below: f64,
+) -> Vec<(String, Vec<String>)> {
+    outcomes
+        .iter()
+        .filter_map(|outcome| {
+            let decisions = outcome.decisions.as_ref()?;
+            let names: Vec<String> = questions
+                .keys()
+                .filter(|name| {
+                    decisions
+                        .iter()
+                        .any(|d| &d.question == *name && unsure(d, below))
+                })
+                .cloned()
+                .collect();
+            (!names.is_empty()).then(|| (outcome.chunk_id.clone(), names))
+        })
+        .collect()
+}
+
+/// The targets grouped by the questions they ask again, in the order each set
+/// first appears, so each group is one batch of one question set.
+fn escalation_groups(targets: &[(String, Vec<String>)]) -> IndexMap<Vec<String>, Vec<String>> {
+    let mut groups: IndexMap<Vec<String>, Vec<String>> = IndexMap::new();
+    for (chunk_id, names) in targets {
+        groups
+            .entry(names.clone())
+            .or_default()
+            .push(chunk_id.clone());
+    }
+    groups
+}
+
+/// One question asked again: the second model's answer, written into `slot`
+/// in place of the first model's, or the first model's kept with the reason
+/// the second model gave none.
+fn escalated_answer(
+    name: &str,
+    slot: &mut Decision,
+    again: &ChunkOutcome,
+    label: &str,
+    first_label: &str,
+) -> EscalatedAnswer {
+    let (first_key, first_p) = (answer_key(slot), top_p(slot));
+    let replacement = again
+        .decisions
+        .iter()
+        .flatten()
+        .find(|d| d.question == name)
+        .cloned();
+    match replacement {
+        Some(replacement) => {
+            let key = answer_key(&replacement);
+            let p = top_p(&replacement);
+            *slot = replacement;
+            EscalatedAnswer {
+                question: name.to_string(),
+                label: key,
+                p,
+                by: label.to_string(),
+                first_label: first_key,
+                first_p,
+                error: None,
+            }
+        }
+        None => EscalatedAnswer {
+            question: name.to_string(),
+            label: first_key.clone(),
+            p: first_p,
+            by: first_label.to_string(),
+            first_label: first_key,
+            first_p,
+            error: Some(
+                again
+                    .error
+                    .clone()
+                    .unwrap_or_else(|| "no answer".to_string()),
+            ),
+        },
+    }
+}
+
+/// The first model's outcomes with each answer the second model gave in its
+/// place, and what the escalation did. An answer the second model failed to
+/// give keeps the first model's. Pure, so the merge is testable without a
+/// model.
+fn merge_escalation(
+    questions: &IndexMap<String, Question>,
+    first: Vec<ChunkOutcome>,
+    first_label: &str,
+    run: EscalationRun,
+) -> (Vec<ChunkOutcome>, EscalationSummary) {
+    let label = {
+        let short = model_label(&run.model);
+        if short == first_label {
+            decision_model_display_label(&run.model)
+        } else {
+            short
+        }
+    };
+    let first_decided = first.iter().filter(|o| o.decisions.is_some()).count();
+    let by_chunk: std::collections::HashMap<&str, &ChunkOutcome> = run
+        .outcomes
+        .iter()
+        .map(|outcome| (outcome.chunk_id.as_str(), outcome))
+        .collect();
+    let mut items = Vec::new();
+    let merged = first
+        .into_iter()
+        .map(|mut outcome| {
+            let Some(again) = by_chunk.get(outcome.chunk_id.as_str()) else {
+                return outcome;
+            };
+            let Some(decisions) = outcome.decisions.as_mut() else {
+                return outcome;
+            };
+            let mut item_answers = Vec::new();
+            for name in questions.keys() {
+                let Some(slot) = decisions.iter_mut().find(|d| &d.question == name) else {
+                    continue;
+                };
+                // Asked again only when unsure; the second model's outcome
+                // holds exactly the questions asked again.
+                let asked = again.error.is_some()
+                    || again
+                        .decisions
+                        .iter()
+                        .flatten()
+                        .any(|d| &d.question == name);
+                if !asked || !unsure(slot, run.below) {
+                    continue;
+                }
+                item_answers.push(escalated_answer(name, slot, again, &label, first_label));
+            }
+            if !item_answers.is_empty() {
+                items.push(EscalatedItem {
+                    chunk_id: outcome.chunk_id.clone(),
+                    answers: item_answers,
+                });
+            }
+            outcome
+        })
+        .collect();
+    let all_answers = || items.iter().flat_map(|item: &EscalatedItem| &item.answers);
+    let answers = all_answers().count();
+    let decided = all_answers().filter(|a| a.error.is_none()).count();
+    let changed = all_answers()
+        .filter(|a| a.error.is_none() && a.label != a.first_label)
+        .count();
+    let errors = answers - decided;
+    let summary = EscalationSummary {
+        model: run.model,
+        label,
+        tier: run.tier,
+        first_label: first_label.to_string(),
+        below: run.below,
+        first_decided,
+        escalated: items.len(),
+        answers,
+        decided,
+        changed,
+        errors,
+        items,
+        error_groups: error_groups(&run.outcomes),
+    };
+    (merged, summary)
 }
 
 fn ids_line(ids: &[String], more: usize) -> String {
@@ -901,8 +1334,24 @@ fn ids_line(ids: &[String], more: usize) -> String {
     line
 }
 
+/// What a line says after an answer that was asked again: the first model's
+/// answer, or that the second model failed and the first answer stands.
+fn escalated_note(answer: &EscalatedAnswer, first_label: &str) -> String {
+    match &answer.error {
+        None => format!(
+            " (escalated; {first_label} said {}, P {:.2})",
+            answer.first_label, answer.first_p
+        ),
+        Some(_) => format!(" (escalation failed; {first_label}'s answer stands)"),
+    }
+}
+
 /// One compact line per chunk, for small batches only.
-fn chunk_line(questions: &IndexMap<String, Question>, outcome: &ChunkOutcome) -> String {
+fn chunk_line(
+    questions: &IndexMap<String, Question>,
+    outcome: &ChunkOutcome,
+    escalation: Option<&EscalationSummary>,
+) -> String {
     let Some(decisions) = &outcome.decisions else {
         return format!(
             "- {}: failed: {}",
@@ -910,10 +1359,25 @@ fn chunk_line(questions: &IndexMap<String, Question>, outcome: &ChunkOutcome) ->
             outcome.error.as_deref().unwrap_or("no answer")
         );
     };
+    let escalated = escalation.and_then(|escalation| {
+        escalation
+            .items
+            .iter()
+            .find(|item| item.chunk_id == outcome.chunk_id)
+            .map(|item| (item, escalation.first_label.as_str()))
+    });
     let parts: Vec<String> = questions
         .iter()
         .filter_map(|(name, question)| {
             let decision = decisions.iter().find(|d| &d.question == name)?;
+            let note = escalated
+                .and_then(|(item, first)| {
+                    item.answers
+                        .iter()
+                        .find(|answer| &answer.question == name)
+                        .map(|answer| escalated_note(answer, first))
+                })
+                .unwrap_or_default();
             // Never a bare "fail": an agent reads that as a no, and a near
             // miss below the threshold is not one.
             let verdict = match (decision.passed, in_review(question, decision)) {
@@ -926,10 +1390,10 @@ fn chunk_line(questions: &IndexMap<String, Question>, outcome: &ChunkOutcome) ->
             };
             Some(match &decision.answer {
                 Answer::Binary { .. } => {
-                    format!("{name} P(yes) {:.2}{verdict}", p_yes(decision))
+                    format!("{name} P(yes) {:.2}{verdict}{note}", p_yes(decision))
                 }
                 _ => format!(
-                    "{name} {} (P {:.2}){verdict}",
+                    "{name} {} (P {:.2}){verdict}{note}",
                     answer_key(decision),
                     reported_p(decision)
                 ),
@@ -939,8 +1403,10 @@ fn chunk_line(questions: &IndexMap<String, Question>, outcome: &ChunkOutcome) ->
     format!("- {}: {}", outcome.chunk_id, parts.join("; "))
 }
 
-/// One question's paragraph of the summary text.
-fn question_paragraph(question: &QuestionSummary, chunks: usize) -> String {
+/// One question's paragraph of the summary text. `list_answers` adds the
+/// chunk ids of each answer of a choice or score, for a batch too big for a
+/// line per chunk, so every chunk's label can still be reported.
+fn question_paragraph(question: &QuestionSummary, chunks: usize, list_answers: bool) -> String {
     let rule = match (&question.pass_on, question.threshold) {
         (Some(on), Some(p)) => format!(", passes at P({on}) >= {p:.2}"),
         _ => String::new(),
@@ -1014,7 +1480,179 @@ fn question_paragraph(question: &QuestionSummary, chunks: usize) -> String {
             ids_line(&question.review_ids, question.more_review)
         ));
     }
+    if let (true, Some(ids), Some(counts)) =
+        (list_answers, &question.answer_ids, &question.answer_counts)
+    {
+        for (answer, listed) in ids.iter().filter(|(_, listed)| !listed.is_empty()) {
+            let total = counts.get(answer).copied().unwrap_or(listed.len());
+            text.push_str(&format!(
+                "\n  {answer}: {}",
+                ids_line(listed, total.saturating_sub(listed.len()))
+            ));
+        }
+    }
     text
+}
+
+/// The escalation's paragraph: how many chunks each model decided, what the
+/// second model changed, and its failures.
+fn escalation_paragraph(escalation: &EscalationSummary) -> String {
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    let tier = escalation
+        .tier
+        .map(|tier| format!(" ({})", tier_word(tier)))
+        .unwrap_or_default();
+    let answers = if escalation.answers == escalation.escalated {
+        String::new()
+    } else {
+        format!(
+            " ({} answer{})",
+            escalation.answers,
+            plural(escalation.answers)
+        )
+    };
+    let mut text = format!(
+        "\nEscalation: {} decided by {}, {} escalated to {}{tier}{answers}, where a top answer \
+         was under {:.2}.",
+        escalation.first_decided,
+        escalation.first_label,
+        escalation.escalated,
+        escalation.label,
+        escalation.below,
+    );
+    if escalation.answers == 0 {
+        text.push_str(&format!(
+            " No answer was under {:.2}, so {} was asked nothing.",
+            escalation.below, escalation.label
+        ));
+        return text;
+    }
+    text.push_str(&format!(
+        " {} gave {} of them, {} different from {}'s. Every answer below is final: {}'s where \
+         escalated, {}'s elsewhere.",
+        escalation.label,
+        escalation.decided,
+        escalation.changed,
+        escalation.first_label,
+        escalation.label,
+        escalation.first_label,
+    ));
+    if escalation.errors > 0 {
+        text.push_str(&format!(
+            " {} escalated answer{} failed, so {}'s answer stands for {}.",
+            escalation.errors,
+            plural(escalation.errors),
+            escalation.first_label,
+            if escalation.errors == 1 { "it" } else { "them" },
+        ));
+    }
+    for group in &escalation.error_groups {
+        let hit = group.chunk_ids.len() + group.more;
+        text.push_str(&format!(
+            "\nEscalation failed ({hit} chunk{}): {}: {}",
+            plural(hit),
+            ids_line(&group.chunk_ids, group.more),
+            group.message
+        ));
+    }
+    text
+}
+
+/// For a batch too big for a line per chunk: one line per chunk asked again,
+/// the final answer beside the first model's, at most [`PER_CHUNK_LINES`].
+fn escalated_lines(escalation: &EscalationSummary) -> String {
+    if escalation.items.is_empty() {
+        return String::new();
+    }
+    let mut text = format!(
+        "\nEscalated (final answer, then {}'s):",
+        escalation.first_label
+    );
+    for item in escalation.items.iter().take(PER_CHUNK_LINES) {
+        let answers: Vec<String> = item
+            .answers
+            .iter()
+            .map(|answer| match &answer.error {
+                None => format!(
+                    "{} {} P {:.2}, was {} P {:.2}",
+                    answer.question, answer.label, answer.p, answer.first_label, answer.first_p
+                ),
+                Some(_) => format!(
+                    "{} {} P {:.2}, escalation failed",
+                    answer.question, answer.label, answer.p
+                ),
+            })
+            .collect();
+        text.push_str(&format!("\n- {}: {}", item.chunk_id, answers.join("; ")));
+    }
+    let rest = escalation.items.get(PER_CHUNK_LINES..).unwrap_or_default();
+    if !rest.is_empty() {
+        // Never capped, so every chunk's model can be told: named here, the
+        // escalation model's answer (or, where it failed, the first model's);
+        // not named, the first model's.
+        let (failed, answered): (Vec<&EscalatedItem>, Vec<&EscalatedItem>) = rest
+            .iter()
+            .partition(|item| item.answers.iter().any(|answer| answer.error.is_some()));
+        let ids = |items: &[&EscalatedItem]| {
+            items
+                .iter()
+                .map(|item| item.chunk_id.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        text.push_str(&format!(
+            "\n(and {} more escalated chunk{}, their final answers in the lists above.",
+            rest.len(),
+            if rest.len() == 1 { "" } else { "s" }
+        ));
+        if !answered.is_empty() {
+            text.push_str(&format!(
+                " Answered by {}: {}.",
+                escalation.label,
+                ids(&answered)
+            ));
+        }
+        if !failed.is_empty() {
+            text.push_str(&format!(
+                " Failed, so {}'s answer stands: {}.",
+                escalation.first_label,
+                ids(&failed)
+            ));
+        }
+        text.push(')');
+    }
+    text
+}
+
+/// The low-confidence line: every chunk with a top answer under the bound,
+/// all of them, and what to do with them.
+fn low_confidence_line(summary: &DecideSummary) -> String {
+    let below = summary.low_confidence_below;
+    let ids = &summary.low_confidence_ids;
+    let escalated = summary.escalation.is_some();
+    if ids.is_empty() {
+        return if escalated {
+            format!("\nAfter escalation no top answer is under {below:.2}.")
+        } else {
+            format!("\nLow confidence (a top answer under {below:.2}): none.")
+        };
+    }
+    let count = format!("{} of {} chunks", ids.len(), summary.decided);
+    if escalated {
+        let them = if ids.len() == 1 { "it" } else { "them" };
+        format!(
+            "\nStill low confidence after escalation (a top answer under {below:.2}), {count}: \
+             {}. Read {them} before you report {them}, or report {them} as unresolved.",
+            ids.join(", ")
+        )
+    } else {
+        format!(
+            "\nLow confidence (a top answer under {below:.2}), {count}: {}. To ask another model \
+             about exactly these, repeat this call with `only_ids` set to them and that `model`, \
+             or use `escalate` to do both in one call.",
+            ids.join(", ")
+        )
+    }
 }
 
 /// The text the model reads: one paragraph per question, never one block per
@@ -1049,8 +1687,16 @@ pub fn render_summary(
         summary.decided,
         summary.errors,
     );
+    let per_chunk =
+        outcomes.len() <= PER_CHUNK_LINES && outcomes.len() * questions.len() <= PER_CHUNK_CELLS;
+    if let Some(escalation) = &summary.escalation {
+        text.push_str(&escalation_paragraph(escalation));
+    }
     for question in &summary.questions {
-        text.push_str(&question_paragraph(question, summary.chunks));
+        text.push_str(&question_paragraph(question, summary.chunks, !per_chunk));
+    }
+    if let (Some(escalation), false) = (&summary.escalation, per_chunk) {
+        text.push_str(&escalated_lines(escalation));
     }
     for group in &summary.error_groups {
         let hit = group.chunk_ids.len() + group.more;
@@ -1061,12 +1707,15 @@ pub fn render_summary(
             group.message
         ));
     }
-    if outcomes.len() <= PER_CHUNK_LINES && outcomes.len() * questions.len() <= PER_CHUNK_CELLS {
+    if per_chunk {
         text.push_str("\nPer chunk:");
         for outcome in outcomes {
             text.push('\n');
-            text.push_str(&chunk_line(questions, outcome));
+            text.push_str(&chunk_line(questions, outcome, summary.escalation.as_ref()));
         }
+    }
+    if summary.decided > 0 {
+        text.push_str(&low_confidence_line(summary));
     }
     if summary.calibrated == Some(false) {
         text.push_str(
@@ -1172,6 +1821,57 @@ impl DecisionsClient {
         resolve_model_name(self.service, session, wanted).await
     }
 
+    /// The model a `decide` call asks first: the one its `model` argument
+    /// names, else the chat's own default, checked as a named model is, so a
+    /// default this chat may not use is refused with its reason up front.
+    /// `None` leaves the choice to the service.
+    async fn model_to_ask(
+        &self,
+        session: &DecisionSession,
+        wanted: Option<&str>,
+    ) -> Result<Option<DecisionModelRef>, String> {
+        match wanted.map(str::trim) {
+            Some(wanted) if !wanted.is_empty() => {
+                Ok(Some(self.named_model(session, wanted).await?))
+            }
+            _ => match &session.chat_default_model {
+                Ok(Some(default)) => self
+                    .named_model(session, &default.label())
+                    .await
+                    .map(Some)
+                    .map_err(|why| {
+                        format!("This chat's default decision model is not usable: {why}")
+                    }),
+                Ok(None) => Ok(None),
+                Err(why) => Err(format!(
+                    "{why}, so this chat's default decision model is unknown. Name one in \
+                     `model`."
+                )),
+            },
+        }
+    }
+
+    /// The first model's name and tier, from its answers, else from the
+    /// listing (nothing was decided, so no answer names it).
+    async fn first_model_of(
+        &self,
+        session: &DecisionSession,
+        model: Option<&DecisionModelRef>,
+        outcomes: &[ChunkOutcome],
+    ) -> Option<(DecisionModelRef, ProviderTier)> {
+        let answered = outcomes
+            .iter()
+            .find_map(|o| o.decisions.as_ref().and_then(|d| d.first()))
+            .map(|d| (d.model.clone(), d.tier));
+        if answered.is_some() {
+            return answered;
+        }
+        self.service
+            .model_entry_for(Some(session), model)
+            .await
+            .map(|entry| (entry.model_ref(), entry.tier))
+    }
+
     async fn handle_decide(
         &self,
         session_id: &str,
@@ -1184,6 +1884,7 @@ impl DecisionsClient {
                 .map_err(|e| format!("decide's arguments do not fit its schema: {e}"))?;
         let (questions, chunks) = build_batch(&params)?;
         let wanted_models = vote_models(&params)?;
+        let escalation = escalation_ask(&params)?;
 
         let batch_id = uuid::Uuid::now_v7().to_string();
         let session = self
@@ -1197,30 +1898,33 @@ impl DecisionsClient {
                 .handle_vote(&session, &wanted, &questions, chunks, &batch_id, cancel)
                 .await;
         }
-        let model = match params.model.as_deref().map(str::trim) {
-            Some(wanted) if !wanted.is_empty() => Some(self.named_model(&session, wanted).await?),
-            // The chat's own default, checked as a named model is, so a default
-            // this chat may not use is refused with its reason up front.
-            _ => match &session.chat_default_model {
-                Ok(Some(default)) => Some(
-                    self.named_model(&session, &default.label())
-                        .await
-                        .map_err(|why| {
-                            format!("This chat's default decision model is not usable: {why}")
-                        })?,
-                ),
-                Ok(None) => None,
-                Err(why) => {
-                    return Err(format!(
-                        "{why}, so this chat's default decision model is unknown. Name one in \
-                         `model`."
-                    ))
-                }
-            },
+        let model = self.model_to_ask(&session, params.model.as_deref()).await?;
+
+        // The escalation model is checked before the first model is asked
+        // anything: a model this chat may not use, or one that can read no
+        // chunk of the call, refuses the whole call with nothing sent.
+        let escalation = match escalation {
+            Some(ask) => Some(
+                self.check_escalation(&session, model.as_ref(), &ask, &questions, &chunks)
+                    .await?,
+            ),
+            None => None,
         };
+        let low_below = escalation
+            .as_ref()
+            .map_or(LOW_CONFIDENCE, |(_, ask)| ask.below);
 
         let started = Instant::now();
-        let run = self.service.decide_batch(
+        // The chunks the escalation may ask again, each at its place in the call.
+        let chunk_texts: std::collections::HashMap<String, (usize, DecisionChunk)> =
+            match &escalation {
+                Some(_) => chunks
+                    .iter()
+                    .map(|(place, chunk)| (chunk.id.clone(), (*place, chunk.clone())))
+                    .collect(),
+                None => std::collections::HashMap::new(),
+            };
+        let run = self.service.decide_batch_at(
             Some(&session),
             model.as_ref(),
             &questions,
@@ -1228,29 +1932,42 @@ impl DecisionsClient {
             &batch_id,
         );
         let outcomes = tokio::select! {
-            _ = cancel.cancelled() => {
-                return Err(
-                    "The decide call was cancelled. Chunks already answered are in the \
-                     decision history."
-                        .to_string(),
-                );
-            }
+            _ = cancel.cancelled() => return Err(CANCELLED.to_string()),
             result = run => result.map_err(|e| e.to_string())?,
         };
-        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let mut summary = summarize(&questions, &outcomes, &batch_id, elapsed_ms);
-        if summary.model.is_none() {
-            // Nothing was decided, so no answer names the model: name the one
-            // the batch was sized for, as the service chose it.
-            if let Some(entry) = self
-                .service
-                .model_entry_for(Some(&session), model.as_ref())
-                .await
-            {
-                summary.model = Some(entry.model_ref());
-                summary.tier = Some(entry.tier);
+        let first_model = self
+            .first_model_of(&session, model.as_ref(), &outcomes)
+            .await;
+        let (outcomes, escalated) = match escalation {
+            Some((escalation_model, ask)) => {
+                let first_label = first_model
+                    .as_ref()
+                    .map(|(model, _)| model_label(model))
+                    .unwrap_or_else(|| "the first model".to_string());
+                let run = self
+                    .run_escalation(
+                        &session,
+                        escalation_model,
+                        ask.below,
+                        &questions,
+                        &outcomes,
+                        &chunk_texts,
+                        &batch_id,
+                        cancel,
+                    )
+                    .await?;
+                let (merged, summary) = merge_escalation(&questions, outcomes, &first_label, run);
+                (merged, Some(summary))
             }
+            None => (outcomes, None),
+        };
+        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let mut summary = summarize(&questions, &outcomes, &batch_id, elapsed_ms, low_below);
+        if let Some((first, tier)) = first_model {
+            summary.model = Some(first);
+            summary.tier = Some(tier);
         }
+        summary.escalation = escalated;
         let text = render_summary(&summary, &questions, &outcomes);
         Ok(CallToolResult {
             content: vec![Content::text(text)],
@@ -1259,6 +1976,153 @@ impl DecisionsClient {
             // the tool card reads an all-failed batch as an answer.
             is_error: Some(summary.decided == 0),
             meta: None,
+        })
+    }
+
+    /// `escalate`'s model, resolved and checked the way any decide model is
+    /// before anything is sent: named as `model` takes it (a model this chat
+    /// may not use is refused with its reason), then every check a decision
+    /// makes before it sends, the size check included, for every chunk of the
+    /// call. A refusal refuses the call before the first model is asked
+    /// anything. The size check refuses only a model that can read no chunk
+    /// of the call: one that can read some is used for those, and an unsure
+    /// chunk too large for it fails at its turn, where the first model's
+    /// answer stands and the result says so.
+    async fn check_escalation(
+        &self,
+        session: &DecisionSession,
+        first: Option<&DecisionModelRef>,
+        ask: &EscalationAsk,
+        questions: &IndexMap<String, Question>,
+        chunks: &CallChunks,
+    ) -> Result<(DecisionModelRef, EscalationAsk), String> {
+        let refused = |why: String| {
+            format!("Nothing was decided: `escalate` names a model this call cannot use. {why}")
+        };
+        let model = self
+            .named_model(session, &ask.model)
+            .await
+            .map_err(refused)?;
+        let first = match first {
+            Some(first) => Some(first.clone()),
+            None => self
+                .service
+                .model_entry_for(Some(session), None)
+                .await
+                .map(|entry| entry.model_ref()),
+        };
+        if first.as_ref() == Some(&model) {
+            return Err(format!(
+                "`escalate` names {}, the model that decides first. Name a different model in \
+                 `escalate`, or another first model in `model`.",
+                model_label(&model)
+            ));
+        }
+        let source = ModelSource::of(Some(session), Some(&model));
+        let every_chunk: Vec<&DecisionChunk> = chunks.iter().map(|(_, chunk)| chunk).collect();
+        let too_large = self
+            .service
+            .check_batch_fits(session, &model, questions, &every_chunk, source)
+            .await
+            .map_err(|error| refused(error.to_string()))?;
+        // While some chunk fits, the second model is asked about those; a chunk
+        // too large for it fails when it is asked, and its first answer stands.
+        let Some((_, first_refusal)) = too_large
+            .first()
+            .filter(|_| too_large.len() == every_chunk.len())
+        else {
+            return Ok((model, ask.clone()));
+        };
+        let others: Vec<String> = too_large.iter().skip(1).map(|(id, _)| id.clone()).collect();
+        let (listed, more) = capped(others, LISTED_ERROR_IDS);
+        let mut text = format!(
+            "Nothing was decided: `escalate`'s model {} cannot read any chunk of this call. \
+             {first_refusal}",
+            model_label(&model)
+        );
+        if !listed.is_empty() {
+            text.push_str(&format!(
+                " Too large for it as well: {}.",
+                ids_line(&listed, more)
+            ));
+        }
+        text.push_str(" Split the chunks, or name a model with a larger window in `escalate`.");
+        Err(text)
+    }
+
+    /// The escalation stage: each chunk whose top answer to a question is
+    /// less probable than `below` is asked those questions again of `model`,
+    /// one batch per set of questions, under the call's batch id, so the
+    /// decision history holds both stages, each row naming its model. A batch
+    /// the service refuses as a whole fails its chunks, whose first answers
+    /// then stand.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_escalation(
+        &self,
+        session: &DecisionSession,
+        model: DecisionModelRef,
+        below: f64,
+        questions: &IndexMap<String, Question>,
+        first: &[ChunkOutcome],
+        chunk_texts: &std::collections::HashMap<String, (usize, DecisionChunk)>,
+        batch_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<EscalationRun, String> {
+        let tier = self
+            .service
+            .model_entry_for(Some(session), Some(&model))
+            .await
+            .map(|entry| entry.tier);
+        let targets = escalation_targets(questions, first, below);
+        let mut answered: std::collections::HashMap<String, ChunkOutcome> =
+            std::collections::HashMap::new();
+        for (names, ids) in escalation_groups(&targets) {
+            let asked: IndexMap<String, Question> = names
+                .iter()
+                .filter_map(|name| Some((name.clone(), questions.get(name)?.clone())))
+                .collect();
+            let chunks: CallChunks = ids
+                .iter()
+                .filter_map(|id| chunk_texts.get(id).cloned())
+                .collect();
+            let run =
+                self.service
+                    .decide_batch_at(Some(session), Some(&model), &asked, chunks, batch_id);
+            let result = tokio::select! {
+                _ = cancel.cancelled() => return Err(CANCELLED.to_string()),
+                result = run => result,
+            };
+            match result {
+                Ok(outcomes) => {
+                    for outcome in outcomes {
+                        answered.insert(outcome.chunk_id.clone(), outcome);
+                    }
+                }
+                Err(error) => {
+                    for id in ids {
+                        answered.insert(
+                            id.clone(),
+                            ChunkOutcome {
+                                chunk_id: id,
+                                decisions: None,
+                                error: Some(error.to_string()),
+                                billed_usage: None,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        // In call order, as the first stage's outcomes are.
+        let outcomes = targets
+            .iter()
+            .filter_map(|(id, _)| answered.remove(id))
+            .collect();
+        Ok(EscalationRun {
+            model,
+            tier,
+            below,
+            outcomes,
         })
     }
 
@@ -1271,7 +2135,7 @@ impl DecisionsClient {
         session: &DecisionSession,
         wanted: &[String],
         questions: &IndexMap<String, Question>,
-        chunks: Vec<DecisionChunk>,
+        chunks: CallChunks,
         batch_id: &str,
         cancel: &CancellationToken,
     ) -> Result<CallToolResult, String> {
@@ -1286,7 +2150,7 @@ impl DecisionsClient {
             }
             models.push(model);
         }
-        let chunk_ids: Vec<String> = chunks.iter().map(|chunk| chunk.id.clone()).collect();
+        let chunk_ids: Vec<String> = chunks.iter().map(|(_, chunk)| chunk.id.clone()).collect();
         let started = Instant::now();
         let mut runs = Vec::with_capacity(models.len());
         for model in models {
@@ -1295,7 +2159,7 @@ impl DecisionsClient {
                 .model_entry_for(Some(session), Some(&model))
                 .await
                 .map(|entry| entry.tier);
-            let run = self.service.decide_batch(
+            let run = self.service.decide_batch_at(
                 Some(session),
                 Some(&model),
                 questions,
@@ -1303,13 +2167,7 @@ impl DecisionsClient {
                 batch_id,
             );
             let outcomes = tokio::select! {
-                _ = cancel.cancelled() => {
-                    return Err(
-                        "The decide call was cancelled. Chunks already answered are in the \
-                         decision history."
-                            .to_string(),
-                    );
-                }
+                _ = cancel.cancelled() => return Err(CANCELLED.to_string()),
                 result = run => result.map_err(|e| e.to_string()),
             };
             runs.push(vote::ModelRun {
@@ -1713,16 +2571,20 @@ pub(crate) mod test_support {
     use crate::privacy::ProviderTier;
 
     /// How the fake answers. Text that contains `FAIL` errors; otherwise a
-    /// state that contains `[state-p=0.95]` gets that P(yes) for every
-    /// question, a question whose instructions contain `[p=0.42]` gets P(yes) =
-    /// 0.42 (or that much on its first option), and every other question
-    /// `default_p`.
+    /// state that contains `[state-p=0.95]` (the model's `text_mark`) gets
+    /// that P(yes) for every question, a question whose instructions contain
+    /// `[p=0.42]` gets P(yes) = 0.42 (or that much on its first option), and
+    /// every other question `default_p`.
     #[derive(Clone)]
     pub(crate) struct FakeModel {
         pub(crate) entry: DecisionModelEntry,
         pub(crate) default_p: f64,
         pub(crate) calls: Arc<AtomicUsize>,
         pub(crate) fail_all: bool,
+        /// The mark this model reads its P(yes) for a chunk from, so two
+        /// models can answer the same chunk differently (`[esc-p=` for a
+        /// second model, beside the first's `[state-p=`).
+        pub(crate) text_mark: &'static str,
     }
 
     fn marked_p(text: &str, mark: &str) -> Option<f64> {
@@ -1767,7 +2629,7 @@ pub(crate) mod test_support {
                 });
             }
             let verbalized = matches!(self.entry.adapter, DecisionAdapter::Verbalized);
-            let state_p = marked_p(&request.context.render_text(), "[state-p=");
+            let state_p = marked_p(&request.context.render_text(), self.text_mark);
             let verdicts = request
                 .questions
                 .iter()
@@ -1871,6 +2733,7 @@ pub(crate) mod test_support {
             default_p,
             calls: Arc::new(AtomicUsize::new(0)),
             fail_all: false,
+            text_mark: "[state-p=",
         }
     }
 
@@ -2012,9 +2875,16 @@ mod tests {
             "pass_option yes",
             "lists under review",
             "the review list catches the rest",
+            "add escalate {\"model\": ",
+            "for escalate too",
         ] {
             assert!(DECIDE_DESCRIPTION.contains(needle), "missing {needle:?}");
         }
+        // The escalate bullet sits with the other rules, before the example.
+        assert!(
+            DECIDE_DESCRIPTION.find("add escalate") < DECIDE_DESCRIPTION.find("Example, 600"),
+            "{DECIDE_DESCRIPTION}"
+        );
         // The fixed 0.4 to 0.6 band is gone, and the description no longer
         // teaches a bare question at 0.9, which passed 1 of 5 true notes.
         assert!(!DECIDE_DESCRIPTION.contains("0.4 to 0.6"));
@@ -2214,6 +3084,9 @@ mod tests {
             elapsed_ms: 10,
             questions: Vec::new(),
             error_groups: Vec::new(),
+            low_confidence_below: LOW_CONFIDENCE,
+            low_confidence_ids: Vec::new(),
+            escalation: None,
         };
         let text = render_summary(&summary, &IndexMap::new(), &[]);
         assert!(text.contains(" with joey-1 (public)"), "{text}");
@@ -2269,10 +3142,21 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), 200, "one request per chunk");
 
         let body = text(&result);
-        assert!(
-            !body.contains("note-0100"),
-            "a big batch must not list every chunk: {body}"
+        // The one list that is never capped is the low-confidence ids, which
+        // an agent decides again by id (`only_ids`): here every chunk is
+        // unsure on edss_stated, so it names each once. Every other list is
+        // capped, so a chunk past the caps appears there and nowhere else.
+        let low = body
+            .lines()
+            .find(|line| line.starts_with("Low confidence"))
+            .unwrap_or_else(|| panic!("no low-confidence line: {body}"));
+        assert!(low.contains("196 of 196 chunks"), "{low}");
+        assert_eq!(
+            body.matches("note-0100").count(),
+            1,
+            "a big batch must not list every chunk outside the low-confidence ids: {body}"
         );
+        assert!(low.contains("note-0100"), "{low}");
         assert!(!body.contains("Per chunk"), "{body}");
         assert!(body.contains("196 decided, 4 failed"), "{body}");
         assert!(body.contains("has_ms"), "{body}");
@@ -3097,11 +3981,13 @@ mod tests {
         assert!(body.contains("no, confident 1 (under 0.10)"), "{body}");
     }
 
-    /// Each logged row's (model, chunk) and batch id.
+    /// Each logged row's (model, chunk) and batch id, and its (model, chunk
+    /// number) as the decision history numbers it.
     #[derive(Default)]
     struct Rows(
         std::sync::Mutex<Vec<(String, String)>>,
         std::sync::Mutex<Vec<String>>,
+        std::sync::Mutex<Vec<(String, Option<usize>)>>,
     );
 
     #[async_trait]
@@ -3110,10 +3996,15 @@ mod tests {
             &self,
             entry: crate::decision::service::DecisionLogEntry,
         ) -> anyhow::Result<()> {
-            self.0.lock().unwrap().push((
-                entry.model.map(|m| m.model).unwrap_or_default(),
-                entry.chunk_id.unwrap_or_default(),
-            ));
+            let model = entry.model.map(|m| m.model).unwrap_or_default();
+            self.2
+                .lock()
+                .unwrap()
+                .push((model.clone(), entry.chunk_index));
+            self.0
+                .lock()
+                .unwrap()
+                .push((model, entry.chunk_id.unwrap_or_default()));
             self.1
                 .lock()
                 .unwrap()
@@ -3274,5 +4165,677 @@ mod tests {
         let low = Threshold::Below(Box::new(Threshold::AtLeastLevel { level: 2, p: 0.6 }));
         assert_eq!(pass_on(Some(&low)).as_deref(), Some("level >= 2"));
         assert_eq!(threshold_p(Some(&low)), Some(0.6));
+    }
+
+    /// The first model, `tev1`, reads a chunk's P(yes) from `[state-p=…]`; the
+    /// second, `clef`, from `[esc-p=…]`, so each answers a chunk its own way.
+    fn first_and_second(
+        second_tier: ProviderTier,
+        second_window: usize,
+    ) -> (test_support::FakeModel, test_support::FakeModel) {
+        let first = model(
+            entry(
+                "tev1",
+                ProviderTier::Private,
+                true,
+                DecisionAdapter::SystemOne,
+            ),
+            0.5,
+        );
+        let mut second_entry = entry("clef", second_tier, true, DecisionAdapter::SystemOne);
+        second_entry.local = second_tier.is_private();
+        second_entry.affiliation = second_entry
+            .local
+            .then_some(crate::privacy::affiliation::ModelAffiliation::Local);
+        second_entry.context_tokens = second_window;
+        let mut second = model(second_entry, 0.5);
+        second.text_mark = "[esc-p=";
+        (first, second)
+    }
+
+    /// The chunks `(id, first P(yes), second P(yes))` as decide takes them.
+    fn marked_chunks(marks: &[(&str, f64, f64)]) -> Vec<serde_json::Value> {
+        marks
+            .iter()
+            .map(|(id, first, second)| {
+                json!({"id": id, "text": format!("note [state-p={first}] [esc-p={second}]")})
+            })
+            .collect()
+    }
+
+    /// The owner's QA ask: screen with tev1, send only the answers whose top
+    /// probability is under 0.8 to a second model, and report the final
+    /// labels. One call does it; both stages are in the decision history under
+    /// the call's batch id, each row naming its model.
+    #[tokio::test]
+    async fn escalate_asks_the_second_model_about_only_the_unsure_answers() {
+        let (first, second) = first_and_second(ProviderTier::Private, 4_096);
+        let (first_calls, second_calls) = (first.calls.clone(), second.calls.clone());
+        let rows = Arc::new(Rows::default());
+        let (client, session) = client_with(vec![], false).await;
+        let client = client.with_service(test_support::service_with_sink(
+            vec![first, second],
+            rows.clone(),
+        ));
+        let chunks = marked_chunks(&[
+            ("c0", 0.95, 0.10), // confident yes: kept
+            ("c1", 0.60, 0.10), // unsure yes: clef says no
+            ("c2", 0.30, 0.20), // unsure no: clef agrees, now confident
+            ("c3", 0.05, 0.90), // confident no: kept
+            ("c4", 0.55, 0.50), // unsure yes: clef is unsure too
+        ]);
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"has_ms": {"instructions": "MS?", "threshold": 0.5}},
+                   "chunks": chunks, "model": "tev1",
+                   "escalate": {"below": 0.8, "model": "clef"}}),
+            enforced(),
+        )
+        .await;
+        let body = text(&result);
+        assert_eq!(result.is_error, Some(false), "{body}");
+        assert_eq!(first_calls.load(Ordering::SeqCst), 5, "every chunk first");
+        assert_eq!(second_calls.load(Ordering::SeqCst), 3, "only the unsure");
+
+        let summary: DecideSummary =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(summary.model.as_ref().unwrap().model, "tev1");
+        let escalation = summary.escalation.as_ref().unwrap();
+        assert_eq!(escalation.label, "clef");
+        assert_eq!(escalation.first_label, "tev1");
+        assert_eq!(
+            (
+                escalation.first_decided,
+                escalation.escalated,
+                escalation.answers,
+                escalation.decided,
+                escalation.changed,
+                escalation.errors
+            ),
+            (5, 3, 3, 3, 1, 0)
+        );
+        let ids: Vec<&str> = escalation
+            .items
+            .iter()
+            .map(|i| i.chunk_id.as_str())
+            .collect();
+        assert_eq!(ids, ["c1", "c2", "c4"]);
+        let c1 = &escalation.items[0].answers[0];
+        assert_eq!(
+            (c1.label.as_str(), c1.by.as_str(), c1.first_label.as_str()),
+            ("no", "clef", "yes")
+        );
+        assert!((c1.p - 0.9).abs() < 1e-9 && (c1.first_p - 0.6).abs() < 1e-9);
+        // The final answers are clef's where escalated and tev1's elsewhere:
+        // c0 (tev1, 0.95) and c4 (clef, 0.50) pass.
+        assert_eq!(summary.questions[0].passed, Some(2));
+        assert_eq!(summary.questions[0].passing_ids, ["c0", "c4"]);
+        assert_eq!(
+            summary.low_confidence_ids,
+            ["c4"],
+            "still unsure after both"
+        );
+
+        assert!(
+            body.contains(
+                "Escalation: 5 decided by tev1, 3 escalated to clef (private), where a top \
+                 answer was under 0.80. clef gave 3 of them, 1 different from tev1's."
+            ),
+            "{body}"
+        );
+        assert!(
+            body.contains(
+                "- c1: has_ms P(yes) 0.10 below threshold (escalated; tev1 said yes, P 0.60)"
+            ),
+            "{body}"
+        );
+        assert!(body.contains("- c0: has_ms P(yes) 0.95 pass\n"), "{body}");
+        assert!(
+            body.contains("Still low confidence after escalation (a top answer under 0.80), 1 of 5 chunks: c4."),
+            "{body}"
+        );
+
+        let logged = rows.0.lock().unwrap().clone();
+        let by = |m: &str| logged.iter().filter(|(model, _)| model == m).count();
+        assert_eq!(
+            (by("tev1"), by("clef")),
+            (5, 3),
+            "both stages, each by its model"
+        );
+        assert!(
+            rows.1
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|b| *b == summary.batch_id),
+            "every row under the call's one batch id"
+        );
+        // The history numbers a chunk by its place in the call, so the second
+        // model's rows name c1, c2 and c4 as Chunk 2, 3 and 5, never as the
+        // first three chunks of a smaller batch.
+        let mut numbered = rows.2.lock().unwrap().clone();
+        numbered.sort();
+        let places = |m: &str| -> Vec<Option<usize>> {
+            numbered
+                .iter()
+                .filter(|(model, _)| model == m)
+                .map(|(_, place)| *place)
+                .collect()
+        };
+        assert_eq!(places("tev1"), [0, 1, 2, 3, 4].map(Some));
+        assert_eq!(places("clef"), [1, 2, 4].map(Some));
+    }
+
+    #[tokio::test]
+    async fn escalate_asks_nothing_when_every_answer_is_confident() {
+        let (first, second) = first_and_second(ProviderTier::Private, 4_096);
+        let second_calls = second.calls.clone();
+        let (client, session) = client_with(vec![first, second], false).await;
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"q": {"instructions": "yes?"}},
+                   "chunks": marked_chunks(&[("a", 0.95, 0.1), ("b", 0.02, 0.9)]),
+                   "model": "tev1", "escalate": {"model": "clef"}}),
+            enforced(),
+        )
+        .await;
+        let body = text(&result);
+        assert_eq!(result.is_error, Some(false), "{body}");
+        assert_eq!(second_calls.load(Ordering::SeqCst), 0);
+        let summary: DecideSummary =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        let escalation = summary.escalation.unwrap();
+        assert_eq!(
+            (escalation.escalated, escalation.below),
+            (0, LOW_CONFIDENCE)
+        );
+        assert!(escalation.items.is_empty());
+        assert!(summary.low_confidence_ids.is_empty());
+        assert!(
+            body.contains("2 decided by tev1, 0 escalated to clef")
+                && body.contains("No answer was under 0.80, so clef was asked nothing.")
+                && body.contains("After escalation no top answer is under 0.80."),
+            "{body}"
+        );
+    }
+
+    /// Every chunk unsure, a big batch (no line per chunk), and a question
+    /// asked again only where it was unsure: the escalated lines list the
+    /// final answer beside the first, capped.
+    #[tokio::test]
+    async fn escalate_can_ask_again_about_every_chunk() {
+        let (first, second) = first_and_second(ProviderTier::Private, 4_096);
+        let (first_calls, second_calls) = (first.calls.clone(), second.calls.clone());
+        let (client, session) = client_with(vec![first, second], false).await;
+        let marks: Vec<(String, f64, f64)> =
+            (0..50).map(|i| (format!("n{i:02}"), 0.6, 0.95)).collect();
+        let marks: Vec<(&str, f64, f64)> = marks
+            .iter()
+            .map(|(id, a, b)| (id.as_str(), *a, *b))
+            .collect();
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"q": {"instructions": "yes?", "threshold": 0.5},
+                                 "also": {"instructions": "and this?"}},
+                   "chunks": marked_chunks(&marks),
+                   "model": "tev1", "escalate": {"below": 0.9, "model": "clef"}}),
+            enforced(),
+        )
+        .await;
+        let body = text(&result);
+        assert_eq!(result.is_error, Some(false), "{body}");
+        assert_eq!(first_calls.load(Ordering::SeqCst), 50);
+        assert_eq!(second_calls.load(Ordering::SeqCst), 50);
+        let summary: DecideSummary =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        let escalation = summary.escalation.as_ref().unwrap();
+        assert_eq!((escalation.escalated, escalation.answers), (50, 100));
+        assert_eq!(escalation.changed, 0, "yes stays yes");
+        assert!(summary.low_confidence_ids.is_empty(), "{body}");
+        assert_eq!(summary.questions[0].groups.unwrap().yes_confident, 50);
+        assert!(
+            body.contains("50 escalated to clef (private) (100 answers)"),
+            "{body}"
+        );
+        assert!(
+            body.contains("- n00: q yes P 0.95, was yes P 0.60; also yes P 0.95, was yes P 0.60"),
+            "{body}"
+        );
+        let names: Vec<String> = (20..50).map(|i| format!("n{i:02}")).collect();
+        assert!(
+            body.contains(&format!(
+                "(and 30 more escalated chunks, their final answers in the lists above. Answered \
+                 by clef: {}.)",
+                names.join(", ")
+            )),
+            "every escalated chunk is named, never capped: {body}"
+        );
+        assert!(!body.contains("Per chunk"), "{body}");
+    }
+
+    /// Gate H for the second model: a private chat refuses a public
+    /// escalation model before the first model is asked anything.
+    #[tokio::test]
+    async fn an_escalation_model_the_chat_may_not_use_refuses_the_call_before_anything_is_sent() {
+        let (first, second) = first_and_second(ProviderTier::Public, 4_096);
+        let (first_calls, second_calls) = (first.calls.clone(), second.calls.clone());
+        let (client, session) = client_with(vec![first, second], true).await;
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"q": {"instructions": "yes?"}},
+                   "chunks": marked_chunks(&[("a", 0.6, 0.9)]),
+                   "model": "tev1", "escalate": {"model": "clef"}}),
+            enforced(),
+        )
+        .await;
+        let body = text(&result);
+        assert_eq!(result.is_error, Some(true), "{body}");
+        assert!(
+            body.contains("Nothing was decided: `escalate` names a model this call cannot use."),
+            "{body}"
+        );
+        assert!(body.contains("private"), "{body}");
+        assert_eq!(first_calls.load(Ordering::SeqCst), 0, "stage 1 never ran");
+        assert_eq!(second_calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// A second model that can read no chunk of the call is refused before
+    /// the first model is asked anything: it could never answer.
+    #[tokio::test]
+    async fn an_escalation_model_too_small_for_every_chunk_refuses_the_call_before_anything_is_sent(
+    ) {
+        let (first, second) = first_and_second(ProviderTier::Private, 512);
+        let (first_calls, second_calls) = (first.calls.clone(), second.calls.clone());
+        let (client, session) = client_with(vec![first, second], false).await;
+        let chunks = json!([
+            {"id": "long-1", "text": "word ".repeat(700)},
+            {"id": "long-2", "text": "word ".repeat(800)},
+        ]);
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"q": {"instructions": "yes?"}}, "chunks": chunks,
+                   "model": "tev1", "escalate": {"model": "clef"}}),
+            enforced(),
+        )
+        .await;
+        let body = text(&result);
+        assert_eq!(result.is_error, Some(true), "{body}");
+        assert!(
+            body.contains("`escalate`'s model clef cannot read any chunk of this call.")
+                && body.contains("Chunk `long-1` is about")
+                && body.contains("Too large for it as well: long-2.")
+                && body.contains("larger window"),
+            "{body}"
+        );
+        assert_eq!(first_calls.load(Ordering::SeqCst), 0, "stage 1 never ran");
+        assert_eq!(second_calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// A second model that can read some chunks of the call is used for
+    /// those. An unsure chunk too large for it is never sent to it: the
+    /// first model's answer stands, and the result says so and why.
+    #[tokio::test]
+    async fn an_escalation_model_too_small_for_some_chunks_keeps_their_first_answers() {
+        let (first, second) = first_and_second(ProviderTier::Private, 512);
+        let (first_calls, second_calls) = (first.calls.clone(), second.calls.clone());
+        let (client, session) = client_with(vec![first, second], false).await;
+        let chunks = json!([
+            {"id": "short", "text": "note [state-p=0.6] [esc-p=0.9]"},
+            {"id": "long-1", "text": "word ".repeat(700)},
+            {"id": "long-2", "text": "word ".repeat(800)},
+        ]);
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"q": {"instructions": "yes?"}}, "chunks": chunks,
+                   "model": "tev1", "escalate": {"model": "clef"}}),
+            enforced(),
+        )
+        .await;
+        let body = text(&result);
+        assert_eq!(result.is_error, Some(false), "{body}");
+        assert_eq!(first_calls.load(Ordering::SeqCst), 3, "{body}");
+        assert_eq!(
+            second_calls.load(Ordering::SeqCst),
+            1,
+            "only the chunk that fits reaches the second model: {body}"
+        );
+        let summary: DecideSummary =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        let escalation = summary.escalation.as_ref().unwrap();
+        assert_eq!(
+            (escalation.escalated, escalation.decided, escalation.errors),
+            (3, 1, 2)
+        );
+        let short = &escalation.items[0];
+        assert_eq!(short.chunk_id, "short");
+        assert_eq!(
+            (
+                short.answers[0].by.as_str(),
+                short.answers[0].error.is_none()
+            ),
+            ("clef", true)
+        );
+        for item in &escalation.items[1..] {
+            let answer = &item.answers[0];
+            assert_eq!(
+                answer.by, "tev1",
+                "the first answer stands for {}",
+                item.chunk_id
+            );
+            assert!(answer.error.is_some());
+        }
+        assert_eq!(escalation.error_groups[0].chunk_ids, ["long-1", "long-2"]);
+        assert_eq!(summary.low_confidence_ids, ["long-1", "long-2"]);
+        assert!(
+            body.contains("2 escalated answers failed, so tev1's answer stands for them.")
+                && body.contains(
+                    "Escalation failed (2 chunks): long-1, long-2: Chunk `long-1` is about"
+                ),
+            "{body}"
+        );
+    }
+
+    /// A second model that fails leaves the first answer standing, says so,
+    /// and keeps the chunk on the low-confidence list.
+    #[tokio::test]
+    async fn a_failed_escalation_keeps_the_first_answer() {
+        let (first, mut second) = first_and_second(ProviderTier::Private, 4_096);
+        second.fail_all = true;
+        let (client, session) = client_with(vec![first, second], false).await;
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"q": {"instructions": "yes?"}},
+                   "chunks": marked_chunks(&[("a", 0.6, 0.9), ("b", 0.95, 0.9)]),
+                   "model": "tev1", "escalate": {"model": "clef"}}),
+            enforced(),
+        )
+        .await;
+        let body = text(&result);
+        assert_eq!(result.is_error, Some(false), "{body}");
+        let summary: DecideSummary =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        let escalation = summary.escalation.as_ref().unwrap();
+        assert_eq!(
+            (escalation.escalated, escalation.decided, escalation.errors),
+            (1, 0, 1)
+        );
+        let answer = &escalation.items[0].answers[0];
+        assert_eq!((answer.label.as_str(), answer.by.as_str()), ("yes", "tev1"));
+        assert!(answer.error.is_some());
+        assert_eq!(escalation.error_groups[0].chunk_ids, ["a"]);
+        assert_eq!(summary.low_confidence_ids, ["a"]);
+        assert!(
+            body.contains("1 escalated answer failed, so tev1's answer stands for it.")
+                && body.contains("Escalation failed (1 chunk): a: the decision server failed")
+                && body.contains(
+                    "- a: q P(yes) 0.60 review (escalation failed; tev1's answer stands)"
+                ),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn escalate_is_refused_with_a_vote_its_own_first_model_or_a_bad_bound() {
+        let (first, second) = first_and_second(ProviderTier::Private, 4_096);
+        let first_calls = first.calls.clone();
+        let (client, session) = client_with(vec![first, second], false).await;
+        let ask = |extra: serde_json::Value| {
+            let mut args = json!({"questions": {"q": {"instructions": "yes?"}},
+                                  "chunks": [{"id": "a", "text": "a note"}]});
+            for (key, value) in extra.as_object().unwrap() {
+                args[key] = value.clone();
+            }
+            args
+        };
+        for (extra, expected) in [
+            (
+                json!({"models": ["tev1", "clef"], "escalate": {"model": "clef"}}),
+                "does not go with a vote",
+            ),
+            (
+                json!({"model": "tev1", "escalate": {"model": "tev1"}}),
+                "the model that decides first",
+            ),
+            (
+                json!({"escalate": {"model": "tev1"}}),
+                "the model that decides first",
+            ),
+            (
+                json!({"escalate": {"model": "clef", "below": 0}}),
+                "above 0 and at most 1",
+            ),
+            (
+                json!({"escalate": {"model": "clef", "below": 1.5}}),
+                "above 0 and at most 1",
+            ),
+            (json!({"escalate": {"model": " "}}), "needs `model`"),
+            (
+                json!({"escalate": {"model": "gpt-giant"}}),
+                "not a decision model this computer offers",
+            ),
+        ] {
+            let result = call(&client, &session, "decide", ask(extra), enforced()).await;
+            assert_eq!(result.is_error, Some(true));
+            assert!(
+                text(&result).contains(expected),
+                "{expected}: {}",
+                text(&result)
+            );
+        }
+        assert_eq!(first_calls.load(Ordering::SeqCst), 0, "nothing was sent");
+    }
+
+    /// Without `escalate`, the result lists every chunk with a top answer
+    /// under 0.8, uncapped, and `only_ids` decides exactly those again.
+    #[tokio::test]
+    async fn the_low_confidence_ids_are_all_listed_and_only_ids_decides_exactly_those() {
+        let (first, second) = first_and_second(ProviderTier::Private, 4_096);
+        let second_calls = second.calls.clone();
+        let (client, session) = client_with(vec![first, second], false).await;
+        // 60 chunks (past the per-chunk lines and the 40-id caps), every
+        // third one unsure.
+        let marks: Vec<(String, f64, f64)> = (0..60)
+            .map(|i| {
+                (
+                    format!("n{i:02}"),
+                    if i % 3 == 0 { 0.55 } else { 0.97 },
+                    0.9,
+                )
+            })
+            .collect();
+        let marks: Vec<(&str, f64, f64)> = marks
+            .iter()
+            .map(|(id, a, b)| (id.as_str(), *a, *b))
+            .collect();
+        let chunks = marked_chunks(&marks);
+        let question = json!({"q": {"instructions": "yes?", "threshold": 0.5}});
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": question, "chunks": chunks, "model": "tev1"}),
+            enforced(),
+        )
+        .await;
+        let body = text(&result);
+        let summary: DecideSummary =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        let expected: Vec<String> = (0..60).step_by(3).map(|i| format!("n{i:02}")).collect();
+        assert_eq!(summary.low_confidence_ids, expected);
+        assert_eq!(summary.low_confidence_below, LOW_CONFIDENCE);
+        assert!(summary.escalation.is_none());
+        assert!(
+            body.contains(&format!(
+                "Low confidence (a top answer under 0.80), 20 of 60 chunks: {}. To ask another \
+                 model about exactly these, repeat this call with `only_ids`",
+                expected.join(", ")
+            )),
+            "{body}"
+        );
+
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": question, "chunks": chunks, "model": "clef",
+                   "only_ids": expected}),
+            enforced(),
+        )
+        .await;
+        let body = text(&result);
+        assert_eq!(result.is_error, Some(false), "{body}");
+        assert_eq!(second_calls.load(Ordering::SeqCst), 20, "exactly those");
+        let summary: DecideSummary =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(summary.chunks, 20);
+        assert!(summary.low_confidence_ids.is_empty(), "{body}");
+
+        for (only, expected) in [
+            (
+                json!(["n00", "nope"]),
+                "`nope`, which is not the id of a chunk",
+            ),
+            (json!(["n00", "n00"]), "names `n00` twice"),
+        ] {
+            let result = call(
+                &client,
+                &session,
+                "decide",
+                json!({"questions": question, "chunks": chunks, "only_ids": only}),
+                enforced(),
+            )
+            .await;
+            assert_eq!(result.is_error, Some(true));
+            assert!(text(&result).contains(expected), "{}", text(&result));
+        }
+    }
+
+    /// A batch too big for a line per chunk still gives each chunk's label of
+    /// a choice: its ids under each answer, in option order, capped.
+    #[tokio::test]
+    async fn a_big_choice_lists_its_chunks_under_each_answer() {
+        let local = model(
+            entry(
+                "tev1",
+                ProviderTier::Private,
+                true,
+                DecisionAdapter::SystemOne,
+            ),
+            0.5,
+        );
+        let (client, session) = client_with(vec![local], false).await;
+        let chunks: Vec<serde_json::Value> = (0..30)
+            .map(|i| {
+                // The fake puts P on the first option; under 1/3 the second
+                // option and the third share the rest, and the second wins
+                // the tie.
+                let p = if i < 10 { 0.9 } else { 0.1 };
+                json!({"id": format!("n{i:02}"), "text": format!("note [state-p={p}]")})
+            })
+            .collect();
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"course": {"instructions": "Which?", "type": "choice",
+                   "options": {"rrms": "Relapsing", "spms": "Secondary", "none": "Not stated"},
+                   "threshold": 0.5, "pass_option": "rrms"}},
+                   "chunks": chunks}),
+            enforced(),
+        )
+        .await;
+        let body = text(&result);
+        let summary: DecideSummary =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        let ids = summary.questions[0].answer_ids.as_ref().unwrap();
+        assert_eq!(ids.keys().collect::<Vec<_>>(), ["rrms", "spms", "none"]);
+        assert_eq!(ids["rrms"].len(), 10);
+        assert_eq!(ids["spms"].len(), 20);
+        assert!(ids["none"].is_empty());
+        assert!(body.contains("\n  rrms: n00, n01"), "{body}");
+        assert!(body.contains("\n  spms: n10, n11"), "{body}");
+        assert!(
+            !body.contains("\n  none:"),
+            "an empty answer is left out: {body}"
+        );
+    }
+
+    /// Models reach for `threshold`, the word the questions use; for
+    /// `escalate` it means `below`.
+    #[test]
+    fn escalate_reads_threshold_as_below_and_trims_its_model() {
+        let params: DecideParams = serde_json::from_value(json!({
+            "questions": {"q": {"instructions": "yes?"}},
+            "chunks": [{"id": "a", "text": "x"}],
+            "escalate": {"model": " clef ", "threshold": 0.6},
+        }))
+        .unwrap();
+        assert_eq!(
+            escalation_ask(&params).unwrap(),
+            Some(EscalationAsk {
+                model: "clef".into(),
+                below: 0.6
+            })
+        );
+    }
+
+    /// The decide tool is offered in every chat, so what it costs the model to
+    /// read is held: its description and its input schema together.
+    #[test]
+    fn the_decide_tool_stays_short() {
+        let tools = DecisionsClient::get_tools();
+        let decide = tools.iter().find(|t| t.name == "decide").unwrap();
+        let description = decide.description.as_deref().unwrap_or_default();
+        let schema = serde_json::to_string(&decide.input_schema).unwrap();
+        // Measured 2026-11-12 with `escalate` and `only_ids`: 2,775 and 4,330.
+        assert!(description.len() <= 2_800, "{}", description.len());
+        assert!(schema.len() <= 4_400, "{}", schema.len());
+    }
+
+    #[test]
+    fn only_ids_left_out_keeps_every_chunk() {
+        let chunks = vec![
+            DecisionChunk {
+                id: "a".into(),
+                context: DecisionContext::Text("x".into()),
+            },
+            DecisionChunk {
+                id: "b".into(),
+                context: DecisionContext::Text("y".into()),
+            },
+        ];
+        let all = only_chunks(chunks.clone(), None).unwrap();
+        assert_eq!(
+            all.iter()
+                .map(|(place, c)| (*place, c.id.as_str()))
+                .collect::<Vec<_>>(),
+            [(0, "a"), (1, "b")]
+        );
+        // A chunk keeps its place in the call, so the history numbers it as
+        // the first pass did.
+        let kept = only_chunks(chunks.clone(), Some(&["b".to_string()])).unwrap();
+        assert_eq!(
+            kept.iter()
+                .map(|(place, c)| (*place, c.id.as_str()))
+                .collect::<Vec<_>>(),
+            [(1, "b")]
+        );
+        assert!(only_chunks(chunks, Some(&[]))
+            .unwrap_err()
+            .contains("names no chunk"));
     }
 }

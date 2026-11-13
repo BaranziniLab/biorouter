@@ -393,6 +393,182 @@ describe('counts that add up (R1-5, R3-F1)', () => {
   });
 });
 
+describe('a choice with a threshold', () => {
+  const COURSE_ARGS = {
+    questions: { course: ARGS.questions.course },
+    chunks: CHUNKS.slice(0, 30),
+  };
+  // The daemon sends the four groups for a choice with a threshold too; the card
+  // drew them as "10 yes · 20 no", answers a three-way choice never offered.
+  const course = {
+    ...SUMMARY.questions[2],
+    decided: 30,
+    passed: 10,
+    review: 5,
+    answerCounts: { rrms: 10, spms: 15, none: 5 },
+    groups: {
+      yesConfident: 8,
+      yesReview: 2,
+      noReview: 3,
+      noConfident: 17,
+      passFrom: 0.6,
+      confidentFrom: 0.8,
+      reviewFrom: 0.2,
+    },
+  };
+
+  it('lists each of its answers in option order, never yes and no', () => {
+    const summary = oneQuestion({ questions: [course] });
+    const { container } = show(true, COURSE_ARGS, summary);
+    // The closed row's meta gives a yes count for a yes or no question only.
+    expect(
+      decideCallMeta({ status: 'success', value: { content: [], structuredContent: summary } })
+    ).toBeNull();
+    expect(container).not.toHaveTextContent('10 yes');
+    openWell(container);
+    const lines = screen.getByTestId('decide-tool-questions');
+    expect(lines).toHaveTextContent(
+      'Which MS course is described?10 rrms · 15 spms · 5 none · 5 of them to review'
+    );
+    expect(lines).not.toHaveTextContent(/\d yes\b/);
+    expect(lines).not.toHaveTextContent(/\d no\b/);
+  });
+});
+
+describe('a call that escalated', () => {
+  const answer = (overrides: Record<string, unknown> = {}) => ({
+    question: 'has_ms',
+    label: 'no',
+    p: 0.9,
+    by: 'clef-flash:latest',
+    firstLabel: 'yes',
+    firstP: 0.6,
+    ...overrides,
+  });
+  // Every other chunk of the call, by the id the agent gave it.
+  const items = Array.from({ length: 12 }, (_, i) => ({
+    chunkId: `note-${i * 2}`,
+    answers: [
+      i === 1
+        ? answer({ label: 'yes', p: 0.6, by: 'tev1:0.8b', error: 'the decision server failed' })
+        : answer(),
+    ],
+  }));
+  const escalation = {
+    model: { provider: 'ollama_decision', model: 'clef-flash:latest' },
+    label: 'clef-flash:latest',
+    tier: 'private',
+    firstLabel: 'tev1:0.8b',
+    below: 0.8,
+    firstDecided: 30,
+    escalated: 12,
+    answers: 12,
+    decided: 11,
+    changed: 11,
+    errors: 1,
+    items,
+    errorGroups: [],
+  };
+  const summary = oneQuestion({
+    escalation,
+    lowConfidenceBelow: 0.8,
+    lowConfidenceIds: ['n01'],
+  });
+
+  it('says it in one line, with the chunks asked again behind the row and capped', () => {
+    const { container } = show(true, ONE_ARGS, summary);
+    // Closed: the meta adds only the count, and no chunk shows.
+    expect(container).toHaveTextContent(
+      'Checked 30 chunks against 1 question · 10 yes, 12 escalated'
+    );
+    expect(container).not.toHaveTextContent('Chunk 1');
+    const well = openWell(container);
+    const line = screen.getByTestId('decide-tool-escalation');
+    expect(screen.getByTestId('decide-tool-escalation-text')).toHaveTextContent(
+      /^12 of 30 escalated to clef-flash:latest · 1 failed$/
+    );
+    expect(within(line).getByRole('img', { name: DECIDE_TOOL_COPY.privateModel })).toBeTruthy();
+    // The bound and what became of the failures sit in the line's InfoTip.
+    expect(
+      within(line).getByRole('button', { name: `About ${DECIDE_TOOL_COPY.escalation}` })
+    ).toBeInTheDocument();
+    expect(line).toHaveTextContent(
+      'Answers with a top probability under 0.80 were asked again of clef-flash:latest, and ' +
+        "its answers are final. Where it gave no answer, tev1:0.8b's answer stands."
+    );
+    const listed = screen.getByTestId('decide-tool-escalated');
+    expect(listed.querySelectorAll('li')).toHaveLength(10);
+    // Each chunk by its number in the call, as the decision history names it, never
+    // by the id the agent gave it.
+    expect(listed.querySelector('li')).toHaveTextContent(
+      'Chunk 1no 0.90, was yes 0.60 by tev1:0.8b'
+    );
+    expect(listed.querySelectorAll('li')[1]).toHaveTextContent(
+      'Chunk 3yes by tev1:0.8b: the second model gave no answer'
+    );
+    expect(listed).not.toHaveTextContent('note-');
+    expect(screen.getByTestId('decide-tool-escalated-more')).toHaveTextContent(
+      '2 more chunks in the decision history'
+    );
+    // The single question needs no name beside each answer; the text never shows.
+    expect(listed).not.toHaveTextContent('multiple sclerosis');
+    expect(well).not.toHaveTextContent('PHI-');
+    expect(well).not.toHaveTextContent('Chunk 21');
+  });
+
+  it('says what the second model changed when nothing failed', () => {
+    const clean = {
+      ...summary,
+      escalation: {
+        ...escalation,
+        errors: 0,
+        decided: 12,
+        changed: 3,
+        items: items.map((item) => ({ ...item, answers: [answer()] })),
+      },
+    };
+    const { container } = show(true, ONE_ARGS, clean);
+    openWell(container);
+    expect(screen.getByTestId('decide-tool-escalation-text')).toHaveTextContent(
+      /^12 of 30 escalated to clef-flash:latest$/
+    );
+    expect(screen.getByTestId('decide-tool-escalation')).toHaveTextContent(
+      'and its answers are final. It changed 3 of 12.'
+    );
+  });
+
+  it('names the question beside each answer when several were asked again', () => {
+    const several = {
+      ...summary,
+      escalation: {
+        ...escalation,
+        items: [
+          {
+            chunkId: 'note-4',
+            answers: [
+              answer(),
+              answer({ question: 'edss_stated', label: 'yes', firstLabel: 'no' }),
+            ],
+          },
+        ],
+      },
+    };
+    const { container } = show(true, ARGS, several);
+    openWell(container);
+    expect(screen.getByTestId('decide-tool-escalated')).toHaveTextContent(
+      'Chunk 5Does this note state the patient has multiple sclerosis?: no 0.90, was yes 0.60 ' +
+        'by tev1:0.8b; Is an EDSS score stated?: yes 0.90, was no 0.60 by tev1:0.8b'
+    );
+  });
+
+  it('draws no escalation for a call that did not escalate', () => {
+    const { container } = show(true, ONE_ARGS, oneQuestion());
+    openWell(container);
+    expect(screen.queryByTestId('decide-tool-escalation')).toBeNull();
+    expect(screen.queryByTestId('decide-tool-escalated')).toBeNull();
+  });
+});
+
 describe('opening the decide row at the end of the conversation (G-7)', () => {
   it('scrolls the open card into view once the panel has opened', async () => {
     const scrollIntoView = vi.fn();

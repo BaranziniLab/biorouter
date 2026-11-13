@@ -947,8 +947,15 @@ impl DecisionService {
         chunks: Vec<DecisionChunk>,
     ) -> DecisionResult<Vec<ChunkOutcome>> {
         let batch_id = uuid::Uuid::now_v7().to_string();
-        self.decide_batch_from(session, Some(model), source, questions, chunks, &batch_id)
-            .await
+        self.decide_batch_from(
+            session,
+            Some(model),
+            source,
+            questions,
+            numbered(chunks),
+            &batch_id,
+        )
+        .await
     }
 
     /// [`Self::decide_many`] with the caller's own batch id, so the caller can
@@ -962,6 +969,24 @@ impl DecisionService {
         chunks: Vec<DecisionChunk>,
         batch_id: &str,
     ) -> DecisionResult<Vec<ChunkOutcome>> {
+        self.decide_batch_at(session, model, questions, numbered(chunks), batch_id)
+            .await
+    }
+
+    /// [`Self::decide_batch`] over some of a larger call's chunks, each with
+    /// its place in that call (from 0), which the decision history numbers it
+    /// by ("Chunk 4"). A second pass over part of a call (the `decide` tool's
+    /// `only_ids`, and its `escalate`, which asks a second model about the
+    /// chunks the first was unsure of) then names each chunk by the number its
+    /// first pass gave it, rather than by its place among the few asked again.
+    pub async fn decide_batch_at(
+        &self,
+        session: Option<&DecisionSession>,
+        model: Option<&DecisionModelRef>,
+        questions: &IndexMap<String, Question>,
+        chunks: Vec<(usize, DecisionChunk)>,
+        batch_id: &str,
+    ) -> DecisionResult<Vec<ChunkOutcome>> {
         let source = ModelSource::of(session, model);
         self.decide_batch_from(session, model, source, questions, chunks, batch_id)
             .await
@@ -973,7 +998,7 @@ impl DecisionService {
         model: Option<&DecisionModelRef>,
         source: ModelSource,
         questions: &IndexMap<String, Question>,
-        chunks: Vec<DecisionChunk>,
+        chunks: Vec<(usize, DecisionChunk)>,
         batch_id: &str,
     ) -> DecisionResult<Vec<ChunkOutcome>> {
         validate_questions(questions).map_err(DecisionError::Invalid)?;
@@ -984,7 +1009,7 @@ impl DecisionService {
             )));
         }
         let mut seen = HashSet::new();
-        for chunk in &chunks {
+        for (_, chunk) in &chunks {
             if chunk.id.trim().is_empty() || !seen.insert(chunk.id.as_str()) {
                 return Err(DecisionError::Invalid(format!(
                     "Every chunk needs its own non-empty id; `{}` is empty or repeated",
@@ -992,10 +1017,11 @@ impl DecisionService {
                 )));
             }
         }
+        let ids = || -> Vec<&str> { chunks.iter().map(|(_, chunk)| chunk.id.as_str()).collect() };
         let resolved = match self.resolve(session, model).await {
             Ok(resolved) => resolved,
             Err(error) => {
-                self.record_batch_failure(session, None, questions, &chunks, batch_id, &error)
+                self.record_batch_failure(session, None, questions, &ids(), batch_id, &error)
                     .await;
                 return Err(error);
             }
@@ -1014,7 +1040,7 @@ impl DecisionService {
                 session,
                 Some(resolved.as_ref()),
                 questions,
-                &chunks,
+                &ids(),
                 batch_id,
                 &error,
             )
@@ -1031,7 +1057,7 @@ impl DecisionService {
             batch_id,
             stopped: Mutex::new(Stopped::default()),
         };
-        let outcomes = futures::stream::iter(chunks.into_iter().enumerate())
+        let outcomes = futures::stream::iter(chunks)
             .map(|(index, chunk)| self.decide_chunk(&batch, index, chunk))
             .buffered(parallel)
             .collect::<Vec<_>>()
@@ -1319,7 +1345,8 @@ impl DecisionService {
         error: &DecisionError,
     ) {
         let batch_id = uuid::Uuid::now_v7().to_string();
-        self.record_batch_failure(Some(session), None, questions, chunks, &batch_id, error)
+        let ids: Vec<&str> = chunks.iter().map(|chunk| chunk.id.as_str()).collect();
+        self.record_batch_failure(Some(session), None, questions, &ids, &batch_id, error)
             .await;
     }
 
@@ -1752,18 +1779,18 @@ impl DecisionService {
         session: Option<&DecisionSession>,
         model: Option<&dyn DecisionModel>,
         questions: &IndexMap<String, Question>,
-        chunks: &[DecisionChunk],
+        chunk_ids: &[&str],
         batch_id: &str,
         error: &DecisionError,
     ) {
         let request = DecisionRequest {
             questions: questions.clone(),
-            context: DecisionContext::Text(unsent_batch_text(chunks)),
+            context: DecisionContext::Text(unsent_batch_text(chunk_ids)),
         };
         let attempt = Attempt {
             session,
             batch_id: Some(batch_id),
-            stopped_chunks: chunks.len(),
+            stopped_chunks: chunk_ids.len(),
             ..Attempt::default()
         };
         self.record_failure(
@@ -1912,6 +1939,27 @@ impl DecisionService {
         question_sets: &[&IndexMap<String, Question>],
         source: ModelSource,
     ) -> DecisionResult<Vec<DecisionResult<()>>> {
+        let model = self.checked_model(session, wanted, source).await?;
+        let caps = model.caps();
+        Ok(question_sets
+            .iter()
+            .map(|questions| {
+                self.check_kinds(model.as_ref(), &caps, questions)?;
+                check_fit(model.as_ref(), &caps, questions)
+            })
+            .collect())
+    }
+
+    /// The model `wanted` names for `session`, opened after every model-wide
+    /// check a decision makes before it sends: the chat's Crew grant, the
+    /// resolution, the chat's bound model, Gate H and affiliation with the
+    /// workspace's gate, and the server's own refusal to load the model.
+    async fn checked_model(
+        &self,
+        session: &DecisionSession,
+        wanted: Option<&DecisionModelRef>,
+        source: ModelSource,
+    ) -> DecisionResult<Arc<dyn DecisionModel>> {
         if let Some(reason) = self.session_refusal(session).await {
             return Err(DecisionError::Refused(reason));
         }
@@ -1928,14 +1976,41 @@ impl DecisionService {
         if let Some(refusal) = load_refusal {
             return Err(DecisionError::Unsupported(refusal));
         }
+        Ok(model)
+    }
+
+    /// Whether every chunk of a batch could be sent to the model `wanted`
+    /// names, asking `questions`, for `session`: every check
+    /// [`Self::check_model_use`] makes, then the size check that runs before
+    /// each chunk is sent, chunk by chunk. Nothing of the chat is sent. The
+    /// outer `Err` is the model's own refusal; the list holds each chunk the
+    /// size check refuses, with its refusal, in `chunks` order. For a caller
+    /// that sends to a second model only after a first one answered (the
+    /// `decide` tool's `escalate`), so a model that could never take the batch
+    /// is refused before the first model is asked anything.
+    pub async fn check_batch_fits(
+        &self,
+        session: &DecisionSession,
+        wanted: &DecisionModelRef,
+        questions: &IndexMap<String, Question>,
+        chunks: &[&DecisionChunk],
+        source: ModelSource,
+    ) -> DecisionResult<Vec<(String, DecisionError)>> {
+        let model = self.checked_model(session, Some(wanted), source).await?;
         let caps = model.caps();
-        Ok(question_sets
-            .iter()
-            .map(|questions| {
-                self.check_kinds(model.as_ref(), &caps, questions)?;
-                check_fit(model.as_ref(), &caps, questions)
-            })
-            .collect())
+        self.check_kinds(model.as_ref(), &caps, questions)?;
+        check_fit(model.as_ref(), &caps, questions)?;
+        let mut refused = Vec::new();
+        for chunk in chunks {
+            let request = DecisionRequest {
+                questions: questions.clone(),
+                context: chunk.context.clone(),
+            };
+            if let Err(error) = check_size(model.as_ref(), &caps, &request, Some(&chunk.id)).await {
+                refused.push((chunk.id.clone(), error));
+            }
+        }
+        Ok(refused)
     }
 
     /// Whether the chat `session` could run what saving `settings` over
@@ -2578,15 +2653,20 @@ const UNSENT_IDS_SHOWN: usize = 20;
 
 /// What a batch-failure row holds in place of a context: how many chunks, and
 /// which, since none was sent.
-fn unsent_batch_text(chunks: &[DecisionChunk]) -> String {
-    let ids: Vec<&str> = chunks.iter().map(|chunk| chunk.id.as_str()).collect();
+fn unsent_batch_text(ids: &[&str]) -> String {
     format!(
         "Not sent: the batch of {} chunk{} was stopped before any chunk reached a decision \
          model. Chunks: {}.",
-        chunks.len(),
-        if chunks.len() == 1 { "" } else { "s" },
-        shown_ids(&ids)
+        ids.len(),
+        if ids.len() == 1 { "" } else { "s" },
+        shown_ids(ids)
     )
+}
+
+/// Each chunk with its place in the list (from 0), for a batch that is a
+/// whole call.
+fn numbered(chunks: Vec<DecisionChunk>) -> Vec<(usize, DecisionChunk)> {
+    chunks.into_iter().enumerate().collect()
 }
 
 /// What the row for a batch stopped partway holds: how many of its chunks
