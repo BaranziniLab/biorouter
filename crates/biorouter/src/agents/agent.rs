@@ -31650,7 +31650,6 @@ mod mid_turn_compaction_tests {
     }
 }
 
-
 /// DR-33: the slot folds a chat's decision models into its tier, at the bind,
 /// at Gate B and after an admitted lowering, and nowhere else (design §2.2).
 #[cfg(test)]
