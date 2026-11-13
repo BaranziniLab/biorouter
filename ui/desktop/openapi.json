@@ -4036,6 +4036,16 @@
               }
             }
           },
+          "429": {
+            "description": "`crew_usage_limit_reached`: this month's usage limit is reached, so no task was started; `error` says where the limit is raised. A chat's Crew tools answer it too when the asking chat's own limit is reached. A retry of a request already admitted is answered with its task instead",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrewError"
+                }
+              }
+            }
+          },
           "503": {
             "description": "The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (the bridge was lost after the request was written; retry with `request_id`, its idempotency key) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)",
             "content": {
@@ -14304,6 +14314,7 @@
           "crew_grant_other_connection",
           "crew_grant_replaced",
           "crew_grant_ended",
+          "crew_usage_limit_reached",
           "crew_read_consent_required",
           "crew_not_found",
           "crew_profile_refused",

@@ -153,6 +153,7 @@ pub enum CrewErrorCode {
     CrewGrantOtherConnection,
     CrewGrantReplaced,
     CrewGrantEnded,
+    CrewUsageLimitReached,
     // A chat's consent to read a workspace as the person (AO-12).
     CrewReadConsentRequired,
     CrewNotFound,

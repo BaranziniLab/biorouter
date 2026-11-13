@@ -25,7 +25,8 @@ use super::setup::{hosting_line, hosts, CREW_TASK_MODEL, FULL_ACCESS_IS_YOU};
 use super::{idempotency_key, refusal_text, said, Card, Ctx, Progress};
 use crate::routes::crew::names::SelectorKind;
 use crate::routes::crew::{
-    cancel_owned_task, owned_run_views, start_owned_run, CrewRouteError, RunOrigin, StartRunRequest,
+    already_admitted, cancel_owned_task, owned_run_views, refuse_at_usage_limit, start_owned_run,
+    CrewRouteError, RunOrigin, StartRunRequest,
 };
 
 /// The providers that run coding agents through a tool bridge, which no Crew task can run
@@ -444,7 +445,6 @@ pub(super) fn tasks_ask(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
         if let Some(line) = crossing(ctx, &place, public_safe(&place, &channel.id)).await {
             card = card.line(line);
         }
-        ctx.approve(card).await?;
         let body = StartRunRequest {
             expected_mode: None,
             expected_policy_epoch: None,
@@ -457,6 +457,15 @@ pub(super) fn tasks_ask(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             context_channels: sources.iter().map(|source| source.id.clone()).collect(),
             posting_grant: true,
         };
+        // Refuse at limit only (owner, 2026-11-13): a chat at its usage limit, or the month at
+        // its, starts no task. Asked before the card, so nobody approves a task that cannot start,
+        // and never for a retry of a task already started, which gets that task back.
+        if !already_admitted(&place.connection.id, &body).await {
+            refuse_at_usage_limit(&ctx.state, Some(&ctx.call.session_id))
+                .await
+                .map_err(route_refusal)?;
+        }
+        ctx.approve(card).await?;
         let origin = RunOrigin {
             restricted,
             institution_ids,
@@ -519,6 +528,26 @@ pub(super) fn tasks_cancel(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// "Refuse at limit only" (owner, 2026-11-13): `tasks_ask` asks the usage limit for the
+    /// asking chat before its approval card, so a chat at its limit (or the month at its) starts
+    /// no task and nobody approves one that cannot start; the task's own spend is never charged
+    /// to the asking chat.
+    #[test]
+    fn tasks_ask_refuses_at_the_asking_chats_usage_limit_before_its_card() {
+        let source = include_str!("tasks.rs");
+        let ask = crate::routes::body_of(source, "pub(super) fn tasks_ask(");
+        let refusal = ask
+            .find("refuse_at_usage_limit(&ctx.state, Some(&ctx.call.session_id))")
+            .expect("tasks_ask asks the usage limit for the asking chat");
+        let card = ask.find("ctx.approve(card)").expect("tasks_ask has a card");
+        assert!(refusal < card, "the limit is asked before the card");
+        // A retry of a task already started is not refused: it gets that task back.
+        let replay = ask
+            .find("if !already_admitted(&place.connection.id, &body).await {")
+            .expect("tasks_ask asks the ledger first");
+        assert!(replay < refusal, "the ledger is asked before the limit");
+    }
 
     /// A start that is still going when the answer is due names the connection and channel the
     /// card named, as the finished start's `RunView` does, so the chat's row can open Crew there.
