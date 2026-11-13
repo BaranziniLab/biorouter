@@ -5,6 +5,7 @@ import {
   hasVisibleTurnErrorMessage,
   presentChatTurnError,
   presentStoredTurnError,
+  turnErrorNoticeMessage,
 } from './ChatTurnError';
 import type { Message } from '../../api';
 import type { ChatTurnErrorData } from '../../types/turnError';
@@ -375,6 +376,48 @@ describe('ChatTurnError', () => {
 
     expect(hasVisibleTurnErrorMessage(turnError, messages)).toBe(true);
     expect(hasVisibleTurnErrorMessage(error({ message: 'Failed to fetch' }), messages)).toBe(false);
+  });
+
+  // Live QA, 2026-11-11: a decision monitor's marker landed after the stored
+  // notice, and reading only the last row drew the one failure twice.
+  describe('the notice of the failed turn', () => {
+    const FAILURE =
+      'Server error: Provider content filter failed (content_filter_error). Retry the request or contact your provider administrator.';
+    const row = (
+      id: string,
+      role: 'user' | 'assistant',
+      text: string,
+      userVisible = true
+    ): Message =>
+      ({
+        id,
+        role,
+        created: 1,
+        content: [{ type: 'text', text }],
+        metadata: { userVisible, agentVisible: true },
+      }) as Message;
+    const notice = row('notice', 'assistant', `Ran into this error: ${FAILURE}\n\nPlease retry.`);
+
+    it('is found when rows landed after it in the same turn', () => {
+      const messages = [
+        row('prompt', 'user', 'list the claims'),
+        notice,
+        row('marker', 'assistant', 'Monitor checked 3 times, quiet'),
+        row('hint', 'user', 'model-only retry note', false),
+      ];
+      expect(turnErrorNoticeMessage(error({ message: FAILURE }), messages)).toBe(notice);
+      expect(hasVisibleTurnErrorMessage(error({ message: FAILURE }), messages)).toBe(true);
+    });
+
+    it('is not taken from an earlier turn', () => {
+      const messages = [
+        row('old-prompt', 'user', 'first try'),
+        notice,
+        row('prompt', 'user', 'second try'),
+        row('answer', 'assistant', 'Working on it.'),
+      ];
+      expect(turnErrorNoticeMessage(error({ message: FAILURE }), messages)).toBeNull();
+    });
   });
 
   // Vision V2-07: the daemon's stored notice ("Ran into this error: …", from

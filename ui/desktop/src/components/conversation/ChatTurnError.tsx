@@ -1,3 +1,4 @@
+import { createContext } from 'react';
 import { AlertTriangle, Info } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { Disclosure } from '../ui/disclosure';
@@ -8,6 +9,7 @@ import type { ChatTurnErrorData } from '../../types/turnError';
 import { isConnectionError } from '../../utils/conversionUtils';
 import { crewTurnRefusalOf } from '../crew/access/crewTurnRefusal';
 import { cn } from '../../utils';
+import { opensTurn } from '../../utils/failedTurn';
 import {
   REPETITION_STOP_FALLBACK,
   REPETITION_STOP_TITLE,
@@ -216,6 +218,10 @@ export function presentStoredTurnError(text: string): ChatTurnErrorPresentation 
     break;
   }
   if (!compact && errorText.includes('insufficient_quota')) title = 'Model quota exceeded';
+  // A content filter's block (`content_filter_blocked_message` in
+  // `providers/formats/openai.rs`) is stored as "Request failed: …"; the live
+  // row titles it by its kind, policy, and the stored row stands in for it.
+  if (!compact && / content filter blocked this /.test(errorText)) title = PROVIDER_TITLES.policy;
 
   const body = /\s*\bResponse:\s*/.exec(reason);
   if (body && body.index > 0) reason = reason.slice(0, body.index).trim();
@@ -224,17 +230,76 @@ export function presentStoredTurnError(text: string): ChatTurnErrorPresentation 
   return { title, message, details: body ? errorText : undefined };
 }
 
-export function hasVisibleTurnErrorMessage(error: ChatTurnErrorData, messages: Message[]): boolean {
+/**
+ * The transcript row that already shows this error: the daemon's stored notice
+ * ("Ran into this error: …"), anywhere in the turn that failed. Null when the
+ * transcript does not show it.
+ *
+ * The whole turn is searched, back to the user row that opened it, because
+ * rows can land after the notice: a decision monitor's marker did, and reading
+ * only the last row drew one content-filter failure twice, the stored row and
+ * then the live one (live QA, 2026-11-11).
+ */
+export function turnErrorNoticeMessage(
+  error: ChatTurnErrorData,
+  messages: Message[]
+): Message | null {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (message.role !== 'assistant' || message.metadata?.userVisible === false) continue;
-
-    return message.content.some(
-      (content) => content.type === 'text' && content.text.includes(error.message)
-    );
+    if (message.role === 'user') {
+      if (opensTurn(message)) return null;
+      continue;
+    }
+    if (message.metadata?.userVisible === false) continue;
+    if (
+      message.content.some(
+        (content) => content.type === 'text' && content.text.includes(error.message)
+      )
+    ) {
+      return message;
+    }
   }
 
-  return false;
+  return null;
+}
+
+export function hasVisibleTurnErrorMessage(error: ChatTurnErrorData, messages: Message[]): boolean {
+  return turnErrorNoticeMessage(error, messages) !== null;
+}
+
+/**
+ * Retry for the stored notice of the failure the chat is showing right now.
+ * When the transcript already shows the failure, the live row is not drawn, so
+ * its Retry rides on the stored row instead (BaseChat provides it, keyed by
+ * the notice's id). Null everywhere else: history, shared and read-only views
+ * draw the notice without a button.
+ */
+export const StoredTurnErrorRetryContext = createContext<{
+  messageId: string;
+  onRetry: () => void;
+} | null>(null);
+
+/** Whether the person may retry this failure from the chat. */
+export function canRetryTurnError(error: ChatTurnErrorData): boolean {
+  // A turn refused for its Crew access would be refused again: the way on is the chat's Crew bar.
+  return error.retryable && !crewTurnRefusalOf(error);
+}
+
+/**
+ * Where the chat draws its live turn error, so one failure draws once: as its
+ * own row at the end of the transcript (`row`), or, when a stored notice in
+ * the failed turn already shows it, not again, with the live row's Retry moved
+ * onto that notice (`retryOnNoticeId`, null when the failure is not one to
+ * retry).
+ */
+export function placeTurnError(
+  error: ChatTurnErrorData | null | undefined,
+  messages: Message[]
+): { row: ChatTurnErrorData | null; retryOnNoticeId: string | null } {
+  if (!error) return { row: null, retryOnNoticeId: null };
+  const notice = turnErrorNoticeMessage(error, messages);
+  if (!notice) return { row: error, retryOnNoticeId: null };
+  return { row: null, retryOnNoticeId: notice.id && canRetryTurnError(error) ? notice.id : null };
 }
 
 export function ChatTurnError({
@@ -259,8 +324,7 @@ export function ChatTurnError({
       </div>
     );
   }
-  // A turn refused for its Crew access would be refused again: the way on is the chat's Crew bar.
-  const canRetry = error.retryable && !!onRetry && !crewTurnRefusalOf(error);
+  const canRetry = !!onRetry && canRetryTurnError(error);
 
   // It sits a turn's width (24px) under the chat, as the agent's answer would
   // have.
