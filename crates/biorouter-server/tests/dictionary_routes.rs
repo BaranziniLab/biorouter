@@ -833,7 +833,10 @@ async fn suggestions_are_measured_by_the_persons_own_decisions() {
     .await;
     assert_eq!(quiet.status, StatusCode::OK, "{}", quiet.body);
     assert_eq!(quiet.body["suggestions"]["offer_turning_off"], false);
-    assert_eq!(quiet.body["suggestions"]["required_chats"], 4, "still held back");
+    assert_eq!(
+        quiet.body["suggestions"]["required_chats"], 4,
+        "still held back"
+    );
 
     let off = post(
         &app,
@@ -843,7 +846,10 @@ async fn suggestions_are_measured_by_the_persons_own_decisions() {
     )
     .await;
     assert_eq!(off.body["learn_from_chats"], false);
-    assert_eq!(off.body["suggestions"]["offer_turning_off"], false, "nothing to turn off");
+    assert_eq!(
+        off.body["suggestions"]["offer_turning_off"], false,
+        "nothing to turn off"
+    );
 }
 
 /// **Find words in my recent chats**: starting the scan needs the proof, is refused with
@@ -855,7 +861,13 @@ async fn the_scan_of_recent_chats_is_the_persons_to_start() {
     use biorouter::dictation::suggestion_scan::MSG_SCAN_OFF;
 
     let (_state, app) = daemon().await;
-    let refused = post(&app, "/dictionary/suggestions/scan", Caller::Proof, json!({})).await;
+    let refused = post(
+        &app,
+        "/dictionary/suggestions/scan",
+        Caller::Proof,
+        json!({}),
+    )
+    .await;
     assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
     assert_eq!(
         refused.body,
@@ -870,13 +882,22 @@ async fn the_scan_of_recent_chats_is_the_persons_to_start() {
     )
     .await;
     for caller in [Caller::SecretOnly, Caller::StatedPrivate] {
-        for uri in ["/dictionary/suggestions/scan", "/dictionary/suggestions/scan/stop"] {
+        for uri in [
+            "/dictionary/suggestions/scan",
+            "/dictionary/suggestions/scan/stop",
+        ] {
             let answer = post(&app, uri, caller, json!({})).await;
             assert_eq!(answer.status, StatusCode::FORBIDDEN, "{caller:?} {uri}");
             assert_eq!(answer.body["code"], "agent");
         }
     }
-    let started = post(&app, "/dictionary/suggestions/scan", Caller::Proof, json!({})).await;
+    let started = post(
+        &app,
+        "/dictionary/suggestions/scan",
+        Caller::Proof,
+        json!({}),
+    )
+    .await;
     assert_eq!(started.status, StatusCode::OK, "{}", started.body);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     let ended = loop {

@@ -33,7 +33,10 @@ async fn stored_chat(fx: &Fixture, kind: SessionType, name: &str, typed: &[&str]
             .await
             .unwrap();
         fx.sessions
-            .add_message(&chat.id, &Message::assistant().with_text("OMOPBOT24 is fine"))
+            .add_message(
+                &chat.id,
+                &Message::assistant().with_text("OMOPBOT24 is fine"),
+            )
             .await
             .unwrap();
     }
@@ -79,7 +82,13 @@ async fn a_scan_suggests_only_the_persons_words_from_public_chats() {
     let fx = Fixture::scratch();
     learn_from_chats(true);
 
-    let first = stored_chat(&fx, SessionType::User, "first", &["SCANTWO24 and SCANONE24"]).await;
+    let first = stored_chat(
+        &fx,
+        SessionType::User,
+        "first",
+        &["SCANTWO24 and SCANONE24"],
+    )
+    .await;
     let second = stored_chat(&fx, SessionType::User, "second", &["more SCANTWO24"]).await;
     for chat in [&first, &second] {
         let injected = Message::user()
@@ -91,7 +100,10 @@ async fn a_scan_suggests_only_the_persons_words_from_public_chats() {
             });
         fx.sessions.add_message(&chat.id, &injected).await.unwrap();
         fx.sessions
-            .add_message(&chat.id, &Message::user().with_text("SCANMDL24").agent_only())
+            .add_message(
+                &chat.id,
+                &Message::user().with_text("SCANMDL24").agent_only(),
+            )
             .await
             .unwrap();
     }
@@ -184,7 +196,10 @@ async fn a_scan_counts_each_chat_once_and_never_brings_back_a_dismissed_word() {
         })
         .unwrap();
     assert_eq!(run(&fx).await.unwrap().words_found, 0);
-    assert!(rows_named("DROP24").is_empty(), "a dismissed word came back");
+    assert!(
+        rows_named("DROP24").is_empty(),
+        "a dismissed word came back"
+    );
     let learning = open_store().view().unwrap().file().chat_learning.clone();
     assert_eq!((learning.kept, learning.dismissed), (0, 1));
     learn_from_chats(false);
@@ -215,7 +230,8 @@ async fn stopping_a_scan_keeps_what_it_found_so_far() {
     assert_eq!(progress.words_found, 1);
     assert_eq!(rows_named("STOPWD24")[0].seen_in.len(), 2);
     assert!(
-        seen.iter().any(|p| p.state == ScanState::Running && p.words_found == 1),
+        seen.iter()
+            .any(|p| p.state == ScanState::Running && p.words_found == 1),
         "the running count showed the word before the scan ended: {seen:?}"
     );
     learn_from_chats(false);
@@ -237,7 +253,13 @@ async fn a_scan_follows_the_persons_back_off() {
         .unwrap();
     learn_from_chats(true);
     assert!(
-        open_store().view().unwrap().file().chat_learning.required_chats() > 2,
+        open_store()
+            .view()
+            .unwrap()
+            .file()
+            .chat_learning
+            .required_chats()
+            > 2,
         "premise: most were dismissed"
     );
     for name in ["one", "two"] {

@@ -156,7 +156,10 @@ async fn a_private_chat_suggests_nothing() {
             .unwrap();
         say(&agent, chat, term, &local).await;
         settled().await;
-        assert!(rows_named(term).is_empty(), "a private chat suggested {term}");
+        assert!(
+            rows_named(term).is_empty(),
+            "a private chat suggested {term}"
+        );
     }
 
     let open = fx.chat(SessionType::User).await;

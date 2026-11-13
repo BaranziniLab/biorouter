@@ -289,7 +289,13 @@ async fn suggestions_on_serve_are_turned_on_at_the_terminal_and_scanned_from_the
             Ok(())
         })
         .unwrap();
-    let (status, body) = post(&app, "/dictionary/suggestions/scan", Caller::SecretOnly, json!({})).await;
+    let (status, body) = post(
+        &app,
+        "/dictionary/suggestions/scan",
+        Caller::SecretOnly,
+        json!({}),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK, "{body}");
     let (status, body) = post(
         &app,

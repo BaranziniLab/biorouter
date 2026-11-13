@@ -1612,9 +1612,7 @@ pub async fn dismiss_dictionary_suggestions(
     let dismissed = on_store(move |store| {
         store.write(|file| {
             let ids = request.listed_now(file);
-            Ok(file
-                .dismiss_suggestions(&ids, store::schema::now())
-                .len())
+            Ok(file.dismiss_suggestions(&ids, store::schema::now()).len())
         })
     })
     .await?;

@@ -450,15 +450,16 @@ mod tests {
     use crate::conversation::message::Message;
 
     fn chat(id: &str, texts: &[&str]) -> Session {
-        let mut session = Session::default();
-        session.id = id.to_string();
         let mut conversation = crate::conversation::Conversation::empty();
         for text in texts {
             conversation.push(Message::user().with_text(*text));
             conversation.push(Message::assistant().with_text("PHD2 OMOP fine"));
         }
-        session.conversation = Some(conversation);
-        session
+        Session {
+            id: id.to_string(),
+            conversation: Some(conversation),
+            ..Session::default()
+        }
     }
 
     #[test]
@@ -520,7 +521,10 @@ mod tests {
         let scoped = scan(&sessions, &stop, &mut |_| {}).await;
         crate::crew::remove_test_scope(&crew, &chats[0].id).await;
         let scoped = scoped.unwrap();
-        assert_eq!(scoped.words_found, 0, "a Crew scoped chat was read: {scoped:?}");
+        assert_eq!(
+            scoped.words_found, 0,
+            "a Crew scoped chat was read: {scoped:?}"
+        );
         let open = scan(&sessions, &stop, &mut |_| {}).await.unwrap();
         assert_eq!(open.words_found, 1, "control: without the scope it is read");
     }
@@ -528,9 +532,14 @@ mod tests {
     #[test]
     fn only_a_persons_own_public_recent_chat_may_be_scanned() {
         let now = chrono::Utc::now();
-        let mut row = Session::default();
-        row.updated_at = now;
-        assert!(row_may_be_scanned(&row, now), "premise: a person's own chat");
+        let row = Session {
+            updated_at: now,
+            ..Session::default()
+        };
+        assert!(
+            row_may_be_scanned(&row, now),
+            "premise: a person's own chat"
+        );
 
         let mut private = row.clone();
         private.privacy_tier = crate::privacy::SessionClassification::Private;

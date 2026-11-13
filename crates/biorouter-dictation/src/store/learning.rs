@@ -103,9 +103,9 @@ impl ChatLearning {
     /// [`MIN_DECISIONS`] decisions.
     pub fn offers_turning_off(&self) -> bool {
         self.backing_off()
-            && self.chose_on_at.is_none_or(|at| {
-                self.decisions().saturating_sub(at) >= MIN_DECISIONS as u32
-            })
+            && self
+                .chose_on_at
+                .is_none_or(|at| self.decisions().saturating_sub(at) >= MIN_DECISIONS as u32)
     }
 
     /// The person chose to keep suggestions on (turned them on, or answered the offer to
@@ -147,7 +147,11 @@ mod tests {
 
     #[test]
     fn most_dismissed_raises_the_chats_a_word_needs() {
-        assert_eq!(with(10, 10).required_chats(), 2, "half kept is not most dismissed");
+        assert_eq!(
+            with(10, 10).required_chats(),
+            2,
+            "half kept is not most dismissed"
+        );
         assert_eq!(with(9, 11).required_chats(), 3);
         assert_eq!(with(5, 15).required_chats(), 3, "a quarter kept");
         assert_eq!(with(4, 16).required_chats(), 4);
@@ -180,7 +184,10 @@ mod tests {
         }
         assert!(!learning.offers_turning_off());
         learning.record(false);
-        assert!(learning.offers_turning_off(), "it asks again after more decisions");
+        assert!(
+            learning.offers_turning_off(),
+            "it asks again after more decisions"
+        );
     }
 
     #[test]
@@ -192,7 +199,10 @@ mod tests {
         let learning = with(1, 1);
         let text = serde_json::to_string(&learning).unwrap();
         assert_eq!(text, r#"{"recent":[true,false],"kept":1,"dismissed":1}"#);
-        assert_eq!(serde_json::from_str::<ChatLearning>(&text).unwrap(), learning);
+        assert_eq!(
+            serde_json::from_str::<ChatLearning>(&text).unwrap(),
+            learning
+        );
         assert!(serde_json::from_str::<ChatLearning>(r#"{"precision":1}"#).is_err());
     }
 

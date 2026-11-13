@@ -733,8 +733,8 @@ impl StoreFile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::schema::now;
     use crate::store::learning::ChatLearning;
+    use crate::store::schema::now;
 
     fn at(seconds: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_790_000_000 + seconds, 0).unwrap()
@@ -1432,7 +1432,13 @@ mod tests {
         for i in 0..kept + dismissed {
             let word = format!("DEC{}X", first + i);
             assert!(listed_after(file, &word, &["one", "two", "three", "four"]));
-            let id = file.entries.iter().find(|r| r.written == word).unwrap().id.clone();
+            let id = file
+                .entries
+                .iter()
+                .find(|r| r.written == word)
+                .unwrap()
+                .id
+                .clone();
             if i < kept {
                 file.accept(&id, at(100)).unwrap();
             } else {
@@ -1447,7 +1453,10 @@ mod tests {
         assert!(!listed_after(&mut file, "EPAS1", &["a", "a", "a"]));
         let row = &file.entries[0];
         assert_eq!((row.seen, row.seen_in.len()), (1, 1));
-        assert!(!row.seen_in.iter().any(|d| d == "a"), "a digest, not the chat id");
+        assert!(
+            !row.seen_in.iter().any(|d| d == "a"),
+            "a digest, not the chat id"
+        );
         assert!(listed_after(&mut file, "EPAS1", &["b"]));
         assert_eq!(file.entries[0].seen_in.len(), 2);
         assert_eq!(file.entries[0].suggested_in.as_deref(), Some("b"));
@@ -1459,16 +1468,29 @@ mod tests {
         decide(&mut file, 2, 3);
         assert_eq!(file.chat_learning.kept, 2);
         assert_eq!(file.chat_learning.dismissed, 3);
-        assert_eq!(file.chat_learning.recent, vec![true, true, false, false, false]);
+        assert_eq!(
+            file.chat_learning.recent,
+            vec![true, true, false, false, false]
+        );
         // Neither an unlisted suggestion, nor an agent's or a person's row, measures the
         // chat extractor.
         file.observe_auto_suggestion("HIDDEN1", EntryTier::Public, "x", None, at(1))
             .unwrap();
-        let hidden = file.entries.iter().find(|r| r.written == "HIDDEN1").unwrap().id.clone();
+        let hidden = file
+            .entries
+            .iter()
+            .find(|r| r.written == "HIDDEN1")
+            .unwrap()
+            .id
+            .clone();
         assert_eq!(file.dismiss_suggestions(&[hidden], at(2)).len(), 1);
         let agent = created(
-            file.add(by(EntrySource::Agent, "AGENT1", EntryTier::Public), Reach::All, at(3))
-                .unwrap(),
+            file.add(
+                by(EntrySource::Agent, "AGENT1", EntryTier::Public),
+                Reach::All,
+                at(3),
+            )
+            .unwrap(),
         );
         file.accept(&agent, at(4)).unwrap();
         assert_eq!(file.chat_learning.decisions(), 5);
@@ -1520,7 +1542,15 @@ mod tests {
         assert_eq!(file.chat_learning.required_chats(), 4, "9 kept of 40");
         assert!(!listed_after(&mut file, "HIF2A", &["a", "b", "c"]));
         assert!(listed_after(&mut file, "HIF2A", &["d"]));
-        assert_eq!(file.entries.iter().find(|r| r.written == "HIF2A").unwrap().seen_in.len(), 4);
+        assert_eq!(
+            file.entries
+                .iter()
+                .find(|r| r.written == "HIF2A")
+                .unwrap()
+                .seen_in
+                .len(),
+            4
+        );
     }
 
     #[test]
@@ -1531,7 +1561,10 @@ mod tests {
         decide(&mut file, 2, 0);
         assert_eq!(file.chat_learning.required_chats(), 2);
         let row = file.entries.iter().find(|r| r.written == "EPAS1").unwrap();
-        assert_eq!(row.seen, 2, "a suggestion already found in two chats is listed now");
+        assert_eq!(
+            row.seen, 2,
+            "a suggestion already found in two chats is listed now"
+        );
     }
 
     #[test]
@@ -1540,7 +1573,10 @@ mod tests {
         file.observe_auto_suggestion("EPAS1", EntryTier::Public, "a", None, at(0))
             .unwrap();
         file.entries[0].seen_in.clear();
-        assert!(!listed_after(&mut file, "EPAS1", &["a"]), "its own chat again");
+        assert!(
+            !listed_after(&mut file, "EPAS1", &["a"]),
+            "its own chat again"
+        );
         assert!(listed_after(&mut file, "EPAS1", &["b"]));
     }
 

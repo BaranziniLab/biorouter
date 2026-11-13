@@ -106,7 +106,11 @@ fn disabled_context_and_private_stamp_are_isolated() {
     )
     .unwrap();
     let view = dictionary.view().unwrap();
-    assert_eq!(view.entries().len(), 1, "control: a public chat suggests it");
+    assert_eq!(
+        view.entries().len(),
+        1,
+        "control: a public chat suggests it"
+    );
     assert_eq!(view.entries()[0].tier, EntryTier::Public);
 }
 
