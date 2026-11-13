@@ -874,13 +874,18 @@ describe('the offer to turn suggestions off', () => {
     expect(screen.queryByTestId('dictionary-back-off')).toBeNull();
   });
 
-  it('says how many chats a word now needs, in one neutral note', async () => {
+  it('says so in one line with its actions, and how many chats a word needs in its InfoTip', async () => {
     offer();
     renderPage();
     const note = await screen.findByTestId('dictionary-back-off');
-    expect(note).toHaveTextContent(
-      'You dismissed most of the words Biorouter suggested, so it now suggests a word only after it shows up in 3 chats.'
+    expect(within(note).getByTestId('dictionary-back-off-line')).toHaveTextContent(
+      /^You dismissed most suggestions, so Biorouter now suggests fewer\.$/
     );
+    const help = within(note).getByTestId('dictionary-back-off-help');
+    expect(help).toHaveAccessibleName('About fewer suggestions');
+    expect(note).toHaveTextContent('A word now has to show up in 3 chats before it is suggested.');
+    expect(within(note).getByRole('button', { name: 'Turn off suggestions' })).toBeInTheDocument();
+    expect(within(note).getByRole('button', { name: 'Keep suggesting' })).toBeInTheDocument();
     expect(note).toHaveClass('bg-background-fill');
     expect(note).not.toHaveClass('bg-wash-danger');
     expect(note).not.toHaveClass('bg-wash-warning');

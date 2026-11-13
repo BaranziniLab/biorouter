@@ -173,7 +173,7 @@ pub const MSG_SCAN_FROM_THE_COMMAND: &str =
 /// word now needs, 3 or 4.
 pub fn msg_suggest_fewer(required: u32) -> String {
     format!(
-        "You dismissed most of the words Biorouter suggested, so it now suggests a word only after it shows up in {required} chats. Turn suggestions off with `biorouter dictionary settings --learn-from-chats off`."
+        "You dismissed most suggestions, so Biorouter now suggests fewer: a word has to show up in {required} chats. Turn them off with `biorouter dictionary settings --learn-from-chats off`."
     )
 }
 
@@ -4102,7 +4102,7 @@ mod tests {
     #[test]
     fn the_suggestion_sentences_read_as_written() {
         let cases: Vec<(String, &str)> = vec![
-            (msg_suggest_fewer(3), "You dismissed most of the words Biorouter suggested, so it now suggests a word only after it shows up in 3 chats. Turn suggestions off with `biorouter dictionary settings --learn-from-chats off`."),
+            (msg_suggest_fewer(3), "You dismissed most suggestions, so Biorouter now suggests fewer: a word has to show up in 3 chats. Turn them off with `biorouter dictionary settings --learn-from-chats off`."),
             (MSG_NO_SUGGESTIONS.into(), "No suggestions to review."),
             (msg_no_suggestion("EPAS1"), "There is no suggestion EPAS1 to review."),
             (MSG_SCAN_FAILED.into(), "Biorouter could not finish reading your chats."),

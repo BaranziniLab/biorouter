@@ -377,32 +377,43 @@ export default function DictionaryView() {
 
               {offerTurningOff ? (
                 <Note tone="neutral" role="status" className="mb-4" testId="dictionary-back-off">
-                  <p>
-                    {dictionaryMessage('MSG-SUGGESTIONS-BACK-OFF', {
-                      n: String(dictionary.settings?.suggestions.required_chats ?? 2),
-                    })}
-                  </p>
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      disabled={answeringOffer}
-                      onClick={() => void answerOffer(true)}
-                      data-testid="dictionary-back-off-turn-off"
-                    >
-                      {DICTIONARY_LABELS.backOff.turnOff}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      disabled={answeringOffer}
-                      onClick={() => void answerOffer(false)}
-                      data-testid="dictionary-back-off-keep"
-                    >
-                      {DICTIONARY_LABELS.backOff.keepSuggesting}
-                    </Button>
+                  {/* One line and its actions (owner rule, 2026-11-13: no walls of text); how
+                      many chats a word now needs is the InfoTip's. */}
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+                    <p className="flex min-w-0 flex-1 items-center gap-1">
+                      <span data-testid="dictionary-back-off-line">
+                        {dictionaryMessage('MSG-SUGGESTIONS-BACK-OFF')}
+                      </span>
+                      <InfoTip
+                        label={DICTIONARY_LABELS.backOff.why}
+                        help={dictionaryMessage('MSG-SUGGESTIONS-BACK-OFF-HELP', {
+                          n: String(dictionary.settings?.suggestions.required_chats ?? 2),
+                        })}
+                        data-testid="dictionary-back-off-help"
+                      />
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        disabled={answeringOffer}
+                        onClick={() => void answerOffer(true)}
+                        data-testid="dictionary-back-off-turn-off"
+                      >
+                        {DICTIONARY_LABELS.backOff.turnOff}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={answeringOffer}
+                        onClick={() => void answerOffer(false)}
+                        data-testid="dictionary-back-off-keep"
+                      >
+                        {DICTIONARY_LABELS.backOff.keepSuggesting}
+                      </Button>
+                    </div>
                   </div>
                 </Note>
               ) : null}

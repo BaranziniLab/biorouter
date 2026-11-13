@@ -66,8 +66,9 @@ export const DICTIONARY_MESSAGES = {
   'MSG-SCAN-STOPPED': 'Stopped after <read> of <chats>. <words> to review.',
   'MSG-SCAN-STOPPED-NONE': 'Stopped after <read> of <chats>. No new words found.',
   'MSG-SCAN-FAILED': 'Biorouter could not finish reading your chats.',
-  'MSG-SUGGESTIONS-BACK-OFF':
-    'You dismissed most of the words Biorouter suggested, so it now suggests a word only after it shows up in <n> chats.',
+  'MSG-SUGGESTIONS-BACK-OFF': 'You dismissed most suggestions, so Biorouter now suggests fewer.',
+  'MSG-SUGGESTIONS-BACK-OFF-HELP':
+    'A word now has to show up in <n> chats before it is suggested. Turning suggestions off stops them until you turn them on again.',
   'MSG-PRIVATIZE-CONFIRM':
     'Dictation then uses this term only when you dictate into private chats.',
   'MSG-EXPORT-SAVED': 'Saved <file> to <folder>.',
@@ -175,6 +176,8 @@ export const DICTIONARY_LABELS = {
   },
   /** The offer to turn suggestions off once most were dismissed (MSG-SUGGESTIONS-BACK-OFF). */
   backOff: {
+    /** The InfoTip's name: "About fewer suggestions". */
+    why: 'fewer suggestions',
     turnOff: 'Turn off suggestions',
     keepSuggesting: 'Keep suggesting',
   },
