@@ -457,16 +457,17 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/dictionary.rs",
-                counts: c(1, 16, 1),
+                counts: c(1, 17, 1),
                 kind: SiteKind::Guard,
                 what: "`read_chat` (PR-16, O-35, O-36): the gate before a stamp reads the chat \
                        an add started in (`origin_session_id`) or an observation names, a \
                        refusal giving the unknown institutions for an add and a silent no op \
-                       for an observation. The sixteen refs are the MODULE qualifier: on this \
+                       for an observation. The seventeen refs are the MODULE qualifier: on this \
                        call, on `target_tier`, on `gate_dictionary_entry` in the router, and on \
-                       `http_caller` in each of the thirteen handlers that resolve their \
-                       caller (PR-23 added the agent row Undo and the activation choice); the \
-                       import is the `use` that brings the module in",
+                       `http_caller` in each of the fourteen places that resolve their caller \
+                       (PR-23 added the agent row Undo and the activation choice; \
+                       `admit_dictionary_attach`, DD-56, asks for `POST /agent/add_extension`); \
+                       the import is the `use` that brings the module in",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/knowledge.rs",
@@ -776,7 +777,7 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/dictionary.rs",
-                counts: c(13, 0, 0),
+                counts: c(14, 0, 0),
                 kind: SiteKind::Guard,
                 what: "every `/dictionary/*` handler (PR-16, DD-37, DD-38), each resolving its \
                        caller once for the listing decision, the write rules, the stamp and \
@@ -784,7 +785,10 @@ const REGISTRY: &[Guard] = &[
                        routes' shared reader, import, export, observations, both halves of the \
                        settings, and since PR-23 the agent row Undo \
                        (`POST /dictionary/entries/{id}/undo-agent-add`) and the activation \
-                       choice (`POST /dictionary/activation`, DD-56)",
+                       choice (`POST /dictionary/activation`, DD-56); plus \
+                       `admit_dictionary_attach`, which `POST /agent/add_extension` asks before \
+                       it attaches the Dictionary to a chat, by the activation choice's own rule \
+                       (DD-56, owner decision 2026-11-13)",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/schedule.rs",

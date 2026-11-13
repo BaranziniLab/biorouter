@@ -2133,6 +2133,18 @@ fn admit_settings(caller: &HttpCaller, raising: Option<String>) -> Answer<()> {
     Ok(())
 }
 
+/// DD-56 at `POST /agent/add_extension` (owner decision 2026-11-13): attaching the
+/// Dictionary to a chat lets it learn from that chat, the same act as turning on suggestions
+/// from chats, so it is admitted by the same rule and policies as `activate_dictionary`'s
+/// raise. Answers the refusal's status and sentence for the agent route's own error shape.
+pub(crate) async fn admit_dictionary_attach(
+    headers: &HeaderMap,
+) -> Result<(), (StatusCode, String)> {
+    let caller = session_reach::http_caller(headers).await;
+    admit_settings(&caller, Some("--suggest-from-chats on".to_string()))
+        .map_err(|error| (error.status, error.body.message))
+}
+
 #[utoipa::path(
     post,
     path = "/dictionary/settings",

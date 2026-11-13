@@ -2069,7 +2069,8 @@ async fn update_agent_provider(
         (status = 401, description = "Unauthorized - invalid secret key"),
         (status = 403, description = "Refused by a privacy or subagent-control boundary: the named \
                                       chat is private/absent, or is a subagent, and the request \
-                                      carried no proof it came from the user"),
+                                      carried no proof it came from the user; or the extension is \
+                                      the Dictionary and the person did not ask (DD-56)"),
         (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): a \
                                       private extension cannot be attached to a chat running on \
                                       a public model"),
@@ -2103,6 +2104,17 @@ async fn agent_add_extension(
             status: StatusCode::CONFLICT,
             message: "A subagent's delegated extension grants are fixed for its lifetime. Steer the running child with a prompt, or start a new child with different tools.".into(),
         });
+    }
+    // DD-56 (owner decision 2026-11-13): the Dictionary learns from the chat it is attached
+    // to, so attaching it is the person's choice, asked exactly as turning on suggestions
+    // from chats is (`routes::dictionary::admit_dictionary_attach`). The desktop's per chat
+    // switch carries the proof; a caller holding only the daemon secret, which an agent's
+    // shell can read, is refused on a keyed daemon, and a keyless daemon sends the person to
+    // the server. The workspace doors refuse the name outright: there the caller is an agent.
+    if biorouter::dictation::activation::is_dictionary_name(&request.config.name()) {
+        crate::routes::dictionary::admit_dictionary_attach(&headers)
+            .await
+            .map_err(|(status, message)| ErrorResponse { status, message })?;
     }
     let agent = state.get_agent(request.session_id.clone()).await?;
 
