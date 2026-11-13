@@ -15,7 +15,7 @@ Identifiers follow the [implementation plan](../dictation/implementation-plan.md
 Version 1 of dictation is announced only when all of these hold (DD-94, O-29):
 
 1. Every section S1 to S20 other than S13 passes on its surface with a signed build of the release being announced. S13's section states the owner's decision O-30 and holds no rows.
-2. M-1 to M-8, M-10, M-12, M-15 to M-20 and M-22 are recorded with dates in the [measurement log](#measurement-log). M-11, M-14 and M-21 feed later decisions; M-9 and M-13 are withdrawn.
+2. M-1 to M-8, M-10, M-12, M-15 to M-20 and M-22 are recorded with dates in the [measurement log](#measurement-log). M-11 and M-14 feed later decisions; M-9, M-13 and M-21 are withdrawn.
 3. The speech model releases in `BaranziniLab/biorouter-models` pass `gh release verify-asset`, and `dictation-model-pins.yml` is green.
 
 No accuracy figure about the product goes into these rows, the release notes, the announcement or the interface (DD-95). A row that records a transcript records whether the expected spelling appeared, not a score.
@@ -320,7 +320,7 @@ Withdrawn by the owner's decision O-30 (2026-11-05). Biorouter builds no microph
 
 ## Measurement log
 
-One row per measurement, with the date, the build, the machine, the result and who took it (O-29). Announcing version 1 needs M-1 to M-8, M-10, M-12, M-15 to M-20 and M-22. M-11, M-14 and M-21 feed later decisions; M-9 and M-13 are withdrawn by the owner's decisions O-23 and O-30 (2026-11-05). What each measurement is and how to take it is in [testing and release](../dictation/testing-and-release.md#measurements). Nothing here is an accuracy claim about the product (DD-95).
+One row per measurement, with the date, the build, the machine, the result and who took it (O-29). Announcing version 1 needs M-1 to M-8, M-10, M-12, M-15 to M-20 and M-22. M-11 and M-14 feed later decisions; M-9 and M-13 are withdrawn by the owner's decisions O-23 and O-30 (2026-11-05), and M-21 by O-45 (2026-11-13). What each measurement is and how to take it is in [testing and release](../dictation/testing-and-release.md#measurements). Nothing here is an accuracy claim about the product (DD-95).
 
 | Id | Measurement | Blocks | Recorded | Build and machine | Result | Taken by |
 |---|---|---|---|---|---|---|
@@ -344,7 +344,7 @@ One row per measurement, with the date, the build, the machine, the result and w
 | M-18 | Whether browsers let a page prevent ⌘⇧D; tap durations on the chord | the tooltip on `serve`; the 500 ms threshold | not recorded | n/a | Open (row S5.6) | n/a |
 | M-19 | Long dictation: 60 to 180 s of continuous real speech through the streaming path; boundary word loss and Stop to text time on Metal and an x86 CPU | announcing v1 | partial | PR-15 | PR-15 measured synthetic clips end to end only (60 s, 10 minutes and a live 120 s; the forced 25 s cuts left the text length unchanged). Real conversation is open, and `long_dictation_replays_in_real_time` is not built | PR-15's run |
 | M-20 | External backend: latency and uploads to a LAN `biorouterd` behind nginx | announcing S17 | not recorded | n/a | Open (row S17.1); PR-29 is committed in `9a96e0132`, and no LAN nginx run has been made; that commit's `rust.yml` run 42975902058 is green on all nine jobs, and its `frontend.yml` run 42975905256 failed two unit tests, both fixed in `8955295b5` (tests only), whose `frontend.yml` run 42982772021 is green on all eight jobs | n/a |
-| M-21 | Extractor precision over the person written messages of 200 of the owner's sessions, offline and local | the default of `learn_from_chats` | not run, by decision | n/a | PR-24 (`491246227`) ships `learn_from_chats` off, with the reason recorded at `LEARN_FROM_CHATS_DEFAULT` in `crates/biorouter-dictation/src/store/schema.rs`: the precision run waits for the owner's own labels on candidate tokens from eligible chats (O-44, 2026-11-10). Turning it on later needs eligible sessions of the owner's only, private model and patient data sessions excluded, the owner's labels on candidate tokens only (never whole messages), aggregate reports with no remote data, and precision of 0.8 or more at `seen ≥ 2` | n/a |
+| M-21 | Extractor precision over the person written messages of 200 of the owner's sessions, offline and local | the default of `learn_from_chats` | withdrawn (O-45) | n/a | Withdrawn by the owner on 2026-11-13 (O-45): suggestions from chats are a feature each person runs, off until they turn it on, with precision measured by that person's own Keep and Dismiss in their local Dictionary store ([dictionary](../dictation/dictionary.md#measured-by-the-person)). PR-24 (`491246227`) had shipped `learn_from_chats` off because this run waited for the owner's labels (O-44) | n/a |
 | M-22 | The DD-44 channel decision on public real speech and synthetic speech | the DD-44 default; announcing v1 | 2026-11-06 | PR-14's code on top of `78d5ca159`, `m22_arms` in `crates/biorouter/tests/dictation_accuracy.rs` (a debug test binary); Metal on one Apple M4 Max shared with other work | The declared fallback ships: the token prompt alone. `temperature_inc` 0.2 and timestamps on stay. Tables in [speech model benchmarks](../research/voice-dictation/speech-model-benchmarks.md#the-m-22-channel-decision-2026-11-06). Recheck its release gate before announcing | the maintainer's run |
 
 ### Latency measured while the pull requests were built
@@ -422,7 +422,7 @@ biorouter dictation install
 - Add the words dictation should spell your way, such as UCSF or EPAS1, on the new **Dictionary** page in the sidebar's Components group, with **Add to Biorouter dictionary…** in the right click menu of a chat, or with `biorouter dictionary add`. Import and export move terms between computers.
 - When you correct a dictated word the same way twice, Biorouter learns it for a term you already have.
 - **Suggest dictionary words from my chats**, beside **Install** in the setup, turns on the agent's `dictionary` capability for new chats. A term the agent adds goes live at once only when your latest message asked for it, or answered the agent's message that offered it; every other term waits under **Suggested** for you. Biorouter checks where the term appears, not whether your answer agreed, so look over the **Added by the agent** group, where **Keep** and **Undo** sit on each row.
-- **Also find terms in my messages automatically**, at the foot of the **Dictionary** page, starts off. Turned on, it looks for terms in your messages, on this computer, and suggests them for you to accept; it starts off because how well it picks terms is not checked yet.
+- **Suggest words from my messages**, at the foot of the **Dictionary** page and in **Settings > Models > Speech models**, starts off. Turned on, it looks for terms in the messages you type in chats on public models, on this computer, and suggests a word once it shows up in two chats; you keep or dismiss each one, and a dismissed word is not suggested again. **Find words in my recent chats** looks through your recent chats once. If you dismiss most suggestions, Biorouter suggests fewer and offers to turn them off.
 
 ### Privacy
 

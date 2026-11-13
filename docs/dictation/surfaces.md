@@ -1382,6 +1382,10 @@ Two groups of message ids were retired on 2026-11-05 and are not reused: the Cop
 | MSG-SCAN-OFF | Turn on Suggest words from my messages first, then find words in your recent chats. | `POST /dictionary/suggestions/scan` and `biorouter dictionary suggestions scan` while `learn_from_chats` is off (409 `suggestions_off`, exit 1); `suggestion_scan::MSG_SCAN_OFF` |
 | MSG-SCAN-POLICY | Your organization turned off adding words to the dictionary automatically. | The same, under managed `dictionary: false` or `dictionary_agent_writes: false` (403 `policy`) |
 | MSG-SCAN-UNREADABLE | Biorouter could not read your dictionary, so it did not look for words. | The same, when the store cannot be read (503 `unreadable`) |
+| MSG-NO-SUGGESTIONS | No suggestions to review. | `biorouter dictionary suggestions` at a terminal when nothing waits (stderr) |
+| MSG-NO-SUGGESTION | There is no suggestion \<name> to review. | `biorouter dictionary suggestions keep` or `dismiss` for a name or id that matches no waiting row (exit 1) |
+| MSG-SCAN-TURN-ON | To turn it on here, run `biorouter dictionary settings --learn-from-chats on`. | `biorouter dictionary suggestions scan`, under MSG-SCAN-OFF |
+| MSG-SCAN-REVIEW | Review them with `biorouter dictionary suggestions`. | `biorouter dictionary suggestions scan`, after a scan that found words |
 | MSG-DICTIONARY-HOST-PRIVATE | Private terms are added on the server: `biorouter dictionary add --private <term>` or `biorouter dictionary import <file>` (as the service user). | Dictionary page on `serve` without private standing, before the click on **Only in private chats**; the 403 for a private add or import |
 | MSG-DICTIONARY-FILE | The dictionary file at \<path> could not be read, so nothing was changed. Fix or remove it, then try again. | Dictionary page, CLI |
 | MSG-NOT-FOUND | No dictionary entry with that id. | Dictionary routes; CLI `--id`, `accept` and `dismiss` (exit 1) |

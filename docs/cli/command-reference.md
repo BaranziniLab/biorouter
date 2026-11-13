@@ -442,7 +442,23 @@ Show the dictionary's settings, or change them. Raising a setting asks for confi
 **Options:**
 
 - **`--agent-writes <MODE>`**: What the agent's terms do: wait for you (`suggest`), go in when you ask or agree (`on_request`, the default), or go in at once (`add`)
-- **`--learn-from-chats <ON|OFF>`**: Also find terms in the messages you write, automatically, on this computer
+- **`--learn-from-chats <ON|OFF>`**: Suggest words from the messages you type in chats on public models, on this computer; you keep or dismiss each one
+
+#### dictionary suggestions [list|keep|dismiss|scan]
+
+The words waiting for you to keep or dismiss: words found in your own messages (**Suggest words from my messages**, `settings --learn-from-chats on`) and the agent's suggested terms. Listing works without a terminal, which lists only public words; keeping, dismissing and finding words need you at an interactive terminal and are refused in an agent's shell.
+
+- **`suggestions`** or **`suggestions list`** (`ls`), with **`--format text|json`**: one line per word, with where it came from and its id. When you have dismissed most suggested words, it also says that Biorouter now waits for more chats before suggesting a word, and how to turn suggestions off.
+- **`suggestions keep TERM|ID…`** and **`suggestions dismiss TERM|ID…`**: name words by spelling or by id. A dismissed word is never suggested again. Each keep or dismiss of a word found in your messages counts toward how many chats a word needs (two, or more when you dismiss most); the counts stay in your dictionary on this computer.
+- **`suggestions scan`**: read your own chats on public models from the last 30 days, at most 100, once, and suggest the words that show up in two or more of them. It shows its progress and ends with what it found; Ctrl+C stops it after the chat it is reading and keeps what it found. It needs suggestions on.
+
+```bash
+biorouter dictionary settings --learn-from-chats on
+biorouter dictionary suggestions scan
+biorouter dictionary suggestions
+biorouter dictionary suggestions keep EPAS1 HIF2A
+biorouter dictionary suggestions dismiss getValue
+```
 
 #### dictionary clear [options]
 
