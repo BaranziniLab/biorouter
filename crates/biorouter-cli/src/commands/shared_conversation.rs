@@ -1514,22 +1514,7 @@ pub(crate) async fn terminal_input(
     while let Some(event) = events.next().await {
         let event = event?;
         if let Event::Paste(paste) = event {
-            let paste = Zeroizing::new(paste);
-            ensure!(
-                value.len() + paste.len() <= limit,
-                "Input exceeds the permitted byte limit; nothing was submitted"
-            );
-            ensure!(
-                !hidden || !paste.chars().any(char::is_control),
-                "Credential input must be a single line; nothing was submitted"
-            );
-            value.push_str(&paste);
-            #[cfg(test)]
-            observe_hidden_input(hidden, !value.is_empty());
-            if !hidden {
-                eprint!("{}", safe_text(&paste));
-            }
-            std::io::stderr().flush()?;
+            accept_paste(&mut value, paste, hidden, limit)?;
             continue;
         }
         let Event::Key(key) = event else { continue };
@@ -1588,6 +1573,33 @@ pub(crate) async fn terminal_input(
         std::io::stderr().flush()?;
     }
     Ok(None)
+}
+
+/// A bracketed paste into the prompt: refused whole above `limit`, refused for a hidden
+/// (credential) prompt when it holds a control character, and echoed when it may be shown.
+fn accept_paste(
+    value: &mut Zeroizing<String>,
+    paste: String,
+    hidden: bool,
+    limit: usize,
+) -> Result<()> {
+    let paste = Zeroizing::new(paste);
+    ensure!(
+        value.len() + paste.len() <= limit,
+        "Input exceeds the permitted byte limit; nothing was submitted"
+    );
+    ensure!(
+        !hidden || !paste.chars().any(char::is_control),
+        "Credential input must be a single line; nothing was submitted"
+    );
+    value.push_str(&paste);
+    #[cfg(test)]
+    observe_hidden_input(hidden, !value.is_empty());
+    if !hidden {
+        eprint!("{}", safe_text(&paste));
+    }
+    std::io::stderr().flush()?;
+    Ok(())
 }
 
 /// The prompt's text before the person types: `initial`, refused for a hidden (credential)
