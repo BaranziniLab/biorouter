@@ -26,13 +26,21 @@ const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 const USER_BG: Color = Color::Indexed(237);
 const USER_FG: Color = Color::Indexed(252);
 
-/// A modal asking the user to approve a tool call.
+/// A modal asking the user to choose: a tool call's approval, or a dictionary row's review.
 pub struct PermissionModal {
+    /// The frame's title, before the scroll hint: [`TOOL_APPROVAL_TITLE`] or
+    /// [`DICTIONARY_REVIEW_TITLE`].
+    pub title: &'static str,
     pub prompt: Option<String>,
     pub options: Vec<(&'static str, &'static str)>,
     pub selected: usize,
     pub scroll: u16,
 }
+
+/// The title of a tool call's approval.
+pub const TOOL_APPROVAL_TITLE: &str = "Tool approval";
+/// The title of `/dictionary review`, which is not a tool approval.
+pub const DICTIONARY_REVIEW_TITLE: &str = "Dictionary review";
 
 /// What category a completion entry is (drives its colored tag in the popup).
 #[derive(Clone, Copy, PartialEq)]

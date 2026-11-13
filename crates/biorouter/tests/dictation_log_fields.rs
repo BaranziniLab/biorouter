@@ -12,12 +12,13 @@
 //!
 //! - the last is a string literal with no `{`, so no value is formatted into the message;
 //! - every other is a field named in [`ALLOWED_FIELDS`] (`name = value`, or the `%name`,
-//!   `?name` and bare `name` shorthands);
+//!   `?name` and bare `name` shorthands) whose value names none of [`CONTENT_WORDS`];
 //! - a `stream` field is a stream's log id (the digest `log_id_of` makes), never the id
 //!   that opens the stream (DD-29).
 //!
-//! `event!` and `span!` take a level and a name first, so this reader refuses them rather
-//! than guess: write the line with a level macro.
+//! `event!`, `span!` and the `_span` macros take a level or a name first, so this reader
+//! refuses them rather than guess: write the line with a level macro. Macro calls written
+//! with `(`, `[` or `{`, and calls nested in another call's arguments, are all read.
 
 use std::path::{Path, PathBuf};
 
@@ -105,16 +106,22 @@ fn dictation_sources() -> Vec<(String, String)> {
     found
 }
 
-/// One macro call: the macro's name, its line, and its top level arguments.
+/// One macro call: the macro's name, its line, and its top level arguments, comments
+/// left out.
 struct Call {
     name: String,
     line: usize,
     args: Vec<String>,
 }
 
-/// The index just past the string, raw string or char literal that starts at `i`, or
-/// `None` when `i` starts none of them (a lifetime's `'` included).
+fn is_ident(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// The index just past the string, raw string, byte string or char literal that starts
+/// at `i`, or `None` when `i` starts none of them (a lifetime's `'` included).
 fn skip_literal(bytes: &[u8], i: usize) -> Option<usize> {
+    let starts_word = |at: usize| at == 0 || !is_ident(bytes[at - 1]);
     match bytes[i] {
         b'"' => {
             let mut j = i + 1;
@@ -123,8 +130,9 @@ fn skip_literal(bytes: &[u8], i: usize) -> Option<usize> {
             }
             Some(j + 1)
         }
+        // `r"…"`, `r#"…"#` and their byte forms `br"…"`, `br#"…"#`.
         b'r' if matches!(bytes.get(i + 1), Some(b'"' | b'#'))
-            && (i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_')) =>
+            && (starts_word(i) || (bytes[i - 1] == b'b' && starts_word(i - 1))) =>
         {
             let mut j = i + 1;
             let mut hashes = 0;
@@ -133,31 +141,31 @@ fn skip_literal(bytes: &[u8], i: usize) -> Option<usize> {
                 j += 1;
             }
             if bytes.get(j) != Some(&b'"') {
-                return None;
+                return None; // a raw identifier such as `r#type`
             }
             j += 1;
-            loop {
-                if j >= bytes.len() {
-                    return Some(j);
-                }
-                if bytes[j] == b'"'
+            while j < bytes.len() {
+                let closes = bytes[j] == b'"'
                     && bytes[j + 1..]
                         .iter()
                         .take(hashes)
                         .filter(|b| **b == b'#')
                         .count()
-                        == hashes
-                {
+                        == hashes;
+                if closes {
                     return Some(j + 1 + hashes);
                 }
                 j += 1;
             }
+            Some(j)
         }
         b'\'' => {
             let next = *bytes.get(i + 1)?;
             if next == b'\\' {
-                let close = bytes[i + 2..].iter().position(|b| *b == b'\'')?;
-                return Some(i + 3 + close);
+                // The escaped character is at `i + 2` (`'\''` escapes the quote itself),
+                // so the closing quote is searched for after it.
+                let close = bytes.get(i + 3..)?.iter().position(|b| *b == b'\'')?;
+                return Some(i + 4 + close);
             }
             // One character, ASCII or not: `'('`, `'…'`. Anything else is a lifetime.
             let width = match next {
@@ -172,7 +180,68 @@ fn skip_literal(bytes: &[u8], i: usize) -> Option<usize> {
     }
 }
 
-/// Every level macro call in `source`, with its arguments split at the top level.
+/// The index just past the comment that starts at `i`, or `None` when none does. Block
+/// comments nest, as Rust's do.
+fn skip_comment(bytes: &[u8], i: usize) -> Option<usize> {
+    match (bytes[i], bytes.get(i + 1)) {
+        (b'/', Some(b'/')) => Some(
+            bytes[i..]
+                .iter()
+                .position(|b| *b == b'\n')
+                .map_or(bytes.len(), |end| i + end),
+        ),
+        (b'/', Some(b'*')) => {
+            let mut depth = 0usize;
+            let mut j = i;
+            while j + 1 < bytes.len() {
+                match (bytes[j], bytes[j + 1]) {
+                    (b'/', b'*') => {
+                        depth += 1;
+                        j += 2;
+                    }
+                    (b'*', b'/') => {
+                        depth -= 1;
+                        j += 2;
+                        if depth == 0 {
+                            return Some(j);
+                        }
+                    }
+                    _ => j += 1,
+                }
+            }
+            Some(bytes.len())
+        }
+        _ => None,
+    }
+}
+
+/// The index of the delimiter that opens a macro's arguments when `name` at `at` is a
+/// macro call: `name!(`, `name![` or `name!{`, with any whitespace around the `!`.
+fn macro_open(bytes: &[u8], at: usize, name: &str) -> Option<usize> {
+    if !bytes[at..].starts_with(name.as_bytes()) {
+        return None;
+    }
+    let after = at + name.len();
+    if bytes.get(after).copied().is_some_and(is_ident) {
+        return None;
+    }
+    let mut j = after;
+    let skip_space = |mut j: usize| {
+        while bytes.get(j).is_some_and(u8::is_ascii_whitespace) {
+            j += 1;
+        }
+        j
+    };
+    j = skip_space(j);
+    if bytes.get(j) != Some(&b'!') {
+        return None;
+    }
+    j = skip_space(j + 1);
+    matches!(bytes.get(j), Some(b'(' | b'[' | b'{')).then_some(j)
+}
+
+/// Every level macro call in `source`, with its arguments split at the top level. A call
+/// nested inside another call's arguments is read too.
 fn macro_calls(source: &str) -> Vec<Call> {
     // A span's fields reach a log line too; the `_span` names come first so `info` does not
     // stop at `info_span`.
@@ -190,89 +259,85 @@ fn macro_calls(source: &str) -> Vec<Call> {
         "event",
         "span",
     ];
+    // Bytes throughout, never `str` slices: `i` steps one byte at a time and may sit
+    // inside a character that is not ASCII.
     let bytes = source.as_bytes();
     let mut calls = Vec::new();
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'/') {
-            while i < bytes.len() && bytes[i] != b'\n' {
-                i += 1;
-            }
-            continue;
-        }
-        if bytes[i] == b'/' && bytes.get(i + 1) == Some(&b'*') {
-            i = bytes[i + 2..]
-                .windows(2)
-                .position(|pair| pair == b"*/")
-                .map_or(bytes.len(), |end| i + 4 + end);
-            continue;
-        }
-        if let Some(next) = skip_literal(bytes, i) {
+        if let Some(next) = skip_comment(bytes, i).or_else(|| skip_literal(bytes, i)) {
             i = next;
             continue;
         }
-        let at_word = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
-        // Bytes, not `str` slices: `i` steps one byte at a time and may sit inside a
-        // character that is not ASCII.
-        let name = NAMES.iter().find(|name| {
-            at_word
-                && bytes[i..].starts_with(name.as_bytes())
-                && bytes[i + name.len()..]
+        let found = (i == 0 || !is_ident(bytes[i - 1]))
+            .then(|| {
+                NAMES
                     .iter()
-                    .skip_while(|b| b.is_ascii_whitespace())
-                    .take(2)
-                    .eq(b"!(".iter())
-        });
-        let Some(name) = name else {
+                    .find_map(|name| macro_open(bytes, i, name).map(|open| (*name, open)))
+            })
+            .flatten();
+        let Some((name, open)) = found else {
             i += 1;
             continue;
         };
         let line = bytes[..i].iter().filter(|b| **b == b'\n').count() + 1;
-        let open = i
-            + name.len()
-            + bytes[i + name.len()..]
-                .iter()
-                .position(|b| *b == b'(')
-                .expect("an open paren");
-        // `start` and `j` always sit on an ASCII delimiter, so each argument is whole text.
-        let text =
-            |from: usize, to: usize| String::from_utf8_lossy(&bytes[from..to]).trim().to_string();
         let mut depth = 0usize;
         let mut args = Vec::new();
-        let mut start = open + 1;
+        let mut current = Vec::new();
         let mut j = open;
         while j < bytes.len() {
-            if let Some(next) = skip_literal(bytes, j) {
+            if let Some(next) = skip_comment(bytes, j) {
                 j = next;
                 continue;
             }
-            match bytes[j] {
-                b'(' | b'[' | b'{' => depth += 1,
+            if let Some(next) = skip_literal(bytes, j) {
+                let end = next.min(bytes.len());
+                current.extend_from_slice(&bytes[j..end]);
+                j = next;
+                continue;
+            }
+            let byte = bytes[j];
+            match byte {
+                b'(' | b'[' | b'{' => {
+                    depth += 1;
+                    if depth > 1 {
+                        current.push(byte);
+                    }
+                }
                 b')' | b']' | b'}' => {
                     depth -= 1;
                     if depth == 0 {
-                        args.push(text(start, j));
+                        args.push(String::from_utf8_lossy(&current).trim().to_string());
                         break;
                     }
+                    current.push(byte);
                 }
                 b',' if depth == 1 => {
-                    args.push(text(start, j));
-                    start = j + 1;
+                    args.push(String::from_utf8_lossy(&current).trim().to_string());
+                    current.clear();
                 }
-                _ => {}
+                _ => current.push(byte),
             }
             j += 1;
         }
         args.retain(|arg| !arg.is_empty());
         calls.push(Call {
-            name: (*name).to_string(),
+            name: name.to_string(),
             line,
             args,
         });
-        i = j + 1;
+        // On inside the arguments, so a call nested in one is read as well.
+        i = open + 1;
     }
     calls
 }
+
+/// Identifiers that name dictation content. A field's value may not mention one, whatever
+/// the field is called: `model = %transcript.text` is as much a leak as `text = ...`.
+const CONTENT_WORDS: &[&str] = &[
+    "text", "raw_text", "partial", "changes", "context", "prompt", "audio", "samples", "pcm",
+    "chunk", "written", "spoken", "note", "words", "term", "terms",
+];
 
 /// Why `call` breaks DD-93, if it does.
 fn problems(call: &Call) -> Vec<String> {
@@ -307,6 +372,15 @@ fn problems(call: &Call) -> Vec<String> {
                 "field `{name}` is not in DD-93's list (`ALLOWED_FIELDS`); a field that is \
                  not audio, text, a prompt, a dictionary entry or `context` goes on the list \
                  with the record changed to name it"
+            ));
+        }
+        let mentioned = value
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .find(|word| CONTENT_WORDS.contains(word));
+        if let Some(word) = mentioned {
+            found.push(format!(
+                "field `{name}` is `{value}`, which reads `{word}`: a log line carries no \
+                 dictation content, whatever the field is called"
             ));
         }
         if name == "stream" && !value.trim_start_matches(['%', '?']).ends_with("log_id") {
@@ -371,19 +445,30 @@ fn the_reader_catches_what_it_is_for() {
         tracing::event!(tracing::Level::INFO, model = %m, "dictation event");
         let span = tracing::info_span!("dictation", text = %t);
         let ellipsis = '…'; tracing::debug!(model = %m, "after a wide char");
+        info![text = %t, "brackets"];
+        info!{model = %m, "braces"}
+        info ! (model = %transcript.text, "spaced, and content under an allowed name");
+        warn!(model = %format!("{}", { warn!(text = %t, "in"); 1 }), "outer");
+        let q = ['\'', '"']; info!(model = %m, "after quote chars");
+        let b = br#"a"b"#; info!(model = %m, "after a raw byte string");
+        info!(model = %m, /* a, comment) */ "with a comment");
+        /* outer /* inner */ info!(text, "still a comment") */ info!(model = %m, "after nested");
     "##;
     let calls = macro_calls(source);
     let found: Vec<(usize, Vec<String>)> = calls
         .iter()
         .map(|call| (call.line, problems(call)))
         .collect();
-    assert_eq!(found.len(), 9, "{:?}", found);
+    assert_eq!(found.len(), 18, "{:?}", found);
+    // Every problem of every call on `line`; a line must hold at least one call.
     let at = |line: usize| {
-        found
+        let on_line: Vec<String> = found
             .iter()
-            .find(|(l, _)| *l == line)
+            .filter(|(l, _)| *l == line)
             .map(|(_, p)| p.join(" | "))
-            .unwrap_or_else(|| panic!("no call read at line {line}"))
+            .collect();
+        assert!(!on_line.is_empty(), "no call read at line {line}");
+        on_line.join(" | ")
     };
     assert_eq!(at(6), "", "the allowed line");
     assert!(at(7).contains("field `text`"), "{}", at(7));
@@ -394,4 +479,16 @@ fn the_reader_catches_what_it_is_for() {
     assert!(at(12).contains("level macro"), "{}", at(12));
     assert!(at(13).contains("level macro"), "{}", at(13));
     assert_eq!(at(14), "", "a call after a char literal that is not ASCII");
+    assert!(at(15).contains("field `text` is not"), "{}", at(15));
+    assert_eq!(at(16), "", "braces");
+    assert!(at(17).contains("reads `text`"), "{}", at(17));
+    assert!(
+        at(18).contains("field `text` is not"),
+        "the nested call: {}",
+        at(18)
+    );
+    assert_eq!(at(19), "", "after the quote chars");
+    assert_eq!(at(20), "", "after a raw byte string");
+    assert_eq!(at(21), "", "a comment inside the arguments");
+    assert_eq!(at(22), "", "only the call after the nested comment");
 }

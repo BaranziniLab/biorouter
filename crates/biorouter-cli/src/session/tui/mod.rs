@@ -47,7 +47,9 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use biorouter::conversation::Conversation;
 use biorouter::session::SessionManager;
 
-use self::app::{App, PermissionModal, StatusInfo, ACCENT};
+use self::app::{
+    App, PermissionModal, StatusInfo, ACCENT, DICTIONARY_REVIEW_TITLE, TOOL_APPROVAL_TITLE,
+};
 use super::CliSession;
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -1484,6 +1486,7 @@ async fn run_permission_modal(
             .is_some_and(|(label, _)| *label == "Allow task"),
     );
     app.modal = Some(PermissionModal {
+        title: TOOL_APPROVAL_TITLE,
         prompt,
         options,
         selected,
@@ -1612,6 +1615,7 @@ async fn review_dictionary(app: &mut App, tui: &mut Tui, rx: &mut Events) -> Res
     }
     for row in rows {
         app.modal = Some(PermissionModal {
+            title: DICTIONARY_REVIEW_TITLE,
             prompt: Some(format!(
                 "Dictionary term: {} ({})\nKeep, dismiss, or skip this suggestion?",
                 row.written,
@@ -2710,7 +2714,7 @@ fn draw_modal(f: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(Style::new().fg(ACCENT))
         .title(Span::styled(
-            " Tool approval · PgUp/PgDn to read ",
+            format!(" {} · PgUp/PgDn to read ", modal.title),
             Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(rect).inner(Margin::new(1, 0));
@@ -3622,6 +3626,7 @@ mod tests {
     fn renders_permission_modal() {
         let mut app = App::new(StatusInfo::default());
         app.modal = Some(PermissionModal {
+            title: TOOL_APPROVAL_TITLE,
             prompt: None,
             options: vec![("Allow", "allow once"), ("Deny", "deny")],
             selected: 0,
@@ -3630,6 +3635,38 @@ mod tests {
         let text = buffer_text(&mut app, 80, 24);
         assert!(text.contains("Tool approval"));
         assert!(text.contains("Allow"));
+    }
+
+    /// `/dictionary review` is not a tool approval, so its frame says what it is.
+    #[test]
+    fn the_dictionary_review_has_its_own_title() {
+        let mut app = App::new(StatusInfo::default());
+        app.modal = Some(PermissionModal {
+            title: DICTIONARY_REVIEW_TITLE,
+            prompt: Some("Dictionary term: EPAS1 (public)".into()),
+            options: vec![
+                ("Keep", "add to active dictionary"),
+                ("Skip", "leave for later"),
+            ],
+            selected: 1,
+            scroll: 0,
+        });
+        let text = buffer_text(&mut app, 80, 24);
+        assert!(text.contains("Dictionary review"), "{text}");
+        assert!(!text.contains("Tool approval"), "{text}");
+        // And `review_dictionary` is what opens it under that title.
+        let source = include_str!("mod.rs");
+        let opened_under = source
+            .split("async fn review_dictionary(")
+            .nth(1)
+            .and_then(|review| review.split("PermissionModal {").nth(1))
+            .and_then(|modal| modal.lines().nth(1))
+            .map(str::trim);
+        assert_eq!(
+            opened_under,
+            Some("title: DICTIONARY_REVIEW_TITLE,"),
+            "review_dictionary opens its modal under DICTIONARY_REVIEW_TITLE"
+        );
     }
 
     #[test]
@@ -3649,6 +3686,7 @@ mod tests {
 
         let mut app = App::new(StatusInfo::default());
         app.modal = Some(PermissionModal {
+            title: TOOL_APPROVAL_TITLE,
             prompt: Some(text),
             options: vec![("Allow", "allow once"), ("Deny", "deny")],
             selected: 1,
@@ -3667,6 +3705,7 @@ mod tests {
     fn long_task_disclosure_scrolls_while_choices_remain_visible() {
         let mut app = App::new(StatusInfo::default());
         app.modal = Some(PermissionModal {
+            title: TOOL_APPROVAL_TITLE,
             prompt: Some(format!(
                 "{}End of sensitive information disclosure",
                 "Biorouter Copilot on backend host\n".repeat(24)
