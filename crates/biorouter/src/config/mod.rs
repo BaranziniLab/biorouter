@@ -10,6 +10,9 @@ pub mod retired_lead_worker;
 pub mod search_path;
 pub mod signup_openrouter;
 pub mod signup_tetrate;
+/// The process-memory credential store every test binary uses in place of the OS one.
+#[doc(hidden)]
+pub mod test_binary_credentials;
 pub mod usage;
 
 pub use crate::agents::ExtensionConfig;

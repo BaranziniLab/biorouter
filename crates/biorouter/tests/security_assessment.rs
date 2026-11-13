@@ -1,4 +1,7 @@
 //! Synthetic security-audit observations and regression checks.
+
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 

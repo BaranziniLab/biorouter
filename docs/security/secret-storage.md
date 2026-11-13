@@ -6,7 +6,8 @@
 > or unwanted.
 > **Status:** Current.
 > **Audience:** end users on the first two sections; developers and maintainers on
-> [developer builds](#developer-builds-rebuilds-re-prompt-unless-you-sign) and
+> [developer builds](#developer-builds-rebuilds-re-prompt-unless-you-sign),
+> [tests](#tests-never-use-the-credential-store) and
 > [background](#background-why-one-password-cannot-cover-both-binaries). Each section says
 > which.
 
@@ -93,7 +94,50 @@ Keychain treats each rebuild as a brand-new app and re-prompts even after Always
 built `biorouter`/`biorouterd` with the Developer ID certificate when it is present in your
 keychain, giving dev builds a stable identity — Always Allow then sticks across rebuilds.
 Without the certificate, set `BIOROUTER_DISABLE_KEYRING=true` during development to use
-plaintext `secrets.yaml` instead.
+plaintext `secrets.yaml` instead. Running the tests needs neither; see the next section.
+
+## Tests never use the credential store
+
+*For developers working on BioRouter.*
+
+`cargo test` never reads or writes the macOS Keychain, the Windows Credential Manager or the
+Linux Secret Service, and needs no environment variable for that. A test binary is ad-hoc signed
+and gets a new identity on every build, so a Keychain read from one used to raise a password
+dialog on every run (12 in one day on 2026-11-12, every one from a `target/debug/deps/` test
+binary), and a dialog nobody answers blocks the test forever.
+
+Every test binary that links the `biorouter` crate replaces the store before `main`:
+
+- `biorouter::keep_this_test_binary_off_the_os_credential_store!()` installs a store kept in the
+  test process's memory as the `keyring` crate's default. Every keyring entry in the process then
+  reads and writes there: the secrets blob behind `Config`, Crew device keys, and any
+  `Config::new(path, service)` a test builds. The macro also adds a test to that binary which
+  fails if an entry would still be built on the OS store.
+- The test sandboxes of `biorouter`, `biorouter-cli` and `biorouter-server` (`src/test_sandbox.rs`,
+  declared by each library's test binary, by `biorouterd`'s, and by every `tests/*.rs` of the CLI
+  and the server) invoke the macro. They also set `BIOROUTER_DISABLE_KEYRING=true` when it is
+  unset, so `Config::global()` keeps its secrets in the sandbox's own `secrets.yaml` under its
+  temporary `BIOROUTER_PATH_ROOT`, as every CI test step does, and a process a test starts
+  inherits the same.
+- Every `tests/*.rs` of `biorouter` and `biorouter-acp`, and the `biorouter-acp` library, invoke
+  the macro directly. These binaries set no temporary root of their own, so they leave the
+  variable alone and their secrets stay in memory.
+
+Two tests in `crates/biorouter/src/config/test_binary_credentials.rs` keep this true.
+`every_test_binary_that_links_biorouter_keeps_off_the_os_credential_store` fails when a new test
+file, crate or binary target forgets the macro, and names it.
+`only_test_code_keeps_a_binary_off_the_os_credential_store` fails when anything under a crate's
+`src/` invokes it outside a `#[cfg(test)]` item. No environment variable and no Cargo feature can
+switch the store off, so shipped binaries, and the development binaries the desktop app runs,
+use the credential store exactly as described above.
+
+The store replacement reaches only the test process itself. A test that starts a real `biorouter`
+or `biorouterd` starts another process: under the CLI and server sandboxes it inherits
+`BIOROUTER_DISABLE_KEYRING=true`, and anywhere else the test passes the variable on the child's
+command itself, as the CLI's `serve_lifecycle` tests do.
+
+A test that needs a real provider key takes it from the environment, never from the credential
+store.
 
 ## Background: why one password cannot cover both binaries
 
@@ -116,6 +160,8 @@ provisioning-profile entitlements, which the Rust `keyring` ecosystem doesn't su
   `BIOROUTER_DISABLE_KEYRING` and the provider key variables.
 - [Choosing a model provider](../getting-started/choosing-a-model-provider.md) — where the API
   keys stored here come from.
+- [Process-global state in tests](../testing/process-global-state.md) — the other per-binary
+  test sandbox rules, which the test credential store sits beside.
 - [Common problems and fixes](../troubleshooting/common-problems-and-fixes.md) — for
   credential-store failures that this page does not cover.
 - [Security](README.md) — the rest of the security documentation.

@@ -17,6 +17,8 @@
 //! two messages sharing one id, the first carrying signed reasoning, the second
 //! a single `Err` tool request tagged `incomplete_stream`.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 

@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::daemon_runtime::{
     descriptor_path, private_directory, profile_identity, profile_record, read_descriptor,
     read_private, read_user_action_key, user_action_key_path, write_private, write_user_action_key,

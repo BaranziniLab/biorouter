@@ -11,6 +11,8 @@
 //! the loop yields the typed terminal event — and that a *successful* turn still
 //! does not, so the abort path cannot fire spuriously.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 

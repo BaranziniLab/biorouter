@@ -1,3 +1,5 @@
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::knowledge::{convert::SourceInput, service::KnowledgeService};
 
 #[tokio::test]

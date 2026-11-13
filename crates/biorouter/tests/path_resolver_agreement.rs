@@ -27,6 +27,8 @@
 //! it builds is etcetera's own, and that the rewrite after a move covers the
 //! files the stores really use.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::config::paths::Paths;
 use serial_test::serial;
 use std::path::PathBuf;

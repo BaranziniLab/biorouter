@@ -11,6 +11,8 @@
 //! does not override that budget. Only the synthetic prompts below can leave
 //! the process. Response bodies and signed headers stay in memory.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};

@@ -18,6 +18,8 @@
 //!
 //! No network: the refresher is the daemon's, and nothing here starts it.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::OnceLock;
 
 use biorouter::model::ModelConfig;

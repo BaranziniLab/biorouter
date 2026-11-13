@@ -39,6 +39,8 @@
 //! to be checked"* mechanical instead of aspirational — a list of call sites is
 //! not the answer, because the next call site will not be on it.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::agents::types::SharedProvider;
 use biorouter::privacy::{CallCapability, ProviderTier};
 use std::collections::{BTreeMap, BTreeSet};

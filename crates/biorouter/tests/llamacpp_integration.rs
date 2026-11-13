@@ -23,6 +23,8 @@
 //! a context error compaction can act on, and the server must not answer an
 //! unauthenticated caller.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::time::{Duration, Instant};
 
 use biorouter::agents::effort::ReasoningEffort;

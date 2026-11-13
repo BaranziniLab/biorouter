@@ -6,6 +6,8 @@
 //! back attached to *its own* call, does a failure surface honestly, and does
 //! cancelling the parent take the children with it.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 mod subagent_support;
 
 use std::collections::HashMap;

@@ -1,6 +1,8 @@
 //! Test-only utilities for the scheduler
 #![cfg(test)]
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use once_cell::sync::Lazy;
 use std::sync::Arc;
 use tokio::sync::Mutex;

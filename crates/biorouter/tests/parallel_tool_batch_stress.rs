@@ -17,6 +17,8 @@
 //! get their own single-test binaries because the process env is global
 //! (`tool_response_streaming_killswitch.rs`, `tool_max_concurrent_serialization.rs`).
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 mod parallel_batch_support;
 
 use parallel_batch_support::{agent_with_batch, drain, persisted_tool_blocks, tool_responses};

@@ -638,7 +638,7 @@ cargo test -p biorouter --lib -- privacy::decision_axes providers::decision_boun
 cargo test -p biorouter --test privacy_public_basis_switch
 ```
 
-`decision_monitor_swarm` runs a scripted orchestrator and its children through the real spawn tool, `workspace_monitor` and the stop of a chat's subagents. A test or live run that saves an enabled monitor through the process's own decision service should set `BIOROUTER_DISABLE_KEYRING=true`, because the save check reads the Baseten key, and on macOS a keyring read can wait on a Keychain prompt.
+`decision_monitor_swarm` runs a scripted orchestrator and its children through the real spawn tool, `workspace_monitor` and the stop of a chat's subagents. A live run that saves an enabled monitor through a real daemon's decision service should set `BIOROUTER_DISABLE_KEYRING=true`, because the save check reads the Baseten key, and on macOS a keyring read can wait on a Keychain prompt. A test needs nothing: every test binary keeps its secrets off the OS credential store ([secret storage](../security/secret-storage.md#tests-never-use-the-credential-store)).
 
 `decision_system_one` covers both System One servers against local mock servers. Most answers were written from Baseten's and Ollama's documentation; Baseten's refusal of a missing key and Ollama's format refusal are the bodies the real servers returned. It also covers the load probe and the order of a listing that holds a copy Ollama refuses. `decision_baseten_config` is its own binary because it sets `BASETEN_API_KEY` and `BASETEN_DECISION_HOST` in the environment.
 

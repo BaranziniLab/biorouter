@@ -1,3 +1,5 @@
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::agents::bug_report::evidence::{
     failures_in, nested_failures_in, operation_failures_in,
 };

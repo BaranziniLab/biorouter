@@ -50,6 +50,14 @@ If a binary genuinely cannot run offline, put its live tests behind `#[ignore]`,
 a line in that table saying why. Before 2026-09, `rust.yml` ran only the sandbox's integration
 target, so a green run said nothing about the rest of `tests/`.
 
+**Tests never touch the OS credential store**, and need no `BIOROUTER_DISABLE_KEYRING` for it.
+Every test binary that links `biorouter` swaps `keyring`'s default store for process memory before
+`main` (`biorouter::keep_this_test_binary_off_the_os_credential_store!()`, invoked by each crate's
+`src/test_sandbox.rs` and by every `tests/*.rs` of `biorouter` and `biorouter-acp`), because a
+re-signed test binary raised a Keychain password dialog on every run. A new `tests/*.rs` without
+it fails the census in `crates/biorouter/src/config/test_binary_credentials.rs`; see
+[`docs/security/secret-storage.md`](docs/security/secret-storage.md#tests-never-use-the-credential-store).
+
 ### Code Quality
 
 ```bash

@@ -1,3 +1,5 @@
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::agents::subagent_tool::{create_subagent_tool, SUBAGENT_TOOL_NAME};
 use biorouter::workflow::{SubWorkflow, Workflow};
 use std::collections::HashMap;

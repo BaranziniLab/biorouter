@@ -4,6 +4,8 @@
 //! adapter round-trips initialize -> new session -> prompt and streams the
 //! agent's reply back over the socket.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 mod common;
 
 use biorouter::config::BioRouterMode;

@@ -9,6 +9,8 @@
 //! configuration, and it installs a Crew tool host, which no test sharing its process could
 //! undo. With nothing else in the process, neither can reach another test.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::agents::ExtensionConfig;
 use biorouter::config::BioRouterMode;
 use biorouter::crew::tool_host::{CrewToolHost, PersonToolCall};

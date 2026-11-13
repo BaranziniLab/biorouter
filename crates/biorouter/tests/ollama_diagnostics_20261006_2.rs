@@ -20,6 +20,8 @@
 //!
 //! Nothing here reaches a network beyond the loopback mock server.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::agents::workspace_extension::WorkspaceClient;
 use biorouter::config::declarative_providers::{DeclarativeProviderConfig, ProviderEngine};
 use biorouter::conversation::message::{Message, MessageContent, ToolRequest};

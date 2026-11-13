@@ -16,6 +16,8 @@
 //! every other privacy surface reads it — would silence it in exactly the
 //! configuration where the risk is highest.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::privacy::disclosure;
 use biorouter::providers::base::ProviderMetadata;
 

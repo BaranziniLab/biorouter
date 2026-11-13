@@ -19,6 +19,8 @@
 //! A fixture is a statement about what you *think* the world looks like. Run
 //! this after touching `manifest.rs` or `plan.rs`.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::agents::skill_package::{self, Evidence, ImportKind, ImportSource};
 
 /// `https://github.com/heygen-com/hyperframes` — a declared plugin with a

@@ -28,6 +28,9 @@ fs-err = "3"
 
 [dev-dependencies]
 assert-json-diff = "2.0.2"
+# `biorouter::keep_this_test_binary_off_the_os_credential_store!` expands to a
+# `#[ctor]`, so every test binary here replaces the OS credential store before `main`.
+ctor = "0.2"
 wiremock = { workspace = true }
 tempfile = "3"
 test-case = "3.3"

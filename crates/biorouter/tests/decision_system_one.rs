@@ -8,6 +8,8 @@
 //! Ollama `nimble` / `tev1` library pages show. PR #469's
 //! `tests/baseten_decisions.rs` is where these tests started.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
