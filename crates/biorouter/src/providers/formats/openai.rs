@@ -266,17 +266,13 @@ fn is_content_filter_category(name: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
-/// The categories a choice's content-filter verdict marks, by name only.
-///
-/// Read from the verdict's own entries (`{"jailbreak": {"filtered": true,
-/// "detected": true}, …}`) and from an error's
+/// The verdicts one content-filter result carries: its own entries
+/// (`{"jailbreak": {"filtered": true, "detected": true}, …}`) and an error's
 /// `innererror.content_filter_result(s)`, the two places Azure reports which
-/// filter fired. Categories marked `filtered: true` are returned; when none
-/// is, the ones marked `detected: true`, so a verdict that only annotated
-/// still says what it saw. Sorted and without repeats, so the sentence does
-/// not depend on how the JSON map orders its keys (`serde_json`'s
-/// `preserve_order` arrives through feature unification in some builds only).
-fn flagged_content_filter_categories(results: &serde_json::Map<String, Value>) -> Vec<String> {
+/// filter fired.
+fn content_filter_verdicts(
+    results: &serde_json::Map<String, Value>,
+) -> Vec<&serde_json::Map<String, Value>> {
     let mut verdicts = vec![results];
     if let Some(inner) = results
         .get("error")
@@ -288,25 +284,58 @@ fn flagged_content_filter_categories(results: &serde_json::Map<String, Value>) -
                 .filter_map(|key| inner.get(*key).and_then(Value::as_object)),
         );
     }
-    let marked = |flag: &str| {
-        let names: std::collections::BTreeSet<&String> = verdicts
-            .iter()
-            .flat_map(|verdict| verdict.iter())
-            .filter(|(name, check)| {
-                *name != "error"
-                    && check.get(flag) == Some(&Value::Bool(true))
-                    && is_content_filter_category(name)
-            })
-            .map(|(name, _)| name)
-            .collect();
-        names.into_iter().cloned().collect::<Vec<String>>()
-    };
-    let filtered = marked("filtered");
-    if filtered.is_empty() {
-        marked("detected")
-    } else {
-        filtered
-    }
+    verdicts
+}
+
+/// Whether a content-filter result BLOCKS the reply: some entry in one of its
+/// verdicts is marked `filtered: true`. Read before the entry's name is
+/// checked, so a block under a name Biorouter does not know still stops the
+/// stream; only the sentence leaves that name out.
+///
+/// An `error` beside the verdict is NOT a block. Azure documents it as the
+/// filtering system being down or out of time, the request completing
+/// without filtering ("Scenario 6: Content filtering system unavailable" on
+/// Microsoft Learn's content-filtering page; the message is "The contents are
+/// not filtered"). Measured live on Versa's gpt-5.5 it rides ordinary text
+/// chunks through to `finish_reason: "stop"` with the whole reply (2026-11-11,
+/// 3 of 7 short requests; 2026-11-12, 1 of 8 short ones and 1 of 31 built by
+/// `create_request` with tools and a tool result, where it marked every chunk
+/// from the first text on). Azure signals a block three
+/// ways: a category marked `filtered: true` (read here), a `finish_reason` of
+/// `content_filter`, or an HTTP 400 with code `content_filter`
+/// ([`azure_content_filter_refusal`]).
+fn content_filter_blocks(results: &serde_json::Map<String, Value>) -> bool {
+    content_filter_verdicts(results).iter().any(|verdict| {
+        verdict.iter().any(|(name, check)| {
+            name != "error" && check.get("filtered") == Some(&Value::Bool(true))
+        })
+    })
+}
+
+/// The categories a blocking verdict marks `filtered: true`, by name only.
+fn filtered_content_filter_categories(results: &serde_json::Map<String, Value>) -> Vec<String> {
+    filtered_categories_in(content_filter_verdicts(results))
+}
+
+/// The category names these verdicts mark `filtered: true`, when they are
+/// names Azure would write ([`is_content_filter_category`]). Sorted and
+/// without repeats, so the sentence does not depend on how the JSON map
+/// orders its keys (`serde_json`'s `preserve_order` arrives through feature
+/// unification in some builds only).
+fn filtered_categories_in<'a>(
+    verdicts: impl IntoIterator<Item = &'a serde_json::Map<String, Value>>,
+) -> Vec<String> {
+    let names: std::collections::BTreeSet<&String> = verdicts
+        .into_iter()
+        .flat_map(|verdict| verdict.iter())
+        .filter(|(name, check)| {
+            *name != "error"
+                && check.get("filtered") == Some(&Value::Bool(true))
+                && is_content_filter_category(name)
+        })
+        .map(|(name, _)| name)
+        .collect();
+    names.into_iter().cloned().collect()
 }
 
 /// Category names in plain words for a sentence: `self_harm` reads "self harm".
@@ -318,9 +347,9 @@ fn content_filter_categories_in_words(categories: &[String]) -> String {
         .join(", ")
 }
 
-/// One warning when a content filter stops a stream: the frame's code and the
-/// categories it flagged, by name only, so the daemon log says which filter
-/// fired. Never the filter's message or anything from the prompt.
+/// One warning when a content filter blocks a reply, streamed or not: the
+/// code and the categories it flagged, by name only, so the daemon log says
+/// which filter fired. Never the filter's message or anything from the prompt.
 fn log_content_filter_stop(code: &str, categories: &[String]) {
     let categories = if categories.is_empty() {
         "-".to_string()
@@ -330,43 +359,214 @@ fn log_content_filter_stop(code: &str, categories: &[String]) {
     tracing::warn!(
         code,
         categories = categories.as_str(),
-        "Provider content filter stopped the stream"
+        "Provider content filter blocked the reply"
     );
 }
 
-/// What Biorouter says when Azure's content filter answers
-/// `content_filter_error`. It is retried as a server error, as it was before
-/// the categories were named. Both sentences keep the code, which
-/// `provider_retry_notice` in `agents/agent.rs` reads to say the retry plainly.
-fn content_filter_error_message(categories: &[String]) -> String {
-    if categories.is_empty() {
-        return "Provider content filter failed (content_filter_error). Retry the request or \
-                contact your provider administrator."
-            .to_string();
-    }
+/// Whose content filter a block came from, as the sentence names it. Azure
+/// files its verdicts under [`CONTENT_FILTER_RESULT_KEYS`]; a bare
+/// `finish_reason: "content_filter"` from any other OpenAI-compatible server
+/// is "the provider's".
+#[derive(Clone, Copy)]
+enum FilterOwner {
+    Azure,
+    Provider,
+}
+
+/// What a block stopped: the model's reply (in the stream) or the request
+/// itself (an HTTP 400 before anything was generated).
+#[derive(Clone, Copy)]
+enum FilterBlocked {
+    Reply,
+    Request,
+}
+
+/// What Biorouter says when a content filter blocks a reply or a request.
+/// Not retried: the same request is filtered the same way. "content filter
+/// blocked" is what `classify_provider_details` reads as a policy refusal,
+/// which is what keeps it from being retried. Nothing the provider wrote is
+/// carried: only the category names, in plain words.
+fn content_filter_blocked_message(
+    owner: FilterOwner,
+    blocked: FilterBlocked,
+    categories: &[String],
+) -> String {
+    let owner = match owner {
+        FilterOwner::Azure => "Azure's",
+        FilterOwner::Provider => "The provider's",
+    };
+    let blocked = match blocked {
+        FilterBlocked::Reply => "reply",
+        FilterBlocked::Request => "request",
+    };
+    let flagged = if categories.is_empty() {
+        String::new()
+    } else {
+        format!(
+            " (flagged: {})",
+            content_filter_categories_in_words(categories)
+        )
+    };
     format!(
-        "Azure's content filter blocked this request (flagged: {}; content_filter_error). Retry \
-         the request or contact your provider administrator.",
-        content_filter_categories_in_words(categories)
+        "{owner} content filter blocked this {blocked}{flagged}. Revise the request or contact \
+         your provider administrator."
     )
 }
 
-/// What Biorouter says when a verdict marks a category `filtered`. It keeps
-/// the `(content_filter)` marker `provider_retry_notice` reads.
-fn content_filter_blocked_message(categories: &[String]) -> String {
-    if categories.is_empty() {
-        return "Provider safety filter blocked the response (content_filter). Revise the \
-                request or contact your provider administrator."
-            .to_string();
+/// Azure's refusal of a request whose PROMPT its content filter blocked: HTTP
+/// 400 with `error.code` `content_filter`, the verdict under
+/// `error.innererror.content_filter_result` (Azure's "Scenario 3: Inappropriate
+/// input prompt"). Read in Biorouter's own words, naming the categories marked
+/// `filtered`, and never retried. Azure's own message is left out: it is
+/// provider prose. `None` for any other response, which the caller maps as it
+/// always has.
+pub fn azure_content_filter_refusal(status: u16, payload: &Value) -> Option<ProviderError> {
+    if status != 400 {
+        return None;
     }
-    format!(
-        "Provider safety filter blocked the response (content_filter), flagged: {}. Revise the \
-         request or contact your provider administrator.",
-        content_filter_categories_in_words(categories)
-    )
+    let error = payload.get("error")?;
+    if error.get("code").and_then(Value::as_str) != Some("content_filter") {
+        return None;
+    }
+    let categories = error
+        .get("innererror")
+        .map(|inner| {
+            filtered_categories_in(
+                CONTENT_FILTER_RESULT_KEYS
+                    .iter()
+                    .filter_map(|key| inner.get(*key).and_then(Value::as_object)),
+            )
+        })
+        .unwrap_or_default();
+    let logged = if categories.is_empty() {
+        "-".to_string()
+    } else {
+        categories.join(",")
+    };
+    tracing::warn!(
+        status,
+        code = "content_filter",
+        categories = logged.as_str(),
+        "Provider content filter refused the request"
+    );
+    Some(ProviderError::RequestFailed(
+        content_filter_blocked_message(FilterOwner::Azure, FilterBlocked::Request, &categories),
+    ))
 }
 
+/// The one sentence Azure writes in a filter-failure annotation, and the only
+/// one logged as it stands. Anything else in that field is provider prose that
+/// could echo the prompt, so it is logged as `-`.
+const AZURE_FILTER_NOT_RUN_MESSAGE: &str = "The contents are not filtered";
+
+/// What one stream has already said about Azure's content-filter annotations.
+#[derive(Debug, Default)]
+struct StreamFilterNotes {
+    /// A filter-failure annotation was logged. Once Azure's filter fails it
+    /// marks every later chunk of the reply, so the warning is given once per
+    /// stream, not once per chunk.
+    not_run_logged: bool,
+}
+
+/// One warning per stream when Azure says its content filter did not run on
+/// the reply: the annotation's code when it is a plain identifier, and its
+/// message only when it is Azure's own sentence. Never the prompt or the
+/// reply. The stream reads on: the text arrives, unfiltered.
+fn log_content_filter_not_run(error: &Value, notes: &mut StreamFilterNotes) {
+    if notes.not_run_logged {
+        return;
+    }
+    notes.not_run_logged = true;
+    let code = loggable_error_label(error.get("code"));
+    let message = error
+        .get("message")
+        .and_then(Value::as_str)
+        .filter(|message| *message == AZURE_FILTER_NOT_RUN_MESSAGE)
+        .unwrap_or("-");
+    tracing::warn!(
+        code = code.as_deref().unwrap_or("-"),
+        filter_message = message,
+        "Provider content filter did not run on this reply; reading on"
+    );
+}
+
+/// The block one choice carries, streamed or not, logged once: a category
+/// marked `filtered: true` under either filter-result key (Azure's, naming
+/// those categories), else a `finish_reason` of `content_filter` alone (Azure's
+/// when the choice carries a filter result, otherwise the provider's, naming
+/// nothing). `None` when nothing was blocked; a failed filter is not a block.
+fn content_filter_block_in_choice(choice: &Value) -> Option<ProviderError> {
+    for key in CONTENT_FILTER_RESULT_KEYS {
+        if let Some(results) = choice.get(key).and_then(Value::as_object) {
+            if content_filter_blocks(results) {
+                let categories = filtered_content_filter_categories(results);
+                log_content_filter_stop("content_filter", &categories);
+                return Some(ProviderError::RequestFailed(
+                    content_filter_blocked_message(
+                        FilterOwner::Azure,
+                        FilterBlocked::Reply,
+                        &categories,
+                    ),
+                ));
+            }
+        }
+    }
+    if choice.get("finish_reason").and_then(Value::as_str) != Some("content_filter") {
+        return None;
+    }
+    let owner = if CONTENT_FILTER_RESULT_KEYS
+        .iter()
+        .any(|key| choice.get(*key).is_some())
+    {
+        FilterOwner::Azure
+    } else {
+        FilterOwner::Provider
+    };
+    log_content_filter_stop("content_filter", &[]);
+    Some(ProviderError::RequestFailed(
+        content_filter_blocked_message(owner, FilterBlocked::Reply, &[]),
+    ))
+}
+
+/// A Chat Completions reply that was NOT streamed, read for a content-filter
+/// block the way the stream decoder reads each chunk: Azure's "Scenario 5"
+/// answers HTTP 200 with `finish_reason: "content_filter"` and the flagged
+/// categories, and an empty message. [`response_to_message`] would read that
+/// as an empty reply, so a caller asks this first. A failed filter
+/// (`content_filter_result.error`) is logged once and is not a block: the
+/// reply is there, unfiltered.
+pub fn content_filter_block_in_completion(response: &Value) -> Option<ProviderError> {
+    let choices = response.get("choices")?.as_array()?;
+    let mut notes = StreamFilterNotes::default();
+    for choice in choices {
+        if let Some(block) = content_filter_block_in_choice(choice) {
+            return Some(block);
+        }
+        for key in CONTENT_FILTER_RESULT_KEYS {
+            if let Some(error) = choice
+                .get(key)
+                .and_then(|results| results.get("error"))
+                .filter(|error| error.is_object())
+            {
+                log_content_filter_not_run(error, &mut notes);
+            }
+        }
+    }
+    None
+}
+
+/// One chunk on its own, as the tests read it.
+#[cfg(test)]
 fn parse_streaming_chunk(line: &str) -> anyhow::Result<StreamingChunk> {
+    parse_streaming_chunk_noting(line, &mut StreamFilterNotes::default())
+}
+
+/// One stream chunk, remembering across the stream's chunks which
+/// content-filter annotations were already logged.
+fn parse_streaming_chunk_noting(
+    line: &str,
+    filter_notes: &mut StreamFilterNotes,
+) -> anyhow::Result<StreamingChunk> {
     let mut value: Value = serde_json::from_str(line).map_err(|error| {
         ProviderError::StreamDecode(format!(
             "Failed to parse streaming chunk: invalid JSON at line {} column {}",
@@ -383,49 +583,30 @@ fn parse_streaming_chunk(line: &str) -> anyhow::Result<StreamingChunk> {
     }
     if let Some(choices) = value.get_mut("choices").and_then(Value::as_array_mut) {
         for choice in choices {
+            if let Some(block) = content_filter_block_in_choice(choice) {
+                return Err(block.into());
+            }
             let mut annotation = false;
             for key in CONTENT_FILTER_RESULT_KEYS {
                 if let Some(results) = choice.get(key).and_then(Value::as_object) {
-                    if let Some(error) = results.get("error").filter(|error| !error.is_null()) {
-                        if error.get("code").and_then(Value::as_str) == Some("content_filter_error")
-                        {
-                            let categories = flagged_content_filter_categories(results);
-                            log_content_filter_stop("content_filter_error", &categories);
-                            return Err(ProviderError::ServerError(content_filter_error_message(
-                                &categories,
-                            ))
-                            .into());
-                        }
-                        return Err(ProviderError::RequestFailed(
-                            "Provider content filter reported an error. Contact your provider administrator.".into(),
-                        ).into());
+                    // The filter failed to run: an annotation, not a verdict.
+                    // Until 2026-11-11 this ended the stream as a retried
+                    // server error, and the retry met the same annotation.
+                    if let Some(error) = results.get("error").filter(|error| error.is_object()) {
+                        log_content_filter_not_run(error, filter_notes);
+                        annotation = true;
+                        continue;
                     }
                     let checks: Vec<_> = results
                         .iter()
                         .filter(|(name, _)| *name != "error")
                         .collect();
-                    if checks
-                        .iter()
-                        .any(|(_, check)| check.get("filtered") == Some(&Value::Bool(true)))
-                    {
-                        let categories = flagged_content_filter_categories(results);
-                        log_content_filter_stop("content_filter", &categories);
-                        return Err(ProviderError::RequestFailed(content_filter_blocked_message(
-                            &categories,
-                        ))
-                        .into());
-                    }
                     annotation |= !checks.is_empty()
                         && checks.iter().all(|(_, check)| {
                             check.get("filtered").and_then(Value::as_bool).is_some()
                                 || check.get("detected").and_then(Value::as_bool).is_some()
                         });
                 }
-            }
-            if choice.get("finish_reason").and_then(Value::as_str) == Some("content_filter") {
-                return Err(ProviderError::RequestFailed(
-                    "Provider safety filter blocked the response (content_filter). Revise the request or contact your provider administrator.".into(),
-                ).into());
             }
             // Azure asynchronous filter annotations omit delta. Only recognized
             // filter results justify an empty delta; malformed choices still fail.
@@ -1125,6 +1306,9 @@ where
         // ProviderUsage we emit — letting the agent loop tell a length-truncated
         // turn ("length") apart from a natural completion ("stop").
         let mut last_finish_reason: Option<String> = None;
+        // Which of Azure's content-filter annotations this stream already
+        // logged (a failed filter marks every later chunk).
+        let mut filter_notes = StreamFilterNotes::default();
 
         'outer: while let Some(response) = stream.next().await {
             let response_str = response?;
@@ -1138,8 +1322,10 @@ where
                 continue
             }
 
-            let chunk = parse_streaming_chunk(line
-                .ok_or_else(|| anyhow!("unexpected stream format"))?)?;
+            let chunk = parse_streaming_chunk_noting(
+                line.ok_or_else(|| anyhow!("unexpected stream format"))?,
+                &mut filter_notes,
+            )?;
 
             if chunk.is_progress_only() {
                 // Metadata only (token counts, never text), so loggable.
@@ -1247,7 +1433,7 @@ where
                                 if line.is_empty() {
                                     continue;
                                 }
-                                let tool_chunk = parse_streaming_chunk(line)?;
+                                let tool_chunk = parse_streaming_chunk_noting(line, &mut filter_notes)?;
 
                                 if let Some(model) = tool_chunk.model.as_ref().filter(|model| !model.is_empty()) {
                                     tool_model = Some(model.clone());
@@ -3837,7 +4023,7 @@ data: [DONE]
         Ok(())
     }
 
-    // === Azure content-filter verdicts name their categories ===
+    // === Azure content filter: a failed filter reads on, a block names its categories ===
 
     #[derive(Clone, Default)]
     struct FilterLogCapture(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
@@ -3853,32 +4039,178 @@ data: [DONE]
         }
     }
 
-    /// The chunk, its decode error as the user reads it, and what the daemon
-    /// log received while it decoded.
-    fn decode_filter_frame(frame: &Value) -> (ProviderError, String) {
+    impl FilterLogCapture {
+        /// A WARN-level subscriber writing into this capture.
+        fn subscriber(&self) -> impl tracing::Subscriber + Send + Sync {
+            let writer = self.clone();
+            tracing_subscriber::fmt()
+                .without_time()
+                .with_ansi(false)
+                .with_max_level(tracing::Level::WARN)
+                .with_writer(move || writer.clone())
+                .finish()
+        }
+
+        fn text(&self) -> String {
+            String::from_utf8(self.0.lock().unwrap().clone()).unwrap()
+        }
+    }
+
+    /// One chunk decoded on its own, and what the daemon log received while
+    /// it decoded.
+    fn parse_filter_frame(frame: &Value) -> (anyhow::Result<StreamingChunk>, String) {
         let capture = FilterLogCapture::default();
-        let writer = capture.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .without_time()
-            .with_ansi(false)
-            .with_max_level(tracing::Level::WARN)
-            .with_writer(move || writer.clone())
-            .finish();
-        let error = tracing::subscriber::with_default(subscriber, || {
-            parse_streaming_chunk(&frame.to_string()).unwrap_err()
+        let parsed = tracing::subscriber::with_default(capture.subscriber(), || {
+            parse_streaming_chunk(&frame.to_string())
         });
-        let provider = error
+        (parsed, capture.text())
+    }
+
+    /// The decode error of a chunk Azure's filter blocked, as the user reads
+    /// it, and what the daemon log received.
+    fn decode_filter_frame(frame: &Value) -> (ProviderError, String) {
+        let (parsed, log) = parse_filter_frame(frame);
+        let provider = parsed
+            .expect_err("a block ends the stream")
             .downcast::<ProviderError>()
             .expect("a filter verdict is a provider error");
-        let log = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
         (provider, log)
     }
 
-    /// A stream chunk whose choice carries Azure's `content_filter_error` with
-    /// the verdict in `innererror.content_filter_result`, the shape Azure
-    /// documents for a filtered prompt (`ResponsibleAIPolicyViolation`), plus a
-    /// blocklist hit whose id must not leave the daemon.
-    fn azure_content_filter_error_frame() -> Value {
+    /// A text chunk in the shape Versa's gpt-5.5 deployment sent on
+    /// 2026-11-11 once its filter failed: the failure annotation under the
+    /// singular key, an empty verdict under the plural one, and the reply's
+    /// text in the same chunk (`azure-filter/small-3.json` in that day's live
+    /// QA folder).
+    fn azure_filter_not_run_chunk(text: &str, finish: Option<&str>) -> String {
+        format!(
+            "data: {}",
+            json!({
+                "id": "chatcmpl-nf",
+                "object": "chat.completion.chunk",
+                "created": 1_794_433_046,
+                "model": "gpt-5.5-2026-04-24",
+                "choices": [{
+                    "index": 0,
+                    "finish_reason": finish,
+                    "logprobs": null,
+                    "delta": {"content": text},
+                    "content_filter_result": {
+                        "error": {
+                            "code": "content_filter_error",
+                            "message": "The contents are not filtered"
+                        }
+                    },
+                    "content_filter_results": {}
+                }]
+            })
+        )
+    }
+
+    /// Live, 3 of 7 harmless Versa requests carried this annotation on every
+    /// chunk from the third on and still finished `stop` with the whole
+    /// reply. Biorouter used to end the turn on the first one, retry, meet it
+    /// again and stop with "Provider content filter failed".
+    #[tokio::test]
+    async fn a_failed_filter_reads_on_keeps_the_text_and_warns_once() -> anyhow::Result<()> {
+        let capture = FilterLogCapture::default();
+        let _guard = tracing::subscriber::set_default(capture.subscriber());
+        let lines = [
+            r#"data: {"id":"","object":"","created":0,"model":"","choices":[],"prompt_filter_results":[{"prompt_index":0,"content_filter_results":{}}]}"#.to_string(),
+            r#"data: {"id":"chatcmpl-nf","object":"chat.completion.chunk","model":"gpt-5.5-2026-04-24","choices":[{"index":0,"finish_reason":null,"delta":{"role":"assistant","content":""},"content_filter_results":{}}]}"#.to_string(),
+            r#"data: {"id":"chatcmpl-nf","object":"chat.completion.chunk","model":"gpt-5.5-2026-04-24","choices":[{"index":0,"finish_reason":null,"delta":{"content":"The"},"content_filter_results":{}}]}"#.to_string(),
+            azure_filter_not_run_chunk(" sky", None),
+            azure_filter_not_run_chunk(" is", None),
+            azure_filter_not_run_chunk(" blue.", None),
+            azure_filter_not_run_chunk("", Some("stop")),
+            r#"data: {"id":"chatcmpl-nf","object":"chat.completion.chunk","model":"gpt-5.5-2026-04-24","choices":[],"usage":{"prompt_tokens":28,"completion_tokens":6,"total_tokens":34}}"#.to_string(),
+            "data: [DONE]".to_string(),
+        ];
+        let items = decode_lines(&lines.join("\n"), false).await?;
+
+        let text: String = decoded_messages(&items)
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter_map(|content| match content {
+                MessageContent::Text(text) => Some(text.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "The sky is blue.");
+        let usage = items
+            .iter()
+            .filter_map(|(_, usage, _)| usage.as_ref())
+            .next_back()
+            .expect("usage");
+        assert_eq!(usage.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(usage.usage.total_tokens, Some(34));
+
+        let log = capture.text();
+        assert_eq!(
+            log.matches("Provider content filter did not run on this reply")
+                .count(),
+            1,
+            "{log}"
+        );
+        assert!(log.contains("WARN"), "{log}");
+        assert!(log.contains("code=\"content_filter_error\""), "{log}");
+        assert!(
+            log.contains("filter_message=\"The contents are not filtered\""),
+            "{log}"
+        );
+        assert!(!log.contains("sky"), "{log}");
+        Ok(())
+    }
+
+    /// The annotation with no text beside it is still a chunk, under either
+    /// key, and nothing the provider wrote in it reaches the log unless it is
+    /// Azure's own sentence and a plain code.
+    #[test]
+    fn a_failed_filter_annotation_alone_parses_and_logs_no_provider_prose() {
+        for key in CONTENT_FILTER_RESULT_KEYS {
+            let mut choice = json!({"index": 0, "finish_reason": null});
+            choice[key] = json!({
+                "error": {"code": "SECRET PROMPT TEXT", "message": "SECRET_PROMPT_TEXT"}
+            });
+            let (parsed, log) = parse_filter_frame(&json!({"choices": [choice]}));
+            let chunk = parsed.expect("a failed filter is an annotation, not an error");
+            assert_eq!(chunk.choices.len(), 1);
+            assert!(chunk.choices[0].delta.content.is_none());
+            assert!(log.contains("code=\"-\""), "{log}");
+            assert!(log.contains("filter_message=\"-\""), "{log}");
+            assert!(!log.contains("SECRET"), "{log}");
+        }
+    }
+
+    /// A failed filter that still says what it saw, with nothing marked
+    /// `filtered`, blocked nothing.
+    #[test]
+    fn a_failed_filter_that_only_detected_does_not_block() {
+        let (parsed, log) = parse_filter_frame(&json!({
+            "choices": [{
+                "index": 0,
+                "delta": {"content": "fn main() {}"},
+                "content_filter_result": {
+                    "error": {"code": "content_filter_error", "message": "SECRET_PROMPT_TEXT"},
+                    "protected_material_code": {"filtered": false, "detected": true},
+                    "hate": {"filtered": false, "severity": "safe"}
+                }
+            }]
+        }));
+        let chunk = parsed.expect("nothing was filtered");
+        assert_eq!(
+            chunk.choices[0].delta.content.as_deref(),
+            Some("fn main() {}")
+        );
+        assert!(!log.contains("blocked the reply"), "{log}");
+        assert!(!log.contains("SECRET_PROMPT_TEXT"), "{log}");
+    }
+
+    /// A choice whose filter result carries an error AND marks categories
+    /// `filtered` inside its `innererror` (the shape Azure documents for a
+    /// filtered prompt, `ResponsibleAIPolicyViolation`), plus a blocklist hit
+    /// whose id must not leave the daemon.
+    fn azure_blocking_frame_with_an_error() -> Value {
         json!({
             "id": "chatcmpl-cf",
             "object": "chat.completion.chunk",
@@ -3914,27 +4246,30 @@ data: [DONE]
     }
 
     #[test]
-    fn a_content_filter_error_names_the_flagged_categories_and_still_retries() {
-        let (error, log) = decode_filter_frame(&azure_content_filter_error_frame());
+    fn a_category_filtered_beside_an_error_is_a_block_that_names_it() {
+        let (error, log) = decode_filter_frame(&azure_blocking_frame_with_an_error());
 
-        // Still the retried server error it was before the categories were read.
-        let ProviderError::ServerError(text) = &error else {
-            panic!("expected a retryable server error, got {error:?}");
+        let ProviderError::RequestFailed(text) = &error else {
+            panic!("a block is not retried, got {error:?}");
         };
         assert_eq!(
             text,
-            "Azure's content filter blocked this request (flagged: custom blocklists, \
-             jailbreak, self harm; content_filter_error). Retry the request or contact your \
-             provider administrator."
+            "Azure's content filter blocked this reply (flagged: custom blocklists, jailbreak, \
+             self harm). Revise the request or contact your provider administrator."
         );
+        assert_eq!(
+            error.kind(),
+            crate::providers::errors::ProviderErrorKind::Policy
+        );
+        assert!(!crate::agents::mistakes::is_recoverable(&error));
 
         // The daemon log names the categories, and only the categories.
         assert!(log.contains("WARN"), "{log}");
         assert!(
-            log.contains("Provider content filter stopped the stream"),
+            log.contains("Provider content filter blocked the reply"),
             "{log}"
         );
-        assert!(log.contains("code=\"content_filter_error\""), "{log}");
+        assert!(log.contains("code=\"content_filter\""), "{log}");
         assert!(
             log.contains("categories=\"custom_blocklists,jailbreak,self_harm\""),
             "{log}"
@@ -3950,55 +4285,7 @@ data: [DONE]
     }
 
     #[test]
-    fn a_content_filter_error_reads_categories_beside_the_error_and_falls_back_to_detected() {
-        let frame = json!({
-            "choices": [{
-                "index": 0,
-                "content_filter_result": {
-                    "error": {"code": "content_filter_error", "message": "SECRET_PROMPT_TEXT"},
-                    "protected_material_code": {"filtered": false, "detected": true},
-                    "hate": {"filtered": false, "severity": "safe"}
-                }
-            }]
-        });
-        let (error, log) = decode_filter_frame(&frame);
-        assert!(
-            error
-                .to_string()
-                .contains("(flagged: protected material code; content_filter_error)"),
-            "{error}"
-        );
-        assert!(
-            log.contains("categories=\"protected_material_code\""),
-            "{log}"
-        );
-        assert!(!log.contains("SECRET_PROMPT_TEXT"), "{log}");
-    }
-
-    #[test]
-    fn a_content_filter_error_with_no_categories_keeps_its_sentence() {
-        let frame = json!({
-            "choices": [{
-                "index": 0,
-                "content_filter_results": {
-                    "error": {"code": "content_filter_error", "message": "The contents are not filtered"}
-                }
-            }]
-        });
-        let (error, log) = decode_filter_frame(&frame);
-        assert!(matches!(error, ProviderError::ServerError(_)), "{error:?}");
-        assert!(
-            error.to_string().contains(
-                "Provider content filter failed (content_filter_error). Retry the request or \
-                 contact your provider administrator."
-            ),
-            "{error}"
-        );
-        assert!(log.contains("categories=\"-\""), "{log}");
-    }
-
-    #[test]
-    fn a_filtered_verdict_names_its_categories_and_keeps_the_content_filter_marker() {
+    fn a_filtered_verdict_names_its_categories_in_a_plain_sentence() {
         let frame = json!({
             "choices": [{
                 "index": 0,
@@ -4016,11 +4303,333 @@ data: [DONE]
         };
         assert_eq!(
             text,
-            "Provider safety filter blocked the response (content_filter), flagged: hate, \
-             violence. Revise the request or contact your provider administrator."
+            "Azure's content filter blocked this reply (flagged: hate, violence). Revise the \
+             request or contact your provider administrator."
+        );
+        assert_eq!(
+            error.kind(),
+            crate::providers::errors::ProviderErrorKind::Policy
         );
         assert!(log.contains("code=\"content_filter\""), "{log}");
         assert!(log.contains("categories=\"hate,violence\""), "{log}");
         assert!(!log.contains("SECRET_REPLY_TEXT"), "{log}");
+        assert!(!text.contains("SECRET_REPLY_TEXT"), "{text}");
+    }
+
+    /// A category name Biorouter does not know still blocks; the sentence
+    /// just names nothing rather than repeat what the provider wrote.
+    #[test]
+    fn a_block_under_an_unknown_name_still_stops_and_names_nothing() {
+        let (error, log) = decode_filter_frame(&json!({
+            "choices": [{
+                "index": 0,
+                "content_filter_results": {"SECRET Name": {"filtered": true}}
+            }]
+        }));
+        assert_eq!(
+            error.to_string(),
+            "Request failed: Azure's content filter blocked this reply. Revise the request or \
+             contact your provider administrator."
+        );
+        assert!(log.contains("categories=\"-\""), "{log}");
+        assert!(!log.contains("SECRET"), "{log}");
+    }
+
+    /// Azure's "Scenario 5": the generation is filtered and the chunk says so
+    /// with `finish_reason: "content_filter"` alone. Fatal, not retried, in
+    /// plain words, and the text beside it is neither shown nor logged.
+    #[test]
+    fn a_content_filter_finish_reason_alone_is_a_block() {
+        for (choice, owner) in [
+            (
+                json!({"index": 0, "finish_reason": "content_filter", "delta": {"content": "SECRET_REPLY_TEXT"}, "content_filter_results": {}}),
+                "Azure's",
+            ),
+            (
+                json!({"index": 0, "finish_reason": "content_filter", "delta": {"content": "SECRET_REPLY_TEXT"}}),
+                "The provider's",
+            ),
+        ] {
+            let (error, log) = decode_filter_frame(&json!({"choices": [choice]}));
+            let ProviderError::RequestFailed(text) = &error else {
+                panic!("a block is not retried, got {error:?}");
+            };
+            assert_eq!(
+                text,
+                &format!(
+                    "{owner} content filter blocked this reply. Revise the request or contact \
+                     your provider administrator."
+                )
+            );
+            assert_eq!(
+                error.kind(),
+                crate::providers::errors::ProviderErrorKind::Policy
+            );
+            assert!(!crate::agents::mistakes::is_recoverable(&error));
+            assert!(
+                log.contains("Provider content filter blocked the reply"),
+                "{log}"
+            );
+            assert!(!text.contains("SECRET"), "{text}");
+            assert!(!log.contains("SECRET"), "{log}");
+        }
+    }
+
+    /// Azure's documented Asynchronous Filter stream (content-streaming,
+    /// "Sample response stream (blocked by filters)"): tokens first, then
+    /// annotation chunks with no delta and `content_filter_offsets`, and last
+    /// a chunk that finishes `content_filter` with the category it filtered.
+    /// The text before the block was already shown; the stream then stops
+    /// naming that category.
+    #[tokio::test]
+    async fn an_asynchronous_filter_block_arrives_after_text_and_names_its_category() {
+        let safe = json!({
+            "hate": {"filtered": false, "severity": "safe"},
+            "self_harm": {"filtered": false, "severity": "safe"},
+            "sexual": {"filtered": false, "severity": "safe"},
+            "violence": {"filtered": false, "severity": "safe"}
+        });
+        let lines = [
+            format!(
+                "data: {}",
+                json!({"id": "", "object": "", "created": 0, "model": "", "prompt_filter_results": [{"prompt_index": 0, "content_filter_results": safe}], "choices": [], "usage": null})
+            ),
+            format!(
+                "data: {}",
+                json!({"id": "chatcmpl-a", "object": "chat.completion.chunk", "created": 1, "model": "gpt-35-turbo", "choices": [{"index": 0, "finish_reason": null, "delta": {"role": "assistant"}}], "usage": null})
+            ),
+            format!(
+                "data: {}",
+                json!({"id": "chatcmpl-a", "object": "chat.completion.chunk", "created": 1, "model": "gpt-35-turbo", "choices": [{"index": 0, "finish_reason": null, "delta": {"content": "Hey"}}], "usage": null})
+            ),
+            format!(
+                "data: {}",
+                json!({"id": "", "object": "", "created": 0, "model": "", "choices": [{"index": 0, "finish_reason": null, "content_filter_results": safe, "content_filter_offsets": {"check_offset": 65, "start_offset": 65, "end_offset": 1056}}], "usage": null})
+            ),
+            format!(
+                "data: {}",
+                json!({"id": "", "object": "", "created": 0, "model": "", "choices": [{"index": 0, "finish_reason": "content_filter", "content_filter_results": {"protected_material_text": {"detected": true, "filtered": true}}, "content_filter_offsets": {"check_offset": 65, "start_offset": 65, "end_offset": 1056}}], "usage": null})
+            ),
+            "data: [DONE]".to_string(),
+        ];
+        let stream = response_to_streaming_message(tokio_stream::iter(
+            lines.into_iter().map(Ok::<String, anyhow::Error>),
+        ));
+        pin!(stream);
+        let mut text = String::new();
+        let mut failure = None;
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok((Some(message), _, _)) => text.push_str(&message.as_concat_text()),
+                Ok(_) => {}
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+            }
+        }
+        assert_eq!(text, "Hey");
+        let error = failure
+            .expect("the block ends the stream")
+            .downcast::<ProviderError>()
+            .expect("a provider error");
+        assert_eq!(
+            error.to_string(),
+            "Request failed: Azure's content filter blocked this reply (flagged: protected \
+             material text). Revise the request or contact your provider administrator."
+        );
+        assert!(!crate::agents::mistakes::is_recoverable(&error));
+    }
+
+    /// Azure's "Scenario 3": a prompt its filter blocks is an HTTP 400 with
+    /// code `content_filter` and the verdict under `innererror`. It reads as a
+    /// policy block naming the flagged categories, never as "Bad request" with
+    /// Azure's own paragraph, and is not retried.
+    #[test]
+    fn an_http_400_content_filter_names_its_categories_and_nothing_else() {
+        let body = json!({
+            "error": {
+                "message": "SECRET_PROVIDER_PARAGRAPH The response was filtered due to the prompt triggering Azure OpenAI's content management policy.",
+                "type": null,
+                "param": "prompt",
+                "code": "content_filter",
+                "status": 400,
+                "innererror": {
+                    "code": "ResponsibleAIPolicyViolation",
+                    "content_filter_result": {
+                        "hate": {"filtered": false, "severity": "safe"},
+                        "jailbreak": {"filtered": true, "detected": true},
+                        "self_harm": {"filtered": true, "severity": "medium"},
+                        "custom_blocklists": {"filtered": false, "details": [{"filtered": false, "id": "SECRET_BLOCKLIST_ID"}]}
+                    }
+                }
+            }
+        });
+        let capture = FilterLogCapture::default();
+        let error = tracing::subscriber::with_default(capture.subscriber(), || {
+            azure_content_filter_refusal(400, &body)
+        })
+        .expect("a filtered prompt is a refusal");
+        let log = capture.text();
+        let ProviderError::RequestFailed(text) = &error else {
+            panic!("a block is not retried, got {error:?}");
+        };
+        assert_eq!(
+            text,
+            "Azure's content filter blocked this request (flagged: jailbreak, self harm). \
+             Revise the request or contact your provider administrator."
+        );
+        assert_eq!(
+            error.kind(),
+            crate::providers::errors::ProviderErrorKind::Policy
+        );
+        assert!(!crate::agents::mistakes::is_recoverable(&error));
+        assert!(!crate::providers::retry::should_retry(&error));
+        assert!(log.contains("status=400"), "{log}");
+        assert!(log.contains("categories=\"jailbreak,self_harm\""), "{log}");
+        for leaked in ["SECRET_PROVIDER_PARAGRAPH", "SECRET_BLOCKLIST_ID"] {
+            assert!(!text.contains(leaked), "{text}");
+            assert!(!log.contains(leaked), "{log}");
+        }
+
+        // With no verdict it still says what happened, naming nothing.
+        let bare =
+            json!({"error": {"code": "content_filter", "message": "SECRET_PROVIDER_PARAGRAPH"}});
+        assert_eq!(
+            azure_content_filter_refusal(400, &bare)
+                .unwrap()
+                .to_string(),
+            "Request failed: Azure's content filter blocked this request. Revise the request or \
+             contact your provider administrator."
+        );
+    }
+
+    /// Only a 400 whose code is `content_filter` is read this way; every other
+    /// response keeps the mapping it always had.
+    #[test]
+    fn other_http_failures_are_not_content_filter_refusals() {
+        let filtered = json!({"error": {"code": "content_filter"}});
+        assert!(azure_content_filter_refusal(500, &filtered).is_none());
+        assert!(azure_content_filter_refusal(429, &filtered).is_none());
+        for body in [
+            json!({"error": {"code": "context_length_exceeded", "message": "too long"}}),
+            json!({"error": {"code": "content_filter_error"}}),
+            json!({"error": "content_filter"}),
+            json!({"code": "content_filter"}),
+            json!({}),
+        ] {
+            assert!(azure_content_filter_refusal(400, &body).is_none(), "{body}");
+        }
+    }
+
+    /// Azure's "Scenario 5" without streaming: HTTP 200, an empty message,
+    /// `finish_reason: "content_filter"` and the verdict beside it. A
+    /// non-streamed reply reads the same block the stream decoder reads, in
+    /// the same words, instead of an empty reply.
+    #[test]
+    fn a_completion_blocked_by_its_filter_names_its_categories() {
+        let response = json!({
+            "id": "chatcmpl-cf",
+            "object": "chat.completion",
+            "model": "gpt-5.5-2026-04-24",
+            "choices": [{
+                "index": 0,
+                "finish_reason": "content_filter",
+                "message": {"role": "assistant", "content": "SECRET_REPLY_TEXT"},
+                "content_filter_results": {
+                    "hate": {"filtered": true, "severity": "high"},
+                    "sexual": {"filtered": false, "severity": "safe"},
+                    "violence": {"filtered": true, "severity": "medium"}
+                }
+            }],
+            "usage": {"prompt_tokens": 9, "completion_tokens": 0, "total_tokens": 9}
+        });
+        let capture = FilterLogCapture::default();
+        let error = tracing::subscriber::with_default(capture.subscriber(), || {
+            content_filter_block_in_completion(&response)
+        })
+        .expect("a filtered completion is a block");
+        let log = capture.text();
+        let ProviderError::RequestFailed(text) = &error else {
+            panic!("a block is not retried, got {error:?}");
+        };
+        assert_eq!(
+            text,
+            "Azure's content filter blocked this reply (flagged: hate, violence). Revise the \
+             request or contact your provider administrator."
+        );
+        assert_eq!(
+            error.kind(),
+            crate::providers::errors::ProviderErrorKind::Policy
+        );
+        assert!(!crate::providers::retry::should_retry(&error));
+        assert!(
+            log.contains("Provider content filter blocked the reply"),
+            "{log}"
+        );
+        assert!(log.contains("categories=\"hate,violence\""), "{log}");
+        assert!(!log.contains("SECRET_REPLY_TEXT"), "{log}");
+        assert!(!text.contains("SECRET_REPLY_TEXT"), "{text}");
+
+        // The finish reason alone, from a server with no filter result of its
+        // own, is the provider's block and names nothing.
+        let bare = json!({"choices": [{
+            "index": 0,
+            "finish_reason": "content_filter",
+            "message": {"role": "assistant", "content": ""}
+        }]});
+        assert_eq!(
+            content_filter_block_in_completion(&bare)
+                .expect("a block")
+                .to_string(),
+            "Request failed: The provider's content filter blocked this reply. Revise the \
+             request or contact your provider administrator."
+        );
+    }
+
+    /// A completed reply whose filter failed to run is still the reply: no
+    /// block, one warning, and nothing the provider wrote in the log.
+    #[test]
+    fn a_completion_whose_filter_did_not_run_is_not_a_block() {
+        let response = json!({
+            "choices": [{
+                "index": 0,
+                "finish_reason": "stop",
+                "message": {"role": "assistant", "content": "SECRET_REPLY_TEXT"},
+                "content_filter_result": {
+                    "error": {"code": "content_filter_error", "message": "The contents are not filtered"}
+                },
+                "content_filter_results": {
+                    "error": {"code": "content_filter_error", "message": "The contents are not filtered"}
+                }
+            }]
+        });
+        let capture = FilterLogCapture::default();
+        let block = tracing::subscriber::with_default(capture.subscriber(), || {
+            content_filter_block_in_completion(&response)
+        });
+        assert!(block.is_none(), "{block:?}");
+        let log = capture.text();
+        assert_eq!(
+            log.matches("Provider content filter did not run on this reply")
+                .count(),
+            1,
+            "{log}"
+        );
+        assert!(!log.contains("SECRET_REPLY_TEXT"), "{log}");
+        let message = response_to_message(&response).unwrap();
+        assert_eq!(message.as_concat_text(), "SECRET_REPLY_TEXT");
+
+        // An ordinary reply, and a body with no choices, block nothing.
+        for clean in [
+            json!({"choices": [{"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "ok"}, "content_filter_results": {"hate": {"filtered": false, "severity": "safe"}}}]}),
+            json!({"choices": []}),
+            json!({}),
+        ] {
+            assert!(
+                content_filter_block_in_completion(&clean).is_none(),
+                "{clean}"
+            );
+        }
     }
 }
