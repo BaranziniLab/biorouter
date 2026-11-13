@@ -77,6 +77,8 @@ export interface ComposerFooterProps {
   outputTokens?: number;
   sessionCosts?: SessionCosts;
   modelCostRows?: ModelCostRow[];
+  /** Reads the chat's usage ledger again; the cost card calls it each time it opens. */
+  reloadCost?: () => void;
   /**
    * The chat's usage limit, which `ChatInput` reads (it holds Send while the chat is paused) and
    * the cost card shows and changes. Given, the cost item is always on the line in a chat, even
@@ -113,6 +115,7 @@ export function ComposerFooter({
   outputTokens,
   sessionCosts,
   modelCostRows,
+  reloadCost,
   usageLimit,
   onOpenUsageSettings,
   className,
@@ -154,6 +157,7 @@ export function ComposerFooter({
                 outputTokens={outputTokens}
                 sessionCosts={sessionCosts}
                 modelCostRows={modelCostRows}
+                reloadCost={reloadCost}
                 ledgerOnly={costFromLedgerOnly}
                 usageLimit={usageLimit}
                 onOpenUsageSettings={onOpenUsageSettings}

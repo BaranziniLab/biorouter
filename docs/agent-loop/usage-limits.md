@@ -150,7 +150,11 @@ Other spending doors follow the same rule:
 - **Chat titles.** A chat at a limit is not named by a model. After a message the limit
   stopped, a chat still called "New chat" gets the first words of its first message as
   its title, and a chat that already has a title keeps it. The check is the same one the
-  turn makes before each model request (`SessionManager::maybe_update_name`).
+  turn makes before each model request (`SessionManager::maybe_update_name`). Below a
+  limit, the naming call is billed to the chat (`side:session_name`) and sees at most the
+  first 1,000 characters of each of the first three user messages, 3,000 in all
+  (`providers::base::session_name_context`): sending the whole message billed a
+  93K-token first message's title at 92,745 input tokens.
 
 In short, a limit holds these model calls: every request of a turn, a message sent to a
 paused chat, automatic, overflow and background compaction, `/compact`, the self-critique
@@ -258,9 +262,14 @@ card's Limit section), and the monthly and default limits in Settings > App > Us
 [Shared controls](../desktop-ui/shared-controls.md#the-cost-cards-limit-section). The
 composer reads the chat's limit when it opens, after every turn, when a stored limit
 notice lands and whenever the chat's recorded usage moves (a title's side call lands after
-the turn). A composer with no chat yet reads the monthly state from `GET /usage/summary`
-and holds Send while the monthly limit is reached. Under the monthly limit's row, Settings
-shows what the month used against it and whether it is near or reached.
+the turn, and the post-turn naming poll carries the chat's row counters into the live ones).
+The card's "Cost of this chat" is every request the chat made, its side calls (the title,
+stall checks, judges, hooks, sampling, knowledge macros) included, and it is read again each
+time the card opens, with the Limit section, so the two never count different requests; the
+limit line adds the chat's subagents. A composer with no chat yet reads the monthly state
+from `GET /usage/summary` and holds Send while the monthly limit is reached. Under the
+monthly limit's row, Settings shows what the month used against it and whether it is near
+or reached.
 
 ## Where the code is
 

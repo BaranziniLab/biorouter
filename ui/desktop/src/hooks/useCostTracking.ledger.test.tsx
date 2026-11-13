@@ -264,3 +264,45 @@ describe('useCostTracking: the live counters ask the ledger again', () => {
     await waitFor(() => expect(result.current.modelRows).toHaveLength(1));
   });
 });
+
+/**
+ * 2026-11-13, a Claude Haiku 5.5 chat on Versa Bedrock: the chat's title is a billed side call the
+ * daemon makes after the turn's last frame, so no counter the hook watches moved, the card's
+ * "Cost of this chat" kept the turn's $0.0769, and the Limit line (read on every open) counted the
+ * title's tokens. `reload` is what the card asks on open, beside the Limit's own read.
+ */
+describe('useCostTracking: reload reads the ledger again with nothing moved', () => {
+  const turnOnly: ModelUsageRow = { ...usageRow, inputTokens: 93_000, cost: 0.0769, turns: 1 };
+  const withTitle: ModelUsageRow = {
+    ...turnOnly,
+    inputTokens: 93_000 + 92_745,
+    cost: 0.0769 + 0.0093,
+  };
+
+  it('picks up a side call made after the turn, keeping its rows while it asks', async () => {
+    mocks.getSessionUsage.mockResolvedValueOnce({ data: { models: [turnOnly] } });
+    const counters = { accumulatedInputTokens: 93_000 };
+    const { result } = renderHook(() =>
+      useCostTracking({ session: chat('a', 0), liveTokens: counters })
+    );
+    await waitFor(() => expect(result.current.modelRows[0]?.totalCost).toBeCloseTo(0.0769));
+
+    const usage = deferred();
+    mocks.getSessionUsage.mockReturnValue(usage.promise);
+    act(() => result.current.reload());
+    await waitFor(() => expect(mocks.getSessionUsage).toHaveBeenCalledTimes(2));
+    expect(result.current.modelRows[0]?.totalCost).toBeCloseTo(0.0769);
+
+    await act(async () => usage.answer([withTitle]));
+    await waitFor(() => expect(result.current.modelRows[0]?.totalCost).toBeCloseTo(0.0862));
+  });
+
+  it('is the same function on every render, so an effect keyed on it runs once', async () => {
+    mocks.getSessionUsage.mockResolvedValue({ data: { models: [turnOnly] } });
+    const { result, rerender } = renderHook(() => useCostTracking({ session: chat('a', 0) }));
+    const first = result.current.reload;
+    rerender();
+    await waitFor(() => expect(result.current.ledgerSettled).toBe(true));
+    expect(result.current.reload).toBe(first);
+  });
+});
