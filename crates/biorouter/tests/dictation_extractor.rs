@@ -49,6 +49,9 @@ fn extraction_requires_the_setting_and_two_chats() {
     assert_eq!(dictionary.view().unwrap().entries()[0].seen, 2);
 }
 
+/// An ineligible observation, and one stamped Private, write nothing (owner, 2026-11-13:
+/// suggestions come only from chats on public models). The control, the same text
+/// stamped Public, lands.
 #[test]
 fn disabled_context_and_private_stamp_are_isolated() {
     let dir = tempfile::tempdir().unwrap();
@@ -86,13 +89,25 @@ fn disabled_context_and_private_stamp_are_isolated() {
         },
     )
     .unwrap();
-    let view = dictionary.view().unwrap();
-    assert_eq!(view.entries().len(), 1);
-    assert_eq!(view.entries()[0].tier, EntryTier::Private);
-    assert_eq!(
-        view.entries()[0].affiliation.as_ref().unwrap().institutions,
-        ["ucsf"]
+    assert!(
+        dictionary.view().unwrap().entries().is_empty(),
+        "a private chat suggested a word"
     );
+    observe(
+        &dictionary,
+        Observation {
+            session_id: "public",
+            text: "UCSF",
+            eligible: true,
+            admitted_stamp: dictionary.view().unwrap().content_stamp(),
+            tier: EntryTier::Public,
+            affiliation: None,
+        },
+    )
+    .unwrap();
+    let view = dictionary.view().unwrap();
+    assert_eq!(view.entries().len(), 1, "control: a public chat suggests it");
+    assert_eq!(view.entries()[0].tier, EntryTier::Public);
 }
 
 #[test]

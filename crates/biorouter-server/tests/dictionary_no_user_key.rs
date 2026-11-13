@@ -257,6 +257,56 @@ async fn writes_are_admitted_for_listable_rows_and_stamped_with_standing() {
 
 /// DD-38: tier changes are the host's, refused before the id is read; raising the
 /// settings is refused with the option named, and lowering is admitted.
+/// On `serve`, turning suggestions on stays the host's (MSG-DICTIONARY-HOST-SETTINGS), and
+/// **Keep suggesting** is admitted, as lowering a setting is. Once the host turned them on at
+/// the terminal, the browser may find words in the recent chats, which writes only public
+/// suggestions the browser can list, and stop the scan.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn suggestions_on_serve_are_turned_on_at_the_terminal_and_scanned_from_the_browser() {
+    let app = daemon().await;
+    let (status, body) = post(
+        &app,
+        "/dictionary/settings",
+        Caller::SecretOnly,
+        json!({"learn_from_chats": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["code"], "host_settings");
+    let (status, body) = post(
+        &app,
+        "/dictionary/settings",
+        Caller::SecretOnly,
+        json!({"keep_suggesting": true}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+
+    dictionary_store::open_store()
+        .write(|file| {
+            file.settings.learn_from_chats = true;
+            Ok(())
+        })
+        .unwrap();
+    let (status, body) = post(&app, "/dictionary/suggestions/scan", Caller::SecretOnly, json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let (status, body) = post(
+        &app,
+        "/dictionary/suggestions/scan/stop",
+        Caller::SecretOnly,
+        json!({}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    dictionary_store::open_store()
+        .write(|file| {
+            file.settings.learn_from_chats = false;
+            Ok(())
+        })
+        .unwrap();
+}
+
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn tier_changes_and_raised_settings_are_the_hosts() {

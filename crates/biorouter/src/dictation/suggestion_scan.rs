@@ -485,6 +485,46 @@ mod tests {
         assert_eq!(harvest.words.len(), SCAN_MAX_WORDS_PER_CHAT);
     }
 
+    /// A Crew scoped chat is never read, while the same chat without its scope is: the
+    /// scan asks the chat extractor's own rule ([`super::super::extractor::chat_may_learn`]).
+    #[tokio::test]
+    async fn a_crew_scoped_chat_is_never_scanned() {
+        use crate::security::dictionary_store::open_store;
+
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = tempfile::TempDir::new().unwrap();
+        let _root = crate::test_sandbox::relocate_path_root(root.path().to_str().unwrap());
+        let sessions = SessionManager::new(root.path().join("sessions"));
+        let mut chats = Vec::new();
+        for name in ["one", "two"] {
+            let chat = sessions
+                .create_session(root.path().to_path_buf(), name.into(), SessionType::User)
+                .await
+                .unwrap();
+            sessions
+                .add_message(&chat.id, &Message::user().with_text("CREWSCAN24"))
+                .await
+                .unwrap();
+            chats.push(chat);
+        }
+        open_store()
+            .write(|file| {
+                file.settings.learn_from_chats = true;
+                Ok(())
+            })
+            .unwrap();
+        let stop = AtomicBool::new(false);
+        let crew = crate::crew::install_test_scope(&chats[0].id, None).await;
+        let scoped = scan(&sessions, &stop, &mut |_| {}).await;
+        crate::crew::remove_test_scope(&crew, &chats[0].id).await;
+        let scoped = scoped.unwrap();
+        assert_eq!(scoped.words_found, 0, "a Crew scoped chat was read: {scoped:?}");
+        let open = scan(&sessions, &stop, &mut |_| {}).await.unwrap();
+        assert_eq!(open.words_found, 1, "control: without the scope it is read");
+    }
+
     #[test]
     fn only_a_persons_own_public_recent_chat_may_be_scanned() {
         let now = chrono::Utc::now();

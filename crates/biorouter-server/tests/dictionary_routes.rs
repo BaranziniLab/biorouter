@@ -740,6 +740,173 @@ async fn settings_change_with_the_proof() {
     assert_eq!(lowered.body["agent_writes"], "suggest");
 }
 
+/// Listed chat suggestions written straight to the store, as the chat extractor writes
+/// them after a word was found in two chats; their ids.
+fn listed_chat_suggestions(prefix: &str, count: usize) -> Vec<String> {
+    let mut ids = Vec::new();
+    dictionary_store::open_store()
+        .write(|file| {
+            let at = store::schema::now();
+            for i in 0..count {
+                let word = format!("{prefix}{i}X");
+                for chat in ["chat-a", "chat-b"] {
+                    file.observe_auto_suggestion(&word, EntryTier::Public, chat, None, at)?;
+                }
+                let row = file.entries.iter().find(|row| row.written == word).unwrap();
+                assert_eq!(row.seen, 2, "premise: {word} is listed");
+                ids.push(row.id.to_string());
+            }
+            Ok(())
+        })
+        .unwrap();
+    ids
+}
+
+/// User run suggestions (owner, 2026-11-13): the settings answer carries the person's own
+/// measure; Keep and Dismiss of listed chat suggestions count; once most of 20 or more are
+/// dismissed a word needs more chats and the answer offers to turn suggestions off;
+/// **Keep suggesting** quiets the offer and needs the proof like every write.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn suggestions_are_measured_by_the_persons_own_decisions() {
+    let (_state, app) = daemon().await;
+    let on = post(
+        &app,
+        "/dictionary/settings",
+        Caller::Proof,
+        json!({"learn_from_chats": true}),
+    )
+    .await;
+    assert_eq!(on.status, StatusCode::OK, "{}", on.body);
+    assert_eq!(
+        on.body["suggestions"],
+        json!({"recent_kept": 0, "recent_decisions": 0, "required_chats": 2, "offer_turning_off": false})
+    );
+
+    let ids = listed_chat_suggestions("MEAS", 22);
+    let kept = post(
+        &app,
+        "/dictionary/suggestions/accept",
+        Caller::Proof,
+        json!({"ids": &ids[..2]}),
+    )
+    .await;
+    assert_eq!(kept.body["accepted"], 2, "{}", kept.body);
+    let refused = post(
+        &app,
+        "/dictionary/suggestions/dismiss",
+        Caller::SecretOnly,
+        json!({"ids": &ids[2..]}),
+    )
+    .await;
+    assert_eq!(refused.status, StatusCode::FORBIDDEN);
+    let dismissed = post(
+        &app,
+        "/dictionary/suggestions/dismiss",
+        Caller::Proof,
+        json!({"ids": &ids[2..]}),
+    )
+    .await;
+    assert_eq!(dismissed.body["dismissed"], 20, "{}", dismissed.body);
+
+    let settings = get(&app, "/dictionary/settings", Caller::SecretOnly).await;
+    assert_eq!(
+        settings.body["suggestions"],
+        json!({"recent_kept": 2, "recent_decisions": 22, "required_chats": 4, "offer_turning_off": true}),
+        "2 kept of 22 is under a quarter"
+    );
+
+    let unproven = post(
+        &app,
+        "/dictionary/settings",
+        Caller::SecretOnly,
+        json!({"keep_suggesting": true}),
+    )
+    .await;
+    assert_eq!(unproven.status, StatusCode::FORBIDDEN);
+    let quiet = post(
+        &app,
+        "/dictionary/settings",
+        Caller::Proof,
+        json!({"keep_suggesting": true}),
+    )
+    .await;
+    assert_eq!(quiet.status, StatusCode::OK, "{}", quiet.body);
+    assert_eq!(quiet.body["suggestions"]["offer_turning_off"], false);
+    assert_eq!(quiet.body["suggestions"]["required_chats"], 4, "still held back");
+
+    let off = post(
+        &app,
+        "/dictionary/settings",
+        Caller::Proof,
+        json!({"learn_from_chats": false}),
+    )
+    .await;
+    assert_eq!(off.body["learn_from_chats"], false);
+    assert_eq!(off.body["suggestions"]["offer_turning_off"], false, "nothing to turn off");
+}
+
+/// **Find words in my recent chats**: starting the scan needs the proof, is refused with
+/// MSG-SCAN-OFF while suggestions are off, and once on runs to its end; stopping needs the
+/// proof too. Its progress is counts only and any caller may read it.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn the_scan_of_recent_chats_is_the_persons_to_start() {
+    use biorouter::dictation::suggestion_scan::MSG_SCAN_OFF;
+
+    let (_state, app) = daemon().await;
+    let refused = post(&app, "/dictionary/suggestions/scan", Caller::Proof, json!({})).await;
+    assert_eq!(refused.status, StatusCode::CONFLICT, "{}", refused.body);
+    assert_eq!(
+        refused.body,
+        json!({"code": "suggestions_off", "message": MSG_SCAN_OFF})
+    );
+
+    post(
+        &app,
+        "/dictionary/settings",
+        Caller::Proof,
+        json!({"learn_from_chats": true}),
+    )
+    .await;
+    for caller in [Caller::SecretOnly, Caller::StatedPrivate] {
+        for uri in ["/dictionary/suggestions/scan", "/dictionary/suggestions/scan/stop"] {
+            let answer = post(&app, uri, caller, json!({})).await;
+            assert_eq!(answer.status, StatusCode::FORBIDDEN, "{caller:?} {uri}");
+            assert_eq!(answer.body["code"], "agent");
+        }
+    }
+    let started = post(&app, "/dictionary/suggestions/scan", Caller::Proof, json!({})).await;
+    assert_eq!(started.status, StatusCode::OK, "{}", started.body);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    let ended = loop {
+        let progress = get(&app, "/dictionary/suggestions/scan", Caller::SecretOnly).await;
+        assert_eq!(progress.status, StatusCode::OK);
+        if progress.body["state"] != "running" {
+            break progress.body;
+        }
+        assert!(std::time::Instant::now() < deadline, "the scan never ended");
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    assert_eq!(ended["state"], "finished", "{ended}");
+    assert_eq!(ended["chats_read"], ended["chats_total"]);
+    let stopped = post(
+        &app,
+        "/dictionary/suggestions/scan/stop",
+        Caller::Proof,
+        json!({}),
+    )
+    .await;
+    assert_eq!(stopped.status, StatusCode::OK, "{}", stopped.body);
+    post(
+        &app,
+        "/dictionary/settings",
+        Caller::Proof,
+        json!({"learn_from_chats": false}),
+    )
+    .await;
+}
+
 fn versa() -> HashMap<String, String> {
     HashMap::from([
         ("BIOROUTER_PROVIDER".to_string(), "versa_azure".to_string()),

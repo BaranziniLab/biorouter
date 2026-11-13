@@ -12,6 +12,7 @@
 mod dictation_extractor_support;
 
 use biorouter::conversation::message::{Message, MessageProvenance, ProvenanceKind};
+use biorouter::dictation::extractor::{admission_stamp, observations_in_flight};
 use biorouter::privacy::affiliation::InstitutionId;
 use biorouter::security::dictionary_store::store::{EntrySource, EntryStatus, EntryTier};
 use biorouter::session::SessionType;
@@ -129,15 +130,16 @@ async fn injected_messages_and_other_kinds_of_session_suggest_nothing() {
     learn_from_chats(false);
 }
 
-/// A private chat produces a private suggestion whose institutions unite the chat's
-/// model's with the chat's record (P-16, O-35): `null` for a model on this computer in a
-/// chat that touched no institution, `{ucsf}` for the same model in a chat whose record
-/// holds `ucsf`.
+/// A chat whose tier is Private suggests nothing (owner, 2026-11-13): a model on this
+/// computer in a chat that touched no institution, and the same model in a chat whose
+/// record holds `ucsf`. The control, the same agent in a chat on a public model, does.
+/// Every turn reaches the model, so each absence is the extractor's decision.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_private_chat_suggests_a_private_term_with_its_institutions() {
+async fn a_private_chat_suggests_nothing() {
     let _serial = SERIAL.lock().await;
     let fx = Fixture::scratch();
     let local = CountingProvider::local();
+    let public = CountingProvider::public();
     let agent = fx.agent().await;
     learn_from_chats(true);
 
@@ -147,27 +149,70 @@ async fn a_private_chat_suggests_a_private_term_with_its_institutions() {
         .record_required_session_affiliation(&touched.id, InstitutionId::new("ucsf"))
         .await
         .unwrap();
-    for (chat, term, institutions) in [
-        (&untouched, "PRVNUL24", None),
-        (&touched, "PRVUCF24", Some(vec!["ucsf".to_string()])),
-    ] {
+    for (chat, term) in [(&untouched, "PRVNUL24"), (&touched, "PRVUCF24")] {
         agent
             .update_provider(local.clone(), &chat.id)
             .await
             .unwrap();
         say(&agent, chat, term, &local).await;
-        wait_for("the private term to land", || rows_named(term).len() == 1).await;
-        let row = rows_named(term).remove(0);
-        assert_eq!(row.tier, EntryTier::Private, "{term}");
-        assert_eq!(row.source, EntrySource::Auto, "{term}");
-        assert_eq!(row.status, EntryStatus::Suggested, "{term}");
-        assert_eq!(
-            row.affiliation.map(|stamp| stamp.institutions),
-            institutions,
-            "{term}"
-        );
-        assert_eq!(row.suggested_in.as_deref(), Some(chat.id.as_str()));
+        settled().await;
+        assert!(rows_named(term).is_empty(), "a private chat suggested {term}");
     }
+
+    let open = fx.chat(SessionType::User).await;
+    agent
+        .update_provider(public.clone(), &open.id)
+        .await
+        .unwrap();
+    say(&agent, &open, "PUBCTL24", &public).await;
+    wait_for("the public chat's term to land", || {
+        rows_named("PUBCTL24").len() == 1
+    })
+    .await;
+    assert_eq!(rows_named("PUBCTL24")[0].tier, EntryTier::Public);
+    learn_from_chats(false);
+}
+
+/// The person's switch alone admits an observation: a chat whose agent does not have the
+/// `dictionary` capability on still suggests the person's words (owner, 2026-11-13), and
+/// with the switch off the same chat suggests nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_persons_switch_needs_no_dictionary_capability_in_the_chat() {
+    let _serial = SERIAL.lock().await;
+    let fx = Fixture::scratch();
+    let provider = CountingProvider::public();
+    let agent = fx.agent_without_the_capability();
+    let chat = fx.chat(SessionType::User).await;
+    agent
+        .update_provider(provider.clone(), &chat.id)
+        .await
+        .unwrap();
+
+    learn_from_chats(false);
+    wait_for("the settings watcher to read the switch off", || {
+        admission_stamp().is_none() && observations_in_flight() == 0
+    })
+    .await;
+    assert!(
+        reply(
+            &agent,
+            &chat,
+            Message::user().with_text("NOCAPOFF24"),
+            &provider
+        )
+        .await
+            > 0,
+        "the turn never reached the model"
+    );
+    settled().await;
+    assert!(rows_named("NOCAPOFF24").is_empty(), "the switch was off");
+
+    learn_from_chats(true);
+    say(&agent, &chat, "NOCAPON24", &provider).await;
+    wait_for("the term to land without the capability", || {
+        rows_named("NOCAPON24").len() == 1
+    })
+    .await;
     learn_from_chats(false);
 }
 

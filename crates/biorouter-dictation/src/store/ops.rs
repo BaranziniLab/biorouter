@@ -278,10 +278,16 @@ impl StoreFile {
         Ok(())
     }
 
-    /// Whether a row is a chat extractor suggestion the person can see, so a decision on
-    /// it measures how well suggestions suit them.
+    /// Whether a row is a public chat extractor suggestion the person can see, so a
+    /// decision on it measures how well suggestions suit them. Only public rows count: the
+    /// measure is answered to every caller, and a count must never tell a caller without
+    /// private standing that a private row was there (oracle rule 10). Since 2026-11-13 the
+    /// extractor writes no private row at all; one written before still reviews as ever.
     fn listed_chat_suggestion(entry: &Entry) -> bool {
-        entry.source == EntrySource::Auto && entry.status == EntryStatus::Suggested && entry.seen >= 2
+        entry.source == EntrySource::Auto
+            && entry.status == EntryStatus::Suggested
+            && entry.seen >= 2
+            && entry.tier == EntryTier::Public
     }
 
     /// After the person's decisions lowered the chats a word needs, list the suggestions
@@ -728,6 +734,7 @@ impl StoreFile {
 mod tests {
     use super::*;
     use crate::store::schema::now;
+    use crate::store::learning::ChatLearning;
 
     fn at(seconds: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(1_790_000_000 + seconds, 0).unwrap()
@@ -1465,6 +1472,19 @@ mod tests {
         );
         file.accept(&agent, at(4)).unwrap();
         assert_eq!(file.chat_learning.decisions(), 5);
+    }
+
+    #[test]
+    fn a_decision_on_a_private_suggestion_is_not_counted() {
+        let mut file = StoreFile::default();
+        for chat in ["a", "b"] {
+            file.observe_auto_suggestion("PRIV1", EntryTier::Private, chat, None, at(0))
+                .unwrap();
+        }
+        let id = file.entries[0].id.clone();
+        assert_eq!(file.entries[0].seen, 2, "premise: listed");
+        file.dismiss_suggestions(&[id], at(1));
+        assert_eq!(file.chat_learning, ChatLearning::default());
     }
 
     #[test]

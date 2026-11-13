@@ -457,17 +457,20 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/dictionary.rs",
-                counts: c(1, 17, 1),
+                counts: c(1, 19, 1),
                 kind: SiteKind::Guard,
                 what: "`read_chat` (PR-16, O-35, O-36): the gate before a stamp reads the chat \
                        an add started in (`origin_session_id`) or an observation names, a \
                        refusal giving the unknown institutions for an add and a silent no op \
-                       for an observation. The seventeen refs are the MODULE qualifier: on this \
+                       for an observation. The nineteen refs are the MODULE qualifier: on this \
                        call, on `target_tier`, on `gate_dictionary_entry` in the router, and on \
-                       `http_caller` in each of the fourteen places that resolve their caller \
+                       `http_caller` in each of the sixteen places that resolve their caller \
                        (PR-23 added the agent row Undo and the activation choice; \
-                       `admit_dictionary_attach`, DD-56, asks for `POST /agent/add_extension`); \
-                       the import is the `use` that brings the module in",
+                       `admit_dictionary_attach`, DD-56, asks for `POST /agent/add_extension`; \
+                       the user run suggestions of 2026-11-13 added starting and stopping the \
+                       scan of recent chats, `admit_scan` and `stop_dictionary_suggestion_scan`, \
+                       neither of which names a chat); the import is the `use` that brings the \
+                       module in",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/knowledge.rs",
@@ -777,18 +780,22 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/dictionary.rs",
-                counts: c(14, 0, 0),
+                counts: c(16, 0, 0),
                 kind: SiteKind::Guard,
                 what: "every `/dictionary/*` handler (PR-16, DD-37, DD-38), each resolving its \
                        caller once for the listing decision, the write rules, the stamp and \
                        private standing: the listing, add, edit, delete, tier change, the bulk \
                        routes' shared reader, import, export, observations, both halves of the \
-                       settings, and since PR-23 the agent row Undo \
+                       settings, since PR-23 the agent row Undo \
                        (`POST /dictionary/entries/{id}/undo-agent-add`) and the activation \
                        choice (`POST /dictionary/activation`, DD-56); plus \
                        `admit_dictionary_attach`, which `POST /agent/add_extension` asks before \
                        it attaches the Dictionary to a chat, by the activation choice's own rule \
-                       (DD-56, owner decision 2026-11-13)",
+                       (DD-56, owner decision 2026-11-13); and since 2026-11-13 starting and \
+                       stopping **Find words in my recent chats** \
+                       (`POST /dictionary/suggestions/scan` through `admit_scan`, and \
+                       `POST /dictionary/suggestions/scan/stop`). Reading the scan's progress \
+                       resolves no caller: it is counts only, never a term or a chat",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/schedule.rs",
@@ -1260,16 +1267,18 @@ const REGISTRY: &[Guard] = &[
         sites: &[
             Site {
                 file: "crates/biorouter-server/src/routes/dictionary.rs",
-                counts: c(12, 0, 0),
+                counts: c(14, 0, 0),
                 kind: SiteKind::Guard,
                 what: "every write and the export: add, edit, delete, the tier change (again \
                        after the gate, right before the tier proof is built), the bulk routes' \
                        shared reader, import, export, observations, the settings change, the \
                        settings answer's `authority`, which asks once for managed writes and \
                        separately for deletion with the same caller proof and row reach, so \
-                       neither control is offered when its route would refuse, and the agent \
+                       neither control is offered when its route would refuse, the agent \
                        row Undo (PR-23), which asks with the row's listed tier before the \
-                       store write",
+                       store write, and **Find words in my recent chats** (2026-11-13): \
+                       starting the scan (`admit_scan`, a public entries write, since the scan \
+                       writes only public suggestions) and stopping it",
             },
             Site {
                 file: SESSION_REACH,

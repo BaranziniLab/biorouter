@@ -783,14 +783,28 @@ async fn rule_10_no_response_counts_what_it_withholds() {
     let settings = raw(&app, "GET", "/dictionary/settings", Caller::Public, None).await;
     let value: Value = serde_json::from_slice(&settings.body).unwrap();
     let keys: Vec<&String> = value.as_object().unwrap().keys().collect();
-    // PR-23 (DD-56) adds the activation choice, a switch and not a count.
+    // PR-23 (DD-56) adds the activation choice, a switch and not a count. The user run
+    // suggestions (2026-11-13) add the person's own measure: counts of the person's
+    // decisions on PUBLIC chat suggestions, rows every caller can list, so none counts a
+    // row withheld from this caller, and none is a count of entries.
     assert_eq!(
         keys,
         [
             "suggest_from_chats",
             "learn_from_chats",
             "agent_writes",
-            "authority"
+            "authority",
+            "suggestions"
+        ]
+    );
+    let measure: Vec<&String> = value["suggestions"].as_object().unwrap().keys().collect();
+    assert_eq!(
+        measure,
+        [
+            "recent_kept",
+            "recent_decisions",
+            "required_chats",
+            "offer_turning_off"
         ]
     );
 }
