@@ -153,7 +153,8 @@ section and This chat, in the docked rail and in the header popover alike.
 - **Hidden** while the chat has made no decision calls and has no monitors.
 
 The stylesheet, `summary/summaryDecisions.css`, keeps the summary's rules: two type sizes, rows
-of 28px, no hairline. `SummaryDecisions.test.tsx` reads it to hold them, and holds the rows to the
+of 28px, no box and no line of its own (the hairline above the section is the summary's one
+section divider, in `summary/chatSummary.css`). `SummaryDecisions.test.tsx` reads it to hold them, and holds the rows to the
 rule above: monitors A, B and C plus an "A+B" aggregate give rows A, B and C, a deleted monitor
 gives no row, and the section never says "Passed", "Failed" or "P ".
 
@@ -599,7 +600,9 @@ A phase with a decision gate (`PhaseSnapshot.gate`, parsed tolerantly in
 of its line in the summary's Plan section (`gateChipWords` in `summary/SummarySubagents.tsx`,
 `gateMarkKind` in `summary/agentGrid.ts`). A gate is decision-model work, so the mark is a circle
 of the agent grid's notation, filled by state; its word is drawn beside it, in the circle's ink,
-only when the gate wants a look. Its tooltip, which is also its accessible name, is the full
+only when the gate wants a look. The mark and its word sit on the card's ground with no fill of
+their own in any state, so a gate is never a box beside the phase's title; the card's hover step
+shows under the pointer. Its tooltip, which is also its accessible name, is the full
 sentence, with the probability named by its outcome:
 
 | State | Circle | Word | Tooltip |
