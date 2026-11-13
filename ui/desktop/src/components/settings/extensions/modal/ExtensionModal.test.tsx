@@ -353,6 +353,54 @@ describe('ExtensionModal — the dialog and its form', () => {
     );
   });
 
+  // A list marker or a leading abbreviation is not a sentence end: the cut at "1." showed a Note
+  // that read "Installation notes / 1." with every step folded away.
+  it.each([
+    {
+      notes: '1. Install uv\n2. Run uv sync\n3. Set the API key',
+      lead: '1. Install uv',
+      rest: '2. Run uv sync 3. Set the API key',
+    },
+    {
+      notes: '1. Run it\n2. Sync it\n3. Set the API key',
+      lead: '1. Run it 2. Sync it',
+      rest: '3. Set the API key',
+    },
+    {
+      notes: 'Step 1. Install uv with Homebrew. Step 2. Run uv sync once.',
+      lead: 'Step 1. Install uv with Homebrew.',
+      rest: 'Step 2. Run uv sync once.',
+    },
+    {
+      notes: 'e.g. on macOS, install uv with Homebrew. Then run uv sync once.',
+      lead: 'e.g. on macOS, install uv with Homebrew.',
+      rest: 'Then run uv sync once.',
+    },
+  ])('never leads numbered or abbreviated notes with a bare marker: $lead', async (c) => {
+    const user = userEvent.setup({ delay: null });
+    render(
+      <ExtensionModal
+        title="Add custom extension"
+        initialData={stdio({ installation_notes: c.notes })}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        submitLabel="Add extension"
+        modalType="add"
+      />
+    );
+
+    const title = screen.getByText(COPY.installationNotes);
+    const note = title.closest<HTMLElement>('[class*="bg-wash-info"]')!;
+    const shown = title.nextElementSibling!.textContent!.replace(/\s+/g, ' ');
+    expect(shown).toBe(c.lead);
+    expect(note).not.toHaveTextContent(c.rest);
+
+    // Every folded word is one click away, in order.
+    await user.click(within(note).getByRole('button', { name: COPY.installationNotesRest }));
+    expect(note).toHaveTextContent(c.rest);
+    expect(`${shown} ${c.rest}`).toBe(c.notes.replace(/\s+/g, ' '));
+  });
+
   it('opens at the removal question from the row, and Cancel closes instead of showing a form', async () => {
     const user = userEvent.setup({ delay: null });
     const onClose = vi.fn();

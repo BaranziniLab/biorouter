@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Note } from '../ui/note';
 import { Button } from '../ui/button';
-import { Disclosure } from '../ui/disclosure';
 import { IconAction } from '../ui/row-actions';
 import { AlertCircle, X } from '../icons/app-icons';
 import { extensionDisplayName } from '../settings/extensions/extensionDisplayName';
@@ -101,7 +100,23 @@ export function ExtensionLoadFailureNotice({
       {failures.map((failure) => {
         const error = errorLines(failure.error);
         return (
-          <Note key={failure.name} tone="danger" role="alert" icon={AlertCircle}>
+          <Note
+            key={failure.name}
+            tone="danger"
+            role="alert"
+            icon={AlertCircle}
+            // The rest of a multi-line error goes in the Note's own `details`, which it renders
+            // outside its clamped node. Folded inside `children`, opening it grew the content past
+            // the Note's ceiling and the stack opened behind a fade, a second "Show more" away.
+            details={
+              error.rest ? (
+                <pre className="whitespace-pre-wrap font-mono text-code [overflow-wrap:anywhere]">
+                  {error.rest}
+                </pre>
+              ) : undefined
+            }
+            detailsLabel={ERROR_DETAILS_LABEL}
+          >
             {/* A line and its error, with the actions in a column at the trailing edge: two quiet
               text actions and a round X, centred on the title, with no second row of buttons
               under the error, which wraps before them. The Note's own action slot did this, but
@@ -157,18 +172,11 @@ export function ExtensionLoadFailureNotice({
               </div>
               {/* The error's first line, always: it just happened, and it is what a person reads
                 first. The rest of a multi-line error (a process's output, a stack) folds under
-                "Details" in the code face, since it is output to read character by character
-                (owner, 2026-11-13: one line up front, the detail a click away). Copy error still
-                copies the whole thing. */}
+                "Details" (the Note's `details`, above) in the code face, since it is output to
+                read character by character (owner, 2026-11-13: one line up front, the detail a
+                click away). Copy error still copies the whole thing. */}
               <div className="br-ext-notice-error mt-1 [overflow-wrap:anywhere]">
                 <div>{error.first}</div>
-                {error.rest && (
-                  <Disclosure label={ERROR_DETAILS_LABEL}>
-                    <pre className="whitespace-pre-wrap font-mono text-code [overflow-wrap:anywhere]">
-                      {error.rest}
-                    </pre>
-                  </Disclosure>
-                )}
               </div>
             </div>
           </Note>

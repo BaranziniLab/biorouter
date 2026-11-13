@@ -20,25 +20,44 @@ import { EXTENSION_MODAL_COPY as COPY } from '../copy';
 import './extension-modal.css';
 
 /**
- * An extension's installation notes, split after the first sentence: the lead is shown, the rest
- * folds behind "Show the rest". A note with one sentence, or whose first sentence runs past
- * {@link NOTES_LEAD_MAX} characters (no clean break to fold at), is shown whole, where the Note's
- * own eight-line clamp still bounds it.
+ * An extension's installation notes, split after the first sentence or line: the lead is shown,
+ * the rest folds behind "Show the rest". A note with one sentence, or whose first sentence runs
+ * past {@link NOTES_LEAD_MAX} characters (no clean break to fold at), is shown whole, where the
+ * Note's own eight-line clamp still bounds it.
  */
 const NOTES_LEAD_MAX = 200;
+
+/**
+ * A lead shorter than this is a list marker or an abbreviation ("1.", "e.g.", "Step 1."), not a
+ * sentence, so the cut moves on to the next break: numbered steps show their first step rather
+ * than "1.". The same floor as `MIN_SENTENCE_CHARS` in `utils/proseFold.ts`.
+ */
+const NOTES_LEAD_MIN = 12;
 
 function splitInstallationNotes(
   text: string | undefined
 ): { lead: string; rest: string | null } | null {
   const notes = text?.trim();
   if (!notes) return null;
-  const end = notes.search(/[.!?](\s|$)|\n/);
-  if (end === -1) return { lead: notes, rest: null };
-  const cut = notes[end] === '\n' ? end : end + 1;
-  const lead = notes.slice(0, cut).trim();
-  const rest = notes.slice(cut).trim();
-  if (!rest || lead.length > NOTES_LEAD_MAX) return { lead: notes, rest: null };
-  return { lead, rest };
+  // A line break, or a stop followed by what starts a sentence (as `proseFold.ts` reads one), so
+  // "e.g. on macOS" mid-sentence is not an end.
+  const breaks = /[.!?](?=\s+["'([“‘]?[A-Z0-9]|\s*$)|\n/g;
+  let match: RegExpExecArray | null;
+  while ((match = breaks.exec(notes)) !== null) {
+    const isLineBreak = match[0] === '\n';
+    const cut = isLineBreak ? match.index : match.index + 1;
+    const lead = notes.slice(0, cut).trim();
+    // A stop is measured on its own line, so "2." opening the second line of a numbered list is
+    // never taken for the end of a sentence even when the first line was too short to cut at.
+    const sentence = isLineBreak
+      ? lead
+      : notes.slice(notes.lastIndexOf('\n', match.index) + 1, cut).trim();
+    if (sentence.length < NOTES_LEAD_MIN) continue;
+    const rest = notes.slice(cut).trim();
+    if (!rest || lead.length > NOTES_LEAD_MAX) break;
+    return { lead, rest };
+  }
+  return { lead: notes, rest: null };
 }
 
 interface ExtensionModalProps {
