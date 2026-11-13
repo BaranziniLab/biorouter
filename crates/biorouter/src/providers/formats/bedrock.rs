@@ -261,7 +261,8 @@ fn bedrock_default_max_tokens(model_name: &str) -> i32 {
 
 fn bedrock_uses_adaptive_thinking(model_name: &str) -> bool {
     const ADAPTIVE_ONLY: &[&str] = &[
-        "opus-5", "sonnet-5", "fable-5", "mythos-5", "opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8",
+        "opus-5", "sonnet-5", "haiku-5", "fable-5", "mythos-5", "opus-4-7", "opus-4.7", "opus-4-8",
+        "opus-4.8",
     ];
     let lower = model_name.to_ascii_lowercase();
     ADAPTIVE_ONLY.iter().any(|pattern| lower.contains(pattern))
@@ -272,7 +273,7 @@ fn bedrock_uses_adaptive_thinking(model_name: &str) -> bool {
 /// ConverseStream on both Bedrock providers, so the four request builders
 /// cannot disagree about what history they send.
 ///
-/// For a preserved-thinking model (Opus 5.5, Sonnet 5.5, Fable 5.1 — see
+/// For a preserved-thinking model (Opus 5.5, Sonnet 5.5, Haiku 5.5, Fable 5.1 — see
 /// `formats::anthropic::uses_preserved_thinking`) every replayed reasoning
 /// block is stripped first. Their signatures bind the conversation prefix,
 /// which provider callers can edit, and a new Bedrock account gets a 400 for a
@@ -3121,6 +3122,26 @@ mod tests {
             "adaptive-only Claude models reject sampling parameters"
         );
 
+        // Haiku 5.5 rejects any temperature too ("`temperature` is deprecated
+        // for this model", UCSF's gateway, 2026-11-12) and takes the Claude
+        // default output allowance; Haiku 4.5 still takes a temperature.
+        let haiku_five_five = ModelConfig::new_or_fail("us.anthropic.claude-haiku-5-5")
+            .with_max_tokens(None)
+            .with_temperature(Some(0.25));
+        let inference = bedrock_inference_config(&haiku_five_five);
+        assert_eq!(
+            inference.max_tokens(),
+            Some(BEDROCK_CLAUDE_DEFAULT_MAX_TOKENS)
+        );
+        assert_eq!(inference.temperature(), None);
+        let haiku_four_five =
+            ModelConfig::new_or_fail("us.anthropic.claude-haiku-4-5-20251001-v1:0")
+                .with_temperature(Some(0.25));
+        assert_eq!(
+            bedrock_inference_config(&haiku_four_five).temperature(),
+            Some(0.25)
+        );
+
         let unlisted = ModelConfig::new_or_fail("vendor.unknown-model").with_max_tokens(None);
         assert_eq!(
             bedrock_inference_config(&unlisted).max_tokens(),
@@ -3284,6 +3305,8 @@ mod tests {
             "claude-opus-5-5",
             "us.anthropic.claude-sonnet-5-5",
             "claude-sonnet-5-5",
+            "us.anthropic.claude-haiku-5-5",
+            "claude-haiku-5-5",
         ] {
             let sent = to_bedrock_messages(model, &history).unwrap();
             assert_eq!(reasoning_blocks(&sent), 0, "{model}");

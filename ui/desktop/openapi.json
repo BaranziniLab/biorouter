@@ -29525,6 +29525,11 @@
           "msg"
         ],
         "properties": {
+          "expiredActionId": {
+            "type": "string",
+            "description": "Approval cards: the id of the card whose answer window closed before\nanyone answered it, on the inline notice that reports the expiry. A\nsurface draws the card with that id as expired, without its buttons.",
+            "nullable": true
+          },
           "msg": {
             "type": "string"
           },

@@ -142,6 +142,11 @@ Other spending doors follow the same rule:
   (`Agent::usage_limit_interrupted_reply`).
 - **Overflow compaction.** When a request overflows the model's window and the chat is
   already at a limit, the chat is not compacted and the turn ends.
+- **Side checks.** The stall check, the permission judge, MCP sampling and knowledge
+  macros are counted, as side calls charged to the chat they serve, if any (a subagent's
+  to its parent), and to the month, but a limit does not stop them. Each serves a request the
+  gate already admitted, or work outside a turn, and the next request of the turn still
+  meets the gate.
 - **Decision models.** A monitor, a `decide` batch or a phase gate is counted, through the
   usage ledger, but never blocked by a usage limit: it is a side call, and stopping it
   part-way would leave a monitor's verdict unknown.
@@ -156,8 +161,9 @@ In short, a limit holds these model calls: every request of a turn, a message se
 paused chat, automatic, overflow and background compaction, `/compact`, the self-critique
 pass, the `/goal` judge and prompt Stop hooks, starting a subagent and each of its
 requests, a chat's title, the start of a scheduled run (monthly limit), and the start of a
-Crew task (the month, and the asking chat for `tasks_ask`). It does not
-hold decision models or workflow generation, which are counted but not stopped, nor
+Crew task (the month, and the asking chat for `tasks_ask`). It does not hold decision models,
+workflow generation, the stall check, the permission judge, MCP sampling or knowledge macros,
+which are counted but not stopped, nor
 prompt hooks on events other than Stop (for example `UserPromptSubmit` or `PreToolUse`).
 
 ## How the next request is estimated

@@ -508,6 +508,9 @@ export const APPROVAL_COPY = {
   deny: 'Deny',
   change: 'Change',
   canceled: 'Approval canceled',
+  // The card's answer window closed before anyone answered it (the daemon's
+  // expiry notice, or a late click it answered `unknown`).
+  expired: 'Expired: ask again',
   unavailable: 'Approval is no longer available',
   resolved: (tool: string, outcome: string) => `${tool} is ${outcome}`,
   outcome: {
@@ -515,7 +518,6 @@ export const APPROVAL_COPY = {
     allowOnce: 'allowed once',
     deny: 'denied',
     alreadyResolved: 'already answered',
-    unknown: 'no longer available',
   },
   confirmFailed: 'Could not confirm your decision. Try again.',
   /** AO-12's read consent (`isCrewReadConsent`): it lasts until taken back, so never "once". */

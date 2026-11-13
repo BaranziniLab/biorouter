@@ -513,15 +513,28 @@ impl Agent {
                             "Tool permission prompt expired without a decision"
                         );
                         write_tool_response(request, request_to_response_map, EXPIRED_RESPONSE).await;
-                        yield Message::assistant()
-                            .with_system_notification(
-                                crate::conversation::message::SystemNotificationType::InlineMessage,
-                                format!(
-                                    "The permission prompt for {} expired before it was answered. The tool was not run.",
-                                    tool_call.name
+                        // The card's buttons go with its window: the notice
+                        // names the card, so every surface that drew it shows
+                        // it expired instead of offering a decision nothing
+                        // waits on. Yielded like the card, and like the card
+                        // never stored; the escalated copy (surface two) hears
+                        // it on the bus it was published to.
+                        let notice = crate::pending_user_action::card_expiry_notice(
+                            &request.id,
+                            &format!("The permission prompt for {}", tool_call.name),
+                        );
+                        if let crate::agents::approval_relay::Delegation::AwaitingHuman {
+                            surfaced_in,
+                        } = &delegation
+                        {
+                            crate::session_events::publish(
+                                surfaced_in,
+                                crate::session_events::SessionBusEvent::Agent(
+                                    crate::agents::AgentEvent::Message(notice.clone()),
                                 ),
-                            )
-                            .user_only();
+                            );
+                        }
+                        yield notice;
                         continue;
                     }
                     ConfirmationWait::Cancelled => {

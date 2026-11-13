@@ -56,6 +56,12 @@ const ANTHROPIC_KNOWN_MODELS: &[&str] = &[
     // preserved-thinking rules as Opus 5.5, and it needs 30-day data
     // retention: an org on zero data retention gets a 400.
     "claude-fable-5-1",
+    // Claude Sonnet 5.5 ($2/$10) and Haiku 5.5 ($0.10/$0.50 up to a 100K-token
+    // prompt, $0.50/$2.50 above), both 1M context and 128K output. Both are
+    // preserved-thinking models like Opus 5.5 and take no sampling parameters;
+    // BioRouter sends neither a temperature nor a disabled thinking block.
+    "claude-sonnet-5-5",
+    "claude-haiku-5-5",
     // Claude Opus 5 (1M context, $5/$25 per MTok).
     "claude-opus-5",
     "claude-sonnet-5",
@@ -456,11 +462,17 @@ mod tests {
             1,
             "the default is listed exactly once"
         );
-        // Still offered, one pick away, for a user who wants it now.
-        assert!(metadata
-            .known_models
-            .iter()
-            .any(|model| model.name == "claude-opus-5-5"));
+        // Still offered, one pick away, for a user who wants it now, and the
+        // rest of the Claude 5.5 generation beside it.
+        for offered in ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"] {
+            assert!(
+                metadata
+                    .known_models
+                    .iter()
+                    .any(|model| model.name == offered),
+                "{offered} is offered"
+            );
+        }
     }
 
     // Opus 5.5 and Fable 5.1 bind each thinking block to the prefix it was
@@ -470,7 +482,12 @@ mod tests {
     // desktop list, so this is the request a user who picks it sends.
     #[test]
     fn preserved_thinking_models_opt_into_drop_block_with_the_beta() {
-        for model in ["claude-opus-5-5", "claude-fable-5-1"] {
+        for model in [
+            "claude-opus-5-5",
+            "claude-fable-5-1",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+        ] {
             let config = ModelConfig::new_or_fail(model);
             let (payload, beta) = AnthropicProvider::prepare_request(
                 &config,

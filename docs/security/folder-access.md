@@ -24,6 +24,10 @@ An absolute file path or a connector's returned result path does not itself gran
   during the same user turn. A new user turn may ask again.
 - **Cancel operation** releases the pending operation without creating a grant. Stopping the
   turn also cancels its pending request.
+- **No answer** within 5 minutes (300 s) expires the request. The operation is not run, no grant
+  is created, and the card shows **Expired: ask again** without its buttons. Ask again in the
+  chat to retry. See
+  [when nobody answers a card](permission-modes.md#when-nobody-answers-a-card).
 
 A symbolic link that leaves the workspace follows the same approval flow. The approval card
 discloses both the requested path and its discovered actual target. The pending operation uses a

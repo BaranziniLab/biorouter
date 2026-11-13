@@ -24,6 +24,10 @@ describe('friendlyModelName', () => {
     ['us.anthropic.claude-sonnet-4-5-20250929-v1:0', 'claude-sonnet-4-5'],
     ['us.anthropic.claude-opus-4-6-v1', 'claude-opus-4-6'],
     ['eu.anthropic.claude-haiku-4-5-20251001-v1:0', 'claude-haiku-4-5'],
+    // The Claude 5.5 generation Versa API Bedrock offers (2026-11-12).
+    ['us.anthropic.claude-opus-5-5', 'claude-opus-5-5'],
+    ['us.anthropic.claude-sonnet-5-5', 'claude-sonnet-5-5'],
+    ['us.anthropic.claude-haiku-5-5', 'claude-haiku-5-5'],
     ['apac.amazon.nova-pro-v1:0', 'nova-pro'],
     ['global.anthropic.claude-opus-5', 'claude-opus-5'],
     ['us-gov.anthropic.claude-sonnet-5', 'claude-sonnet-5'],

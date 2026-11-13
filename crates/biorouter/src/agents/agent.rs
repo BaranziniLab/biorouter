@@ -7511,7 +7511,13 @@ impl Agent {
             // clickable, and routed to a request id that no longer exists.
             // Elicitations keep being persisted, because their *answer* is part
             // of the conversation and the response row references this one.
-            if crate::pending_user_action::is_ephemeral_card(&elicitation_message) {
+            // The notice that such a card expired unanswered lives where the
+            // card does, in the stream and the turn's replay log, and is not
+            // stored either: a stored one would report on a card no reload
+            // shows, persisted mid-batch above its own tool call.
+            if crate::pending_user_action::is_ephemeral_card(&elicitation_message)
+                || crate::pending_user_action::is_card_expiry_notice(&elicitation_message)
+            {
                 messages.push(elicitation_message);
                 continue;
             }

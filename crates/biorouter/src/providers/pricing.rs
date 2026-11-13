@@ -117,7 +117,7 @@ impl LongContextTier {
 /// Every threshold any [`LongContextTier`] uses, ascending. The usage ledger
 /// groups requests into bands at these sizes ([`prompt_band`]), so a tier with
 /// a threshold missing here would be priced wrong; a test checks every tier.
-pub const LONG_CONTEXT_THRESHOLDS: [i64; 2] = [200_000, 272_000];
+pub const LONG_CONTEXT_THRESHOLDS: [i64; 3] = [100_000, 200_000, 272_000];
 
 /// The largest threshold in [`LONG_CONTEXT_THRESHOLDS`] the prompt is above,
 /// or 0. The SQL twin is `prompt_band_sql!` in `session::session_manager`.
@@ -154,6 +154,32 @@ const XAI_LONG_CONTEXT: LongContextTier = LongContextTier {
     cache_read_multiplier: 2.0,
     cache_write_multiplier: 2.0,
 };
+
+/// Claude Haiku 5.5's second rate card: $0.10 / $0.50 per MTok for a prompt of
+/// 100K tokens or fewer and $0.50 / $2.50 above that, for the whole request
+/// (Anthropic's Haiku 5.5 model and migration pages, read 2026-11-12). Cache
+/// reads (0.1x) and 5-minute writes (1.25x) are multiples of the input rate on
+/// either card, so all four rates take the same 5x. It is billed wherever
+/// [`claude_family_pricing`] prices the model, Versa API Bedrock included:
+/// that provider bills Anthropic's first-party rates, and Versa's own rate for
+/// Haiku 5.5 is unconfirmed. "Longer than 100K" is modelled as "above", so a
+/// prompt of exactly 100,000 reads the short card.
+const HAIKU_5_5_LONG_CONTEXT: LongContextTier = LongContextTier {
+    threshold_prompt_tokens: 100_000,
+    input_multiplier: 5.0,
+    output_multiplier: 5.0,
+    cache_read_multiplier: 5.0,
+    cache_write_multiplier: 5.0,
+};
+
+/// The providers whose Claude ids [`claude_family_pricing`] prices. Kept beside
+/// `explicit_provider_model_pricing`'s Claude arm, which names the same set.
+fn prices_with_claude_family(provider: &str) -> bool {
+    matches!(
+        provider,
+        "anthropic" | "claude" | "bedrock" | "aws_bedrock" | "aws-bedrock" | "versa_bedrock"
+    )
+}
 
 /// The GPT models OpenAI's price sheet gives a long-context column (read
 /// 2026-11-10). Every one bills cached input at 0.1x its input rate.
@@ -219,6 +245,10 @@ pub fn long_context_tier(provider: &str, model: &str) -> Option<LongContextTier>
     let model = model.to_ascii_lowercase();
     if openai_tiered_gpt(&provider, &model).is_some() {
         return Some(OPENAI_LONG_CONTEXT);
+    }
+    if prices_with_claude_family(&provider) && claude_version(&model) == Some(("haiku", 5, Some(5)))
+    {
+        return Some(HAIKU_5_5_LONG_CONTEXT);
     }
     match (provider.as_str(), model.as_str()) {
         ("xai" | "x-ai", "grok-4.7" | "grok-4.6" | "grok-4.5") => Some(XAI_LONG_CONTEXT),
@@ -530,6 +560,7 @@ fn explicit_provider_model_pricing(provider: &str, model: &str) -> Option<Provid
         // 2026-10-05 it fell through to the canonical catalog, which cannot
         // map a dated Bedrock id, so the Opus 4.5 and Haiku 4.5 it offers were
         // unpriced and the rest carried no cache rates.
+        // The same set as `prices_with_claude_family`, which a test keeps in step.
         "anthropic" | "claude" | "bedrock" | "aws_bedrock" | "aws-bedrock" | "versa_bedrock" => {
             claude_family_pricing(model)
         }
@@ -649,6 +680,11 @@ fn claude_family_pricing(model: &str) -> Option<ProviderModelPricing> {
         ("sonnet", 4, None | Some(0 | 5)) | ("sonnet", 3, None | Some(5 | 7)) => {
             cached(3.0, 15.0, 200_000)
         }
+        // Haiku 5.5 has two rate cards chosen by the prompt's length: $0.10 /
+        // $0.50 for 100K tokens or fewer, $0.50 / $2.50 above that (cache
+        // reads 0.1x input, 5-minute writes 1.25x). This row is the short
+        // card; `HAIKU_5_5_LONG_CONTEXT` carries the long one per request.
+        ("haiku", 5, Some(5)) => with_cache(0.10, 0.50, 1_000_000, 0.1, 1.25),
         ("haiku", 4, Some(5)) => cached(1.0, 5.0, 200_000),
         ("haiku", 3, Some(5)) => cached(0.80, 4.0, 200_000),
         ("haiku", 3, None) => cached(0.25, 1.25, 200_000),
@@ -1576,6 +1612,8 @@ mod tests {
                 "claude-3-7-sonnet-20250219",
                 (3.0, 15.0, 200_000, 0.30, 3.75),
             ),
+            // Haiku 5.5's short card (a prompt of 100K tokens or fewer).
+            ("claude-haiku-5-5", (0.10, 0.50, 1_000_000, 0.01, 0.125)),
             ("claude-haiku-4-5-20251001", (1.0, 5.0, 200_000, 0.10, 1.25)),
             (
                 "claude-3-5-haiku-20241022",
@@ -1643,6 +1681,10 @@ mod tests {
             (
                 "us.anthropic.claude-sonnet-4-6",
                 (3.0, 15.0, 1_000_000, 0.30, 3.75),
+            ),
+            (
+                "us.anthropic.claude-haiku-5-5",
+                (0.10, 0.50, 1_000_000, 0.01, 0.125),
             ),
             (
                 "us.anthropic.claude-haiku-4-5-20251001-v1:0",
@@ -2059,6 +2101,17 @@ mod tests {
             // Same model through a provider whose pass-through is unconfirmed.
             ("openrouter", "openai/gpt-5.6-sol"),
             ("anthropic", "claude-opus-5-5"),
+            // The rest of the Claude 5.5 generation, and the Haiku before it,
+            // bill one rate at any prompt size.
+            ("versa_bedrock", "us.anthropic.claude-opus-5-5"),
+            ("versa_bedrock", "us.anthropic.claude-sonnet-5-5"),
+            ("anthropic", "claude-haiku-4-5"),
+            (
+                "versa_bedrock",
+                "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+            ),
+            // Haiku 5.5 through a provider this table does not price.
+            ("openrouter", "anthropic/claude-haiku-5.5"),
             // A name that only contains a tiered one.
             ("openai", "gpt-5.6-sol-mini"),
         ] {
@@ -2079,6 +2132,72 @@ mod tests {
         assert!(request_cost("bedrock", "us.openai.gpt-6-sol", &usage_of(500_000, 1, 0)).is_none());
     }
 
+    /// Haiku 5.5's second card, on every provider that prices it: a whole
+    /// request over 100K prompt tokens (fresh plus cache read plus cache
+    /// write) bills $0.50 / $2.50 and 5x cache rates; exactly 100K is the
+    /// short card. `claude_code` is subscription-billed and stays unpriced.
+    #[test]
+    fn haiku_5_5_bills_its_second_card_above_100k() {
+        for (provider, model) in [
+            ("anthropic", "claude-haiku-5-5"),
+            ("aws_bedrock", "us.anthropic.claude-haiku-5-5"),
+            ("bedrock", "us.anthropic.claude-haiku-5-5"),
+            ("versa_bedrock", "us.anthropic.claude-haiku-5-5"),
+        ] {
+            assert_eq!(
+                long_context_tier(provider, model),
+                Some(HAIKU_5_5_LONG_CONTEXT),
+                "{provider}/{model}"
+            );
+            // 100k fresh + 50k cache read = a 150k prompt.
+            let long = request_cost(provider, model, &usage_of(100_000, 1_000, 50_000)).unwrap();
+            assert!(long.long_context, "{provider}/{model}");
+            let want = (100_000.0 * 0.50 + 1_000.0 * 2.50 + 50_000.0 * 0.05) / 1e6;
+            assert!(
+                (long.cost - want).abs() < 1e-12,
+                "{provider}/{model}: {}",
+                long.cost
+            );
+
+            let at = request_cost(provider, model, &usage_of(60_000, 1_000, 40_000)).unwrap();
+            assert!(!at.long_context, "{provider}/{model}");
+            let want = (60_000.0 * 0.10 + 1_000.0 * 0.50 + 40_000.0 * 0.01) / 1e6;
+            assert!(
+                (at.cost - want).abs() < 1e-12,
+                "{provider}/{model}: {}",
+                at.cost
+            );
+        }
+        assert!(
+            request_cost("claude_code", "claude-haiku-5-5", &usage_of(150_000, 1, 0)).is_none()
+        );
+    }
+
+    /// The tier's provider list and the pricing arm that names the same set
+    /// cannot drift: every provider the helper names prices Haiku 5.5 through
+    /// `claude_family_pricing`, and a neighbouring one does not.
+    #[test]
+    fn the_claude_family_provider_list_matches_the_pricing_arm() {
+        for provider in [
+            "anthropic",
+            "claude",
+            "bedrock",
+            "aws_bedrock",
+            "aws-bedrock",
+            "versa_bedrock",
+        ] {
+            assert!(prices_with_claude_family(provider), "{provider}");
+            assert_eq!(
+                explicit_provider_model_pricing(provider, "claude-haiku-5-5"),
+                claude_family_pricing("claude-haiku-5-5"),
+                "{provider}"
+            );
+        }
+        for provider in ["openrouter", "gcp_vertex_ai", "databricks", "claude_code"] {
+            assert!(!prices_with_claude_family(provider), "{provider}");
+        }
+    }
+
     #[test]
     fn xai_grok_bills_its_documented_200k_tier() {
         let long = request_cost("xai", "grok-4.7", &usage_of(250_000, 1_000, 0)).unwrap();
@@ -2091,7 +2210,11 @@ mod tests {
 
     #[test]
     fn every_tier_threshold_is_a_ledger_band() {
-        let mut tiers = vec![OPENAI_LONG_CONTEXT, XAI_LONG_CONTEXT];
+        let mut tiers = vec![
+            OPENAI_LONG_CONTEXT,
+            XAI_LONG_CONTEXT,
+            HAIKU_5_5_LONG_CONTEXT,
+        ];
         tiers.extend(long_context_tier("openai", "gpt-6-sol"));
         for tier in tiers {
             assert!(
@@ -2120,7 +2243,9 @@ mod tests {
     #[test]
     fn prompt_bands_split_at_each_threshold() {
         assert_eq!(prompt_band(0), 0);
-        assert_eq!(prompt_band(200_000), 0);
+        assert_eq!(prompt_band(100_000), 0);
+        assert_eq!(prompt_band(100_001), 100_000);
+        assert_eq!(prompt_band(200_000), 100_000);
         assert_eq!(prompt_band(200_001), 200_000);
         assert_eq!(prompt_band(272_000), 200_000);
         assert_eq!(prompt_band(272_001), 272_000);

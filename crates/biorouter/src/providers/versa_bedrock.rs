@@ -125,15 +125,15 @@ use super::provider_binding::{
 };
 
 pub const VERSA_BEDROCK_DOC_LINK: &str = "http://biorouter.ucsf.edu/docs";
-// Opus 4.8: verified end-to-end through the UCSF MuleSoft proxy (a converse
-// round-trip on 2026-07-26, and again on 2026-10-05). Same price and window as
-// the Opus 4.6 default it replaced (1M context, $5.50/$27.50 us geo), so a new
-// user's first chat cannot get worse. Kept as the default when Sonnet 5 was
-// verified on 2026-10-05: that was a decision to leave the default alone, not
-// a claim that no newer model answers. It must also stay FIRST in the list
-// below: the UI auto-selects `known_models[0]` when a user switches providers,
-// not this constant (SwitchModelModal `findFirstAvailableModel`).
-pub const VERSA_BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-opus-4-8";
+// Opus 5.5: the default from 2026-11-12, at the owner's request ("Claude Opus
+// 5.5 for Bedrock Claude models"), after it answered a Converse round-trip and
+// a tool call through the UCSF MuleSoft proxy that day (1M window, 128K output,
+// both measured). Opus 4.8, the default it replaced, is still offered. It must
+// stay FIRST in the list below: the UI auto-selects `known_models[0]` when a
+// user switches providers, not this constant (SwitchModelModal
+// `findFirstAvailableModel`). An existing configuration keeps the model it
+// names, and a chat keeps the model it is bound to.
+pub const VERSA_BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-opus-5-5";
 // Model IDs follow the AWS Bedrock format documented at
 // https://platform.claude.com/docs/en/about-claude/models/overview, prefixed
 // with the `us.` cross-region inference profile required by the UCSF MuleSoft
@@ -141,10 +141,13 @@ pub const VERSA_BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-opus-4-8";
 // comes back for a wrong spelling — so the id shape is whatever AWS publishes;
 // the only open question for a new id is UCSF's entitlement.
 //
-// The original entries answered a real Converse round-trip through the UCSF
-// proxy on 2026-10-05. PR #434 reports the same check for Opus 5.5 and Sonnet
-// 5.5 on 2026-10-22. Keep the default first for the model picker; users can
-// enter other IDs once UCSF enables them.
+// Every entry answered a real Converse round-trip through the UCSF proxy: the
+// Claude 4.x entries and Sonnet 5 on 2026-10-05, and Opus 5.5, Sonnet 5.5 and
+// Haiku 5.5 on 2026-11-12 (a reply, a `tool_use` with the right arguments,
+// and the limits the gateway names when a request is over them: a 1,000,000
+// token prompt and 128,000 output tokens each). PR #434 first reported Opus
+// 5.5 and Sonnet 5.5 answering on 2026-10-22. Keep the default first for the
+// model picker; users can enter other IDs once UCSF enables them.
 //
 // Measured on 2026-10-05 and deliberately NOT listed:
 //   * Refused by UCSF's IAM policy: AWS answered `AccessDeniedException`
@@ -161,7 +164,8 @@ pub const VERSA_BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-opus-4-8";
 //     been enabled and are listed again (2026-10-22); the rest of this group
 //     is still refused. `versa_refusal` turns that 403
 //     into a model refusal, not a rejected key pair, for a chat still bound
-//     to one of them.
+//     to one of them. On 2026-11-12 `global.anthropic.claude-haiku-5-5` drew
+//     the same refusal, while the `us.` profile listed below answers.
 //   * Fable, every version, stays off this list even if a later probe finds
 //     UCSF's account may invoke it: Bedrock serves Fable only to accounts
 //     whose data-retention mode is `aws_review` (see `bedrock.rs`), which an
@@ -175,18 +179,24 @@ pub const VERSA_BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-opus-4-8";
 //   * Opus 4 (`-opus-4-20250514-v1:0`) and every Claude 3.x id: AWS answered
 //     `ResourceNotFoundException`, "reached the end of its life".
 pub const VERSA_BEDROCK_KNOWN_MODELS: &[&str] = &[
+    // The Claude 5.5 generation, default first. All three take a 1M window and
+    // up to 128K output tokens (measured through the proxy on 2026-11-12), are
+    // adaptive-only, so `formats::bedrock` sends them no temperature (the
+    // gateway answers "`temperature` is deprecated for this model"), and bind
+    // their reasoning to the conversation, so replayed reasoning is stripped
+    // (`formats::anthropic::uses_preserved_thinking`). Opus 5.5 is $4/$20 and
+    // Sonnet 5.5 $2/$10 per MTok. Haiku 5.5 is $0.10/$0.50 for a prompt of
+    // 100K tokens or fewer and $0.50/$2.50 above that.
+    "us.anthropic.claude-opus-5-5",
+    "us.anthropic.claude-sonnet-5-5",
+    "us.anthropic.claude-haiku-5-5",
     // Claude 4.8 (1M context). Added 2026-07 (issue #29). Verified live
     // through the MuleSoft proxy on 2026-07-26: the short un-suffixed form
     // below answered a real converse round-trip, while the `-v1` spelling
     // (which opus-4-6 uses) was rejected with "The provided model
     // identifier is invalid" — 4.8 and 4.6 genuinely differ in id shape on
-    // this account. Still the default (see above).
+    // this account. The default until 2026-11-12.
     "us.anthropic.claude-opus-4-8",
-    // Opus 5.5 (1M context, $4/$20) and Sonnet 5.5 (1M context, $2/$10).
-    // Enabled on UCSF's account after the 2026-10-05 IAM refusal recorded
-    // above; PR #434 reports successful live calls on 2026-10-22.
-    "us.anthropic.claude-opus-5-5",
-    "us.anthropic.claude-sonnet-5-5",
     // Sonnet 5 (1M context, $2/$10). First answered through the proxy on
     // 2026-10-05. Adaptive-only, so `formats::bedrock` sends it no
     // temperature, and it takes the Claude 64K default output allowance.
@@ -1161,6 +1171,35 @@ mod tests {
         assert_inference_wire(captured, 21_333, None);
     }
 
+    /// The gateway refuses any temperature for the Claude 5.5 generation
+    /// ("`temperature` is deprecated for this model", measured 2026-11-12 for
+    /// Opus, Sonnet and Haiku 5.5), so a configured one never reaches the wire
+    /// on either call, while the configured output allowance still does.
+    #[tokio::test]
+    async fn the_claude_5_5_generation_gets_no_temperature_on_the_wire() {
+        for model in [
+            "us.anthropic.claude-opus-5-5",
+            "us.anthropic.claude-sonnet-5-5",
+            "us.anthropic.claude-haiku-5-5",
+        ] {
+            for streaming in [false, true] {
+                let (provider, captured) = capturing_provider().await;
+                let config = ModelConfig::new_or_fail(model)
+                    .with_max_tokens(Some(12_345))
+                    .with_temperature(Some(0.25));
+                let history = [Message::user().with_text("hello")];
+                if streaming {
+                    let _ = provider
+                        .converse_stream(&config, "system", &history, &[])
+                        .await;
+                } else {
+                    let _ = provider.converse(&config, "system", &history, &[]).await;
+                }
+                assert_inference_wire(captured, 12_345, None);
+            }
+        }
+    }
+
     #[tokio::test]
     async fn converse_stream_sends_configured_inference_fields_on_the_wire() {
         let (provider, captured) = capturing_provider().await;
@@ -1179,18 +1218,27 @@ mod tests {
     }
 
     /// The UI auto-selects `known_models[0]` on a provider switch, so the
-    /// default and the first entry must agree. Retired models and models the
-    /// UCSF account still refuses stay out of the catalog.
+    /// default and the first entry must agree. The default is Opus 5.5, by the
+    /// owner's ruling of 2026-11-12, and the provider's metadata says so too.
+    /// Retired models and models the UCSF account still refuses stay out of
+    /// the catalog.
     #[test]
     fn the_offered_list_is_exactly_what_the_ucsf_proxy_answered() {
-        assert_eq!(VERSA_BEDROCK_DEFAULT_MODEL, "us.anthropic.claude-opus-4-8");
+        assert_eq!(VERSA_BEDROCK_DEFAULT_MODEL, "us.anthropic.claude-opus-5-5");
         assert_eq!(VERSA_BEDROCK_KNOWN_MODELS[0], VERSA_BEDROCK_DEFAULT_MODEL);
+        let metadata = VersaBedrockProvider::metadata();
+        assert_eq!(metadata.default_model, VERSA_BEDROCK_DEFAULT_MODEL);
+        assert_eq!(
+            metadata.known_models.first().map(|info| info.name.as_str()),
+            Some(VERSA_BEDROCK_DEFAULT_MODEL)
+        );
         assert_eq!(
             VERSA_BEDROCK_KNOWN_MODELS,
             [
-                "us.anthropic.claude-opus-4-8",
                 "us.anthropic.claude-opus-5-5",
                 "us.anthropic.claude-sonnet-5-5",
+                "us.anthropic.claude-haiku-5-5",
+                "us.anthropic.claude-opus-4-8",
                 "us.anthropic.claude-sonnet-5",
                 "us.anthropic.claude-opus-4-6-v1",
                 "us.anthropic.claude-sonnet-4-6",
@@ -1199,7 +1247,9 @@ mod tests {
             ]
         );
         for refused in [
-            // AccessDeniedException from UCSF's IAM policy (2026-10-05).
+            // AccessDeniedException from UCSF's IAM policy (2026-10-05), and
+            // the global Haiku 5.5 profile (2026-11-12).
+            "global.anthropic.claude-haiku-5-5",
             "us.anthropic.claude-opus-5",
             "us.anthropic.claude-opus-4-7",
             "us.anthropic.claude-fable-5-1",
@@ -1257,6 +1307,44 @@ mod tests {
             );
         }
 
+        // The Claude 5.5 generation, each at the window the gateway named on
+        // 2026-11-12 and at Anthropic's published rate (in $/MTok; Haiku 5.5's
+        // is the rate for a prompt of 100K tokens or fewer).
+        for (model, input, output, cache_read) in [
+            ("us.anthropic.claude-opus-5-5", 4.0, 20.0, 0.20),
+            ("us.anthropic.claude-sonnet-5-5", 2.0, 10.0, 0.10),
+            ("us.anthropic.claude-haiku-5-5", 0.10, 0.50, 0.01),
+        ] {
+            assert_eq!(
+                ModelConfig::new_or_fail(model).context_limit(),
+                1_000_000,
+                "{model}"
+            );
+            let info = VersaBedrockProvider::metadata()
+                .known_models
+                .into_iter()
+                .find(|info| info.name == model)
+                .unwrap_or_else(|| panic!("{model} is offered"));
+            assert_eq!(info.context_limit, 1_000_000, "{model}");
+            assert_eq!(info.supports_vision, Some(true), "{model}");
+            let price = crate::providers::pricing::provider_model_pricing("versa_bedrock", model)
+                .unwrap_or_else(|| panic!("{model} is priced"));
+            let per_million = |rate: f64| rate * 1_000_000.0;
+            assert!(
+                (per_million(price.input_token_cost) - input).abs() < 1e-9,
+                "{model}: {price:?}"
+            );
+            assert!(
+                (per_million(price.output_token_cost) - output).abs() < 1e-9,
+                "{model}: {price:?}"
+            );
+            assert!(
+                (per_million(price.cache_read_cost.expect("cache read rate")) - cache_read).abs()
+                    < 1e-9,
+                "{model}: {price:?}"
+            );
+        }
+
         let sonnet_5 = "us.anthropic.claude-sonnet-5";
         assert_eq!(
             ModelConfig::new_or_fail(sonnet_5).context_limit(),
@@ -1310,6 +1398,7 @@ mod tests {
             for (model, expect_reasoning) in [
                 ("us.anthropic.claude-opus-5-5", false),
                 ("us.anthropic.claude-sonnet-5-5", false),
+                ("us.anthropic.claude-haiku-5-5", false),
                 ("us.anthropic.claude-opus-4-8", true),
             ] {
                 let (provider, captured) = capturing_provider().await;

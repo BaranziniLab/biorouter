@@ -572,16 +572,26 @@ fn inline_notice_line(message: &serde_json::Value) -> Option<String> {
         .get("content")?
         .as_array()?
         .iter()
-        .filter(|c| {
-            c.get("type").and_then(serde_json::Value::as_str) == Some("systemNotification")
-                && c.get("notificationType")
-                    .and_then(serde_json::Value::as_str)
-                    == Some("inlineMessage")
-        })
-        .filter_map(|c| c.get("msg").and_then(serde_json::Value::as_str))
-        .filter(|msg| !msg.trim().is_empty())
+        .filter_map(inline_notice)
         .collect();
     (!notices.is_empty()).then(|| format!("[notice] {}", notices.join(" ")))
+}
+
+/// The sentence of one inline notice block, or `None` for any other block or an empty one.
+fn inline_notice(block: &serde_json::Value) -> Option<&str> {
+    let inline = block.get("type").and_then(serde_json::Value::as_str)
+        == Some("systemNotification")
+        && block
+            .get("notificationType")
+            .and_then(serde_json::Value::as_str)
+            == Some("inlineMessage");
+    if !inline {
+        return None;
+    }
+    block
+        .get("msg")
+        .and_then(serde_json::Value::as_str)
+        .filter(|msg| !msg.trim().is_empty())
 }
 
 /// The output for a message with no text and no tool call: its cards (an approval, a
@@ -814,6 +824,9 @@ struct Progress {
     turn_id: Option<String>,
     /// A terminal frame (`Finish` or `Error`) has been seen.
     ended: bool,
+    /// The approvals whose expiry a printed line already reported (`Render::Lines`): see
+    /// `stream_frame_lines`.
+    expiries: cards::SaidEnds,
 }
 
 /// What reading one response came to.
@@ -1003,8 +1016,23 @@ async fn stream_frames(request: String, until: Until, render: Render) -> Result<
 /// so only the *join* is expanded into a transcript. A later one is a mid-stream
 /// resync (`bus_lag_resync_frame`), and re-printing the whole conversation for it
 /// would bury the live output it exists to correct.
-fn stream_frame_lines(frame: &serde_json::Value, render: Render, joined: &mut bool) -> Vec<String> {
+///
+/// `expiries` makes an approval's expiry one line under `Render::Lines`. The
+/// daemon reports a parked card's expiry twice, its `timed_out` end frame and then
+/// the notice that names the card, and the agent's own permission prompt's once,
+/// by the notice. `watch` and `send` keep no cards, so they print whichever comes
+/// first and not the other.
+fn stream_frame_lines(
+    frame: &serde_json::Value,
+    render: Render,
+    joined: &mut bool,
+    expiries: &mut cards::SaidEnds,
+) -> Vec<String> {
     let kind = frame.get("type").and_then(serde_json::Value::as_str);
+    let expiry = cards::expiry_reported_by(frame);
+    if render == Render::Lines && expiry.is_some_and(|id| !expiries.note(id)) {
+        return Vec::new();
+    }
     match render {
         Render::Silent => Vec::new(),
         Render::JoinThenLines if !*joined && kind == Some("UpdateConversation") => {
@@ -1019,6 +1047,9 @@ fn stream_frame_lines(frame: &serde_json::Value, render: Render, joined: &mut bo
         // `attach` names the card that ended from what it showed ([`cards::Waiting`]), so the
         // nameless `watch` line would say it twice.
         Render::JoinThenLines if kind == Some("ActionRequiredEnded") => Vec::new(),
+        // The same for an expiry notice: `attach`'s tracker prints one line for the expiry,
+        // whichever of its words comes first, and the notice's own line when it held no card.
+        Render::JoinThenLines if expiry.is_some() => Vec::new(),
         Render::Lines | Render::JoinThenLines => render_frame(frame).into_iter().collect(),
     }
 }
@@ -1039,7 +1070,7 @@ fn print_frames(
     cards: Option<&cards::CardSink>,
 ) -> bool {
     for frame in frames {
-        for line in stream_frame_lines(frame, render, &mut seen.joined) {
+        for line in stream_frame_lines(frame, render, &mut seen.joined, &mut seen.expiries) {
             println!("{line}");
         }
         if let Some(sink) = cards {
@@ -4120,7 +4151,8 @@ mod tests {
         });
 
         let mut joined = false;
-        let first = stream_frame_lines(&snapshot, Render::JoinThenLines, &mut joined);
+        let mut said = cards::SaidEnds::default();
+        let first = stream_frame_lines(&snapshot, Render::JoinThenLines, &mut joined, &mut said);
         assert!(joined, "the first snapshot latches the join");
         assert!(
             first.iter().any(|l| l.contains("audit the migration")),
@@ -4129,7 +4161,7 @@ mod tests {
 
         // A mid-stream resync (`bus_lag_resync_frame`) corrects the live output;
         // re-printing the whole conversation would bury it.
-        let second = stream_frame_lines(&snapshot, Render::JoinThenLines, &mut joined);
+        let second = stream_frame_lines(&snapshot, Render::JoinThenLines, &mut joined, &mut said);
         assert_eq!(
             second,
             vec!["[snapshot] chat resynced".to_string()],
@@ -4139,7 +4171,7 @@ mod tests {
         // `watch`/`send` never expand a snapshot at all, latch or no latch.
         let mut never_joins = false;
         assert_eq!(
-            stream_frame_lines(&snapshot, Render::Lines, &mut never_joins),
+            stream_frame_lines(&snapshot, Render::Lines, &mut never_joins, &mut said),
             vec!["[snapshot] chat resynced".to_string()]
         );
         assert!(!never_joins, "Render::Lines has no join to latch");
@@ -4147,7 +4179,7 @@ mod tests {
         // The `/reply` fallback prints nothing whatever it is handed — the
         // observer stream is already rendering that turn.
         let mut silent = false;
-        assert!(stream_frame_lines(&snapshot, Render::Silent, &mut silent).is_empty());
+        assert!(stream_frame_lines(&snapshot, Render::Silent, &mut silent, &mut said).is_empty());
         assert!(!silent);
     }
 
@@ -4160,10 +4192,95 @@ mod tests {
         });
         let mut joined = false;
         assert_eq!(
-            stream_frame_lines(&end, Render::Lines, &mut joined),
+            stream_frame_lines(
+                &end,
+                Render::Lines,
+                &mut joined,
+                &mut cards::SaidEnds::default()
+            ),
             vec!["[closed] A request in this chat is over: timed out.".to_string()]
         );
-        assert!(stream_frame_lines(&end, Render::JoinThenLines, &mut joined).is_empty());
+        assert!(stream_frame_lines(
+            &end,
+            Render::JoinThenLines,
+            &mut joined,
+            &mut cards::SaidEnds::default()
+        )
+        .is_empty());
+    }
+
+    /// The daemon's expiry notice for approval `id`, built by the daemon's own constructor so
+    /// this reader and that writer cannot drift apart.
+    fn expiry_notice_frame(id: &str, seq: u64) -> serde_json::Value {
+        let notice = biorouter::pending_user_action::card_expiry_notice(
+            id,
+            "The folder access request for /synthetic/results",
+        );
+        serde_json::json!({ "type": "Message", "seq": seq, "message": notice })
+    }
+
+    /// One expiry is one line in `watch` and `send`. A parked card's expiry arrives twice, its
+    /// `timed_out` end frame and then the notice that names it: the first is printed and the
+    /// second is not. The agent's own permission prompt is never parked, so its notice is the
+    /// only word and is printed. Another card's expiry is its own line.
+    #[test]
+    fn an_expiry_is_one_line_in_watch_and_send() {
+        let mut joined = false;
+        let mut said = cards::SaidEnds::default();
+        let mut lines = |frame: &serde_json::Value| {
+            stream_frame_lines(frame, Render::Lines, &mut joined, &mut said)
+        };
+        let parked_end = serde_json::json!({
+            "type": "ActionRequiredEnded", "id": "parked-1", "ending": "timed_out", "seq": 9
+        });
+        let mut printed = lines(&parked_end);
+        printed.extend(lines(&expiry_notice_frame("parked-1", 10)));
+        assert_eq!(
+            printed,
+            vec!["[closed] A request in this chat is over: timed out.".to_string()],
+            "a parked card's end and its notice are one expiry"
+        );
+
+        let own = lines(&expiry_notice_frame("call-1", 11));
+        assert_eq!(own.len(), 1, "{own:?}");
+        assert!(
+            own[0].starts_with("[notice] The folder access request for /synthetic/results expired"),
+            "{own:?}"
+        );
+        // The notice again (a replay) and an end frame after it say nothing more.
+        assert!(lines(&expiry_notice_frame("call-1", 12)).is_empty());
+        let late_end = serde_json::json!({
+            "type": "ActionRequiredEnded", "id": "call-1", "ending": "timed_out", "seq": 12
+        });
+        assert!(lines(&late_end).is_empty());
+
+        // An end that is not an expiry, and one for another card, still print.
+        let answered = serde_json::json!({
+            "type": "ActionRequiredEnded", "id": "parked-1", "ending": "answered", "seq": 13
+        });
+        assert_eq!(lines(&answered).len(), 1);
+        assert_eq!(lines(&expiry_notice_frame("parked-2", 14)).len(), 1);
+    }
+
+    /// In `attach` the expiry notice is the card tracker's to print ([`cards::Waiting`]), as
+    /// a card's end frame is: printed here as well, it would be the second line for one expiry.
+    #[test]
+    fn an_expiry_notice_is_left_to_the_tracker_in_attach() {
+        let notice = expiry_notice_frame("card-1", 10);
+        assert!(stream_frame_lines(
+            &notice,
+            Render::JoinThenLines,
+            &mut true,
+            &mut cards::SaidEnds::default()
+        )
+        .is_empty());
+        assert_eq!(
+            cards::card_events(&notice),
+            vec![cards::CardEvent::Expired {
+                id: "card-1".into(),
+                notice: "[notice] The folder access request for /synthetic/results expired before it was answered. The tool was not run. Ask again to retry.".into(),
+            }]
+        );
     }
 
     /// Reading a response off an in-memory pipe, so the status/termination rules

@@ -219,7 +219,7 @@ fn unknown_model_hint(model: &str) -> String {
 ///
 /// `ProviderMetadata::with_models` is used rather than `::new` because `::new`
 /// hard-codes `supports_vision: None` (see `base.rs`), and this catalog carries a
-/// per-model vision answer: all four of these take image input, which Anthropic
+/// per-model vision answer: all six of these take image input, which Anthropic
 /// states for every current model — recording a known fact as unknown is its
 /// own defect.
 ///
@@ -253,10 +253,20 @@ fn known_models() -> Vec<ModelInfo> {
     //     the window from `modelUsage` on a signed-in 2.1.280 when one is
     //     available.
     //
-    // All four windows match
+    //   * 2026-11-12, a real one-turn completion per id on the owner's
+    //     signed-in `claude` 2.1.321 (the desktop-bundled binary; the PATH
+    //     copy was a broken npm install that day), run with a clean
+    //     environment so the subscription answered: `claude-sonnet-5-5` and
+    //     `claude-haiku-5-5` each reported `contextWindow` 1,000,000 and
+    //     `maxOutputTokens` 128,000 in `modelUsage`, with no
+    //     `unrecognized_model` warning (the control, `claude-not-a-model-9`,
+    //     drew one). On that CLI the `sonnet` and `haiku` aliases run them.
+    //
+    // All six windows match
     // https://platform.claude.com/docs/en/about-claude/models/overview, which
     // also states that every current model takes text *and* image input —
-    // hence `with_vision()` on all four.
+    // hence `with_vision()` on all six. Sonnet 5 and Haiku 4.5 stay listed:
+    // Anthropic still lists both as current models, not legacy.
     //
     // ⚠ Each model has its own CLI floor, and an older CLI gets the vendor's
     // `claude_code_version_too_old` 400, which is surfaced verbatim so it reads
@@ -266,6 +276,8 @@ fn known_models() -> Vec<ModelInfo> {
     //   claude-fable-5-1  2.1.257  (the page said 2.1.255 on 2026-09-08, and the
     //                               API's own 400 on 2.1.235 then named 2.1.251)
     //   claude-sonnet-5   2.1.197
+    // The 5.5 Sonnet and Haiku answered on 2.1.321 (2026-11-12); their floor
+    // was not measured.
     //
     // ⚠ The probe has to be checked before it is trusted: `claude --model X -p`
     // ACCEPTS an unknown id and merely warns. Current CLIs (2.1.266, 2.1.275
@@ -311,6 +323,8 @@ fn known_models() -> Vec<ModelInfo> {
     vec![
         ModelInfo::new("claude-opus-5-5", 1_000_000).with_vision(),
         ModelInfo::new("claude-fable-5-1", 1_000_000).with_vision(),
+        ModelInfo::new("claude-sonnet-5-5", 1_000_000).with_vision(),
+        ModelInfo::new("claude-haiku-5-5", 1_000_000).with_vision(),
         ModelInfo::new("claude-sonnet-5", 1_000_000).with_vision(),
         ModelInfo::new("claude-haiku-4-5", 200_000).with_vision(),
     ]
@@ -2729,12 +2743,15 @@ mod tests {
             [
                 "claude-opus-5-5",
                 "claude-fable-5-1",
+                "claude-sonnet-5-5",
+                "claude-haiku-5-5",
                 "claude-sonnet-5",
                 "claude-haiku-4-5",
             ],
             "Anthropic's current lineup per its model overview, re-read \
              2026-09-25 against the baked catalogs of `claude` 2.1.266, 2.1.275 \
-             and 2.1.280"
+             and 2.1.280; Sonnet 5.5 and Haiku 5.5 measured on 2.1.321 \
+             (2026-11-12)"
         );
         assert_eq!(
             m.default_model, CLAUDE_CODE_DEFAULT_MODEL,
@@ -2768,8 +2785,8 @@ mod tests {
 
         // The window each entry declares is the one the CLI itself reported
         // (Opus 5.5's is its baked catalog's, since no signed-in completion
-        // was possible when it was added). Haiku differing from the rest is the
-        // point: a blanket 1M would be a 5x overstatement for it.
+        // was possible when it was added). Haiku 4.5 differing from the rest is
+        // the point: a blanket 1M would be a 5x overstatement for it.
         let window = |id: &str| {
             m.known_models
                 .iter()
@@ -2779,6 +2796,8 @@ mod tests {
         };
         assert_eq!(window("claude-opus-5-5"), 1_000_000);
         assert_eq!(window("claude-fable-5-1"), 1_000_000);
+        assert_eq!(window("claude-sonnet-5-5"), 1_000_000);
+        assert_eq!(window("claude-haiku-5-5"), 1_000_000);
         assert_eq!(window("claude-sonnet-5"), 1_000_000);
         assert_eq!(window("claude-haiku-4-5"), 200_000);
     }

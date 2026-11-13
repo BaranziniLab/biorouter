@@ -8276,6 +8276,12 @@ export type SystemInfo = {
 };
 
 export type SystemNotificationContent = {
+    /**
+     * Approval cards: the id of the card whose answer window closed before
+     * anyone answered it, on the inline notice that reports the expiry. A
+     * surface draws the card with that id as expired, without its buttons.
+     */
+    expiredActionId?: string | null;
     msg: string;
     notificationType: SystemNotificationType;
 };

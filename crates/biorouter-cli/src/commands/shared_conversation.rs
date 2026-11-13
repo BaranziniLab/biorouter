@@ -1,6 +1,7 @@
 //! Terminal presentation of the profile daemon's personal conversation services.
 use crate::commands::session_watch::cards;
 use crate::daemon_client::{CrewClient, DaemonEventStream, DaemonRefusal};
+use crate::session::APPROVAL_EXPIRED;
 use anyhow::{bail, ensure, Context, Result};
 use biorouter::conversation::message::{ActionRequiredData, Message, MessageContent};
 use crossterm::event::{
@@ -53,6 +54,9 @@ struct Conversation {
     interactive: bool,
     quiet: bool,
     answered: HashSet<String>,
+    /// The approvals whose prompt here ended by saying how they closed, so the daemon's own
+    /// words for the same end print nothing more ([`ClosedHere`]).
+    closed_here: ClosedHere,
     renderer: TextRenderer,
     continuation_owner_id: String,
     continuation_lease: Option<Zeroizing<String>>,
@@ -66,6 +70,12 @@ struct Conversation {
     #[cfg(test)]
     crew_step_test_input:
         Option<std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + Sync>>>,
+    /// What the next approval prompt reads in place of the terminal.
+    #[cfg(test)]
+    approval_test_input: Option<ApprovalTestInput>,
+    /// Every line [`Conversation::notice`] wrote, for a test to read back.
+    #[cfg(test)]
+    noticed: std::sync::Mutex<Vec<String>>,
 }
 
 #[cfg(feature = "dictation")]
@@ -73,6 +83,10 @@ type SharedDictationState = crate::dictation::frontend::FrontendSession;
 #[cfg(not(feature = "dictation"))]
 #[derive(Default)]
 struct SharedDictationState;
+/// A test's stand-in for the terminal an approval prompt reads.
+#[cfg(test)]
+type ApprovalTestInput =
+    std::pin::Pin<Box<dyn Future<Output = Result<Option<Zeroizing<String>>>> + Send + Sync>>;
 
 /// The provider, model and privacy a chat was shown with.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -195,6 +209,7 @@ pub async fn run(options: SharedConversationOptions) -> Result<()> {
         interactive: options.interactive,
         quiet: options.quiet,
         answered: HashSet::new(),
+        closed_here: ClosedHere::default(),
         renderer: TextRenderer::default(),
         continuation_owner_id: uuid::Uuid::new_v4().to_string(),
         continuation_lease: None,
@@ -203,6 +218,10 @@ pub async fn run(options: SharedConversationOptions) -> Result<()> {
         dictation_state: Default::default(),
         #[cfg(test)]
         crew_step_test_input: None,
+        #[cfg(test)]
+        approval_test_input: None,
+        #[cfg(test)]
+        noticed: Default::default(),
     };
     conversation.event(&json!({"type":"Session","session_id":conversation.session_id}))?;
     let result = conversation.execute(&options).await;
@@ -557,6 +576,9 @@ impl Conversation {
         let mut bound = false;
         // Whether the turn reached the provider: a model's frame arrived.
         let mut reached = false;
+        // Frames read while a card's prompt was open (`observe_crew_step`,
+        // `ask_until_expired`), handled here in the order they arrived before
+        // the stream is read again.
         let mut deferred = VecDeque::new();
         loop {
             let frame = tokio::select! {
@@ -617,7 +639,9 @@ impl Conversation {
                         );
                         self.answered.insert(id.to_owned());
                     }
-                    self.notice(&cards::ended_frame_line(&frame))?;
+                    if let Some(line) = self.closed_here.ended_line(&frame) {
+                        self.notice(&line)?;
+                    }
                 }
                 "Error" => return Err(turn_error(&frame, reached)),
                 "Finish" => {
@@ -651,7 +675,9 @@ impl Conversation {
     ) -> Result<Interaction> {
         let message: Message =
             serde_json::from_value(value.clone()).context("Unsupported daemon message shape")?;
-        if self.format == Format::Text {
+        // An expiry notice for an approval whose prompt already said it expired is that same
+        // end a second time.
+        if self.format == Format::Text && !self.closed_here.said(&message) {
             self.renderer.message(&message, self.quiet)?;
         }
         for content in message.content {
@@ -688,10 +714,18 @@ impl Conversation {
         sequence: Option<u64>,
     ) -> Result<Interaction> {
         let ActionRequiredData::CrewStep { id, step } = &action else {
-            return self.interact(action).await;
+            // Any other card is asked with the turn's stream lent to it, so an approval
+            // stops asking the moment its card expires (`ask_until_expired`).
+            let watch = TurnWatch {
+                stream,
+                deferred,
+                turn_id,
+                sequence,
+            };
+            return self.interact(action, Some(watch)).await;
         };
         if biorouter::pending_user_action::crew_step_is_a_notice(step) {
-            return self.interact(action).await;
+            return self.interact(action, None).await;
         }
         let id = id.clone();
         validate_id(&id)?;
@@ -706,7 +740,7 @@ impl Conversation {
         // Drop the prompt's reader and zeroizing buffers before clearing queued input or
         // rendering deferred chat output. A detached reader could consume the next prompt.
         let observed = {
-            let interaction = self.interact(action);
+            let interaction = self.interact(action, None);
             observe_crew_step(
                 interaction,
                 stream,
@@ -735,7 +769,14 @@ impl Conversation {
         }
     }
 
-    async fn interact(&mut self, action: ActionRequiredData) -> Result<Interaction> {
+    /// Ask the person for card `action`. `watch` lends the turn's stream to an approval's
+    /// prompt (`ask_until_expired`); a Crew step is observed from outside instead
+    /// (`observe_crew_step`), so it gets none.
+    async fn interact(
+        &mut self,
+        action: ActionRequiredData,
+        watch: Option<TurnWatch<'_>>,
+    ) -> Result<Interaction> {
         let id = match &action {
             ActionRequiredData::ToolConfirmation { id, .. }
             | ActionRequiredData::Elicitation { id, .. }
@@ -756,7 +797,9 @@ impl Conversation {
             "Too many interaction prompts; reconnect to the session"
         );
         let outcome = match action {
-            ActionRequiredData::ToolConfirmation { .. } => self.confirm_tool(&action, &id).await?,
+            ActionRequiredData::ToolConfirmation { .. } => {
+                self.confirm_tool(&action, &id, watch).await?
+            }
             ActionRequiredData::SecretRequest { .. } => self.collect_secrets(action, &id).await?,
             ActionRequiredData::Elicitation {
                 message,
@@ -792,7 +835,12 @@ impl Conversation {
         crate::commands::crew_step::take(&surface, step).await
     }
 
-    async fn confirm_tool(&self, action: &ActionRequiredData, id: &str) -> Result<Interaction> {
+    async fn confirm_tool(
+        &mut self,
+        action: &ActionRequiredData,
+        id: &str,
+        mut watch: Option<TurnWatch<'_>>,
+    ) -> Result<Interaction> {
         // The card whole, but never an argument whose name looks like a credential, one line
         // of it per line on the terminal.
         self.notice_lines(&card_lines(action))?;
@@ -810,8 +858,54 @@ impl Conversation {
         let read_consent = cards::is_read_consent(action);
         let question = approval_question(read_consent, folder_access, &self.session_id);
         loop {
-            let Some(answer) = terminal_input(&question, false, 32, None, None, None).await? else {
-                return Ok(Interaction::Stop);
+            // The daemon stops waiting for a card when its window closes, and
+            // says so on the turn's stream. Keep reading it while the person
+            // types, so the prompt ends the moment the card expires instead of
+            // taking an answer nothing waits on.
+            #[cfg(test)]
+            let input = match self.approval_test_input.take() {
+                Some(injected) => futures::future::Either::Left(injected),
+                None => futures::future::Either::Right(terminal_input(
+                    &question, false, 32, None, None, None,
+                )),
+            };
+            #[cfg(not(test))]
+            let input = terminal_input(&question, false, 32, None, None, None);
+            let asked = match watch.as_mut() {
+                Some(watch) => {
+                    ask_until_expired(
+                        input,
+                        &mut *watch.stream,
+                        &mut *watch.deferred,
+                        id,
+                        watch.turn_id,
+                        watch.sequence,
+                    )
+                    .await?
+                }
+                None => WhileAsking::Answered(input.await?),
+            };
+            let answer = match asked {
+                WhileAsking::Answered(None) => return Ok(Interaction::Stop),
+                WhileAsking::Answered(Some(answer)) => answer,
+                // The turn ended under the prompt (stopped from another
+                // window, say): nothing can use an answer now. The turn loop
+                // reads the ending (from `deferred`, or the ended stream) and
+                // reports it.
+                WhileAsking::TurnEnded => {
+                    eprint!("\r\n");
+                    return Ok(Interaction::Continue);
+                }
+                // The card expired, or ended in another window: one line says
+                // so, and the daemon's own words for that end, read after the
+                // prompt, print nothing more.
+                closed @ (WhileAsking::Expired | WhileAsking::Closed(_)) => {
+                    eprint!("\r\n");
+                    if let Some(line) = self.closed_here.close(id, &closed) {
+                        self.notice(&line)?;
+                    }
+                    return Ok(Interaction::Continue);
+                }
             };
             let decision = if folder_access && answer.trim() == "allow_session" {
                 Some("allow_session")
@@ -838,11 +932,11 @@ impl Conversation {
                 ),
                 "Unexpected tool approval response"
             );
-            if matches!(
-                result["status"].as_str(),
-                Some("unknown" | "already_resolved")
-            ) {
-                self.notice("This request is no longer pending; no new tool call was approved.")?;
+            if let Some(notice) = late_answer_notice(result["status"].as_str()) {
+                // The daemon's own words for that end (its end frame, its
+                // expiry notice) may still be on their way: this line said it.
+                self.notice(notice)?;
+                self.closed_here.note(id);
             } else if read_consent && decision == "allow_once" {
                 self.notice(&cards::read_consent_allowed(&self.session_id))?;
             }
@@ -1001,6 +1095,11 @@ impl Conversation {
         let mut stderr = std::io::stderr().lock();
         writeln!(stderr, "{}", safe_text(value))?;
         stderr.flush()?;
+        #[cfg(test)]
+        self.noticed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(value.to_owned());
         Ok(())
     }
     /// [`Self::notice`] for text already split into `lines`, each printed on its own line and
@@ -1407,6 +1506,178 @@ where
             }
             outcome = &mut interaction => {
                 return outcome.map(ObservedCrewStep::Completed);
+            }
+        }
+    }
+}
+
+/// The line for a decision the daemon did not deliver. `unknown` is a card
+/// nothing waits on any more, which for a card still on screen is a window
+/// that closed: said as the same expiry, never as a vague "no longer pending".
+fn late_answer_notice(status: Option<&str>) -> Option<&'static str> {
+    match status {
+        Some("unknown") => Some(APPROVAL_EXPIRED),
+        Some("already_resolved") => {
+            Some("This request was already answered elsewhere; no new tool call was approved.")
+        }
+        _ => None,
+    }
+}
+
+/// The turn's stream, lent to an approval's prompt so it keeps reading while the person types
+/// ([`ask_until_expired`]). What it reads waits in `deferred` for the turn loop, which has
+/// handled `turn_id`'s frames up to `sequence`.
+struct TurnWatch<'a> {
+    stream: &'a mut DaemonEventStream,
+    deferred: &'a mut VecDeque<Value>,
+    turn_id: &'a str,
+    sequence: Option<u64>,
+}
+
+/// The turn stream, as a prompt reads it while it waits.
+trait FrameSource {
+    async fn next_frame(&mut self) -> Result<Option<Value>>;
+}
+
+impl FrameSource for DaemonEventStream {
+    async fn next_frame(&mut self) -> Result<Option<Value>> {
+        self.next_event().await
+    }
+}
+
+/// How a prompt raised by approval card `id` ended.
+#[derive(Debug)]
+enum WhileAsking<T> {
+    Answered(T),
+    /// The daemon reported the card's window closed before an answer came: a
+    /// parked card's `timed_out` end frame, or the notice that names the card
+    /// (the only word of the agent's own prompt expiring).
+    Expired,
+    /// The daemon said the card ended another way (`ActionRequiredEnded`), with
+    /// its word for how: answered or dismissed in another window, or withdrawn.
+    Closed(String),
+    /// The turn's stream ended (a terminal frame, or the stream's end), so no
+    /// call is left to take an answer.
+    TurnEnded,
+}
+
+/// Whether `frame` ends the prompt for approval card `id`, and how.
+fn ends_approval_prompt<T>(frame: &Value, id: &str) -> Option<WhileAsking<T>> {
+    if cards::expiry_reported_by(frame) == Some(id) {
+        return Some(WhileAsking::Expired);
+    }
+    match frame["type"].as_str() {
+        Some("ActionRequiredEnded") if frame["id"].as_str() == Some(id) => Some(
+            WhileAsking::Closed(frame["ending"].as_str().unwrap_or_default().to_owned()),
+        ),
+        Some("Finish" | "Error") => Some(WhileAsking::TurnEnded),
+        _ => None,
+    }
+}
+
+/// The approvals whose prompt in this terminal ended by saying how they closed (expired, or
+/// ended in another window), by card ID. The daemon says such an end in its own words too, an
+/// end frame and, for an expiry, a notice naming the card, and the turn loop reads them after
+/// the prompt: printed as well, one end would be two or three lines. Every ID here is also in
+/// [`Conversation::answered`], whose bound holds for both.
+#[derive(Debug, Default)]
+struct ClosedHere(HashSet<String>);
+
+impl ClosedHere {
+    /// The one line a prompt for approval `id` ends with when `how` closed it, noting `id` so
+    /// the daemon's words for that end print nothing more. `None` for an answer or the turn's
+    /// end, which say their own.
+    fn close<T>(&mut self, id: &str, how: &WhileAsking<T>) -> Option<String> {
+        let line = match how {
+            WhileAsking::Expired => APPROVAL_EXPIRED.to_string(),
+            WhileAsking::Closed(ending) => cards::approval_closed_line(ending),
+            WhileAsking::Answered(_) | WhileAsking::TurnEnded => return None,
+        };
+        self.note(id);
+        Some(line)
+    }
+
+    /// Note that a line here said how approval `id` ended: an answer the daemon took for no
+    /// waiting call ([`late_answer_notice`]) is said that way.
+    fn note(&mut self, id: &str) {
+        self.0.insert(id.to_owned());
+    }
+
+    /// The line for a card's end frame (`ActionRequiredEnded`), or `None` when the prompt for
+    /// that card already said how it ended.
+    fn ended_line(&self, frame: &Value) -> Option<String> {
+        if frame["id"].as_str().is_some_and(|id| self.0.contains(id)) {
+            return None;
+        }
+        Some(cards::ended_frame_line(frame))
+    }
+
+    /// Whether `message` is the expiry notice of an approval whose prompt here already said
+    /// how it ended.
+    fn said(&self, message: &Message) -> bool {
+        biorouter::pending_user_action::expired_card_id(message)
+            .is_some_and(|id| self.0.contains(id))
+    }
+}
+
+/// Wait for the person's `input` while reading the turn's stream, and stop
+/// as soon as the daemon reports that card `id` expired or ended another way
+/// (answered in another window, say), or the turn ends.
+///
+/// Every frame read here (the expiry included) waits in `deferred`, in order and
+/// within the same bounds as [`observe_crew_step`]'s, for the turn loop to handle
+/// after the prompt, so nothing the stream said while the person was typing is
+/// lost or reordered. Frames already waiting there are read first: an expiry
+/// that arrived while another prompt was open ends this one before it is asked.
+/// The stream's end ends the prompt, and the turn loop meets it again after the
+/// frames before it (the stream stays ended); a stream error is the turn's error.
+/// An answer that is ready wins over a frame that is ready at the same moment:
+/// the person spoke, and the daemon's reply to it says whether it landed.
+async fn ask_until_expired<T, S: FrameSource>(
+    input: impl Future<Output = Result<T>>,
+    stream: &mut S,
+    deferred: &mut VecDeque<Value>,
+    id: &str,
+    turn_id: &str,
+    sequence: Option<u64>,
+) -> Result<WhileAsking<T>> {
+    let mut observed_sequence = sequence;
+    let mut deferred_bytes = 0usize;
+    for frame in deferred.iter() {
+        deferred_bytes = deferred_bytes.saturating_add(serde_json::to_vec(frame)?.len());
+        if observe_card_sequence(frame, turn_id, &mut observed_sequence)? {
+            if let Some(ending) = ends_approval_prompt(frame, id) {
+                return Ok(ending);
+            }
+        }
+    }
+    tokio::pin!(input);
+    loop {
+        tokio::select! {
+            biased;
+            answer = &mut input => return Ok(WhileAsking::Answered(answer?)),
+            frame = stream.next_frame() => {
+                let Some(frame) = frame? else {
+                    return Ok(WhileAsking::TurnEnded);
+                };
+                // The heartbeat (every 500 ms) is liveness, not content: deferring
+                // it would fill `deferred` for as long as the person reads the card.
+                if frame["type"].as_str() == Some("Ping")
+                    || !observe_card_sequence(&frame, turn_id, &mut observed_sequence)?
+                {
+                    continue;
+                }
+                deferred_bytes = deferred_bytes.saturating_add(serde_json::to_vec(&frame)?.len());
+                ensure!(
+                    deferred.len() < MAX_DEFERRED_CARD_FRAMES
+                        && deferred_bytes <= MAX_DEFERRED_CARD_BYTES,
+                    "Too many daemon events arrived while a request waited; reattach to this session without new input"
+                );
+                let ending = ends_approval_prompt(&frame, id);
+                deferred.push_back(frame);
+                if let Some(ending) = ending {
+                    return Ok(ending);
+                }
             }
         }
     }
@@ -1919,6 +2190,278 @@ mod tests {
         }
     }
 
+    mod approval_expiry {
+        use super::super::{
+            ask_until_expired, late_answer_notice, ClosedHere, FrameSource, WhileAsking,
+            APPROVAL_EXPIRED,
+        };
+        use anyhow::Result;
+        use serde_json::{json, Value};
+        use std::collections::VecDeque;
+
+        /// A turn stream that says these frames, then waits forever (a live
+        /// turn whose next frame has not come yet).
+        struct Said(VecDeque<Result<Option<Value>>>);
+        impl FrameSource for Said {
+            async fn next_frame(&mut self) -> Result<Option<Value>> {
+                match self.0.pop_front() {
+                    Some(frame) => frame,
+                    None => std::future::pending().await,
+                }
+            }
+        }
+
+        fn said(frames: Vec<Value>) -> Said {
+            Said(frames.into_iter().map(|frame| Ok(Some(frame))).collect())
+        }
+
+        /// The frame the daemon sends, built by the daemon's own constructor so
+        /// this reader and that writer cannot drift apart.
+        fn expiry(id: &str) -> Value {
+            let notice = biorouter::pending_user_action::card_expiry_notice(
+                id,
+                "The permission prompt for developer__shell",
+            );
+            json!({"type": "Message", "seq": 7, "message": notice})
+        }
+
+        /// The prompt stops waiting the moment the daemon says its card
+        /// expired, and every frame read meanwhile reaches the turn loop in
+        /// order (the heartbeat aside).
+        #[tokio::test]
+        async fn the_prompt_stops_when_its_card_expires() {
+            let mut stream = said(vec![
+                json!({"type": "Ping"}),
+                json!({"type": "Notification", "seq": 6}),
+                expiry("card-1"),
+            ]);
+            let mut deferred = VecDeque::new();
+            let asked = ask_until_expired(
+                std::future::pending::<Result<Option<String>>>(),
+                &mut stream,
+                &mut deferred,
+                "card-1",
+                "turn-1",
+                Some(5),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(asked, WhileAsking::Expired));
+            assert_eq!(
+                Vec::from(deferred),
+                vec![json!({"type": "Notification", "seq": 6}), expiry("card-1")]
+            );
+        }
+
+        /// Another card's expiry leaves the prompt open: the person still
+        /// answers it, and the frame is deferred for the loop.
+        #[tokio::test]
+        async fn another_cards_expiry_does_not_end_the_prompt() {
+            let mut stream = said(vec![expiry("card-2")]);
+            let mut deferred = VecDeque::new();
+            let (answer, typed) = tokio::sync::oneshot::channel::<()>();
+            let input = async move {
+                typed.await.unwrap();
+                Ok(Some("deny".to_string()))
+            };
+            let asked = tokio::join!(
+                ask_until_expired(input, &mut stream, &mut deferred, "card-1", "turn-1", None),
+                async move {
+                    tokio::task::yield_now().await;
+                    answer.send(()).unwrap();
+                }
+            )
+            .0
+            .unwrap();
+            assert!(matches!(asked, WhileAsking::Answered(Some(ref text)) if text == "deny"));
+            assert_eq!(Vec::from(deferred), vec![expiry("card-2")]);
+        }
+
+        /// A turn that ends under the prompt (stopped from another window)
+        /// ends the prompt too, and the loop still reads the ending.
+        #[tokio::test]
+        async fn the_prompt_stops_when_the_turn_ends() {
+            let finish = json!({"type": "Finish", "seq": 9, "reason": "cancelled"});
+            let mut stream = said(vec![finish.clone()]);
+            let mut deferred = VecDeque::new();
+            let asked = ask_until_expired(
+                std::future::pending::<Result<Option<String>>>(),
+                &mut stream,
+                &mut deferred,
+                "card-1",
+                "turn-1",
+                None,
+            )
+            .await
+            .unwrap();
+            assert!(matches!(asked, WhileAsking::TurnEnded));
+            assert_eq!(deferred.pop_front(), Some(finish));
+        }
+
+        /// A stream that ends under the prompt ends it too; what came before
+        /// the end still reaches the loop, which then meets the end itself.
+        #[tokio::test]
+        async fn the_prompt_stops_when_the_stream_ends() {
+            let notification = json!({"type": "Notification", "seq": 6});
+            let mut stream = Said(VecDeque::from([Ok(Some(notification.clone())), Ok(None)]));
+            let mut deferred = VecDeque::new();
+            let asked = ask_until_expired(
+                std::future::pending::<Result<Option<String>>>(),
+                &mut stream,
+                &mut deferred,
+                "card-1",
+                "turn-1",
+                None,
+            )
+            .await
+            .unwrap();
+            assert!(matches!(asked, WhileAsking::TurnEnded));
+            assert_eq!(Vec::from(deferred), vec![notification]);
+        }
+
+        /// An expiry read while another card's prompt was open ends this
+        /// card's prompt before it is asked, and stays for the loop.
+        #[tokio::test]
+        async fn an_expiry_already_read_ends_the_prompt_before_it_is_asked() {
+            let mut stream = said(Vec::new());
+            let mut deferred = VecDeque::from([expiry("card-1")]);
+            let asked = ask_until_expired(
+                async { Err::<Option<String>, _>(anyhow::anyhow!("the prompt was asked")) },
+                &mut stream,
+                &mut deferred,
+                "card-1",
+                "turn-1",
+                Some(5),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(asked, WhileAsking::Expired));
+            assert_eq!(Vec::from(deferred), vec![expiry("card-1")]);
+        }
+
+        /// A late click the daemon answers `unknown` is said as the same expiry,
+        /// never as a vague "no longer pending".
+        #[test]
+        fn a_late_answer_is_said_as_expired() {
+            assert_eq!(late_answer_notice(Some("unknown")), Some(APPROVAL_EXPIRED));
+            assert!(
+                APPROVAL_EXPIRED.starts_with("Expired") && APPROVAL_EXPIRED.contains("Ask again")
+            );
+            assert!(late_answer_notice(Some("already_resolved"))
+                .is_some_and(|line| line.contains("already answered")));
+            assert_eq!(late_answer_notice(Some("delivered")), None);
+        }
+
+        fn ended(id: &str, ending: &str, seq: u64) -> Value {
+            json!({"type": "ActionRequiredEnded", "id": id, "ending": ending, "seq": seq})
+        }
+
+        /// A parked card's expiry comes first as its end frame (`timed_out`), and the notice
+        /// follows: the prompt stops at the end frame. One that ends any other way in another
+        /// window (answered on the desktop, say) stops the prompt too, with the daemon's word
+        /// for how. Either way the frame stays for the turn loop.
+        #[tokio::test]
+        async fn the_prompt_stops_when_its_card_ends_elsewhere() {
+            for (ending, expected) in [("timed_out", None), ("answered", Some("answered"))] {
+                let mut stream = said(vec![
+                    ended("card-2", "answered", 6),
+                    ended("card-1", ending, 7),
+                ]);
+                let mut deferred = VecDeque::new();
+                // Bounded, so a prompt the end frame leaves open fails rather than hangs.
+                let asked = tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    ask_until_expired(
+                        std::future::pending::<Result<Option<String>>>(),
+                        &mut stream,
+                        &mut deferred,
+                        "card-1",
+                        "turn-1",
+                        Some(5),
+                    ),
+                )
+                .await
+                .unwrap_or_else(|_| panic!("{ending}: the card's end frame left its prompt open"))
+                .unwrap();
+                match (asked, expected) {
+                    (WhileAsking::Expired, None) => {}
+                    (WhileAsking::Closed(how), Some(word)) if how == word => {}
+                    (asked, _) => panic!("{ending}: the prompt ended as {asked:?}"),
+                }
+                assert_eq!(
+                    Vec::from(deferred),
+                    vec![ended("card-2", "answered", 6), ended("card-1", ending, 7)],
+                    "another card's end leaves the prompt open, and both reach the loop"
+                );
+            }
+        }
+
+        /// An end already read while another card's prompt was open ends this card's prompt
+        /// before it is asked.
+        #[tokio::test]
+        async fn an_end_already_read_ends_the_prompt_before_it_is_asked() {
+            let mut stream = said(Vec::new());
+            let mut deferred = VecDeque::from([ended("card-1", "dismissed", 6)]);
+            let asked = ask_until_expired(
+                async { Err::<Option<String>, _>(anyhow::anyhow!("the prompt was asked")) },
+                &mut stream,
+                &mut deferred,
+                "card-1",
+                "turn-1",
+                Some(5),
+            )
+            .await
+            .unwrap();
+            assert!(matches!(asked, WhileAsking::Closed(ref how) if how == "dismissed"));
+        }
+
+        /// One expiry is one line at the prompt. A parked card's expiry reaches the turn as its
+        /// end frame and then the notice naming it; the agent's own prompt's, as the notice
+        /// alone. The prompt says `APPROVAL_EXPIRED`, and neither of the daemon's words for that
+        /// expiry, read after it, prints again. A card that ended in another window says the
+        /// daemon's word for how, once. Another card's end and notice still print, and an
+        /// answer or the turn's end notes nothing.
+        #[test]
+        fn a_closed_prompt_is_the_one_line_for_its_end() {
+            let notice = |id: &str| {
+                biorouter::pending_user_action::card_expiry_notice(
+                    id,
+                    "The folder access request for /synthetic/results",
+                )
+            };
+            let mut closed = ClosedHere::default();
+            assert_eq!(
+                closed.close("card-1", &WhileAsking::<()>::Expired),
+                Some(APPROVAL_EXPIRED.to_string())
+            );
+            assert_eq!(closed.ended_line(&ended("card-1", "timed_out", 8)), None);
+            assert!(closed.said(&notice("card-1")));
+
+            assert_eq!(
+                closed.close("card-2", &WhileAsking::<()>::Closed("answered".into())),
+                Some("[approval closed] This request was answered somewhere else.".to_string())
+            );
+            assert_eq!(closed.ended_line(&ended("card-2", "answered", 9)), None);
+
+            assert_eq!(
+                closed.ended_line(&ended("card-3", "timed_out", 10)),
+                Some("[closed] A request in this chat is over: timed out.".to_string())
+            );
+            assert!(!closed.said(&notice("card-3")));
+            assert_eq!(closed.close("card-4", &WhileAsking::Answered(())), None);
+            assert_eq!(closed.close("card-4", &WhileAsking::<()>::TurnEnded), None);
+            assert!(closed
+                .ended_line(&ended("card-4", "answered", 11))
+                .is_some());
+
+            // A late answer the daemon took for no waiting call is said as the expiry, and
+            // that card's end frame and notice then print nothing more.
+            closed.note("card-5");
+            assert_eq!(closed.ended_line(&ended("card-5", "timed_out", 12)), None);
+            assert!(closed.said(&notice("card-5")));
+        }
+    }
+
     /// AGT2-N4: "Chat … is ready" waits for the turn that follows it to reach the provider,
     /// and is dropped when the daemon refuses the start first; `TurnStarted`, sent before any
     /// work that can fail, says neither.
@@ -2087,6 +2630,7 @@ mod tests {
                 interactive,
                 quiet: true,
                 answered: Default::default(),
+                closed_here: Default::default(),
                 renderer: TextRenderer::default(),
                 continuation_owner_id: "owner-a".into(),
                 continuation_lease: None,
@@ -2094,6 +2638,8 @@ mod tests {
                 pending_ready: None,
                 dictation_state: Default::default(),
                 crew_step_test_input: None,
+                approval_test_input: None,
+                noticed: Default::default(),
             }
         }
 
@@ -2408,16 +2954,19 @@ mod tests {
             );
             let mut conversation = conversation(client, false);
             let Err(error) = conversation
-                .interact(ActionRequiredData::CrewStep {
-                    id: "card-1".into(),
-                    step: CrewStepRequest::SignIn {
-                        target: CrewSignInTarget::Setup {
-                            job_id: "job-1".into(),
+                .interact(
+                    ActionRequiredData::CrewStep {
+                        id: "card-1".into(),
+                        step: CrewStepRequest::SignIn {
+                            target: CrewSignInTarget::Setup {
+                                job_id: "job-1".into(),
+                            },
+                            server: "hpc.example.edu".into(),
+                            login: "you@hpc.example.edu".into(),
                         },
-                        server: "hpc.example.edu".into(),
-                        login: "you@hpc.example.edu".into(),
                     },
-                })
+                    None,
+                )
                 .await
             else {
                 panic!("nobody is at this terminal, so the card must be refused");
@@ -2764,6 +3313,128 @@ mod tests {
                 .expect("reply request headers captured");
             assert_eq!(header.1.as_deref(), Some("text/event-stream"));
             assert_eq!(header.2.as_deref(), Some("1"));
+        }
+
+        /// A parked approval's expiry reaches the turn first as its end frame (`timed_out`),
+        /// then as the notice naming it. The prompt stops at the end frame, answers nothing,
+        /// and notes the card as closed here, so the loop prints neither of the daemon's words
+        /// for that end after the prompt's own line.
+        #[tokio::test]
+        #[serial]
+        async fn an_approval_prompt_stops_at_its_cards_end_frame() {
+            use biorouter::conversation::message::{Message, MessageContent};
+            use std::sync::atomic::{AtomicBool, Ordering};
+            use std::time::Duration;
+
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let daemon = FakeDaemon::start(StatusCode::OK, json!({})).await;
+            let mut conversation = conversation(daemon.client(), true);
+            let dropped = Arc::new(AtomicBool::new(false));
+            let (asked_tx, asked_rx) = tokio::sync::oneshot::channel();
+            let drop_probe = DropCrewStepInput(Arc::clone(&dropped));
+            conversation.approval_test_input = Some(Box::pin(async move {
+                let _drop = drop_probe;
+                let _ = asked_tx.send(());
+                std::future::pending::<anyhow::Result<Option<Zeroizing<String>>>>().await
+            }));
+            let mut task = tokio::spawn(async move {
+                let result = conversation.attach("turn-1").await;
+                (conversation, result)
+            });
+
+            let card =
+                Message::assistant().with_content(MessageContent::action_required_with_context(
+                    "card-1",
+                    "filesystem__folder_access".into(),
+                    serde_json::Map::new(),
+                    Some("Allow access to /synthetic/results?".into()),
+                    None,
+                    None,
+                ));
+            daemon.send_event(&json!({
+                "type":"Message", "turn_id":"turn-1", "seq":1, "message":card
+            }));
+            tokio::time::timeout(Duration::from_secs(2), asked_rx)
+                .await
+                .expect("the approval prompt starts before its card ends")
+                .expect("prompt-start signal arrives");
+            daemon.send_event(&json!({
+                "type":"ActionRequiredEnded", "turn_id":"turn-1", "id":"card-1",
+                "ending":"timed_out", "seq":2
+            }));
+            let stopped = tokio::time::timeout(Duration::from_secs(2), async {
+                while !dropped.load(Ordering::SeqCst) {
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await;
+            if stopped.is_err() {
+                task.abort();
+                let _ = task.await;
+                panic!("the card's timed_out end frame must stop its prompt");
+            }
+
+            let notice = biorouter::pending_user_action::card_expiry_notice(
+                "card-1",
+                "The folder access request for /synthetic/results",
+            );
+            daemon.send_event(&json!({
+                "type":"Message", "turn_id":"turn-1", "seq":3, "message":notice
+            }));
+            daemon.send_event(&json!({
+                "type":"Finish", "turn_id":"turn-1", "seq":4, "reason":"completed"
+            }));
+            daemon.finish_events();
+
+            let completed = tokio::time::timeout(Duration::from_secs(2), &mut task).await;
+            if completed.is_err() {
+                task.abort();
+                let _ = task.await;
+            }
+            let (conversation, result) = completed
+                .expect("the turn finishes after its expired card")
+                .expect("attach task joins");
+            assert!(
+                matches!(&result, Ok(TurnEnd::Finished)),
+                "{:?}",
+                result.as_ref().err()
+            );
+            assert!(conversation.answered.contains("card-1"));
+            // One line for the expiry: the prompt's own. The end frame and the notice the
+            // loop read after it print nothing more.
+            let noticed = conversation.noticed.lock().unwrap().clone();
+            assert_eq!(
+                noticed
+                    .iter()
+                    .filter(|line| line.as_str() == super::super::APPROVAL_EXPIRED)
+                    .count(),
+                1,
+                "{noticed:?}"
+            );
+            assert!(
+                !noticed.iter().any(|line| line.starts_with("[closed]")),
+                "{noticed:?}"
+            );
+            let end = json!({"type":"ActionRequiredEnded", "id":"card-1", "ending":"timed_out"});
+            assert_eq!(
+                conversation.closed_here.ended_line(&end),
+                None,
+                "the prompt said the expiry, so its end frame prints nothing more"
+            );
+            assert!(conversation.closed_here.said(&notice));
+            let paths: Vec<String> = daemon
+                .requests()
+                .into_iter()
+                .map(|(_, path, _)| path)
+                .collect();
+            assert!(
+                !paths
+                    .iter()
+                    .any(|path| path.starts_with("/action-required/")),
+                "an expired card is never answered: {paths:?}"
+            );
         }
 
         #[tokio::test]
