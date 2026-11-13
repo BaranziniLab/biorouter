@@ -10,7 +10,7 @@
 
 use anyhow::Result;
 use biorouter::crew::{added_via_words, ClusterMode, Connection};
-use biorouter::privacy::{ProviderTier, SessionClassification};
+use biorouter::privacy::SessionClassification;
 use futures::future::BoxFuture;
 use serde_json::{json, Value};
 
@@ -241,8 +241,8 @@ pub(super) fn grants_list(ctx: &Ctx) -> BoxFuture<'_, Result<Value>> {
             Ok(snapshot) => naming_scope(ctx, &connection, &snapshot).await,
             Err(_) => None,
         };
-        let public =
-            ctx.call.capability.enforced() && ctx.call.capability.tier() == ProviderTier::Public;
+        let public = ctx.call.capability.enforced()
+            && biorouter::crew::ModelPrivacy::of_call(&ctx.call.capability).is_public();
         let (mut shown, mut withheld) = (false, 0u64);
         for key in ["grants", "replaced_grants"] {
             let scope = names

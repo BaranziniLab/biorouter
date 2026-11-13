@@ -1690,9 +1690,12 @@ const DECISION_AXES_SITES: &[(&str, &str, usize, &str)] = &[
     (
         "decision_axes::from_row(",
         "crates/biorouter/src/agents/agent.rs",
-        1,
+        2,
         "`install_bound_provider`, the slot's one writer: the bind, Gate B's refresh and \
-         `lower_decision_axes` all reach the fold through it",
+         `lower_decision_axes` all reach the fold through it; and `provider_for_crew_grant`, a \
+         judgment that installs nothing: a chat with no model bound is judged for a Crew grant \
+         by its stored model folded with its row's decision models, as its slot would be \
+         (coding-agent parity, CP-1)",
     ),
     (
         "decision_axes::fold(",

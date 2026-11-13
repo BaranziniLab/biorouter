@@ -439,6 +439,11 @@ pub(super) fn classify_exit(code: Option<i32>, stderr: &str) -> SshFailureKind {
     classify(ChildState::Exited(code), stderr)
 }
 
+/// How long one request to the workspace waits for its answer before the bridge is given up as
+/// unusable. Every request Crew sends passes here, so it bounds every Crew call a coding agent's
+/// tool bridge waits on (coding-agent parity, CP-6: `every_crew_wait_fits_inside_a_bridged_call`).
+pub(super) const REQUEST_DEADLINE: Duration = Duration::from_secs(45);
+
 impl Transport {
     pub async fn connect(c: &Connection, control: &Path) -> Result<Self> {
         ensure!(
@@ -519,8 +524,7 @@ impl Transport {
         // this request's late reply. Only a complete valid envelope rearms it.
         self.unusable = true;
         self.last_activity = std::time::SystemTime::now();
-        let result =
-            tokio::time::timeout(Duration::from_secs(45), self.exchange(&bytes, &id)).await;
+        let result = tokio::time::timeout(REQUEST_DEADLINE, self.exchange(&bytes, &id)).await;
         self.last_activity = std::time::SystemTime::now();
         // From here a failure may have lost the answer to a request already written: only one
         // that could have changed something leaves its outcome unknown (T3-BE-1).

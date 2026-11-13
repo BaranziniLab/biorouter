@@ -4,7 +4,7 @@
 
 use anyhow::Result;
 use biorouter::crew::{ClusterMode, Connection};
-use biorouter::privacy::{ProviderTier, SessionClassification};
+use biorouter::privacy::SessionClassification;
 use serde_json::{json, Value};
 
 use super::{
@@ -79,7 +79,7 @@ pub(super) async fn send(
 /// candidates. A refusal that lists names goes through [`naming`] with it, so the chat is
 /// raised as a read would raise it.
 pub(super) fn names_readable<'a>(ctx: &Ctx, place: &'a Place) -> Option<&'a ContentScope> {
-    if ctx.call.capability.tier() == ProviderTier::Public {
+    if biorouter::crew::ModelPrivacy::of_call(&ctx.call.capability).is_public() {
         return None;
     }
     place.names.as_ref()

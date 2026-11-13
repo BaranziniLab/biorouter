@@ -8557,13 +8557,9 @@ async fn new_chat_model(api: &Api) -> Result<Option<(String, String)>> {
     Ok(model_choice(&json!({"provider": provider, "model": model})))
 }
 
-/// The providers that run coding agents through a tool bridge. The daemon refuses them for every
-/// Crew task (`uses_tool_bridge`), so neither is ever a task's default (`CODING_AGENT_ORDER` in
-/// `ui/desktop/src/components/onboarding/codingAgentStatus.ts`).
-const CODING_AGENT_PROVIDERS: [&str; 2] = ["claude_code", "codex"];
-
-/// The providers a Crew task can start on (C30): configured (`GET /config/providers`'s
-/// `is_configured`), and not a coding agent ([`CODING_AGENT_PROVIDERS`]). The renderer's
+/// The providers a Crew task can start on (C30): every configured one (`GET /config/providers`'s
+/// `is_configured`), Claude Code and Codex included. Whether a workspace admits a model is the
+/// daemon's to say at the task's start, by privacy alone (coding-agent parity, CP-1). The renderer's
 /// `crewTaskModelUsable` in `ui/desktop/src/components/crew/state/crewTaskModel.ts` is the same
 /// rule, so the terminal and the app start a task on one model.
 async fn usable_task_providers(api: &Api) -> Result<std::collections::HashSet<String>> {
@@ -8578,7 +8574,6 @@ async fn usable_task_providers(api: &Api) -> Result<std::collections::HashSet<St
         .flatten()
         .filter(|provider| provider["is_configured"].as_bool() == Some(true))
         .filter_map(|provider| provider["name"].as_str())
-        .filter(|name| !CODING_AGENT_PROVIDERS.contains(name))
         .map(str::to_owned)
         .collect())
 }
@@ -8635,7 +8630,7 @@ async fn task_model(api: &Api) -> Result<TaskModel> {
         return Ok(choice);
     }
     let sentence = if choices.crew.is_some() || choices.chats.is_some() {
-        "No model that can run a Crew task is set: its provider isn't configured, or it is Claude Code or Codex, which Crew can't run. Add --provider and --model, or choose one with biorouter crew defaults set --provider PROVIDER --model MODEL."
+        "No model that can run a Crew task is set: its provider isn't configured. Add --provider and --model, or choose one with biorouter crew defaults set --provider PROVIDER --model MODEL."
     } else {
         "No model is set for Crew tasks. Add --provider and --model, or choose one with biorouter crew defaults set --provider PROVIDER --model MODEL."
     };
@@ -8752,7 +8747,7 @@ async fn defaults_show(api: &Api) -> Result<Reply> {
     if let Some((provider, model)) = &choices.crew {
         if choices.usable(&choices.crew).is_none() {
             lines.push(format!(
-                "Your model for Crew tasks, {} ({}), can't run a task: that provider isn't configured, or Crew can't run it.",
+                "Your model for Crew tasks, {} ({}), can't run a task: that provider isn't configured.",
                 safe_text(model),
                 safe_text(provider)
             ));
@@ -8842,7 +8837,7 @@ async fn defaults_clear(api: &Api) -> Result<Reply> {
             ));
             // C30: said when it is one a task can't start on, as the app skips it.
             if !usable_task_providers(api).await?.contains(provider) {
-                line.push_str(" It can't run a Crew task: that provider isn't configured, or Crew can't run it. Choose another with biorouter crew defaults set --provider PROVIDER --model MODEL.");
+                line.push_str(" It can't run a Crew task: that provider isn't configured. Choose another with biorouter crew defaults set --provider PROVIDER --model MODEL.");
             }
         }
         None => line.push_str(", and none is set."),
@@ -16402,8 +16397,9 @@ mod tests {
     }
 
     /// C30: a task starts on a model the app would start it on: a Crew tasks model whose
-    /// provider is no longer configured falls back to the default for new chats, and Claude Code
-    /// or Codex is never a default.
+    /// provider is no longer configured falls back to the default for new chats. Claude Code
+    /// and Codex are defaults like any configured provider (coding-agent parity, CP-1): whether
+    /// a workspace admits them is the daemon's to say, by privacy.
     #[tokio::test]
     async fn a_task_model_must_be_one_crew_can_run() {
         let start = || {
@@ -16446,29 +16442,29 @@ mod tests {
         assert_eq!(
             lines,
             [
-                "Your model for Crew tasks, gpt-5.5 (versa_azure), can't run a task: that provider isn't configured, or Crew can't run it.",
+                "Your model for Crew tasks, gpt-5.5 (versa_azure), can't run a task: that provider isn't configured.",
                 "Crew tasks use your default model for new chats: claude (anthropic).",
             ]
         );
 
-        for agent in CODING_AGENT_PROVIDERS {
+        for agent in ["claude_code", "codex"] {
             let (api, fake) = api_with(
-                OutputFormat::Text,
+                OutputFormat::Json,
                 task_daemon(json!({"BIOROUTER_PROVIDER": agent, "BIOROUTER_MODEL": "default"})),
             );
-            let error = run(&api, start()).await.expect_err("a coding agent");
+            let Reply::Show(value, _) = run(&api, start()).await.expect("a coding agent") else {
+                panic!("a run")
+            };
             assert_eq!(
-                error_code(&error).as_deref(),
-                Some(TASK_MODEL_REQUIRED),
+                value["task_model"],
+                json!({"provider": agent, "model": "default", "source": "new_chats"}),
                 "{agent}"
             );
-            assert!(error.downcast_ref::<Usage>().is_some(), "{error:?}");
-            assert!(
-                message(&error).starts_with("No model that can run a Crew task is set"),
-                "{}",
-                message(&error)
+            assert_eq!(
+                started_run(&fake).expect("started")["provider"],
+                agent,
+                "{agent}"
             );
-            assert!(started_run(&fake).is_none());
         }
     }
 

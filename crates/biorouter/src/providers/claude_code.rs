@@ -2059,6 +2059,42 @@ mod tests {
         );
     }
 
+    /// Coding-agent parity, CP-7 (`docs/crew/design/coding-agent-parity.md`): Crew admits a
+    /// Claude Code chat as it admits any public model because the child has no tool of its own,
+    /// only Biorouter's, through the bridge. These are the flags that argument rests on, with a
+    /// bridge offered (the case Crew meets): no built-in tool but the schema loader, no settings
+    /// or hooks from the working directory, no MCP server but Biorouter's relay, and never
+    /// `--bare`.
+    #[test]
+    fn crew_relies_on_the_coding_agent_isolation_flags() {
+        let bridge = std::path::Path::new("/tmp/bridge.json");
+        let args = provider().base_args(
+            &ModelConfig::new("claude-sonnet-4-6").unwrap(),
+            "SYS",
+            "stream-json",
+            Some(bridge),
+            None,
+        );
+        let value_of = |flag: &str| {
+            args.iter()
+                .position(|arg| arg == flag)
+                .map(|at| args[at + 1].clone())
+                .unwrap_or_else(|| panic!("{flag} is required: {args:?}"))
+        };
+        assert_eq!(
+            value_of("--tools"),
+            crate::providers::coding_agent::claude_stream::CHILD_SCHEMA_LOADER,
+            "only the schema loader stays on"
+        );
+        assert_eq!(value_of("--setting-sources"), "");
+        assert!(
+            args.iter().any(|arg| arg == "--strict-mcp-config"),
+            "{args:?}"
+        );
+        assert_eq!(value_of("--mcp-config"), bridge.display().to_string());
+        assert!(!args.iter().any(|arg| arg == "--bare"), "{args:?}");
+    }
+
     /// With a bridge, the child keeps exactly ONE built-in: `ToolSearch`, the
     /// schema loader that lets the CLI defer Biorouter's tool schemas instead
     /// of putting all of them in every request. Nothing else — no Read, Edit,

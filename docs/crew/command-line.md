@@ -86,7 +86,7 @@ In JSON, an error has `error` and `request_id`, and usually a `code`. The code i
 | `crew_host_required` | Only the workspace host can run this command, such as `enroll pending` in a managed workspace, `workspace delete` or `workspace governance`. Nothing was sent. |
 | `crew_institution_required` | `host --mode private` needs `--institution ID`. Exit `2`. |
 | `crew_folder_required` | `connections set-access folder` or `full` needs a work folder, and the connection has none: add `--folder PATH`. Exit `2`. |
-| `crew_task_model_required` | `tasks start` or `ask` named no model, and none is set for Crew tasks or new chats. Add `--provider` and `--model`, or run `defaults set`. Exit `2`. |
+| `crew_task_model_required` | `tasks start` or `ask` named no model, and none is set for Crew tasks or new chats, or the one set names a provider that isn't configured. Add `--provider` and `--model`, or run `defaults set`. Exit `2`. |
 | `crew_join_removed` | `join` or `open` found that the workspace removed your account: ``You were removed from lab. Ask a member to invite you again.`` Ask a member for a new invitation. |
 | `crew_host_name_in_use` | `host` found a workspace of that name you already host on the server. See [Host a workspace](#host-a-workspace). |
 | `crew_host_controls_would_end` | `connections remove` refused to remove the only computer that can act as host of a workspace on a server with an older Crew. See [Change or remove a saved connection](#change-or-remove-a-saved-connection). |
@@ -564,7 +564,7 @@ The model for Crew tasks is the one the desktop's **Settings** > **Models** > **
 - `defaults set --provider PROVIDER --model MODEL` sets it, and prints ``Crew tasks now start on gpt-5.5 (versa_azure), unless a task names another model.``
 - `defaults clear` goes back to your default model for new chats.
 
-The workspace still checks each task's model against its privacy and institution.
+Any configured provider can be the model for Crew tasks, Claude Code and Codex included. A model whose provider is not configured is skipped, and `defaults show` says so. The workspace still checks each task's model against its privacy and institution, so a public model, Claude Code and Codex among them, is refused by a Private workspace or connection.
 
 `tasks list` shows each task, the channel it posts to and its chat session, and `--show-ids` adds the task IDs that `tasks show`, `tasks watch` and `tasks cancel` take. `tasks watch ID` follows one and exits with `0` at every end state, so read the last: `Done`, `Couldn't finish`, `Stopped`, `Interrupted`, `Outcome unknown` or `Stop not confirmed`. Ctrl+C stops watching, not the task.
 

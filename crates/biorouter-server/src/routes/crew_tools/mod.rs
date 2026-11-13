@@ -66,7 +66,7 @@ use biorouter::pending_user_action::{
 use biorouter::permission::tool_risk::ToolRisk;
 use biorouter::privacy::affiliation::InstitutionId;
 use biorouter::privacy::visibility::appears_in_list;
-use biorouter::privacy::{ProviderTier, SessionClassification};
+use biorouter::privacy::SessionClassification;
 use futures::future::BoxFuture;
 use serde_json::{json, Map, Value};
 use tokio_util::sync::CancellationToken;
@@ -1044,7 +1044,7 @@ impl Ctx {
                 .filter(|id| !id.is_empty())
         };
         let workspace_institution = institution(workspace["institution_id"].as_str());
-        if self.call.capability.tier() == ProviderTier::Public {
+        if biorouter::crew::ModelPrivacy::of_call(&self.call.capability).is_public() {
             if connection.mode != ClusterMode::Public || workspace_mode != ClusterMode::Public {
                 return Err(said(
                     Some(crew_refusal::PUBLIC_MODEL_REFUSED),
@@ -2023,6 +2023,7 @@ mod bridged_call_tests {
     use super::*;
     use biorouter::conversation::message::CrewVaultAction;
     use biorouter::crew::tool_host::PersonTool;
+    use biorouter::privacy::ProviderTier;
     use biorouter::providers::coding_agent::bridge::with_call_budget_for_test;
 
     fn unlock() -> CrewStepRequest {

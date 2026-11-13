@@ -16,6 +16,8 @@ mod host_start;
 #[path = "host_start_tests.rs"]
 mod host_start_tests;
 mod institution;
+mod model_match;
+pub use model_match::ModelPrivacy;
 #[cfg(test)]
 #[path = "institution_tests.rs"]
 mod institution_tests;
@@ -64,10 +66,9 @@ pub use refusal::CrewRefusal;
 mod ssh_policy;
 pub use ssh_policy::SshPolicyRefused;
 mod transport;
-use crate::{
-    privacy::{CallCapability, ProviderTier},
-    providers::base::Provider,
-};
+#[cfg(test)]
+use crate::privacy::ProviderTier;
+use crate::{privacy::CallCapability, providers::base::Provider};
 use anyhow::{ensure, Result};
 use chrono::{DateTime, Datelike, Offset, TimeZone};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
@@ -676,8 +677,10 @@ const REPLACED_RUN: &str = "This task was replaced by a newer explicitly granted
 /// tools and the checklist. Exact names, never the `crew__` prefix, which the person tools
 /// share.
 pub const SCOPED_CREW_TOOLS: [&str; 2] = ["crew__connections", "crew__request"];
-/// Whether a Crew-scoped chat may call the tool `name` ([`SCOPED_CREW_TOOLS`] or `todo__*`).
-fn scoped_tool_allowed(name: &str) -> bool {
+/// Whether a Crew-scoped chat may call the tool `name` ([`SCOPED_CREW_TOOLS`] or `todo__*`):
+/// gate B-1, which a coding agent's bridge plan applies to every tool it offers such a chat
+/// (coding-agent parity, CP-4).
+pub(crate) fn scoped_tool_allowed(name: &str) -> bool {
     SCOPED_CREW_TOOLS.contains(&name) || name.starts_with("todo__")
 }
 /// The longest a run of a removed connection can still be honored (AO-11): every run is made
@@ -1820,7 +1823,6 @@ fn hello_nonce() -> String {
 pub(super) static TEST_HELLO_NONCE: StdMutex<Option<String>> = StdMutex::new(None);
 /// What a public model is told when the chat asking for Crew access has used a private one: its
 /// history carries private context a public model must not continue with (W2-DMN-9).
-const ORIGIN_RESTRICTED_PUBLIC: &str = "This chat has used a private model, so a public model can't continue it with Crew context. Choose a private model.";
 
 /// What `crew_credential_store_unavailable` says to a profile that holds no Crew identity yet,
 /// where an encrypted vault can still be set up (W2-DMN-1).
@@ -4599,29 +4601,22 @@ impl CrewManager {
         Ok(Some((scope, connection)))
     }
     pub async fn check_dispatch(&self, session: &str, cap: &CallCapability) -> Result<()> {
-        self.check_tier(session, cap.tier(), cap.affiliation())
-            .await
+        self.check_tier(session, &ModelPrivacy::of_call(cap)).await
     }
-    async fn check_tier(
-        &self,
-        session: &str,
-        tier: ProviderTier,
-        affiliation: Option<crate::privacy::affiliation::ModelAffiliation>,
-    ) -> Result<()> {
-        let Some((s, c)) = self.checked_scope(session).await? else {
+    /// Whether `model` may read `session`'s standing grant (design CP-2): `Ok` for a chat no
+    /// grant restricts.
+    async fn check_tier(&self, session: &str, model: &ModelPrivacy) -> Result<()> {
+        let Some((scope, connection)) = self.checked_scope(session).await? else {
             return Ok(());
         };
-        let c = grant_stands(&s, c.as_ref())?;
-        if tier == ProviderTier::Public
-            && !(c.mode == ClusterMode::Public && s.public_provider && !s.origin_restricted)
-        {
-            return Err(CrewRefusal::public_model(
-                "This chat's Crew context is private, so a public model can't read it.",
-            )
-            .into());
-        }
-        institution::check_provider(tier, affiliation, &s.institution_ids)?;
-        Ok(())
+        let connection = grant_stands(&scope, connection.as_ref())?;
+        model_match::check(
+            model,
+            model_match::CrewPlace::Grant {
+                scope: &scope,
+                connection,
+            },
+        )
     }
     /// Why `session`'s stored history must not be rewritten or resent under its Crew grant, or
     /// `None` when no grant restricts the chat or its grant still stands (revoke F1, defense in
@@ -4672,10 +4667,6 @@ impl CrewManager {
         let Some((scope, connection)) = self.checked_scope(session).await? else {
             return Ok(());
         };
-        ensure!(
-            !provider.uses_tool_bridge(),
-            "Crew cannot bind a provider with unscoped external tools"
-        );
         // Before the tier: a chat's model is fixed by its grant whatever tier the new one has,
         // and that is the one sentence a person can act on (W2-DMN-10).
         if !binds(&scope.provider_binding, provider) {
@@ -4683,22 +4674,15 @@ impl CrewManager {
         }
         let connection =
             connection.ok_or_else(|| anyhow::anyhow!("Crew connection was removed"))?;
-        if provider.tier() == ProviderTier::Public
-            && !(connection.mode == ClusterMode::Public
-                && scope.public_provider
-                && !scope.origin_restricted)
-        {
-            return Err(CrewRefusal::public_model(
-                "This chat's Crew context is private, so a public model can't read it.",
-            )
-            .into());
-        }
-        institution::check_provider(
-            provider.tier(),
-            provider.affiliation(),
-            &scope.institution_ids,
-        )?;
-        Ok(())
+        // By privacy alone, for every provider (design CP-1): a Claude Code or Codex chat is a
+        // public model here like any other.
+        model_match::check(
+            &ModelPrivacy::of(provider),
+            model_match::CrewPlace::Grant {
+                scope: &scope,
+                connection: &connection,
+            },
+        )
     }
     /// Every check a model request on `session` must pass: the binding, the tier, and — for a
     /// scoped chat — a live `context.manifest` through the worker path, asked now whatever was
@@ -4746,7 +4730,7 @@ impl CrewManager {
         admission: Admission,
     ) -> Result<()> {
         self.check_provider_binding(session, provider).await?;
-        self.check_tier(session, provider.tier(), provider.affiliation())
+        self.check_tier(session, &ModelPrivacy::of(provider))
             .await?;
         let scope = match self.standing(session).await {
             Standing::None => return Ok(()),
@@ -4868,7 +4852,6 @@ impl CrewManager {
         provider: &dyn Provider,
         policy: &RunPolicy,
     ) -> Result<(institution::Admission, AdmissionLabels, Value)> {
-        ensure!(!provider.uses_tool_bridge(), "Crew cannot admit providers with external tools outside its scoped capability boundary");
         let connection = self.connection(id).await?;
         require_mode(
             policy.expected_mode.map(|mode| json!(mode)).as_ref(),
@@ -4881,19 +4864,19 @@ impl CrewManager {
                 .is_none_or(|epoch| epoch == connection.policy_epoch),
             "Crew connection policy changed; refresh before granting agent access"
         );
-        let public = provider.tier() == ProviderTier::Public;
+        // By privacy alone, for every provider (design CP-1): a Claude Code or Codex task or
+        // grant is a public model's, admitted where any public model is.
+        let model = ModelPrivacy::of(provider);
+        let public = model.is_public();
         let workspace = self.workspace_label(id).await;
-        if public && connection.mode != ClusterMode::Public {
-            return Err(CrewRefusal::public_model(format!(
-                "Your connection to {workspace} is Private, so a public model can't read it. \
-                 Choose a private model."
-            ))
-            .with("workspace", json!(workspace))
-            .into());
-        }
-        if public && policy.origin_restricted {
-            return Err(CrewRefusal::public_model(ORIGIN_RESTRICTED_PUBLIC).into());
-        }
+        model_match::check(
+            &model,
+            model_match::CrewPlace::Connection {
+                connection: &connection,
+                workspace: &workspace,
+                origin_restricted: policy.origin_restricted,
+            },
+        )?;
         if remote_level(public, &connection) == Some(RemoteAccess::Full) {
             self.full_access_offered(id).await?;
         }
@@ -4922,7 +4905,14 @@ impl CrewManager {
         let labels = admission_labels(&snapshot, &connection, channel, &listed);
         let context = snapshot["context"].clone();
         Ok((
-            institution::admission(connection, provider, policy, &snapshot, protected)?,
+            institution::admission(
+                connection,
+                &model,
+                &provider.get_model_config().model_name,
+                policy,
+                &snapshot,
+                protected,
+            )?,
             labels,
             context,
         ))
@@ -4954,7 +4944,8 @@ impl CrewManager {
         provider: &dyn Provider,
         mut policy: RunPolicy,
     ) -> Result<RunAdmission> {
-        let public = provider.tier() == ProviderTier::Public;
+        let model = ModelPrivacy::of(provider);
+        let public = model.is_public();
         self.carry_previous_grant(session, id, channel, &mut sources, provider, &mut policy)
             .await?;
         let origin_restricted = policy.origin_restricted;
@@ -4966,16 +4957,26 @@ impl CrewManager {
         // never gets any level (it has no work folder either).
         let full = remote_level(public, &c) == Some(RemoteAccess::Full);
         let institution_ids = admission.institution_ids;
-        if public && origin_restricted {
-            return Err(CrewRefusal::public_model(ORIGIN_RESTRICTED_PUBLIC).into());
-        }
+        // Admission asked both of these, with the names a person needs beside its refusal;
+        // this is the check again at the point of use, by the same rule (design CP-2).
+        model_match::check(
+            &model,
+            model_match::CrewPlace::Connection {
+                connection: &c,
+                workspace: &labels.workspace,
+                origin_restricted,
+            },
+        )?;
         institution::check_origin(
             &institution_ids,
             admission.workspace_institution_id.as_deref(),
         )?;
-        // Admission asked this of the same institutions, with the names a person needs beside
-        // its refusal; this is the check again at the point of use.
-        institution::check_provider(provider.tier(), provider.affiliation(), &institution_ids)?;
+        model_match::check(
+            &model,
+            model_match::CrewPlace::Owned {
+                institution_ids: &institution_ids,
+            },
+        )?;
         if !sources.iter().any(|s| s == channel) {
             sources.push(channel.into());
         }
@@ -5236,7 +5237,7 @@ impl CrewManager {
             return Err(CrewRefusal::model_fixed().into());
         }
         ensure!(
-            provider.tier() != ProviderTier::Public || previous.public_provider,
+            !ModelPrivacy::of(provider).is_public() || previous.public_provider,
             "Private-origin Crew conversation cannot be rebound to a public model"
         );
         for source in previous.source_channels {

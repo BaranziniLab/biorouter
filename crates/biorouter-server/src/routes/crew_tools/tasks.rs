@@ -14,7 +14,7 @@ use anyhow::Result;
 use axum::Json;
 use biorouter::config::Config;
 use biorouter::crew::RemoteAccess;
-use biorouter::privacy::{ProviderTier, SessionClassification};
+use biorouter::privacy::SessionClassification;
 use futures::future::BoxFuture;
 use serde_json::{json, Value};
 
@@ -29,9 +29,6 @@ use crate::routes::crew::{
     CrewRouteError, RunOrigin, StartRunRequest,
 };
 
-/// The providers that run coding agents through a tool bridge, which no Crew task can run
-/// (`uses_tool_bridge`), so neither is ever a task's model.
-const CODING_AGENT_PROVIDERS: [&str; 2] = ["claude_code", "codex"];
 /// The longest prompt a task takes, as the route holds it.
 const MAX_PROMPT_BYTES: usize = 32_768;
 /// How long `tasks_watch` waits for news at most (AO-12).
@@ -158,7 +155,7 @@ async fn output_allowed(ctx: &Ctx, reading: &mut Reading, session: &str) -> Resu
     if !capability.enforced() {
         return Ok(true);
     }
-    if capability.tier() == ProviderTier::Public {
+    if biorouter::crew::ModelPrivacy::of_call(&capability).is_public() {
         return Ok(!private);
     }
     let owners: BTreeSet<String> = sessions
@@ -256,10 +253,9 @@ fn model_choice(value: &Value) -> Option<(String, String)> {
 }
 
 /// The model a task starts on: the one the call names, else the model for Crew tasks, else the
-/// default model for new chats, as `biorouter crew ask` resolves it. A coding agent can never
-/// run a task.
+/// default model for new chats, as `biorouter crew ask` resolves it. Any provider can run one;
+/// whether this workspace admits its model is admission's to say, by privacy (design CP-1).
 fn task_model(ctx: &Ctx) -> Result<(String, String)> {
-    let usable = |choice: &(String, String)| !CODING_AGENT_PROVIDERS.contains(&choice.0.as_str());
     let choice = match (ctx.text("provider"), ctx.text("model")) {
         (Some(provider), Some(model)) => (provider, model),
         (None, None) => {
@@ -268,13 +264,11 @@ fn task_model(ctx: &Ctx) -> Result<(String, String)> {
                 .get_param::<Value>(CREW_TASK_MODEL)
                 .ok()
                 .as_ref()
-                .and_then(model_choice)
-                .filter(usable);
+                .and_then(model_choice);
             let chats = model_choice(&json!({
                 "provider": config.get_param::<String>("BIOROUTER_PROVIDER").ok(),
                 "model": config.get_param::<String>("BIOROUTER_MODEL").ok(),
-            }))
-            .filter(usable);
+            }));
             crew.or(chats).ok_or_else(|| {
                 said(
                     Some("crew_task_model_required"),
@@ -289,12 +283,6 @@ fn task_model(ctx: &Ctx) -> Result<(String, String)> {
             ))
         }
     };
-    if !usable(&choice) {
-        return Err(said(
-            None,
-            "Crew can't run a task on Claude Code or Codex. Choose another model.",
-        ));
-    }
     Ok(choice)
 }
 
