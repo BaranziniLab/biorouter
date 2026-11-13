@@ -68,11 +68,11 @@ export const CANVAS_INK_FALLBACK = '#1f242c';
  * ⚠ **There is deliberately NO danger fallback constant, and adding one is a
  * regression.**
  *
- * The obvious candidate — a single light hex — is one FAMILY's value. Parchment
- * light `--text-danger` is `#b3261e`, Alma Mater's is `#c40d3e`, Roche Limit's is
- * `#c4232b`, and the three dark values are a different family again. The
- * theme-system architecture is explicit that the status hues stay per family, so
- * a shared constant here would paint one family's red inside the other two —
+ * The obvious candidate — a single light hex — is one FAMILY's value. Each
+ * family's `--text-danger` is its own primary ink since 2026-11-12 (red is rare,
+ * design.md 9.13; it was a per-family red before), and the dark values are a
+ * different set again. The theme-system architecture is explicit that inks stay
+ * per family, so a shared constant here would paint one family's ink inside the other two —
  * on §5.7's negative-edge stroke and §5.8's strike-through, which are exactly
  * the two places a wrong red is a wrong MEANING and not merely a wrong tint.
  *
