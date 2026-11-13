@@ -74,7 +74,8 @@ const capitalize = (text: string) => (text ? text[0].toUpperCase() + text.slice(
 
 export const MONITORS_COPY = {
   title: 'Monitors',
-  subtitle: 'Monitors ask a decision model about this chat as it runs, and act on the answer.',
+  subtitle:
+    'Choose the decision model this chat uses, and add monitors that ask it about the chat as it runs.',
   empty: 'No monitors yet',
   emptyDescription:
     'A monitor watches this chat and notifies you, tells the agent or stops the turn when its question is answered.',
@@ -87,6 +88,8 @@ export const MONITORS_COPY = {
   undo: 'Undo',
   undoLabel: (name: string) => `Undo removing ${name}`,
   saved: 'Saved',
+  /** Draft mode's "Saved": nothing is stored until the chat's first message is sent. */
+  savedDraft: 'Ready for the first message',
   saving: 'Saving…',
   name: 'Name',
   nameRequired: 'Give the monitor a name.',
@@ -451,15 +454,19 @@ function watchedOutcome(rule: Threshold, question: Question): string {
 }
 
 /**
- * A monitor row's second line: what it does, then its rule in words,
- * `Stop the turn · when P(yes) is at or above 0.85` (never `≥`), or, for a choice
- * whose option is not chosen yet, `Notify me · choose the option it fires on`.
+ * A monitor row's second line: what it does, its rule in words and when it checks,
+ * `Stop the turn · when P(yes) is at or above 0.85 · after each step` (never `≥`),
+ * or, for a choice whose option is not chosen yet,
+ * `Notify me · choose the option it fires on · after each step`. The peek says the
+ * timing again, because a long line is cut with an ellipsis.
  */
 export function monitorRowLine(monitor: MonitorCriterion): string {
   const rule = monitorThreshold(monitor);
-  return `${copy.actions[monitor.action]} · ${
-    rule ? ruleInWords(rule, monitor.question) : copy.chooseOptionPhrase
-  }`;
+  return [
+    copy.actions[monitor.action],
+    rule ? ruleInWords(rule, monitor.question) : copy.chooseOptionPhrase,
+    copy.peekTimings[monitor.timing],
+  ].join(' · ');
 }
 
 /**
@@ -1841,7 +1848,9 @@ export function MonitorsDialog({
     status.kind === 'saving'
       ? copy.saving
       : status.kind === 'saved'
-        ? copy.saved
+        ? draft
+          ? copy.savedDraft
+          : copy.saved
         : status.kind === 'removed'
           ? copy.removed(status.name)
           : atLimit && !readOnly

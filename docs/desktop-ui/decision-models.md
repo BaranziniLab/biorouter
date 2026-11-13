@@ -253,7 +253,9 @@ above the detail. The view only reads, so it works the same in a `biorouter serv
 ## The Monitors dialog
 
 `components/decisions/MonitorsDialog.tsx` (styled by `monitorsDialog.css` and
-`decisionsPanel.css`) lists the chat's monitors and adds, edits or removes them. A monitor has a
+`decisionsPanel.css`) holds the chat's default decision model and lists the chat's monitors, and
+adds, edits or removes them. Its subtitle says the model first: "Choose the decision model this
+chat uses, and add monitors that ask it about the chat as it runs." A monitor has a
 name, a question, yes or no or one of several options (with the answer that fires it), a model,
 an action (notify, tell the agent, stop the turn), when it checks (after each step, or when the
 turn ends), an on switch, and a few settings most monitors leave at their defaults.
@@ -295,13 +297,16 @@ A row is the monitor's name, at most one owner badge, and its switch:
   can no longer change it."), and "Inherited" for a copy from the chat that started this
   subagent ("Copied from the chat that started this subagent."). A change you make to an agent's
   monitor (an edit, or its switch) makes it yours.
-- **One muted line with two facts**, what it does and its rule in words (`monitorRowLine`):
-  "Stop the turn · when P(yes) is at or above 0.85". The rule reads the monitor's `option` as
+- **One muted line with three facts**, what it does, its rule in words and when it checks
+  (`monitorRowLine`): "Stop the turn · when P(yes) is at or above 0.85 · after each step", or
+  "… · when the turn ends". The line is cut with an ellipsis when it is too long, so the peek says
+  the timing again. The rule reads the monitor's `option` as
   `MonitorCriterion::pass_threshold` does (`monitorThreshold` in `utils/sessionDecisions.ts`):
   "when P(no) is at or above 0.85" for a yes/no monitor that watches No, "when P(rrms) is at or
   above 0.70" for a choice, and "when P(mild or a higher level) is at or above 0.85" for a score
   monitor, whose level is named by its label whether the record stores the label or its index. A
-  choice monitor with no option chosen yet reads "… · choose the option it fires on".
+  choice monitor with no option chosen yet reads "Notify me · choose the option it fires on ·
+  after each step".
 - **The peek.** That line is an InfoTip trigger, so hover peeks and a click pins
   ([Hover and click](shared-controls.md#hover-and-click)). The peek says, in at most two
   sentences, which model it uses, where it runs and when it checks ("Uses tev1:0.8b on this
@@ -420,7 +425,9 @@ Retry link that reads the list again and keeps the monitor being edited.
 
 - **Two ways in.** The summary's Decisions section has a Monitors button, but that section is
   drawn only once a chat has a decision call or a monitor, so the composer's `+` menu also carries
-  "Decision monitors…" (`composer/ComposerPlusMenu.tsx`), which is how the first monitor is added.
+  "Decision models and monitors…" (`composer/ComposerPlusMenu.tsx`), which is how the first
+  monitor is added and how the chat's default decision model is chosen. The row names both because
+  the dialog holds both; the dialog keeps the title "Monitors", the name of the summary's button.
   In a chat that exists both open the one dialog `BaseChat` mounts. Before the chat's first
   message (on Home, or in a new chat) the `+` row opens the dialog in draft mode, described in
   [Before the first message](#before-the-first-message). A decision chat draws no `+`.
@@ -493,7 +500,9 @@ the dialog offered monitors only, so a person could not set the default the CLI 
 `decisions/DraftMonitorsDialog.tsx` is the Monitors dialog for a chat that has no session row yet,
 shared by both composers (Home's `Hub` and a blank chat's `BaseChat`), which would otherwise
 diverge. It edits the default decision model (the select above) and the monitors only, and writes
-nothing to the daemon. The tip beside "This chat will be public" names the chat model the way the
+nothing to the daemon. So where a chat's dialog says "Saved" after a change, the draft dialog says
+"Ready for the first message", with the same check, under the note "These monitors start with the
+chat when you send its first message." The tip beside "This chat will be public" names the chat model the way the
 model chip does (`gpt-5.5`, not `gpt-5.5-2026-04-24`), here and in a chat's own Monitors dialog. The draft lives in renderer memory beside the held chat model
 (`decisions/draftDecisionSettings.ts`), keyed by the composer (a chat tab, or Home's draft key), so
 it outlives a tab switch and a trip to Settings and is never written to disk. The list is read

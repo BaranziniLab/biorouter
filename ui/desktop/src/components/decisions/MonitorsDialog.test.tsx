@@ -333,14 +333,36 @@ describe('validation, as the daemon would refuse it', () => {
   });
 });
 
+describe('the dialog', () => {
+  it('keeps the title Monitors and says first that it holds the chat’s decision model (W2-7)', () => {
+    draw();
+    const dialog = screen.getByRole('dialog', { name: 'Monitors' });
+    expect(dialog).toHaveAccessibleDescription(
+      'Choose the decision model this chat uses, and add monitors that ask it about the chat as it runs.'
+    );
+    expect(within(dialog).getByText('Decision model for this chat')).toBeInTheDocument();
+  });
+});
+
 describe('a monitor row', () => {
-  it('shows the name and two facts, in words: what it does and its rule', () => {
+  it('shows the name and three facts, in words: what it does, its rule and when it checks', () => {
     draw();
     const item = screen.getByTestId('monitor-item');
     expect(item).toHaveTextContent('Form reached');
     const line = within(item).getByTestId('monitor-line');
-    expect(line.textContent).toBe('Stop the turn · when P(yes) is at or above 0.85');
+    expect(line.textContent).toBe(
+      'Stop the turn · when P(yes) is at or above 0.85 · after each step'
+    );
     expect(item.textContent).not.toMatch(/[≥<]/);
+  });
+
+  it('says when a monitor checks on its row, not only in the peek (W3-8)', () => {
+    expect(monitorRowLine(wireMonitor({ timing: 'post_iteration' }))).toBe(
+      'Stop the turn · when P(yes) is at or above 0.85 · after each step'
+    );
+    expect(monitorRowLine(wireMonitor({ timing: 'turn_end', action: 'notify' }))).toBe(
+      'Notify me · when P(yes) is at or above 0.85 · when the turn ends'
+    );
   });
 
   it('is a list row in a flat shell, not a filled box; the editor is still a filled box', async () => {
@@ -380,7 +402,7 @@ describe('a monitor row', () => {
     expect(within(item).getByTestId('monitor-line')).not.toHaveTextContent('tev1');
     const toggle = within(item).getByRole('switch', { name: 'Form reached' });
     expect(toggle).toHaveAccessibleDescription(
-      `Stop the turn · when P(yes) is at or above 0.85 ${peek}`
+      `Stop the turn · when P(yes) is at or above 0.85 · after each step ${peek}`
     );
     // R1-3: the peek opens below its line, so it never covers the row's own name.
     fireEvent.click(within(item).getByTestId('monitor-line'));
@@ -437,7 +459,7 @@ describe('a monitor row', () => {
 
   it('names the answer a monitor watches, as the daemon reads `option`', () => {
     expect(monitorRowLine(wireMonitor({ option: 'no' }))).toBe(
-      'Stop the turn · when P(no) is at or above 0.85'
+      'Stop the turn · when P(no) is at or above 0.85 · after each step'
     );
     expect(monitorRowLine(wireMonitor({ option: 'NO' }))).toMatch(/P\(no\)/);
     expect(monitorRowLine(wireMonitor({ option: null }))).toMatch(/P\(yes\)/);
@@ -450,7 +472,7 @@ describe('a monitor row', () => {
       },
     };
     expect(monitorRowLine(wireMonitor({ ...severity, option: 'mild' }))).toBe(
-      'Stop the turn · when P(mild or a higher level) is at or above 0.85'
+      'Stop the turn · when P(mild or a higher level) is at or above 0.85 · after each step'
     );
     expect(monitorRowLine(wireMonitor({ ...severity, option: '2' }))).toMatch(
       /P\(severe or a higher level\)/
@@ -465,9 +487,9 @@ describe('a monitor row', () => {
       direction: 'below',
       action: 'notify',
     });
-    expect(monitorRowLine(course)).toBe('Notify me · when P(spms) is below 0.20');
+    expect(monitorRowLine(course)).toBe('Notify me · when P(spms) is below 0.20 · after each step');
     expect(monitorRowLine({ ...course, option: null })).toBe(
-      'Notify me · choose the option it fires on'
+      'Notify me · choose the option it fires on · after each step'
     );
   });
 
@@ -564,6 +586,22 @@ describe('each change applies when it is made', () => {
     expect(saved[1]).toMatchObject({ enabled: false, setBy: 'person', setBySession: null });
     expect(saved[0]).toMatchObject({ id: 'form-reached', enabled: true });
     expect(await screen.findByText('Saved')).toBeInTheDocument();
+  });
+
+  it('in draft mode says the change is ready for the first message, never "Saved"', async () => {
+    const onChange = vi.fn();
+    await drawReady({
+      sessionId: '',
+      draft: { chat: { boundProvider: 'versa_azure', boundModel: 'gpt-5.5' }, onChange },
+    });
+    fireEvent.click(screen.getByRole('switch', { name: 'Form reached' }));
+    await waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+    const status = screen.getByTestId('monitors-status');
+    expect(status).toHaveAttribute('data-state', 'saved');
+    expect(status).toHaveTextContent(/^Ready for the first message$/);
+    expect(status).not.toHaveTextContent('Saved');
+    // Nothing is stored until the chat's first message is sent.
+    expect(mocks.save).not.toHaveBeenCalled();
   });
 
   it('a refused toggle reverts the switch and says why under that row', async () => {
