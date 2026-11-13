@@ -74,7 +74,7 @@ The bridge takes Crew tools only from that roster, never from the registry (unch
 
 ### CP-5: a bridged call carries the chat's tier
 
-The bridge plan's capability is sampled from the chat's provider slot, the DR-33 tier, not from the provider rebuilt for one iteration of the reply loop, while the slot holds the provider that iteration runs on (the same provider at the same tier, which an effort rebuild keeps). With nothing bound, or a model switched since the iteration began, the iteration's own provider is sampled, so a slot more private than the provider the child talks to never widens what a public child may read. The two are equal for Claude Code and Codex, which are Public with no affiliation and cannot be lowered further, but Crew's dispatch check reads this capability, so it must be the chat's tier if a private provider ever drives the bridge.
+The bridge plan's capability is the lesser of the chat's provider slot (its DR-33 tier, decision models included) and the provider rebuilt for one iteration of the reply loop: the slot whenever it is Public, the iteration's provider while the slot is Private. So a chat a decision model made public bridges as public, and a slot switched to a private model while a public child runs never widens what that child may read. This rule landed with the mixed provider tiers work (#484, `prepare_coding_agent_bridge_plan`, held by `the_turn_provider_never_decides_a_tier`); parity relies on it and adds `a_bridge_plan_carries_the_chats_tier_not_the_iteration_providers`. The two are equal for Claude Code and Codex, which are Public with no affiliation and cannot be lowered further, but Crew's dispatch check reads this capability, so it must be the chat's tier if a private provider ever drives the bridge.
 
 ### CP-6: long Crew work never outlasts a bridged call
 
@@ -114,7 +114,7 @@ Enforcement points a reviewer should read, all in `crates/biorouter/src` unless 
 3. `crew/institution.rs`: `admission` asks it for the workspace's mode and restricted context.
 4. `crates/biorouter-server/src/routes/crew.rs` `start_owned_run`: the task-start kind refusal is gone; admission decides.
 5. `crates/biorouter-server/src/routes/crew_tools/tasks.rs` `task_model`: no provider is left out of a chat's task model.
-6. `agents/agent.rs`: the Crew bridge row admits the worker tools; the bridge plan keeps a grant's tool limit and samples the chat's slot; the Crew empty-roster note is gone.
+6. `agents/agent.rs`: the Crew bridge row admits the worker tools; the bridge plan keeps a grant's tool limit (its capability rule, CP-5, came with #484); the Crew empty-roster note is gone.
 7. `agents/agent.rs` `provider_for_crew_grant`: a chat whose slot is empty is judged with its stored decision models folded in (DR-33), so a chat made public by a decision model is never granted a private workspace as if it were private.
 
 Surfaces: the desktop's Crew task model list and the CLI's task defaults offer Claude Code and Codex like any configured provider; the docs say what each workspace admits by privacy.
