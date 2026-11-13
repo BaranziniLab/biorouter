@@ -15,6 +15,20 @@
 //!   with a "+N more" line when the rows do not fit;
 //! - hidden while the chat has no subagents, unless the person toggled it on.
 //!
+//! The notation is the desktop Chat summary's agent grid
+//! (`ui/desktop/src/components/summary/agentGrid.ts`): one mark per agent, a
+//! square (■) for a language-model agent and a circle (●) for decision-model
+//! work, filled by status (hollow, a core, half full, solid, a cross, a bar) and
+//! coloured on top, and a line of them under the header or under each phase.
+//!
+//! Sections, never frames (owner direction, 2026-11-12): the pane is labelled
+//! by headings and parted by dim rule lines, as the desktop rail is by small
+//! headings and hairlines. A `PLAN` heading opens the phases, a dim `─` rule
+//! parts each phase from the one above, and a one-line key ("■ language model
+//! ● decision model") sits under the list while the two shapes mix. Headings
+//! carry words, never a mark, so a `●` is always decision-model work. The only
+//! line drawn round the pane is its left edge against the transcript.
+//!
 //! Keys: `Ctrl-B` shows or hides the pane; `Ctrl-O` moves focus into it (and
 //! back). With focus in the pane, ↑/↓ select, Enter opens the selected
 //! subagent's chat, Esc returns to the input, and typing a character returns
@@ -28,6 +42,7 @@ use biorouter::agents::subagent_roster::{SessionSubagents, SubagentRow, Subagent
 use biorouter::agents::AgentEvent;
 use biorouter::conversation::message::{Message, MessageContent, ProvenanceKind};
 use biorouter::privacy::SessionClassification;
+use biorouter::providers::decision::is_decision_chat_provider;
 use biorouter::session_events::{SessionBusEvent, Subscription};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -554,16 +569,6 @@ impl Bucket {
             Bucket::Unknown => "unknown",
         }
     }
-
-    fn glyph(self) -> &'static str {
-        match self {
-            Bucket::Active => "◐",
-            Bucket::Blocked => "⏸",
-            Bucket::Failed | Bucket::Stopped => "✗",
-            Bucket::Done => "●",
-            Bucket::Unknown => "·",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -732,60 +737,150 @@ impl SubagentPane {
             "subagents"
         };
         Some(if t.running > 0 {
-            format!("◐ {} of {} {noun} running", t.running, t.total)
+            format!(
+                "{} {} of {} {noun} running",
+                MarkKind::Running.glyph(false),
+                t.running,
+                t.total
+            )
         } else {
             format!("{} {noun} · done {}/{}", t.total, t.done, t.total)
         })
     }
 }
 
+// ── the agent grid's notation ───────────────────────────────────────────────
+
+/// Where a piece of work stands, by the mark's FILL: the desktop's
+/// `AgentMarkKind` (`summary/agentGrid.ts`), with the same mapping, so a child
+/// reads the same in the rail, the popover and this pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkKind {
+    /// Waiting to start: hollow.
+    Queued,
+    /// Running or stopping: hollow with a core.
+    Running,
+    /// Needs an answer, stopped, interrupted, or an active child gone quiet:
+    /// half full.
+    Waiting,
+    /// Completed: solid.
+    Done,
+    /// Failed: a cross.
+    Failed,
+    /// Status unknown: a bar.
+    Idle,
+}
+
+impl MarkKind {
+    pub fn of_status(status: SubagentRunStatus) -> Self {
+        match status {
+            SubagentRunStatus::Queued => Self::Queued,
+            SubagentRunStatus::Running | SubagentRunStatus::Cancelling => Self::Running,
+            SubagentRunStatus::Completed => Self::Done,
+            SubagentRunStatus::Blocked
+            | SubagentRunStatus::Incomplete
+            | SubagentRunStatus::Interrupted => Self::Waiting,
+            SubagentRunStatus::Failed => Self::Failed,
+            SubagentRunStatus::Unknown => Self::Idle,
+        }
+    }
+
+    /// A row's mark: its status's, except that an active child gone quiet reads
+    /// as stalled.
+    pub fn of(row: &PaneRow) -> Self {
+        if row.is_quiet() {
+            Self::Waiting
+        } else {
+            Self::of_status(row.status)
+        }
+    }
+
+    /// The glyph: a square for a language-model agent, a circle for
+    /// decision-model work, each in the six fills.
+    pub fn glyph(self, decision: bool) -> &'static str {
+        match (self, decision) {
+            (Self::Queued, false) => "□",
+            (Self::Queued, true) => "○",
+            (Self::Running, false) => "▣",
+            (Self::Running, true) => "◉",
+            (Self::Waiting, false) => "◧",
+            (Self::Waiting, true) => "◒",
+            (Self::Done, false) => "■",
+            (Self::Done, true) => "●",
+            (Self::Failed, false) => "⊠",
+            (Self::Failed, true) => "⊗",
+            (Self::Idle, false) => "⊟",
+            (Self::Idle, true) => "⊖",
+        }
+    }
+
+    /// The ink on top of the shape: the desktop's tokens in the terminal's
+    /// palette. Running blue, waiting yellow, failed red, finished green, the
+    /// rest dim.
+    pub fn style(self) -> Style {
+        match self {
+            Self::Queued | Self::Idle => DIM,
+            Self::Running => Style::new().fg(Color::LightBlue),
+            Self::Waiting => Style::new().fg(Color::Yellow),
+            Self::Done => Style::new().fg(Color::Green),
+            Self::Failed => Style::new().fg(Color::Red),
+        }
+    }
+}
+
+/// A subagent whose own model is a decision model is decision-model work: a
+/// circle.
+pub fn is_decision_work(row: &PaneRow) -> bool {
+    row.provider
+        .as_deref()
+        .is_some_and(is_decision_chat_provider)
+}
+
+/// The row's mark as a styled span.
+pub fn row_mark(row: &PaneRow) -> Span<'static> {
+    let kind = MarkKind::of(row);
+    Span::styled(kind.glyph(is_decision_work(row)), kind.style())
+}
+
+/// A gate's fill. Its mark is always a circle: a gate is decision-model work.
+fn gate_kind(gate: PaneGate) -> MarkKind {
+    match gate {
+        PaneGate::Waiting => MarkKind::Queued,
+        PaneGate::Passed | PaneGate::ByYou => MarkKind::Done,
+        PaneGate::NotPassed => MarkKind::Failed,
+        PaneGate::Blocked => MarkKind::Waiting,
+    }
+}
+
+/// One line of marks per `width - indent` agents, in the order given (spawn
+/// order), so 150 children wrap into a block rather than running off the pane.
+pub fn mark_lines(rows: &[&PaneRow], width: usize, indent: usize) -> Vec<Line<'static>> {
+    let per_line = width.saturating_sub(indent).max(1);
+    rows.chunks(per_line)
+        .map(|chunk| {
+            let mut spans = vec![Span::raw(" ".repeat(indent))];
+            spans.extend(chunk.iter().map(|row| row_mark(row)));
+            Line::from(spans)
+        })
+        .collect()
+}
+
 // ── formatting ──────────────────────────────────────────────────────────────
 
-pub fn status_glyph(status: SubagentRunStatus) -> &'static str {
-    match status {
-        SubagentRunStatus::Queued => "○",
-        SubagentRunStatus::Running | SubagentRunStatus::Cancelling => "◐",
-        SubagentRunStatus::Completed => "●",
-        SubagentRunStatus::Blocked => "⏸",
-        SubagentRunStatus::Failed | SubagentRunStatus::Incomplete => "✗",
-        SubagentRunStatus::Interrupted => "⊘",
-        SubagentRunStatus::Unknown => "·",
-    }
-}
-
-fn status_style(status: SubagentRunStatus) -> Style {
-    match status {
-        SubagentRunStatus::Queued | SubagentRunStatus::Unknown => DIM,
-        SubagentRunStatus::Running | SubagentRunStatus::Cancelling => Style::new().fg(ACCENT),
-        SubagentRunStatus::Completed => Style::default(),
-        SubagentRunStatus::Blocked | SubagentRunStatus::Interrupted => {
-            Style::new().fg(Color::Yellow)
-        }
-        SubagentRunStatus::Failed | SubagentRunStatus::Incomplete => Style::new().fg(Color::Red),
-    }
-}
-
+/// The status in the desktop's words (`SUBAGENT_STATUS_WORDS`), lower case: a
+/// child that ended early is "stopped", never "incomplete", and one that asked
+/// a question "needs an answer".
 pub fn status_word(status: SubagentRunStatus) -> &'static str {
     match status {
-        SubagentRunStatus::Queued => "queued",
+        SubagentRunStatus::Queued => "waiting to start",
         SubagentRunStatus::Running => "running",
         SubagentRunStatus::Cancelling => "stopping",
-        SubagentRunStatus::Completed => "done",
-        SubagentRunStatus::Blocked => "blocked",
-        SubagentRunStatus::Incomplete => "incomplete",
+        SubagentRunStatus::Completed => "completed",
+        SubagentRunStatus::Blocked => "needs an answer",
+        SubagentRunStatus::Incomplete => "stopped",
         SubagentRunStatus::Failed => "failed",
         SubagentRunStatus::Interrupted => "interrupted",
-        SubagentRunStatus::Unknown => "unknown",
-    }
-}
-
-fn phase_glyph(status: PhaseStatus) -> &'static str {
-    match status {
-        PhaseStatus::Pending => "○",
-        PhaseStatus::InProgress => "◐",
-        PhaseStatus::Completed => "●",
-        PhaseStatus::Blocked => "⏸",
-        PhaseStatus::Skipped => "⊘",
+        SubagentRunStatus::Unknown => "status unknown",
     }
 }
 
@@ -928,18 +1023,33 @@ fn dense_tail(row: &PaneRow) -> String {
     }
 }
 
-fn phase_head_text(phase: &PanePhase, counts: &PhaseCounts) -> String {
-    let mut s = phase_head_counts(phase, counts);
-    // E-7: the phase's gate, passed or blocked, on its own heading.
+/// A phase's heading: words, never a status mark, so a `●` in this pane is
+/// always decision-model work. Its label, its counts and where it stands, in
+/// the phase's style; then (E-7) its gate, led by the gate's circle in the
+/// gate's own ink, as the desktop draws it at the end of the phase's line.
+fn phase_head_spans(phase: &PanePhase, counts: &PhaseCounts) -> Vec<Span<'static>> {
+    let style = phase_style(phase.status);
+    let mut spans = vec![Span::styled(phase_head_counts(phase, counts), style)];
     if let Some(gate) = phase.gate {
-        s.push_str(" · ");
-        s.push_str(gate.words());
+        let kind = gate_kind(gate);
+        spans.push(Span::styled(" · ", style));
+        spans.push(Span::styled(kind.glyph(true), kind.style()));
+        spans.push(Span::styled(format!(" {}", gate.words()), style));
     }
-    s
+    spans
+}
+
+/// The heading as plain text, for the tests that read it whole.
+#[cfg(test)]
+fn phase_head_text(phase: &PanePhase, counts: &PhaseCounts) -> String {
+    phase_head_spans(phase, counts)
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect()
 }
 
 fn phase_head_counts(phase: &PanePhase, counts: &PhaseCounts) -> String {
-    let mut s = format!("{} {}", phase_glyph(phase.status), phase.label());
+    let mut s = phase.label();
     // A phase an earlier gate holds says what it waits for, in place of "not
     // started" or "starting", which it cannot do until that gate is through.
     let held = phase
@@ -979,6 +1089,16 @@ fn phase_head_counts(phase: &PanePhase, counts: &PhaseCounts) -> String {
     if counts.blocked > 0 {
         s.push_str(&format!(" · {} blocked", counts.blocked));
     }
+    // Where the phase itself stands, when its counts cannot say it: marked
+    // blocked (and not by its gate, whose words say so) or skipped while it
+    // holds subagents.
+    match phase.status {
+        PhaseStatus::Blocked if phase.gate != Some(PaneGate::Blocked) => {
+            s.push_str(" · phase blocked")
+        }
+        PhaseStatus::Skipped => s.push_str(" · skipped"),
+        _ => {}
+    }
     if let Some(held) = held {
         s.push_str(" · ");
         s.push_str(&held);
@@ -1005,27 +1125,70 @@ fn phase_counts(model: &PaneModel, phase: &PanePhase, rows: &[usize]) -> PhaseCo
     }
 }
 
+/// A group's heading, in words alone: a phase's, "other agents" (the
+/// desktop's "Other agents") or a state's with its count.
 fn group_head_line(model: &PaneModel, group: &Group, width: usize) -> Option<Line<'static>> {
-    let (text, style) = match group.head? {
+    let bold = Style::new().add_modifier(Modifier::BOLD);
+    let spans = match group.head? {
         GroupHead::Phase(pi) => {
             let phase = &model.plan.as_ref()?.phases[pi];
             let counts = phase_counts(model, phase, &group.rows);
-            (phase_head_text(phase, &counts), phase_style(phase.status))
+            phase_head_spans(phase, &counts)
         }
         // The rows under it say how many there are; a number after the label
         // read as part of it ("no phase 2").
-        GroupHead::Unphased => (
-            "· no phase".to_string(),
-            Style::new().add_modifier(Modifier::BOLD),
-        ),
-        GroupHead::State(bucket) => (
-            format!("{} {} {}", bucket.glyph(), bucket.label(), group.rows.len()),
-            Style::new().add_modifier(Modifier::BOLD),
-        ),
+        GroupHead::Unphased => vec![Span::styled("other agents", bold)],
+        GroupHead::State(bucket) => vec![Span::styled(
+            format!("{} {}", bucket.label(), group.rows.len()),
+            bold,
+        )],
     };
-    Some(Line::from(Span::styled(
-        super::clip_cells(&text, width),
-        style,
+    Some(Line::from(clip_spans(spans, width)))
+}
+
+/// A dim rule across the pane: what parts one section, or one phase, from the
+/// next. A line, never a frame.
+fn rule_line(width: usize) -> Line<'static> {
+    Line::from(Span::styled("─".repeat(width), DIM))
+}
+
+/// The Plan section's heading, the desktop's `PLAN  1 of 4`: dim caps, the
+/// phases done of the plan's, then the plan's title where it has one.
+fn plan_heading(plan: &PanePlan, width: usize) -> Line<'static> {
+    let done = plan
+        .phases
+        .iter()
+        .filter(|phase| phase.status == PhaseStatus::Completed)
+        .count();
+    let mut text = format!("PLAN {done}/{}", plan.phases.len());
+    let title = plan.title.trim();
+    if !title.is_empty() {
+        text.push_str(" · ");
+        text.push_str(title);
+    }
+    Line::from(Span::styled(super::clip_cells(&text, width), DIM))
+}
+
+/// The notation's key, under the list only while decision-model subagents (●)
+/// mix with language-model ones (■), as the desktop rail draws it at the foot
+/// of its roster. A roster of one kind needs none.
+pub fn key_line(model: &PaneModel, width: usize) -> Option<Line<'static>> {
+    let decision = model
+        .rows
+        .iter()
+        .filter(|row| is_decision_work(row))
+        .count();
+    if decision == 0 || decision == model.rows.len() {
+        return None;
+    }
+    Some(Line::from(clip_spans(
+        vec![
+            Span::styled(MarkKind::Done.glyph(false), DIM),
+            Span::styled(" language model  ", DIM),
+            Span::styled(MarkKind::Done.glyph(true), DIM),
+            Span::styled(" decision model", DIM),
+        ],
+        width,
     )))
 }
 
@@ -1080,7 +1243,7 @@ fn name_spans(pane: &SubagentPane, row: &PaneRow, open_child: Option<&str>) -> V
     }
     let mut spans = vec![
         row_marker(pane, row, open_child),
-        Span::styled(status_glyph(row.status), status_style(row.status)),
+        row_mark(row),
         Span::raw(" "),
     ];
     if row.private {
@@ -1125,9 +1288,29 @@ fn list_lines(
     let model = &pane.model;
     let two_line = model.rows.len() <= TWO_LINE_MAX_ROWS;
     let mut out = Vec::new();
-    for group in model.groups() {
+    // The marks, as the desktop's grid draws them: under each phase's heading
+    // with a plan, once above the state groups without one, and not at all for
+    // the few two-line rows, which already lead with theirs.
+    if !two_line && model.plan.is_none() {
+        let rows: Vec<&PaneRow> = model.rows.iter().collect();
+        for line in mark_lines(&rows, width, 2) {
+            out.push((LineKind::Head, line));
+        }
+    }
+    for (gi, group) in model.groups().into_iter().enumerate() {
+        // A phase after the first opens on a dim rule, as the desktop parts its
+        // phases with a hairline: sections, never frames.
+        if gi > 0 && model.plan.is_some() {
+            out.push((LineKind::Head, rule_line(width)));
+        }
         if let Some(head) = group_head_line(model, &group, width) {
             out.push((LineKind::Head, head));
+        }
+        if !two_line && model.plan.is_some() && !group.rows.is_empty() {
+            let rows: Vec<&PaneRow> = group.rows.iter().map(|&i| &model.rows[i]).collect();
+            for line in mark_lines(&rows, width, 2) {
+                out.push((LineKind::Head, line));
+            }
         }
         for &ri in &group.rows {
             let row = &model.rows[ri];
@@ -1177,7 +1360,7 @@ fn phase_title(model: &PaneModel, phase_id: &str) -> String {
 /// The selected row's setup, standing in for the desktop's hover card.
 pub fn details_lines(model: &PaneModel, row: &PaneRow) -> Vec<Line<'static>> {
     let mut lines = vec![Line::from(vec![
-        Span::styled(status_glyph(row.status), status_style(row.status)),
+        row_mark(row),
         Span::raw(" "),
         Span::styled(
             row.label().to_string(),
@@ -1206,6 +1389,10 @@ pub fn details_lines(model: &PaneModel, row: &PaneRow) -> Vec<Line<'static>> {
         (None, None) => "unknown".to_string(),
     };
     lines.push(labelled("model", model_text));
+    // The desktop's card says so too: its circle is decision-model work.
+    if is_decision_work(row) {
+        lines.push(labelled("kind", "decision model".to_string()));
+    }
     lines.push(labelled("extensions", list_or_none(&row.extensions)));
     lines.push(labelled("skills", list_or_none(&row.skills)));
     lines.push(labelled("knowledge", list_or_none(&row.knowledge_bases)));
@@ -1280,6 +1467,12 @@ fn header_line(pane: &SubagentPane, width: usize) -> Line<'static> {
             format!("  {}", pane.model.tally().text()),
             DIM,
         ));
+        // The strip's marks: every agent in spawn order after the counts, so a
+        // narrow terminal still sees the grid; cut first when room runs out.
+        if pane.model.rows.len() > TWO_LINE_MAX_ROWS {
+            spans.push(Span::raw("  "));
+            spans.extend(pane.model.rows.iter().map(row_mark));
+        }
     }
     Line::from(clip_spans(spans, width))
 }
@@ -1346,17 +1539,10 @@ pub fn draw_side(f: &mut Frame, pane: &mut SubagentPane, area: Rect, open_child:
     let width = inner.width as usize;
 
     let mut head = header_lines(pane, width);
-    if let Some(plan) = pane
-        .model
-        .plan
-        .as_ref()
-        .filter(|p| !p.title.trim().is_empty())
-    {
-        head.push(Line::from(Span::styled(
-            super::clip_cells(&plan.title, width),
-            DIM,
-        )));
+    if let Some(plan) = pane.model.plan.as_ref() {
+        head.push(plan_heading(plan, width));
     }
+    let key = key_line(&pane.model, width);
     let details = if pane.focused {
         pane.selected_row()
             .map(|row| details_lines(&pane.model, row))
@@ -1378,10 +1564,14 @@ pub fn draw_side(f: &mut Frame, pane: &mut SubagentPane, area: Rect, open_child:
     let regions = Layout::vertical([
         Constraint::Length(head.len() as u16),
         Constraint::Min(1),
+        Constraint::Length(u16::from(key.is_some())),
         Constraint::Length(details_h),
     ])
     .split(inner);
     f.render_widget(Paragraph::new(head), regions[0]);
+    if let Some(key) = key {
+        f.render_widget(Paragraph::new(key), regions[2]);
+    }
 
     if pane.model.rows.is_empty() {
         f.render_widget(
@@ -1393,9 +1583,9 @@ pub fn draw_side(f: &mut Frame, pane: &mut SubagentPane, area: Rect, open_child:
     }
 
     if details_h > 0 {
-        let mut lines = vec![Line::from(Span::styled("─".repeat(width), DIM))];
+        let mut lines = vec![rule_line(width)];
         lines.extend(details);
-        f.render_widget(Paragraph::new(lines), regions[2]);
+        f.render_widget(Paragraph::new(lines), regions[3]);
     }
 }
 
@@ -1544,7 +1734,8 @@ pub fn strip_height(pane: &SubagentPane) -> u16 {
     (1 + plan + details + rows.min(STRIP_MAX_ROWS as usize) as u16).clamp(1, STRIP_MAX_ROWS)
 }
 
-/// The plan's phases on one line: `● plan 1/1  ◐ research 3/5 · 1 quiet`.
+/// The plan's phases on one line, parted by a dim rule: `plan 1/1 │ research
+/// 3/5 · 1 quiet`.
 fn phases_line(model: &PaneModel, width: usize) -> Option<Line<'static>> {
     let plan = model.plan.as_ref()?;
     let groups = model.groups();
@@ -1557,12 +1748,9 @@ fn phases_line(model: &PaneModel, width: usize) -> Option<Line<'static>> {
             .unwrap_or_default();
         let counts = phase_counts(model, phase, &rows);
         if pi > 0 {
-            spans.push(Span::styled("   ", DIM));
+            spans.push(Span::styled(" │ ", DIM));
         }
-        spans.push(Span::styled(
-            phase_head_text(phase, &counts),
-            phase_style(phase.status),
-        ));
+        spans.extend(phase_head_spans(phase, &counts));
     }
     Some(Line::from(clip_spans(spans, width)))
 }
@@ -1673,7 +1861,7 @@ pub fn list_into(app: &mut App) {
     for (i, row) in model.rows.iter().enumerate() {
         let mut spans = vec![
             Span::styled(format!("  {:>2}. ", i + 1), DIM),
-            Span::styled(status_glyph(row.status), status_style(row.status)),
+            row_mark(row),
             Span::raw(" "),
         ];
         if row.private {
@@ -2004,10 +2192,7 @@ pub fn draw_child(f: &mut Frame, child: &mut ChildView, row: Option<&PaneRow>, a
         Span::raw(" "),
     ];
     if let Some(row) = row {
-        spans.push(Span::styled(
-            status_glyph(row.status),
-            status_style(row.status),
-        ));
+        spans.push(row_mark(row));
         spans.push(Span::raw(" "));
         if row.private {
             spans.push(Span::raw(format!("{LOCK} ")));
@@ -2035,10 +2220,7 @@ pub fn draw_child(f: &mut Frame, child: &mut ChildView, row: Option<&PaneRow>, a
         spans.push(Span::styled(format!("  {}", tail.join(" · ")), DIM));
     }
     spans.push(Span::styled("  · esc returns to your chat", DIM));
-    let header = vec![
-        Line::from(clip_spans(spans, width)),
-        Line::from(Span::styled("─".repeat(width), DIM)),
-    ];
+    let header = vec![Line::from(clip_spans(spans, width)), rule_line(width)];
     f.render_widget(Paragraph::new(header), regions[0]);
     super::draw_history(f, &mut child.transcript, regions[1]);
 }
@@ -2197,11 +2379,11 @@ mod tests {
         assert_eq!(phases[2].held_by.as_deref(), Some("gone"));
         assert_eq!(
             phase_head_text(&phases[0], &PhaseCounts::default()),
-            "◐ Research · starting"
+            "Research · starting"
         );
         assert_eq!(
             phase_head_text(&phases[1], &PhaseCounts::default()),
-            "○ Write · waits for Research's gate"
+            "Write · waits for Research's gate"
         );
         let counts = PhaseCounts {
             total: 2,
@@ -2211,19 +2393,20 @@ mod tests {
         };
         assert_eq!(
             phase_head_text(&phases[1], &counts),
-            "○ Write 1/2 · 1 running · waits for Research's gate"
+            "Write 1/2 · 1 running · waits for Research's gate"
         );
         let mut blocked = phases[1].clone();
         blocked.status = PhaseStatus::Blocked;
         assert_eq!(
             phase_head_text(&blocked, &PhaseCounts::default()),
-            "⏸ Write · blocked · waits for Research's gate"
+            "Write · blocked · waits for Research's gate"
         );
     }
 
     /// E-9: a subagent the person stopped (it ends incomplete) is counted as
     /// stopped, never as a failure; E-8: the rows a plan does not place sit
-    /// under "no phase", with no count run into the label.
+    /// under "other agents" (the desktop's "Other agents"), with no count run
+    /// into the label.
     #[test]
     fn stopped_subagents_are_not_failures_and_no_phase_has_no_count() {
         let mut model = PaneModel {
@@ -2253,7 +2436,7 @@ mod tests {
             .unwrap();
         let line = group_head_line(&model, unphased, 40).unwrap();
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "· no phase");
+        assert_eq!(text, "other agents");
     }
 
     /// E-7: a phase's heading marks its gate: passed, blocked (the person's
@@ -2280,7 +2463,12 @@ mod tests {
             done: 1,
             ..PhaseCounts::default()
         };
-        assert_eq!(phase_head_text(&build, &one), "● Build 1/1 · gate passed");
+        // The heading is words; the gate is decision-model work, so its circle
+        // leads its words, in the gate's own ink.
+        assert_eq!(phase_head_text(&build, &one), "Build 1/1 · ● gate passed");
+        let spans = phase_head_spans(&build, &one);
+        assert_eq!(spans[2].content, "●");
+        assert_eq!(spans[2].style, MarkKind::Done.style());
 
         gate.last_passed = Some(false);
         gate.blocked = true;
@@ -2289,13 +2477,87 @@ mod tests {
         build.gate = Some(PaneGate::of(&gate));
         assert_eq!(
             phase_head_text(&build, &one),
-            "⏸ Build 1/1 · gate blocked · needs you"
+            "Build 1/1 · ◒ gate blocked · needs you"
         );
         gate.blocked = false;
         gate.needs_person = false;
         assert_eq!(PaneGate::of(&gate), PaneGate::NotPassed);
         gate.last_passed = None;
         assert_eq!(PaneGate::of(&gate), PaneGate::Waiting);
+    }
+
+    /// The desktop's notation (`summary/agentGrid.ts`): the same status-to-fill
+    /// map, squares for language models and circles for decision models, and the
+    /// same status words.
+    #[test]
+    fn marks_speak_the_desktops_notation() {
+        use SubagentRunStatus as S;
+        let fills: Vec<(S, MarkKind)> = vec![
+            (S::Queued, MarkKind::Queued),
+            (S::Running, MarkKind::Running),
+            (S::Cancelling, MarkKind::Running),
+            (S::Completed, MarkKind::Done),
+            (S::Blocked, MarkKind::Waiting),
+            (S::Incomplete, MarkKind::Waiting),
+            (S::Interrupted, MarkKind::Waiting),
+            (S::Failed, MarkKind::Failed),
+            (S::Unknown, MarkKind::Idle),
+        ];
+        for (status, kind) in fills {
+            assert_eq!(MarkKind::of_status(status), kind, "{status:?}");
+        }
+        // Six fills, two shapes, twelve glyphs, none shared.
+        let kinds = [
+            MarkKind::Queued,
+            MarkKind::Running,
+            MarkKind::Waiting,
+            MarkKind::Done,
+            MarkKind::Failed,
+            MarkKind::Idle,
+        ];
+        let mut glyphs: Vec<&str> = kinds
+            .iter()
+            .flat_map(|k| [k.glyph(false), k.glyph(true)])
+            .collect();
+        assert_eq!(
+            &glyphs[..],
+            &["□", "○", "▣", "◉", "◧", "◒", "■", "●", "⊠", "⊗", "⊟", "⊖"]
+        );
+        glyphs.sort_unstable();
+        glyphs.dedup();
+        assert_eq!(glyphs.len(), 12);
+        for glyph in &glyphs {
+            assert_eq!(UnicodeWidthStr::width(*glyph), 1, "{glyph} takes one cell");
+        }
+
+        // A quiet active child reads as stalled; a decision model is a circle.
+        let mut quiet = row("q", "quiet", S::Running);
+        quiet.quiet_seconds = Some(QUIET_AFTER_SECS + 1);
+        assert_eq!(MarkKind::of(&quiet), MarkKind::Waiting);
+        let mut judge = row("d", "dose check", S::Completed);
+        judge.provider = Some("ollama_decision".into());
+        assert!(is_decision_work(&judge));
+        assert_eq!(row_mark(&judge).content, "●");
+        assert_eq!(row_mark(&row("l", "reader", S::Completed)).content, "■");
+
+        assert_eq!(status_word(S::Queued), "waiting to start");
+        assert_eq!(status_word(S::Blocked), "needs an answer");
+        assert_eq!(status_word(S::Incomplete), "stopped");
+        assert_eq!(status_word(S::Unknown), "status unknown");
+    }
+
+    #[test]
+    fn a_long_roster_wraps_its_marks_into_a_block() {
+        let rows: Vec<PaneRow> = (0..30)
+            .map(|i| row(&format!("c{i}"), "agent", SubagentRunStatus::Completed))
+            .collect();
+        let refs: Vec<&PaneRow> = rows.iter().collect();
+        let lines = mark_lines(&refs, 14, 2);
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|line| line.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(texts, vec!["  ■■■■■■■■■■■■", "  ■■■■■■■■■■■■", "  ■■■■■■"]);
     }
 
     #[test]
@@ -2436,5 +2698,355 @@ mod tests {
         );
         child.load(&[]);
         assert!(!child.needs_reload);
+    }
+
+    // ── sections, never frames ─────────────────────────────────────────────
+
+    /// One phase of a review plan: `n` agents in `statuses`' cycle, every
+    /// `judge_every`th on a decision model, one gone quiet when asked.
+    struct ReviewPhase {
+        id: &'static str,
+        title: &'static str,
+        kind: PhaseKind,
+        status: PhaseStatus,
+        n: usize,
+        statuses: &'static [SubagentRunStatus],
+        judge_every: usize,
+        quiet_at: Option<usize>,
+        gate: Option<PaneGate>,
+        held_by: Option<&'static str>,
+    }
+
+    const ROLES: [&str; 6] = [
+        "Reader",
+        "Auditor",
+        "Tabulator",
+        "Checker",
+        "Summariser",
+        "Critic",
+    ];
+
+    fn review_model(title: &str, phases: &[ReviewPhase]) -> PaneModel {
+        let mut rows = Vec::new();
+        let mut plan_phases = Vec::new();
+        for phase in phases {
+            let start = rows.len();
+            for i in 0..phase.n {
+                let at = rows.len();
+                let status = phase.statuses[i % phase.statuses.len()];
+                let mut row = PaneRow::new(
+                    format!("child-{at}"),
+                    format!("Read batch {} of the trial reports", at + 1),
+                    status,
+                );
+                row.role = Some(format!("{} {}", ROLES[at % ROLES.len()], at + 1));
+                row.phase_id = Some(phase.id.to_string());
+                row.elapsed_seconds = Some(40 + at as u64 * 13);
+                row.quiet_seconds = Some(if phase.quiet_at == Some(i) { 600 } else { 3 });
+                if phase.judge_every > 0 && i % phase.judge_every == phase.judge_every / 2 {
+                    row.role = Some(format!("Dose check {}", at + 1));
+                    row.provider = Some("ollama_decision".into());
+                    row.model = Some("tev1:0.8b".into());
+                } else {
+                    row.provider = Some("anthropic".into());
+                    row.model = Some("claude-sonnet-4-5".into());
+                }
+                rows.push(row);
+            }
+            let mine = &rows[start..];
+            let count =
+                |pred: &dyn Fn(&PaneRow) -> bool| mine.iter().filter(|r| pred(r)).count() as u32;
+            let mut pane_phase = PanePhase::new(phase.id, phase.kind, phase.status);
+            pane_phase.title = phase.title.to_string();
+            pane_phase.counts = PhaseCounts {
+                total: mine.len() as u32,
+                done: count(&|r| r.status == SubagentRunStatus::Completed),
+                running: count(&|r| r.status.is_active()),
+                blocked: count(&|r| r.status == SubagentRunStatus::Blocked),
+                failed: count(&|r| r.status == SubagentRunStatus::Failed),
+                quiet: count(&|r| r.is_quiet()),
+            };
+            pane_phase.gate = phase.gate;
+            pane_phase.held_by = phase.held_by.map(str::to_string);
+            plan_phases.push(pane_phase);
+        }
+        PaneModel {
+            rows,
+            plan: Some(PanePlan {
+                title: title.to_string(),
+                phases: plan_phases,
+            }),
+        }
+    }
+
+    /// The desktop review's twenty: an audit of eight that passed its gate,
+    /// a draft of twelve in every state (one quiet, one on a decision model),
+    /// and a check its gate holds.
+    fn twenty() -> PaneModel {
+        use SubagentRunStatus as S;
+        review_model(
+            "Survey every trial of the drug",
+            &[
+                ReviewPhase {
+                    id: "audit",
+                    title: "Audit the sources",
+                    kind: PhaseKind::Auditing,
+                    status: PhaseStatus::Completed,
+                    n: 8,
+                    statuses: &[
+                        S::Completed,
+                        S::Completed,
+                        S::Completed,
+                        S::Completed,
+                        S::Completed,
+                        S::Failed,
+                        S::Completed,
+                        S::Completed,
+                    ],
+                    judge_every: 0,
+                    quiet_at: None,
+                    gate: Some(PaneGate::Passed),
+                    held_by: None,
+                },
+                ReviewPhase {
+                    id: "draft",
+                    title: "Draft the dosing tables",
+                    kind: PhaseKind::Execution,
+                    status: PhaseStatus::InProgress,
+                    n: 12,
+                    statuses: &[
+                        S::Running,
+                        S::Running,
+                        S::Completed,
+                        S::Running,
+                        S::Queued,
+                        S::Completed,
+                        S::Blocked,
+                        S::Running,
+                        S::Queued,
+                        S::Completed,
+                        S::Running,
+                        S::Queued,
+                    ],
+                    judge_every: 12,
+                    quiet_at: Some(3),
+                    gate: Some(PaneGate::Waiting),
+                    held_by: None,
+                },
+                ReviewPhase {
+                    id: "check",
+                    title: "Check the numbers",
+                    kind: PhaseKind::Verification,
+                    status: PhaseStatus::Pending,
+                    n: 0,
+                    statuses: &[S::Queued],
+                    judge_every: 0,
+                    quiet_at: None,
+                    gate: None,
+                    held_by: Some("Draft the dosing tables"),
+                },
+            ],
+        )
+    }
+
+    /// The desktop review's 150, in three phases with decision-model checks
+    /// among them.
+    fn one_fifty() -> PaneModel {
+        use SubagentRunStatus as S;
+        review_model(
+            "Review every trial of the drug",
+            &[
+                ReviewPhase {
+                    id: "audit",
+                    title: "Audit the sources",
+                    kind: PhaseKind::Auditing,
+                    status: PhaseStatus::Completed,
+                    n: 40,
+                    statuses: &[
+                        S::Completed,
+                        S::Completed,
+                        S::Completed,
+                        S::Completed,
+                        S::Completed,
+                        S::Completed,
+                        S::Completed,
+                        S::Completed,
+                        S::Completed,
+                        S::Completed,
+                        S::Completed,
+                        S::Completed,
+                        S::Completed,
+                        S::Failed,
+                    ],
+                    judge_every: 8,
+                    quiet_at: None,
+                    gate: Some(PaneGate::Passed),
+                    held_by: None,
+                },
+                ReviewPhase {
+                    id: "verify",
+                    title: "Verify each claim",
+                    kind: PhaseKind::Verification,
+                    status: PhaseStatus::InProgress,
+                    n: 90,
+                    statuses: &[
+                        S::Completed,
+                        S::Running,
+                        S::Completed,
+                        S::Queued,
+                        S::Completed,
+                        S::Running,
+                        S::Failed,
+                        S::Completed,
+                        S::Blocked,
+                        S::Completed,
+                        S::Running,
+                        S::Queued,
+                    ],
+                    judge_every: 7,
+                    quiet_at: Some(13),
+                    gate: Some(PaneGate::Waiting),
+                    held_by: None,
+                },
+                ReviewPhase {
+                    id: "report",
+                    title: "Write the report",
+                    kind: PhaseKind::Synthesis,
+                    status: PhaseStatus::Pending,
+                    n: 20,
+                    statuses: &[S::Queued],
+                    judge_every: 0,
+                    quiet_at: None,
+                    gate: None,
+                    held_by: Some("Verify each claim"),
+                },
+            ],
+        )
+    }
+
+    /// The side pane alone, drawn at `width` x `height`, as plain lines.
+    fn side_frame(model: PaneModel, width: u16, height: u16) -> Vec<String> {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut pane = SubagentPane::default();
+        pane.set_model(model);
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|f| draw_side(f, &mut pane, f.area(), None))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        (0..height)
+            .map(|y| {
+                let line: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+                line.trim_end().to_string()
+            })
+            .collect()
+    }
+
+    /// Owner direction, 2026-11-12: section headings and dim rule lines, never a
+    /// box-drawing frame round a group. The pane's one edge is its left border
+    /// against the transcript.
+    #[test]
+    fn the_pane_is_sections_and_rules_never_frames() {
+        for (model, name) in [(twenty(), "20"), (one_fifty(), "150")] {
+            let frame = side_frame(model, 50, 60);
+            let all = frame.join("\n");
+            for corner in [
+                '┌', '┐', '└', '┘', '├', '┤', '┬', '┴', '┼', '╭', '╮', '╰', '╯',
+            ] {
+                assert!(
+                    !all.contains(corner),
+                    "{name}: a frame corner {corner:?}:\n{all}"
+                );
+            }
+            // The PLAN heading opens the phases, and a dim rule parts each phase
+            // from the one above, never the first from the heading.
+            let plan_at = frame
+                .iter()
+                .position(|l| l.contains("PLAN 1/3 · "))
+                .expect(&all);
+            let first_phase = frame
+                .iter()
+                .position(|l| l.contains("Audit the sources "))
+                .expect(&all);
+            assert_eq!(first_phase, plan_at + 1, "{name}:\n{all}");
+            let rules: Vec<usize> = frame
+                .iter()
+                .enumerate()
+                .filter(|(_, l)| l.trim_start_matches('│').trim_start().starts_with("────"))
+                .map(|(i, _)| i)
+                .collect();
+            assert!(!rules.is_empty(), "{name}: no rule between phases:\n{all}");
+            for &at in &rules {
+                let next = frame.get(at + 1).map(String::as_str).unwrap_or("");
+                assert!(
+                    [
+                        "Draft the dosing",
+                        "Check the numbers",
+                        "Verify each claim",
+                        "Write the report"
+                    ]
+                    .iter()
+                    .any(|title| next.contains(title)),
+                    "{name}: a rule opens a phase, line {at}:\n{all}"
+                );
+            }
+            // Headings are words: no heading leads with a mark, so a `●` is always
+            // decision-model work.
+            let heading = frame
+                .iter()
+                .find(|l| l.contains("Audit the sources"))
+                .unwrap();
+            assert!(
+                heading
+                    .trim_start_matches('│')
+                    .trim_start()
+                    .starts_with("Audit the sources "),
+                "{name}: {heading}"
+            );
+            // The key: the two shapes mix in both rosters.
+            assert!(
+                all.contains("■ language model  ● decision model"),
+                "{name}:\n{all}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_key_shows_only_while_the_two_shapes_mix() {
+        let language = PaneModel {
+            rows: vec![row("a", "reader", SubagentRunStatus::Running)],
+            plan: None,
+        };
+        assert!(key_line(&language, 40).is_none());
+        let mut judge = row("d", "dose check", SubagentRunStatus::Completed);
+        judge.provider = Some("ollama_decision".into());
+        let decisions = PaneModel {
+            rows: vec![judge.clone()],
+            plan: None,
+        };
+        assert!(key_line(&decisions, 40).is_none());
+        let both = PaneModel {
+            rows: vec![row("a", "reader", SubagentRunStatus::Running), judge],
+            plan: None,
+        };
+        let line = key_line(&both, 40).expect("a key");
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "■ language model  ● decision model");
+    }
+
+    /// With `BIOROUTER_TUI_FRAMES=<dir>`, saves the pane as a person sees it
+    /// for the twenty and the 150, for review beside the desktop's screenshots.
+    #[test]
+    fn saves_the_review_frames_when_asked() {
+        let Some(dir) = std::env::var_os("BIOROUTER_TUI_FRAMES") else {
+            return;
+        };
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (model, file) in [(twenty(), "tui-20.txt"), (one_fifty(), "tui-150.txt")] {
+            let frame = side_frame(model, 50, 60).join("\n");
+            std::fs::write(dir.join(file), format!("{frame}\n")).unwrap();
+        }
     }
 }
