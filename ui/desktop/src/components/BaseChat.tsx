@@ -115,7 +115,11 @@ import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
 import ArtifactViewer from './artifacts/ArtifactViewer';
 import { useArtifactPanel } from './artifacts/useArtifactPanel';
 import InAppTerminalDock from './InAppTerminalDock';
-import { ChatTurnError, hasVisibleTurnErrorMessage } from './conversation/ChatTurnError';
+import {
+  ChatTurnError,
+  placeTurnError,
+  StoredTurnErrorRetryContext,
+} from './conversation/ChatTurnError';
 import { ChatTurnStopped } from './conversation/ChatTurnStopped';
 import { transcriptEndsStopped } from './conversation/turnStoppedNotice';
 import { latestUsageLimitNoticeKey } from './conversation/usageLimitTranscript';
@@ -2445,9 +2449,18 @@ function BaseChatContent({
   );
 
   // The turn error drawn at the end of the transcript, when the transcript
-  // does not already show it as a stored notice.
-  const turnErrorRow =
-    turnError && !hasVisibleTurnErrorMessage(turnError, messages) ? turnError : null;
+  // does not already show it as a stored notice. When it does, the failure
+  // draws once, as that stored row, and the live row's Retry moves onto it.
+  const turnErrorPlacement = useMemo(
+    () => placeTurnError(turnError, messages),
+    [turnError, messages]
+  );
+  const turnErrorRow = turnErrorPlacement.row;
+  const retryOnNoticeId = turnErrorPlacement.retryOnNoticeId;
+  const storedTurnErrorRetry = useMemo(
+    () => (retryOnNoticeId ? { messageId: retryOnNoticeId, onRetry: heldRetryTurn } : null),
+    [retryOnNoticeId, heldRetryTurn]
+  );
 
   // A chat whose model could not be restored learns it from the agent load,
   // seconds after a long transcript is drawn; that row goes below the fold
@@ -3342,7 +3355,7 @@ function BaseChatContent({
                     )}
 
                     {messages.length > 0 || workflow || turnError || firstSend.message ? (
-                      <>
+                      <StoredTurnErrorRetryContext.Provider value={storedTurnErrorRetry}>
                         <SearchView>
                           <>
                             {/* A new chat's first message while the chat is
@@ -3381,7 +3394,7 @@ function BaseChatContent({
                         {/* No tail spacer: the composer bar's `pt-7` owns
                             the distance to the composer, at every scroll
                             position. */}
-                      </>
+                      </StoredTurnErrorRetryContext.Provider>
                     ) : null}
                   </div>
                 </ScrollArea>

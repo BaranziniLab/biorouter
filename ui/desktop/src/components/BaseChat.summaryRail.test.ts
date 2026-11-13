@@ -442,9 +442,10 @@ describe('BaseChat: the transcript keeps its newest line through a resize (V2-R6
 
   it('holds a late restore failure below the fold instead of following it (V2-R9-2)', () => {
     // summary/lateRowHold.browser.test.tsx measures it; here, the joins.
-    expect(code).toContain(
-      'const turnErrorRow =\n    turnError && !hasVisibleTurnErrorMessage(turnError, messages) ? turnError : null;'
-    );
+    // One failure draws once: the live row only when no stored notice shows it
+    // (`placeTurnError`, conversation/turnErrorOnce.test.tsx).
+    expect(code).toContain('const turnErrorRow = turnErrorPlacement.row;');
+    expect(code).toContain('placeTurnError(turnError, messages)');
     const call = code.slice(
       code.indexOf('useLateRowHold({'),
       code.indexOf('});', code.indexOf('useLateRowHold({'))

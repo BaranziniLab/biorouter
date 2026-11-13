@@ -730,6 +730,93 @@ describe('ChatStreamRegistry', () => {
     expect(vi.mocked(reply).mock.calls[1][0].body.from_seq).toBeUndefined();
   });
 
+  /**
+   * Live QA, 2026-11-11: a provider failure the daemon answered with its stored
+   * notice ("Ran into this error: …") and, after it, a decision monitor's
+   * marker. The transcript no longer ended in the user's prompt, so Retry
+   * cleared the error and sent nothing. It now sends the failed turn's prompt
+   * again, as a new row.
+   */
+  describe('Retry after a provider failure the transcript already records', () => {
+    const NOTICE =
+      'Ran into this error: Server error: Provider content filter failed (content_filter_error). ' +
+      'Retry the request or contact your provider administrator.\n\n' +
+      'Please retry if you think this is a transient or recoverable error. Biorouter already retried it once.';
+
+    function failingTurn(scope: 'provider' | 'session') {
+      return {
+        stream: (async function* () {
+          yield {
+            type: 'Message',
+            message: assistantMessage('notice', NOTICE),
+            token_state: tokenState,
+          } as MessageEvent;
+          yield {
+            type: 'Message',
+            message: assistantMessage('marker', 'Monitor checked 3 times, quiet'),
+            token_state: tokenState,
+          } as MessageEvent;
+          yield {
+            type: 'Error',
+            error:
+              'Server error: Provider content filter failed (content_filter_error). Retry the request or contact your provider administrator.',
+            code: 'provider_failure',
+            scope,
+            retryable: true,
+            provider_kind: 'server',
+          } as MessageEvent;
+        })(),
+      } as never;
+    }
+
+    const finished = {
+      stream: (async function* () {
+        yield { type: 'Finish', reason: 'done', token_state: tokenState } as MessageEvent;
+      })(),
+    } as never;
+
+    it('sends the prompt of the failed turn again as a new row', async () => {
+      const sessionId = 'retry-after-stored-notice';
+      const registry = new ChatStreamRegistry();
+      vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(sessionId) } } as never);
+      vi.mocked(reply)
+        .mockResolvedValueOnce(failingTurn('provider'))
+        .mockResolvedValueOnce(finished);
+
+      const controller = registry.getController(sessionId);
+      await controller.handleSubmit('list the medical claims');
+      expect(controller.getSnapshot().turnError).toMatchObject({ scope: 'provider' });
+      const tail = controller.getSnapshot().messages;
+      expect(tail[tail.length - 1]?.id).toBe('marker');
+      const first = vi.mocked(reply).mock.calls[0][0].body.user_message;
+
+      await controller.retryTurn();
+
+      expect(reply).toHaveBeenCalledTimes(2);
+      const again = vi.mocked(reply).mock.calls[1][0].body.user_message;
+      expect(again.content).toEqual([{ type: 'text', text: 'list the medical claims' }]);
+      expect(again.id).not.toBe(first.id);
+      const rows = controller.getSnapshot().messages;
+      expect(rows.map((m) => m.id)).toEqual([first.id, 'notice', 'marker', again.id]);
+      expect(controller.getSnapshot().turnError).toBeUndefined();
+    });
+
+    it('never re-runs the prompt of a finished turn after a failure that is not a provider failure', async () => {
+      const sessionId = 'retry-after-session-failure';
+      const registry = new ChatStreamRegistry();
+      vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(sessionId) } } as never);
+      vi.mocked(reply).mockResolvedValueOnce(failingTurn('session'));
+
+      const controller = registry.getController(sessionId);
+      await controller.handleSubmit('list the medical claims');
+
+      await controller.retryTurn();
+
+      expect(reply).toHaveBeenCalledTimes(1);
+      expect(controller.getSnapshot().messages.filter((m) => m.role === 'user')).toHaveLength(1);
+    });
+  });
+
   it('retryTurn does not fire a second concurrent turn while one is live', async () => {
     const sessionId = 'retry-concurrent';
     const registry = new ChatStreamRegistry();
