@@ -48,9 +48,11 @@ export default {
       // A tooltip is a surface, so it is shared rather than set to this
       // family's own `text-default` navy.
       'background-inverse': '#1f1e1c',
-      // Red is rare (design.md 9.14): danger is drawn in ink, the fill being
-      // the secondary ink and the text the primary ink. See Parchment.
-      'background-danger': '#43526b',
+      // Red is rare (design.md 9.14): the danger tone is drawn in ink, its fill
+      // the secondary ink and its text the primary ink. The family's red lives
+      // on in `background-critical` / `text-critical`, the danger-zone button only.
+      'background-critical': '#e61048',
+      'background-danger': '#506380',
       'background-success': '#007242',
       'background-info': '#0f388a',
       'background-warning': '#8a5a00',
@@ -63,15 +65,16 @@ export default {
       'border-success': '#007242',
       'border-warning': '#8a5a00',
       'border-info': '#0f388a',
-      'text-default': '#08111f',
-      'text-muted': '#43526b',
-      'text-subtle': '#4e5b71',
+      'text-default': '#052049',
+      'text-muted': '#506380',
+      'text-subtle': '#586780',
       'text-inverse': '#ffffff',
       // Status inks are held to 4.5:1 on their OWN WASH (`--wash-X`, the hue at
       // 22% over the ground), not just on white: a Note paints the pair, and the
       // old stops measured 3.5–4.5:1 there (live QA T-18). Darkened in OKLCH
       // lightness at a fixed hue; `check-contrast.mjs` asserts every pair.
-      'text-danger': '#08111f',
+      'text-danger': '#052049',
+      'text-critical': '#a8032f',
       'text-success': '#02653a',
       'text-warning': '#7a5000',
       'text-info': '#0f388a',
@@ -86,16 +89,16 @@ export default {
       'heat-3': '#16a0ac',
       'heat-4': '#0e5258',
       sidebar: '#f7f7f5',
-      'sidebar-foreground': '#08111f',
-      // Nav icons wear the row's resting ink, the primary ink since 2026-11-12, as in
+      'sidebar-foreground': '#052049',
+      // Nav icons wear the row's resting ink, the muted label ink, as in
       // Parchment and Roche Limit: one ink with the labels and the chat glyphs
       // below (V1-R2-5). The accent is held for the active rail and the lock
       // badge (redesign principle 7); teal icons were accent outside it (V1-M3).
-      'sidebar-icon': '#08111f',
+      'sidebar-icon': '#506380',
       'sidebar-hover': '#efefec',
       'sidebar-active': '#eaeae6',
       'sidebar-accent': '#efefec',
-      'sidebar-accent-foreground': '#08111f',
+      'sidebar-accent-foreground': '#052049',
       'sidebar-border': '#e7e7e3',
       'sidebar-ring': '#5c5a55',
       // ── PERSON AVATAR HUES (D-AVATAR) ─────────────────────────────────────
@@ -237,9 +240,11 @@ export default {
       'background-medium': '#2c2c29',
       'background-strong': '#3a3a36',
       'background-inverse': '#ededea',
-      // Red is rare (design.md 9.14): danger is drawn in ink, the fill being
-      // the secondary ink and the text the primary ink. See Parchment.
-      'background-danger': '#c0c5cb',
+      // Red is rare (design.md 9.14): the danger tone is drawn in ink, its fill
+      // the secondary ink and its text the primary ink. The family's red lives
+      // on in `background-critical` / `text-critical`, the danger-zone button only.
+      'background-critical': '#f5768a',
+      'background-danger': '#b4b9bf',
       'background-success': '#5fbf74',
       'background-info': '#7fb3e6',
       'background-warning': '#feb80a',
@@ -252,12 +257,13 @@ export default {
       'border-success': '#5fbf74',
       'border-warning': '#feb80a',
       'border-info': '#7fb3e6',
-      'text-default': '#f5f6f7',
-      'text-muted': '#c0c5cb',
-      'text-subtle': '#a1aab5',
+      'text-default': '#f2f3f4',
+      'text-muted': '#b4b9bf',
+      'text-subtle': '#909aa6',
       'text-inverse': '#052049',
       // Status inks are held to 4.5:1 on their OWN WASH; see the light block.
-      'text-danger': '#f5f6f7',
+      'text-danger': '#f2f3f4',
+      'text-critical': '#fd90a0',
       'text-success': '#63c277',
       'text-warning': '#feb80a',
       'text-info': '#7fb3e6',
@@ -270,12 +276,12 @@ export default {
       'heat-3': '#16a0ac',
       'heat-4': '#60d0da',
       sidebar: '#171716',
-      'sidebar-foreground': '#f5f6f7',
-      'sidebar-icon': '#f5f6f7', // the row's resting ink, the primary ink, as in light
+      'sidebar-foreground': '#f2f3f4',
+      'sidebar-icon': '#b4b9bf', // the muted label ink, as in light
       'sidebar-hover': '#232320',
       'sidebar-active': '#2e2e2a',
       'sidebar-accent': '#232320',
-      'sidebar-accent-foreground': '#f5f6f7',
+      'sidebar-accent-foreground': '#f2f3f4',
       'sidebar-border': '#2a2a27',
       'sidebar-ring': '#a5a39d',
       // Person avatar hues (D-AVATAR): the light set's hues at fill L 0.39 and

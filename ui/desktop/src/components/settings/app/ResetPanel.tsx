@@ -255,7 +255,7 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
       >
         <Button
           type="button"
-          variant="destructive"
+          variant="critical"
           size="sm"
           disabled={hostOnly !== null}
           onClick={openDialog}
@@ -291,7 +291,7 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
             </Button>
             <Button
               type="button"
-              variant="destructive"
+              variant="critical"
               disabled={resetting || selectedCategories.length === 0}
               onClick={handleReset}
             >

@@ -329,7 +329,7 @@ function ArchiveChannel({ channelId, onClose }: { channelId: string; onClose(): 
       message={confirmCopy.archiveChannel.description}
       confirmLabel={confirmCopy.archiveChannel.confirm}
       cancelLabel={confirmCopy.cancel}
-      confirmVariant="destructive"
+      confirmVariant="critical"
       isSubmitting={crew.isPending(key)}
       onCancel={onClose}
       onConfirm={() =>
@@ -390,7 +390,7 @@ function DeleteChannel({ channelId, onClose }: { channelId: string; onClose(): v
       message={confirmCopy.deleteChannel.description(name)}
       confirmLabel={confirmCopy.deleteChannel.confirm}
       cancelLabel={confirmCopy.cancel}
-      confirmVariant="destructive"
+      confirmVariant="critical"
       isSubmitting={crew.isPending(key)}
       onCancel={onClose}
       onConfirm={() => {

@@ -29,13 +29,14 @@ describe('ResetProviderSection', () => {
     Object.defineProperty(window, 'location', { configurable: true, value: originalLocation });
   });
 
-  it('is one Danger zone row: the label, an InfoTip and a destructive Reset… button', () => {
+  it('is one Danger zone row: the label, an InfoTip and a danger-zone Reset… button', () => {
     render(<ResetProviderSection setView={vi.fn()} />);
 
     // The row label names the button; "Reset…" is only what it says.
     const button = screen.getByRole('button', { name: modelsDangerCopy.row });
     expect(button).toHaveTextContent(modelsDangerCopy.open);
-    expect(button).toHaveClass('text-text-danger');
+    // The danger zone keeps its red (owner, 2026-11-12; design.md 9.14): Button `critical`.
+    expect(button).toHaveClass('text-text-critical');
     // The explanation is the InfoTip, reachable from the button itself, never a paragraph.
     expect(button).toHaveAccessibleDescription(modelsDangerCopy.rowHelp);
     expect(

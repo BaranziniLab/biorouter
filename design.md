@@ -282,10 +282,6 @@ This is the same convention GitHub's contribution graph uses. Absolute values li
 
 #### Text colours
 
-> **Inks superseded 2026-11-12 ([9.15](#915--solid-ink)).** The primary ink is near-black (`#16120d` light,
-> `#f6f4ee` dark) and the secondary steps are one small step stronger. The tables below are the record of
-> how the earlier values were chosen.
-
 **This is Parchment's axis.** Now that the grounds are shared, the ink below is most of what makes the
 family. It was not retuned by the 2026-08-08 unification — every value held on the shared grounds, and
 the minima moved only because the grounds did.
@@ -508,7 +504,7 @@ The values below are the Standard baseline. Settings → App → Appearance offe
 | Caption | 12 / 16 | 400 | 0 |
 | Section label (all-caps) | 11 / 14 | 500 | +0.08em |
 | Metric readout | 30 / 34 | 300, mono | −0.02em |
-| Code / terminal | 13 / 20 | 400, mono | 0 |
+| Code / terminal | 12 / 20 *(13 / 20 until 2026-11-12, 9.15)* | 400, mono | 0 |
 
 **Rules.** Prose (chat messages, docs) is capped at **68ch** measure. Anywhere digits align in a column — token counts, durations, table cells, metric tiles — use `font-variant-numeric: tabular-nums`.
 
@@ -1095,7 +1091,7 @@ All three: 8px gap to a 14/21 label; the **label is part of the hit target**; mi
 | Navigation row | 32px, 12px horizontal inset, `--radius-md`, 8px gap, 16px icon + 14/20 label; no inter-row gap |
 | Recent session row | 32px, 12px horizontal inset, plain 14/20 title text; no leading icon; single-line ellipsis at the fixed sidebar width; running indicator only when live; full title and metadata remain available on hover/focus |
 | Compact titlebar controls | Three 32px controls in an explicit non-drag layer above the chat header; the session title starts 8px after their measured endpoint and moves beyond the 240px sidebar when it overlays the canvas |
-| Rest | transparent, `--text-default` icon + label (`--sidebar-foreground`, `--sidebar-icon`; was `--text-muted` until 2026-11-12, [9.15](#915--solid-ink)) |
+| Rest | transparent, `--text-muted` icon + label |
 | Hover | `--sidebar-hover` |
 | Active | `--sidebar-active`, `--text-default`, **plus a 2px accent bar on the leading edge** |
 | Section label | 11px caps `+0.08em` `--text-subtle`, 8px inset |
@@ -1942,8 +1938,8 @@ stay at `--row-height` 40px, because A-03's 36px is not part of this pass.
     Never borrow a `crew-*` class outside `crew/`.
 12. **Simplicity never costs accessibility.** Everything hidden stays reachable by keyboard and by screen
     reader, and the contrast gates pass, including the 3:1 control assertions in 9.5.
-13. **Red is rare** (owner, 2026-11-12; 9.14). Red never marks a failure, a risk, a permission or a
-    destructive action. Words and a glyph do that, in ink. The one red left in the chrome is the edge of an
+13. **Red is rare** (owner, 2026-11-12; 9.14). Red never marks a failure, a risk or a permission. Words and
+    a glyph do that, in ink. Red is left for real danger only: the danger zone's button and the edge of an
     invalid field.
 
 Copy rules: sentence case, the noun is "chat", "Biorouter" and "BAAM", the typographic ellipsis, American
@@ -1958,7 +1954,7 @@ period. InfoTip text is full sentences, at most two (about 160 characters).
 | `text-chip` | 12 / 16 | 500 | 0 | Badges and chips, sentence case |
 | `text-caps` | 12 / 16 | 500 | +0.04em, uppercase | Page section labels only |
 | `text-secondary` | 13 / 18 | 400 | 0 | Sidebar rows, menu rows, tab labels, segmented labels, dense controls in strips of 36px or less, tool-call rows, table cells, composer controls |
-| `text-code` | 13 / 20 mono | 400 | 0 | Code and terminal text |
+| `text-code` | 12 / 20 mono | 400 | 0 | Code and terminal text (13 / 20 until 2026-11-12; 9.15) |
 | `text-body` | 14 / 20 | 400 | 0 | UI prose and values |
 | `text-label` | 14 / 20 | 500 | 0 | Control text, row titles, band titles, field labels |
 | `text-prose` | 14 / 21 | 400 | 0 | Chat markdown, document prose, Crew messages |
@@ -2332,8 +2328,9 @@ and the glyph do not. If there is none, and there almost never is, do not use re
 |---|---|---|
 | A failed tool call, run, agent or task; an error note, toast or inline error message | The row's muted ink or the primary ink, a failure glyph (a failed transcript line draws `FAILED_GLYPH`, a circled ✕, in the primary ink) and words that say what failed ("Failed to read …", "Couldn't connect"). The details stay one click away. | A red line, icon, wash or dot |
 | Something that needs the person: a permission prompt, its risk grade, a decision | The card itself asks. Its risk chip is neutral, and the riskiest grade is the same chip in the primary ink (Badge `strong`), read first without a colour. A warning line keeps only its triangle in the warning hue; the sentence is ink. | A red badge, a red card edge, a paragraph set in a status hue |
-| A destructive action: Delete chat, Reset, Remove | Its verb, its glyph (trash, reset) and, where it cannot be undone, a confirmation that names what goes. The button and the menu item are the ordinary ones. | A red button or menu item |
-| A field whose value is invalid, a drop zone that refused a file | The one red left in the chrome: the 1px edge in `--border-danger`, beside a message in ink that says how to fix it | Red text, a red box round the form |
+| A destructive action: Delete chat, Remove, Revoke | Its verb, its glyph (trash, reset) and, where it cannot be undone, a confirmation that names what goes. The button and the menu item are the ordinary ones. | A red button or menu item |
+| A danger zone: Settings › Models and Settings › App, a Crew channel's About | The one control still drawn in red (owner, 2026-11-12): its button and the confirm that follows are Button `critical`, the family's translucent pink, because what they do is real, irreversible danger. | Red anywhere else on the page |
+| A field whose value is invalid, a drop zone that refused a file | The 1px edge in `--border-danger`, beside a message in ink that says how to fix it | Red text, a red box round the form |
 | Data whose meaning is a colour | Terminal ANSI red, a chart series, an avatar hue. These are content, not chrome | |
 
 **How it is built, so new work follows by default.** The danger tone is a role, not a hue. In every family
@@ -2342,8 +2339,10 @@ is that ink at 8%, about the strong fill step. Every `danger` Badge, Note, Statu
 destructive Button and menu item, the error toast chip and every `text-text-danger` therefore reads as calm
 ink with no change at its call site, and UI written later that reaches for "danger" stays calm.
 `--border-danger` keeps each family's red because it marks exactly one thing, the invalid edge: never use it
-for a card, a banner or a status. Do not bring red back through a hex, a `--color-red-*` utility or a status
-token borrowed for its hue.
+for a card, a banner or a status. The family's red also lives on as `--background-critical` and
+`--text-critical` (the old danger fill and ink), which only Button `critical`, the danger zone's button, may
+wear. Do not bring red back through a hex, a `--color-red-*` utility or a status token borrowed for its hue;
+`styles/redIsRare.test.ts` holds all of this.
 
 - **Failed tool calls.** A failed row (`TranscriptRow`, `tone="danger"`) keeps the muted ink its neighbours
   wear and draws `FAILED_GLYPH`, a circled ✕ in the primary ink, in place of its tool's glyph; its label
@@ -2356,38 +2355,28 @@ token borrowed for its hue.
 - **Gauges.** A context or usage bar past its limit fills with the danger tone, the secondary ink: full, not
   alarmed. The label says what happens next.
 
-### 9.15 · Solid ink
+### 9.15 · Code reads like text
 
-The owner, 2026-11-12: text in the sidebar and in the summary rail read "a little grayed out", with a stroke
-on the thin side. Wanted: dark, solid, smooth text (black in light mode), strokes "a tiny, tiny bit thicker",
-secondary grey "a tiny bit more pronounced", as one systematic change and not a redesign. The references were
-the Claude and Codex desktop sidebars: rows in the primary ink, section labels in a quieter grey, no tint.
+The owner, 2026-11-12: code was set in a face that looked distinct from the text, with spacing that seemed off
+beside it. Code should read like the text around it, the way Codex's does, while a person can still tell it is
+code. That covers every code surface: markdown code in chat, tool arguments and output, the artifact panel, the
+Crew timeline and the terminal. Syntax colours are unchanged.
 
-| Token | Parchment light, was → now | Parchment dark, was → now |
-|---|---|---|
-| `--text-default` | `#2a2520` → `#16120d` | `#f4f0e6` → `#f6f4ee` |
-| `--text-muted` | `#635c54` → `#4f4a45` | `#b0a892` → `#bdb7aa` |
-| `--text-subtle` | `#6e6760` → `#5d5852` | `#9c937b` → `#a8a193` |
-
-Alma Mater's primary ink moves from UCSF navy `#052049` to a near-black navy, `#08111f`, and Roche Limit's to
-`#111110`; their secondary steps move the same small distance, with less tint. The theme files hold the
-values. The order default → muted → subtle holds, and every step clears the contrast floors with more room
-than before (`npm run check:contrast`).
-
-- **Sidebar rows rest on the primary ink.** Nav rows, chat rows and their icons (`--sidebar-foreground`,
-  `--sidebar-icon`) are the primary ink at rest; hover, the current row and focus are told apart by their
-  fills and the accent rail. The Chats header, folder headers and date buckets stay on the secondary inks,
-  which is the hierarchy. This supersedes 4.11's resting `--text-muted`; V1-R2-5 still holds, the icon
-  column is one ink with its labels.
-- **Stroke weight comes from rendering, not from a weight step.** Arial draws only 400 and 700 (9.3), so a
-  heavier weight would be bold. In light mode `body` no longer sets `-webkit-font-smoothing: antialiased`,
-  which switched off macOS stem darkening and drew every glyph a hair thinner than the system's own apps;
-  `auto` draws dark text the way macOS does everywhere else. Dark mode keeps `antialiased`: stem darkening
-  fattens light-on-dark text far more, and with it on the dark UI read semi-bold beside the Codex reference
-  (vision review, 2026-11-12). There the brighter ink is what makes text solid. Windows and Linux ignore the
-  property and are unchanged.
-- **Hover tints keep their strength.** `--overlay-*` and `--border-emphasized` are mixed from the primary
-  ink, so the same percentage of a near-black ink would have deepened every hover and selection. In light mode
-  each step is re-weighed so its composite over white lands where the 2026-10 one did (4.8 / 9.1 / 12.7 / 17.2,
-  and 21.7 for the emphasized border), so only the text got darker; `.dark` restates the 2026-10 percentages.
+- **The stack is Codex's, verbatim** (`openai/codex`, `codex-rs/tui/assets/inline_visualization/visualize.css`):
+  `ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace`. `--font-mono`, the
+  terminal's `TERMINAL_FONT` and the knowledge graph's `CANVAS_MONO_FALLBACK` carry it, and
+  `styles/fontStacks.test.ts` keeps them one stack.
+- **SF Mono on macOS.** Under WebKit `ui-monospace` is SF Mono, Apple's system monospace, drawn to sit beside
+  the system text. Under Chromium none of the first three names resolves (measured with
+  `CSS.getPlatformFontsForNode`), so every code surface fell back to Menlo, the wider, heavier face the owner
+  saw. The desktop main process hands the renderer the installed `SFNSMono.ttf` and its italic
+  (`get-system-mono-font`), and `utils/systemMonoFont.ts` registers them under "SF Mono" with the FontFace API,
+  declared over the variable font's whole weight range. Nothing is bundled: it is the font macOS ships. Windows
+  (Consolas), Linux (Liberation Mono) and a `biorouter serve` browser follow the stack as Codex's does, and
+  Safari reaches SF Mono on its own.
+- **12 / 20, Codex's code size.** SF Mono at 13px read wide beside the 13 to 14px text, so code blocks, inline
+  code, tool arguments and output, and the terminal moved to 12px on the same 20px line (`--text-code`,
+  `CODE_FONT_SIZE`, `TERMINAL_FONT_SIZE`), still byte-identical to each other.
+- **Nothing waits for it.** The face registers in the background after launch; code draws in the fallback for
+  the moment the local file takes. A terminal opened before then re-measures its cells once the face is ready.
 

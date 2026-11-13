@@ -52,7 +52,7 @@ export const CANVAS_FONT_FALLBACK =
 
 /** The mono stack, resolved off a `font-mono` probe. Edge labels are machine tokens. */
 export const CANVAS_MONO_FALLBACK =
-  "ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, 'Liberation Mono', monospace";
+  "ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace";
 
 /**
  * The ink every canvas glyph, outline, edge and grid dot is drawn in.

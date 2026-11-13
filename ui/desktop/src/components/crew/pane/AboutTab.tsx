@@ -174,7 +174,7 @@ export function AboutTab({ canRename = false, className }: AboutTabProps) {
             {manageTools && (
               <Button
                 type="button"
-                variant="destructive"
+                variant="critical"
                 size="sm"
                 onClick={() =>
                   crew.openDialog({
@@ -189,7 +189,7 @@ export function AboutTab({ canRename = false, className }: AboutTabProps) {
             {canDelete && (
               <Button
                 type="button"
-                variant="destructive"
+                variant="critical"
                 size="sm"
                 onClick={() =>
                   crew.openDialog({

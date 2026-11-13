@@ -37,10 +37,13 @@ describe.each(['light', 'dark'] as const)('%s: the danger tone is ink, not red',
     expect(tokens['text-danger']).toBe(tokens['text-default']);
     // The fill a failed dot, a full gauge or a destructive button's tint mixes.
     expect(tokens['background-danger']).toBe(tokens['text-muted']);
-    // The invalid edge keeps the family's red: it is the one red, so it must
-    // not collapse into the ink either.
+    // The invalid edge keeps the family's red: it is one of the two reds left,
+    // so it must not collapse into the ink either.
     expect(tokens['border-danger']).not.toBe(tokens['text-default']);
     expect(tokens['border-danger']).not.toBe(tokens['text-muted']);
+    // The danger zone's button keeps the family red too (owner, 2026-11-12).
+    expect(tokens['text-critical']).not.toBe(tokens['text-default']);
+    expect(tokens['background-critical']).not.toBe(tokens['text-muted']);
   });
 });
 
@@ -117,6 +120,15 @@ describe('the one red left is the invalid edge', () => {
       /border-border-danger|var\(--border-danger\)/.test(text)
     ).map(({ rel }) => rel);
     expect(users.filter((rel) => !INVALID_EDGE_FILES.has(rel))).toEqual([]);
+  });
+
+  it('only Button `critical`, the danger zone button, wears the critical red', () => {
+    const users = FILES.filter(({ text }) => /background-critical|text-critical/.test(text)).map(
+      ({ rel }) => rel
+    );
+    expect(
+      users.filter((rel) => !['styles/main.css', 'components/ui/button.tsx'].includes(rel))
+    ).toEqual([]);
   });
 
   it('no chrome reaches for a red palette utility or the raw red ramp', () => {

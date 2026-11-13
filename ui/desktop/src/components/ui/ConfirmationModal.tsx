@@ -38,7 +38,14 @@ export function ConfirmationModal({
   confirmLabel?: string;
   cancelLabel?: string;
   isSubmitting?: boolean; // To handle debounce state
-  confirmVariant?: 'default' | 'destructive' | 'outline' | 'secondary' | 'ghost' | 'link';
+  confirmVariant?:
+    | 'default'
+    | 'destructive'
+    | 'critical'
+    | 'outline'
+    | 'secondary'
+    | 'ghost'
+    | 'link';
   /**
    * Rendered between the message and the buttons — for the one line a caller must show in place,
    * such as the refusal of the action being confirmed, so it lands in the dialog rather than
