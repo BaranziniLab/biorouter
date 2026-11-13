@@ -17,13 +17,13 @@ import {
   FooterCard,
   FooterCardDetail,
   FooterCardList,
-  FooterCardNote,
   FooterCardRoot,
   FooterCardRow,
   FooterCardSection,
   FooterCardTrigger,
   FooterCardValue,
 } from './FooterCard';
+import { FooterCardHelpSection } from './FooterCardHelpSection';
 import { useFooterCard } from './useFooterCard';
 import { isUnmeteredDecisionProvider } from '../decisions/decisionWire';
 import { UsageLimitSection } from './UsageLimitSection';
@@ -340,13 +340,18 @@ function CostFigure({
         testId="cost-card"
       >
         {summary && label !== null && (
-          <FooterCardSection label={COST_CARD_COPY.section}>
+          // A partial total says so in its label, "Estimated cost of this chat", and why it is an
+          // estimate in the InfoTip beside it, rather than in a note under the figures.
+          <FooterCardHelpSection
+            label={
+              summary.estimate.partial ? COST_CARD_COPY.sectionEstimated : COST_CARD_COPY.section
+            }
+            about={COST_CARD_COPY.aboutEstimate}
+            help={summary.estimate.partial ? COST_CARD_COPY.partialNote : undefined}
+          >
             <FooterCardValue>{label}</FooterCardValue>
             <TokenDetail lines={COST_CARD_COPY.tokens(summary)} />
-            {summary.estimate.partial && (
-              <FooterCardNote>{COST_CARD_COPY.partialNote}</FooterCardNote>
-            )}
-          </FooterCardSection>
+          </FooterCardHelpSection>
         )}
         {summary && summary.models.length > 0 && (
           <FooterCardSection label={COST_CARD_COPY.byModel} labelId={byModelId}>

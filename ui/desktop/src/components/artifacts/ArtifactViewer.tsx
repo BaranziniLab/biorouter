@@ -82,6 +82,7 @@ import {
 } from '../ui/dropdown-menu';
 import { Button } from '../ui/button';
 import { InfoTip } from '../ui/info-tip';
+import { Disclosure } from '../ui/disclosure';
 import { SegmentedControl } from '../ui/segmented-control';
 import { artifactCardKind } from '../MCPUIResourceRenderer';
 import { ENTITY_ICONS } from '../icons/entity-icons';
@@ -100,7 +101,10 @@ import {
   PreviewSkeleton,
 } from './PreviewBar';
 import './preview-panel.css';
-import AnnotationOverlay, { type SelectedRegion } from './AnnotationOverlay';
+import AnnotationOverlay, {
+  ANNOTATION_MODIFIERS_HINT,
+  type SelectedRegion,
+} from './AnnotationOverlay';
 import DelimitedTable from './DelimitedTable';
 import { annotateBrowserReason } from './captureOnBrowser';
 import DocumentPreview from './DocumentPreview';
@@ -1853,6 +1857,7 @@ export default function ArtifactViewer({
             {isAnnotating && !annotateInline && (
               <PreviewIconButton
                 label={PREVIEW_COPY.cancelAnnotate}
+                hint={annotateHint(PREVIEW_COPY.cancelAnnotate)}
                 data-testid="artifact-annotate-cancel"
                 aria-pressed={true}
                 onClick={() => void toggleAnnotation()}
@@ -1893,6 +1898,9 @@ export default function ArtifactViewer({
               // being picked it is the pressed tool, and pressing it again cancels.
               <PreviewIconButton
                 label={isAnnotating ? PREVIEW_COPY.cancelAnnotate : PREVIEW_COPY.annotate}
+                hint={annotateHint(
+                  isAnnotating ? PREVIEW_COPY.cancelAnnotate : PREVIEW_COPY.annotate
+                )}
                 data-testid={isAnnotating ? 'artifact-annotate-cancel' : 'artifact-annotate'}
                 aria-pressed={isAnnotating ? true : undefined}
                 onClick={() => void toggleAnnotation()}
@@ -2038,6 +2046,16 @@ export default function ArtifactViewer({
 }
 
 /**
+ * The camera button's tooltip: its name, then the modifier keys the region overlay honours. They
+ * used to be a five-item list in the pill over the preview; the pill now says only the action and
+ * the way out, and the overlay takes no pointer events, so the keys live on the button that starts
+ * and cancels the mode (owner, 2026-11-13).
+ */
+function annotateHint(label: string): string {
+  return `${label}. ${ANNOTATION_MODIFIERS_HINT}`;
+}
+
+/**
  * Friendly empty-state for a file that could not be read (#36). The main
  * process already maps errno codes to human-readable messages (see
  * utils/artifactFileErrors.ts); this renders them as a proper centered state
@@ -2054,17 +2072,58 @@ function ArtifactErrorState({
   code?: string;
 }) {
   const Icon = code === 'EACCES' || code === 'EPERM' ? Lock : FileX;
-  // An error stays visible (principle 2): the icon, the title and the daemon's
-  // own sentence. The path is a machine string, so it is the title's tooltip.
+  const { line, folded } = errorStateLine(message);
+  // An error stays visible (principle 2): the icon, the title and the first
+  // sentence of the message. The path is a machine string, so it is the title's
+  // tooltip. A long message (a library's own error, a raw errno string) keeps
+  // that sentence in view, clamped to two lines, and folds the whole text under
+  // Details (owner, 2026-11-13: one line up front, the rest folded).
   return (
     <div data-testid="artifact-error-state" className="br-preview-state">
       <Icon className="h-5 w-5 text-text-muted" aria-hidden="true" />
       <div className="text-label text-text-default" title={path}>
         {PREVIEW_COPY.fileNotAvailable}
       </div>
-      <p className="br-preview-state__line text-body text-text-muted">{message}</p>
+      <p
+        className={cn(
+          'br-preview-state__line text-body text-text-muted',
+          folded && 'line-clamp-2 [overflow-wrap:anywhere]'
+        )}
+      >
+        {line}
+      </p>
+      {folded && (
+        <Disclosure label={ERROR_DETAILS_LABEL}>
+          <p
+            data-testid="artifact-error-details"
+            className="br-preview-state__line whitespace-pre-wrap text-left text-supporting text-text-muted [overflow-wrap:anywhere]"
+          >
+            {message}
+          </p>
+        </Disclosure>
+      )}
     </div>
   );
+}
+
+/** The disclosure under a long error message. */
+export const ERROR_DETAILS_LABEL = 'Details';
+
+/** Up to this, an error message is the state's line as it is; past it, its first sentence is. */
+const ERROR_LINE_MAX = 120;
+
+/**
+ * The line an error state shows of its message: the whole message when it is short (every
+ * message Biorouter writes itself, such as "This file was moved, renamed, or deleted, so it
+ * can't be previewed anymore."), otherwise its first line cut at its first sentence, with
+ * `folded` set so the whole text goes under a disclosure.
+ */
+function errorStateLine(message: string): { line: string; folded: boolean } {
+  const whole = message.trim();
+  if (whole.length <= ERROR_LINE_MAX) return { line: whole, folded: false };
+  const firstLine = (whole.split(/\r?\n/, 1)[0] ?? '').trim();
+  const end = firstLine.search(/[.!?](\s|$)/);
+  return { line: end >= 0 ? firstLine.slice(0, end + 1) : firstLine, folded: true };
 }
 
 /**

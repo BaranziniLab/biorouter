@@ -81,8 +81,9 @@ function makePaneTitle(workingDir: string | undefined, index: number) {
 }
 
 // xterm measures glyph widths itself, so it cannot read `var(--font-mono)`.
-// This stack must stay byte-identical to --font-mono in styles/main.css, so a
-// command pasted from a chat code block renders in exactly the same face.
+// This stack must stay the same list as --font-mono in styles/main.css, family
+// for family and in order, so a command pasted from a chat code block renders in
+// exactly the same face. `styles/fontStacks.test.ts` holds the two together.
 const TERMINAL_FONT =
   'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
 const TERMINAL_FONT_SIZE = 12;
@@ -339,6 +340,10 @@ const TerminalPaneView: React.FC<{
     if (measuredBeforeCodeFace) {
       void loadSystemMonoFont().then((registered) => {
         if (!registered || disposed) return;
+        // Deliberate, never rendered: xterm's options service fires a change (and re-measures
+        // its cells) only when the value differs, so setting TERMINAL_FONT again alone would do
+        // nothing. The bare `monospace` lasts until the next line, inside one task, so no frame
+        // is ever painted in it.
         term.options.fontFamily = 'monospace';
         term.options.fontFamily = TERMINAL_FONT;
         flushResize();

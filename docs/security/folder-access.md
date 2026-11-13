@@ -29,6 +29,14 @@ An absolute file path or a connector's returned result path does not itself gran
   chat to retry. See
   [when nobody answers a card](permission-modes.md#when-nobody-answers-a-card).
 
+The approval card in the chat asks one question, "Allow access to this external folder?", and
+shows the folder under it. The info icon beside the question says, in two sentences, what access
+is asked for and what **Allow once** covers, then when a session grant ends. The files the
+operation touches fold under **Files in this operation**, with their count. Each button says what
+it does when you point at it, and a screen reader hears the same words as the button's
+description. If a browser approval is refused without a reason, the card says "Folder approval
+was refused." and its info icon says to check the approval key and try again.
+
 A symbolic link that leaves the workspace follows the same approval flow. The approval card
 discloses both the requested path and its discovered actual target. The pending operation uses a
 dispatch-scoped alias and retained directory capability; changing the link while the card is
@@ -51,14 +59,19 @@ has two sections:
 
 - **Working folder** shows where the folder is. On Home, and in a chat that has no messages
   yet, a **Choose folder…** button in this section picks a different working folder. Once the
-  chat has messages its working folder is fixed, and the section says so instead.
+  chat has messages its working folder is fixed, and the section says so instead. The info icon
+  beside the **Working folder** label says what folder approval covers: the file editor, file
+  analysis and image tools ask before they use another folder, and shell commands and document
+  tools do not ask.
 - **Other approved folders**, in a chat only, lists every other folder allowed for this
   session. Each one shows its access (read only, or read and write), whether it includes
-  subfolders, and a **Revoke** button. Folders allowed once are not listed, because that
-  approval covers only its pending operation.
+  subfolders, and a **Revoke** button. The info icon beside its label says when a session grant
+  ends, and that folders allowed once are not listed, because that approval covers only its
+  pending operation.
 
-The card ends by saying what folder approval covers. The file editor, file analysis and image
-tools ask before they use another folder. Shell commands and document tools do not ask.
+The card shows only the folders and their buttons. What explains them is in those info icons:
+point at one, or move focus to it with Tab, to read its words, and click it to keep them open.
+A screen reader hears the same words as the icon's description.
 
 Every folder in the card is written in the card's ordinary text, in one colour. In the desktop
 app, `~` stands for your home folder, so a folder in it reads `~/Desktop/BioRouter`, and a folder
@@ -76,8 +89,11 @@ monospaced face, `~` never stands in for it, and it still wraps after a separato
 - Click the folder name, or press Enter or Space while it has focus, to keep the card open.
   This works in every state, including Home and a chat before its first message, and the name
   then stays shaded until the card closes. A second click closes it. Opening it from the
-  keyboard also moves focus into the card, so Tab reaches **Choose folder…** or each
-  **Revoke** button. A press inside the card keeps it open too.
+  keyboard also moves focus into the card. The first Tab stop there is the info icon beside
+  **Working folder**, whose words then show; further Tabs reach **Choose folder…**, the info icon
+  beside **Other approved folders** and each **Revoke** button. While an info icon's words are
+  showing, the first Escape closes only them and the card stays open. A press inside the card
+  keeps it open too.
 - A kept card stays open when the pointer moves away, when the page scrolls and when you switch
   to another window. Escape, or a click outside the card, closes it, as does focus moving to
   something else in the page. Escape, and Shift+Tab from the card itself, return focus to the
@@ -95,7 +111,8 @@ monospaced face, `~` never stands in for it, and it still wraps after a separato
   you have kept a card open, pointing at another item opens nothing, so the kept card and
   anything you typed in it stay. Click the other item, or Tab to it, to switch.
 - In a browser, the Other approved folders section also holds the **Folder approval key**
-  field once the chat has a grant to revoke. See [Browser setup](#browser-setup).
+  field once the chat has a grant to revoke. Where that key comes from is the info icon beside
+  the field's label, and the field's description. See [Browser setup](#browser-setup).
 
 Revocation is checked by operations that already hold a file capability as well as
 future operations. It does not undo a completed edit. Read-only permission never silently
@@ -157,7 +174,8 @@ A browser or a manually selected external backend remains a trusted service-sess
 Its grants are owned by that backend, not isolated by the new desktop lifetime protocol. To end
 a service grant, revoke it from the working folder's card beneath the composer, delete its chat,
 or restart the backend. The folder approval card and the working folder's card both state this
-backend lifetime, including for the environment-selected external development backend.
+backend lifetime in their info icons, including for the environment-selected external development
+backend.
 The primary workspace and ordinary in-workspace edits do not need additional folder approval.
 
 On Windows, an idle captured directory can move while its own identity handle remains open.

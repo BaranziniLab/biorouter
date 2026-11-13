@@ -3,6 +3,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { Package } from './icons/app-icons';
 import { ModalShell } from './ModalShell';
 import { Button } from './ui/button';
+import { CopyField } from './ui/copy-field';
 import { Disclosure } from './ui/disclosure';
 import { Field } from './ui/field';
 import { InfoTip } from './ui/info-tip';
@@ -66,6 +67,21 @@ interface Props {
 }
 
 const NO_LOCAL_PATH_MESSAGE = COPY.noLocalPath;
+
+/**
+ * A description's first sentence and the rest. The summary shows the first sentence and folds
+ * the rest under "Read more" (owner, 2026-11-13: one line up front, the detail a click away), so a
+ * bundle with a long description no longer stacks a paragraph above the Install button. A
+ * boundary is a stop followed by space and a capital, a digit or an opening mark, so "e.g. the
+ * graph" and "v1.2" stay whole.
+ */
+function splitFirstSentence(text: string): { lead: string; rest: string } {
+  const trimmed = text.trim();
+  const match = /[.!?](\s+)(?=[A-Z0-9"'([])/.exec(trimmed);
+  if (!match) return { lead: trimmed, rest: '' };
+  const end = match.index + 1;
+  return { lead: trimmed.slice(0, end), rest: trimmed.slice(end).trim() };
+}
 
 export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, origin }: Props) {
   const installOrigin: BrxtInstallOrigin = origin ?? { kind: 'local-file' };
@@ -347,6 +363,7 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
     </div>
   );
 
+  const description = splitFirstSentence(manifest?.description ?? '');
   const manifestSummary = manifest && !error && (
     <section className="br-brxt-summary">
       <p className="text-supporting text-text-muted">
@@ -360,31 +377,63 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath, orig
         {' · '}
         {COPY.requiredVars(requiredVars.length, optionalVars.length)}
       </p>
-      <p className="br-brxt-summary-desc text-body text-text-default">{manifest.description}</p>
+      {/* One sentence up front; a longer description folds the rest under "Read more". */}
+      <p className="br-brxt-summary-desc text-body text-text-default">{description.lead}</p>
+      {description.rest && (
+        <Disclosure label={COPY.readMore}>
+          <p className="text-body text-text-default">{description.rest}</p>
+        </Disclosure>
+      )}
+      {/* The skills a bundle carries, folded: the count is already in the fact line above, and a
+          paragraph per skill made the summary a stack of text above the Install button. */}
       {skillsPreview.length > 0 && (
         <div className="br-brxt-skills">
-          <p className="text-supporting text-text-muted">{COPY.skillsIncluded}</p>
-          {skillsPreview.map((skill) => (
-            <p key={skill.slug} className="text-supporting text-text-muted">
-              · <span className="text-text-default">{skill.name}</span>: {skill.description}
-            </p>
-          ))}
+          <Disclosure label={COPY.skillsIncluded(skillsPreview.length)}>
+            <div className="flex flex-col gap-0.5">
+              {skillsPreview.map((skill) => (
+                <p key={skill.slug} className="text-supporting text-text-muted">
+                  <span className="text-text-default">{skill.name}</span>
+                  {skill.description ? `: ${skill.description}` : ''}
+                </p>
+              ))}
+            </div>
+          </Disclosure>
         </div>
       )}
     </section>
   );
 
-  const dependencyBanner = error && (
-    <DependencyErrorBanner
-      error={error}
-      failure={{
-        kind: 'extension',
-        name: manifest?.name ?? 'extension',
-        displayName: manifest?.display_name ?? manifest?.name,
-        command: 'uv sync',
-      }}
-    />
-  );
+  const dependencyBanner =
+    error === NO_LOCAL_PATH_MESSAGE ? (
+      // A refusal, not a dependency failure: the reason stays visible and a debugging chat
+      // cannot help, so there is no Debug button. How to install it on the daemon's machine folds
+      // under it, with the command as a value to copy rather than literal backticks in a sentence.
+      <div className="flex flex-col gap-1">
+        <DependencyErrorBanner
+          error={error}
+          hideDebugAction
+          failure={{ kind: 'extension', name: 'extension', command: 'install' }}
+        />
+        <Disclosure label={COPY.noLocalPathHow}>
+          <div className="flex flex-col gap-2">
+            <p className="text-supporting text-text-muted">{COPY.noLocalPathSteps}</p>
+            <CopyField value={COPY.noLocalPathCommand} label={COPY.noLocalPathCommandLabel} />
+          </div>
+        </Disclosure>
+      </div>
+    ) : (
+      error && (
+        <DependencyErrorBanner
+          error={error}
+          failure={{
+            kind: 'extension',
+            name: manifest?.name ?? 'extension',
+            displayName: manifest?.display_name ?? manifest?.name,
+            command: 'uv sync',
+          }}
+        />
+      )
+    );
 
   // The titles say what the dialog is doing; the second line, where there is one, is a fact (where
   // it came from), never an instruction. "Install a Biorouter extension bundle (.brxt file)" and

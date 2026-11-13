@@ -60,11 +60,30 @@ describe('folder-scoped browser approval', () => {
     const about = screen.getByRole('button', { name: 'About this folder access' });
     expect(about).toHaveAccessibleDescription(/backend restarts/);
     expect(about).not.toHaveAccessibleDescription(/desktop app quits/);
+    // Two sentences at most (design.md 9.16): the scope with Allow once, then the lifetime.
+    expect(about).toHaveAccessibleDescription(
+      /^Read-only access, including subfolders; Allow once covers only this operation's files\. Session grants expire/
+    );
+    expect(about.getAttribute('aria-describedby')).toBeTruthy();
+    const help = document.getElementById(about.getAttribute('aria-describedby') ?? '');
+    expect(help?.textContent?.match(/[.!?](\s|$)/g)).toHaveLength(2);
     const key = screen.getByLabelText('Folder approval key');
     expect(key).toHaveAccessibleName('Folder approval key');
     expect(key).toHaveAccessibleDescription(/separate key set with/);
     const allow = screen.getByRole('button', { name: 'Allow for this session' });
     expect(allow).toBeDisabled();
+    // Each decision says what it does on hover, and as its accessible description, so no
+    // paragraph above the buttons is needed to tell them apart (owner, 2026-11-13).
+    expect(allow).toHaveAccessibleDescription(/until the session grant expires/);
+    expect(screen.getByRole('button', { name: 'Allow once' })).toHaveAccessibleDescription(
+      /only its listed files, this time only/
+    );
+    expect(screen.getByRole('button', { name: 'Deny' })).toHaveAccessibleDescription(
+      /Refuses this folder/
+    );
+    expect(screen.getByRole('button', { name: 'Cancel operation' })).toHaveAccessibleDescription(
+      /without recording an answer/
+    );
     fireEvent.change(key, { target: { value: 'human-held-folder-key' } });
     fireEvent.click(allow);
     fireEvent.click(allow);
@@ -99,6 +118,21 @@ describe('folder-scoped browser approval', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Allow once' }));
     await waitFor(() => expect(mocks.confirm).toHaveBeenCalledTimes(2));
+  });
+
+  // An error that just happened keeps its first line; what to check is its info icon.
+  it('says a refusal the daemon did not explain in one line, with what to check on hover', async () => {
+    mocks.confirm.mockResolvedValueOnce({ error: { reason: 'unproven' } });
+    show();
+    fireEvent.change(screen.getByLabelText('Folder approval key'), {
+      target: { value: 'wrong-key' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Allow once' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.querySelector('p')?.firstChild?.textContent).toBe('Folder approval was refused.');
+    expect(screen.getByRole('button', { name: 'About this refusal' })).toHaveAccessibleDescription(
+      /Check the separate approval key and try again; this operation remains pending\./
+    );
   });
 
   it('can decline without a key and cannot use the folder channel for unrelated protected actions', async () => {

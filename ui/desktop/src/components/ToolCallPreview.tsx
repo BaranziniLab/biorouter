@@ -92,7 +92,11 @@ function PreviewFrame({
 }: {
   icon: React.ReactNode;
   title: string;
-  /** A path: set in the code face. A label ("Command") stays in the UI face. */
+  /**
+   * A path: the file the call writes, an argument read character by character, so it is set in
+   * the code role (`font-mono text-code`, design.md D-42). A label ("Command") stays in the UI
+   * face.
+   */
   machineTitle?: boolean;
   meta?: React.ReactNode;
   truncated: boolean;
@@ -110,7 +114,7 @@ function PreviewFrame({
         </span>
         {/* A long path truncates; the whole path stays one hover away. */}
         <span
-          className={machineTitle ? 'truncate font-mono' : 'truncate'}
+          className={machineTitle ? 'truncate font-mono text-code' : 'truncate'}
           title={machineTitle ? title : undefined}
         >
           {title}
@@ -237,7 +241,8 @@ function ArgumentFields({ fields }: { fields: Array<[string, unknown]> }) {
     <dl className="br-tool-preview-fields">
       {fields.map(([key, value]) => (
         <div key={key} data-testid="tool-preview-field">
-          <dt className="font-mono text-supporting text-text-muted">{key}</dt>
+          {/* The argument's name is an identifier, so it is code: the code role, muted. */}
+          <dt className="font-mono text-code text-text-muted">{key}</dt>
           <dd
             data-testid={`tool-preview-value-${key}`}
             className="br-tool-preview-text font-mono text-code text-text-default"
@@ -313,14 +318,15 @@ export function FolderAccessDetails({ preview }: { preview: FolderAccessPreview 
 
 /**
  * The folder-access card's helper text, behind the info icon beside its question: what
- * the grant covers and how long a session grant lasts. Kept to two sentences.
+ * the grant covers, then how long a session grant lasts. Two sentences, the InfoTip's
+ * limit (design.md 9.16), so the scope and Allow once share the first one.
  */
 export function folderAccessHelp(preview: { access: string; onceDescendants?: boolean }): string {
   const access = preview.access.charAt(0).toUpperCase() + preview.access.slice(1);
   const once = preview.onceDescendants
-    ? 'Allow once covers this folder and its subfolders for this operation only.'
-    : 'Allow once covers only the files in this operation.';
-  return `${access} access, including subfolders. ${once} ${folderAccessLifetime()}`;
+    ? 'Allow once covers this folder and its subfolders for this operation.'
+    : "Allow once covers only this operation's files.";
+  return `${access} access, including subfolders; ${once} ${folderAccessLifetime()}`;
 }
 
 /** Render whatever the backend resolved this call into. */

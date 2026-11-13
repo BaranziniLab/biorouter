@@ -1,10 +1,13 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useId, useRef } from 'react';
+import type { ComponentProps } from 'react';
 import PermissionModal from './settings/permission/PermissionModal';
 import { Check, Clock, X, AlertTriangle } from './icons/app-icons';
 import { confirmToolAction, ActionRequired } from '../api';
 import { Button } from './ui/button';
 import { folderAccessHelp, ToolCallPreview, ToolRiskBadge } from './ToolCallPreview';
+import { Disclosure } from './ui/disclosure';
 import { InfoTip } from './ui/info-tip';
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
 import { TranscriptRow } from './TranscriptRow';
 import {
   APPROVAL_COPY,
@@ -22,6 +25,7 @@ import {
   requesterOnPreview,
   useFolderRequester,
 } from './folderAccessCopy';
+import { fitsInfoTip, foldForHelp } from '../utils/proseFold';
 
 /**
  * What this card says instead of offering three buttons that cannot work.
@@ -66,6 +70,185 @@ const LEADING_WARNING_GLYPH = /^\s*\u26A0\uFE0F?\s*/u;
 function findingText(prompt: string): string {
   const stripped = prompt.replace(LEADING_WARNING_GLYPH, '');
   return stripped.length > 0 ? stripped : prompt;
+}
+
+/**
+ * The finding beside its warning triangle, folded to the one line a person needs (owner,
+ * 2026-11-13: no solid chunks of text; design.md 9.14).
+ *
+ * `approval_prompt_for_request` joins every inspector's reason with a blank line, and a reason
+ * can run to several sentences. The first sentence of the first reason is the security fact and
+ * stays on the line. A short rest of that reason goes behind the info icon beside it; anything
+ * longer, and every further reason, goes into a Details disclosure under the line, in order and
+ * word for word, so nothing the inspectors said is lost.
+ */
+function FindingLine({ prompt }: { prompt: string }) {
+  const text = findingText(prompt);
+  const reasons = text
+    .split(/\n\s*\n/)
+    .map((reason) => reason.trim())
+    .filter(Boolean);
+  const [first = text, ...others] = reasons;
+  const { lead, tip, details } = foldForHelp(first);
+  const inlineTip = tip && others.length === 0 ? tip : '';
+  const folded = [inlineTip ? '' : tip, details, ...others].filter(Boolean);
+  return (
+    <div data-testid="tool-security-finding" className="flex min-w-0 flex-col gap-1">
+      <div className="flex items-start gap-2 text-body text-text-default">
+        <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-text-warning" />
+        <span className="min-w-0">
+          {lead}
+          {inlineTip ? (
+            <>
+              {' '}
+              <InfoTip label={APPROVAL_COPY.findingName} help={inlineTip} />
+            </>
+          ) : null}
+        </span>
+      </div>
+      {folded.length > 0 && (
+        <div className="pl-6">
+          <Disclosure
+            label={
+              others.length > 0
+                ? APPROVAL_COPY.findingReasons(reasons.length)
+                : APPROVAL_COPY.findingDetails
+            }
+          >
+            <div className="flex flex-col gap-2 text-body text-text-default">
+              {folded.map((part, index) => (
+                <p key={index} className="min-w-0 [overflow-wrap:anywhere]">
+                  {part}
+                </p>
+              ))}
+            </div>
+          </Disclosure>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A Crew person card's finding (AO-12): the daemon writes a summary line ("Post this in #general in
+ * lab on leo as you"), then a line per fact (who it affects, what cannot be undone, a privacy
+ * crossing). The summary is the line beside the triangle. The first fact's first sentence stays on
+ * its own line under it, because it is usually the consequence the person is deciding on (design.md
+ * 9.16: one line of consequence stays visible). The rest of the facts go behind the info icon when
+ * they fit one, and under Details otherwise, each on its own line and word for word.
+ */
+function HeadedFindingLine({ prompt }: { prompt: string }) {
+  const [summary = '', ...facts] = findingText(prompt)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const [firstFact = '', ...otherFacts] = facts;
+  const { lead: factLead, tip, details } = foldForHelp(firstFact);
+  const rest = [tip, details, ...otherFacts].filter(Boolean);
+  const restText = rest.join(' ');
+  const inlineTip = rest.length > 0 && fitsInfoTip(restText) ? restText : '';
+  return (
+    <div data-testid="tool-security-finding" className="flex min-w-0 flex-col gap-1">
+      <div className="flex items-start gap-2 text-body text-text-default">
+        <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-text-warning" />
+        <span data-testid="tool-security-finding-summary" className="min-w-0">
+          {summary}
+        </span>
+      </div>
+      {factLead ? (
+        <p className="min-w-0 pl-6 text-body text-text-default [overflow-wrap:anywhere]">
+          {factLead}
+          {inlineTip ? (
+            <>
+              {' '}
+              <InfoTip label={APPROVAL_COPY.findingName} help={inlineTip} />
+            </>
+          ) : null}
+        </p>
+      ) : null}
+      {rest.length > 0 && !inlineTip && (
+        <div className="pl-6">
+          <Disclosure label={APPROVAL_COPY.findingDetails}>
+            <div className="flex flex-col gap-2 text-body text-text-default">
+              {rest.map((part, index) => (
+                <p key={index} className="min-w-0 [overflow-wrap:anywhere]">
+                  {part}
+                </p>
+              ))}
+            </div>
+          </Disclosure>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A refusal or an error, as one line with the rest behind an info icon or a Details disclosure.
+ * `help`, when given, is the info icon's text for a line the app wrote itself; otherwise the line
+ * is the daemon's sentence, folded after its first sentence when it runs past one line. A line
+ * that fits stays whole: the first line of a refusal or an error is never hidden.
+ */
+function FoldedNotice({
+  text,
+  help,
+  name,
+  role,
+  className,
+}: {
+  text: string;
+  help?: string;
+  name: string;
+  role: 'status' | 'alert';
+  className: string;
+}) {
+  const { lead, tip, details } = help ? { lead: text, tip: help, details: '' } : foldForHelp(text);
+  return (
+    <div role={role} className={className}>
+      <p className="min-w-0 [overflow-wrap:anywhere]">
+        {lead}
+        {tip ? (
+          <>
+            {' '}
+            <InfoTip label={name} help={tip} />
+          </>
+        ) : null}
+      </p>
+      {details ? (
+        <Disclosure label={APPROVAL_COPY.findingDetails}>
+          <p className="min-w-0 [overflow-wrap:anywhere]">{details}</p>
+        </Disclosure>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * A decision on the folder-access card, with what it does on hover (the app's label tooltip) and
+ * as its accessible description, so the consequence is in reach at the moment of the press
+ * without a paragraph above the buttons.
+ */
+function DecisionButton({
+  help,
+  children,
+  ...props
+}: ComponentProps<typeof Button> & { help: string }) {
+  const helpId = useId();
+  return (
+    <>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button {...props} aria-describedby={helpId}>
+            {children}
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent>{help}</TooltipContent>
+      </Tooltip>
+      <span id={helpId} className="sr-only">
+        {help}
+      </span>
+    </>
+  );
 }
 
 const ALLOW_ONCE = 'allow_once';
@@ -239,9 +422,7 @@ export default function ToolConfirmation({
             ? response.error.error
             : undefined;
         setConfirmationError(
-          typeof explanation === 'string'
-            ? explanation
-            : 'Folder approval was refused. Check the separate approval key and try again; this operation remains pending.'
+          typeof explanation === 'string' ? explanation : APPROVAL_COPY.folder.refused
         );
         return;
       }
@@ -340,24 +521,19 @@ export default function ToolConfirmation({
   // (R2-3).
   const securityFinding = !folderAccess && typeof prompt === 'string' && prompt.trim().length > 0;
 
-  // The finding is a security fact, so it stays visible on every state of the
-  // card: a warning line, not a tinted band (a band inside a card is a box in
-  // a box). Only the triangle wears the warning hue; the sentence is the
-  // primary ink, because a paragraph in amber reads as an alarm and reads worse
-  // (owner, 2026-11-12: permission prompts ask for attention without alarm;
-  // design.md 9.14).
+  // The finding is a security fact, so its first line stays visible on every
+  // state of the card: a warning line, not a tinted band (a band inside a card
+  // is a box in a box). Only the triangle wears the warning hue; the sentence is
+  // the primary ink, because a paragraph in amber reads as an alarm and reads
+  // worse (owner, 2026-11-12: permission prompts ask for attention without
+  // alarm; design.md 9.14). The rest folds (`FindingLine`). A Crew card's prompt is a summary
+  // line, then a line per fact, and folds by its lines (`HeadedFindingLine`).
   const findingLine = securityFinding ? (
-    <div
-      data-testid="tool-security-finding"
-      className="flex items-start gap-2 text-body text-text-default"
-    >
-      <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-text-warning" />
-      {/* A Crew card's summary and the lines under it are separate lines (live QA: "as you It
-          can then read…" ran together). */}
-      <span className={crewPerson ? 'min-w-0 whitespace-pre-line' : 'min-w-0'}>
-        {findingText(prompt)}
-      </span>
-    </div>
+    crewPerson ? (
+      <HeadedFindingLine prompt={prompt} />
+    ) : (
+      <FindingLine prompt={prompt} />
+    )
   ) : null;
 
   // Expired: the window closed before anyone answered, so the call gave up and
@@ -491,17 +667,71 @@ export default function ToolConfirmation({
           </div>
         )}
         {cannotApprove ? (
-          // A refusal, so it stays visible (principle 2).
-          <p role="status" className="text-body text-text-muted">
-            {cannotApprove}
-          </p>
+          // A refusal, so its line stays visible (principle 2); why it cannot be
+          // answered here is the info icon beside it.
+          <FoldedNotice
+            role="status"
+            className="text-body text-text-muted"
+            text={cannotApprove}
+            help={
+              cannotApprove === BROWSER_CANNOT_APPROVE
+                ? APPROVAL_COPY.browserCannotApproveWhy
+                : undefined
+            }
+            name={APPROVAL_COPY.browserCannotApproveName}
+          />
+        ) : folderAccess && preview?.kind === 'folderAccess' ? (
+          // Each decision says what it does on hover, so the card needs no
+          // paragraph above the buttons (owner, 2026-11-13).
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <DecisionButton
+              type="button"
+              size="sm"
+              variant="default"
+              disabled={isSending || (browserFolderAccess && !folderApprovalKey)}
+              onClick={() => handleButtonClick(ALLOW_ONCE)}
+              help={APPROVAL_COPY.folder.allowOnceHelp(Boolean(preview.onceDescendants))}
+            >
+              {APPROVAL_COPY.allowOnce}
+            </DecisionButton>
+            <DecisionButton
+              type="button"
+              size="sm"
+              variant="secondary"
+              disabled={isSending || (browserFolderAccess && !folderApprovalKey)}
+              onClick={() => handleButtonClick(ALLOW_SESSION)}
+              help={APPROVAL_COPY.folder.allowSessionHelp}
+            >
+              {FOLDER_ACCESS_COPY.allowSession}
+            </DecisionButton>
+            <DecisionButton
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={isSending}
+              onClick={() => handleButtonClick(DENY)}
+              help={APPROVAL_COPY.folder.denyHelp}
+            >
+              {APPROVAL_COPY.deny}
+            </DecisionButton>
+            <DecisionButton
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={isSending}
+              onClick={() => handleButtonClick(CANCEL)}
+              help={APPROVAL_COPY.folder.cancelHelp}
+            >
+              {FOLDER_ACCESS_COPY.cancel}
+            </DecisionButton>
+          </div>
         ) : (
           <div className="flex flex-wrap items-center justify-end gap-2">
             <Button
               type="button"
               size="sm"
               variant="default"
-              disabled={isSending || (browserFolderAccess && !folderApprovalKey)}
+              disabled={isSending}
               onClick={() => handleButtonClick(ALLOW_ONCE)}
             >
               {readConsent ? APPROVAL_COPY.readConsent.allow : APPROVAL_COPY.allowOnce}
@@ -509,15 +739,15 @@ export default function ToolConfirmation({
             {/* Only offer "Always allow" when there's no security finding. A
                 permanent grant is not something to decide from a card that
                 exists because an inspector objected. */}
-            {(folderAccess || !securityFinding) && (
+            {!securityFinding && (
               <Button
                 type="button"
                 size="sm"
                 variant="secondary"
-                disabled={isSending || (browserFolderAccess && !folderApprovalKey)}
-                onClick={() => handleButtonClick(folderAccess ? ALLOW_SESSION : ALWAYS_ALLOW)}
+                disabled={isSending}
+                onClick={() => handleButtonClick(ALWAYS_ALLOW)}
               >
-                {folderAccess ? FOLDER_ACCESS_COPY.allowSession : APPROVAL_COPY.alwaysAllow}
+                {APPROVAL_COPY.alwaysAllow}
               </Button>
             )}
             <Button
@@ -529,23 +759,22 @@ export default function ToolConfirmation({
             >
               {APPROVAL_COPY.deny}
             </Button>
-            {folderAccess && (
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                disabled={isSending}
-                onClick={() => handleButtonClick(CANCEL)}
-              >
-                {FOLDER_ACCESS_COPY.cancel}
-              </Button>
-            )}
           </div>
         )}
         {confirmationError && (
-          <p role="alert" className="text-supporting text-text-danger">
-            {confirmationError}
-          </p>
+          // An error that just happened keeps its first line visible; the
+          // folder card's own fallback says what to check behind its info icon.
+          <FoldedNotice
+            role="alert"
+            className="text-supporting text-text-danger"
+            text={confirmationError}
+            help={
+              confirmationError === APPROVAL_COPY.folder.refused
+                ? APPROVAL_COPY.folder.refusedHelp
+                : undefined
+            }
+            name={APPROVAL_COPY.folder.refusedName}
+          />
         )}
       </div>
 

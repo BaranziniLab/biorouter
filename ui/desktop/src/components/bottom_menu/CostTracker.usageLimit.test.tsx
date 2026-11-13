@@ -5,7 +5,7 @@ import type { SessionUsageLimitResponse } from '../../api';
 import type { ModelCostRow } from '../../hooks/useCostTracking';
 import { USAGE_LIMIT_COPY } from './copy';
 import { CostTracker } from './CostTracker';
-import { monthUsedReading } from './UsageLimitSection';
+import { limitHelp, monthUsedReading } from './UsageLimitSection';
 import { useSessionUsageLimit } from './useSessionUsageLimit';
 
 /**
@@ -101,6 +101,10 @@ function Harness({
 const card = () => document.querySelector<HTMLElement>('[data-testid="cost-card"]');
 const isOpen = () => card()?.getAttribute('data-state') === 'open';
 const usageTrigger = () => screen.getByTestId('chat-usage');
+
+/** The InfoTip beside the Limit label, which says why the card offers no write or cannot stop. */
+const limitTip = (dialog: HTMLElement) =>
+  within(dialog).getByRole('button', { name: `About ${USAGE_LIMIT_COPY.aboutLimit}` });
 
 async function openCard(trigger: HTMLElement) {
   fireEvent.click(trigger, { detail: 1 });
@@ -500,19 +504,58 @@ describe('the cost item with a usage limit to manage', () => {
   });
 
   it('offers no write in a browser, nor for a subagent’s chat, and says why', async () => {
+    // Why is the Limit label's InfoTip (owner, 2026-11-13: the detail on hover, not a note under
+    // the readings), so the card's one control is that glyph: no write of any kind.
     mocks.browser = true;
     const { unmount } = render(<Harness modelCostRows={[]} />);
     let dialog = await openCard(usageTrigger());
-    await waitFor(() => expect(dialog).toHaveTextContent(USAGE_LIMIT_COPY.browserNote));
-    expect(within(dialog).queryByRole('button')).toBeNull();
+    await waitFor(() =>
+      expect(limitTip(dialog)).toHaveAccessibleDescription(USAGE_LIMIT_COPY.browserNote)
+    );
+    expect(within(dialog).getAllByRole('button')).toEqual([limitTip(dialog)]);
     unmount();
 
     mocks.browser = false;
     mocks.getLimit.mockResolvedValue({ data: limitState({ billingSessionId: 'parent' }) });
     render(<Harness modelCostRows={[]} />);
     dialog = await openCard(usageTrigger());
-    await waitFor(() => expect(dialog).toHaveTextContent(USAGE_LIMIT_COPY.parentChat));
-    expect(within(dialog).queryByRole('button')).toBeNull();
+    await waitFor(() =>
+      expect(limitTip(dialog)).toHaveAccessibleDescription(USAGE_LIMIT_COPY.parentChat)
+    );
+    expect(within(dialog).getAllByRole('button')).toEqual([limitTip(dialog)]);
+  });
+
+  it('draws no InfoTip beside the Limit label when there is nothing to explain', async () => {
+    render(<Harness modelCostRows={[]} />);
+    const dialog = await openCard(usageTrigger());
+    await waitFor(() =>
+      expect(within(dialog).getByTestId('usage-limit-section')).toHaveTextContent(
+        USAGE_LIMIT_COPY.source.none
+      )
+    );
+    expect(
+      within(dialog).queryByRole('button', { name: `About ${USAGE_LIMIT_COPY.aboutLimit}` })
+    ).toBeNull();
+    expect(within(dialog).getByRole('button', { name: USAGE_LIMIT_COPY.setLimit })).toBeVisible();
+  });
+
+  it('says a dollar limit nothing can trip in the Limit label’s InfoTip', async () => {
+    mocks.getLimit.mockResolvedValue({
+      data: limitState({
+        chatDollarLimitInert: true,
+        limit: { maxTokens: null, maxUsd: 5, source: 'chat' },
+      }),
+    });
+    render(<Harness modelCostRows={[]} />);
+    const dialog = await openCard(usageTrigger());
+    await waitFor(() =>
+      expect(limitTip(dialog)).toHaveAccessibleDescription(USAGE_LIMIT_COPY.chatDollarInert)
+    );
+    // The sentence is the InfoTip's (beside the label), never a note drawn under the readings.
+    expect(within(dialog).getByTestId('usage-limit-section')).not.toHaveTextContent(
+      USAGE_LIMIT_COPY.chatDollarInert
+    );
+    expect(dialog.querySelector('.br-footer-card__note')).toBeNull();
   });
 
   it('in a chat that has not started, says when a limit can be set and reads nothing', async () => {
@@ -520,6 +563,41 @@ describe('the cost item with a usage limit to manage', () => {
     const dialog = await openCard(usageTrigger());
     expect(dialog).toHaveTextContent(USAGE_LIMIT_COPY.noChatYet);
     expect(mocks.getLimit).not.toHaveBeenCalled();
+  });
+});
+
+describe('the Limit label’s InfoTip', () => {
+  const state = (overrides: Partial<SessionUsageLimitResponse> = {}) => limitState(overrides);
+
+  it('says nothing when nothing needs explaining', () => {
+    expect(limitHelp(state(), true, true, false)).toBeUndefined();
+  });
+
+  it('names each inert dollar limit, and both in one sentence so the tip stays at two', () => {
+    expect(limitHelp(state({ chatDollarLimitInert: true }), true, true, false)).toBe(
+      USAGE_LIMIT_COPY.chatDollarInert
+    );
+    expect(limitHelp(state({ monthDollarLimitInert: true }), true, true, false)).toBe(
+      USAGE_LIMIT_COPY.monthDollarInert
+    );
+    const both = state({ chatDollarLimitInert: true, monthDollarLimitInert: true });
+    expect(limitHelp(both, true, false, false)).toBe(
+      `${USAGE_LIMIT_COPY.bothDollarInert} ${USAGE_LIMIT_COPY.parentChat}`
+    );
+    expect(limitHelp(both, true, true, true)).toBe(
+      `${USAGE_LIMIT_COPY.bothDollarInert} ${USAGE_LIMIT_COPY.browserNote}`
+    );
+  });
+
+  it('says nothing of dollars with Show costs off', () => {
+    const both = state({ chatDollarLimitInert: true, monthDollarLimitInert: true });
+    expect(limitHelp(both, false, true, false)).toBeUndefined();
+  });
+
+  it('says why a subagent’s chat or a browser offers no write', () => {
+    expect(limitHelp(state(), true, false, false)).toBe(USAGE_LIMIT_COPY.parentChat);
+    expect(limitHelp(state(), true, false, true)).toBe(USAGE_LIMIT_COPY.parentChat);
+    expect(limitHelp(state(), true, true, true)).toBe(USAGE_LIMIT_COPY.browserNote);
   });
 });
 

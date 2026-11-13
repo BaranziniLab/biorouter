@@ -272,7 +272,8 @@ const ITEMS: Item[] = [
     trigger: '[data-testid="dir-switcher-locked"]',
     card: '[data-testid="folder-access-card"]',
     align: 'start',
-    afterTab: { role: 'button', name: `Revoke access to ${GRANTS[0].folder}`, closes: false },
+    // The Working folder label's InfoTip (which tools ask for folder approval) is drawn first.
+    afterTab: { role: 'button', name: 'About the working folder', closes: false },
     presses: ['.br-footer-card__label', 'li .br-footer-card__value'],
   },
   {

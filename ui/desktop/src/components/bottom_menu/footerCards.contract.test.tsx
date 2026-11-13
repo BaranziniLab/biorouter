@@ -138,7 +138,10 @@ interface Item {
   card: string;
   cardName: string;
   align: 'start' | 'end';
-  /** The card's first control, or null for a card that holds none (the cost's). */
+  /**
+   * The card's first control, or null for a card that holds none (the cost's). An InfoTip's glyph
+   * counts: it is a control, and the folder card's first one.
+   */
   firstControl: (() => HTMLElement) | null;
   /**
    * What a press inside the card can land on: its text, and every kind of control a press there
@@ -148,6 +151,21 @@ interface Item {
   /** Sets up this item's card with no control in it, or null for a card that always has one. */
   withoutControls: (() => void) | null;
 }
+
+/** A section's label: in its section, or in the row it shares with its InfoTip there. */
+const SECTION_LABEL =
+  '.br-footer-card__section > .br-footer-card__label, .br-footer-card__section > [data-slot="footer-card-head"] > .br-footer-card__label';
+
+/** The folder card's first control: the Working folder label's InfoTip. */
+const WORKING_FOLDER_TIP = `About ${FOLDER_ACCESS_COPY.aboutWorkingFolder}`;
+
+/**
+ * Whether focus is on an InfoTip's glyph with its preview open. A Tab onto one opens that preview,
+ * a layer of its own above the card, so the first Escape closes the preview and the card stays:
+ * Radix closes the top layer only, as with the Tools popover's InfoTips and the model menu's.
+ */
+const onInfoTip = () =>
+  document.activeElement?.matches('[data-slot="info-tip-trigger"][data-state="open"]') ?? false;
 
 const LABEL = {
   name: 'its section label',
@@ -175,14 +193,14 @@ const ITEMS: Item[] = [
     card: 'folder-access-card',
     cardName: FOLDER_ACCESS_COPY.cardLabel,
     align: 'start',
-    firstControl: () =>
-      screen.getByRole('button', { name: FOLDER_ACCESS_COPY.revokeLabel(GRANT.folder) }),
+    // The Working folder label's InfoTip (which tools ask for folder approval), drawn first.
+    firstControl: () => screen.getByRole('button', { name: WORKING_FOLDER_TIP }),
     pressTargets: [
       LABEL,
       { name: 'a granted folder’s path', get: (card) => byPath(card, GRANT.folder) },
     ],
-    // A chat with messages and no other approved folders: no Choose folder…, no Revoke.
-    withoutControls: () => mocks.list.mockResolvedValue({ data: [] }),
+    // The Working folder label's InfoTip is always there, in every state of the card.
+    withoutControls: null,
   },
   {
     name: 'context',
@@ -339,9 +357,8 @@ describe.each(ITEMS)('the $name item', (item) => {
       expect(card).toHaveClass('br-footer-card');
       expect(card).toHaveClass('biorouter-popover-surface');
       expect(card).toHaveAttribute('data-align', item.align);
-      expect(
-        card.querySelector('.br-footer-card__section > .br-footer-card__label')
-      ).not.toBeNull();
+      // The label sits in its section, alone or in the row it shares with its InfoTip.
+      expect(card.querySelector(SECTION_LABEL)).not.toBeNull();
     });
   });
 
@@ -682,6 +699,12 @@ describe.each(ITEMS)('the $name item', (item) => {
       // From the first control, or from the surface of a card that holds none (a Tab would leave
       // that one: rule 4).
       if (item.firstControl) await user.tab();
+      if (onInfoTip()) {
+        // The InfoTip's preview goes first, and the card with focus in it stays.
+        await user.keyboard('{Escape}');
+        expect(isOpen(item), 'the first Escape closes the InfoTip only').toBe(true);
+        expect(item.firstControl!()).toHaveFocus();
+      }
       await user.keyboard('{Escape}');
       expect(isOpen(item)).toBe(false);
       expect(trigger(item)).toHaveFocus();
@@ -1311,7 +1334,8 @@ describe('3. a Tab past the last item on the line, into its card', () => {
       before: () => screen.getByRole('button', { name: 'Before the line' }),
       trigger: 'dir-switcher',
       card: 'folder-access-card',
-      firstControl: () => screen.getByRole('button', { name: FOLDER_ACCESS_COPY.chooseFolder }),
+      // The Working folder label's InfoTip, drawn before Choose folder….
+      firstControl: () => screen.getByRole('button', { name: WORKING_FOLDER_TIP }),
     },
     {
       name: 'context',
@@ -1363,6 +1387,11 @@ describe('3. a Tab past the last item on the line, into its card', () => {
       await wait(FOOTER_CARD_CLOSE_GRACE_MS * 2);
       expect(open(), 'held: it holds focus').toBe(true);
       expect(last.firstControl()).toHaveFocus();
+      if (onInfoTip()) {
+        // The InfoTip's preview goes first, and the card with focus in it stays.
+        await user.keyboard('{Escape}');
+        expect(open(), 'the first Escape closes the InfoTip only').toBe(true);
+      }
       await user.keyboard('{Escape}');
       expect(open()).toBe(false);
       expect(button).toHaveFocus();

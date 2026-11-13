@@ -75,6 +75,11 @@ const costCard = () => document.querySelector<HTMLElement>('[data-testid="cost-c
 const isOpen = () => costCard()?.getAttribute('data-state') === 'open';
 
 /** Every piece of the card, in order, by its part of the shared format. */
+/** The InfoTip beside a partial total's label, which says why the total is an estimate. */
+function estimateTip(card: HTMLElement): HTMLElement {
+  return within(card).getByRole('button', { name: `About ${COST_CARD_COPY.aboutEstimate}` });
+}
+
 function cardShape(card: HTMLElement): string[] {
   return [...card.querySelectorAll<HTMLElement>('[class*="br-footer-card__"]')].map(
     (el) => el.className.match(/br-footer-card__[\w-]+/)?.[0] ?? ''
@@ -203,7 +208,7 @@ describe('the cost figure is a footer card trigger', () => {
 });
 
 describe('the cost card', () => {
-  it('opens on hover with the total, its tokens, the partial note and a row per model', async () => {
+  it('opens on hover with the total, its tokens, the estimate’s note and a row per model', async () => {
     render(<CostTracker modelCostRows={[ledgerRow, unpricedRow]} />);
     await waitFor(() => expect(figure()).toHaveTextContent('$3.50'));
     vi.useFakeTimers();
@@ -221,13 +226,18 @@ describe('the cost card', () => {
 
     const card = screen.getByRole('dialog', { name: 'Cost' });
     expect(card).toHaveAttribute('data-testid', 'cost-card');
-    expect(card).toHaveTextContent('Cost of this chat');
+    // A partial total says so in its label, and why in the InfoTip beside it (owner, 2026-11-13:
+    // the detail on hover, not a note under the figures).
+    expect(within(card).getByText(COST_CARD_COPY.sectionEstimated)).toHaveClass(
+      'br-footer-card__label'
+    );
     expect(within(card).getByText('$3.50')).toHaveClass('br-footer-card__value');
     // Neither row recorded the cache, so the line lists input and output alone.
     expect(within(card).getByText('20,100 input · 1,550 output')).toHaveClass(
       'br-footer-card__detail'
     );
-    expect(within(card).getByText(COST_CARD_COPY.partialNote)).toHaveClass('br-footer-card__note');
+    expect(estimateTip(card)).toHaveAccessibleDescription(COST_CARD_COPY.partialNote);
+    expect(card.querySelector('.br-footer-card__note')).toBeNull();
 
     const models = within(card).getByRole('list', { name: 'By model' });
     const rows = within(models).getAllByRole('listitem');
@@ -238,8 +248,9 @@ describe('the cost card', () => {
     );
     expect(rows[1]).toHaveTextContent('openai/gpt-retired');
     expect(within(rows[1]).getByText('Unavailable · 20,000 in · 1,500 out')).toBeInTheDocument();
-    // Rows of figures carry no action.
-    expect(within(card).queryByRole('button')).not.toBeInTheDocument();
+    // Rows of figures carry no action: the card's one control is the estimate's InfoTip.
+    expect(within(models).queryByRole('button')).not.toBeInTheDocument();
+    expect(within(card).getAllByRole('button')).toEqual([estimateTip(card)]);
   });
 
   it('names a ledger row with no model in sentence case in the By model list', async () => {
@@ -269,6 +280,8 @@ describe('the cost card', () => {
     await user.click(figure());
     const card = screen.getByRole('dialog', { name: 'Cost' });
     expect(card).not.toHaveTextContent(COST_CARD_COPY.partialNote);
+    expect(within(card).getByText(COST_CARD_COPY.section)).toHaveClass('br-footer-card__label');
+    expect(within(card).queryByRole('button')).not.toBeInTheDocument();
     expect(within(card).getByText('100 input · 50 output')).toBeInTheDocument();
     expect(
       within(within(card).getByRole('list', { name: 'By model' })).getAllByRole('listitem')
@@ -346,7 +359,7 @@ describe('the cost card', () => {
     const mapCard = screen.getByRole('dialog', { name: 'Cost' });
     expect(mapCard).toHaveAttribute('data-testid', 'cost-card');
     expect(within(mapCard).getByText('100 input · 50 output')).toBeInTheDocument();
-    expect(within(mapCard).getByText(COST_CARD_COPY.partialNote)).toBeInTheDocument();
+    expect(estimateTip(mapCard)).toHaveAccessibleDescription(COST_CARD_COPY.partialNote);
     expect(within(mapCard).queryByText(COST_CARD_COPY.byModel)).not.toBeInTheDocument();
     const mapShape = cardShape(mapCard);
     fromMap.unmount();
@@ -360,10 +373,11 @@ describe('the cost card', () => {
     // The counters hold input and output alone: the card says nothing about the cache.
     expect(liveCard).not.toHaveTextContent(/cache/);
     // The counters priced at the current model's rate are always an estimate.
-    expect(within(liveCard).getByText(COST_CARD_COPY.partialNote)).toBeInTheDocument();
+    expect(estimateTip(liveCard)).toHaveAccessibleDescription(COST_CARD_COPY.partialNote);
     expect(within(liveCard).queryByText(COST_CARD_COPY.byModel)).not.toBeInTheDocument();
 
-    const totalSection = ['section', 'label', 'value', 'detail', 'note'].map(
+    // The estimate's note is its label's InfoTip, so the section ends with its detail.
+    const totalSection = ['section', 'label', 'value', 'detail'].map(
       (part) => `br-footer-card__${part}`
     );
     expect(mapShape).toEqual(totalSection);

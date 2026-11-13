@@ -32,6 +32,8 @@ import {
 } from './settings/models/predefinedModelsUtils';
 import { ModalShell } from './ModalShell';
 import { Button } from './ui/button';
+import { Disclosure } from './ui/disclosure';
+import { InfoTip } from './ui/info-tip';
 import { Note } from './ui/note';
 import { Spinner } from './ui/spinner';
 import { notifySessionToolsChanged } from '../utils/sessionToolEvents';
@@ -41,13 +43,17 @@ import {
   subscribeAppModelSelectionChanges,
 } from '../utils/sessionBindingSync';
 import {
+  acceleratorMemoryExplanation,
   acceleratorMemoryLabel,
   detectedMemoryText,
   fitVerdict,
+  fitWarning,
   llamaMemoryWarning,
   windowsVramNote,
 } from './settings/models/localModelMemory';
 import { localModelsCopy } from './settings/models/copy';
+import { llamaCopy, splitMemoryWarning } from './onboarding/copy';
+import { homeFolder, tildePath } from '../utils/folderPath';
 
 // titles
 export const UNKNOWN_PROVIDER_TITLE = 'Provider name lookup';
@@ -293,13 +299,16 @@ const privacyBarrierOf = (error: unknown): PrivacyBarrierBody | null =>
  * directory — a refusal must not carry conversation content.
  */
 const privacyBarrierMessage = (barrier: PrivacyBarrierBody) => {
-  const lines = [
-    'This chat is private, so it can only run on a private model. Biorouter will not send its contents to a model hosted outside your institution.',
-  ];
+  // The refusal's reason first, then the way forward that stays private, then the rest. A toast
+  // clamps its message to three lines (and shows the whole on hover and in Copy error), so the order
+  // decides what is read at a glance: the reason line and the private models, not the explanation
+  // and the make-public route, which a person reaches by hovering (owner, 2026-11-13).
+  const lines = ['This chat is private, so it can only run on a private model.'];
   if (barrier.available_private_providers.length > 0) {
     lines.push(`Available private models: ${barrier.available_private_providers.join(', ')}.`);
   }
   lines.push(
+    "Biorouter will not send this chat's contents to a model hosted outside your institution.",
     'To use a public model here, make this chat public first (History → this chat → Make public). That permanently exposes its contents and cannot be undone.'
   );
   return lines.join('\n');
@@ -329,19 +338,33 @@ const fallbackDownloadLabel = (model: LlamaCppModel | undefined) => {
   }
 };
 
+/**
+ * One row of the warm-up dialog's detail list, in one of three kinds (design.md D-42), as first
+ * run's Advanced list and Settings' info dialog set them:
+ * - `id`: a value read character by character (the Ollama tag), in mono at the code role;
+ * - `path`: a folder or file shown as where the model lives, in the sans face, from `~`;
+ * - prose (the default): a size, a state, a sentence.
+ */
 const WarmupDetailRow = ({
   label,
   children,
-  mono = false,
+  kind = 'prose',
 }: {
   label: string;
   children: React.ReactNode;
-  mono?: boolean;
+  kind?: 'prose' | 'id' | 'path';
 }) => (
   <div className="grid grid-cols-[minmax(7.5rem,auto)_minmax(0,1fr)] items-start gap-x-3 gap-y-1">
     <span className="text-text-muted">{label}</span>
     <span
-      className={['min-w-0 text-right text-text-default', mono ? 'break-all font-mono' : '']
+      className={[
+        'min-w-0 text-right text-text-default',
+        kind === 'id'
+          ? 'font-mono text-code [overflow-wrap:anywhere]'
+          : kind === 'path'
+            ? '[overflow-wrap:anywhere]'
+            : '',
+      ]
         .filter(Boolean)
         .join(' ')}
     >
@@ -349,6 +372,22 @@ const WarmupDetailRow = ({
     </span>
   </div>
 );
+
+/** A folder or file written for a person to read: `~` for the home folder, the absolute path kept. */
+const PlacePath = ({ path }: { path: string }) => (
+  <span dir="ltr" data-path={path}>
+    {tildePath(path, homeFolder())}
+  </span>
+);
+
+/** The warm-up dialog's first-use reason, its title's InfoTip. */
+export const WARMUP_FIRST_USE_LABEL = 'first use';
+export const WARMUP_FIRST_USE_HELP =
+  'First use can take a while because the model may need to load, download, and produce a test response.';
+/** The custom-spec warning, said in two layers: the fact, then the advice behind Details. */
+const CUSTOM_SPEC_WARNING = 'Custom Hugging Face specs are not memory-rated here.';
+const CUSTOM_SPEC_ADVICE =
+  'Start with a small quantization or lower LLAMACPP_CONTEXT_SIZE on laptop hardware.';
 
 const ModelAndProviderContext = createContext<ModelAndProviderContextType | undefined>(undefined);
 
@@ -983,10 +1022,18 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
     if (currentProvider === LOCAL_PROVIDER) void readLocalModelNames();
   }, [currentProvider, readLocalModelNames]);
 
-  const llamaWarnings = useMemo(() => {
-    if (!llamaWarmupDialog) return [];
+  /**
+   * The warning note, in two layers (owner, 2026-11-13): `lead` is the one sentence a person needs
+   * at the decision, and `details` what they may want after it, folded under the note. A memory
+   * warning leads with its consequence (the figures and what may happen) and folds what the memory
+   * figure means on this machine, as first run's confirmation and Settings' do; the Windows note
+   * leads only when it is the one warning there is.
+   */
+  const llamaWarning = useMemo((): { lead: string; details: string[] } | null => {
+    if (!llamaWarmupDialog) return null;
 
-    const warnings: string[] = [];
+    let lead: string | null = null;
+    const details: string[] = [];
     const entry = llamaWarmupDialog.entry;
     const system = llamaWarmupDialog.status.system;
 
@@ -995,18 +1042,33 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
       // line used to follow here for every model over 16 GiB; the catalog
       // has no laptop-sized model any more, so it pointed at nothing.
       const warning = llamaMemoryWarning(entry, system);
-      if (warning) warnings.push(warning);
+      if (warning) {
+        const { consequence, meaning } = splitMemoryWarning(
+          warning,
+          acceleratorMemoryExplanation(system.accelerator_memory_kind)
+        );
+        lead = consequence;
+        if (meaning) details.push(meaning);
+      }
     } else {
-      warnings.push(
-        'Custom Hugging Face specs are not memory-rated here. Start with a small quantization or lower LLAMACPP_CONTEXT_SIZE on laptop hardware.'
-      );
+      lead = CUSTOM_SPEC_WARNING;
+      details.push(CUSTOM_SPEC_ADVICE);
     }
 
     const windowsNote = windowsVramNote(system);
-    if (windowsNote) warnings.push(windowsNote);
+    if (windowsNote) {
+      if (lead === null) lead = windowsNote;
+      else details.push(windowsNote);
+    }
 
-    return warnings;
+    return lead === null ? null : { lead, details };
   }, [llamaWarmupDialog]);
+
+  // The one warning word the detail's summary carries, only when the model does not fit here:
+  // "Large for this Mac", "Below the 32 GB minimum" or "CPU only, slow", first run's words.
+  const warmupFitWord = llamaWarmupDialog?.entry
+    ? fitWarning(llamaWarmupDialog.entry, llamaWarmupDialog.status.system)
+    : null;
 
   const contextValue = useMemo(
     () => ({
@@ -1070,6 +1132,9 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         // and keeps the footer pinned. Guarded by ModelAndProviderContext.warmupDialog.test.tsx.
         scrollBody
         title="Warm up local model"
+        // One line under the title; why first use is slow is the title's InfoTip (owner,
+        // 2026-11-13: one line up front, the detail on hover).
+        titleInfo={<InfoTip label={WARMUP_FIRST_USE_LABEL} help={WARMUP_FIRST_USE_HELP} />}
         subtitle={
           llamaWarmupDialog
             ? warmupDialogSubtitle(
@@ -1101,72 +1166,103 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
       >
         {llamaWarmupDialog && (
           <>
-            <div className="biorouter-modal-panel min-w-0 rounded-element p-3">
-              <div className="grid min-w-0 gap-1.5 text-supporting">
-                {/* W2-5. "Model size", not "Download": beside "Local copy: Downloaded"
-                    the old label read as a download about to happen. */}
-                <WarmupDetailRow label="Model size">
-                  {llamaWarmupDialog.entry?.download_size ?? 'custom'}
-                </WarmupDetailRow>
-                <WarmupDetailRow label="Local copy">
-                  {modelDownloadLabel(llamaWarmupDialog.entry)}
-                </WarmupDetailRow>
-                {/* Where a download would come from and land. Once the copy is on this
-                    computer none of it applies, and Settings' local model list keeps it. */}
-                {!isDownloaded(llamaWarmupDialog.entry) && (
-                  <>
-                    <WarmupDetailRow label="Llama Server fallback">
-                      {fallbackDownloadLabel(llamaWarmupDialog.entry)}
-                    </WarmupDetailRow>
-                    <WarmupDetailRow label="Ollama model">
-                      {llamaWarmupDialog.entry?.ollama_name ?? 'custom'}
-                    </WarmupDetailRow>
-                    <WarmupDetailRow label="Model store" mono>
-                      {llamaWarmupDialog.status.system.model_cache_dir}
-                    </WarmupDetailRow>
-                    {llamaWarmupDialog.entry?.model_path && (
-                      <WarmupDetailRow label="Model blob" mono>
-                        {llamaWarmupDialog.entry.model_path}
-                      </WarmupDetailRow>
-                    )}
-                  </>
-                )}
-                <WarmupDetailRow label="Default context">
-                  {formatContext(llamaWarmupDialog.status.system.default_context_size)} tokens
-                </WarmupDetailRow>
-                <WarmupDetailRow label="Detected GPU memory">
-                  {typeof llamaWarmupDialog.status.system.accelerator_memory_gib === 'number'
-                    ? detectedMemoryText(llamaWarmupDialog.status.system)
-                    : acceleratorMemoryLabel(
-                        llamaWarmupDialog.status.system.accelerator_memory_kind
-                      )}
-                </WarmupDetailRow>
-                <WarmupDetailRow label="Recommended GPU memory">
-                  {llamaWarmupDialog.entry
-                    ? localModelsCopy.gigabytes(llamaWarmupDialog.entry.recommended_gpu_memory_gib)
-                    : 'unknown'}
-                </WarmupDetailRow>
-                {/* The daemon's verdict in the words Settings' info dialog uses (`fitVerdict`);
-                    the numbers are the memory rows above, the kind in plain words ("128 GB
-                    unified memory"). The daemon's own sentence printed the kind's id ("128 GiB
-                    apple_unified meets the 48 GiB recommendation") and repeated those rows. */}
-                {llamaWarmupDialog.entry && (
-                  <WarmupDetailRow label="Recommendation">
-                    {fitVerdict(llamaWarmupDialog.entry, llamaWarmupDialog.status.system)}
-                  </WarmupDetailRow>
-                )}
-              </div>
-            </div>
-
-            {llamaWarnings.length > 0 && (
-              <Note tone="warning">
-                <div className="space-y-2">
-                  {llamaWarnings.map((warning) => (
-                    <p key={warning}>{warning}</p>
-                  ))}
-                </div>
+            {llamaWarning && (
+              <Note
+                tone="warning"
+                details={
+                  llamaWarning.details.length > 0 ? (
+                    <div className="space-y-2">
+                      {llamaWarning.details.map((detail) => (
+                        <p key={detail}>{detail}</p>
+                      ))}
+                    </div>
+                  ) : undefined
+                }
+              >
+                {llamaWarning.lead}
               </Note>
             )}
+
+            {/* The ids, paths and figures, folded behind the first-run panel's word with its
+                summary (size · fit), so the two buttons sit on the first screen (owner,
+                2026-11-13). The fit word is the one a Settings row and first run say. */}
+            <Disclosure
+              label={llamaCopy.advanced}
+              summary={
+                llamaWarmupDialog.entry ? (
+                  <span data-testid="warmup-summary">
+                    {llamaWarmupDialog.entry.download_size}
+                    {warmupFitWord ? (
+                      <>
+                        {' · '}
+                        <span className="text-text-warning">{warmupFitWord}</span>
+                      </>
+                    ) : null}
+                  </span>
+                ) : undefined
+              }
+            >
+              <div className="biorouter-modal-panel min-w-0 rounded-element p-3">
+                <div className="grid min-w-0 gap-1.5 text-supporting">
+                  {/* W2-5. "Model size", not "Download": beside "Local copy: Downloaded"
+                      the old label read as a download about to happen. */}
+                  <WarmupDetailRow label="Model size">
+                    {llamaWarmupDialog.entry?.download_size ?? 'custom'}
+                  </WarmupDetailRow>
+                  <WarmupDetailRow label="Local copy">
+                    {modelDownloadLabel(llamaWarmupDialog.entry)}
+                  </WarmupDetailRow>
+                  {/* Where a download would come from and land. Once the copy is on this
+                      computer none of it applies, and Settings' local model list keeps it. */}
+                  {!isDownloaded(llamaWarmupDialog.entry) && (
+                    <>
+                      <WarmupDetailRow label="Llama Server fallback">
+                        {fallbackDownloadLabel(llamaWarmupDialog.entry)}
+                      </WarmupDetailRow>
+                      <WarmupDetailRow
+                        label="Ollama model"
+                        kind={llamaWarmupDialog.entry?.ollama_name ? 'id' : 'prose'}
+                      >
+                        {llamaWarmupDialog.entry?.ollama_name ?? 'custom'}
+                      </WarmupDetailRow>
+                      {/* Where the model lives: a place, in sans and from `~` (D-42). */}
+                      <WarmupDetailRow label="Model store" kind="path">
+                        <PlacePath path={llamaWarmupDialog.status.system.model_cache_dir} />
+                      </WarmupDetailRow>
+                      {llamaWarmupDialog.entry?.model_path && (
+                        <WarmupDetailRow label="Model blob" kind="path">
+                          <PlacePath path={llamaWarmupDialog.entry.model_path} />
+                        </WarmupDetailRow>
+                      )}
+                    </>
+                  )}
+                  <WarmupDetailRow label="Default context">
+                    {formatContext(llamaWarmupDialog.status.system.default_context_size)} tokens
+                  </WarmupDetailRow>
+                  <WarmupDetailRow label="Detected GPU memory">
+                    {typeof llamaWarmupDialog.status.system.accelerator_memory_gib === 'number'
+                      ? detectedMemoryText(llamaWarmupDialog.status.system)
+                      : acceleratorMemoryLabel(
+                          llamaWarmupDialog.status.system.accelerator_memory_kind
+                        )}
+                  </WarmupDetailRow>
+                  <WarmupDetailRow label="Recommended GPU memory">
+                    {llamaWarmupDialog.entry
+                      ? localModelsCopy.gigabytes(
+                          llamaWarmupDialog.entry.recommended_gpu_memory_gib
+                        )
+                      : 'unknown'}
+                  </WarmupDetailRow>
+                  {/* The daemon's verdict in the words Settings' info dialog uses (`fitVerdict`);
+                      the numbers are the memory rows above, the kind in plain words. */}
+                  {llamaWarmupDialog.entry && (
+                    <WarmupDetailRow label="Recommendation">
+                      {fitVerdict(llamaWarmupDialog.entry, llamaWarmupDialog.status.system)}
+                    </WarmupDetailRow>
+                  )}
+                </div>
+              </div>
+            </Disclosure>
 
             {llamaWarmupDialog.isWarming && (
               <div className="biorouter-modal-panel flex items-start gap-2 rounded-element p-3 text-supporting text-text-muted">
@@ -1175,8 +1271,9 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
                 </span>
                 <div className="min-w-0">
                   <p className="text-text-default">Waiting for the model to generate…</p>
+                  {/* A status sentence from the daemon, not code: the sans face. */}
                   {llamaWarmupDialog.detail && (
-                    <p className="mt-1 truncate font-mono">{llamaWarmupDialog.detail}</p>
+                    <p className="mt-1 truncate">{llamaWarmupDialog.detail}</p>
                   )}
                 </div>
               </div>

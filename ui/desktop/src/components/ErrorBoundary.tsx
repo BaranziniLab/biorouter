@@ -1,5 +1,6 @@
 import React from 'react';
 import { Button } from './ui/button';
+import { Disclosure } from './ui/disclosure';
 import { AlertTriangle } from './icons/app-icons';
 import { errorMessage } from '../utils/conversionUtils';
 
@@ -15,7 +16,21 @@ window.addEventListener('error', (event) => {
   );
 });
 
+/** The disclosure that holds the whole error, under its first line. */
+export const ERROR_DETAILS_LABEL = 'Show error details';
+
+/**
+ * The error in two layers (owner, 2026-11-13): its first line stays in view, as an error that just
+ * happened should, and the whole text folds behind "Show error details" when there is more than
+ * that line (another line, or a first line long enough to be clamped).
+ */
+export function errorLayers(error: string): { line: string; more: boolean } {
+  const line = error.split('\n')[0].trim() || error.trim();
+  return { line, more: error.trim() !== line || line.length > 200 };
+}
+
 export function ErrorUI({ error }: { error: string }) {
+  const { line, more } = errorLayers(error);
   const handleReload = () => {
     window.electron.reloadApp();
   };
@@ -37,9 +52,22 @@ export function ErrorUI({ error }: { error: string }) {
           <p className="text-body text-text-muted mb-2">An error occurred.</p>
         )}
 
-        <pre className="w-full overflow-auto whitespace-pre-wrap rounded-element border border-transparent bg-background-well p-4 text-code text-text-danger">
-          {error}
-        </pre>
+        {/* The first line in view, in the code face (it is the error's own text). */}
+        <p
+          data-testid="error-first-line"
+          className="w-full line-clamp-3 rounded-element border border-transparent bg-background-well p-4 font-mono text-code text-text-danger [overflow-wrap:anywhere]"
+        >
+          {line}
+        </p>
+
+        {/* The whole error, folded, capped at about six lines and scrolled past that. */}
+        {more ? (
+          <Disclosure label={ERROR_DETAILS_LABEL} className="w-full text-left">
+            <pre className="max-h-32 w-full overflow-auto whitespace-pre-wrap rounded-element border border-transparent bg-background-well p-4 font-mono text-code text-text-danger">
+              {error}
+            </pre>
+          </Disclosure>
+        ) : null}
 
         <Button onClick={handleReload}>Reload</Button>
       </div>

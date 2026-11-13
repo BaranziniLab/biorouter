@@ -3,6 +3,8 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import userEvent from '@testing-library/user-event';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  CEILING_HELP,
+  CEILING_HELP_LABEL,
   CEILING_NOTE,
   ContextWindowGauge,
   ContextWindowIndicator,
@@ -1016,6 +1018,11 @@ describe('the context card shows where the token ceiling makes Biorouter compact
     readWith({});
     render(gauge());
     expect(await screen.findByText(CEILING_NOTE('200k', 19))).toHaveClass('br-footer-card__note');
+    // One line in the card; the marker's relation to the limit is the note's InfoTip.
+    expect(
+      screen.getByRole('button', { name: `About ${CEILING_HELP_LABEL}` })
+    ).toHaveAccessibleDescription(CEILING_HELP);
+    expect(CEILING_HELP).toContain('The marker sets a share of the window');
     const tick = screen.getByTestId('context-gauge-ceiling');
     expect(tick).toHaveAttribute('aria-label', 'Compacts at 200k tokens');
     expect(parseFloat(tick.style.left)).toBeCloseTo(19.05, 1);

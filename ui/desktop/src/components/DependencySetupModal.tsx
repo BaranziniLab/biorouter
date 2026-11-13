@@ -13,11 +13,14 @@ import { useState, useEffect, useRef, type ReactElement } from 'react';
 import { Button } from './ui/button';
 import { Spinner } from './ui/spinner';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
+import { InfoTip } from './ui/info-tip';
+import { Disclosure } from './ui/disclosure';
 import { ArrowRight, Check, X } from './icons/app-icons';
 import { InlineCodeText } from './settings/providers/subcomponents/InlineCodeText';
 import type { DependencyInfo, DependencyEvent } from '../utils/dependencyChecker';
 import { ModalShell } from './ModalShell';
 import { launchDependencyDebugSession } from '../utils/launchDependencyDebug';
+import { fitsInfoTip } from '../utils/proseFold';
 
 type InstallState = 'idle' | 'running' | 'done' | 'error' | 'installed';
 
@@ -63,6 +66,45 @@ function installLine(
   if (info.downloadUrl) return null;
   return { text: `Install ${info.displayName} via your system package manager`, command: false };
 }
+
+/**
+ * The dialog's words (owner, 2026-11-13: one line up front, the detail on hover). The subtitle is
+ * one clause; what to do about it is the title's InfoTip. The sudo note is the Install button's
+ * InfoTip, and the button is described by it.
+ */
+export const DEPENDENCY_COPY = {
+  requiredSubtitle: 'These tools are required for Biorouter features.',
+  requiredTip: 'Install them to continue.',
+  optionalSubtitle: 'These optional tools add Biorouter features.',
+  optionalTip: 'Install them now, or dismiss this and install them later.',
+  tipLabel: 'these tools',
+  sudoTipLabel: 'installing with sudo',
+  sudoTip: 'Requires sudo. You may be prompted for your password in a terminal.',
+  /** The disclosure under a row whose install note is too long for an InfoTip. */
+  installNoteDetails: (name: string) => `How to install ${name}`,
+} as const;
+
+/**
+ * A free-text install note split at its first sentence: the sentence stays on the row. The rest is
+ * its InfoTip when it fits one (two sentences, about 160 characters; design.md 9.16), and a Details
+ * disclosure under the row when it does not. A note of one sentence stays whole. Every word is
+ * kept, in order, between the parts.
+ */
+export function splitInstallNote(note: string): {
+  lead: string;
+  tip: string | null;
+  details: string | null;
+} {
+  const match = /^(.+?[.!?])\s+(\S[\s\S]*)$/.exec(note.trim());
+  if (!match) return { lead: note.trim(), tip: null, details: null };
+  const rest = match[2].trim();
+  return fitsInfoTip(rest)
+    ? { lead: match[1], tip: rest, details: null }
+    : { lead: match[1], tip: null, details: rest };
+}
+
+/** An id an element may carry, from a dependency's name. */
+const idFor = (prefix: string, name: string) => `${prefix}-${name.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
 
 interface DepState {
   info: DependencyInfo;
@@ -486,6 +528,15 @@ export default function DependencySetupModal() {
             : 'Update the Biorouter CLI'
           : 'Install missing dependencies'
       }
+      // What to do about the tools listed, beside the title; the subtitle says what they are.
+      titleInfo={
+        deps.length === 0 && cliIsUpdate ? undefined : (
+          <InfoTip
+            label={DEPENDENCY_COPY.tipLabel}
+            help={anyRequired ? DEPENDENCY_COPY.requiredTip : DEPENDENCY_COPY.optionalTip}
+          />
+        )
+      }
       subtitle={
         // The one sentence that says why (FR-S-7): the footer used to repeat it ("Biorouter
         // features may be limited…", "Updating keeps the terminal CLI in sync…"). A command in it
@@ -497,8 +548,8 @@ export default function DependencySetupModal() {
                 ? 'The `biorouter` on your PATH no longer runs. Reinstall it from this app.'
                 : 'Your terminal `biorouter` is older than this app. Update it to match.'
               : anyRequired
-                ? 'The following tools are required for Biorouter features. Install them to continue.'
-                : 'These optional tools add Biorouter features. Install them now, or dismiss this and install them later.'
+                ? DEPENDENCY_COPY.requiredSubtitle
+                : DEPENDENCY_COPY.optionalSubtitle
           }
         />
       }
@@ -576,8 +627,9 @@ export default function DependencySetupModal() {
                 <span className="text-supporting text-text-muted">{cliProgressLabel}</span>
               )}
             </div>
+            {/* Install output is code: mono at the code role, 12/20. */}
             {cliOutput && (
-              <div className="mt-2 font-mono text-supporting text-text-muted bg-background-well rounded-inner p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all">
+              <div className="mt-2 font-mono text-code text-text-muted bg-background-well rounded-inner p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all">
                 {cliOutput}
               </div>
             )}
@@ -604,6 +656,11 @@ export default function DependencySetupModal() {
         {deps.map(({ info, installState, output, errorMsg }) => {
           const installed = installState === 'done' || info.installed;
           const line = !installed && installState === 'idle' ? installLine(info) : null;
+          // A note in prose keeps its first sentence on the row; the rest is its InfoTip, or a
+          // Details disclosure under it when it is longer than an InfoTip holds.
+          const note = line && !line.command ? splitInstallNote(line.text) : null;
+          const showSudo = Boolean(info.requiresSudo) && !installed && installState !== 'running';
+          const sudoTipId = idFor('dep-sudo', info.name);
           return (
             <div
               key={info.name}
@@ -633,17 +690,25 @@ export default function DependencySetupModal() {
                   {installed && info.version && (
                     <p className="text-supporting text-text-muted mt-0.5">{info.version}</p>
                   )}
-                  {line && (
-                    <p
-                      className={
-                        line.command
-                          ? 'text-supporting text-text-muted font-mono mt-0.5 break-all'
-                          : 'text-supporting text-text-muted mt-0.5'
-                      }
-                    >
+                  {/* The command Install runs is code (mono, 12/20); a note is prose. */}
+                  {line?.command && (
+                    <p className="text-code text-text-muted font-mono mt-0.5 break-all">
                       {line.text}
                     </p>
                   )}
+                  {note && (
+                    <p className="flex min-w-0 flex-wrap items-center text-supporting text-text-muted mt-0.5">
+                      <span className="min-w-0">{note.lead}</span>
+                      {note.tip ? (
+                        <InfoTip label={`installing ${info.displayName}`} help={note.tip} />
+                      ) : null}
+                    </p>
+                  )}
+                  {note?.details ? (
+                    <Disclosure label={DEPENDENCY_COPY.installNoteDetails(info.displayName)}>
+                      <p className="text-supporting text-text-muted">{note.details}</p>
+                    </Disclosure>
+                  ) : null}
                 </div>
                 <div className="flex items-center gap-2 shrink-0 ml-3">
                   {!installed && info.downloadUrl && installState !== 'running' && (
@@ -670,9 +735,19 @@ export default function DependencySetupModal() {
                       // managers contended for one lock.
                       disabled={isBusy}
                       onClick={() => handleInstall(info.name)}
+                      aria-describedby={showSudo ? sudoTipId : undefined}
                     >
                       Install
                     </Button>
+                  )}
+                  {/* The sudo note was a warning line under every such row; it is the Install
+                      button's InfoTip now, and the button's description (owner, 2026-11-13). */}
+                  {showSudo && (
+                    <InfoTip
+                      id={sudoTipId}
+                      label={DEPENDENCY_COPY.sudoTipLabel}
+                      help={DEPENDENCY_COPY.sudoTip}
+                    />
                   )}
                   {installState === 'running' && (
                     <span className="text-supporting text-text-muted">Installing…</span>
@@ -686,7 +761,7 @@ export default function DependencySetupModal() {
                   ref={(el) => {
                     outputRefs.current[info.name] = el;
                   }}
-                  className="mt-2 font-mono text-supporting text-text-muted bg-background-well rounded-inner p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all"
+                  className="mt-2 font-mono text-code text-text-muted bg-background-well rounded-inner p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all"
                 >
                   {output}
                 </div>
@@ -711,13 +786,6 @@ export default function DependencySetupModal() {
                     </Button>
                   </HelpTooltip>
                 </div>
-              )}
-
-              {/* Linux sudo note */}
-              {info.requiresSudo && !installed && installState !== 'running' && (
-                <p className="mt-1 text-supporting text-text-warning">
-                  Requires sudo. You may be prompted for your password in a terminal.
-                </p>
               )}
             </div>
           );

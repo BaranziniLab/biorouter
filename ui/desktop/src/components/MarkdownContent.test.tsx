@@ -1486,6 +1486,25 @@ Another very long URL: https://www.example.com/very/long/path/with/many/segments
       expect(button).not.toHaveClass('decoration-border-strong');
     });
 
+    // design.md D-42: a path named in a sentence is where a file lives, so its link keeps the
+    // sentence's face; only a path written as inline code stays code.
+    it('sets a path named in prose in the prose face, and a path written as code in mono', async () => {
+      const onOpenArtifact = vi.fn();
+      render(
+        <MarkdownContent
+          content="See /Users/wgu/project/analysis.sql for the query, or `/Users/wgu/project/plot.py`."
+          onOpenArtifact={onOpenArtifact}
+        />
+      );
+
+      const prose = await screen.findByRole('button', { name: '/Users/wgu/project/analysis.sql' });
+      expect(prose).not.toHaveClass('font-mono');
+      expect(prose).not.toHaveClass('text-code');
+      expect(prose).toHaveClass('text-text-accent');
+      const code = await screen.findByRole('button', { name: '/Users/wgu/project/plot.py' });
+      expect(code).toHaveClass('font-mono', 'text-code', 'biorouter-inline-code');
+    });
+
     it('uses one inline-code size across the code element and the artifact button', async () => {
       const onOpenArtifact = vi.fn();
       render(

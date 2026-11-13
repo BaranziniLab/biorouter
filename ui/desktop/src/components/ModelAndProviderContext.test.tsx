@@ -275,6 +275,8 @@ describe('ModelAndProviderProvider Llama Server warm-up', () => {
       )
     ).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/laptop tier|use Gemma 4/);
+    // The rows sit behind the dialog's Advanced disclosure (owner, 2026-11-13).
+    fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
     expect(screen.getByText('Needs download')).toBeInTheDocument();
     expect(screen.getByText('Llama Server fallback')).toBeInTheDocument();
     expect(screen.getByText('Fallback may download')).toBeInTheDocument();

@@ -7,15 +7,18 @@ vi.mock('./ModalShell', () => ({
     children,
     footer,
     title,
+    titleInfo,
     subtitle,
   }: {
     children: React.ReactNode;
     footer?: React.ReactNode;
     title?: React.ReactNode;
+    titleInfo?: React.ReactNode;
     subtitle?: React.ReactNode;
   }) => (
     <div>
       <h2>{title}</h2>
+      {titleInfo}
       <p data-testid="dependency-subtitle">{subtitle}</p>
       {children}
       {footer}
@@ -23,7 +26,7 @@ vi.mock('./ModalShell', () => ({
   ),
 }));
 
-import DependencySetupModal from './DependencySetupModal';
+import DependencySetupModal, { DEPENDENCY_COPY } from './DependencySetupModal';
 
 let emit: (e: DependencyEvent) => void = () => {};
 
@@ -66,6 +69,10 @@ describe('DependencySetupModal required copy', () => {
     expect(subtitle).not.toHaveTextContent(/required/i);
     expect(subtitle).not.toHaveTextContent(/to continue/i);
     expect(subtitle).toHaveTextContent('These optional tools add Biorouter features.');
+    // "Now or later" is the title's InfoTip, and says nothing about continuing either.
+    const tip = screen.getByRole('button', { name: `About ${DEPENDENCY_COPY.tipLabel}` });
+    expect(tip).toHaveAccessibleDescription(DEPENDENCY_COPY.optionalTip);
+    expect(tip).not.toHaveAccessibleDescription(/to continue/i);
     expect(screen.getByText('(optional)')).toBeInTheDocument();
   });
 
@@ -77,9 +84,12 @@ describe('DependencySetupModal required copy', () => {
     });
 
     const subtitle = await screen.findByTestId('dependency-subtitle');
-    expect(subtitle).toHaveTextContent(
-      'The following tools are required for Biorouter features. Install them to continue.'
-    );
+    expect(subtitle).toHaveTextContent('These tools are required for Biorouter features.');
+    // "Install them to continue" is the title's InfoTip (owner, 2026-11-13).
+    expect(
+      screen.getByRole('button', { name: `About ${DEPENDENCY_COPY.tipLabel}` })
+    ).toHaveAccessibleDescription(DEPENDENCY_COPY.requiredTip);
+    expect(DEPENDENCY_COPY.requiredTip).toBe('Install them to continue.');
     expect(screen.getAllByText('(optional)')).toHaveLength(1);
   });
 });

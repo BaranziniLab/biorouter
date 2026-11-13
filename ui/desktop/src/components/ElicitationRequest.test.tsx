@@ -82,6 +82,44 @@ describe('ElicitationRequest', () => {
     expect(screen.getByText('Which cohort?')).toHaveClass('text-label');
   });
 
+  // Owner, 2026-11-13: a server's paragraph of instructions does not become a wall of title.
+  // The first sentence is the title; a short rest is the info icon's, a long one folds.
+  it('titles a long request with its first sentence and folds the rest', () => {
+    const first = 'Choose the cohort this analysis should run on before anything is computed.';
+    const short = 'Only cohorts you can read are listed.';
+    const { unmount } = render(
+      <ElicitationRequest
+        actionRequiredContent={{
+          ...action,
+          data: { ...action.data, message: `${first} ${short}` },
+        }}
+        isCancelledMessage={false}
+        isClicked={false}
+        onSubmit={vi.fn(async () => undefined)}
+      />
+    );
+    expect(screen.getByText(first)).toHaveClass('text-label');
+    expect(screen.getByRole('button', { name: 'About this request' })).toHaveAccessibleDescription(
+      short
+    );
+    unmount();
+
+    const long =
+      'Only cohorts you can read are listed. Each one is named by its study. Pick one and press Submit.';
+    render(
+      <ElicitationRequest
+        actionRequiredContent={{ ...action, data: { ...action.data, message: `${first} ${long}` } }}
+        isCancelledMessage={false}
+        isClicked={false}
+        onSubmit={vi.fn(async () => undefined)}
+      />
+    );
+    expect(screen.getByText(first)).toHaveClass('text-label');
+    expect(screen.queryByText(long)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+    expect(screen.getByText(long)).toBeInTheDocument();
+  });
+
   it('shows a canceled request as a quiet row', () => {
     render(
       <ElicitationRequest

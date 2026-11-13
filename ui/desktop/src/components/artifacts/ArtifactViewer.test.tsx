@@ -6,7 +6,7 @@ import { ThemeProvider } from '../../contexts/ThemeContext';
 import { AppTooltipLayer } from '../ui/AppTooltipLayer';
 import MarkdownContent from '../MarkdownContent';
 import { GENERATED_THEMES, THEME_FAMILY_IDS } from '../../styles/themes.generated';
-import ArtifactViewer, { safeTiffDimensions } from './ArtifactViewer';
+import ArtifactViewer, { ERROR_DETAILS_LABEL, safeTiffDimensions } from './ArtifactViewer';
 import type { ArtifactSource } from './artifactTypes';
 import { PREVIEW_COPY } from './copy';
 import { artifactSourceFromResource, PAPER_GUTTER_EM, titleFromResourceUri } from './artifactUtils';
@@ -993,6 +993,45 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
       '/Users/wanjun/Desktop/normal_numbers_ggplot_sorted.png'
     );
     expect(screen.queryByText(/ENOENT/)).not.toBeInTheDocument();
+  });
+
+  // A message Biorouter did not write (an unrecognised errno, a library's own error) can run to
+  // several sentences of internals. Its first sentence stays in view, and the whole message is
+  // one press away under Details (owner, 2026-11-13: no block of text where one line will do).
+  it('keeps the first sentence of a long error in view and folds the whole message', async () => {
+    installElectronMock();
+    const long =
+      'The file could not be read. EMFILE: too many open files, open ' +
+      "'/Users/wanjun/Desktop/run/figure.png' while the reader held 4096 descriptors.";
+    (window.electron.readArtifactFile as ReturnType<typeof vi.fn>).mockResolvedValue({
+      kind: 'error',
+      title: 'figure.png',
+      path: '/Users/wanjun/Desktop/run/figure.png',
+      error: long,
+      code: 'EMFILE',
+      found: false,
+    });
+
+    render(
+      <ThemeProvider>
+        <ArtifactViewer
+          artifact={{
+            kind: 'file',
+            title: 'figure.png',
+            path: '/Users/wanjun/Desktop/run/figure.png',
+          }}
+          onClose={vi.fn()}
+          onOpenArtifact={vi.fn()}
+        />
+      </ThemeProvider>
+    );
+
+    const state = await screen.findByTestId('artifact-error-state');
+    expect(within(state).getByText('The file could not be read.')).toBeInTheDocument();
+    expect(state).not.toHaveTextContent('4096 descriptors');
+
+    await userEvent.click(within(state).getByRole('button', { name: ERROR_DETAILS_LABEL }));
+    expect(within(state).getByTestId('artifact-error-details')).toHaveTextContent(long);
   });
 
   // The same empty-state, told the truth. A path the assistant only NAMED — the

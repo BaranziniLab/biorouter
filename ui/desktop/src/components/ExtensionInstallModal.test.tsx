@@ -40,6 +40,12 @@ describe('ExtensionInstallModal', () => {
   const mockAddExtension = vi.fn();
   const mockSetView = vi.fn();
 
+  /** The dialog's buttons, less the InfoTip's glyph, which explains rather than acts. */
+  const actionButtons = () =>
+    screen
+      .getAllByRole('button')
+      .filter((button) => button.getAttribute('data-slot') !== 'info-tip-trigger');
+
   const getAddExtensionEventHandler = () => {
     const addExtensionCall = mockElectron.on.mock.calls.find((call) => call[0] === 'add-extension');
     expect(addExtensionCall).toBeDefined();
@@ -110,7 +116,15 @@ describe('ExtensionInstallModal', () => {
 
       expect(screen.getByText('Install untrusted extension UntrustedExt?')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Install anyway' })).toBeInTheDocument();
-      expect(screen.getAllByRole('button')).toHaveLength(3);
+      // The consequence stays on screen; the advice behind it is the InfoTip's.
+      expect(screen.getByText(/Once installed it can read your chats/)).toBeVisible();
+      expect(
+        screen.getByRole('button', { name: 'About installing this extension' })
+      ).toHaveAccessibleDescription(/may pose security risks/);
+      // The command is data, set in the code face under a sans label.
+      expect(screen.getByText('npx untrusted-extension')).toHaveClass('font-mono', 'text-code');
+      expect(screen.getByText('Command')).not.toHaveClass('font-mono');
+      expect(actionButtons()).toHaveLength(3);
     });
 
     it('should handle i-ching-mcp-server as allowed command', async () => {
@@ -131,6 +145,8 @@ describe('ExtensionInstallModal', () => {
       expect(screen.getByText('Install I Ching?')).toBeInTheDocument();
       expect(screen.getByText(/i-ching-mcp-server/)).toBeInTheDocument();
       expect(screen.getAllByRole('button')).toHaveLength(3);
+      // A trusted install has no advice to fold.
+      expect(screen.queryByRole('button', { name: /^About / })).toBeNull();
     });
     it('should handle blocked extension', async () => {
       mockElectron.getAllowedExtensions.mockResolvedValue(['uvx allowed-package']);
@@ -148,8 +164,14 @@ describe('ExtensionInstallModal', () => {
 
       expect(screen.getByText('Cannot install BlockedExt')).toBeInTheDocument();
       expect(screen.getByRole('button', { name: 'Got it' })).toBeInTheDocument();
-      expect(screen.getAllByRole('button')).toHaveLength(2);
-      expect(screen.getByText(/Contact your administrator/)).toBeInTheDocument();
+      expect(actionButtons()).toHaveLength(2);
+      // The refusal's reason is visible; who to ask is the InfoTip beside it.
+      expect(
+        screen.getByText(/not in the allowed list, so its installation is blocked/)
+      ).toBeVisible();
+      expect(
+        screen.getByRole('button', { name: 'About installing this extension' })
+      ).toHaveAccessibleDescription(/Contact your administrator/);
     });
   });
 

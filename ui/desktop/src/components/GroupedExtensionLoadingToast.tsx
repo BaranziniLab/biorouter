@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Button } from './ui/button';
 import { Spinner } from './ui/spinner';
+import { Disclosure } from './ui/disclosure';
 import { ModalShell } from './ModalShell';
 import { NotificationContent, type NotificationStatus } from './alerts/NotificationSurface';
 import { startNewSession } from '../sessions';
@@ -41,6 +42,21 @@ interface ExtensionLoadingToastProps {
   builtinFailures?: string[];
 }
 
+/** The disclosure under a failed row whose error is longer than its line. */
+export const EXTENSION_ERROR_DETAILS_LABEL = 'Error details';
+
+/**
+ * A failed row's error in two layers (owner, 2026-11-13): the line the row shows, and the whole
+ * error behind "Error details" when the line is not all of it. A short error is its own line. A
+ * long one used to collapse to "Failed to add extension" with the rest only in Copy error; its
+ * first line now stays in view (clamped to two lines), as an error that just happened should.
+ */
+export function extensionErrorLayers(error: string): { line: string; full: string | null } {
+  const firstLine = error.split('\n')[0].trim() || 'Failed to add extension';
+  const line = formatExtensionErrorMessage(error, firstLine);
+  return { line, full: line === error ? null : error };
+}
+
 // Per-row markers: 8px status dots (design.md §4.16), tokenised for both themes.
 function StatusDot({ status }: { status: ExtensionLoadingStatus['status'] }) {
   if (status === 'loading') {
@@ -52,6 +68,25 @@ function StatusDot({ status }: { status: ExtensionLoadingStatus['status'] }) {
         status === 'success' ? 'bg-background-success' : 'bg-background-danger'
       }`}
     />
+  );
+}
+
+/** A failed row's error line, and the whole error folded under it when there is more. */
+function ExtensionErrorLines({ error }: { error: string }) {
+  const { line, full } = extensionErrorLayers(error);
+  return (
+    <>
+      <div className="mt-1 line-clamp-2 text-supporting text-text-muted [overflow-wrap:anywhere]">
+        {line}
+      </div>
+      {full ? (
+        <Disclosure label={EXTENSION_ERROR_DETAILS_LABEL} className="mt-1">
+          <pre className="max-h-28 overflow-auto whitespace-pre-wrap font-mono text-code text-text-muted [overflow-wrap:anywhere]">
+            {full}
+          </pre>
+        </Disclosure>
+      ) : null}
+    </>
   );
 }
 
@@ -108,9 +143,7 @@ function ExtensionLoadReport({
               <div className="truncate text-text-default">{extensionDisplayName(ext.name)}</div>
               {ext.status === 'error' && ext.error && (
                 <>
-                  <div className="mt-1 text-supporting text-text-muted [overflow-wrap:anywhere]">
-                    {formatExtensionErrorMessage(ext.error, 'Failed to add extension')}
-                  </div>
+                  <ExtensionErrorLines error={ext.error} />
                   <div className="mt-1.5 flex flex-wrap gap-2">
                     {ext.recoverHints && onAskBiorouter && (
                       <Button

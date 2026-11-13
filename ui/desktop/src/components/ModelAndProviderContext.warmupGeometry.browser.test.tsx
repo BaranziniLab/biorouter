@@ -207,7 +207,11 @@ describe('the local-model warm-up dialog in Chromium (V3-R7-1)', () => {
     await browser?.close();
   }, 120_000);
 
-  /** Mount the provider, open the sheet the way the picker does, and let its motion settle. */
+  /**
+   * Mount the provider, open the sheet the way the picker does, open its folded detail (it starts
+   * closed under its summary, owner 2026-11-13, and the measurements are of the detail), and let
+   * the motion settle.
+   */
   async function open(mode: Mode, size: { width: number; height: number }): Promise<Page> {
     const tab = await browser!.newPage({ viewport: size });
     // Served from an origin, not `setContent`'s about:blank: storage throws on an opaque origin.
@@ -227,6 +231,8 @@ describe('the local-model warm-up dialog in Chromium (V3-R7-1)', () => {
     });
     await tab.addScriptTag({ content: script });
     await tab.waitForSelector('[role="dialog"]');
+    await tab.getByRole('button', { name: 'Advanced' }).click();
+    await tab.waitForSelector('[role="dialog"] .biorouter-modal-panel');
     await tab.waitForTimeout(450);
     return tab;
   }
@@ -260,8 +266,11 @@ describe('the local-model warm-up dialog in Chromium (V3-R7-1)', () => {
       const scroller = dialog.querySelector('.overflow-y-auto') as HTMLElement;
       const panel = dialog.querySelector('.biorouter-modal-panel') as HTMLElement;
       const header = dialog.firstElementChild!;
+      // The dialog's own actions: the footer's buttons, not the header's × or InfoTip, and not
+      // the disclosures and the InfoTip inside the scrolling body.
       const buttons = [...dialog.querySelectorAll('button')]
         .filter((b) => (b.textContent ?? '').trim() !== 'Close')
+        .filter((b) => !header.contains(b) && !scroller.contains(b))
         .map((b) => ({ name: (b.textContent ?? '').trim(), box: box(b) }));
       const spinner = dialog.querySelector('.br-spinner');
       return {

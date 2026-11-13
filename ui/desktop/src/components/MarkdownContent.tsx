@@ -381,11 +381,16 @@ function artifactSourceFromMarkdownValue(
 const LINK_CLASS =
   'cursor-pointer font-medium text-text-accent underline decoration-text-accent/40 underline-offset-2 transition-colors hover:decoration-text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus';
 
-// Both variants are mono at 13px — the same size as a fenced block
-// (CODE_FONT_SIZE) and inline code. The sole difference is the inline-code
-// fill, which is the only thing `inlineCode` should mean; the two variants
-// used to also disagree on font-size (0.9em vs 0.95em) for no stated reason.
-const ARTIFACT_LINK_BASE_CLASS = 'inline break-all rounded-inner text-left font-mono text-code';
+// The link treatment's layout, shared by both variants.
+const ARTIFACT_LINK_BASE_CLASS = 'inline break-all rounded-inner text-left';
+
+// A path the assistant wrote as inline code stays code: the code role (mono,
+// 12/20, the same as a fenced block and inline code) with the inline-code fill.
+// A path it named in a sentence is where a file lives, so it keeps the
+// sentence's own face and size (design.md D-42), as the unlinkable prose path
+// below already does; only real code is set in mono.
+const ARTIFACT_LINK_CODE_CLASS =
+  'font-mono text-code biorouter-inline-code bg-background-medium px-1 py-0.5';
 
 function ArtifactLinkButton({
   artifact,
@@ -420,9 +425,7 @@ function ArtifactLinkButton({
     return inlineCode ? (
       // Same fill, padding, family and size as the inline-code recipe, so the
       // text is unchanged and only its role is.
-      <span
-        className={`${ARTIFACT_LINK_BASE_CLASS} biorouter-inline-code bg-background-medium px-1 py-0.5 text-text-default`}
-      >
+      <span className={`${ARTIFACT_LINK_BASE_CLASS} ${ARTIFACT_LINK_CODE_CLASS} text-text-default`}>
         {children}
       </span>
     ) : (
@@ -442,7 +445,7 @@ function ArtifactLinkButton({
         <button
           type="button"
           className={`${ARTIFACT_LINK_BASE_CLASS} ${LINK_CLASS} ${
-            inlineCode ? 'biorouter-inline-code bg-background-medium px-1 py-0.5' : ''
+            inlineCode ? ARTIFACT_LINK_CODE_CLASS : ''
           }`}
           onClick={() => onOpenArtifact(artifact)}
         >
