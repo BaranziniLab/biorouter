@@ -1172,9 +1172,13 @@ const CODING_AGENT_BRIDGE_ALLOWED_CHAT_RECALL_TOOLS: &[&str] = &["chatrecall__ch
 // absent from this table, and the table is the only door a BUNDLED extension
 // has onto the bridge: `enabled_coding_agent_bridge_extension_targets` skips
 // every name `resolve_bundled_extension` knows, so a built-in with no policy
-// here is dropped silently. A Claude Code or Codex chat therefore saw the
-// Decisions instructions in its system prompt and no `decide` tool, while a
-// chat on any other provider had both.
+// here was dropped silently. A Claude Code or Codex chat therefore read that
+// Decisions was loaded with no effective tools, and had no `decide`, while a
+// chat on any other provider had both. A drop like that is no longer silent:
+// every bundled capability is in this table or in
+// `CODING_AGENT_BRIDGE_EXCLUSIONS`, and
+// `every_bundled_capability_is_bridged_or_withheld_on_purpose` fails on one in
+// neither.
 //
 // Bridging it adds no new gate and drops none. A bridged call still reaches
 // `ExtensionManager::dispatch_tool_call` (Gate C, with the capability pinned
@@ -1231,22 +1235,9 @@ const CODING_AGENT_BRIDGE_ALLOWED_WEBDOCUMENTS_TOOLS: &[&str] = &[
     "webdocuments__xlsx_tool",
 ];
 
-// ⚠ There is deliberately NO `code_execution` policy, and its absence is the
-// opposite of the Developer one — it withholds no capability.
-//
-// Code Execution is a token-efficiency mechanism, not a capability: with it on,
-// `survives_code_execution_filter` HIDES the ordinary tool surface and the model
-// reaches it by writing JavaScript against `execute_code`. A coding-agent child
-// does better than that. `prepare_tools_and_prompt_for_provider` strips
-// `code_execution__*` from the bridge plan and hands the child the REAL tools
-// directly — `coding_agent_bridge_recovers_managers_hidden_by_code_execution`
-// pins exactly that, asserting the recovered `skills__`/`extensionmanager__`/
-// `knowledge__` tools are present and the prompt describes them rather than a
-// nested executor.
-//
-// So bridging `execute_code` would nest a sandbox inside an agent that already
-// holds everything the sandbox wraps: strictly redundant, and it would put the
-// child back behind an indirection every other capability here removes.
+// The two knowledge-ingestion tools the agent dispatches itself. They ride on
+// the Knowledge target (`CodingAgentBridgePlan::target_for_tool`), so they are
+// offered only while Knowledge is on.
 const CODING_AGENT_BRIDGE_ALLOWED_PLATFORM_TOOLS: &[&str] = &[
     PLATFORM_INGEST_CONVERSATION_TOOL_NAME,
     PLATFORM_INGEST_SOURCE_TOOL_NAME,
@@ -1292,7 +1283,12 @@ const CODING_AGENT_BRIDGE_ALLOWED_EXTENSION_MANAGER_TOOLS: &[&str] = &[
 // a person's proof. Every change parks its own proof-backed card (the permission inspector
 // leaves both tools to it), and a read takes the bridge's capability, Public for both coding
 // agents, so it returns only Public content. The grant's worker tools (`crew__connections`,
-// `crew__request`) are deliberately absent.
+// `crew__request`) are deliberately absent. Crew refuses these providers for everything a grant
+// does, in three places: a grant is never admitted for one (`checked_run_admission`), a chat
+// that holds a grant cannot be bound to one (`check_provider_binding`), and a Crew task cannot
+// start on one (`routes/crew.rs`), because the vendor's own agent runs tools Crew cannot
+// isolate. So the worker tools could only ever answer "type /crew", and a /crew that then
+// refuses this provider.
 const CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS: &[&str] = &["crew__read", "crew__change"];
 
 const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
@@ -1367,6 +1363,122 @@ const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
         tools: CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS,
     },
 ];
+
+/// A bundled capability the coding-agent bridge withholds on purpose.
+///
+/// A bundled capability reaches a Claude Code or Codex child only through its
+/// entry in `CODING_AGENT_BRIDGE_POLICIES`, so one with no entry has none of
+/// its tools on the bridge. That is right for the capability below and was
+/// wrong for Decisions, and nothing told the two apart until this table
+/// existed: every bundled capability is now in exactly one of the two tables,
+/// and `every_bundled_capability_is_bridged_or_withheld_on_purpose` fails on a
+/// capability that is in neither. Crew is in the policy table, not here: only
+/// its person tools may cross, and its grant tools are simply not on that
+/// allowlist (`CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS`).
+///
+/// `note` is what the bridged model reads about the capability in place of its
+/// own instructions (`ExtensionInfo::withheld_note`). Without it the model read
+/// that the capability was "loaded but has no effective tools", which is how a
+/// child came to tell the person that Decisions "exposes no tools" rather than
+/// that it was missing.
+struct CodingAgentBridgeExclusion {
+    target_name: &'static str,
+    note: &'static str,
+}
+
+const CODING_AGENT_BRIDGE_EXCLUSIONS: &[CodingAgentBridgeExclusion] = &[
+    // Code Execution withholds no capability, which makes its absence the
+    // opposite of what the empty Developer list used to be.
+    //
+    // It is a token-efficiency mechanism, not a capability: with it on,
+    // `survives_code_execution_filter` HIDES the ordinary tool surface and the
+    // model reaches it by writing JavaScript against `execute_code`. A
+    // coding-agent child does better than that. The bridge plan leaves out
+    // `code_execution__*` and hands the child the REAL tools directly, which
+    // `coding_agent_bridge_recovers_managers_hidden_by_code_execution` pins: the
+    // recovered `skills__`, `extensionmanager__` and `knowledge__` tools are
+    // present and the prompt describes them rather than a nested executor.
+    //
+    // So bridging `execute_code` would nest a sandbox inside an agent that
+    // already holds everything the sandbox wraps: strictly redundant, and it
+    // would put the child back behind an indirection every other capability
+    // here removes.
+    CodingAgentBridgeExclusion {
+        target_name: "code_execution",
+        note: "Code Execution is not used in this chat. The tools it would run from a script are \
+               offered to you directly, so call them by name.",
+    },
+];
+
+/// What a bridged model reads about a capability that HAS a bridge policy when
+/// none of its tools crosses this turn, in place of its own instructions and
+/// the template's "loaded but has no effective tools" line.
+///
+/// A policy says which tools may cross, not that any will: Crew's admits only
+/// its person tools, which `CrewToolStanding::offers` gives only some chats.
+/// Without a note a Claude Code or Codex chat read that Crew was loaded with
+/// nothing to call, and could tell a person neither why nor what to do, which
+/// is the failure that hid Decisions.
+struct CodingAgentBridgeEmptyNote {
+    target_name: &'static str,
+    note: &'static str,
+}
+
+const CODING_AGENT_BRIDGE_EMPTY_NOTES: &[CodingAgentBridgeEmptyNote] = &[
+    // Holds wherever no Crew tool reaches the chat, which is wherever the
+    // chat's own Crew roster lacks the person tools. It speaks only of what a
+    // grant does (a channel connection, a Crew task), which Crew refuses these
+    // providers in every build (the three refusals named above
+    // `CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS`), so it never claims a person
+    // tool is absent where one might be offered.
+    CodingAgentBridgeEmptyNote {
+        target_name: "crew",
+        note: "No Crew tool is available in this chat. A chat on Claude Code or Codex cannot be \
+               connected to a Crew channel, and a Crew task cannot run on either, because Crew \
+               cannot isolate the tools their own agent runs. If the person asks for Crew, tell \
+               them this, and suggest they switch this chat to a model from any other provider \
+               in the model menu, or start a new chat with one, and then type /crew to connect \
+               it.",
+    },
+];
+
+/// Tell a bridged model why a capability it can see has no tools, in place of
+/// that capability's own instructions: a withheld capability's note
+/// (`CodingAgentBridgeExclusion`), or a bridged one's note for a turn in which
+/// none of its tools crosses (`CodingAgentBridgeEmptyNote`).
+///
+/// Only a capability with no effective tool this turn is noted: the note says
+/// there is nothing to call, so it must never replace a roster that has
+/// something in it.
+pub(super) fn note_capabilities_withheld_from_the_bridge(
+    extensions_info: &mut [crate::agents::extension::ExtensionInfo],
+) {
+    for info in extensions_info {
+        if info.classification != crate::agents::extension::ExtensionClassification::Capability
+            || !info.available_tools.is_empty()
+        {
+            continue;
+        }
+        let Some(note) = CODING_AGENT_BRIDGE_EXCLUSIONS
+            .iter()
+            .map(|exclusion| (exclusion.target_name, exclusion.note))
+            .chain(
+                CODING_AGENT_BRIDGE_EMPTY_NOTES
+                    .iter()
+                    .map(|empty| (empty.target_name, empty.note)),
+            )
+            .find(|(target_name, _)| {
+                resolve_bundled_extension(target_name)
+                    .is_some_and(|target| target.key() == info.name)
+            })
+            .map(|(_, note)| note)
+        else {
+            continue;
+        };
+        info.instructions.clear();
+        info.withheld_note = Some(note.to_string());
+    }
+}
 
 pub(crate) fn coding_agent_bridge_allows_tool(
     tool_name: &str,
@@ -21333,6 +21445,421 @@ mod tests {
         );
     }
 
+    /// Decisions went missing from Claude Code and Codex chats because a
+    /// bundled capability with no entry in `CODING_AGENT_BRIDGE_POLICIES` is
+    /// dropped from the bridge, and nothing said whether a drop was meant. The
+    /// audit that followed found Crew in the same state.
+    ///
+    /// So every bundled capability must be bridged by a policy or withheld by a
+    /// `CODING_AGENT_BRIDGE_EXCLUSIONS` entry, which carries the reason and what
+    /// the model is told. "Every" means each one a fresh install turns on (the
+    /// platform capabilities with `default_enabled`, and every built-in server,
+    /// which `inject_builtin_extensions` writes enabled) and each one a person
+    /// can turn on later (`chatrecall`): the set is read from the two registries
+    /// that spawn them, `PLATFORM_EXTENSIONS` and `BUILTIN_EXTENSIONS`, rather
+    /// than written out, so a capability added to either is covered the day it
+    /// lands and fails here, not in a live chat.
+    #[test]
+    fn every_bundled_capability_is_bridged_or_withheld_on_purpose() {
+        use std::collections::BTreeSet;
+        let key_of = |name: &str| {
+            resolve_bundled_extension(name)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "`{name}` must resolve to exactly one bundled capability; a bridge \
+                         policy or exclusion naming anything else is stale"
+                    )
+                })
+                .key()
+        };
+        // (key, how a person gets it), one row per capability.
+        let mut bundled: Vec<(String, &'static str)> =
+            crate::agents::extension::PLATFORM_EXTENSIONS
+                .values()
+                .map(|def| {
+                    let kind = if def.default_enabled {
+                        "platform capability, on by default"
+                    } else {
+                        "platform capability, off by default and can be turned on"
+                    };
+                    (key_of(def.name), kind)
+                })
+                .chain(
+                    biorouter_mcp::BUILTIN_EXTENSIONS
+                        .values()
+                        .map(|def| (key_of(def.name), "built-in server")),
+                )
+                .collect();
+        bundled.sort();
+        // Both registries were read, and no two entries are one capability, or
+        // every assertion below passes for the wrong reason.
+        let keys: BTreeSet<&str> = bundled.iter().map(|(key, _)| key.as_str()).collect();
+        assert_eq!(
+            keys.len(),
+            bundled.len(),
+            "two registry entries share a key"
+        );
+        assert!(
+            bundled.len() >= 15
+                && keys.contains("crew")
+                && keys.contains("decisions")
+                && keys.contains("developer")
+                && keys.contains("chatrecall"),
+            "read only {keys:?}"
+        );
+
+        let bridged: BTreeSet<String> = CODING_AGENT_BRIDGE_POLICIES
+            .iter()
+            .map(|policy| key_of(policy.target_name))
+            .collect();
+        assert_eq!(
+            bridged.len(),
+            CODING_AGENT_BRIDGE_POLICIES.len(),
+            "two entries in CODING_AGENT_BRIDGE_POLICIES name the same capability"
+        );
+        let withheld: BTreeSet<String> = CODING_AGENT_BRIDGE_EXCLUSIONS
+            .iter()
+            .map(|exclusion| key_of(exclusion.target_name))
+            .collect();
+        assert_eq!(
+            withheld.len(),
+            CODING_AGENT_BRIDGE_EXCLUSIONS.len(),
+            "two entries in CODING_AGENT_BRIDGE_EXCLUSIONS name the same capability"
+        );
+        let both: Vec<_> = bridged.intersection(&withheld).collect();
+        assert!(
+            both.is_empty(),
+            "{both:?} is in both CODING_AGENT_BRIDGE_POLICIES and CODING_AGENT_BRIDGE_EXCLUSIONS \
+             (crates/biorouter/src/agents/agent.rs). A capability is bridged or withheld, never \
+             both: once some of its tools may cross, delete its exclusion, and let its policy name \
+             only those tools."
+        );
+
+        let unaccounted: Vec<String> = bundled
+            .iter()
+            .filter(|(key, _)| !bridged.contains(key) && !withheld.contains(key))
+            .map(|(key, kind)| format!("`{key}` ({kind})"))
+            .collect();
+        assert!(
+            unaccounted.is_empty(),
+            "{} has no entry in CODING_AGENT_BRIDGE_POLICIES and none in \
+             CODING_AGENT_BRIDGE_EXCLUSIONS (crates/biorouter/src/agents/agent.rs). A Claude \
+             Code or Codex chat would drop all of its tools while its instructions still reach \
+             the prompt, and nothing would say why. Bridge it with a CODING_AGENT_BRIDGE_POLICIES \
+             entry that names the tools which may cross, or withhold it with a \
+             CODING_AGENT_BRIDGE_EXCLUSIONS entry whose comment says why and whose note tells the \
+             model what to tell the person.",
+            unaccounted.join(", ")
+        );
+
+        // A note for a turn in which none of a capability's tools crosses
+        // belongs to a bridged capability: a withheld one has its own note.
+        let empty_noted: BTreeSet<String> = CODING_AGENT_BRIDGE_EMPTY_NOTES
+            .iter()
+            .map(|empty| key_of(empty.target_name))
+            .collect();
+        assert_eq!(
+            empty_noted.len(),
+            CODING_AGENT_BRIDGE_EMPTY_NOTES.len(),
+            "two entries in CODING_AGENT_BRIDGE_EMPTY_NOTES name the same capability"
+        );
+        for key in &empty_noted {
+            assert!(
+                bridged.contains(key),
+                "`{key}` is in CODING_AGENT_BRIDGE_EMPTY_NOTES with no entry in \
+                 CODING_AGENT_BRIDGE_POLICIES; a withheld capability's note belongs in \
+                 CODING_AGENT_BRIDGE_EXCLUSIONS"
+            );
+        }
+
+        for (target_name, note) in CODING_AGENT_BRIDGE_EXCLUSIONS
+            .iter()
+            .map(|exclusion| (exclusion.target_name, exclusion.note))
+            .chain(
+                CODING_AGENT_BRIDGE_EMPTY_NOTES
+                    .iter()
+                    .map(|empty| (empty.target_name, empty.note)),
+            )
+        {
+            assert!(
+                note.len() > 40 && note.ends_with('.') && !note.contains(['\u{2014}', '\u{2013}']),
+                "`{target_name}` needs a plain note the model can pass on: {note}"
+            );
+        }
+        // Crew's tools can all be absent from a bridged chat (in this build
+        // always), and the person must then hear why and what to do.
+        assert!(
+            empty_noted.contains("crew"),
+            "Crew needs a CODING_AGENT_BRIDGE_EMPTY_NOTES entry"
+        );
+        // Pinned, so withholding another capability, or bridging this one, is a
+        // decision rather than an accident. Code Execution would only wrap tools
+        // the child already has. Crew is bridged, for its person tools alone
+        // (`a_coding_agent_is_never_offered_crews_grant_tools`).
+        assert_eq!(
+            withheld,
+            BTreeSet::from(["code_execution".to_string()]),
+            "the withheld set changed: update this pin, the exclusion notes and \
+             docs/providers/coding-agents/README.md together"
+        );
+        assert!(bridged.contains("crew"), "Crew must have a bridge policy");
+    }
+
+    /// What a bridged model reads about a capability with no tool this turn:
+    /// Code Execution's exclusion note, Crew's note for a chat no Crew tool
+    /// reaches, and for any other bridged capability the template's own line,
+    /// left alone. A roster with anything in it is never replaced, so Crew's
+    /// note cannot hide a person tool that did cross.
+    #[test]
+    fn a_bridged_chat_reads_why_a_capability_has_no_tool_this_turn() {
+        use crate::agents::extension::ExtensionInfo;
+        let entry = |name: &str, tools: &[&str]| {
+            let mut info = ExtensionInfo::capability(name, "its own instructions", false);
+            info.tool_roster_known = true;
+            info.available_tools = tools.iter().map(|tool| (*tool).to_string()).collect();
+            info
+        };
+        let note_of = |table: &[(&'static str, &'static str)], name: &str| {
+            table
+                .iter()
+                .find(|(target_name, _)| *target_name == name)
+                .map(|(_, note)| note.to_string())
+                .unwrap_or_else(|| panic!("{name} has a note"))
+        };
+        let exclusions: Vec<_> = CODING_AGENT_BRIDGE_EXCLUSIONS
+            .iter()
+            .map(|exclusion| (exclusion.target_name, exclusion.note))
+            .collect();
+        let empty_notes: Vec<_> = CODING_AGENT_BRIDGE_EMPTY_NOTES
+            .iter()
+            .map(|empty| (empty.target_name, empty.note))
+            .collect();
+        let crew_note = note_of(&empty_notes, "crew");
+        // The note is what the person ends up hearing, so it holds both halves
+        // of the answer: why there is no Crew here, and what to do instead.
+        for part in [
+            "Claude Code or Codex",
+            "cannot isolate",
+            "any other provider",
+            "/crew",
+        ] {
+            assert!(crew_note.contains(part), "the Crew note lacks {part:?}");
+        }
+
+        let mut infos = vec![
+            entry("code_execution", &[]),
+            entry("crew", &[]),
+            entry("decisions", &[]),
+            entry("todo", &["todo_write"]),
+        ];
+        // A person tool that crossed keeps Crew's roster and guidance.
+        let mut crew_with_a_tool = entry("crew", &["read"]);
+        // A third-party extension named like a capability is not that capability.
+        let mut extension = ExtensionInfo::new("crew", "a third-party server", false);
+        extension.tool_roster_known = true;
+        infos.push(extension);
+        note_capabilities_withheld_from_the_bridge(&mut infos);
+        note_capabilities_withheld_from_the_bridge(std::slice::from_mut(&mut crew_with_a_tool));
+
+        assert_eq!(
+            infos[0].withheld_note.as_deref(),
+            Some(note_of(&exclusions, "code_execution").as_str())
+        );
+        assert_eq!(infos[1].withheld_note.as_deref(), Some(crew_note.as_str()));
+        for noted in &infos[..2] {
+            assert!(
+                noted.instructions.is_empty(),
+                "{}: its instructions describe tools it was not given",
+                noted.name
+            );
+        }
+        // Decisions has no note, so it keeps the template's own line; To Do
+        // has a tool; the third-party server is not a capability.
+        for (untouched, instructions) in infos[2..].iter().zip([
+            "its own instructions",
+            "its own instructions",
+            "a third-party server",
+        ]) {
+            assert_eq!(untouched.withheld_note, None, "{}", untouched.name);
+            assert_eq!(untouched.instructions, instructions, "{}", untouched.name);
+        }
+        assert_eq!(crew_with_a_tool.withheld_note, None);
+        assert_eq!(crew_with_a_tool.instructions, "its own instructions");
+    }
+
+    /// Crew on the coding-agent bridge, measured end to end (owner ruling D3,
+    /// coordinator instruction S-1). Crew is bridged for its person tools alone:
+    /// `crew__connections` and `crew__request` answer from a Crew grant, which
+    /// Crew never admits for Claude Code or Codex, so neither is ever offered to
+    /// such a chat, while a roster that holds a person tool has it bridged. The
+    /// bridged prompt never carries Crew's own instructions, which describe the
+    /// grant tools. Code Execution, the one withheld capability, is told apart by
+    /// its note.
+    ///
+    /// Every control is one that holds before and after the person tools land
+    /// (#475), which narrows a chat's own Crew roster: the registry and the
+    /// capability's instructions, never "an ordinary chat is offered the grant
+    /// tools", which stops being true there.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_coding_agent_is_never_offered_crews_grant_tools() {
+        use std::collections::BTreeSet;
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let enable = |name: &'static str| {
+            let agent = &agent;
+            async move {
+                let target = resolve_bundled_extension(name).expect("a bundled capability");
+                agent
+                    .add_extension(target.into_config(format!("{name} on the bridge")))
+                    .await
+                    .unwrap_or_else(|error| panic!("enable {name}: {error}"));
+            }
+        };
+        enable("crew").await;
+        enable("code_execution").await;
+        let grant_tools = ["crew__connections", "crew__request"];
+        let person_tools: BTreeSet<&str> = CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS
+            .iter()
+            .copied()
+            .collect();
+
+        // The allowlist: the grant tools are off it, the person tools are on it,
+        // and the two never meet.
+        for tool in grant_tools {
+            assert!(
+                !coding_agent_bridge_policy_allows_tool(tool),
+                "{tool} answers from a Crew grant, which Crew refuses these providers"
+            );
+            assert!(!person_tools.contains(tool), "{tool} is a grant tool");
+        }
+        assert!(
+            !person_tools.is_empty(),
+            "Crew's bridge policy admits nothing"
+        );
+        for tool in &person_tools {
+            assert!(tool.starts_with("crew__"), "{tool} is not a Crew tool");
+            assert!(coding_agent_bridge_policy_allows_tool(tool), "{tool}");
+        }
+
+        // The controls. The registry lists the grant tools, so the bridge had them
+        // to drop; and Crew's instructions are loaded, so their absence from the
+        // bridged prompt below is a choice, not a capability that never came up.
+        let registry: BTreeSet<String> = agent
+            .extension_manager
+            .get_prefixed_tools(None)
+            .await
+            .expect("list the registry")
+            .iter()
+            .map(|tool| tool.name.to_string())
+            .collect();
+        for tool in grant_tools {
+            assert!(
+                registry.contains(tool),
+                "precondition: the registry lists {tool}"
+            );
+        }
+        // A distinctive sentence from Crew's own instructions.
+        let crew_instruction = "crew__connections lists authorized source_channel_ids.";
+        assert!(
+            agent
+                .extension_manager
+                .get_extensions_info()
+                .await
+                .iter()
+                .any(|info| info.name == "crew" && info.instructions.contains(crew_instruction)),
+            "precondition: Crew's instructions are loaded"
+        );
+        let code_execution_note = CODING_AGENT_BRIDGE_EXCLUSIONS
+            .iter()
+            .find(|exclusion| exclusion.target_name == "code_execution")
+            .expect("Code Execution is withheld")
+            .note;
+        let session = agent
+            .config
+            .session_manager
+            .get_session(&session_id, false)
+            .await
+            .expect("read the chat");
+
+        for provider_name in ["claude_code", "codex"] {
+            let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider {
+                name: provider_name,
+            });
+            let (tools, _, prompt, plan) = agent
+                .prepare_tools_and_prompt_for_provider(&session_id, &session.working_dir, &provider)
+                .await
+                .unwrap_or_else(|error| panic!("{provider_name}: prepare a turn: {error}"));
+            let plan = plan.unwrap_or_else(|| panic!("{provider_name} needs a bridge plan"));
+            assert!(
+                plan.target_named("crew").is_some(),
+                "{provider_name}: Crew is a bridge target while it is on"
+            );
+            for surface in [&tools, &plan.tools] {
+                for tool in surface.iter() {
+                    let name = tool.name.as_ref();
+                    assert!(
+                        !name.starts_with("crew__") || person_tools.contains(name),
+                        "{provider_name} was offered {name}, which only a Crew grant answers"
+                    );
+                    assert!(
+                        !name.starts_with("code_execution__"),
+                        "{provider_name} was offered withheld {name}"
+                    );
+                }
+            }
+            // The bridge is live for this chat, so what is absent was dropped.
+            assert!(
+                tools
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == "todo__todo_write"),
+                "{provider_name}: precondition, Todo is bridged"
+            );
+            assert!(
+                !prompt.contains(crew_instruction),
+                "{provider_name}: Crew's instructions describe the grant tools this chat \
+                 cannot have: {prompt}"
+            );
+            // No Crew tool crossed, so the Crew entry says why rather than that
+            // Crew is loaded with nothing to call (`CODING_AGENT_BRIDGE_EMPTY_NOTES`).
+            let crew_section = prompt
+                .split("\n## ")
+                .find(|section| section.starts_with("crew"))
+                .unwrap_or_else(|| panic!("{provider_name}: the prompt names Crew: {prompt}"));
+            assert!(
+                !crew_section.contains("loaded but has no effective tools"),
+                "{provider_name}: the person would hear that Crew has nothing to call, and not \
+                 why: {crew_section}"
+            );
+            assert!(
+                prompt.contains(code_execution_note),
+                "{provider_name}: the prompt must say Code Execution is not used: {prompt}"
+            );
+
+            // The person tools cross wherever the chat's own roster holds them.
+            // They arrive with #475, so stand them in beside the grant tools: the
+            // bridge keeps the person tools and drops the grant's.
+            let roster: Vec<Tool> = grant_tools
+                .iter()
+                .chain(person_tools.iter())
+                .map(|name| bridge_test_tool(name))
+                .collect();
+            let plan = agent
+                .prepare_coding_agent_bridge_plan(&provider, &roster)
+                .await
+                .unwrap_or_else(|| panic!("{provider_name} needs a bridge plan"));
+            let bridged_crew: BTreeSet<&str> = plan
+                .tools
+                .iter()
+                .map(|tool| tool.name.as_ref())
+                .filter(|name| name.starts_with("crew__"))
+                .collect();
+            assert_eq!(
+                bridged_crew, person_tools,
+                "{provider_name}: a roster holding Crew's person tools has exactly those bridged"
+            );
+        }
+    }
+
     /// ⚠ The name still says "withholds arbitrary host tools", and that is
     /// still what it measures — but the set of tools that counts as *arbitrary*
     /// shrank. Every BUILT-IN capability is now bridged, Developer, Biorouter
@@ -21345,9 +21872,9 @@ mod tests {
     fn subscription_coding_agent_bridge_withholds_arbitrary_host_tools_but_allows_managers() {
         for blocked in [
             "custom_local_mcp__read_any_path",
-            // Not withheld — RECOVERED. See the comment on the missing
-            // `code_execution` policy: the child gets the real tools this would
-            // have wrapped, so bridging it would only re-add an indirection.
+            // Not withheld but RECOVERED. See Code Execution's entry in
+            // `CODING_AGENT_BRIDGE_EXCLUSIONS`: the child gets the real tools this
+            // would have wrapped, so bridging it would only re-add an indirection.
             "code_execution__execute_code",
             "code_execution__read_module",
             "workspace__workspace_set_tools",
@@ -21432,6 +21959,10 @@ mod tests {
             "computercontroller",
             "webdocuments",
             "decisions",
+            // `todo` is already on: the fixture loads it.
+            "chatrecall",
+            // The withheld capability, checked below from the other side.
+            "code_execution",
         ] {
             let target = resolve_bundled_extension(name).expect("reviewed bundled target");
             agent
@@ -21488,6 +22019,33 @@ mod tests {
             prefixed("decisions"),
             expected(CODING_AGENT_BRIDGE_ALLOWED_DECISIONS_TOOLS)
         );
+        // To Do and Chat Recall bridge their whole rosters too, and nothing
+        // pinned either one until the audit that followed Decisions.
+        assert_eq!(
+            prefixed("todo"),
+            expected(CODING_AGENT_BRIDGE_ALLOWED_TODO_TOOLS)
+        );
+        assert_eq!(
+            prefixed("chatrecall"),
+            expected(CODING_AGENT_BRIDGE_ALLOWED_CHAT_RECALL_TOOLS)
+        );
+        // And a withheld capability is withheld whole: none of its live tools
+        // is on any allowlist, including a tool added to it later, so it can
+        // never reach a coding agent as a half-bridged surface its note says is
+        // not there.
+        for exclusion in CODING_AGENT_BRIDGE_EXCLUSIONS {
+            let key = resolve_bundled_extension(exclusion.target_name)
+                .expect("a withheld capability is bundled")
+                .key();
+            let live = prefixed(&key);
+            assert!(!live.is_empty(), "precondition: {key} is loaded");
+            for tool in &live {
+                assert!(
+                    !coding_agent_bridge_policy_allows_tool(tool),
+                    "{tool} belongs to withheld {key} and is on a bridge allowlist"
+                );
+            }
+        }
     }
 
     /// #150.3. `coding_agent_bridge_policy_matches_the_reviewed_builtin_router_rosters`
