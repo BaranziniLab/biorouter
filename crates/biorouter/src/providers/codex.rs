@@ -2326,8 +2326,6 @@ for line in sys.stdin:
             .expect("the fake app server should start")
     }
 
-    /// The thread is read-only, ephemeral, and carries Biorouter's instructions.
-    /// Each of the four is a decision rather than a default, so each is pinned.
     /// Coding-agent parity, CP-7 (`docs/crew/design/coding-agent-parity.md`): Crew admits a
     /// Codex chat as it admits any public model because the Codex child has no tool of its own,
     /// only Biorouter's, through the bridge. These are the flags that argument rests on: no
@@ -2382,6 +2380,8 @@ for line in sys.stdin:
         );
     }
 
+    /// The thread is read-only, ephemeral, and carries Biorouter's instructions.
+    /// Each of the four is a decision rather than a default, so each is pinned.
     #[test]
     fn thread_params_are_locked_down() {
         let p = CodexProvider::thread_params("SYSTEM", "/tmp/work", "gpt-5.5", None);

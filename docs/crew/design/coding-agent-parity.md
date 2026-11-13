@@ -74,7 +74,7 @@ The bridge takes Crew tools only from that roster, never from the registry (unch
 
 ### CP-5: a bridged call carries the chat's tier
 
-The bridge plan's capability is sampled from the chat's provider slot, the DR-33 tier, not from the provider rebuilt for one iteration of the reply loop. The two are equal for Claude Code and Codex, which are Public with no affiliation and cannot be lowered further, but Crew's dispatch check reads this capability, so it must be the chat's tier if a private provider ever drives the bridge.
+The bridge plan's capability is sampled from the chat's provider slot, the DR-33 tier, not from the provider rebuilt for one iteration of the reply loop, while the slot holds the provider that iteration runs on (the same provider at the same tier, which an effort rebuild keeps). With nothing bound, or a model switched since the iteration began, the iteration's own provider is sampled, so a slot more private than the provider the child talks to never widens what a public child may read. The two are equal for Claude Code and Codex, which are Public with no affiliation and cannot be lowered further, but Crew's dispatch check reads this capability, so it must be the chat's tier if a private provider ever drives the bridge.
 
 ### CP-6: long Crew work never outlasts a bridged call
 

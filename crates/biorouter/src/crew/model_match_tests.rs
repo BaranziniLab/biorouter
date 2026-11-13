@@ -516,6 +516,49 @@ async fn versa_and_a_chat_made_public_by_its_decision_model_meet_the_same_rule()
     .await;
 }
 
+/// `text` without its comment lines and its test-only items. Each `#[cfg(test)]` item is
+/// dropped whole: a block (a test module, a test helper) to its closing brace, a one-line item
+/// (`mod tests;`, a `use`) by itself; the rest of the file is kept. Braces are counted plainly,
+/// which [`no_crew_door_asks_the_provider_kind`]'s size floors keep honest: a strip that ate a
+/// file's production code would fall below them.
+fn without_test_items(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let mut kept = Vec::with_capacity(lines.len());
+    let mut at = 0;
+    while at < lines.len() {
+        if lines[at].trim() != "#[cfg(test)]" {
+            if !lines[at].trim_start().starts_with("//") {
+                kept.push(lines[at]);
+            }
+            at += 1;
+            continue;
+        }
+        at += 1;
+        while at < lines.len() && lines[at].trim_start().starts_with("#[") {
+            at += 1;
+        }
+        let (mut depth, mut opened) = (0i64, false);
+        while at < lines.len() {
+            let line = lines[at];
+            for c in line.chars() {
+                match c {
+                    '{' => {
+                        depth += 1;
+                        opened = true;
+                    }
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            at += 1;
+            if (opened && depth <= 0) || (!opened && line.trim_end().ends_with(';')) {
+                break;
+            }
+        }
+    }
+    kept.join("\n")
+}
+
 /// The Crew source files whose code may decide who reads Crew: the core, the server's Crew
 /// routes and the person tools, and the Crew capability's dispatch. Test files and test
 /// modules are left out, and so are comment lines.
@@ -556,14 +599,7 @@ fn crew_code() -> Vec<(String, String)> {
         })
         .map(|path| {
             let text = std::fs::read_to_string(&path).unwrap();
-            let code: String = text
-                .split("\n#[cfg(test)]")
-                .next()
-                .unwrap_or_default()
-                .lines()
-                .filter(|line| !line.trim_start().starts_with("//"))
-                .collect::<Vec<_>>()
-                .join("\n");
+            let code = without_test_items(&text);
             let relative = path
                 .strip_prefix(&root)
                 .unwrap()
@@ -592,8 +628,28 @@ fn no_crew_door_asks_the_provider_kind() {
         "read only {:?}",
         files.iter().map(|(path, _)| path).collect::<Vec<_>>()
     );
-    let tier_comparison =
-        regex::Regex::new(r"[=!]=\s*ProviderTier::Public|ProviderTier::Public\s*[=!]=").unwrap();
+    // Each key file keeps its production code (measured 2026-11-12: crew/mod.rs 6,434 lines,
+    // routes/crew.rs 2,486, crew_extension.rs 583), so a strip that ate one fails here rather
+    // than scanning nothing.
+    for (file, floor) in [
+        ("crates/biorouter/src/crew/mod.rs", 5_000),
+        ("crates/biorouter-server/src/routes/crew.rs", 1_800),
+        ("crates/biorouter/src/agents/crew_extension.rs", 400),
+        (
+            "crates/biorouter-server/src/routes/crew_tools/tasks.rs",
+            300,
+        ),
+    ] {
+        let lines = files
+            .iter()
+            .find(|(path, _)| path == file)
+            .map_or(0, |(_, code)| code.lines().count());
+        assert!(lines > floor, "{file}: only {lines} lines were scanned");
+    }
+    let tier_comparison = regex::Regex::new(
+        r"[=!]=\s*ProviderTier::Public|ProviderTier::Public\s*[=!]=|matches!\([^)]*ProviderTier::Public",
+    )
+    .unwrap();
     let mut offenders = Vec::new();
     for (path, code) in &files {
         for kind in [
