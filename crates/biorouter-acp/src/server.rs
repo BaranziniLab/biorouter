@@ -1011,18 +1011,15 @@ impl BioRouterAcpAgent {
         Ok(LoadSessionResponse::new())
     }
 
-    async fn on_prompt(
+    /// Answer the dictation a prompt carries before the agent sees it: a lone `/dictate`
+    /// gets MSG-ACP-DICTATE where the command is offered, and audio blocks get
+    /// MSG-ACP-NOTE. Returns the response that ends the turn there (`/dictate`, or a
+    /// prompt of nothing but audio), or `None` when the prompt goes on to the agent.
+    fn answer_dictation_in_prompt(
         &self,
-        args: PromptRequest,
+        args: &PromptRequest,
         cx: &JrConnectionCx<AgentToClient>,
-    ) -> Result<PromptResponse, sacp::Error> {
-        let session_id = args.session_id.0.to_string();
-        if !self.sessions.lock().await.contains_key(&session_id) {
-            return Err(
-                sacp::Error::invalid_params().data(format!("Session not found: {}", session_id))
-            );
-        }
-
+    ) -> Result<Option<PromptResponse>, sacp::Error> {
         if self.dictate_available
             && matches!(
                 args.prompt.as_slice(),
@@ -1030,12 +1027,12 @@ impl BioRouterAcpAgent {
             )
         {
             cx.send_notification(SessionNotification::new(
-                args.session_id,
+                args.session_id.clone(),
                 SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
                     TextContent::new(MSG_ACP_DICTATE),
                 ))),
             ))?;
-            return Ok(PromptResponse::new(StopReason::EndTurn));
+            return Ok(Some(PromptResponse::new(StopReason::EndTurn)));
         }
 
         let has_audio = args
@@ -1054,8 +1051,26 @@ impl BioRouterAcpAgent {
                 .iter()
                 .all(|block| matches!(block, ContentBlock::Audio(_)))
             {
-                return Ok(PromptResponse::new(StopReason::EndTurn));
+                return Ok(Some(PromptResponse::new(StopReason::EndTurn)));
             }
+        }
+        Ok(None)
+    }
+
+    async fn on_prompt(
+        &self,
+        args: PromptRequest,
+        cx: &JrConnectionCx<AgentToClient>,
+    ) -> Result<PromptResponse, sacp::Error> {
+        let session_id = args.session_id.0.to_string();
+        if !self.sessions.lock().await.contains_key(&session_id) {
+            return Err(
+                sacp::Error::invalid_params().data(format!("Session not found: {}", session_id))
+            );
+        }
+
+        if let Some(response) = self.answer_dictation_in_prompt(&args, cx)? {
+            return Ok(response);
         }
 
         let cancel_token = CancellationToken::new();

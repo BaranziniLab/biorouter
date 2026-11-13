@@ -210,35 +210,12 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
     const CMD_COMPACT: &str = "/compact";
     const CMD_SUMMARIZE_DEPRECATED: &str = "/summarize";
 
+    #[cfg(feature = "dictation")]
+    if let Some(result) = dictation_slash_command(input) {
+        return Some(result);
+    }
+
     match input {
-        #[cfg(feature = "dictation")]
-        "/dictate" => Some(InputResult::Dictate {
-            left: String::new(),
-            right: String::new(),
-        }),
-        #[cfg(feature = "dictation")]
-        "/dictate status" => Some(InputResult::DictateStatus),
-        #[cfg(feature = "dictation")]
-        "/dictate retry" => Some(InputResult::DictateRetry),
-        #[cfg(feature = "dictation")]
-        s if s == "/dictate install" || s.starts_with("/dictate install ") => {
-            let model = s
-                .strip_prefix("/dictate install")
-                .unwrap_or_default()
-                .trim();
-            Some(InputResult::DictateInstall(
-                (!model.is_empty()).then(|| model.to_string()),
-            ))
-        }
-        #[cfg(feature = "dictation")]
-        s if s.starts_with("/dictionary add ") => Some(InputResult::DictionaryAdd(
-            s.strip_prefix("/dictionary add ")
-                .unwrap_or_default()
-                .trim()
-                .to_string(),
-        )),
-        #[cfg(feature = "dictation")]
-        "/dictionary review" => Some(InputResult::DictionaryReview),
         s if s == "/folder-access" || s.starts_with("/folder-access ") => {
             Some(InputResult::FolderAccess(
                 s.strip_prefix("/folder-access")
@@ -306,6 +283,37 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
             Some(InputResult::Compact)
         }
         "/r" => Some(InputResult::ToggleFullToolOutput),
+        _ => None,
+    }
+}
+
+/// The `/dictate` and `/dictionary` commands, checked before every other slash command.
+/// `input` is already trimmed; `None` means it is none of them.
+#[cfg(feature = "dictation")]
+fn dictation_slash_command(input: &str) -> Option<InputResult> {
+    match input {
+        "/dictate" => Some(InputResult::Dictate {
+            left: String::new(),
+            right: String::new(),
+        }),
+        "/dictate status" => Some(InputResult::DictateStatus),
+        "/dictate retry" => Some(InputResult::DictateRetry),
+        s if s == "/dictate install" || s.starts_with("/dictate install ") => {
+            let model = s
+                .strip_prefix("/dictate install")
+                .unwrap_or_default()
+                .trim();
+            Some(InputResult::DictateInstall(
+                (!model.is_empty()).then(|| model.to_string()),
+            ))
+        }
+        s if s.starts_with("/dictionary add ") => Some(InputResult::DictionaryAdd(
+            s.strip_prefix("/dictionary add ")
+                .unwrap_or_default()
+                .trim()
+                .to_string(),
+        )),
+        "/dictionary review" => Some(InputResult::DictionaryReview),
         _ => None,
     }
 }

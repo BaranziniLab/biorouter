@@ -3567,6 +3567,126 @@ async fn handle_extension_subcommand(command: ExtensionCommand) -> Result<()> {
     }
 }
 
+/// Run one `biorouter dictation` subcommand (speech models, devices, the microphone test).
+async fn handle_dictation_subcommand(command: DictationCommand) -> Result<()> {
+    match command {
+        DictationCommand::Status { format, verbose } => {
+            crate::commands::dictation::handle_status(&format, verbose).await
+        }
+        DictationCommand::List { format } => crate::commands::dictation::handle_list(&format).await,
+        DictationCommand::Install {
+            model,
+            from,
+            system,
+            yes,
+            suggest_from_chats,
+            no_suggest_from_chats,
+        } => {
+            crate::commands::dictation::handle_install_with_choice(
+                crate::commands::dictation::InstallArgs {
+                    model,
+                    from,
+                    system,
+                    yes,
+                },
+                if suggest_from_chats {
+                    Some(true)
+                } else if no_suggest_from_chats {
+                    Some(false)
+                } else {
+                    None
+                },
+            )
+            .await
+        }
+        DictationCommand::Remove { model, system, yes } => {
+            crate::commands::dictation::handle_remove(&model, system, yes).await
+        }
+        DictationCommand::Use { model } => crate::commands::dictation::handle_use(&model).await,
+        DictationCommand::Urls { model } => {
+            crate::commands::dictation::handle_urls(model.as_deref())
+        }
+        DictationCommand::Verify {} => crate::commands::dictation::handle_verify().await,
+        DictationCommand::Bench { format } => {
+            crate::commands::dictation::handle_bench(&format).await
+        }
+        DictationCommand::WarmUp { model } => {
+            crate::commands::dictation::handle_warm_up(&model).await
+        }
+        DictationCommand::Devices { format } => {
+            crate::commands::dictation::handle_devices(&format).await
+        }
+        DictationCommand::Test { seconds } => {
+            crate::commands::dictate::handle_microphone_test(seconds).await
+        }
+    }
+}
+
+/// Run `biorouter dictate`. [`dispatch`] hands over the whole `Command::Dictate` so its
+/// table stays one arm per verb; no other variant is routed here.
+async fn handle_dictate_command(command: Command) -> Result<()> {
+    let Command::Dictate {
+        copy,
+        no_history,
+        format,
+        seconds,
+        session,
+        private_terms,
+        language,
+        model,
+        no_dictionary,
+        no_review,
+        yes,
+        file,
+    } = command
+    else {
+        unreachable!("dispatch routes only `Command::Dictate` here");
+    };
+    crate::commands::dictate::handle_dictate(crate::commands::dictate::DictateArgs {
+        copy,
+        no_history,
+        format: crate::commands::dictate::DictateFormat::parse(&format),
+        seconds,
+        session,
+        private_terms,
+        language,
+        model,
+        no_dictionary,
+        no_review: no_review || yes,
+        file,
+    })
+    .await
+}
+
+/// Run `biorouter transcribe`. [`dispatch`] hands over the whole `Command::Transcribe` so
+/// its table stays one arm per verb; no other variant is routed here.
+async fn handle_transcribe_command(command: Command) -> Result<()> {
+    let Command::Transcribe {
+        input,
+        format,
+        output,
+        language,
+        model,
+        session,
+        context_file,
+        no_dictionary,
+    } = command
+    else {
+        unreachable!("dispatch routes only `Command::Transcribe` here");
+    };
+    crate::commands::transcribe::handle_transcribe(crate::commands::transcribe::TranscribeArgs {
+        input,
+        format: crate::commands::transcribe::OutputFormat::parse(&format),
+        output,
+        language,
+        model,
+        session,
+        context_file,
+        no_dictionary,
+    })
+    .await
+}
+
 async fn handle_dictionary_subcommand(command: DictionaryCommand) -> Result<()> {
     crate::commands::dictionary::handle(command.into_action()).await
 }
@@ -3811,6 +3931,15 @@ pub async fn cli(command_line: CommandLine) -> anyhow::Result<()> {
     dispatch(cli.command).await
 }
 
+/// Mark this process as the terminal surface for the dictation and dictionary code that
+/// reads `activation::process_surface` (the first surface set wins). `session` and `run`
+/// call it before they start.
+fn mark_cli_surface() {
+    biorouter::dictation::activation::set_process_surface(
+        biorouter::dictation::activation::Surface::Cli,
+    );
+}
+
 /// Run the named command.
 ///
 /// Split out of [`cli`] so that adding a verb grows a function that is nothing
@@ -3845,9 +3974,7 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
             extension_opts,
             model_opts,
         }) => {
-            biorouter::dictation::activation::set_process_surface(
-                biorouter::dictation::activation::Surface::Cli,
-            );
+            mark_cli_surface();
             handle_session_command(
                 command,
                 identifier,
@@ -3872,9 +3999,7 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
             output_opts,
             model_opts,
         }) => {
-            biorouter::dictation::activation::set_process_surface(
-                biorouter::dictation::activation::Surface::Cli,
-            );
+            mark_cli_surface();
             handle_run_command(
                 input_opts,
                 identifier,
@@ -3906,112 +4031,9 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
         Some(Command::Workflow { command }) => handle_workflow_subcommand(command),
         Some(Command::Decide(options)) => crate::commands::decide::handle_decide(options).await,
         Some(Command::Models { command }) => handle_models_subcommand(command).await,
-        Some(Command::Dictation { command }) => match command {
-            DictationCommand::Status { format, verbose } => {
-                crate::commands::dictation::handle_status(&format, verbose).await
-            }
-            DictationCommand::List { format } => {
-                crate::commands::dictation::handle_list(&format).await
-            }
-            DictationCommand::Install {
-                model,
-                from,
-                system,
-                yes,
-                suggest_from_chats,
-                no_suggest_from_chats,
-            } => {
-                crate::commands::dictation::handle_install_with_choice(
-                    crate::commands::dictation::InstallArgs {
-                        model,
-                        from,
-                        system,
-                        yes,
-                    },
-                    if suggest_from_chats {
-                        Some(true)
-                    } else if no_suggest_from_chats {
-                        Some(false)
-                    } else {
-                        None
-                    },
-                )
-                .await
-            }
-            DictationCommand::Remove { model, system, yes } => {
-                crate::commands::dictation::handle_remove(&model, system, yes).await
-            }
-            DictationCommand::Use { model } => crate::commands::dictation::handle_use(&model).await,
-            DictationCommand::Urls { model } => {
-                crate::commands::dictation::handle_urls(model.as_deref())
-            }
-            DictationCommand::Verify {} => crate::commands::dictation::handle_verify().await,
-            DictationCommand::Bench { format } => {
-                crate::commands::dictation::handle_bench(&format).await
-            }
-            DictationCommand::WarmUp { model } => {
-                crate::commands::dictation::handle_warm_up(&model).await
-            }
-            DictationCommand::Devices { format } => {
-                crate::commands::dictation::handle_devices(&format).await
-            }
-            DictationCommand::Test { seconds } => {
-                crate::commands::dictate::handle_microphone_test(seconds).await
-            }
-        },
-        Some(Command::Dictate {
-            copy,
-            no_history,
-            format,
-            seconds,
-            session,
-            private_terms,
-            language,
-            model,
-            no_dictionary,
-            no_review,
-            yes,
-            file,
-        }) => {
-            crate::commands::dictate::handle_dictate(crate::commands::dictate::DictateArgs {
-                copy,
-                no_history,
-                format: crate::commands::dictate::DictateFormat::parse(&format),
-                seconds,
-                session,
-                private_terms,
-                language,
-                model,
-                no_dictionary,
-                no_review: no_review || yes,
-                file,
-            })
-            .await
-        }
-        Some(Command::Transcribe {
-            input,
-            format,
-            output,
-            language,
-            model,
-            session,
-            context_file,
-            no_dictionary,
-        }) => {
-            crate::commands::transcribe::handle_transcribe(
-                crate::commands::transcribe::TranscribeArgs {
-                    input,
-                    format: crate::commands::transcribe::OutputFormat::parse(&format),
-                    output,
-                    language,
-                    model,
-                    session,
-                    context_file,
-                    no_dictionary,
-                },
-            )
-            .await
-        }
+        Some(Command::Dictation { command }) => handle_dictation_subcommand(command).await,
+        Some(command @ Command::Dictate { .. }) => handle_dictate_command(command).await,
+        Some(command @ Command::Transcribe { .. }) => handle_transcribe_command(command).await,
         Some(Command::Dictionary { command }) => handle_dictionary_subcommand(command).await,
         Some(Command::Knowledge { command }) => handle_knowledge_subcommand(command).await,
         Some(Command::Extension { command }) => handle_extension_subcommand(command).await,
