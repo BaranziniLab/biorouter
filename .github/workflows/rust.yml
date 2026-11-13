@@ -361,17 +361,23 @@ jobs:
         if: ${{ !cancelled() && env.CI_FULL_SUITE == 'true' }}
         run: cargo clippy --workspace --all-targets --locked
 
+  # Three shards on a pull request, where someone waits on the run; one job
+  # (`1/1`, every step of every shard) on main and nightly, where nobody does.
+  # Each shard pays its own setup and library compile, and the organisation
+  # runs at most 20 jobs at once: three main-branch shards would hold three of
+  # those slots while pull requests queue (measured 2026-11-13: 20 of 20 busy
+  # for 20 minutes, mostly with main-branch runs).
   integration:
-    name: integration (ubuntu, ${{ matrix.shard }}/3)
-    timeout-minutes: 60
+    name: integration (ubuntu, ${{ matrix.shard }}/${{ github.event_name == 'pull_request' && 3 || 1 }})
+    timeout-minutes: 75
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[1, 2, 3]' || '[1]') }}
     env:
       SHARD: ${{ matrix.shard }}
-      SHARDS: 3
+      SHARDS: ${{ github.event_name == 'pull_request' && 3 || 1 }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -463,7 +469,8 @@ jobs:
       # line naming a target that no longer exists fails the step.
       #
       # Sharding: the remaining targets, sorted by name, are dealt round-robin
-      # across the three shards (target i goes to shard i mod 3, plus one).
+      # across the shards (target i goes to shard i mod SHARDS, plus one; on
+      # main SHARDS is 1 and one job runs them all).
       # Every shard computes the same list and checks the same table, so every
       # target runs in exactly one shard. Measured on 2026-11-13 the 208
       # binaries then ran 11.0 minutes in sequence; dealt this way the shards
@@ -545,7 +552,7 @@ jobs:
 
       # ── `biorouter serve` end to end, and the generated API contract ───────
       #
-      # Shard 3 carries what used to be two more jobs, each of which compiled
+      # Shard 3 (the single job on main) carries what used to be two more jobs, each of which compiled
       # the daemon on its own: `serve` here (11.6 minutes median, its own 2 GB
       # cache) and `Generated API contract` in frontend.yml (5.8 minutes, a
       # 1.3 GB cache). They now use the executables this job's cargo build
@@ -555,7 +562,7 @@ jobs:
       # shard already ran them. A renamed test fails here ("no test target
       # named"), not silently.
       - name: Build the command, the daemon and the schema generator
-        if: matrix.shard == 3 && !cancelled()
+        if: ${{ !cancelled() && (matrix.shard == 3 || github.event_name != 'pull_request') }}
         env:
           BIOROUTER_DISABLE_KEYRING: "true"
         run: |
@@ -566,7 +573,7 @@ jobs:
           done
 
       - name: Install the interface's dependencies
-        if: matrix.shard == 3 && !cancelled()
+        if: ${{ !cancelled() && (matrix.shard == 3 || github.event_name != 'pull_request') }}
         working-directory: ui/desktop
         run: npm ci
         env:
@@ -580,7 +587,7 @@ jobs:
       # CARGO_MANIFEST_DIR at run time to find ui/desktop/openapi.json, which
       # `cargo run` used to set for it.
       - name: Generated API contract (schema and TypeScript client are committed)
-        if: matrix.shard == 3 && !cancelled()
+        if: ${{ !cancelled() && (matrix.shard == 3 || github.event_name != 'pull_request') }}
         run: |
           set -euo pipefail
           CARGO_MANIFEST_DIR="$PWD/crates/biorouter-server" ./target/debug/generate_schema > /dev/null
@@ -594,7 +601,7 @@ jobs:
       # everything between the browser and that boundary. SIGTERM, SIGINT and
       # SIGKILL to `serve` are `serve_lifecycle`'s job, in the offline step.
       - name: Build the interface bundle
-        if: matrix.shard == 3 && !cancelled()
+        if: ${{ !cancelled() && (matrix.shard == 3 || github.event_name != 'pull_request') }}
         working-directory: ui/desktop
         run: |
           npm run build:web
@@ -607,7 +614,7 @@ jobs:
           ! grep -q 'src="/assets/' src/web/index.html
 
       - name: Serve, and check the whole browser contract
-        if: matrix.shard == 3 && !cancelled()
+        if: ${{ !cancelled() && (matrix.shard == 3 || github.event_name != 'pull_request') }}
         run: |
           set -euo pipefail
           export BIOROUTER_PATH_ROOT="$RUNNER_TEMP/serve-root"

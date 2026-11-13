@@ -58,12 +58,14 @@ cd ui/desktop && npm run test-e2e               # Run Playwright E2E tests
   which `scripts/ci/choose-os-suite.sh` decides from the diff (a `cfg` for the OS in a changed
   hunk, a path naming it, and on Windows the dependency set), or the pull request carries the
   `ci:full` label (add it, then push). The full macOS and Windows suites run on every push to
-  `main`, nightly and on dispatch. So a pull request that changes, say, a Windows-only branch deep
+  `main`, nightly and on dispatch, where the integration binaries and vitest run unsharded (one
+  job each) to hold fewer of the organisation's 20 runner slots. So a pull request that changes, say, a Windows-only branch deep
   inside a shared file without its `cfg` in view can still pass and turn `main` red; read `main`'s
   run after a merge.
 - **Required checks** are gate jobs that fail unless every job they name passed:
   `test (ubuntu-latest)` (guards, cross-check, socket gate, lib tests, the three shards) and
-  `Unit tests (vitest)` (three vitest shards, `Static checks`, `Registry generator`), plus
+  `Unit tests (vitest)` (the vitest shards and `Static checks`, which carries the registry
+  generator checks), plus
   `test (macos-latest)`, `test (windows-latest)` and `no-ai-coauthor`. Those five names are what
   branch protection requires: renaming one blocks every merge.
 - Before 2026-09, `rust.yml` ran only the sandbox's integration target, so a green run said
