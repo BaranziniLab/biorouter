@@ -514,6 +514,8 @@ impl TodoClient {
                   3-7 short steps (a few words each).
                 - Report progress in the `todo` field of your next real tool call,
                   e.g. `"todo": {"done": [2, 3]}`, never in a message of its own.
+                  Where no tool offers that field, send `todo_update` in the same
+                  message as real work.
                   Mark several items at once, only at milestones. The first open
                   item is current on its own, so report only done and blocked.
                 - A broad item that turns out to be several steps: `todo_expand`
@@ -814,7 +816,7 @@ impl TodoClient {
                     Seed the checklist, or replace it whole (this renumbers every
                     id). Only for multi-step work: 3-7 short steps, never one.
                     To change an existing list use `todo_expand`, `todo_add` or
-                    the `todo` field of your next tool call.
+                    the `todo` field of your next tool call (where offered).
                 "#},
                 true,
             ),
@@ -842,8 +844,9 @@ impl TodoClient {
                     Change items by `#N` id: `{id, status}`, or several at once
                     with `updates`. Report only `completed` and `blocked`; the
                     first open item is current on its own. Send `text` only to
-                    rename. Prefer the `todo` field of your next real tool call:
-                    every separate call re-sends the whole conversation.
+                    rename. Prefer the `todo` field of your next real tool call
+                    where a tool offers it, or send this in the same message as
+                    real work: every separate call re-sends the whole conversation.
                 "#},
                 false,
             ),

@@ -146,6 +146,7 @@ session-scoped tool state; do not imply that Extension Manager is the only such 
 {% if checklist_enforcement %}
 - Biorouter enforces the checklist when a request has several steps (a numbered or bulleted list of actions, three or
   more instructions, or instructions joined by "then", "after that", "finally" or "steps"):
+{% if todo_sidecar %}
   - While the checklist is empty, your first action is `todo__todo_write` with one `- [ ]` item per step, or the steps
     in the `todo.add` field of your first tool call. The first other tool call you make in that turn is refused with a
     pointer back to it. That refusal happens once per turn: if you have a reason not to keep a checklist, say so and
@@ -153,6 +154,13 @@ session-scoped tool state; do not imply that Extension Manager is the only such 
   - As you work, report finished items in the `todo` field of your next real tool call, several at once; it applies
     only if that call succeeds. The first open item counts as in progress on its own, so
     report only `done` and `blocked`.
+{% else %}
+  - While the checklist is empty, your first action is `todo__todo_write` with one `- [ ]` item per step. The first
+    other tool call you make in that turn is refused with a pointer back to it. That refusal happens once per turn: if
+    you have a reason not to keep a checklist, say so and repeat the call, and it runs.
+  - As you work, report finished items with `todo__todo_update`, several at once, in the same message as real work.
+    The first open item counts as in progress on its own, so report only `completed` and `blocked`.
+{% endif %}
   - A turn that created or changed the checklist cannot end while items are unfinished, unless your final message
     names each unfinished item by its `#N` id and says why it is not done. Otherwise you are sent back to finish.
 {% endif %}
@@ -193,11 +201,17 @@ session-scoped tool state; do not imply that Extension Manager is the only such 
   independent operations are needed, batch them: issue them in a single message so they run in parallel (or combine
   them into one script when using a code-execution tool) instead of one slow round-trip at a time. Only serialize when
   one call's output feeds the next.
+{% if todo_sidecar %}
 - Checklist and plan updates are bookkeeping, not work: send them with real work, never as a call on its own. Put
   them in the `todo` field of your next real tool call, for example `"todo": {"done": [2, 3]}`, mark several items at
   once, only at milestones, and don't repeat the list in your reply. The field applies only if its call succeeds;
   after a failed call, send it again with the next one. Use a separate todo tool only to seed or restructure the
   list, or when no other call is coming.
+{% else %}
+- Checklist and plan updates are bookkeeping, not work. When todo tools are available, send an update in the same
+  message as real tool calls rather than in a message of its own, mark several items at once, only at milestones, and
+  don't repeat the list in your reply.
+{% endif %}
 - Data a tool returns is data to process in code, not text to read. Return counts, schemas and a few sample rows;
   write bulk results to a file and look at them with `head`, a `view_range` or a search; select only the columns you
   need. Never pull long free-text fields (clinical notes, document bodies, report text) into the chat unless the user

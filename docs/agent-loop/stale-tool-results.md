@@ -1,7 +1,7 @@
 # Older tool results and the prompt cache
 
 > **What this is.** How Biorouter keeps a long chat's requests small and cacheable without losing anything: older, larger tool results leave the model's copy of the conversation in rare batches, a long reply is compacted between its own tool rounds (at most twice), the system prompt and the tools stay byte-identical, and the automatic context sent with each request stays where it was first sent, so each request is the previous one plus its new tail and the provider's prompt cache reaches the whole conversation.
-> **Status:** Current. Code: `crates/biorouter/src/context_mgmt/elision.rs`, `context_mgmt/prompt_fingerprint.rs`, `check_if_compaction_needed` and `with_saved_output_index` in `context_mgmt/mod.rs`, `crates/biorouter/src/agents/moim.rs`, and `Agent::assemble_turn_context`, `Agent::mid_turn_compaction_due`, `Agent::run_mid_turn_compaction` and `Agent::with_saved_tool_outputs` in `crates/biorouter/src/agents/agent.rs`.
+> **Status:** Current. Code: `crates/biorouter/src/context_mgmt/elision.rs`, `context_mgmt/prompt_fingerprint.rs`, `check_if_compaction_needed`, `run_eager_compaction` and `with_saved_output_index` in `context_mgmt/mod.rs`, `crates/biorouter/src/agents/large_response_handler.rs`, `crates/biorouter/src/agents/moim.rs`, and `Agent::assemble_turn_context`, `Agent::mid_turn_compaction_due`, `Agent::run_mid_turn_compaction` and `Agent::with_saved_tool_outputs` in `crates/biorouter/src/agents/agent.rs`.
 > **Audience:** people whose chats run long data analyses, and anyone changing how a request is assembled.
 
 ## Why a long chat gets expensive
@@ -51,11 +51,17 @@ A reply also compacts at most twice between its tool rounds, however well each c
 
 ### The summary names the saved files
 
-A summary cannot carry the full text of a file listing the person asked to see, so after a compaction a careful model ran the tool again. Before a compaction now, every tool result of at least 1,500 characters in the part being summarized is saved to `<working folder>/.biorouter/tool-output/` (a result an elision batch or the large-result handler already saved keeps its file), and the summary ends with a list: each tool, a short copy of its call's arguments, the result's size and the file that holds it, with a line asking the model to read or search the file instead of running the tool again. The newest 60 are listed. Results the compaction kept as they are, results of the checklist, skills and workspace protocol tools, and every result in a chat without the Developer extension (which has nothing to read the files with) are not listed. This applies to compaction at the start of a turn, between a reply's tool rounds, and in overflow recovery.
+A summary cannot carry the full text of a file listing the person asked to see, so after a compaction a careful model ran the tool again. Before a compaction now, every tool result of at least 1,500 characters in the part being summarized is saved to `<working folder>/.biorouter/tool-output/` (a result an elision batch or the large-result handler already saved keeps its file), and the summary ends with a list: each tool, a short copy of its call's arguments, the result's size and the file that holds it, with a line asking the model to read or search the file instead of running the tool again. The newest 60 are listed. Results the compaction kept as they are, results of the checklist, skills and workspace protocol tools, and every result in a chat without the Developer extension (which has nothing to read the files with) are not listed. This applies to compaction at the start of a turn, between a reply's tool rounds, in overflow recovery, and in the background compaction that runs after a turn ends over the trigger.
 
 The check measures what the model is sent, elided results included, so elision delays compaction rather than triggering it.
 
 The context card under the composer draws a tick where compaction will really happen. On a window over 250,000 tokens that is the ceiling, not the marker's share, and the card says so.
+
+## The saved files
+
+Elision and compaction write each saved result, as plain text, to `<working folder>/.biorouter/tool-output/`. When the working folder cannot be written, the file goes to `biorouter_mcp_responses` in the system temp folder instead. On macOS and Linux only your account can open that folder (mode 0700) or read the files in it (mode 0600), and a folder or file an earlier version left open is tightened the next time a result is saved there. A folder that cannot be made private, such as one another account owns, is not written to: the result then stays in the conversation, and for the large-result handler only its preview survives. The `.biorouter/` folder above it keeps its permissions, because it also holds project skills, workflows and hooks that other people may share.
+
+These files are copies of what the tools returned, query rows and file contents included, and Biorouter never removes them: they stay after the chat is deleted. Delete the `tool-output` folder to remove them. Anything that runs as your account can read them, including another chat working in the same folder with a shell, whatever either chat's privacy tier (see [Privacy tiers](../security/privacy-tiers.md)).
 
 ## A stable prefix
 
@@ -106,4 +112,5 @@ Token figures here are estimates at 4 characters a token, the same every time, s
 - [Waiting on jobs](waiting-on-jobs.md)
 - [Context engineering](context-engineering.md)
 - [Compaction preservation marker](compaction-preservation-marker.md)
+- [Privacy tiers](../security/privacy-tiers.md)
 - [Environment variables](../configuration/environment-variables.md)

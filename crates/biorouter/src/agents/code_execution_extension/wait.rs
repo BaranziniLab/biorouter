@@ -60,6 +60,9 @@ pub(super) const MAX_SLEEP_SECS: u64 = 280;
 pub(super) const SCRIPT_WAIT_BUDGET_SECS: u64 = 600;
 /// How much of the last status result the model is shown.
 pub(super) const MAX_LAST_RESULT_BYTES: usize = 8 * 1024;
+/// The most of a job's earlier output ([`DrainedOutput`]) a wait result or a
+/// wake message carries, its end kept.
+pub(super) const MAX_EARLIER_OUTPUT_BYTES: usize = 8 * 1024;
 
 /// One "second" of waiting. Unit tests of this crate run the same arithmetic
 /// on a 10 ms second so they do not sit through real minutes.
@@ -276,6 +279,94 @@ pub(super) struct WaitReport {
     /// In seconds, rounded up.
     pub elapsed_secs: u64,
     pub last: Option<String>,
+    /// What the job printed before the last check, for a status tool that
+    /// hands its output out once ([`DrainedOutput::earlier`]).
+    pub earlier_output: Option<String>,
+}
+
+/// What a job printed across the checks of one wait, for a status tool that
+/// hands each piece of its output out once.
+///
+/// The developer shell's `shell_status` returns only what the job printed
+/// since the last call, then moves past it
+/// (`job_status::hands_out_output_once`). A wait or a watch makes those calls
+/// itself, so keeping only the last result threw away everything the job
+/// printed before the final check, and a later call of the tool returns
+/// "(no new output)": the output was gone. This keeps every check's new
+/// output except the latest one, which the last result shows, up to
+/// [`MAX_EARLIER_OUTPUT_BYTES`]. The end is kept rather than the start, since
+/// a job's last lines say how it went.
+#[derive(Debug, Clone, Default)]
+pub(super) struct DrainedOutput {
+    /// The output of the checks before the latest one.
+    earlier: String,
+    /// Bytes dropped from the front of `earlier` to keep it in bounds.
+    dropped: usize,
+    /// The latest check's new output, which its result shows itself.
+    latest: Option<String>,
+}
+
+impl DrainedOutput {
+    /// Take one check's result. Nothing is kept for a tool that does not hand
+    /// its output out once.
+    pub(super) fn record(&mut self, tool: &str, value: &str) {
+        if let Some(previous) = self.latest.take() {
+            self.keep(&previous);
+        }
+        self.latest =
+            crate::tool_monitor::job_status::new_output_in(tool, value).map(str::to_string);
+    }
+
+    fn keep(&mut self, text: &str) {
+        if !self.earlier.is_empty() {
+            self.earlier.push('\n');
+        }
+        self.earlier.push_str(text);
+        let excess = self.earlier.len().saturating_sub(MAX_EARLIER_OUTPUT_BYTES);
+        if excess == 0 {
+            return;
+        }
+        let mut start = excess;
+        while !self.earlier.is_char_boundary(start) {
+            start += 1;
+        }
+        // Start on a whole line when one begins soon after the cut.
+        if let Some(newline) = self
+            .earlier
+            .get(start..)
+            .and_then(|rest| rest.find('\n'))
+            .filter(|at| *at < 200)
+        {
+            start += newline + 1;
+        }
+        self.earlier.drain(..start);
+        self.dropped += start;
+    }
+
+    /// The output of the checks before the latest one, or `None` when they
+    /// printed nothing.
+    pub(super) fn earlier(&self) -> Option<String> {
+        if self.earlier.trim().is_empty() {
+            return None;
+        }
+        Some(if self.dropped == 0 {
+            self.earlier.clone()
+        } else {
+            format!(
+                "[{} earlier bytes not kept]\n{}",
+                self.dropped, self.earlier
+            )
+        })
+    }
+}
+
+/// The section a wait result or a wake message carries the job's earlier
+/// output under.
+pub(super) fn earlier_output_section(tool: &str, earlier: &str) -> String {
+    format!(
+        "Output from the earlier checks ({tool} returns only what is new since its last call, \
+         so this is the only copy):\n{earlier}"
+    )
 }
 
 /// Keys whose values change with the clock, not with the job, so `"changed"`
@@ -387,13 +478,19 @@ pub(super) fn compact_state(last: &str, max_chars: usize) -> String {
     }
     let trimmed = last.trim();
     let Ok(json) = serde_json::from_str::<Value>(trimmed) else {
-        return match cut(trimmed, max_chars) {
-            None => trimmed.to_string(),
-            Some(head) => format!(
-                "{head}... (cut; {} characters in all)",
-                trimmed.chars().count()
-            ),
-        };
+        // Text keeps its start and its end: the end of a job's output is
+        // where it says how it went.
+        let count = trimmed.chars().count();
+        if count <= max_chars {
+            return trimmed.to_string();
+        }
+        let head_chars = max_chars / 4;
+        let head: String = trimmed.chars().take(head_chars).collect();
+        let tail: String = trimmed
+            .chars()
+            .skip(count - (max_chars - head_chars))
+            .collect();
+        return format!("{head}\n[...]\n{tail}\n(cut; {count} characters in all)");
     };
     let quiet = without_timing(&json);
     let full = quiet.to_string();
@@ -449,29 +546,34 @@ pub(super) async fn run_wait(
     let mut checks = 0u32;
     let mut first: Option<String> = None;
     let mut last: Option<String> = None;
-    let report = |end, checks, last| WaitReport {
+    let mut output = DrainedOutput::default();
+    let report = |end, checks, last, output: &DrainedOutput| WaitReport {
         end,
         checks,
         elapsed_secs: seconds_up(started.elapsed(), unit),
         last,
+        earlier_output: output.earlier(),
     };
     loop {
         if cancellation_token.is_cancelled() {
-            return report(WaitEnd::Cancelled, checks, last);
+            return report(WaitEnd::Cancelled, checks, last, &output);
         }
         let reading = tokio::select! {
             biased;
-            () = cancellation_token.cancelled() => return report(WaitEnd::Cancelled, checks, last),
+            () = cancellation_token.cancelled() => {
+                return report(WaitEnd::Cancelled, checks, last, &output)
+            }
             reading = checker.check() => reading,
         };
         checks += 1;
         let value = match reading.value {
             Ok(value) => value,
-            Err(error) => return report(WaitEnd::Failed(error), checks, last),
+            Err(error) => return report(WaitEnd::Failed(error), checks, last, &output),
         };
+        output.record(&plan.tool, &value);
         last = Some(value.clone());
         if let Some(end) = end_of(&plan.until, &value, reading.activity, checks, &mut first) {
-            return report(end, checks, last);
+            return report(end, checks, last, &output);
         }
         let now = tokio::time::Instant::now();
         let remaining = deadline.saturating_duration_since(now);
@@ -479,12 +581,14 @@ pub(super) async fn run_wait(
         // Otherwise sleep to the next check, or to the deadline for one last
         // check there.
         if remaining < unit {
-            return report(WaitEnd::TimedOut, checks, last);
+            return report(WaitEnd::TimedOut, checks, last, &output);
         }
         let interval = unit * u32::try_from(plan.interval_after(reading.hint_secs)).unwrap_or(1);
         tokio::select! {
             biased;
-            () = cancellation_token.cancelled() => return report(WaitEnd::Cancelled, checks, last),
+            () = cancellation_token.cancelled() => {
+                return report(WaitEnd::Cancelled, checks, last, &output)
+            }
             () = tokio::time::sleep(interval.min(remaining)) => {}
         }
     }
@@ -498,15 +602,32 @@ pub(super) fn duration_words(seconds: u64) -> String {
     }
 }
 
-pub(super) fn shown_result(last: &str) -> String {
+/// `last`, the last result of `tool`, cut to [`MAX_LAST_RESULT_BYTES`]: its
+/// start and its end, since the end of a job's output is where it says how it
+/// went.
+pub(super) fn shown_result(tool: &str, last: &str) -> String {
     if last.len() <= MAX_LAST_RESULT_BYTES {
         return last.to_string();
     }
+    let mut head_end = MAX_LAST_RESULT_BYTES / 4;
+    while !last.is_char_boundary(head_end) {
+        head_end -= 1;
+    }
+    let mut tail_start = last.len() - (MAX_LAST_RESULT_BYTES - MAX_LAST_RESULT_BYTES / 4);
+    while !last.is_char_boundary(tail_start) {
+        tail_start += 1;
+    }
+    let again = if crate::tool_monitor::job_status::hands_out_output_once(tool) {
+        ""
+    } else {
+        " Call the status tool directly to read all of it."
+    };
     format!(
-        "{}\n(The result is {} bytes; the first {MAX_LAST_RESULT_BYTES} are shown. Call the \
-         status tool directly to read all of it.)",
-        super::truncate_record_text(last, MAX_LAST_RESULT_BYTES),
-        last.len()
+        "{}\n[...]\n{}\n(The result is {} bytes; its first {head_end} and last {} are shown.{again})",
+        &last[..head_end],
+        &last[tail_start..],
+        last.len(),
+        last.len() - tail_start,
     )
 }
 
@@ -574,14 +695,19 @@ pub(super) fn report_text(
         }
         WaitEnd::Cancelled => return Err("wait_for was cancelled".to_string()),
     };
-    Ok(match &report.last {
-        Some(last) => format!(
-            "{headline}\nLast result of {}:\n{}",
+    let mut text = headline;
+    if let Some(earlier) = &report.earlier_output {
+        text.push('\n');
+        text.push_str(&earlier_output_section(&plan.tool, earlier));
+    }
+    if let Some(last) = &report.last {
+        text.push_str(&format!(
+            "\nLast result of {}:\n{}",
             plan.tool,
-            shown_result(last)
-        ),
-        None => headline,
-    })
+            shown_result(&plan.tool, last)
+        ));
+    }
+    Ok(text)
 }
 
 #[derive(Debug, Serialize)]
@@ -592,6 +718,10 @@ struct ScriptReport<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     value: Option<&'a Value>,
     last_result: Value,
+    /// What the job printed before the last check, for a status tool that
+    /// hands its output out once ([`DrainedOutput`]).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    earlier_output: Option<&'a str>,
     /// The live watch of the same call, on a timeout: end the script and the
     /// turn, and the chat resumes when the job ends.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -624,6 +754,7 @@ pub(super) fn report_json(
         elapsed_seconds: report.elapsed_secs,
         value,
         last_result,
+        earlier_output: report.earlier_output.as_deref(),
         watch_id: watching.filter(|_| report.end == WaitEnd::TimedOut),
     })
     .map_err(|error| error.to_string())
@@ -933,10 +1064,112 @@ mod tests {
             end: WaitEnd::Finished,
             checks: 1,
             elapsed_secs: 0,
-            last: Some("x".repeat(MAX_LAST_RESULT_BYTES * 2)),
+            last: Some(format!("start{}end", "x".repeat(MAX_LAST_RESULT_BYTES * 2))),
+            earlier_output: None,
         };
         let text = report_text(&plan, &report, None).unwrap();
         assert!(text.len() < MAX_LAST_RESULT_BYTES + 400);
         assert!(text.contains("Call the status tool directly"), "{text}");
+        // The start and the end are both kept.
+        assert!(
+            text.contains("Last result of cdw__status:\nstart"),
+            "{text}"
+        );
+        assert!(text.contains("xend\n(The result is"), "{text}");
+        // A tool that hands its output out once cannot return it again.
+        let shell = shown_result(
+            "developer__shell_status",
+            &"y".repeat(MAX_LAST_RESULT_BYTES * 2),
+        );
+        assert!(!shell.contains("Call the status tool directly"), "{shell}");
+    }
+
+    fn shell_check(status: &str, body: &str) -> CheckReading {
+        CheckReading {
+            value: Ok(format!(
+                "job job-1 [make], status: {status} (5s elapsed)\nnew output since last check:\n{body}"
+            )),
+            activity: if status == "running" {
+                JobActivity::Active
+            } else {
+                JobActivity::Finished
+            },
+            hint_secs: None,
+        }
+    }
+
+    /// `shell_status` hands each piece of output out once, so a wait keeps
+    /// what every check returned: the model sees what the job printed, not
+    /// only the last check's share of it.
+    #[tokio::test(start_paused = true)]
+    async fn a_wait_keeps_the_output_each_check_drained() {
+        let mut checker = Scripted::new(vec![
+            shell_check("running", "compiling a"),
+            shell_check("running", "compiling b"),
+            shell_check("running", "(no new output)"),
+            shell_check("exited 1", "error: b failed"),
+        ]);
+        let mut shell_plan = plan(Until::Inactive, 240, 30);
+        shell_plan.tool = "developer__shell_status".into();
+        let report = run_wait(&shell_plan, &mut checker, UNIT, &CancellationToken::new()).await;
+        assert_eq!(report.end, WaitEnd::Finished);
+        assert_eq!(
+            report.earlier_output.as_deref(),
+            Some("compiling a\ncompiling b")
+        );
+        let text = report_text(&shell_plan, &report, None).unwrap();
+        let earlier = text.find("compiling a").expect("the first check's output");
+        let last = text
+            .find("error: b failed")
+            .expect("the last check's output");
+        assert!(earlier < last, "in the order the job printed it: {text}");
+        assert!(text.contains("so this is the only copy"), "{text}");
+
+        let script: Value =
+            serde_json::from_str(&report_json(&shell_plan, &report, None).unwrap()).unwrap();
+        assert_eq!(script["earlier_output"], "compiling a\ncompiling b");
+
+        // A tool whose every result is whole keeps nothing extra.
+        let mut checker = Scripted::new(vec![
+            reading(
+                json!({"status": "running", "log": "a"}),
+                JobActivity::Active,
+                None,
+            ),
+            reading(
+                json!({"status": "done", "log": "a b"}),
+                JobActivity::Finished,
+                None,
+            ),
+        ]);
+        let other = plan(Until::Inactive, 240, 30);
+        let report = run_wait(&other, &mut checker, UNIT, &CancellationToken::new()).await;
+        assert_eq!(report.earlier_output, None);
+    }
+
+    /// The kept output is bounded, and keeps its end.
+    #[test]
+    fn drained_output_keeps_the_end_within_its_bound() {
+        let tool = "developer__shell_status";
+        let check = |body: &str| {
+            format!("job job-1 [make], status: running (5s elapsed)\nnew output since last check:\n{body}")
+        };
+        let mut output = DrainedOutput::default();
+        for n in 0..2000 {
+            output.record(tool, &check(&format!("line {n}")));
+        }
+        output.record(tool, &check("(no new output)"));
+        let earlier = output.earlier().unwrap();
+        assert!(
+            earlier.len() < MAX_EARLIER_OUTPUT_BYTES + 100,
+            "{}",
+            earlier.len()
+        );
+        assert!(earlier.starts_with('['), "says what was dropped: {earlier}");
+        assert!(
+            earlier.contains("earlier bytes not kept]\nline "),
+            "{earlier}"
+        );
+        assert!(earlier.ends_with("line 1999"), "{earlier}");
     }
 }

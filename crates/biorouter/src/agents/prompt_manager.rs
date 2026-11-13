@@ -219,6 +219,11 @@ struct SystemPromptContext {
     /// The planning gate runs for this conversation (`agents::planning_gate`):
     /// the "Working on Tasks" section then states exactly what it enforces.
     checklist_enforcement: bool,
+    /// The workhorse tools carry the checklist `todo` field this turn
+    /// (`reply_parts::add_todo_sidecar`), so the prompt may tell the model to
+    /// use it. False on a coding-agent bridge surface and on a roster without
+    /// the checklist tools, where no tool offers the field.
+    todo_sidecar: bool,
 }
 
 pub struct SystemPromptBuilder<'a, M> {
@@ -230,6 +235,7 @@ pub struct SystemPromptBuilder<'a, M> {
     hints: Option<String>,
     code_execution_mode: bool,
     checklist_enforcement: bool,
+    todo_sidecar: bool,
     variant: PromptVariant,
 }
 
@@ -267,6 +273,14 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
     /// clause this renders is a description of that gate.
     pub fn with_checklist_enforcement(mut self, enabled: bool) -> Self {
         self.checklist_enforcement = enabled;
+        self
+    }
+
+    /// Whether the checklist `todo` field is on this turn's tool schemas. Pass
+    /// what `reply_parts::add_todo_sidecar` returned, never a value of your
+    /// own: the prompt names the field only while a tool offers it.
+    pub fn with_todo_sidecar(mut self, offered: bool) -> Self {
+        self.todo_sidecar = offered;
         self
     }
 
@@ -317,6 +331,7 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             hints,
             code_execution_mode,
             checklist_enforcement,
+            todo_sidecar,
             variant,
         } = self;
         let (extensions_info, hints) =
@@ -332,6 +347,7 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             render_prompt_clock(now),
         );
         context.checklist_enforcement = checklist_enforcement;
+        context.todo_sidecar = todo_sidecar;
         let base_prompt = render_base_prompt(manager, variant, &context);
         append_system_prompt_extras(manager, base_prompt, hints, biorouter_mode)
     }
@@ -477,6 +493,7 @@ fn build_system_prompt_context(
         enable_subagents: subagents_enabled,
         code_execution_mode,
         checklist_enforcement: false,
+        todo_sidecar: false,
     }
 }
 
@@ -607,6 +624,7 @@ impl PromptManager {
             hints: None,
             code_execution_mode: false,
             checklist_enforcement: false,
+            todo_sidecar: false,
             variant: PromptVariant::Default,
         }
     }
@@ -1116,6 +1134,47 @@ mod tests {
         assert!(on.contains("names each unfinished item by its `#N` id"));
         // It extends the planning bullet rather than replacing it.
         assert!(on.contains("plan before acting"));
+    }
+
+    /// The prompt names the checklist `todo` field only while a tool schema
+    /// offers it (`reply_parts::add_todo_sidecar`). A coding-agent bridge
+    /// surface, or a roster without the checklist tools, has no such field,
+    /// and a prompt naming one sends updates nothing applies.
+    #[test]
+    fn the_todo_field_is_named_only_while_a_tool_offers_it() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        for enforcement in [false, true] {
+            let offered = manager
+                .builder()
+                .with_checklist_enforcement(enforcement)
+                .with_todo_sidecar(true)
+                .build();
+            assert!(
+                offered.contains("Put\n  them in the `todo` field of your next real tool call"),
+                "{offered}"
+            );
+            assert!(offered.contains(r#""todo": {"done": [2, 3]}"#));
+
+            let absent = manager
+                .builder()
+                .with_checklist_enforcement(enforcement)
+                .build();
+            assert!(!absent.contains("`todo` field"), "{absent}");
+            assert!(!absent.contains("`todo.add` field"), "{absent}");
+            assert!(
+                absent.contains("Checklist and plan updates are bookkeeping, not work."),
+                "{absent}"
+            );
+            assert!(absent.contains("in the same\n  message as real tool calls"));
+        }
+        let enforced_without_field = manager.builder().with_checklist_enforcement(true).build();
+        assert!(enforced_without_field.contains("report finished items with `todo__todo_update`"));
+        let enforced_with_field = manager
+            .builder()
+            .with_checklist_enforcement(true)
+            .with_todo_sidecar(true)
+            .build();
+        assert!(enforced_with_field.contains("or the steps\n    in the `todo.add` field"));
     }
 
     /// Contract test for the agentic-behavior clauses added to `system.md`.

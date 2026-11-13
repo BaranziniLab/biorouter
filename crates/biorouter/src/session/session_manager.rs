@@ -70,7 +70,16 @@ macro_rules! side_request_sql {
 
 pub mod side_usage;
 mod spend;
-pub use spend::{RequestUsage, SpendSnapshot};
+pub use spend::{compaction_event_key, RequestUsage, SpendSnapshot, COMPACTION_EVENT_KEY_PREFIX};
+
+/// A chat's subagents by their parent, for the usage limits' spend read
+/// (`spend::CHAT_ROWS_FILTER`), which runs before every model request.
+///
+/// ⚠ **No numbered migration arm**, like `deleted_chat_usage`: it is additive,
+/// so `create_schema` creates it for a fresh database and
+/// `reconcile_loop_schema` for every existing one, on every open.
+const SESSIONS_PARENT_INDEX_DDL: &str =
+    "CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id)";
 
 pub const CURRENT_SCHEMA_VERSION: i32 = 21;
 
@@ -4799,6 +4808,7 @@ impl SessionStorage {
         sqlx::query("CREATE INDEX idx_sessions_type ON sessions(session_type)")
             .execute(pool)
             .await?;
+        sqlx::query(SESSIONS_PARENT_INDEX_DDL).execute(pool).await?;
         // BRSDK: stable external handle for durable, resumable app sessions
         // (e.g. "app:<app-id>:<client-id>"). Unique so a reconnecting client
         // resolves back to its existing session.
@@ -5019,6 +5029,7 @@ impl SessionStorage {
         // table records: a database a development build already stamped 21 (or
         // later) without this table would never re-enter that arm.
         Self::create_decisions_table(pool).await?;
+        sqlx::query(SESSIONS_PARENT_INDEX_DDL).execute(pool).await?;
         // Last: every table it sweeps exists by now.
         Self::retire_side_rows_of_deleted_chats(pool).await?;
         Ok(())

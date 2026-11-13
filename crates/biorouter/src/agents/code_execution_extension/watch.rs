@@ -592,6 +592,9 @@ pub(super) struct WatchReport {
     pub checks: u32,
     pub elapsed_secs: u64,
     pub last: Option<String>,
+    /// What the job printed before the last check, for a status tool that
+    /// hands its output out once (`wait::DrainedOutput`).
+    pub earlier_output: Option<String>,
 }
 
 /// What the first check left for the background loop.
@@ -600,6 +603,9 @@ pub(super) struct FirstCheck {
     pub first: Option<String>,
     pub last: Option<String>,
     pub hint: Option<u64>,
+    /// The first check's output, for a status tool that hands its output out
+    /// once: the tool result showed only the start of it.
+    pub output: wait::DrainedOutput,
 }
 
 fn seconds_up(duration: Duration, unit: Duration) -> u64 {
@@ -674,13 +680,15 @@ pub(super) async fn run_watch(
         mut first,
         mut last,
         mut hint,
+        mut output,
     } = first;
     let mut previous = None;
-    let report = |end, checks, last| WatchReport {
+    let report = |end, checks, last, output: &wait::DrainedOutput| WatchReport {
         end,
         checks,
         elapsed_secs: seconds_up(started.elapsed(), unit),
         last,
+        earlier_output: output.earlier(),
     };
     loop {
         let interval = next_interval(spec.plan.min_interval, previous, hint);
@@ -690,7 +698,7 @@ pub(super) async fn run_watch(
         tokio::select! {
             biased;
             () = stop.cancelled() => {
-                return report(WatchEnd::Cancelled(stop_cause(cause)), checks, last);
+                return report(WatchEnd::Cancelled(stop_cause(cause)), checks, last, &output);
             }
             () = tokio::time::sleep(sleep) => {}
         }
@@ -698,29 +706,30 @@ pub(super) async fn run_watch(
             .chat_is_current(&spec.session_id, spec.incarnation)
             .await
         {
-            return report(WatchEnd::ChatGone, checks, last);
+            return report(WatchEnd::ChatGone, checks, last, &output);
         }
         let reading = tokio::select! {
             biased;
             () = stop.cancelled() => {
-                return report(WatchEnd::Cancelled(stop_cause(cause)), checks, last);
+                return report(WatchEnd::Cancelled(stop_cause(cause)), checks, last, &output);
             }
             reading = background_check(host, spec, stop) => reading,
         };
         let Some(reading) = reading else {
-            return report(WatchEnd::AgentGone, checks, last);
+            return report(WatchEnd::AgentGone, checks, last, &output);
         };
         checks += 1;
         match reading.value {
             Err(error) => {
                 failures += 1;
                 if failures >= MAX_CONSECUTIVE_FAILURES {
-                    return report(WatchEnd::Job(WaitEnd::Failed(error)), checks, last);
+                    return report(WatchEnd::Job(WaitEnd::Failed(error)), checks, last, &output);
                 }
             }
             Ok(value) => {
                 failures = 0;
                 hint = reading.hint_secs;
+                output.record(&spec.plan.tool, &value);
                 last = Some(value.clone());
                 if let Some(end) = wait::end_of(
                     &spec.plan.until,
@@ -729,12 +738,12 @@ pub(super) async fn run_watch(
                     checks,
                     &mut first,
                 ) {
-                    return report(WatchEnd::Job(end), checks, last);
+                    return report(WatchEnd::Job(end), checks, last, &output);
                 }
             }
         }
         if tokio::time::Instant::now() >= deadline {
-            return report(WatchEnd::Job(WaitEnd::TimedOut), checks, last);
+            return report(WatchEnd::Job(WaitEnd::TimedOut), checks, last, &output);
         }
     }
 }
@@ -789,6 +798,10 @@ pub(super) fn wake_text(spec: &WatchSpec, report: &WatchReport) -> Option<String
         | WatchEnd::Job(WaitEnd::Cancelled) => return None,
     };
     let mut text = format!("[watch {}] {headline}", spec.id);
+    if let Some(earlier) = &report.earlier_output {
+        text.push('\n');
+        text.push_str(&wait::earlier_output_section(tool, earlier));
+    }
     if let Some(last) = &report.last {
         text.push_str("\nLast result: ");
         text.push_str(&wait::compact_state(last, MAX_STATE_CHARS));
@@ -1120,9 +1133,53 @@ fn validate(params: WatchJobParams) -> Result<(WaitPlan, String, u64), String> {
     Ok((plan, note, max_wait))
 }
 
+/// Whether this chat may set a new watch of `tool` with these arguments
+/// (canonical): `Ok(None)`, `Ok(Some(id))` when the same call is already
+/// watched, or why not when a cap is reached.
+fn admission(
+    watches: &HashMap<String, WatchEntry>,
+    session_id: &str,
+    tool: &str,
+    arguments: &str,
+) -> Result<Option<String>, String> {
+    if let Some((id, _)) = watches
+        .iter()
+        .find(|(_, e)| e.session_id == session_id && e.tool == tool && e.arguments == arguments)
+    {
+        return Ok(Some(id.clone()));
+    }
+    let mine = watches
+        .values()
+        .filter(|e| e.session_id == session_id)
+        .count();
+    if mine >= MAX_WATCHES_PER_CHAT {
+        return Err(format!(
+            "this chat already has {mine} job watches, the most it may hold; cancel one with \
+             watch_job {{\"cancel\": \"<id>\"}} first"
+        ));
+    }
+    if watches.len() >= MAX_WATCHES {
+        return Err(
+            "Biorouter is already watching as many jobs as it will; try again when one ends, \
+             or use code_execution__wait_for"
+                .to_string(),
+        );
+    }
+    Ok(None)
+}
+
+/// What [`launch`] did.
+enum Launched {
+    /// A new watch, by id.
+    Started(String),
+    /// The same call was watched by the time this one was ready to start.
+    Already(String),
+}
+
 /// Register a watch whose first check found the job still running, and
 /// start its background task and its follower of the creating turn. Returns
-/// the watch id (`spec.id` is filled in here).
+/// the watch id (`spec.id` is filled in here), or the id of a watch of the
+/// same call that started meanwhile.
 fn launch(
     host: Arc<dyn WatchHost>,
     session_id: &str,
@@ -1130,48 +1187,60 @@ fn launch(
     mut spec: WatchSpec,
     first_check: FirstCheck,
     started: tokio::time::Instant,
-) -> String {
+) -> Result<Launched, String> {
     let stop = CancellationToken::new();
     let cause = Arc::new(std::sync::Mutex::new(None));
-    let id = {
-        let stop = stop.clone();
-        let cause = Arc::clone(&cause);
-        // The chat is named on the row: `GET /active_work` shows it only to a
-        // caller that could open this chat (issue #56).
-        biorouter_mcp::active_work::active_work().register(
-            biorouter_mcp::active_work::ActiveWorkKind::JobWatch,
-            format!("Watching {}", spec.plan.tool),
-            (!spec.note.is_empty()).then(|| truncate_chars(&spec.note, 200)),
-            Some(session_id.to_string()),
-            Some(Arc::new(move || {
-                cause
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .get_or_insert(StopCause::Person);
-                stop.cancel();
-            })),
-        )
-    };
-    spec.id = id.clone();
+    let arguments = canonical(&spec.plan.arguments);
     let admitted = serde_json::from_str::<Value>(&spec.admitted)
         .ok()
         .and_then(|value| value.as_object().cloned())
-        .map_or_else(
-            || canonical(&spec.plan.arguments),
-            |object| canonical(&object),
+        .map_or_else(|| arguments.clone(), |object| canonical(&object));
+    let id = {
+        // Asked again here, under the lock the insert takes: two calls for
+        // the same job (parallel tool calls, or a call and a script's) both
+        // pass `start_watch`'s first ask while their first checks run, and
+        // each used to set a watch and resume the chat. The caps are asked
+        // again for the same reason. The active work row is registered under
+        // this lock too (its registry never takes this one), so a call that
+        // loses here leaves no row behind.
+        let mut watches = watches();
+        if let Some(id) = admission(&watches, session_id, &spec.plan.tool, &arguments)? {
+            return Ok(Launched::Already(id));
+        }
+        let id = {
+            let stop = stop.clone();
+            let cause = Arc::clone(&cause);
+            // The chat is named on the row: `GET /active_work` shows it only to
+            // a caller that could open this chat (issue #56).
+            biorouter_mcp::active_work::active_work().register(
+                biorouter_mcp::active_work::ActiveWorkKind::JobWatch,
+                format!("Watching {}", spec.plan.tool),
+                (!spec.note.is_empty()).then(|| truncate_chars(&spec.note, 200)),
+                Some(session_id.to_string()),
+                Some(Arc::new(move || {
+                    cause
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .get_or_insert(StopCause::Person);
+                    stop.cancel();
+                })),
+            )
+        };
+        watches.insert(
+            id.clone(),
+            WatchEntry {
+                session_id: session_id.to_string(),
+                tool: spec.plan.tool.clone(),
+                arguments,
+                admitted,
+                until: spec.plan.until.clone(),
+                stop: stop.clone(),
+                cause: Arc::clone(&cause),
+            },
         );
-    watches().insert(
-        id.clone(),
-        WatchEntry {
-            session_id: session_id.to_string(),
-            tool: spec.plan.tool.clone(),
-            arguments: canonical(&spec.plan.arguments),
-            admitted,
-            until: spec.plan.until.clone(),
-            stop: stop.clone(),
-            cause: Arc::clone(&cause),
-        },
-    );
+        id
+    };
+    spec.id = id.clone();
     tokio::spawn(follow_creating_turn(
         Arc::clone(&host),
         CreatingTurn {
@@ -1185,7 +1254,7 @@ fn launch(
         wait::wait_unit(),
     ));
     tokio::spawn(watch_task(host, spec, first_check, started, stop, cause));
-    id
+    Ok(Launched::Started(id))
 }
 
 /// Validate a watch, check the job once in the turn, and, when it is still
@@ -1213,31 +1282,16 @@ pub(super) async fn start_watch(
         );
     }
     let (plan, note, max_wait) = validate(params)?;
-    let arguments_key = canonical(&plan.arguments);
-    {
-        let watches = watches();
-        if let Some((id, _)) = watches.iter().find(|(_, e)| {
-            e.session_id == session_id && e.tool == plan.tool && e.arguments == arguments_key
-        }) {
-            return Ok(WatchStarted::Already { id: id.clone() });
-        }
-        let mine = watches
-            .values()
-            .filter(|e| e.session_id == session_id)
-            .count();
-        if mine >= MAX_WATCHES_PER_CHAT {
-            return Err(format!(
-                "this chat already has {mine} job watches, the most it may hold; cancel one with \
-                 watch_job {{\"cancel\": \"<id>\"}} first"
-            ));
-        }
-        if watches.len() >= MAX_WATCHES {
-            return Err(
-                "Biorouter is already watching as many jobs as it will; try again when one ends, \
-                 or use code_execution__wait_for"
-                    .to_string(),
-            );
-        }
+    // Asked before the first check, so a duplicate or a call over a cap
+    // costs no check, and again by `launch` as it inserts.
+    let existing = admission(
+        &watches(),
+        session_id,
+        &plan.tool,
+        &canonical(&plan.arguments),
+    )?;
+    if let Some(id) = existing {
+        return Ok(WatchStarted::Already { id });
     }
     let incarnation = host.incarnation(session_id).await;
 
@@ -1271,8 +1325,10 @@ pub(super) async fn start_watch(
     }
     let admitted = admitted.ok_or("watch_job: the first check was not admitted")?;
     let first_interval = next_interval(plan.min_interval, None, reading.hint_secs);
+    let mut output = wait::DrainedOutput::default();
+    output.record(&plan.tool, &value);
 
-    let id = launch(
+    let launched = launch(
         host,
         session_id,
         turn,
@@ -1289,9 +1345,14 @@ pub(super) async fn start_watch(
             first,
             last: Some(value.clone()),
             hint: reading.hint_secs,
+            output,
         },
         started,
-    );
+    )?;
+    let id = match launched {
+        Launched::Started(id) => id,
+        Launched::Already(id) => return Ok(WatchStarted::Already { id }),
+    };
     Ok(WatchStarted::Watching {
         id,
         first_interval,
@@ -1360,7 +1421,7 @@ fn started_text(tool: &str, until: &Until, started: &WatchStarted) -> String {
              state or phase field reading queued, running, completed and so on). To watch this \
              result, call watch_job again with until: \"changed\" or until: {{\"pointer\": \
              \"/field\", \"values\": [...]}}.\nResult:\n{}",
-            wait::shown_result(value)
+            wait::shown_result(tool, value)
         ),
         WatchStarted::Done { end, value } => {
             let what = match (end, until) {
@@ -1371,7 +1432,7 @@ fn started_text(tool: &str, until: &Until, started: &WatchStarted) -> String {
             };
             format!(
                 "watch_job set no watch: {what}.\nLast result of {tool}:\n{}",
-                wait::shown_result(value)
+                wait::shown_result(tool, value)
             )
         }
         WatchStarted::Already { id } => {
@@ -1617,6 +1678,7 @@ mod tests {
             checks: 9,
             elapsed_secs: 905,
             last: Some(big),
+            earlier_output: None,
         };
         let text = wake_text(&spec, &report).unwrap();
         assert!(text.starts_with("[watch watch-7] cdw__status: the job is no longer active (9 checks over 15 min 5 s)."), "{text}");
@@ -1684,11 +1746,14 @@ mod watch_tests {
     use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
     /// A status tool that answers with `results` in order, then repeats the
-    /// last one.
+    /// last one. It lists itself twice, as `status` and as `shell_status`,
+    /// the name of a tool that hands its output out once. Each call takes
+    /// `delay` first.
     struct StatusFixture {
         results: std::sync::Mutex<VecDeque<CallToolResult>>,
         last: std::sync::Mutex<Option<CallToolResult>>,
         calls: Arc<AtomicUsize>,
+        delay: Duration,
     }
 
     #[async_trait::async_trait]
@@ -1698,19 +1763,25 @@ mod watch_tests {
             _next_cursor: Option<String>,
             _cancel_token: CancellationToken,
         ) -> Result<ListToolsResult, Error> {
+            let schema = Arc::new(
+                serde_json::json!({"type": "object", "properties": {
+                    "job_id": {"type": "string"}
+                }})
+                .as_object()
+                .unwrap()
+                .clone(),
+            );
             Ok(ListToolsResult {
-                tools: vec![McpTool::new(
-                    "status".to_string(),
-                    "Synthetic job status".to_string(),
-                    Arc::new(
-                        serde_json::json!({"type": "object", "properties": {
-                            "job_id": {"type": "string"}
-                        }})
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                    ),
-                )],
+                tools: ["status", "shell_status"]
+                    .into_iter()
+                    .map(|name| {
+                        McpTool::new(
+                            name.to_string(),
+                            "Synthetic job status".to_string(),
+                            Arc::clone(&schema),
+                        )
+                    })
+                    .collect(),
                 next_cursor: None,
                 meta: None,
             })
@@ -1723,6 +1794,9 @@ mod watch_tests {
             _meta: McpMeta,
             _cancel_token: CancellationToken,
         ) -> Result<CallToolResult, Error> {
+            if !self.delay.is_zero() {
+                tokio::time::sleep(self.delay).await;
+            }
             self.calls.fetch_add(1, Ordering::SeqCst);
             let next = self.results.lock().unwrap().pop_front();
             let mut last = self.last.lock().unwrap();
@@ -1847,6 +1921,11 @@ mod watch_tests {
     }
 
     pub(super) async fn harness(results: Vec<CallToolResult>) -> Harness {
+        harness_with_delay(results, Duration::ZERO).await
+    }
+
+    /// [`harness`] whose status tool takes `delay` to answer.
+    async fn harness_with_delay(results: Vec<CallToolResult>, delay: Duration) -> Harness {
         let dir = tempfile::tempdir().unwrap();
         let session_manager = Arc::new(crate::session::SessionManager::new(
             dir.path().to_path_buf(),
@@ -1877,6 +1956,7 @@ mod watch_tests {
                     results: std::sync::Mutex::new(results.into()),
                     last: std::sync::Mutex::new(None),
                     calls: Arc::clone(&calls),
+                    delay,
                 }),
                 None,
                 None,
@@ -2201,6 +2281,88 @@ mod watch_tests {
         assert_eq!(watch_id(&again), id);
         assert_eq!(cancel_watches_for_session(&h.session_id), 1);
         until_ended(&id).await;
+    }
+
+    /// Two watches of the same job started at once (parallel tool calls, or a
+    /// call and a script's) are one watch: both first checks run, but one
+    /// watch is set, so the chat is resumed once, and the call that lost
+    /// leaves no active work row behind.
+    #[tokio::test]
+    async fn two_watches_of_the_same_job_started_at_once_are_one() {
+        let h = harness_with_delay(vec![job("running")], Duration::from_millis(50)).await;
+        let (a, b) = tokio::join!(watch(&h, job_args("j-race")), watch(&h, job_args("j-race")));
+        let (a, b) = (text_of(&a), text_of(&b));
+        assert_eq!(h.calls.load(Ordering::SeqCst), 2, "both first checks ran");
+        let started: Vec<&String> = [&a, &b]
+            .into_iter()
+            .filter(|text| text.starts_with("Watching"))
+            .collect();
+        let already: Vec<&String> = [&a, &b]
+            .into_iter()
+            .filter(|text| text.starts_with("Already watching"))
+            .collect();
+        assert_eq!((started.len(), already.len()), (1, 1), "{a}\n{b}");
+        let id = watch_id(started[0]);
+        assert_eq!(watch_id(already[0]), id);
+        let live = watches()
+            .values()
+            .filter(|entry| entry.session_id == h.session_id)
+            .count();
+        assert_eq!(live, 1);
+        let rows = biorouter_mcp::active_work::active_work()
+            .list()
+            .into_iter()
+            .filter(|row| row.session_id.as_deref() == Some(h.session_id.as_str()))
+            .count();
+        assert_eq!(rows, 1, "the call that lost leaves no row");
+        assert_eq!(cancel_watches_for_session(&h.session_id), 1);
+        until_ended(&id).await;
+    }
+
+    fn shell(status: &str, body: &str) -> CallToolResult {
+        CallToolResult::success(vec![Content::text(format!(
+            "job job-1 [make], status: {status} (5s elapsed)\nnew output since last check:\n{body}"
+        ))])
+    }
+
+    /// `shell_status` hands each piece of output out once. A watch makes the
+    /// checks itself, so its wake carries what every check drained, in the
+    /// order the job printed it, not only the last check's share: the rest
+    /// cannot be read again.
+    #[tokio::test]
+    async fn a_watch_over_shell_status_wakes_with_all_the_output_it_drained() {
+        let h = harness(vec![
+            shell("running", "compiling a"),
+            shell("running", "compiling b"),
+            shell("running", "(no new output)"),
+            shell("exited 1", "error: b failed"),
+        ])
+        .await;
+        let text = text_of(
+            &watch(
+                &h,
+                serde_json::json!({
+                    "tool": "fixture__shell_status",
+                    "arguments": {"job_id": "job-1"},
+                }),
+            )
+            .await,
+        );
+        assert!(text.starts_with("Watching"), "{text}");
+        let id = watch_id(&text);
+        until_ended(&id).await;
+        let actions = h.host.actions();
+        assert_eq!(actions.len(), 1, "{actions:?}");
+        let wake = &actions[0];
+        let a = wake.find("compiling a").expect("the first check's output");
+        let b = wake
+            .find("compiling b")
+            .expect("a background check's output");
+        let failed = wake
+            .find("error: b failed")
+            .expect("the last check's output");
+        assert!(a < b && b < failed, "{wake}");
+        assert!(wake.contains("so this is the only copy"), "{wake}");
     }
 
     #[tokio::test]

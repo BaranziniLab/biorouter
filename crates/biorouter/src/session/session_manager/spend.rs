@@ -66,28 +66,87 @@ impl RequestUsage {
     }
 }
 
-/// The columns of [`RequestUsage`], for a ledger row that is a turn's model
-/// request: side calls (`side:`) and decision calls (`decision:`) are left
-/// out, since neither is the shape of the chat's next request.
+/// The event key prefix of a compaction's ledger rows: the summarization
+/// requests, whose prompt is the whole history being replaced and whose output
+/// is the summary. A compaction is not the shape of the chat's next request,
+/// so [`SessionManager::last_request_usage`] does not estimate from it. Like
+/// any other row, a compaction row is billed spend and counts as a turn.
+pub const COMPACTION_EVENT_KEY_PREFIX: &str = "compaction:";
+
+/// A fresh event key for one compaction's ledger rows
+/// (`reply_parts::apply_compaction_metrics` gives a second request of the
+/// same compaction `<key>:1`, which keeps the prefix).
+pub fn compaction_event_key() -> String {
+    format!("{COMPACTION_EVENT_KEY_PREFIX}{}", uuid::Uuid::new_v4())
+}
+
+/// A ledger row that is a compaction's ([`COMPACTION_EVENT_KEY_PREFIX`]).
+const IS_COMPACTION_ROW: &str = "COALESCE(event_key LIKE 'compaction:%', 0)";
+
+/// The columns of [`RequestUsage`] (and `event_key`), for a ledger row that
+/// is a model request of the chat's turns or its compactions: side calls
+/// (`side:`) and decision calls (`decision:`) are left out, since neither is
+/// the shape of the chat's next request.
 const REQUEST_USAGE_SQL: &str = "SELECT COALESCE(input_tokens, 0) AS input_tokens,
             COALESCE(output_tokens, 0) AS output_tokens,
             COALESCE(cache_read_tokens, 0) AS cache_read_tokens,
             COALESCE(cache_creation_tokens, 0) AS cache_creation_tokens,
             provider,
-            model_id
+            model_id,
+            event_key
        FROM token_events
       WHERE (event_key IS NULL
              OR (event_key NOT LIKE 'side:%' AND event_key NOT LIKE 'decision:%'))
         AND COALESCE(input_tokens, 0) + COALESCE(cache_read_tokens, 0)
             + COALESCE(cache_creation_tokens, 0) > 0";
 
+/// The chat's own ledger rows plus its direct subagents'. Both halves of the
+/// `OR` are read through `idx_token_events_session`, and the subagents through
+/// `idx_sessions_parent`, so a check reads the chat's rows and nothing else.
+const CHAT_ROWS_FILTER: &str = "te.session_id = ?1
+            OR te.session_id IN (SELECT id FROM sessions WHERE parent_session_id = ?1)";
+
+/// Billed tokens of [`CHAT_ROWS_FILTER`].
+fn chat_tokens_sql() -> String {
+    format!(
+        "SELECT COALESCE(SUM(COALESCE(te.billed_total_tokens,
+                                      COALESCE(te.input_tokens, 0) + COALESCE(te.output_tokens, 0))), 0)
+           FROM token_events te
+          WHERE {CHAT_ROWS_FILTER}"
+    )
+}
+
 /// The chat's own ledger rows plus its direct subagents', in the shared grain
 /// shape (prompt bands included) so they price exactly like the usage summary.
 fn chat_grain_sql() -> String {
-    super::token_events_grain_sql(
-        "te.session_id = ?1
-            OR te.session_id IN (SELECT id FROM sessions WHERE parent_session_id = ?1)",
+    super::token_events_grain_sql(CHAT_ROWS_FILTER)
+}
+
+/// The current LOCAL calendar month of [`BILLABLE_USAGE`]. The `ts` bound is
+/// what an index can serve: SQLite pushes it into both halves of the union, so
+/// the ledger half reads this month's rows through `idx_token_events_ts`
+/// instead of computing a local date for every row it holds, before every
+/// model request. It starts a day before local midnight on the 1st, so no time
+/// zone or daylight-saving offset can leave a row of this month out; the
+/// `day` test after it decides.
+const THIS_MONTH_FILTER: &str =
+    "u.ts >= CAST(strftime('%s', strftime('%Y-%m-01', 'now', 'localtime'), 'utc')
+                           AS INTEGER) - 86400
+            AND substr(u.day, 1, 7) = strftime('%Y-%m', 'now', 'localtime')";
+
+/// Billed tokens of every billable row this month ([`THIS_MONTH_FILTER`]).
+fn month_tokens_sql() -> String {
+    format!(
+        "SELECT COALESCE(SUM(COALESCE(u.billed_total_tokens,
+                                      COALESCE(u.input_tokens, 0) + COALESCE(u.output_tokens, 0))), 0)
+           FROM {BILLABLE_USAGE}
+          WHERE {THIS_MONTH_FILTER}"
     )
+}
+
+/// This month's billable rows in the shared priced grain.
+fn month_grain_sql() -> String {
+    super::billable_usage_grain_sql("''", THIS_MONTH_FILTER)
 }
 
 impl SessionManager {
@@ -100,19 +159,27 @@ impl SessionManager {
 
     /// The last model request `session_id` made itself (not a side call, not a
     /// decision, not a subagent's), or `None` before its first.
+    ///
+    /// Also `None` when a compaction ran after it: the request before a
+    /// compaction carried the history the compaction replaced, so the next
+    /// request is estimated like a chat's first (the context manager's size of
+    /// it, when the caller holds one) until a request after the compaction is
+    /// billed. Estimating from either row would hold the chat to the size of a
+    /// history it no longer has.
     pub async fn last_request_usage(&self, session_id: &str) -> Result<Option<RequestUsage>> {
         let pool = self.storage.pool().await?;
         Ok(sqlx::query_as::<_, RequestUsage>(&format!(
-            "{REQUEST_USAGE_SQL} AND session_id = ?1 ORDER BY id DESC LIMIT 1"
+            "SELECT * FROM ({REQUEST_USAGE_SQL} AND session_id = ?1 ORDER BY id DESC LIMIT 1)
+              WHERE NOT {IS_COMPACTION_ROW}"
         ))
         .bind(session_id)
         .fetch_optional(pool)
         .await?)
     }
 
-    /// The last model request any chat made to `provider`'s `model`, which
-    /// gives a chat's first request the cache hit rate the model has been
-    /// getting.
+    /// The last model request any chat made to `provider`'s `model` (not a
+    /// compaction), which gives a chat's first request the cache hit rate the
+    /// model has been getting.
     pub async fn last_request_usage_for_model(
         &self,
         provider: &str,
@@ -120,7 +187,8 @@ impl SessionManager {
     ) -> Result<Option<RequestUsage>> {
         let pool = self.storage.pool().await?;
         Ok(sqlx::query_as::<_, RequestUsage>(&format!(
-            "{REQUEST_USAGE_SQL} AND provider = ?1 COLLATE NOCASE AND model_id = ?2 COLLATE NOCASE
+            "{REQUEST_USAGE_SQL} AND NOT {IS_COMPACTION_ROW}
+                AND provider = ?1 COLLATE NOCASE AND model_id = ?2 COLLATE NOCASE
               ORDER BY id DESC LIMIT 1"
         ))
         .bind(provider)
@@ -134,25 +202,14 @@ impl SessionStorage {
     async fn spend_snapshot(&self, session_id: &str, with_usd: bool) -> Result<SpendSnapshot> {
         let pool = self.pool().await?;
 
-        let chat_tokens: i64 = sqlx::query_scalar(
-            "SELECT COALESCE(SUM(COALESCE(billed_total_tokens,
-                                          COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0))), 0)
-               FROM token_events
-              WHERE session_id = ?1
-                 OR session_id IN (SELECT id FROM sessions WHERE parent_session_id = ?1)",
-        )
-        .bind(session_id)
-        .fetch_one(pool)
-        .await?;
+        let chat_tokens: i64 = sqlx::query_scalar(&chat_tokens_sql())
+            .bind(session_id)
+            .fetch_one(pool)
+            .await?;
 
-        let month_tokens: i64 = sqlx::query_scalar(&format!(
-            "SELECT COALESCE(SUM(COALESCE(u.billed_total_tokens,
-                                          COALESCE(u.input_tokens, 0) + COALESCE(u.output_tokens, 0))), 0)
-               FROM {BILLABLE_USAGE}
-              WHERE substr(u.day, 1, 7) = strftime('%Y-%m', 'now', 'localtime')"
-        ))
-        .fetch_one(pool)
-        .await?;
+        let month_tokens: i64 = sqlx::query_scalar(&month_tokens_sql())
+            .fetch_one(pool)
+            .await?;
 
         let month: String = sqlx::query_scalar("SELECT strftime('%Y-%m', 'now', 'localtime')")
             .fetch_one(pool)
@@ -177,12 +234,9 @@ impl SessionStorage {
         snapshot.chat_usd = chat.cost;
         snapshot.chat_usd_complete = !chat.has_unpriced && !chat.cost_excludes_cache;
 
-        let month_grain = sqlx::query_as::<_, UsageGrainRow>(&super::billable_usage_grain_sql(
-            "''",
-            "substr(u.day, 1, 7) = strftime('%Y-%m', 'now', 'localtime')",
-        ))
-        .fetch_all(pool)
-        .await?;
+        let month_grain = sqlx::query_as::<_, UsageGrainRow>(&month_grain_sql())
+            .fetch_all(pool)
+            .await?;
         let month_pricing = resolve_grain_pricing(&month_grain).await;
         let month_totals = totals_from_grain_with_pricing(&month_grain, &month_pricing);
         snapshot.month_usd = month_totals.cost;
@@ -340,6 +394,187 @@ mod tests {
                 .unwrap(),
             None
         );
+    }
+
+    /// A compaction after the chat's last turn request leaves no request to
+    /// estimate from: its row (the whole old history in, the summary out) is
+    /// not the next request's shape, and neither is the turn request before
+    /// it, which carried the history the compaction replaced. The next turn
+    /// request is the basis again.
+    #[tokio::test]
+    async fn a_compaction_is_never_the_basis_of_the_next_request() {
+        let temp = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let chat = sm
+            .create_session(temp.path().to_path_buf(), "sol".into(), SessionType::User)
+            .await
+            .unwrap();
+        sm.apply_usage_event(sol_turn(&chat.id, "t1", 1_000, 249_000, 40))
+            .await
+            .unwrap();
+        let key = super::compaction_event_key();
+        assert!(key.starts_with(super::COMPACTION_EVENT_KEY_PREFIX), "{key}");
+        sm.apply_usage_event(sol_turn(&chat.id, &key, 250_000, 0, 3_000))
+            .await
+            .unwrap();
+        // A second summarization request of the same compaction.
+        sm.apply_usage_event(sol_turn(&chat.id, &format!("{key}:1"), 250_000, 0, 2_000))
+            .await
+            .unwrap();
+        assert_eq!(
+            sm.last_request_usage(&chat.id).await.unwrap(),
+            None,
+            "no basis until a request after the compaction is billed"
+        );
+        // The model's cache shares are not read off a compaction either.
+        let model = sm
+            .last_request_usage_for_model("versa_azure", SOL)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(model.cache_read_tokens, 249_000, "{model:?}");
+        // Still billed spend.
+        let snapshot = sm.spend_snapshot(&chat.id, false).await.unwrap();
+        assert_eq!(snapshot.chat_tokens, 250_040 + 253_000 + 252_000);
+
+        sm.apply_usage_event(sol_turn(&chat.id, "t2", 2_000, 8_000, 50))
+            .await
+            .unwrap();
+        let last = sm.last_request_usage(&chat.id).await.unwrap().unwrap();
+        assert_eq!(last.prompt_tokens(), 10_000, "{last:?}");
+    }
+
+    /// The month read takes only this local month's rows; a row from an
+    /// earlier month is not counted.
+    #[tokio::test]
+    async fn the_month_counts_this_months_rows_only() {
+        let temp = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let chat = sm
+            .create_session(temp.path().to_path_buf(), "sol".into(), SessionType::User)
+            .await
+            .unwrap();
+        sm.apply_usage_event(sol_turn(&chat.id, "now", 1_000, 0, 10))
+            .await
+            .unwrap();
+        sm.apply_usage_event(sol_turn(&chat.id, "old", 7_000, 0, 10))
+            .await
+            .unwrap();
+        // Forty days back is always an earlier calendar month.
+        let pool = sm.storage.pool().await.unwrap();
+        sqlx::query(
+            "UPDATE token_events SET ts = CAST(strftime('%s', 'now', '-40 days') AS INTEGER)
+              WHERE event_key = 'old'",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let snapshot = sm.spend_snapshot(&chat.id, true).await.unwrap();
+        assert_eq!(snapshot.month_tokens, 1_010, "{snapshot:?}");
+        assert_eq!(snapshot.chat_tokens, 8_020, "a chat limit counts every row");
+        let month_usd = (1_000.0 * 4.0 + 10.0 * 20.0) / 1e6;
+        assert!(
+            close(snapshot.month_usd.unwrap(), month_usd),
+            "{snapshot:?}"
+        );
+    }
+
+    async fn plan(pool: &sqlx::SqlitePool, sql: &str, bind_session: bool) -> Vec<String> {
+        let explain = format!("EXPLAIN QUERY PLAN {sql}");
+        let mut query = sqlx::query(&explain);
+        if bind_session {
+            query = query.bind("chat");
+        }
+        query
+            .fetch_all(pool)
+            .await
+            .unwrap()
+            .iter()
+            .map(|row| sqlx::Row::get::<String, _>(row, "detail"))
+            .collect()
+    }
+
+    /// `idx_sessions_parent` has no migration arm, so an existing database
+    /// gains it when it is opened.
+    #[tokio::test]
+    async fn an_existing_database_gains_the_subagent_index_on_open() {
+        let temp = TempDir::new().unwrap();
+        let index_count = "SELECT COUNT(*) FROM sqlite_master \
+                           WHERE type = 'index' AND name = 'idx_sessions_parent'";
+        {
+            let sm = SessionManager::new(temp.path().to_path_buf());
+            let pool = sm.storage.pool().await.unwrap();
+            let fresh: i64 = sqlx::query_scalar(index_count)
+                .fetch_one(pool)
+                .await
+                .unwrap();
+            assert_eq!(fresh, 1, "a fresh database has it");
+            sqlx::query("DROP INDEX idx_sessions_parent")
+                .execute(pool)
+                .await
+                .unwrap();
+            pool.close().await;
+        }
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let pool = sm.storage.pool().await.unwrap();
+        let reopened: i64 = sqlx::query_scalar(index_count)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(reopened, 1, "an existing database gains it on open");
+    }
+
+    /// The spend read runs before every model request, so neither half scans
+    /// the ledger: the month reads its rows through `idx_token_events_ts`, and
+    /// a chat its own rows and its subagents' through `idx_token_events_session`
+    /// and `idx_sessions_parent`.
+    #[tokio::test]
+    async fn the_spend_read_walks_the_ledger_indexes() {
+        let temp = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        sm.create_session(temp.path().to_path_buf(), "sol".into(), SessionType::User)
+            .await
+            .unwrap();
+        let pool = sm.storage.pool().await.unwrap();
+
+        for sql in [super::month_tokens_sql(), super::month_grain_sql()] {
+            let steps = plan(pool, &sql, false).await;
+            assert!(
+                steps
+                    .iter()
+                    .any(|step| step.contains("USING INDEX idx_token_events_ts")),
+                "the month no longer reads through idx_token_events_ts: {steps:?}"
+            );
+            assert!(
+                !steps
+                    .iter()
+                    .any(|step| step.starts_with("SCAN te") || step == "SCAN token_events"),
+                "the month scans the ledger: {steps:?}"
+            );
+        }
+
+        for sql in [super::chat_tokens_sql(), super::chat_grain_sql()] {
+            let steps = plan(pool, &sql, true).await;
+            assert!(
+                steps
+                    .iter()
+                    .any(|step| step.contains("idx_token_events_session")),
+                "a chat's rows are not read through idx_token_events_session: {steps:?}"
+            );
+            assert!(
+                steps
+                    .iter()
+                    .any(|step| step.contains("idx_sessions_parent")),
+                "a chat's subagents are not found through idx_sessions_parent: {steps:?}"
+            );
+            assert!(
+                !steps
+                    .iter()
+                    .any(|step| step.starts_with("SCAN te") || step.starts_with("SCAN sessions")),
+                "the chat read scans a table: {steps:?}"
+            );
+        }
     }
 
     /// A deleted chat's usage is folded per day and model with no per-request

@@ -165,12 +165,18 @@ pub async fn before_dispatch(
     };
     let mut held = Duration::ZERO;
     if !hold.is_zero() {
-        let started = Instant::now();
-        tokio::select! {
-            () = tokio::time::sleep(hold) => {}
-            () = cancellation_token.cancelled() => {}
-        }
-        held = started.elapsed();
+        // The hold does no work, so the dispatch it sits in hands its permit
+        // back while it waits, as a script's `sleep()` does: eight held checks
+        // must not stall every other tool call in the daemon.
+        held = crate::agents::tool_dispatch_limits::park(async {
+            let started = Instant::now();
+            tokio::select! {
+                () = tokio::time::sleep(hold) => {}
+                () = cancellation_token.cancelled() => {}
+            }
+            started.elapsed()
+        })
+        .await;
     }
     Paced {
         key: Some(key),
@@ -418,6 +424,49 @@ mod tests {
         let started = Instant::now();
         let _ = before_dispatch(session, tool, Some(&args("a")), &token).await;
         assert_eq!(started.elapsed(), Duration::from_secs(2));
+    }
+
+    /// A held check does no work, so the dispatch it runs in holds no permit
+    /// while it waits, and takes one back for the call itself. Eight held
+    /// checks holding permits would stall every other tool call in the daemon.
+    #[tokio::test(start_paused = true)]
+    async fn a_held_check_holds_no_dispatch_permit() {
+        use crate::agents::tool_dispatch_limits::{with_parking_handle, ToolDispatchGuard};
+        let session = "pace-permit";
+        let tool = "cdw__status";
+        remember_for_test(session, tool, Some(&args("a")), Duration::from_secs(30));
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
+        let guard = ToolDispatchGuard::for_test(std::sync::Arc::clone(&semaphore)).await;
+        assert_eq!(
+            semaphore.available_permits(),
+            0,
+            "the call holds the permit"
+        );
+
+        let handle = guard.parking_handle();
+        let held = tokio::spawn(async move {
+            let arguments = args("a");
+            with_parking_handle(
+                Some(handle),
+                before_dispatch(session, tool, Some(&arguments), &CancellationToken::new()),
+            )
+            .await
+        });
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(
+            semaphore.available_permits(),
+            1,
+            "a held check must hold no dispatch permit"
+        );
+        let paced = held.await.unwrap();
+        assert_eq!(paced.held, Duration::from_secs(30));
+        assert_eq!(
+            semaphore.available_permits(),
+            0,
+            "the permit is taken back before the call runs"
+        );
+        drop(guard);
+        assert_eq!(semaphore.available_permits(), 1);
     }
 
     #[tokio::test(start_paused = true)]

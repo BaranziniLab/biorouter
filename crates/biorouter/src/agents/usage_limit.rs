@@ -24,6 +24,12 @@
 //! spend so far plus an estimate of that request would pass it
 //! ([`project_request`]), so the last request does not run whole past the
 //! limit. See `docs/agent-loop/usage-limits.md`.
+//!
+//! ⚠ A check compares BILLED spend, which a request adds only once its
+//! response lands. Requests running at the same time (parallel subagents of
+//! one chat, or several chats against the monthly limit) do not see one
+//! another, so together they can pass a limit by up to about one request
+//! each. Nothing reserves a request's estimate while it runs.
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -416,6 +422,16 @@ pub fn evaluate(
     (reached, warning)
 }
 
+/// Every limit in force at or past [`WARN_FRACTION`], month first. Each is
+/// warned about on its own ([`announce_warning_once`]), so a month already
+/// warned about does not hide a chat limit crossing 80% later.
+pub fn warnings(limits: &EffectiveLimits, spend: &SpendSnapshot) -> Vec<LimitHit> {
+    hits(limits, spend)
+        .into_iter()
+        .filter(|hit| hit.amount.fraction() >= WARN_FRACTION)
+        .collect()
+}
+
 /// The first limit in force, month first, that `next` would pass, given
 /// that none is reached yet. A limit whose axis the estimate does not price
 /// (dollars for an unpriced model) is not projected.
@@ -461,6 +477,11 @@ pub struct NextRequestInputs {
     /// so the previous request's billed prompt can be scaled by the growth
     /// since (a tool result, the model's answer).
     pub previous_prompt_estimate: Option<u64>,
+    /// The context manager's size estimate of what the request about to be
+    /// sent carries after the previous request's answer: the new message, an
+    /// attachment, a pasted document. Only the reply loop sees it; a reply's
+    /// first request adds it to the previous request plus its answer.
+    pub added_estimate: Option<u64>,
 }
 
 /// The token buckets the next request is expected to bill.
@@ -486,8 +507,11 @@ impl ProjectedRequest {
 ///
 /// * With an earlier request in this chat (`previous`): its billed prompt,
 ///   scaled by how much the context manager's estimate grew since it was
-///   sent when both estimates are known, else plus its output (the answer
-///   joins the history). Its cache shares and its output carry over.
+///   sent when both estimates are known (inside a reply). Otherwise (a
+///   reply's first request) its prompt plus its output (the answer joins the
+///   history) plus [`NextRequestInputs::added_estimate`], so a large new
+///   message counts before it is sent. Its cache shares and its output carry
+///   over; what was added is counted as fresh input.
 /// * Before the chat's first request: the context manager's estimate of the
 ///   prompt, with the cache shares and output of the model's last request in
 ///   any chat (`model_basis`), or none.
@@ -496,26 +520,42 @@ pub fn project_request(
     model_basis: Option<&RequestUsage>,
     inputs: &NextRequestInputs,
 ) -> Option<ProjectedRequest> {
-    let (prompt, basis) = match previous.filter(|p| p.prompt_tokens() > 0) {
+    // `cached` is the part of the prompt the basis's cache shares apply to.
+    let (prompt, cached, basis) = match previous.filter(|p| p.prompt_tokens() > 0) {
         Some(previous) => {
             let before = previous.prompt_tokens();
-            let prompt = match (inputs.prompt_estimate, inputs.previous_prompt_estimate) {
+            match (inputs.prompt_estimate, inputs.previous_prompt_estimate) {
                 (Some(now), Some(then)) if then > 0 => {
-                    ((before as f64) * (now as f64) / (then as f64)).ceil() as i64
+                    let prompt = ((before as f64) * (now as f64) / (then as f64)).ceil() as i64;
+                    (prompt, prompt, Some(previous))
                 }
-                _ => before + previous.output_tokens.max(0),
-            };
-            (prompt, Some(previous))
+                _ => {
+                    // The added part is estimated on its own, not the whole
+                    // request: the context manager's size over-counts by
+                    // design, and only a ratio of two of them is trusted.
+                    let resting = before + previous.output_tokens.max(0);
+                    let added = inputs
+                        .added_estimate
+                        .and_then(|added| i64::try_from(added).ok())
+                        .unwrap_or(0);
+                    (resting.saturating_add(added), resting, Some(previous))
+                }
+            }
         }
         None => {
             let prompt = i64::try_from(inputs.prompt_estimate?).ok()?;
-            (prompt, model_basis.filter(|b| b.prompt_tokens() > 0))
+            (
+                prompt,
+                prompt,
+                model_basis.filter(|b| b.prompt_tokens() > 0),
+            )
         }
     };
     let prompt = prompt.max(1);
+    let cached = cached.clamp(0, prompt);
     let share = |part: i64| match basis {
         Some(b) => {
-            ((prompt as f64) * (part.max(0) as f64) / (b.prompt_tokens() as f64)).round() as i64
+            ((cached as f64) * (part.max(0) as f64) / (b.prompt_tokens() as f64)).round() as i64
         }
         None => 0,
     };
@@ -707,6 +747,13 @@ fn next_request_sentence(hit: &LimitHit, limit_text: &str) -> Option<String> {
              so no request fits under it."
         ));
     }
+    if hit.scope == LimitScope::Month {
+        // What is left would give away the month's total ([`stop_notice`]).
+        return Some(format!(
+            "The next request is estimated at {estimate}, more than is left of it, so it \
+             would pass the limit."
+        ));
+    }
     let left = hit
         .amount
         .amount_text((hit.amount.limit() - hit.amount.used()).max(0.0));
@@ -720,6 +767,12 @@ fn next_request_sentence(hit: &LimitHit, limit_text: &str) -> Option<String> {
 /// sent to a paused chat gets. Numbers and names of limits only, never content.
 /// A projected stop ([`LimitHit::next_request`]) also says what the next
 /// request is estimated at and how much is left.
+///
+/// ⚠ A monthly notice names the limit and never the month's total. The total
+/// sums every chat, private and deleted ones included, and the notice is
+/// stored in whichever chat reached it, which may be a public one whose
+/// transcript a caller holding only the daemon secret can read; the usage
+/// routes give that total only to a caller with the user-action proof.
 pub fn stop_notice(hit: &LimitHit) -> String {
     let (used, limit) = hit.amount.texts();
     let next = next_request_sentence(hit, &limit)
@@ -727,10 +780,13 @@ pub fn stop_notice(hit: &LimitHit) -> String {
         .unwrap_or_default();
     match (hit.scope, hit.source) {
         (LimitScope::Month, _) => format!(
-            "{MONTH_LIMIT_REACHED_PREFIX}{used} used in {month}, of a monthly limit of {limit}.\
-             {next} To continue, raise or lift it in Settings > App > Usage. \
-             The month resets on the 1st, local time.",
-            month = hit.month,
+            "{MONTH_LIMIT_REACHED_PREFIX}{state}{next} To continue, raise or lift it in \
+             Settings > App > Usage. The month resets on the 1st, local time.",
+            state = if hit.next_request.is_some() {
+                format!("the monthly limit for {} is {limit}.", hit.month)
+            } else {
+                format!("the monthly limit of {limit} for {} is used up.", hit.month)
+            },
         ),
         (LimitScope::Chat, LimitSource::Default) => format!(
             "{CHAT_LIMIT_REACHED_PREFIX}{used} used, of the default per-chat limit of {limit}.\
@@ -744,14 +800,17 @@ pub fn stop_notice(hit: &LimitHit) -> String {
     }
 }
 
-/// The heads-up at [`WARN_FRACTION`] of a limit, once per crossing.
+/// The heads-up at [`WARN_FRACTION`] of a limit, once per crossing. A monthly
+/// warning names the limit, never the month's total ([`stop_notice`]).
 pub fn warning_notice(hit: &LimitHit) -> String {
     let (used, limit) = hit.amount.texts();
     let percent = (hit.amount.fraction() * 100.0).floor() as u64;
     match hit.scope {
         LimitScope::Month => format!(
-            "{MONTH_LIMIT_WARNING_PREFIX}{used} used in {month}, of {limit} ({percent}%).",
+            "{MONTH_LIMIT_WARNING_PREFIX}usage in {month} is at least {threshold}% of the \
+             monthly limit of {limit}.",
             month = hit.month,
+            threshold = (WARN_FRACTION * 100.0).round() as u64,
         ),
         LimitScope::Chat => {
             let whose = if hit.source == LimitSource::Default {
@@ -771,8 +830,11 @@ struct NoticeRecord {
     warned: Vec<String>,
 }
 
-/// Whether `check`'s warning is due now, remembered on the billing chat so it
-/// is given once per crossing and a reload does not bring it back.
+/// Which near-limit warning is due now, remembered on the billing chat so each
+/// limit's is given once per crossing and a reload does not bring it back:
+/// the first limit at or past [`WARN_FRACTION`], month first, whose crossing
+/// has not been warned about yet ([`warnings`]). One per check; a second
+/// limit near its ceiling is warned about at the next check.
 ///
 /// Every check with limits in force also forgets the warnings of limits that
 /// are no longer in force or are back under [`WARN_FRACTION`] (a raised or
@@ -793,11 +855,8 @@ pub async fn announce_warning_once(
         Some(value) => serde_json::from_value(value).unwrap_or_default(),
         None => NoticeRecord::default(),
     };
-    let still_warned: Vec<String> = hits(&check.effective, spend)
-        .iter()
-        .filter(|hit| hit.amount.fraction() >= WARN_FRACTION)
-        .map(LimitHit::notice_key)
-        .collect();
+    let near = warnings(&check.effective, spend);
+    let still_warned: Vec<String> = near.iter().map(LimitHit::notice_key).collect();
     let mut next = NoticeRecord {
         warned: stored
             .warned
@@ -806,18 +865,15 @@ pub async fn announce_warning_once(
             .cloned()
             .collect(),
     };
-    let due = match &check.warning {
-        Some(hit) if check.reached.is_none() => {
-            let key = hit.notice_key();
-            if next.warned.contains(&key) {
-                None
-            } else {
-                next.warned.push(key);
-                Some(hit.clone())
-            }
-        }
-        _ => None,
+    let due = if check.reached.is_none() {
+        near.into_iter()
+            .find(|hit| !next.warned.contains(&hit.notice_key()))
+    } else {
+        None
     };
+    if let Some(hit) = &due {
+        next.warned.push(hit.notice_key());
+    }
     if next != stored {
         let value = serde_json::to_value(&next)?;
         session_manager
@@ -1012,26 +1068,45 @@ pub async fn monthly_state_with(
 }
 
 /// Per-reply state on the agent: whether this reply already warned, whether
-/// it already stopped (so a second stop point adds no second notice), and the
-/// context manager's size estimate made before each chat's previous request
-/// of this reply ([`NextRequestInputs::previous_prompt_estimate`]).
+/// it already stopped (so a second stop point adds no second notice), whether
+/// a limit cut it short, and the context manager's size estimate made before
+/// each chat's previous request of this reply
+/// ([`NextRequestInputs::previous_prompt_estimate`]).
 #[derive(Debug, Default)]
 pub struct ReplyLimitState {
     warned: AtomicBool,
     stopped: AtomicBool,
+    interrupted: AtomicBool,
     prompt_estimates: Mutex<HashMap<String, u64>>,
 }
 
 impl ReplyLimitState {
     /// A reply's first request is estimated from the previous request plus
-    /// its answer, as the composer and the prologue estimate it, so the three
-    /// agree on whether the chat is paused.
+    /// its answer, as the composer and the prologue estimate it, plus what
+    /// the reply adds ([`NextRequestInputs::added_estimate`]), which only the
+    /// loop can see. So the loop is at least as strict as the other two: a
+    /// chat they show open can still stop at its first request when the new
+    /// message is large, never the other way round.
     pub fn begin_reply(&self) {
         self.warned.store(false, Ordering::SeqCst);
         self.stopped.store(false, Ordering::SeqCst);
+        self.interrupted.store(false, Ordering::SeqCst);
         if let Ok(mut estimates) = self.prompt_estimates.lock() {
             estimates.clear();
         }
+    }
+
+    /// A limit stopped the reply before a model request it was about to make
+    /// (the loop's gate, or a message sent to a paused chat), so its work was
+    /// cut short. Not set by a turn that finished and then stored the stop
+    /// notice for the next request.
+    pub fn mark_interrupted(&self) {
+        self.interrupted.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether [`Self::mark_interrupted`] was called since the reply began.
+    pub fn interrupted(&self) -> bool {
+        self.interrupted.load(Ordering::SeqCst)
     }
 
     /// The estimate made before `session_id`'s previous request this reply.
@@ -1269,8 +1344,10 @@ mod tests {
         };
         let text = stop_notice(&month);
         assert!(text.starts_with(MONTH_LIMIT_REACHED_PREFIX));
-        assert!(text.contains("$251.00 used in 2026-11"), "{text}");
-        assert!(text.contains("$250.00"), "{text}");
+        assert!(
+            text.contains("the monthly limit of $250.00 for 2026-11 is used up"),
+            "{text}"
+        );
         assert!(text.contains("Settings > App > Usage"), "{text}");
 
         assert!(warning_notice(&hit).starts_with(CHAT_LIMIT_WARNING_PREFIX));
@@ -1284,6 +1361,70 @@ mod tests {
         ] {
             assert!(!text.contains('\u{2014}'), "no em dash in copy: {text}");
         }
+    }
+
+    /// The month's total sums every chat, private ones included, and only a
+    /// caller with the user-action proof may read it; a monthly notice is
+    /// stored in whichever chat reached the limit, so it names the limit and
+    /// never the total, a percent of it or what is left.
+    #[test]
+    fn a_monthly_notice_never_carries_the_months_total() {
+        let at = |used: f64, next_request: Option<f64>| LimitHit {
+            scope: LimitScope::Month,
+            source: LimitSource::None,
+            amount: LimitAmount::Usd { used, limit: 250.0 },
+            month: "2026-11".to_string(),
+            next_request,
+        };
+        let tokens = LimitHit {
+            amount: LimitAmount::Tokens {
+                used: 61_234_567,
+                limit: 66_000_000,
+            },
+            ..at(0.0, None)
+        };
+        let notices = [
+            (stop_notice(&at(251.37, None)), "251.37"),
+            (stop_notice(&at(246.13, Some(5.2))), "246.13"),
+            (warning_notice(&at(213.37, None)), "213.37"),
+            (warning_notice(&tokens), "61,234,567"),
+        ];
+        for (text, total) in &notices {
+            assert!(
+                text.starts_with(MONTH_LIMIT_REACHED_PREFIX)
+                    || text.starts_with(MONTH_LIMIT_WARNING_PREFIX),
+                "{text}"
+            );
+            assert!(!text.contains(total), "the month's total leaks: {text}");
+            assert!(!text.contains("is left, so"), "what is left leaks: {text}");
+            assert!(!text.contains("$3.87"), "what is left leaks: {text}");
+            assert!(!text.contains('\u{2014}'), "{text}");
+        }
+        assert!(
+            notices[0].0.contains("monthly limit of $250.00"),
+            "{}",
+            notices[0].0
+        );
+        assert!(
+            notices[1]
+                .0
+                .contains("The next request is estimated at $5.20"),
+            "{}",
+            notices[1].0
+        );
+        assert!(
+            notices[2]
+                .0
+                .contains("at least 80% of the monthly limit of $250.00"),
+            "{}",
+            notices[2].0
+        );
+        assert!(!notices[2].0.contains("85%"), "{}", notices[2].0);
+        assert!(
+            notices[3].0.contains("monthly limit of 66,000,000 tokens"),
+            "{}",
+            notices[3].0
+        );
     }
 
     /// The cases `formatUsd` in the desktop runs too, so both print one
@@ -1366,6 +1507,118 @@ mod tests {
             project_request(None, None, &NextRequestInputs::default()),
             None
         );
+    }
+
+    /// A reply's first request carries the new message, which the previous
+    /// request did not: a 120,000-token paste counts before it is sent, as
+    /// fresh input, while the previous prompt keeps its cache share. The loop's
+    /// whole-request estimate is not what is added: it over-counts by design.
+    #[test]
+    fn a_replys_first_request_counts_the_new_message() {
+        let previous = usage(1_000, 35_000, 5);
+        let pasted = project_request(
+            Some(&previous),
+            None,
+            &NextRequestInputs {
+                prompt_estimate: Some(200_000),
+                added_estimate: Some(120_000),
+                ..NextRequestInputs::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(pasted.prompt_tokens(), 156_005, "{pasted:?}");
+        assert_eq!(pasted.cache_read_tokens, 35_005, "{pasted:?}");
+        assert_eq!(pasted.input_tokens, 121_000, "{pasted:?}");
+
+        // Nothing added (the composer and the prologue, which cannot see an
+        // unsent message): the previous prompt plus its answer, as before.
+        let resting =
+            project_request(Some(&previous), None, &NextRequestInputs::default()).unwrap();
+        assert_eq!(resting.prompt_tokens(), 36_005);
+
+        // Inside a reply the growth since the previous request is the ratio
+        // of two estimates, and what was added is already in it.
+        let inside = project_request(
+            Some(&previous),
+            None,
+            &NextRequestInputs {
+                prompt_estimate: Some(60_000),
+                previous_prompt_estimate: Some(40_000),
+                added_estimate: Some(120_000),
+                ..NextRequestInputs::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(inside.prompt_tokens(), 54_000);
+
+        // So against a 150,000-token limit with 50,000 used, the paste stops
+        // the request the previous-request estimate alone let through.
+        let limits = EffectiveLimits {
+            chat_tokens: Some(150_000),
+            chat_usd: None,
+            source: LimitSource::Chat,
+            month_tokens: None,
+            month_usd: None,
+        };
+        let at = spend(50_000, 50_000);
+        let estimate = |next: ProjectedRequest| RequestEstimate {
+            tokens: next.billed_tokens() as u64,
+            usd: None,
+        };
+        assert!(projected_hit(&limits, &at, &estimate(resting)).is_none());
+        assert!(projected_hit(&limits, &at, &estimate(pasted)).is_some());
+    }
+
+    /// Each limit near its ceiling is warned about on its own: a month already
+    /// warned about does not hide the chat crossing 80% of its own limit.
+    #[tokio::test]
+    async fn a_month_already_warned_does_not_hide_the_chats_warning() {
+        let temp = tempfile::tempdir().unwrap();
+        let (sm, id) = manager_and_session(&temp).await;
+        let effective = EffectiveLimits {
+            chat_tokens: Some(100),
+            chat_usd: None,
+            source: LimitSource::Chat,
+            month_tokens: Some(1_000),
+            month_usd: None,
+        };
+        let check_at = |chat: i64, month: i64| {
+            let at = spend(chat, month);
+            let (reached, warning) = evaluate(&effective, &at);
+            LimitCheck {
+                billing_session_id: id.clone(),
+                chat_override: None,
+                effective,
+                spend: Some(at),
+                reached,
+                warning,
+                next_request: None,
+            }
+        };
+
+        // The month at 85%, warned once.
+        let first = announce_warning_once(&sm, &check_at(10, 850))
+            .await
+            .unwrap()
+            .expect("the month's warning");
+        assert_eq!(first.scope, LimitScope::Month);
+        assert!(announce_warning_once(&sm, &check_at(20, 860))
+            .await
+            .unwrap()
+            .is_none());
+
+        // Later the chat crosses 80% of its own limit.
+        let chat = announce_warning_once(&sm, &check_at(85, 900))
+            .await
+            .unwrap()
+            .expect("the chat's own warning");
+        assert_eq!(chat.scope, LimitScope::Chat);
+        assert!(warning_notice(&chat).starts_with(CHAT_LIMIT_WARNING_PREFIX));
+        // Both are remembered now.
+        assert!(announce_warning_once(&sm, &check_at(90, 950))
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[test]
@@ -1553,7 +1806,13 @@ mod tests {
         assert!(state.stopped());
         state.record_prompt_estimate("chat", 40_000);
         assert_eq!(state.previous_prompt_estimate("chat"), Some(40_000));
+        // A stop is not an interruption by itself: the end of a finished turn
+        // stops too.
+        assert!(!state.interrupted());
+        state.mark_interrupted();
+        assert!(state.interrupted());
         state.begin_reply();
+        assert!(!state.interrupted());
         assert!(!state.stopped());
         assert!(state.take_warning());
         assert_eq!(

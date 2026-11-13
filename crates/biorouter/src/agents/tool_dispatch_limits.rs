@@ -197,6 +197,51 @@ impl DispatchPermitHandle {
     }
 }
 
+tokio::task_local! {
+    /// The permit handle of the dispatch whose body is running, so a wait deep
+    /// inside that body can hand the permit back ([`park`]).
+    static DISPATCH_PERMIT: DispatchPermitHandle;
+}
+
+/// Run a dispatch's `body` with its permit handle in reach of [`park`]. With
+/// `None` (an exempt dispatch, or one holding no permit) it just runs `body`.
+///
+/// The scope is a task-local, so it covers what `body` awaits on this task and
+/// nothing it spawns: a script's tool calls run on a spawned handler, which
+/// installs the script's own handle around each call.
+pub async fn with_parking_handle<F: std::future::Future>(
+    handle: Option<DispatchPermitHandle>,
+    body: F,
+) -> F::Output {
+    match handle {
+        Some(handle) => DISPATCH_PERMIT.scope(handle, body).await,
+        None => body.await,
+    }
+}
+
+/// Await `parked`, a wait that does no work, holding no dispatch permit: the
+/// permit of the dispatch it runs in ([`with_parking_handle`]) is handed back
+/// for the wait and queued for again after it. Outside such a dispatch it is a
+/// plain await.
+///
+/// For the status-check pacing hold (`tool_monitor::poll_pacing`): a repeated
+/// check of a running job sleeps up to two minutes inside the dispatch, and
+/// eight of them holding permits would stall every other tool call in the
+/// daemon.
+pub async fn park<F: std::future::Future>(parked: F) -> F::Output {
+    match DISPATCH_PERMIT.try_with(DispatchPermitHandle::clone) {
+        Ok(handle) => handle.while_parked(parked).await,
+        Err(_) => parked.await,
+    }
+}
+
+/// Whether the running dispatch body has a permit handle in reach of
+/// [`park`].
+#[cfg(test)]
+pub(crate) fn permit_in_reach() -> bool {
+    DISPATCH_PERMIT.try_with(|_| ()).is_ok()
+}
+
 /// Acquire the concurrency permit and any write-path locks for a tool call, in
 /// deadlock-free order (permit first, then paths sorted). The returned guard
 /// must be held for the whole duration of the tool's execution.

@@ -158,8 +158,16 @@ fn config(id: &str, max_turns: u32) -> SessionConfig {
 }
 
 async fn drain(agent: &Agent, session_config: SessionConfig) -> Result<Vec<Message>> {
+    drain_with(agent, session_config, "Hello").await
+}
+
+async fn drain_with(
+    agent: &Agent,
+    session_config: SessionConfig,
+    text: &str,
+) -> Result<Vec<Message>> {
     let reply_stream = agent
-        .reply(Message::user().with_text("Hello"), session_config, None)
+        .reply(Message::user().with_text(text), session_config, None)
         .await?;
     tokio::pin!(reply_stream);
     let mut responses = Vec::new();
@@ -288,6 +296,10 @@ async fn a_request_that_would_pass_the_chat_limit_is_not_made() -> Result<()> {
     .await?;
 
     let responses = drain(&agent, config(&id, 100)).await?;
+    assert!(
+        agent.usage_limit_interrupted_reply(),
+        "the gate cut the reply short"
+    );
     let used = chat_tokens(&agent, &id).await?;
     assert!(used <= 450, "no request runs past the limit: {used} used");
     assert_eq!(
@@ -345,6 +357,9 @@ async fn the_turn_that_reaches_the_limit_stores_why() -> Result<()> {
             .any(|n| n.starts_with(CHAT_LIMIT_REACHED_PREFIX)),
         "the turn says it reached the limit"
     );
+    // The turn finished its work; the notice is for the request after it. A
+    // scheduled run that ends like this is a success.
+    assert!(!agent.usage_limit_interrupted_reply());
     let stored = stored_notices(&agent, &id).await?;
     let stop = stored
         .iter()
@@ -467,6 +482,7 @@ async fn a_message_to_a_paused_chat_is_stored_and_makes_no_model_request() -> Re
             .any(|n| n.starts_with(CHAT_LIMIT_REACHED_PREFIX)),
         "the paused chat says why"
     );
+    assert!(agent.usage_limit_interrupted_reply());
     let session = agent.config.session_manager.get_session(&id, true).await?;
     let conversation = session.conversation.expect("conversation");
     assert!(
@@ -651,5 +667,229 @@ async fn a_limit_reached_at_a_context_overflow_ends_the_turn_there() -> Result<(
         "{live:?}"
     );
     assert!(!live.iter().any(|n| n.contains("Compacting")), "{live:?}");
+    Ok(())
+}
+
+/// A reply's first request carries the new message, which the previous
+/// request plus its answer leaves out: a large paste is counted before it is
+/// sent, though the composer and the prologue (which cannot see it) let the
+/// message through.
+#[tokio::test]
+async fn a_large_new_message_is_counted_before_the_first_request() -> Result<()> {
+    let _serial = SERIAL.lock().await;
+    let (agent, id, calls) = spendy_agent("usage-limit-paste").await?;
+    seed_spend(&agent, &id, "side:paste:1", 15_000).await?;
+    seed_request(&agent, &id, "paste:seed").await?;
+    usage_limit::set_for_session(
+        &agent.config.session_manager,
+        &id,
+        Some(ChatLimitOverride::Limit {
+            max_tokens: Some(20_000),
+            max_usd: None,
+        }),
+    )
+    .await?;
+    // 15,100 used, and the previous request plus its answer (about 120)
+    // fits. The paste is about 10,000 tokens, which does not.
+    let paste = "The quick brown fox jumps over the lazy dog. ".repeat(700);
+    let responses = drain_with(&agent, config(&id, 3), &paste).await?;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "the request carrying the paste would pass the limit"
+    );
+    let live = notices(&responses);
+    let stop = live
+        .iter()
+        .find(|n| n.starts_with(CHAT_LIMIT_REACHED_PREFIX))
+        .unwrap_or_else(|| panic!("no stop notice: {live:?}"));
+    assert!(stop.contains("The next request is estimated at"), "{stop}");
+    assert!(stop.contains("4,900 tokens is left"), "{stop}");
+    assert_eq!(chat_tokens(&agent, &id).await?, 15_100, "nothing was spent");
+    assert!(agent.usage_limit_interrupted_reply());
+    Ok(())
+}
+
+/// The model calls a turn makes at its end are requests too: once the turn
+/// leaves too little for the next request, the self-critique pass does not
+/// run, and the turn ends on the stop notice.
+#[tokio::test]
+async fn the_self_critique_pass_is_not_made_at_a_limit() -> Result<()> {
+    let _serial = SERIAL.lock().await;
+    let (agent, id, calls) = spendy_agent_with("usage-limit-critique", Some(150)).await?;
+    seed_request(&agent, &id, "critique:seed").await?;
+    usage_limit::set_for_session(
+        &agent.config.session_manager,
+        &id,
+        Some(ChatLimitOverride::Limit {
+            max_tokens: Some(300),
+            max_usd: None,
+        }),
+    )
+    .await?;
+    // From 100 used the answer (about 126 estimated) fits, and bills 150:
+    // 250 used, and the next request (about 180) no longer fits.
+    Config::global().set_param("BIOROUTER_SELF_CRITIQUE", true)?;
+    let result = drain(&agent, config(&id, 5)).await;
+    Config::global().delete("BIOROUTER_SELF_CRITIQUE")?;
+    let responses = result?;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the answer only, no self-critique judge"
+    );
+    assert!(
+        notices(&responses)
+            .iter()
+            .any(|n| n.starts_with(CHAT_LIMIT_REACHED_PREFIX)),
+        "{:?}",
+        notices(&responses)
+    );
+    Ok(())
+}
+
+/// The same for the `/goal` judge, a prompt Stop hook: it is not asked, and a
+/// goal nobody judged is not cleared.
+#[tokio::test]
+async fn the_goal_judge_is_not_asked_at_a_limit() -> Result<()> {
+    let _serial = SERIAL.lock().await;
+    let (agent, id, calls) = spendy_agent_with("usage-limit-goal", Some(150)).await?;
+    seed_request(&agent, &id, "goal:seed").await?;
+    usage_limit::set_for_session(
+        &agent.config.session_manager,
+        &id,
+        Some(ChatLimitOverride::Limit {
+            max_tokens: Some(300),
+            max_usd: None,
+        }),
+    )
+    .await?;
+    agent.set_goal(&id, "say hello".to_string()).await;
+
+    let responses = drain(&agent, config(&id, 5)).await?;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "the answer only, no goal judge"
+    );
+    assert!(
+        agent.active_goal(&id).await.is_some(),
+        "a goal nobody judged stays"
+    );
+    let live = notices(&responses);
+    assert!(
+        live.iter()
+            .any(|n| n.starts_with("The /goal was not checked")),
+        "{live:?}"
+    );
+    assert!(
+        live.iter()
+            .any(|n| n.starts_with(CHAT_LIMIT_REACHED_PREFIX)),
+        "{live:?}"
+    );
+    Ok(())
+}
+
+/// `/compact` is a billed model request over the whole history: a chat at its
+/// limit is not compacted and gets the paused notice.
+#[tokio::test]
+async fn compact_at_a_limit_makes_no_model_request() -> Result<()> {
+    let _serial = SERIAL.lock().await;
+    let (agent, id, calls) = spendy_agent("usage-limit-compact").await?;
+    usage_limit::set_for_session(
+        &agent.config.session_manager,
+        &id,
+        Some(ChatLimitOverride::Limit {
+            max_tokens: Some(50),
+            max_usd: None,
+        }),
+    )
+    .await?;
+    seed_spend(&agent, &id, "compact:1", 60).await?;
+
+    let responses = drain_with(&agent, config(&id, 3), "/compact").await?;
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "no summarization request");
+    let live = notices(&responses);
+    assert!(
+        live.iter()
+            .any(|n| n.starts_with(CHAT_LIMIT_REACHED_PREFIX)),
+        "{live:?}"
+    );
+    assert!(
+        !live.iter().any(|n| n.contains("Compaction complete")),
+        "{live:?}"
+    );
+    Ok(())
+}
+
+/// A subagent is held to its parent chat's limit, and its near-limit warning
+/// is about that limit: it is stored in the parent's transcript, where the
+/// warning is remembered and where the person reads, not in the subagent's.
+#[tokio::test]
+async fn a_subagents_warning_is_stored_in_its_parent_chat() -> Result<()> {
+    let _serial = SERIAL.lock().await;
+    let agent = Agent::new();
+    let manager = Arc::clone(&agent.config.session_manager);
+    let parent = manager
+        .create_session(
+            PathBuf::default(),
+            "usage-limit-parent".to_string(),
+            SessionType::User,
+        )
+        .await?;
+    let child = manager
+        .create_session(
+            PathBuf::default(),
+            "usage-limit-child".to_string(),
+            SessionType::SubAgent,
+        )
+        .await?;
+    manager
+        .update(&child.id)
+        .parent_session_id(Some(parent.id.clone()))
+        .apply()
+        .await?;
+    let calls = Arc::new(AtomicUsize::new(0));
+    agent
+        .update_provider(
+            Arc::new(MockSpendyProvider {
+                calls: Arc::clone(&calls),
+                text_usage: Some(50),
+            }),
+            &child.id,
+        )
+        .await?;
+    usage_limit::set_for_session(
+        &manager,
+        &parent.id,
+        Some(ChatLimitOverride::Limit {
+            max_tokens: Some(1_000),
+            max_usd: None,
+        }),
+    )
+    .await?;
+    // 700 by the parent and 100 by the subagent: 80% of the parent's limit.
+    seed_spend(&agent, &parent.id, "parent:spend", 700).await?;
+    seed_request(&agent, &child.id, "child:seed").await?;
+
+    let responses = drain(&agent, config(&child.id, 3)).await?;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let warned = |notices: &[String]| {
+        notices
+            .iter()
+            .filter(|n| n.starts_with(CHAT_LIMIT_WARNING_PREFIX))
+            .count()
+    };
+    assert_eq!(
+        warned(&stored_notices(&agent, &parent.id).await?),
+        1,
+        "the parent's transcript holds the warning about its limit"
+    );
+    assert_eq!(warned(&stored_notices(&agent, &child.id).await?), 0);
+    assert_eq!(
+        warned(&notices(&responses)),
+        0,
+        "not in the subagent's stream"
+    );
     Ok(())
 }

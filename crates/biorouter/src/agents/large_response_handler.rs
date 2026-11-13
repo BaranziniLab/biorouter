@@ -372,7 +372,7 @@ fn write_handle(content: &str, ctx: &LargeResponseContext) -> Result<Handle, std
 
     // Fallback: the pre-BR-6 temp location. An awkward handle beats no handle.
     let temp_dir = std::env::temp_dir().join("biorouter_mcp_responses");
-    std::fs::create_dir_all(&temp_dir)?;
+    create_private_dir(&temp_dir)?;
     let path = temp_dir.join(&filename);
     write_all(&path, content)?;
     Ok(Handle {
@@ -382,15 +382,64 @@ fn write_handle(content: &str, ctx: &LargeResponseContext) -> Result<Handle, std
 }
 
 fn write_all(path: &Path, content: &str) -> Result<(), std::io::Error> {
-    let mut file = File::create(path)?;
-    file.write_all(content.as_bytes())
+    write_private_file(path, content.as_bytes())
+}
+
+/// Create `dir` readable by its owner alone (0700 on Unix), and tighten it to
+/// that when it already exists. A saved tool result is a plaintext copy of
+/// whatever the tool returned (query rows, file contents), so the folder that
+/// holds it is not left open to other accounts on the machine, which matters
+/// most for the shared temp-dir fallback. Missing parents are created with
+/// the usual permissions: `<working dir>/.biorouter/` also holds project
+/// skills, workflows and hooks that other people may share. Fails when the
+/// folder cannot be made private (another account owns it), so the caller
+/// falls back or keeps the text rather than writing into a folder it does
+/// not control.
+pub(crate) fn create_private_dir(dir: &Path) -> Result<(), std::io::Error> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+        if let Some(parent) = dir.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(e) => return Err(e),
+        }
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+    }
+    #[cfg(not(unix))]
+    {
+        std::fs::create_dir_all(dir)
+    }
+}
+
+/// Write `content` to `path`, readable and writable by its owner alone (0600
+/// on Unix; see [`create_private_dir`]). A file that already exists is
+/// truncated and tightened too.
+pub(crate) fn write_private_file(path: &Path, content: &[u8]) -> Result<(), std::io::Error> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file: File = options.open(path)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    file.write_all(content)
 }
 
 /// Create the handle dir and make it invisible to git (a `.gitignore` of `*`
 /// also ignores itself), so offloading a tool result never dirties the user's
 /// working tree.
 fn prepare_handle_dir(dir: &Path) -> Result<(), std::io::Error> {
-    std::fs::create_dir_all(dir)?;
+    create_private_dir(dir)?;
     if let Some(parent) = dir.parent() {
         let gitignore = parent.join(".gitignore");
         if !gitignore.exists() {
@@ -646,6 +695,27 @@ mod tests {
             .expect("summary should name the handle");
         assert_eq!(fs::read_to_string(path).unwrap(), large);
         let _ = fs::remove_file(path);
+    }
+
+    /// The saved copy is plaintext of whatever the tool returned, so the file
+    /// and its folder are private to their owner.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_offloaded_result_is_private_to_its_owner() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let dir = TempDir::new().unwrap();
+        let processed = process_tool_response(ok(vec![Content::text(huge_text())]), &ctx(&dir))
+            .await
+            .unwrap();
+        let text = &processed.content[0].as_text().unwrap().text;
+        let path = text
+            .lines()
+            .find_map(|l| l.strip_prefix("The complete output is saved at: "))
+            .expect("summary should name the handle");
+        assert!(Path::new(path).starts_with(dir.path().join(HANDLE_DIR)));
+        assert_eq!(mode(Path::new(path)), 0o600);
+        assert_eq!(mode(&dir.path().join(HANDLE_DIR)), 0o700);
     }
 
     #[tokio::test]
