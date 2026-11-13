@@ -1,5 +1,5 @@
 import './pickers.css';
-import type { RefObject } from 'react';
+import type { ReactNode, RefObject } from 'react';
 import type { ModelCostRow, SessionCosts } from '../../hooks/useCostTracking';
 import { COST_TRACKING_ENABLED } from '../../updates';
 import { cn } from '../../utils';
@@ -10,10 +10,16 @@ import { FooterCardGroup } from './FooterCard';
 import type { SessionUsageLimitController } from './useSessionUsageLimit';
 
 /**
- * The composer's footer line (spec 3.7): the working folder on the left, the
- * context ring and the chat's cost on the right, in 12px muted ink under the
- * card. On Home (`sessionId === null`) only the folder shows, and a decision
- * chat (`showContext={false}`) shows no ring.
+ * The composer's footer line (spec 3.7, owner 2026-11-13): the working folder on
+ * the left; the model, the context ring and the chat's cost on the right, in
+ * 12px muted ink under the one-line card. On Home (`sessionId === null`) the
+ * folder and the model show, and a decision chat (`showContext={false}`) shows
+ * no ring.
+ *
+ * The model is a slot (`model`): `ChatInput` owns the model chip's inputs and
+ * hands the chip in, already wrapped in the element its "Switch model" action
+ * finds it by. It is a menu trigger, not a footer card, so it opens on a click
+ * only, like View options.
  *
  * Each of the three items opens a card in ONE format and with ONE behaviour
  * (`FooterCard`, `useFooterCard`): hover, Tab or a click opens it, a click
@@ -87,7 +93,12 @@ export interface ComposerFooterProps {
   usageLimit?: SessionUsageLimitController;
   /** Opens Settings > App > Usage (the monthly and default limits). */
   onOpenUsageSettings?: () => void;
-  /** Layout only (the inset that lines the folder up with the card's text). */
+  /**
+   * The model chip, first on the right. Shown on Home and in every chat; a
+   * decision chat names its decision model here.
+   */
+  model?: ReactNode;
+  /** Layout only (the inset that lines the folder up with the card's `+`). */
   className?: string;
   /**
    * The composer card above the line. Every item's card hangs above it, so a
@@ -118,6 +129,7 @@ export function ComposerFooter({
   reloadCost,
   usageLimit,
   onOpenUsageSettings,
+  model,
   className,
   composerRef,
 }: ComposerFooterProps) {
@@ -137,9 +149,10 @@ export function ComposerFooter({
             />
           )}
         </div>
-        {inChat && (
+        {(inChat || model) && (
           <div className="br-footline__side" data-side="end">
-            {showContext && (
+            {model}
+            {inChat && showContext && (
               <ContextWindowIndicator
                 sessionId={sessionId}
                 totalTokens={totalTokens}
@@ -151,7 +164,7 @@ export function ComposerFooter({
                 onCompact={onCompact}
               />
             )}
-            {COST_TRACKING_ENABLED && (
+            {inChat && COST_TRACKING_ENABLED && (
               <CostTracker
                 inputTokens={inputTokens}
                 outputTokens={outputTokens}

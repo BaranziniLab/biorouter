@@ -526,7 +526,7 @@ The Knowledge feature (built across Plans 1-6 in `docs/history/knowledge-base-bu
 
 - **Backend module:** `crates/biorouter-mcp/src/knowledge/` (types, store, git, graph, credibility, convert/, macros/, subagent/loop_, MCP server).
 - **HTTP routes:** `crates/biorouter-server/src/routes/knowledge.rs` covers `/knowledge/bases`, `/ingest` (SSE), `/graph`, `/history`, `/preview`, `/restore`, `/page`, `/active`, `/export`, `/import`.
-- **Frontend:** `ui/desktop/src/components/knowledge/` (view shell, KB selector, ingest panel, force-graph + change-log drawer). There is no chat-side KB chip any more: a chat's knowledge bases are the Knowledge list of the composer's Tools popover (`KnowledgePanel` and `useKnowledgePicker` in `ui/desktop/src/components/bottom_menu/BottomMenuKnowledgeSelection.tsx`, mounted by `bottom_menu/ToolsChip.tsx`; see "Desktop shell geometry").
+- **Frontend:** `ui/desktop/src/components/knowledge/` (view shell, KB selector, ingest panel, force-graph + change-log drawer). There is no chat-side KB chip any more: a chat's knowledge bases are the Knowledge list of the composer's `+` popover (`KnowledgePanel` and `useKnowledgePicker` in `ui/desktop/src/components/bottom_menu/BottomMenuKnowledgeSelection.tsx`, mounted by `composer/ComposerPlusMenu.tsx`; see "Desktop shell geometry").
 - **Storage layout:** `~/.config/biorouter/knowledge/<kb-id>/` with `raw/`, `knowledge/`, `index.md`, `log.md`, `schema.md`, and a hidden `.git/`.
 - **One axis, one pointer.** A session's knowledge bases are the *visible* set — everything not in `.hidden-kbs` (machine-wide) or `.hidden-kb-sessions/<sha256(session_id)>` (per session; an empty `[]` means "hide nothing", not "inherit"). KB-less search spans this set with per-hit `kb_id` attribution. Its **primary** is the write target, default single-base read target and Knowledge view's subject. Soul is the product default when the user has expressed no preference. A missing `.active-kb` / `.active-kb-sessions/<digest>` inherits; a bare id pins a choice; a blank file explicitly chooses no primary and must not fall back to Soul. KB-less writes with that explicit no-primary state fail with the candidate list. The primary must remain visible; the daemon repairs selection when its base is hidden or deleted — and the two repairs differ (D2): hiding *promotes* to the first remaining base, deleting *clears* every pointer that named the base to that explicit blank, and a chat that only inherited the pointer is left inheriting. A blank `.active-kb` after a delete is the repair, not its absence. ⚠ The renderer adopts these repairs by re-reading; it never writes one (no `clear_primary` after a delete, no prune against its own base list), and every selection read from the desktop carries `userActionHeaders()`, because the gate refuses a private chat's selection without it. `kb_set_active` changes the primary without narrowing search. Set-only edits send neither `primary_kb` nor `clear_primary`; see [`docs/knowledge-base/multi-kb-implementation-plan.md`](docs/knowledge-base/multi-kb-implementation-plan.md).
 - **Sub-agent loop:** `crates/biorouter-mcp/src/knowledge/subagent/loop_.rs` drives ingest / query / lint macros. Mutating tools accept an optional `txn` so a macro's tool calls commit as one logical change.
@@ -1445,12 +1445,21 @@ value's *location* is as load-bearing as the number.
   primitives Crew renders take the fill like everywhere else (ruling 12). The
   composer card (a chat's, Home's and the message editor's) is the one exception
   (R-32, next bullet).
-- **The composer is one card and one muted footer line** (`ChatInput.tsx`, spec
-  3.7; `ChatInput.structure.test.tsx` pins the shape). The card holds the queue,
-  notices, chips and the text, then one 32px controls row: `+`, the Tools chip,
-  the model and effort chip, and Send (a decision chat draws no `+` and no Tools chip). Under the card, a 12px muted footer
-  (`bottom_menu/ComposerFooter.tsx`): the working folder on the left, the context
-  ring and the chat's cost on the right, only the folder on Home. The three
+- **The composer is a ONE-LINE card and one muted footer line** (owner,
+  2026-11-13; `ChatInput.tsx`, `ChatInput.structure.test.tsx` pins the shape).
+  The card holds the queue, notices and chips, then ONE row
+  (`.br-composer-row`, `composer/composer.css`): `+`, the text, the microphone
+  and Send/Stop. The text grows upward with what is typed and the controls keep
+  to its last line; a decision chat draws no `+`. The `+` is the only way to
+  attach, mention, run a command and switch tools: one popover
+  (`composer/ComposerPlusMenu.tsx`, next bullet but three). Under the card, a 12px muted footer
+  (`bottom_menu/ComposerFooter.tsx`): the working folder on the left; the model
+  and effort chip (moved out of the card, its menu opening ABOVE the card through
+  `ModelsBottomBar`'s `menuClearOf`), the context ring and the chat's cost on the
+  right; the folder and the model on Home. Sending plays a short lift of the sent
+  text and Send's arrow (`composer/useSendMotion.ts`, transform and opacity only,
+  none under reduced motion), and Send's arrow settles in on the spring when the
+  field goes from empty to written (`data-armed`). The three readout
   footer items open the same light hover card (`bottom_menu/useFooterCard.ts`,
   `bottom_menu/FooterCard.tsx`) with one behaviour: a hover previews it after
   300ms and a Tab at once (its trigger holds nothing), a click, tap, Enter or Space keeps it
@@ -1494,12 +1503,15 @@ value's *location* is as load-bearing as the number.
     `:has()`, so a component test that focuses the textarea and reads
     `borderColor` sees the resting value and passes whether the rule exists or
     not.
-  - **The Tools popover's switcher never moves** (R-25, owner message 13).
-    `bottom_menu/ToolsChip.tsx` opens one popover above the chip holding one list
-    at a time (a search field, a scope line saying where a change applies with
-    Enable all or Disable all, the switch rows) and the Extensions | Skills |
-    Knowledge `SegmentedControl` as its LAST child, so the control rides the
-    popover's bottom edge, 6px above the chip (`sideOffset`): Radix places a `side="top"` popover by its bottom, so a
+  - **The `+` popover's switcher never moves** (R-25, owner message 13).
+    `composer/ComposerPlusMenu.tsx` (which replaced the `+` menu AND the Tools
+    chip, owner 2026-11-13) opens one popover above the `+` holding one list at a
+    time and the Add | Extensions | Skills | Knowledge `SegmentedControl` as its
+    LAST child. A click on `+` always opens on Add (attach files, mention,
+    commands, decision monitors: the menu recipe's rows); the other three are the
+    tool lists (a search field, a scope line saying where a change applies with
+    Enable all or Disable all, the switch rows). The control rides the
+    popover's bottom edge, 6px above the `+` (`sideOffset`): Radix places a `side="top"` popover by its bottom, so a
     longer or shorter list grows or shrinks it upward. ⚠ `avoidCollisions={false}`
     is load-bearing (collision handling would flip the popover below the chip or
     slide it along it); the room above caps the height instead, through Radix's

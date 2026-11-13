@@ -391,30 +391,176 @@
   overflow-y: auto;
 }
 
-/* ── The controls row inside the card: [+] [Tools]  ·  [model] (Send) ───── */
+/* ── The one-line card (owner, 2026-11-13) ──────────────────────────────── */
 
-.br-composer-controls {
+/* 8px all round. Whatever goes with the message (the queue, notices, chips, a
+   decision chat's question) stacks above the row, inset another 8px so its text
+   starts 16px in, as it did. */
+.br-composer-chat-card {
+  padding: 8px;
+}
+
+.br-composer-chat-card > :not(.br-composer-row, .br-composer-send-ghost) {
+  margin-inline: 8px 4px;
+}
+
+.br-composer-chat-card > :not(.br-composer-row, .br-composer-send-ghost):first-child {
+  margin-top: 4px;
+}
+
+/* ONE ROW: [+] [text …] [mic] [Send]. The controls keep to the LAST line: the
+   text grows upward with what is typed and the buttons stay where the thumb and
+   the pointer left them. Each control sits in a 32px slot, centred, so the 28px
+   microphone and the 32px buttons share one centre line with a single line of
+   text. */
+.br-composer-row {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 4px;
   min-width: 0;
-  min-height: 32px;
-  /* Pull the `+` glyph back onto the card's text edge: a 28px ghost button
-     holds its 16px glyph 6px in. The row sits directly under the field, as in
-     Crew's card, so the two cards rest at the same height. */
-  margin-left: -6px;
 }
 
-.br-composer-controls__spacer {
+.br-composer-row__slot {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  height: var(--control-md);
+}
+
+.br-composer-row__field {
+  position: relative;
+  /* A block, not a flex box: a flex box would stretch the field to the
+     animating height below, and the field's own height is what is measured. */
+  display: block;
   flex: 1 1 auto;
   min-width: 0;
+  /* Clips the field while its height animates to a new line count
+     (`composer/useFieldGrowth.ts`); at rest the box is exactly the field. */
+  overflow: clip;
+  /* 4px off the `+` (the row's gap plus this), so the caret has air. */
+  padding-left: 4px;
 }
 
-/* The model chip may shrink (it truncates); Send never does. */
-.br-composer-controls__model {
+/* No `+` (a decision chat): the text starts on the stack's 16px edge. */
+.br-composer-row[data-plus='none'] .br-composer-row__field {
+  padding-left: 8px;
+}
+
+/* The `+`: its glyph turns 45° on the spring while the popover is open, the cue
+   that the same button closes it. `aria-expanded`, never `data-state`: the
+   Tooltip trigger merges its own `data-state` over the popover's. */
+.br-composer-plus__glyph {
+  transition: rotate var(--dur-fast-max) var(--ease-spring);
+}
+
+.br-composer-plus[aria-expanded='true'] .br-composer-plus__glyph {
+  rotate: 45deg;
+}
+
+/* Send, empty to written: as it turns accent the arrow settles in from a little
+   below on the spring. Mount-only on the armed state, transform only. */
+.br-composer-send__glyph {
+  display: inline-flex;
+}
+
+.br-composer-send[data-armed='true'] .br-composer-send__glyph {
+  animation: br-composer-send-arm var(--dur-fast-max) var(--ease-spring);
+}
+
+@keyframes br-composer-send-arm {
+  from {
+    transform: translateY(3px) scale(0.85);
+  }
+  to {
+    transform: none;
+  }
+}
+
+/* The text just sent, lifting away from the field it was typed in. Clipped to
+   the card, never covering anything outside it. */
+.br-composer-send-ghost {
+  position: absolute;
+  z-index: 1;
+  overflow: hidden;
+  padding: 6px 0;
+  color: var(--text-default);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  pointer-events: none;
+  animation: br-composer-send-lift var(--dur-med-min) var(--ease-out) forwards;
+}
+
+@keyframes br-composer-send-lift {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+}
+
+/* The placeholder answers the empty field: it fades in as the text goes. */
+.br-composer-input::placeholder {
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-composer-plus__glyph {
+    transition: none;
+  }
+  .br-composer-send[data-armed='true'] .br-composer-send__glyph {
+    animation: none;
+  }
+  .br-composer-send-ghost {
+    display: none;
+  }
+}
+
+/* ── The `+` popover: Add, then the three tool lists ─────────────────────── */
+
+/* The Tools popover's recipe (`.br-picker-popover`, pickers.css), a little wider
+   so four segments (Add, Extensions, Skills, Knowledge) keep their whole words. */
+.br-picker-popover.br-plus-popover {
+  width: 344px;
+}
+
+/* Four equal columns of about 80px: the segments' 10px side padding would cut
+   "Extensions" and "Knowledge" short, so it is 4px here. The thumb and the
+   spring are the primitive's, untouched. */
+.br-plus-popover .br-segmented-item {
+  padding-inline: 4px;
+}
+
+/* The Add list: the menu recipe's rows (32px, 13/18, a muted hint on the right)
+   in the list's 4px inset, the way the three tool lists sit. */
+.br-plus-add__list {
   display: flex;
-  min-width: 0;
-  flex: 0 1 auto;
+  flex-direction: column;
+  padding: 4px;
+}
+
+.br-plus-action {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text-default);
+  text-align: left;
+  cursor: pointer;
+}
+
+/* Hover peeks the same wash a focused row wears (the menu recipe moves focus on
+   hover; these are buttons, so the hover is written). */
+.br-plus-action:hover {
+  background: var(--overlay-hover);
+}
+
+.br-plus-add__separator {
+  height: 1px;
+  margin: 4px -4px;
+  background: var(--border-subtle);
 }
 
 /* ── The microphone, left of Send (DD-60) ───────────────────────────────── */
@@ -646,9 +792,50 @@
    WS-PICKERS) hold their 14px glyph 6px in, so 11px puts the folder glyph on
    the card's text edge (1px border + 16px padding = 17px), and 7px puts the
    last readout's ink under Send's right edge (1px border + 12px padding). */
+/* The footer's items line up with the card's controls: the folder glyph under
+   the `+` glyph (1px border + 8px padding + the 32px button's 8px inset, less
+   the item's 6px), and the last readout's ink on Send's outer edge (1px + 8px,
+   less 6px). */
 .br-composer-footer {
   padding-left: 11px;
-  padding-right: 7px;
+  padding-right: 3px;
+}
+
+/* Both sides may give way now that the model sits on the right: the folder's
+   name and the model's name ellipsize; the ring and the cost never do. */
+.br-composer-footer .br-footline__side {
+  flex: 0 1 auto;
+}
+
+.br-composer-footer .br-footline__side[data-side='end'] {
+  justify-content: flex-end;
+}
+
+/* The model chip, moved out of the card onto the footer line: the footer item's
+   recipe (24px, 12/16, muted, 6px inset) instead of the card chip's 28px, with
+   no chevron, so it reads as one of the line's readouts. Its menu still opens on
+   a click and keeps its trigger on the strong step while open
+   (`.br-picker-chip[aria-expanded='true']`, pickers.css). */
+.br-footline__model {
+  display: flex;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.br-footline__model .br-picker-chip {
+  height: var(--control-compact);
+  padding: 0 6px;
+  gap: 4px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+}
+
+.br-footline__model .br-picker-chip[data-kind='model'] {
+  max-width: 240px;
+}
+
+.br-footline__model .br-picker-chip__chevron {
+  display: none;
 }
 
 /* ── The mention and slash-command menu ─────────────────────────────────── */

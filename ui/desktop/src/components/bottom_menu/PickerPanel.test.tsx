@@ -1,9 +1,17 @@
 import * as React from 'react';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import BuiltInBadge from '../ui/BuiltInBadge';
-import { PickerPanel, PickerRow } from './PickerPanel';
+import { PickerPanel, PickerRow, useBuiltInDisclosure } from './PickerPanel';
 import { TOOLS_COPY } from './copy';
 
 /**
@@ -434,5 +442,48 @@ describe('the picker shell', () => {
     expect(screen.getByRole('option', { name: 'alpha' })).toHaveAttribute('aria-selected', 'true');
     expect(picture).toHaveAttribute('data-state', 'checked');
     expect(picture).not.toHaveAttribute('data-motion-still');
+  });
+});
+
+/**
+ * The built-in groups stay out of the way (owner, 2026-11-13): "collapsed by default so that the
+ * users are not bombarded with the complexity of all of the built-in capabilities". They open
+ * only when the person asks (a click) or types a search that matches one, and every new look at
+ * the list starts collapsed again.
+ */
+describe('useBuiltInDisclosure', () => {
+  type Props = { listOpen: boolean; matching: boolean };
+  const mount = (initial: Props) =>
+    renderHook(({ listOpen, matching }: Props) => useBuiltInDisclosure(listOpen, matching), {
+      initialProps: initial,
+    });
+
+  it('starts collapsed, with the list closed or open, and an empty search never opens it', () => {
+    const { result, rerender } = mount({ listOpen: false, matching: false });
+    expect(result.current[0]).toBe(false);
+    rerender({ listOpen: true, matching: false });
+    expect(result.current[0]).toBe(false);
+  });
+
+  it('opens on the person’s click and collapses again once the list closes', () => {
+    const { result, rerender } = mount({ listOpen: true, matching: false });
+    act(() => result.current[1](true));
+    expect(result.current[0]).toBe(true);
+    rerender({ listOpen: false, matching: false });
+    expect(result.current[0]).toBe(false);
+    // The next look at the list starts collapsed, not where the last one was left.
+    rerender({ listOpen: true, matching: false });
+    expect(result.current[0]).toBe(false);
+  });
+
+  it('opens while a search matches a built-in, and the person can still fold it', () => {
+    const { result, rerender } = mount({ listOpen: true, matching: false });
+    rerender({ listOpen: true, matching: true });
+    expect(result.current[0]).toBe(true);
+    act(() => result.current[1](false));
+    expect(result.current[0]).toBe(false);
+    // Typing on while it still matches does not force it open again.
+    rerender({ listOpen: true, matching: true });
+    expect(result.current[0]).toBe(false);
   });
 });

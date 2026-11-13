@@ -2,15 +2,16 @@ import * as React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ToolsChip } from './ToolsChip';
-import { TOOLS_COPY } from './copy';
+import { ComposerPlusMenu, type ComposerPlusMenuProps } from './ComposerPlusMenu';
+import { COMPOSER_COPY } from './copy';
 import { TOOLTIP_DELAY_MS } from '../ui/Tooltip';
 
 /**
- * ONE Tools chip with its counts on hover opening ONE popover, with a
- * segmented control over the three lists. The lists themselves are tested in
- * their own files (`BottomMenu*Selection*.test.tsx`); here they are stand-ins
- * that record what the chip asks of them.
+ * ONE `+` with its counts on hover opening ONE popover (owner, 2026-11-13): the
+ * old `+` menu's rows under Add, and the old Tools chip's three lists, on one
+ * segmented control. The lists themselves are tested in their own files
+ * (`BottomMenu*Selection*.test.tsx`); here they are stand-ins that record what
+ * the `+` asks of them.
  */
 const hooks = vi.hoisted(() => ({
   extensionsOpen: [] as boolean[],
@@ -26,7 +27,7 @@ const hooks = vi.hoisted(() => ({
   knowledge: { count: 2, answered: true },
 }));
 
-vi.mock('./BottomMenuExtensionSelection', () => ({
+vi.mock('../bottom_menu/BottomMenuExtensionSelection', () => ({
   useExtensionPicker: (
     _sessionId: string | null,
     { open, onOpenRequest }: { open: boolean; onOpenRequest?: () => void }
@@ -43,7 +44,7 @@ vi.mock('./BottomMenuExtensionSelection', () => ({
     <input data-testid="extensions-panel" ref={inputRef} aria-label="extensions search" />
   ),
 }));
-vi.mock('./BottomMenuSkillSelection', () => ({
+vi.mock('../bottom_menu/BottomMenuSkillSelection', () => ({
   useSkillPicker: (_sessionId: string | null, { open }: { open: boolean }) => {
     hooks.skillsOpen.push(open);
     return {
@@ -56,7 +57,7 @@ vi.mock('./BottomMenuSkillSelection', () => ({
     <input data-testid="skills-panel" ref={inputRef} aria-label="skills search" />
   ),
 }));
-vi.mock('./BottomMenuKnowledgeSelection', () => ({
+vi.mock('../bottom_menu/BottomMenuKnowledgeSelection', () => ({
   useKnowledgePicker: ({ open }: { open: boolean }) => {
     hooks.knowledgeOpen.push(open);
     return {
@@ -106,46 +107,68 @@ beforeEach(() => {
 
 const last = (values: boolean[]) => values[values.length - 1];
 const toolCounts = (chip: HTMLElement) => chip.getAttribute('aria-label')?.match(/\d+/g) ?? [];
+const COPY = COMPOSER_COPY.plus;
+const named = (counts: string) => `${COPY.label}. Tools: ${counts}`;
 
-describe('ToolsChip', () => {
-  it('shows only Tools, and gives the enabled total and category counts on hover', async () => {
+const handlers = {
+  onAttachFiles: vi.fn(),
+  onInsertTrigger: vi.fn(),
+};
+
+function Plus(props: Partial<ComposerPlusMenuProps> & { sessionId: string | null }) {
+  return <ComposerPlusMenu {...handlers} {...props} />;
+}
+
+describe('ComposerPlusMenu', () => {
+  it('is one round `+` with no text, giving the enabled total and category counts on hover', async () => {
     const user = userEvent.setup();
-    render(<ToolsChip sessionId="chat-1" />);
+    render(<Plus sessionId="chat-1" />);
 
-    const chip = screen.getByTestId('composer-tools-chip');
-    expect(chip).toHaveTextContent(/^Tools$/);
+    const chip = screen.getByTestId('composer-plus');
+    expect(chip).toHaveTextContent('');
     expect(toolCounts(chip)).toEqual(['4', '9', '2']);
-    expect(chip).toHaveAccessibleName('Tools: 4 extensions, 9 skills, 2 knowledge bases');
-    expect(chip).toHaveClass('br-picker-chip');
+    expect(chip).toHaveAccessibleName(named('4 extensions, 9 skills, 2 knowledge bases'));
+    expect(chip).toHaveClass('br-surface-trigger', 'br-composer-plus');
     expect(chip).not.toHaveAttribute('title');
     expect(chip.querySelectorAll('svg')).toHaveLength(1);
 
     await user.hover(chip);
     const tooltip = await screen.findByRole('tooltip');
+    expect(tooltip).toHaveTextContent(COPY.label);
     expect(tooltip).toHaveTextContent(/15 (?:enabled tools|tools enabled)/);
     expect(tooltip).toHaveTextContent('4 extensions');
     expect(tooltip).toHaveTextContent('9 skills');
     expect(tooltip).toHaveTextContent('2 knowledge bases');
   });
 
-  it('opens one popover with a segmented control over one list at a time', async () => {
-    render(<ToolsChip sessionId="chat-1" />);
-    const chip = screen.getByTestId('composer-tools-chip');
+  it('opens one popover on Add, with a segmented control over one list at a time', async () => {
+    render(<Plus sessionId="chat-1" />);
+    const chip = screen.getByTestId('composer-plus');
     expect(chip).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(chip);
 
-    // `pickers.css` holds the chip's open ground and turns its chevron on
-    // `aria-expanded`: the tooltip around the trigger overwrites `data-state`.
+    // `composer.css` turns the glyph and `.br-surface-trigger` holds the open
+    // ground on `aria-expanded`: the tooltip around the trigger overwrites
+    // `data-state`.
     expect(chip).toHaveAttribute('aria-expanded', 'true');
-    const tabs = await screen.findByRole('radiogroup', { name: TOOLS_COPY.segmentsLabel });
+    const tabs = await screen.findByRole('radiogroup', { name: COPY.segmentsLabel });
     const radios = Array.from(tabs.querySelectorAll('[role="radio"]'));
-    expect(radios.map((radio) => radio.textContent)).toEqual(['Extensions', 'Skills', 'Knowledge']);
-    expect(screen.getByRole('radio', { name: 'Extensions' })).toHaveAttribute(
-      'aria-checked',
-      'true'
-    );
-    expect(screen.getByTestId('extensions-panel')).toBeInTheDocument();
-    expect(screen.queryByTestId('skills-panel')).toBeNull();
+    expect(radios.map((radio) => radio.textContent)).toEqual([
+      'Add',
+      'Extensions',
+      'Skills',
+      'Knowledge',
+    ]);
+    expect(screen.getByRole('radio', { name: 'Add' })).toHaveAttribute('aria-checked', 'true');
+    const add = screen.getByRole('menu', { name: COPY.addListLabel });
+    expect(
+      Array.from(add.querySelectorAll('[role="menuitem"]')).map((row) => row.textContent)
+    ).toEqual([COPY.attachFile, `${COPY.mention}@`, `${COPY.commands}/`]);
+    expect(screen.queryByTestId('extensions-panel')).toBeNull();
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Extensions' }));
+    expect(await screen.findByTestId('extensions-panel')).toBeInTheDocument();
+    expect(screen.queryByRole('menu', { name: COPY.addListLabel })).toBeNull();
 
     fireEvent.click(screen.getByRole('radio', { name: 'Skills' }));
     expect(await screen.findByTestId('skills-panel')).toBeInTheDocument();
@@ -157,12 +180,13 @@ describe('ToolsChip', () => {
 
   it('puts the segmented control last, under the list, where Tab reaches it after the list (R-25)', async () => {
     const user = userEvent.setup();
-    render(<ToolsChip sessionId="chat-1" />);
-    await user.click(screen.getByTestId('composer-tools-chip'));
+    render(<Plus sessionId="chat-1" />);
+    await user.click(screen.getByTestId('composer-plus'));
+    await user.click(await screen.findByRole('radio', { name: 'Extensions' }));
 
     // The control is the popover's last child: it sits on the bottom edge, which
-    // is the edge pinned above the chip (geometry: toolsPopover.browser.test.tsx).
-    const popover = await screen.findByTestId('composer-tools-popover');
+    // is the edge pinned above the `+` (geometry: toolsPopover.browser.test.tsx).
+    const popover = await screen.findByTestId('composer-plus-popover');
     const tabs = screen.getByTestId('composer-tools-tabs');
     expect(popover.lastElementChild).toBe(tabs);
     const search = screen.getByTestId('extensions-panel');
@@ -186,8 +210,9 @@ describe('ToolsChip', () => {
 
   it('hands focus to the new list’s search after a pointer pick, and keeps it on the control after an arrow key', async () => {
     const user = userEvent.setup();
-    render(<ToolsChip sessionId="chat-1" />);
-    await user.click(screen.getByTestId('composer-tools-chip'));
+    render(<Plus sessionId="chat-1" />);
+    await user.click(screen.getByTestId('composer-plus'));
+    await user.click(await screen.findByRole('radio', { name: 'Extensions' }));
     await waitFor(() => expect(screen.getByTestId('extensions-panel')).toHaveFocus());
 
     // Pointer: "click Skills, type gg" filters the skills.
@@ -213,17 +238,86 @@ describe('ToolsChip', () => {
     expect(screen.getByTestId('knowledge-panel')).not.toHaveFocus();
   });
 
-  it('puts focus in the search field when it opens', async () => {
-    render(<ToolsChip sessionId="chat-1" />);
-    fireEvent.click(screen.getByTestId('composer-tools-chip'));
-    await waitFor(() => expect(screen.getByTestId('extensions-panel')).toHaveFocus());
+  it('puts focus on Add’s first row when it opens, and the arrow keys walk the rows', async () => {
+    const user = userEvent.setup();
+    render(<Plus sessionId="chat-1" onOpenDecisionMonitors={vi.fn()} />);
+    await user.click(screen.getByTestId('composer-plus'));
+    const attach = await screen.findByRole('menuitem', { name: COPY.attachFile });
+    await waitFor(() => expect(attach).toHaveFocus());
+    await user.keyboard('{ArrowDown}');
+    expect(screen.getByRole('menuitem', { name: /Mention/ })).toHaveFocus();
+    await user.keyboard('{End}');
+    expect(screen.getByRole('menuitem', { name: COPY.decisionMonitors })).toHaveFocus();
+    await user.keyboard('{ArrowDown}');
+    expect(attach).toHaveFocus();
+    await user.keyboard('{ArrowUp}');
+    expect(screen.getByRole('menuitem', { name: COPY.decisionMonitors })).toHaveFocus();
+  });
+
+  it('opens on Add every time, whichever list it was left on', async () => {
+    const user = userEvent.setup();
+    render(<Plus sessionId="chat-1" />);
+    await user.click(screen.getByTestId('composer-plus'));
+    await user.click(await screen.findByRole('radio', { name: 'Skills' }));
+    await screen.findByTestId('skills-panel');
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByTestId('skills-panel')).toBeNull());
+    await user.click(screen.getByTestId('composer-plus'));
+    expect(await screen.findByRole('radio', { name: 'Add' })).toHaveAttribute(
+      'aria-checked',
+      'true'
+    );
+  });
+
+  it('runs a mention or a command only after it has closed, so the caret lands in the text', async () => {
+    const user = userEvent.setup();
+    render(<Plus sessionId="chat-1" />);
+    await user.click(screen.getByTestId('composer-plus'));
+    await user.click(await screen.findByRole('menuitem', { name: /Mention/ }));
+    await waitFor(() => expect(handlers.onInsertTrigger).toHaveBeenCalledWith('@'));
+    expect(screen.queryByTestId('composer-plus-popover')).toBeNull();
+    // Focus is the insert's to place, not handed back to the `+`.
+    expect(screen.getByTestId('composer-plus')).not.toHaveFocus();
+
+    await user.click(screen.getByTestId('composer-plus'));
+    await user.click(await screen.findByRole('menuitem', { name: /Commands/ }));
+    await waitFor(() => expect(handlers.onInsertTrigger).toHaveBeenLastCalledWith('/'));
+  });
+
+  it('attaches the files picked in the system dialog, and opens the monitors from the last row', async () => {
+    const user = userEvent.setup();
+    const onOpenDecisionMonitors = vi.fn();
+    render(<Plus sessionId="chat-1" onOpenDecisionMonitors={onOpenDecisionMonitors} />);
+    const input = screen.getByTestId('composer-file-input') as HTMLInputElement;
+    const picked = vi.spyOn(input, 'click');
+    await user.click(screen.getByTestId('composer-plus'));
+    await user.click(await screen.findByRole('menuitem', { name: COPY.attachFile }));
+    expect(picked).toHaveBeenCalledTimes(1);
+    const file = new File(['x'], 'notes.txt', { type: 'text/plain' });
+    await user.upload(input, file);
+    expect(handlers.onAttachFiles).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByTestId('composer-plus'));
+    await user.click(await screen.findByTestId('composer-plus-decision-monitors'));
+    await waitFor(() => expect(onOpenDecisionMonitors).toHaveBeenCalledTimes(1));
+  });
+
+  it('draws no monitors row when the composer offers none', async () => {
+    render(<Plus sessionId="chat-1" />);
+    fireEvent.click(screen.getByTestId('composer-plus'));
+    await screen.findByRole('menu', { name: COPY.addListLabel });
+    expect(screen.queryByTestId('composer-plus-decision-monitors')).toBeNull();
   });
 
   it('tells only the list on screen that it is open, so each re-reads when shown', async () => {
-    render(<ToolsChip sessionId="chat-1" />);
+    render(<Plus sessionId="chat-1" />);
     expect(last(hooks.extensionsOpen)).toBe(false);
 
-    fireEvent.click(screen.getByTestId('composer-tools-chip'));
+    fireEvent.click(screen.getByTestId('composer-plus'));
+    await screen.findByRole('menu', { name: COPY.addListLabel });
+    expect(last(hooks.extensionsOpen)).toBe(false);
+    expect(last(hooks.skillsOpen)).toBe(false);
+    fireEvent.click(screen.getByRole('radio', { name: 'Extensions' }));
     await screen.findByTestId('extensions-panel');
     expect(last(hooks.extensionsOpen)).toBe(true);
     expect(last(hooks.skillsOpen)).toBe(false);
@@ -236,8 +330,8 @@ describe('ToolsChip', () => {
   });
 
   it('opens on Extensions when the app asks to show this chat’s extensions', async () => {
-    render(<ToolsChip sessionId="chat-1" />);
-    fireEvent.click(screen.getByTestId('composer-tools-chip'));
+    render(<Plus sessionId="chat-1" />);
+    fireEvent.click(screen.getByTestId('composer-plus'));
     fireEvent.click(await screen.findByRole('radio', { name: 'Knowledge' }));
     fireEvent.keyDown(screen.getByTestId('knowledge-panel'), { key: 'Escape' });
     await waitFor(() => expect(screen.queryByTestId('knowledge-panel')).toBeNull());
@@ -247,8 +341,9 @@ describe('ToolsChip', () => {
   });
 
   it('clears every search when it closes', async () => {
-    render(<ToolsChip sessionId="chat-1" />);
-    fireEvent.click(screen.getByTestId('composer-tools-chip'));
+    render(<Plus sessionId="chat-1" />);
+    fireEvent.click(screen.getByTestId('composer-plus'));
+    fireEvent.click(await screen.findByRole('radio', { name: 'Extensions' }));
     await screen.findByTestId('extensions-panel');
     fireEvent.keyDown(screen.getByTestId('extensions-panel'), { key: 'Escape' });
     await waitFor(() => expect(screen.queryByTestId('extensions-panel')).toBeNull());
@@ -257,25 +352,26 @@ describe('ToolsChip', () => {
     expect(hooks.setKnowledgeQuery).toHaveBeenCalledWith('');
   });
 
-  it('gives focus back to the chip after Escape', async () => {
-    render(<ToolsChip sessionId="chat-1" />);
-    const chip = screen.getByTestId('composer-tools-chip');
+  it('gives focus back to the `+` after Escape', async () => {
+    render(<Plus sessionId="chat-1" />);
+    const chip = screen.getByTestId('composer-plus');
     fireEvent.click(chip);
+    fireEvent.click(await screen.findByRole('radio', { name: 'Extensions' }));
     await screen.findByTestId('extensions-panel');
     fireEvent.keyDown(screen.getByTestId('extensions-panel'), { key: 'Escape' });
     await waitFor(() => expect(chip).toHaveFocus());
   });
 
   it('lists Knowledge as the default chats inherit on Home', async () => {
-    render(<ToolsChip sessionId={null} />);
-    fireEvent.click(screen.getByTestId('composer-tools-chip'));
+    render(<Plus sessionId={null} />);
+    fireEvent.click(screen.getByTestId('composer-plus'));
     fireEvent.click(await screen.findByRole('radio', { name: 'Knowledge' }));
     expect(await screen.findByTestId('knowledge-panel')).toHaveAttribute('data-in-chat', 'false');
   });
 
   describe('the counts state this chat’s tools, or remain unknown (V2-R7-3)', () => {
     /**
-     * Every count tuple the chip has named, in order, from the first commit on. The
+     * Every count tuple the `+` has named, in order, from the first commit on. The
      * observer reports in a microtask, so each step is flushed before the next.
      */
     function recordNumbers(chip: HTMLElement): string[] {
@@ -298,43 +394,43 @@ describe('ToolsChip', () => {
       hooks.extensions = { count: 2, answered: false };
       hooks.skills = { count: 0, answered: false };
       hooks.knowledge = { count: 1, answered: false };
-      const { rerender } = render(<ToolsChip sessionId="chat-1" />);
-      const chip = screen.getByTestId('composer-tools-chip');
+      const { rerender } = render(<Plus sessionId="chat-1" />);
+      const chip = screen.getByTestId('composer-plus');
       const numbers = recordNumbers(chip);
 
       expect(toolCounts(chip)).toEqual([]);
-      expect(chip).toHaveTextContent(/^Tools$/);
-      expect(chip).toHaveAccessibleName(TOOLS_COPY.chip);
-      // Nothing to say on hover either: the parts are not known. (Held past the
-      // delay a ready chip's tooltip takes, so the check cannot pass early.)
+      expect(chip).toHaveAccessibleName(COPY.label);
+      // The hover names the button and no figures: the parts are not known.
+      // (Held past the tooltip's delay, so the check cannot pass early.)
       await user.hover(chip);
       await act(() => new Promise((resolve) => setTimeout(resolve, TOOLTIP_DELAY_MS + 200)));
-      expect(screen.queryByRole('tooltip')).toBeNull();
+      const tooltip = screen.getByRole('tooltip');
+      expect(tooltip).toHaveTextContent(COPY.label);
+      expect(tooltip.textContent).not.toMatch(/\d/);
       await user.unhover(chip);
 
       // The lists answer one at a time, as they did on a chat switch: the
       // configuration's fallback first, then the chat's own figures.
       hooks.knowledge = { count: 0, answered: true };
-      rerender(<ToolsChip sessionId="chat-1" />);
+      rerender(<Plus sessionId="chat-1" />);
       await flush();
       hooks.skills = { count: 3, answered: true };
-      rerender(<ToolsChip sessionId="chat-1" />);
+      rerender(<Plus sessionId="chat-1" />);
       await flush();
       expect(toolCounts(chip)).toEqual([]);
-      expect(chip).toHaveTextContent(/^Tools$/);
       hooks.extensions = { count: 1, answered: true };
-      rerender(<ToolsChip sessionId="chat-1" />);
+      rerender(<Plus sessionId="chat-1" />);
       await flush();
 
       expect(toolCounts(chip)).toEqual(['1', '3', '0']);
-      expect(chip).toHaveAccessibleName('Tools: 1 extension, 3 skills, 0 knowledge bases');
+      expect(chip).toHaveAccessibleName(named('1 extension, 3 skills, 0 knowledge bases'));
       // No partial figures on the way: unknown, then the settled tuple.
       expect(numbers).toEqual(['', '1|3|0']);
     });
 
     it('never shows the previous chat’s counts under the next one', async () => {
-      const { rerender } = render(<ToolsChip sessionId="chat-a" />);
-      const chip = screen.getByTestId('composer-tools-chip');
+      const { rerender } = render(<Plus sessionId="chat-a" />);
+      const chip = screen.getByTestId('composer-plus');
       expect(toolCounts(chip)).toEqual(['4', '9', '2']);
       const numbers = recordNumbers(chip);
 
@@ -342,32 +438,32 @@ describe('ToolsChip', () => {
       // chat A's figures until chat B's answers land.
       hooks.extensions = { count: 4, answered: false };
       hooks.skills = { count: 9, answered: false };
-      rerender(<ToolsChip sessionId="chat-b" />);
+      rerender(<Plus sessionId="chat-b" />);
       await flush();
       expect(toolCounts(chip)).toEqual([]);
 
       hooks.extensions = { count: 1, answered: true };
       hooks.skills = { count: 2, answered: true };
-      rerender(<ToolsChip sessionId="chat-b" />);
+      rerender(<Plus sessionId="chat-b" />);
       await flush();
       expect(toolCounts(chip)).toEqual(['1', '2', '2']);
       expect(numbers).toEqual(['4|9|2', '', '1|2|2']);
     });
 
     it('keeps the counts while one list re-asks for the same chat, and moves them once', async () => {
-      const { rerender } = render(<ToolsChip sessionId="chat-1" />);
-      const chip = screen.getByTestId('composer-tools-chip');
+      const { rerender } = render(<Plus sessionId="chat-1" />);
+      const chip = screen.getByTestId('composer-plus');
       const numbers = recordNumbers(chip);
 
       // The knowledge selection follows the window's focused chat, which moves
       // between split panes: it asks again, and its cached guess is not shown.
       hooks.knowledge = { count: 5, answered: false };
-      rerender(<ToolsChip sessionId="chat-1" />);
+      rerender(<Plus sessionId="chat-1" />);
       await flush();
       expect(toolCounts(chip)).toEqual(['4', '9', '2']);
 
       hooks.knowledge = { count: 3, answered: true };
-      rerender(<ToolsChip sessionId="chat-1" />);
+      rerender(<Plus sessionId="chat-1" />);
       await flush();
       expect(toolCounts(chip)).toEqual(['4', '9', '3']);
       expect(numbers).toEqual(['4|9|2', '4|9|3']);
@@ -375,40 +471,40 @@ describe('ToolsChip', () => {
 
     it('carries the counts into a chat this composer has just started', async () => {
       // A new tab's composer: no chat yet, counting what the next chat gets.
-      const { rerender } = render(<ToolsChip sessionId={null} />);
-      const chip = screen.getByTestId('composer-tools-chip');
+      const { rerender } = render(<Plus sessionId={null} />);
+      const chip = screen.getByTestId('composer-plus');
       const numbers = recordNumbers(chip);
 
       // The first message creates the chat; its lists have not answered yet.
       hooks.extensions = { count: 4, answered: false };
       hooks.skills = { count: 9, answered: false };
-      rerender(<ToolsChip sessionId="chat-new" />);
+      rerender(<Plus sessionId="chat-new" />);
       await flush();
       expect(toolCounts(chip)).toEqual(['4', '9', '2']);
 
       hooks.extensions = { count: 4, answered: true };
       hooks.skills = { count: 9, answered: true };
-      rerender(<ToolsChip sessionId="chat-new" />);
+      rerender(<Plus sessionId="chat-new" />);
       await flush();
       expect(numbers).toEqual(['4|9|2']);
     });
 
     it('names carried counts as it names answered ones', async () => {
-      const { rerender } = render(<ToolsChip sessionId="chat-1" />);
-      const chip = screen.getByTestId('composer-tools-chip');
+      const { rerender } = render(<Plus sessionId="chat-1" />);
+      const chip = screen.getByTestId('composer-plus');
       hooks.knowledge = { count: 5, answered: false };
-      rerender(<ToolsChip sessionId="chat-1" />);
+      rerender(<Plus sessionId="chat-1" />);
       await flush();
       // The accessible counts remain settled while the list refreshes (V2-R8-3).
       expect(toolCounts(chip)).toEqual(['4', '9', '2']);
-      expect(chip).toHaveAccessibleName('Tools: 4 extensions, 9 skills, 2 knowledge bases');
+      expect(chip).toHaveAccessibleName(named('4 extensions, 9 skills, 2 knowledge bases'));
     });
 
-    it('hands its counts to the chip that replaces it when the composer remounts (V2-R8-3)', async () => {
+    it('hands its counts to the `+` that replaces it when the composer remounts (V2-R8-3)', async () => {
       // A new chat's first send moves the composer from the centre of the empty
       // chat to the bar under the transcript: a second mount, in one commit.
       function Seat({ centre, sessionId }: { centre: boolean; sessionId: string | null }) {
-        const chip = <ToolsChip sessionId={sessionId} handOffKey="tab-1" />;
+        const chip = <Plus sessionId={sessionId} handOffKey="tab-1" />;
         return (
           <div>
             {centre ? <section>{chip}</section> : <p />}
@@ -417,17 +513,17 @@ describe('ToolsChip', () => {
         );
       }
       const { rerender } = render(<Seat centre sessionId={null} />);
-      const first = screen.getByTestId('composer-tools-chip');
+      const first = screen.getByTestId('composer-plus');
       expect(toolCounts(first)).toEqual(['4', '9', '2']);
 
       // The new mount's lists have not answered yet, for "no chat" or the chat.
       hooks.extensions = { count: 4, answered: false };
       hooks.skills = { count: 9, answered: false };
       rerender(<Seat centre={false} sessionId={null} />);
-      const second = screen.getByTestId('composer-tools-chip');
+      const second = screen.getByTestId('composer-plus');
       expect(second).not.toBe(first);
       const numbers = recordNumbers(second);
-      expect(second).toHaveAccessibleName('Tools: 4 extensions, 9 skills, 2 knowledge bases');
+      expect(second).toHaveAccessibleName(named('4 extensions, 9 skills, 2 knowledge bases'));
 
       rerender(<Seat centre={false} sessionId="chat-new" />);
       await flush();
@@ -440,7 +536,7 @@ describe('ToolsChip', () => {
       // Not for another chat: a remount onto a different chat starts from nothing.
       hooks.extensions = { count: 4, answered: false };
       rerender(<Seat centre sessionId="chat-other" />);
-      expect(toolCounts(screen.getByTestId('composer-tools-chip'))).toEqual([]);
+      expect(toolCounts(screen.getByTestId('composer-plus'))).toEqual([]);
     });
   });
 });

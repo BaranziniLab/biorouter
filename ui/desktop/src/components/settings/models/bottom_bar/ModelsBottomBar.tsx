@@ -208,7 +208,17 @@ interface ModelsBottomBarProps {
    * model that is not known to be private asks MSG-PRIVATE-DRAFT-SWITCH first.
    */
   dictationDraftKey?: string;
+  /**
+   * The composer card the chip sits UNDER (the footer line, owner 2026-11-13).
+   * Given, the menu opens above that card rather than over it, the way every
+   * footer card hangs (`FooterCardGroup`'s `clearOf`), so it never covers the
+   * draft or Send.
+   */
+  menuClearOf?: React.RefObject<HTMLElement | null>;
 }
+
+/** The gap between the card's top edge and a menu hung above it. */
+const MENU_CLEARANCE_GAP = 6;
 
 export default function ModelsBottomBar({
   sessionId,
@@ -221,6 +231,7 @@ export default function ModelsBottomBar({
   effectiveModel,
   reasoningScope,
   dictationDraftKey,
+  menuClearOf,
 }: ModelsBottomBarProps) {
   const effort = useReasoningEffortValue(reasoningScope);
   const notesId = useInfoTipId();
@@ -273,8 +284,25 @@ export default function ModelsBottomBar({
   const [isAddModelModalOpen, setIsAddModelModalOpen] = useState(false);
   // The model menu, controlled for the chip's whole life so its hint can stay shut over it: the
   // chip's tooltip names the model on a hover and never comes back over the open menu (H2).
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuOpen, setMenuOpenState] = useState(false);
   const menuHint = useSurfaceTriggerHint(menuOpen);
+  // How far above the chip the menu opens: past the composer card when the chip
+  // sits under one (`menuClearOf`), else the menus' usual 6px. Measured as it
+  // opens, because the card grows with the draft.
+  const chipRef = useRef<HTMLButtonElement>(null);
+  const [menuSideOffset, setMenuSideOffset] = useState(MENU_CLEARANCE_GAP);
+  const setMenuOpen = (next: boolean) => {
+    if (next) {
+      const card = menuClearOf?.current?.getBoundingClientRect();
+      const chip = chipRef.current?.getBoundingClientRect();
+      setMenuSideOffset(
+        card && chip && card.top < chip.top
+          ? Math.round(chip.top - card.top) + MENU_CLEARANCE_GAP
+          : MENU_CLEARANCE_GAP
+      );
+    }
+    setMenuOpenState(next);
+  };
   const [providerDefaultModel, setProviderDefaultModel] = useState<string | null>(null);
   /**
    * V2-R8-1. What the catalog said about each provider, KEYED BY THE PROVIDER
@@ -636,6 +664,7 @@ export default function ModelsBottomBar({
                 // W2-5. The id the visible name stands for, in the tooltip's words.
                 localModelName && MODEL_COPY.fullIdTooltip(displayModel),
               ])}
+              ref={chipRef}
               data-testid="model-chip"
               data-kind="model"
               className="br-picker-chip"
@@ -673,6 +702,7 @@ export default function ModelsBottomBar({
         <DropdownMenuContent
           side="top"
           align="end"
+          sideOffset={menuSideOffset}
           className="w-72"
           aria-describedby={notes ? notesId : undefined}
           // The menu's arrow keys visit rows only, and Tab leaves the menu; this adds the selected

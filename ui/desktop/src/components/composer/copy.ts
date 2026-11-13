@@ -35,8 +35,15 @@ export const COMPOSER_COPY = {
   },
 
   plus: {
-    label: 'Add to message',
-    attachFile: 'Attach file…',
+    /** The `+` button's name and tooltip: one line, the counts on a second. */
+    label: 'Add files and tools',
+    /** The first segment of the `+` popover: attach, mention, commands. */
+    addSegment: 'Add',
+    /** The add list's accessible name. */
+    addListLabel: 'Add to message',
+    /** The popover's segmented control. */
+    segmentsLabel: 'Add or switch tools',
+    attachFile: 'Attach files…',
     mention: 'Mention',
     mentionHint: '@',
     commands: 'Commands',

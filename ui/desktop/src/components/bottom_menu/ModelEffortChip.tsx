@@ -1,3 +1,4 @@
+import type * as React from 'react';
 import type { SessionClassification } from '../../api/types.gen';
 import type { PinnedModelView } from '../../hooks/chatStreamStore';
 import type { PrivacyBasis } from '../../utils/sessionDecisions';
@@ -9,8 +10,9 @@ import ModelsBottomBar from '../settings/models/bottom_bar/ModelsBottomBar';
  * that answers the next message ("gpt-5.6-sol · Deep" and its padlock), with
  * the reasoning effort chosen inside its menu as Quick, Normal or Deep.
  *
- * ⚠ The props are the wave-0 contract (WS-PICKERS). `ChatInput` places this
- * inside the composer card, beside Send, and owns nothing below it.
+ * ⚠ The props are the wave-0 contract (WS-PICKERS). `ChatInput` places this on
+ * the footer line under the composer card (owner, 2026-11-13), first among the
+ * readouts on the right, and its menu opens above the card (`menuClearOf`).
  */
 export interface ModelEffortChipProps {
   /** The focused chat, or `null` on Home and in a chat that has not started. */
@@ -34,6 +36,8 @@ export interface ModelEffortChipProps {
    * public model asks MSG-PRIVATE-DRAFT-SWITCH first.
    */
   dictationDraftKey?: string;
+  /** The composer card the chip sits under; its menu opens above that card. */
+  menuClearOf?: React.RefObject<HTMLElement | null>;
 }
 
 export function ModelEffortChip({
@@ -44,6 +48,7 @@ export function ModelEffortChip({
   privacyBasis,
   setView,
   dictationDraftKey,
+  menuClearOf,
 }: ModelEffortChipProps) {
   return (
     <div data-testid="composer-model-chip" className="flex min-w-0 items-center">
@@ -55,6 +60,7 @@ export function ModelEffortChip({
         setView={setView}
         reasoningScope={reasoningScope}
         dictationDraftKey={dictationDraftKey}
+        menuClearOf={menuClearOf}
         hideAlertPopover
       />
     </div>

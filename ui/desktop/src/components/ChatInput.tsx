@@ -8,7 +8,6 @@ import type { View, ViewOptions } from '../utils/navigationUtils';
 import Stop from './ui/Stop';
 import { ChatState } from '../types/chatState';
 import { LocalMessageStorage } from '../utils/localMessageStorage';
-import { ToolsChip } from './bottom_menu/ToolsChip';
 import { useSessionWorkingDir } from './bottom_menu/useSessionWorkingDir';
 import { ModelEffortChip } from './bottom_menu/ModelEffortChip';
 import { ComposerFooter } from './bottom_menu/ComposerFooter';
@@ -22,6 +21,8 @@ import { ComposerChips } from './composer/ComposerChips';
 import { composerCardClassName } from './composer/composerCard';
 import { mentionMenuAnchor } from './composer/mentionMenuPlacement';
 import { ComposerPlusMenu, type ComposerTrigger } from './composer/ComposerPlusMenu';
+import { useFieldGrowth } from './composer/useFieldGrowth';
+import { useSendMotion } from './composer/useSendMotion';
 import { useConfig } from './ConfigContext';
 import { useModelAndProvider } from './ModelAndProviderContext';
 import {
@@ -1208,6 +1209,12 @@ export default function ChatInput({
   const [isInGlobalHistory, setIsInGlobalHistory] = useState(false);
   const [hasUserTyped, setHasUserTyped] = useState(() => Boolean(seedDraft?.text));
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
+  // The send motion: the sent text lifts from the field and Send's arrow answers
+  // the press (`composer/useSendMotion.ts`).
+  const sendMotion = useSendMotion();
+  const playSendMotion = sendMotion.play;
+  // Lines come and go smoothly as the draft grows and shrinks.
+  useFieldGrowth(textAreaRef);
   const timeoutRefsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
   // A region the user selected in the preview panel arrives here as an already
@@ -2804,6 +2811,8 @@ export default function ChatInput({
           setLastInterruption(null);
         }
 
+        // Read before the field empties: the ghost is drawn where the text was.
+        playSendMotion(textAreaRef.current, splitComposerText(displayValue).body);
         setDisplayValue('');
         setValue('');
         setPastedImages([]);
@@ -2845,6 +2854,7 @@ export default function ChatInput({
       droppedFiles.length,
       handleSubmit,
       releaseComposerText,
+      playSendMotion,
       lastInterruption,
       localDroppedFiles.length,
       onFilesProcessed,
@@ -3374,11 +3384,21 @@ export default function ChatInput({
             disabled={isSubmitButtonDisabled || isStarting}
             aria-label={COMPOSER_COPY.send.label}
             aria-busy={isStarting || undefined}
+            // `data-armed` is the empty-to-written change: the arrow settles in
+            // on the spring as Send turns accent (`.br-composer-send`, composer.css).
+            data-armed={!isSubmitButtonDisabled && !isStarting ? 'true' : undefined}
             className={cn(
+              'br-composer-send',
               (isSubmitButtonDisabled || isStarting) && 'cursor-not-allowed disabled:opacity-100'
             )}
           >
-            {isStarting ? <Spinner size={16} /> : <ArrowUp className="size-4" />}
+            {isStarting ? (
+              <Spinner size={16} />
+            ) : (
+              <span ref={sendMotion.glyphRef} className="br-composer-send__glyph">
+                <ArrowUp className="size-4" />
+              </span>
+            )}
           </Button>
         </span>
       </TooltipTrigger>
@@ -3395,11 +3415,11 @@ export default function ChatInput({
   );
 
   return (
-    // ONE CARD AND ONE LINE (spec 3.7, Crew's composer recipe plus Codex's
-    // footer). The card holds what is being written and every control that
-    // shapes it: the queue ahead of it, its notices, its chips, the text, and a
-    // controls row ending in Send. Under it, one muted footer line says where
-    // the agent works and what the chat has used.
+    // A ONE-LINE CARD AND ONE FOOTER LINE (owner, 2026-11-13). The card holds
+    // what is being written: the queue ahead of it, its notices, its chips, and
+    // then ONE row, `+` (attach, mention, commands and the tool lists), the text,
+    // the microphone and Send. Under it, one muted footer line says where the
+    // agent works, which model answers and what the chat has used.
     //
     // The drop target is the WRAPPER, so a file dropped on the footer still
     // attaches.
@@ -3420,6 +3440,8 @@ export default function ChatInput({
         // THE WORKING EDGE: an attribute, not a class, so the hook is something
         // Tailwind never had to generate. Absent when idle.
         data-working={isWorking ? 'true' : undefined}
+        // Empty or written: the hook the empty-to-written motion keys off.
+        data-composer-empty={hasSubmittableContent ? undefined : 'true'}
       >
         {queuedMessages.length > 0 && (
           <MessageQueue
@@ -3531,76 +3553,115 @@ export default function ChatInput({
 
         {decisionChat && <DecisionComposer sessionId={sessionId} />}
 
-        <form id={composerFormId} onSubmit={onFormSubmit} className="relative flex min-w-0">
-          {/* The field grows with what is typed by itself (`field-sizing:
-              content` in `composer.css`, as Crew's fields do), up to ten lines,
-              then scrolls. `py-1.5` makes its box 32px around a 20px line, so
-              the text sits centred however it grows; `px-0` keeps the text on
-              the card's 16px edge. */}
-          <textarea
-            data-testid="chat-input"
-            autoFocus={autoFocusAtMountRef.current}
-            id="dynamic-textarea"
-            aria-label={COMPOSER_COPY.inputLabel}
-            // An invitation, never an instruction: "Ask a follow-up" once the
-            // chat has messages, the open question before that. `followUp` is
-            // the caller's word for a message it already shows.
-            // With the `/bug` chip in the row above, the empty prose says what
-            // goes after it.
-            placeholder={
-              crewHold?.placeholder ??
-              (dictation.listening ? DICTATION_LABELS.listening : null) ??
-              (composerCommand
-                ? CHIP_COMMANDS[composerCommand].placeholder
-                : decisionChat
-                  ? DECISION_CHAT_PLACEHOLDER
-                  : (followUp ?? (messagesLength ?? 0) > 0)
-                    ? COMPOSER_COPY.placeholderFollowUp
-                    : COMPOSER_COPY.placeholderEmpty)
-            }
-            // The prose after the command chip: every textarea offset is a
-            // prose offset (`utils/composerCommand.ts`).
-            value={composerProse}
-            onChange={handleChange}
-            onCompositionStart={handleCompositionStart}
-            onCompositionEnd={handleCompositionEnd}
-            onFocus={() => {
-              if (dictationFocusArmedRef.current) dictation.noteInterest();
-            }}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            ref={textAreaRef}
-            rows={1}
-            className={cn(
-              'br-composer-input block w-full resize-none border-none bg-transparent px-0 py-1.5',
-              COMPOSER_INPUT_TYPE_CLASS,
-              'text-text-default placeholder:text-text-muted'
-            )}
-          />
-        </form>
-
-        {/* THE CONTROLS ROW: what to add, what the agent can reach, which model
-            answers, and Send at the end, Crew's `.crew-compose-controls`. */}
-        <div data-testid="chat-input-toolbar" className="br-composer-controls">
+        {/* THE ONE LINE (owner, 2026-11-13): `+`, the text, the microphone and
+            Send, side by side. The text grows upward with what is typed; the
+            controls keep to the last line (`.br-composer-row`, composer.css). */}
+        <div
+          data-testid="chat-input-toolbar"
+          className="br-composer-row"
+          data-plus={decisionChat ? 'none' : undefined}
+        >
           {/* A decision chat has nothing to attach, insert or switch on: its model
               reads the chat and answers, and calls no tools (B-3). The monitors
               stay reachable from an ordinary chat's `+`. */}
           {!decisionChat && (
-            <>
+            <span className="br-composer-row__slot">
               <ComposerPlusMenu
+                sessionId={sessionId}
+                privacyTier={sessionPrivacyTier}
+                handOffKey={handOffKey}
                 onAttachFiles={attachPickedFiles}
                 onInsertTrigger={insertTrigger}
                 onOpenDecisionMonitors={onOpenDecisionMonitors}
               />
-              <ToolsChip
-                sessionId={sessionId}
-                privacyTier={sessionPrivacyTier}
-                handOffKey={handOffKey}
-              />
-            </>
+            </span>
           )}
-          <span className="br-composer-controls__spacer" />
-          <div ref={modelSlotRef} className="br-composer-controls__model">
+          <form id={composerFormId} onSubmit={onFormSubmit} className="br-composer-row__field">
+            {/* The field grows with what is typed by itself (`field-sizing:
+              content` in `composer.css`, as Crew's fields do), then scrolls.
+              `py-1.5` makes its box 32px around a 20px line, so a single line
+              sits on the controls' centre line however the row is drawn. */}
+            <textarea
+              data-testid="chat-input"
+              autoFocus={autoFocusAtMountRef.current}
+              id="dynamic-textarea"
+              aria-label={COMPOSER_COPY.inputLabel}
+              // An invitation, never an instruction: "Ask a follow-up" once the
+              // chat has messages, the open question before that. `followUp` is
+              // the caller's word for a message it already shows.
+              // With the `/bug` chip in the row above, the empty prose says what
+              // goes after it.
+              placeholder={
+                crewHold?.placeholder ??
+                (dictation.listening ? DICTATION_LABELS.listening : null) ??
+                (composerCommand
+                  ? CHIP_COMMANDS[composerCommand].placeholder
+                  : decisionChat
+                    ? DECISION_CHAT_PLACEHOLDER
+                    : (followUp ?? (messagesLength ?? 0) > 0)
+                      ? COMPOSER_COPY.placeholderFollowUp
+                      : COMPOSER_COPY.placeholderEmpty)
+              }
+              // The prose after the command chip: every textarea offset is a
+              // prose offset (`utils/composerCommand.ts`).
+              value={composerProse}
+              onChange={handleChange}
+              onCompositionStart={handleCompositionStart}
+              onCompositionEnd={handleCompositionEnd}
+              onFocus={() => {
+                if (dictationFocusArmedRef.current) dictation.noteInterest();
+              }}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              ref={textAreaRef}
+              rows={1}
+              className={cn(
+                'br-composer-input block w-full resize-none border-none bg-transparent px-0 py-1.5',
+                COMPOSER_INPUT_TYPE_CLASS,
+                'text-text-default placeholder:text-text-muted'
+              )}
+            />
+          </form>
+          {/* The microphone, immediately left of Send, which stays the row's last
+              child: the footer inset and the geometry tests are derived from its
+              edge (DD-60). */}
+          {dictation.available && (
+            <span className="br-composer-row__slot">
+              <DictationButton control={dictation} setView={setView} />
+            </span>
+          )}
+          <span className="br-composer-row__slot">{sendOrStop}</span>
+        </div>
+
+        {/* The text just sent, lifting away from where it was typed. */}
+        {sendMotion.ghost && (
+          <div
+            key={sendMotion.ghost.id}
+            aria-hidden="true"
+            data-testid="composer-send-ghost"
+            className={cn('br-composer-send-ghost', COMPOSER_INPUT_TYPE_CLASS)}
+            style={{
+              bottom: sendMotion.ghost.bottom,
+              left: sendMotion.ghost.left,
+              width: sendMotion.ghost.width,
+              height: sendMotion.ghost.height,
+            }}
+            onAnimationEnd={sendMotion.clearGhost}
+          >
+            <div style={{ marginTop: -sendMotion.ghost.scrollTop }}>{sendMotion.ghost.text}</div>
+          </div>
+        )}
+      </div>
+
+      {/* THE FOOTER LINE: the folder on the left; the model, the context ring and
+          the cost on the right, 12px muted, on the canvas under the card. The
+          ring and the cost show only inside a chat, and a decision chat has no
+          ring. */}
+      <ComposerFooter
+        className="br-composer-footer"
+        composerRef={composerCardRef}
+        model={
+          <div ref={modelSlotRef} className="br-footline__model">
             <ModelEffortChip
               sessionId={sessionId}
               reasoningScope={
@@ -3613,22 +3674,10 @@ export default function ChatInput({
               privacyBasis={privacyBasis}
               setView={setView}
               dictationDraftKey={dictationKey}
+              menuClearOf={composerCardRef}
             />
           </div>
-          {/* The microphone, immediately left of Send, which stays the row's last
-              child: the footer inset and the geometry tests are derived from its
-              edge (DD-60). */}
-          {dictation.available && <DictationButton control={dictation} setView={setView} />}
-          {sendOrStop}
-        </div>
-      </div>
-
-      {/* THE FOOTER LINE: the folder on the left, the context ring and the cost
-          on the right, 12px muted, on the canvas under the card. The ring and
-          the cost show only inside a chat, and a decision chat has no ring. */}
-      <ComposerFooter
-        className="br-composer-footer"
-        composerRef={composerCardRef}
+        }
         sessionId={sessionId}
         workingDir={composerWorkingDir}
         workingDirLocked={workingDirIsLocked}
