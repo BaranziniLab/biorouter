@@ -282,6 +282,22 @@ impl ActionRequiredManager {
         messages
     }
 
+    /// Remove and return the unscoped requests `matching` picks, in order,
+    /// leaving every other one queued: the unscoped queue is shared by every
+    /// test in the binary, so a test takes back only what it put there.
+    #[cfg(test)]
+    pub(crate) fn take_unscoped(&self, matching: impl Fn(&Message) -> bool) -> Vec<Message> {
+        let mut queue = self
+            .unscoped
+            .queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let (taken, kept): (Vec<Message>, Vec<Message>) =
+            queue.drain(..).partition(|message| matching(message));
+        queue.extend(kept);
+        taken
+    }
+
     #[cfg(test)]
     pub(crate) fn has_unscoped_tool_confirmation(&self, expected_tool_name: &str) -> bool {
         self.unscoped

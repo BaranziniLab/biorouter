@@ -1514,7 +1514,7 @@ impl CliSession {
                                     drop(stream);
                                     break;
                                 }
-                                self.agent
+                                let outcome = self.agent
                                     .handle_confirmation_for_session(
                                         &self.session_id,
                                         id,
@@ -1536,6 +1536,15 @@ impl CliSession {
                                         biorouter::pending_user_action::DecisionAuthority::from_local_human_surface(),
                                     )
                                     .await;
+                                // Nothing waited on the answer: the card's
+                                // window closed while the prompt was open.
+                                if let Some(note) = late_confirmation_note(&outcome) {
+                                    if is_json_mode || is_stream_json_mode {
+                                        eprintln!("{note}");
+                                    } else {
+                                        output::render_text(note, None, true);
+                                    }
+                                }
                             } else if let Some((elicitation_id, elicitation_message, schema)) = find_elicitation_request(&message) {
                                 // #40/#31: an elicitation cannot be answered when nobody
                                 // is at the terminal — same predicate as tool
@@ -2461,6 +2470,26 @@ fn confirmation_artefact(message: &Message) -> Option<String> {
     })
 }
 
+/// What a terminal says when an approval card's window closed before anyone
+/// answered it: the daemon took no decision, and the tool was not run. One
+/// sentence for every terminal surface (this prompt, the TUI modal, and
+/// `biorouter session send` / `attach`), as the desktop card has one state.
+pub(crate) const APPROVAL_EXPIRED: &str =
+    "Expired: this approval was not answered in time, so the tool was not run. Ask again to retry.";
+
+/// The line a terminal adds after an answer that reached no waiting call.
+///
+/// `Unknown` is a card nothing waits on any more. An in-process prompt holds
+/// the reply stream while it is open, so the agent's own permission prompt
+/// cannot expire under it; a call parked elsewhere (a bridged or platform
+/// approval) keeps its own clock and can, and a decision for it then lands
+/// nowhere. Saying nothing would read as approved.
+pub(crate) fn late_confirmation_note(
+    outcome: &biorouter::agents::ConfirmationOutcome,
+) -> Option<&'static str> {
+    matches!(outcome, biorouter::agents::ConfirmationOutcome::Unknown).then_some(APPROVAL_EXPIRED)
+}
+
 /// Extract tool confirmation request from a message
 fn find_tool_confirmation(message: &Message) -> Option<(String, Option<String>)> {
     message.content.iter().find_map(|content| {
@@ -2962,6 +2991,27 @@ mod tests {
                 None,
             ),
         )
+    }
+
+    /// An answer that reached no waiting call is said as an expiry, the one
+    /// state the desktop card shows; a delivered or refused one adds nothing.
+    #[test]
+    fn an_answer_nothing_waited_on_is_said_as_expired() {
+        use biorouter::agents::ConfirmationOutcome;
+        assert_eq!(
+            super::late_confirmation_note(&ConfirmationOutcome::Unknown),
+            Some(super::APPROVAL_EXPIRED)
+        );
+        assert!(super::APPROVAL_EXPIRED.starts_with("Expired"));
+        assert!(super::APPROVAL_EXPIRED.contains("Ask again"));
+        assert_eq!(
+            super::late_confirmation_note(&ConfirmationOutcome::Delivered),
+            None
+        );
+        assert_eq!(
+            super::late_confirmation_note(&ConfirmationOutcome::Unproven),
+            None
+        );
     }
 
     #[test]

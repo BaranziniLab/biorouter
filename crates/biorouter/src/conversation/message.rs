@@ -318,6 +318,27 @@ pub enum SystemNotificationType {
 pub struct SystemNotificationContent {
     pub notification_type: SystemNotificationType,
     pub msg: String,
+    /// Approval cards: the id of the card whose answer window closed before
+    /// anyone answered it, on the inline notice that reports the expiry. A
+    /// surface draws the card with that id as expired, without its buttons.
+    //
+    // On the content rather than on `MessageMetadata`: a `Message` is held by
+    // value in several enums whose variants clippy keeps within 200 bytes of
+    // each other, and the metadata is already at that line. This variant is
+    // far from the largest, so the field costs `Message` nothing.
+    //
+    // The notice travels exactly where the card does, the live stream and the
+    // turn's replay log, and is never stored
+    // (`pending_user_action::is_card_expiry_notice`): the card is never stored
+    // either (`is_ephemeral_card`), so a stored notice would report on a card
+    // no reload can show, persisted mid-batch above its own tool call.
+    // Lenient and omitted when absent, so older readers are untouched.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_lenient_decision_id",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub expired_action_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
@@ -589,6 +610,17 @@ impl MessageContent {
         MessageContent::SystemNotification(SystemNotificationContent {
             notification_type,
             msg: msg.into(),
+            expired_action_id: None,
+        })
+    }
+
+    /// The inline notice that approval card `action_id` expired unanswered
+    /// (see [`SystemNotificationContent::expired_action_id`]).
+    pub fn card_expiry_notification<S: Into<String>>(action_id: &str, msg: S) -> Self {
+        MessageContent::SystemNotification(SystemNotificationContent {
+            notification_type: SystemNotificationType::InlineMessage,
+            msg: msg.into(),
+            expired_action_id: Some(action_id.to_string()),
         })
     }
 

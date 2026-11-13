@@ -41,6 +41,7 @@ use serde_json::{Map, Value};
 
 use super::DaemonAuth;
 use crate::commands::shared_conversation::safe_text;
+use crate::session::APPROVAL_EXPIRED;
 
 /// The marker Crew's daemon host sets in a read consent card's arguments
 /// (`Ctx::read_consent` in `biorouter-server/src/routes/crew_tools/mod.rs`, `"action": "read as
@@ -416,6 +417,12 @@ pub(crate) enum CardEvent {
     /// more. The one way a card raised by a tool (a Crew change, a bridged call), whose ID is
     /// not its call's, is known to be over before the turn ends.
     Ended { id: String, ending: String },
+    /// The daemon's notice that an approval's window closed before anyone answered it (its
+    /// `expiredActionId`): the card's ID and the notice's own line. The same news as an end that
+    /// timed out. It is the only word of the agent's own permission prompt expiring, which is
+    /// never parked and so never gets an end frame; a parked card's end frame comes first and
+    /// the notice follows it. `attach` prints one line for the two ([`Waiting`]).
+    Expired { id: String, notice: String },
     /// The turn ended, so no card of it is still waiting.
     TurnEnded,
 }
@@ -472,7 +479,84 @@ fn block_event(block: &Value) -> Option<CardEvent> {
                 _ => None,
             }
         }
+        "systemNotification" => {
+            let id = block.get("expiredActionId").and_then(Value::as_str)?;
+            Some(CardEvent::Expired {
+                id: id.to_owned(),
+                notice: format!(
+                    "[notice] {}",
+                    super::inline_notice(block).unwrap_or(APPROVAL_EXPIRED)
+                ),
+            })
+        }
         _ => None,
+    }
+}
+
+/// The approval card a message reports as expired: the daemon's expiry notice
+/// (`pending_user_action::card_expiry_notice`), a message of inline notices one of which names
+/// the card (`expiredActionId`). `None` for any message that says anything else.
+pub(crate) fn expired_card_of(message: &Value) -> Option<&str> {
+    let blocks = message.get("content")?.as_array()?;
+    if !blocks
+        .iter()
+        .all(|block| block.get("type").and_then(Value::as_str) == Some("systemNotification"))
+    {
+        return None;
+    }
+    blocks
+        .iter()
+        .find_map(|block| block.get("expiredActionId").and_then(Value::as_str))
+}
+
+/// The approval whose expiry `frame` reports: a card's end frame that says `timed_out`, or the
+/// notice that names an expired approval ([`expired_card_of`]). A parked card's expiry comes as
+/// both, the end frame first; the agent's own permission prompt's comes as the notice alone.
+pub(crate) fn expiry_reported_by(frame: &Value) -> Option<&str> {
+    match frame.get("type").and_then(Value::as_str)? {
+        "ActionRequiredEnded"
+            if frame.get("ending").and_then(Value::as_str) == Some("timed_out") =>
+        {
+            frame.get("id").and_then(Value::as_str)
+        }
+        "Message" => expired_card_of(frame.get("message")?),
+        _ => None,
+    }
+}
+
+/// The cards whose end a terminal has already said, by ID, newest last and at most
+/// [`SHOWN_LIMIT`]. The daemon says a parked approval's expiry twice, its end frame and then the
+/// notice that names it, and a terminal prints one line for the two.
+#[derive(Debug, Default)]
+pub(crate) struct SaidEnds(VecDeque<String>);
+
+impl SaidEnds {
+    pub(crate) fn contains(&self, id: &str) -> bool {
+        self.0.iter().any(|said| said == id)
+    }
+
+    /// Note that the end of `id` was said: `false` when it already was.
+    pub(crate) fn note(&mut self, id: &str) -> bool {
+        if self.contains(id) {
+            return false;
+        }
+        self.0.push_back(id.to_owned());
+        while self.0.len() > SHOWN_LIMIT {
+            self.0.pop_front();
+        }
+        true
+    }
+}
+
+/// The line for an approval that stopped waiting before this terminal answered it, by the
+/// daemon's word for how it ended. A window that closed is the one sentence every terminal says
+/// for an expiry ([`APPROVAL_EXPIRED`]), never "answered somewhere else".
+pub(crate) fn approval_closed_line(ending: &str) -> String {
+    match ending {
+        "answered" => "[approval closed] This request was answered somewhere else.".to_string(),
+        "dismissed" => "[approval closed] This request was dismissed somewhere else.".to_string(),
+        "timed_out" => format!("[approval closed] {APPROVAL_EXPIRED}"),
+        _ => "[approval closed] This request is no longer waiting.".to_string(),
     }
 }
 
@@ -614,6 +698,9 @@ pub(crate) struct Waiting {
     /// The cards shown here that only another surface answers, by ID and heading, oldest first,
     /// so their end can name them ([`CardEvent::Shown`]).
     shown: VecDeque<(String, String)>,
+    /// The cards whose end a line here already said, so the daemon's second word for the same
+    /// end (a parked approval's expiry notice, after its end frame) prints nothing.
+    said: SaidEnds,
 }
 
 impl Waiting {
@@ -623,6 +710,7 @@ impl Waiting {
             answering,
             cards: VecDeque::new(),
             shown: VecDeque::new(),
+            said: SaidEnds::default(),
         }
     }
 
@@ -646,13 +734,12 @@ impl Waiting {
     /// again. One this terminal answered, or never showed, needs nothing.
     fn on_ended(&mut self, id: &str, ending: &str) -> Vec<String> {
         if let Some(at) = self.cards.iter().position(|held| held.id == id) {
-            let closed = match ending {
-                "answered" => "[approval closed] This request was answered somewhere else.",
-                "dismissed" => "[approval closed] This request was dismissed somewhere else.",
-                "timed_out" => "[approval closed] This request timed out.",
-                _ => "[approval closed] This request is no longer waiting.",
-            };
-            return self.close_held(at, closed);
+            // The first one's close is said here. One behind it goes quietly, so the expiry
+            // notice that follows a parked card's end is then its one line ([`Self::on_expired`]).
+            if at == 0 {
+                self.said.note(id);
+            }
+            return self.close_held(at, &approval_closed_line(ending));
         }
         let Some(at) = self.shown.iter().position(|(shown, _)| shown == id) else {
             return Vec::new();
@@ -665,6 +752,25 @@ impl Waiting {
             clip(&heading, LINE_CHARS),
             ended_phrase(ending)
         )))]
+    }
+
+    /// What to print for the daemon's notice that the approval `id` expired unanswered, whose
+    /// own line is `notice` ([`CardEvent::Expired`]). One line for the expiry, whichever of its
+    /// words came first: the approval waiting first closes as expired, and its call's response,
+    /// which follows the notice, then finds nothing to close as "answered somewhere else"; one
+    /// behind it, never asked, goes with the notice's line; any other card's notice is printed
+    /// once, unless an end frame already said it.
+    fn on_expired(&mut self, id: &str, notice: String) -> Vec<String> {
+        match self.cards.iter().position(|held| held.id == id) {
+            Some(0) => return self.on_ended(id, "timed_out"),
+            Some(at) => {
+                self.cards.remove(at);
+            }
+            None if self.said.contains(id) => return Vec::new(),
+            None => {}
+        }
+        self.said.note(id);
+        vec![notice]
     }
 
     /// The question for `card`: its details, then which words answer it.
@@ -684,8 +790,12 @@ impl Waiting {
     /// What to print for `event`.
     pub(crate) fn on_event(&mut self, event: CardEvent) -> Vec<String> {
         match event {
-            // The same card shown again is still one request.
-            CardEvent::Approval(card) if self.cards.iter().any(|held| held.id == card.id) => {
+            // The same card shown again is still one request, and one whose end was said here
+            // waits for nothing.
+            CardEvent::Approval(card)
+                if self.cards.iter().any(|held| held.id == card.id)
+                    || self.said.contains(&card.id) =>
+            {
                 Vec::new()
             }
             // Shown whole as anywhere, but never held: a line read here stays a message.
@@ -715,10 +825,7 @@ impl Waiting {
                 let Some(at) = self.cards.iter().position(|held| held.id == id) else {
                     return Vec::new();
                 };
-                self.close_held(
-                    at,
-                    "[approval closed] This request was answered somewhere else.",
-                )
+                self.close_held(at, &approval_closed_line("answered"))
             }
             // Its line is already printed; it is named again only when it ends.
             CardEvent::Shown { id, heading } => {
@@ -731,6 +838,7 @@ impl Waiting {
                 Vec::new()
             }
             CardEvent::Ended { id, ending } => self.on_ended(&id, &ending),
+            CardEvent::Expired { id, notice } => self.on_expired(&id, notice),
             CardEvent::TurnEnded if self.cards.is_empty() => {
                 // Each card's own end came first; a turn's end leaves none waiting.
                 self.shown.clear();
@@ -1516,6 +1624,97 @@ mod tests {
                 ending: "answered".into(),
             })
             .is_empty());
+    }
+
+    /// The daemon's expiry notice for approval `id`, as the observer stream carries it, built
+    /// by the daemon's own constructor so this reader and that writer cannot drift apart.
+    fn expiry_frame(id: &str) -> Value {
+        let notice = biorouter::pending_user_action::card_expiry_notice(
+            id,
+            "The permission prompt for developer__shell",
+        );
+        serde_json::json!({ "type": "Message", "seq": 7, "message": notice })
+    }
+
+    fn held(id: &str) -> ApprovalCard {
+        ApprovalCard {
+            id: id.into(),
+            read_consent: false,
+            details: vec![format!("Do {id}")],
+        }
+    }
+
+    /// The agent's own permission prompt is never parked, so its expiry reaches `attach` only
+    /// as the daemon's notice, and the call's response follows it. The approval closes as
+    /// expired in one line, never as "answered somewhere else", and the next line typed here
+    /// answers the request after it.
+    #[test]
+    fn the_agents_own_prompt_expires_in_one_line_never_as_answered_elsewhere() {
+        let mut waiting = Waiting::new("s", Answering::Here);
+        waiting.on_event(CardEvent::Approval(held("call-1")));
+        waiting.on_event(CardEvent::Approval(held("call-2")));
+
+        let events = card_events(&expiry_frame("call-1"));
+        assert!(
+            matches!(events.as_slice(), [CardEvent::Expired { id, .. }] if id == "call-1"),
+            "{events:?}"
+        );
+        let lines = waiting.on_event(events[0].clone());
+        assert_eq!(lines[0], format!("[approval closed] {APPROVAL_EXPIRED}"));
+        assert!(lines.contains(&"Do call-2".to_string()), "{lines:?}");
+        assert!(
+            !lines.iter().any(|line| line.contains("somewhere else")),
+            "{lines:?}"
+        );
+
+        // The call's response, then a replay of the notice, add nothing.
+        assert!(waiting
+            .on_event(CardEvent::Responded("call-1".into()))
+            .is_empty());
+        assert!(waiting.on_event(events[0].clone()).is_empty());
+        let LineUse::Answer { card, .. } = waiting.on_line("deny") else {
+            panic!("the next line answers the request after the expired one");
+        };
+        assert_eq!(card.id, "call-2");
+    }
+
+    /// A parked card's expiry reaches `attach` twice, its `timed_out` end frame and then the
+    /// notice that names it: one line. Held first, the end frame closes it as expired and the
+    /// notice says nothing; held behind the first, never asked, it goes quietly and the notice
+    /// is its line; not held at all (a read-only attach), the notice is its line, once.
+    #[test]
+    fn a_parked_cards_expiry_is_one_line_in_attach() {
+        let ended = |id: &str| CardEvent::Ended {
+            id: id.into(),
+            ending: "timed_out".into(),
+        };
+        let expired = |id: &str| card_events(&expiry_frame(id)).remove(0);
+        let notice = "[notice] The permission prompt for developer__shell expired before it was answered. The tool was not run. Ask again to retry.";
+
+        let mut waiting = Waiting::new("s", Answering::Here);
+        waiting.on_event(CardEvent::Approval(held("a")));
+        waiting.on_event(CardEvent::Approval(held("b")));
+        waiting.on_event(CardEvent::Approval(held("c")));
+        let mut printed = waiting.on_event(ended("a"));
+        printed.extend(waiting.on_event(expired("a")));
+        assert_eq!(
+            printed,
+            [
+                format!("[approval closed] {APPROVAL_EXPIRED}"),
+                "Do b".to_string(),
+                "Type allow_once or deny, then press Enter. Your next line answers this request and is not sent to the chat.".to_string(),
+            ]
+        );
+        let mut printed = waiting.on_event(ended("c"));
+        printed.extend(waiting.on_event(expired("c")));
+        assert_eq!(printed, [notice]);
+
+        let mut read_only = Waiting::new("s", Answering::ReadOnly);
+        read_only.on_event(CardEvent::Approval(held("d")));
+        let mut printed = read_only.on_event(ended("d"));
+        printed.extend(read_only.on_event(expired("d")));
+        printed.extend(read_only.on_event(expired("d")));
+        assert_eq!(printed, [notice]);
     }
 
     /// The frames that carry a card's life reach `attach` as card events: a Crew step and a

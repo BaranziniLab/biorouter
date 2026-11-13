@@ -40,6 +40,7 @@ import { useLiveRows } from './transcript/useLiveRows';
 import { transcriptCopy } from './transcript/copy';
 import { DecisionTurnMarker } from './decisions/DecisionTurnMarker';
 import { messageDecisionMarker } from '../utils/sessionDecisions';
+import { expiryShownOnItsCard } from '../utils/approvalExpiry';
 
 /** A row's key: its id, or its place and time for a row the daemon has not named yet. */
 const rowKey = (message: Message, index: number) => message.id ?? `msg-${index}-${message.created}`;
@@ -402,6 +403,12 @@ export default function ProgressiveMessageList({
         // lists the calls.
         const marker = messageDecisionMarker(message);
         const decisionMarker = marker && marker.items.length > 0 ? marker : null;
+
+        // An approval card's expiry notice draws on the card itself, which
+        // then reads "Expired"; a second line saying so would repeat it.
+        if (expiryShownOnItsCard(messages, message)) {
+          return null;
+        }
 
         // System notifications are never user messages, handle them first
         if (decisionMarker || hasInlineSystemNotification(message)) {

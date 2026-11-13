@@ -987,6 +987,21 @@ impl PendingUserActions {
             self.announce_end(id, &entry, ending);
         }
     }
+
+    /// Remove `id` if it is still waiting for a decision, announce that it
+    /// timed out, and say where it was showing. `None` when a decision took the
+    /// entry first, and announced its own end.
+    fn take_unanswered(&self, id: &str) -> Option<CardSurfaces> {
+        let entry = self.lock().remove(id)?;
+        entry.tx.as_ref()?;
+        // The entry leaves the map here, so the `forget` that follows in `wait`
+        // finds nothing: this is the one place the timeout's end is announced.
+        self.announce_end(id, &entry, CardEnding::TimedOut);
+        Some(CardSurfaces {
+            home: entry.session_id,
+            escalated_to: entry.escalated_to,
+        })
+    }
 }
 
 /// A published request, and the caller's end of its rendezvous.
@@ -1093,26 +1108,30 @@ impl PendingUserAction {
             };
         };
 
-        let outcome = tokio::select! {
+        let mut rx = rx;
+        let answered = tokio::select! {
             biased;
             () = async {
                 match cancel {
                     Some(token) => token.cancelled().await,
                     None => std::future::pending::<()>().await,
                 }
-            } => UserActionOutcome::Cancelled,
-            answered = tokio::time::timeout(ttl, rx) => match answered {
-                Ok(Ok(outcome)) => outcome,
-                // The registry entry was dropped without a decision.
-                Ok(Err(_)) => UserActionOutcome::Cancelled,
-                Err(_) => UserActionOutcome::TimedOut,
-            },
+            } => None,
+            answered = tokio::time::timeout(ttl, &mut rx) => Some(answered),
+        };
+        let outcome = match answered {
+            None => UserActionOutcome::Cancelled,
+            Some(Ok(Ok(outcome))) => outcome,
+            // The registry entry was dropped without a decision.
+            Some(Ok(Err(_))) => UserActionOutcome::Cancelled,
+            Some(Err(_)) => self.expire(&mut rx).await,
         };
 
         // On every path but a delivered decision the entry is still registered;
         // clearing it here is what stops a late click resolving a receiver that
         // has already gone. A delivered decision already took the entry, and
-        // announced its end, so this announces nothing twice.
+        // announced its end, as did an expiry (`expire`), so this announces
+        // nothing twice.
         let ending = match outcome {
             UserActionOutcome::TimedOut => CardEnding::TimedOut,
             _ => CardEnding::Withdrawn,
@@ -1120,6 +1139,117 @@ impl PendingUserAction {
         self.registry.forget(&self.id, ending);
         outcome
     }
+}
+
+impl PendingUserAction {
+    /// The window closed. Take the card out of the registry, so no surface can
+    /// answer it from here on, and tell every surface that showed it.
+    ///
+    /// The take and the timeout are not one instant: a click can resolve the
+    /// entry between the two. Whoever took the entry holds its sender and is
+    /// about to send on it (or drop it), so the decision is awaited rather than
+    /// lost: honoring it beats reporting "expired" to a call whose person did
+    /// answer, while the clicking surface was told it was delivered.
+    async fn expire(&self, rx: &mut oneshot::Receiver<UserActionOutcome>) -> UserActionOutcome {
+        match self.registry.take_unanswered(&self.id) {
+            Some(surfaces) => {
+                announce_card_expiry(&self.id, &self.request, surfaces);
+                UserActionOutcome::TimedOut
+            }
+            None => rx.await.unwrap_or(UserActionOutcome::TimedOut),
+        }
+    }
+}
+
+/// Where an expired card was showing: its home, and the sessions it was
+/// escalated into ([`Entry::escalated_to`]).
+struct CardSurfaces {
+    home: Option<String>,
+    escalated_to: Vec<String>,
+}
+
+/// Publish [`card_expiry_notice`] wherever card `id` was published, by the
+/// same channels: the home session's request queue (the agent loop drains it
+/// into the chat's stream, where the card arrived) and the session bus of each
+/// escalated surface. Only approval cards carry a notice; an elicitation, a
+/// credential request or a Crew step keeps the shape it has.
+///
+/// ⚠ Never to the unscoped queue. A card parked without a home was queued
+/// there, and the first chat whose loop drains it claims it as its home
+/// ([`PendingUserActions::claim_unscoped_for_session`]), so a card that still
+/// has none at expiry never reached any chat. That queue is drained by
+/// whichever loop runs next, so a notice published there would land in a chat
+/// that never drew the card, as a report on a request nobody there saw.
+fn announce_card_expiry(id: &str, request: &UserActionRequest, surfaces: CardSurfaces) {
+    let Some(subject) = expiry_subject(request) else {
+        return;
+    };
+    if surfaces.home.is_none() && surfaces.escalated_to.is_empty() {
+        return;
+    }
+    let notice = card_expiry_notice(id, &subject);
+    for surface in &surfaces.escalated_to {
+        crate::session_events::publish(
+            surface,
+            crate::session_events::SessionBusEvent::Agent(crate::agents::AgentEvent::Message(
+                notice.clone(),
+            )),
+        );
+    }
+    if let Some(home) = surfaces.home.as_deref() {
+        crate::action_required_manager::ActionRequiredManager::global().publish(Some(home), notice);
+    }
+}
+
+/// What an expiry notice names, for the cards that carry one.
+fn expiry_subject(request: &UserActionRequest) -> Option<String> {
+    match request {
+        UserActionRequest::ToolApproval(r) => {
+            Some(format!("The permission prompt for {}", r.tool_name))
+        }
+        UserActionRequest::FolderAccess(r) => {
+            Some(format!("The folder access request for {}", r.folder))
+        }
+        // A Crew step is not an approval: its end reaches a surface as `ActionRequiredEnded`.
+        UserActionRequest::Elicitation(_)
+        | UserActionRequest::Secrets(_)
+        | UserActionRequest::CrewStep(_) => None,
+    }
+}
+
+/// The notice that approval card `id` closed before anyone answered it.
+///
+/// One constructor for both places a card can expire: a call parked here
+/// ([`PendingUserAction::wait`]) and the agent's own permission prompt
+/// (`handle_approval_tool_requests`). Its text is the record a terminal prints;
+/// its `expired_action_id` is what lets a surface that shows the card draw it
+/// as expired, buttons gone, rather than leave three live buttons on a call
+/// that has already given up (a late click answers `unknown`).
+pub fn card_expiry_notice(id: &str, subject: &str) -> Message {
+    Message::assistant()
+        .with_content(MessageContent::card_expiry_notification(
+            id,
+            format!(
+                "{subject} expired before it was answered. The tool was not run. Ask again to retry."
+            ),
+        ))
+        .with_metadata(crate::conversation::message::MessageMetadata::user_only())
+}
+
+/// The approval card a [`card_expiry_notice`] reports as expired.
+pub fn expired_card_id(message: &Message) -> Option<&str> {
+    message.content.iter().find_map(|content| match content {
+        MessageContent::SystemNotification(note) => note.expired_action_id.as_deref(),
+        _ => None,
+    })
+}
+
+/// Whether `message` is a [`card_expiry_notice`].
+///
+/// Live-only, like the card it reports on: a drain yields it into the stream
+/// (and so into the turn's replay log, after the card) but never stores it.
+pub fn is_card_expiry_notice(message: &Message) -> bool {
+    expired_card_id(message).is_some()
 }
 
 impl Drop for PendingUserAction {
@@ -1960,6 +2090,217 @@ mod tests {
             parked.id().to_string()
         };
         assert!(!registry.is_pending(&id));
+    }
+
+    fn folder_card(folder: &str) -> UserActionRequest {
+        UserActionRequest::FolderAccess(FolderAccessRequest {
+            action_id: "synthetic-action".to_string(),
+            tool_name: "developer__text_editor".to_string(),
+            folder: folder.to_string(),
+            access: "read-only".to_string(),
+            once_descendants: false,
+            files: vec![format!("{folder}/notes.txt")],
+        })
+    }
+
+    fn allow_once() -> UserActionOutcome {
+        UserActionOutcome::Approved {
+            permission: Permission::AllowOnce,
+        }
+    }
+
+    fn card_id(message: &Message) -> Option<String> {
+        message.content.iter().find_map(|content| match content {
+            MessageContent::ActionRequired(action) => match &action.data {
+                crate::conversation::message::ActionRequiredData::ToolConfirmation {
+                    id, ..
+                } => Some(id.clone()),
+                _ => None,
+            },
+            _ => None,
+        })
+    }
+
+    /// The bug the decisions lane found live: a folder card ("Allow / Allow
+    /// for this session / Deny") kept its buttons after its 300 s window
+    /// closed, and a late click got `unknown` and collapsed to "no longer
+    /// available". The window closing must reach every surface that drew the
+    /// card, by the channel the card took, naming the card, so the surface can
+    /// drop its buttons; and from then on no surface may answer it.
+    ///
+    /// `start_paused` lets the real 300 s window elapse at once.
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_folder_card_announces_its_expiry_wherever_it_was_shown() {
+        let home = format!("expiry-home-{}", Uuid::new_v4());
+        let watcher = format!("expiry-watcher-{}", Uuid::new_v4());
+        let mut watching = crate::session_events::subscribe(&watcher);
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = registry.park(Some(&home), None, folder_card("/synthetic/results"));
+        let id = parked.id().to_string();
+        assert!(parked.also_surface_in(&watcher));
+
+        assert_eq!(
+            parked.wait(Duration::from_secs(300), None).await,
+            UserActionOutcome::TimedOut
+        );
+
+        // Home: the request queue the agent loop drains into the chat's
+        // stream, the card first and its expiry after it.
+        let drained =
+            crate::action_required_manager::ActionRequiredManager::global().drain_requests(&home);
+        let card_at = drained
+            .iter()
+            .position(|message| card_id(message).as_deref() == Some(id.as_str()))
+            .expect("the card was published to its home");
+        let notice_at = drained
+            .iter()
+            .position(is_card_expiry_notice)
+            .expect("the expiry must be published where the card was");
+        assert!(card_at < notice_at, "the expiry follows its card");
+        let notice = &drained[notice_at];
+        assert_eq!(expired_card_id(notice), Some(id.as_str()));
+        assert!(notice.metadata.user_visible && !notice.metadata.agent_visible);
+        assert!(
+            matches!(
+                notice.content.as_slice(),
+                [MessageContent::SystemNotification(note)]
+                    if note.notification_type
+                        == crate::conversation::message::SystemNotificationType::InlineMessage
+                        && note.msg.contains("/synthetic/results")
+            ),
+            "the notice is one inline notice naming what expired: {:?}",
+            notice.content
+        );
+
+        // The escalated surface hears it on the bus the card reached it by.
+        let mut heard = Vec::new();
+        while let Ok(crate::session_events::SessionBusEvent::Agent(
+            crate::agents::AgentEvent::Message(message),
+        )) = watching.try_recv()
+        {
+            heard.push(message);
+        }
+        assert_eq!(heard.len(), 2, "{heard:?}");
+        assert_eq!(card_id(&heard[0]).as_deref(), Some(id.as_str()));
+        assert_eq!(expired_card_id(&heard[1]), Some(id.as_str()));
+
+        // And a late click answers nothing, from either surface.
+        for surface in [&home, &watcher] {
+            assert_eq!(
+                registry.resolve_in_session(
+                    surface,
+                    &id,
+                    allow_once(),
+                    DecisionAuthority::unproven()
+                ),
+                ResolveOutcome::Unknown
+            );
+        }
+    }
+
+    /// An answered card announces nothing, and neither does a cancelled one:
+    /// only a window that closed unanswered is an expiry.
+    #[tokio::test]
+    async fn only_an_unanswered_window_is_announced_as_expired() {
+        let home = format!("expiry-answered-{}", Uuid::new_v4());
+        let registry = Arc::new(PendingUserActions::default());
+
+        let answered = registry.park(Some(&home), None, approval("developer__shell"));
+        let id = answered.id().to_string();
+        assert_eq!(
+            registry.resolve_in_session(&home, &id, allow_once(), DecisionAuthority::unproven()),
+            ResolveOutcome::Delivered
+        );
+        assert_eq!(
+            answered.wait(Duration::from_millis(30), None).await,
+            allow_once()
+        );
+
+        let token = CancellationToken::new();
+        let cancelled = registry.park(Some(&home), None, approval("developer__shell"));
+        token.cancel();
+        assert_eq!(
+            cancelled.wait(Duration::from_secs(5), Some(&token)).await,
+            UserActionOutcome::Cancelled
+        );
+
+        let drained =
+            crate::action_required_manager::ActionRequiredManager::global().drain_requests(&home);
+        assert!(!drained.iter().any(is_card_expiry_notice), "{drained:?}");
+    }
+
+    /// An elicitation or a credential request is not an approval card; its
+    /// surfaces keep the shape they have, so nothing is announced for it.
+    #[tokio::test]
+    async fn a_credential_request_that_times_out_announces_nothing() {
+        let home = format!("expiry-secrets-{}", Uuid::new_v4());
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = registry.park(Some(&home), None, secrets());
+        assert_eq!(
+            parked.wait(Duration::from_millis(20), None).await,
+            UserActionOutcome::TimedOut
+        );
+        let drained =
+            crate::action_required_manager::ActionRequiredManager::global().drain_requests(&home);
+        assert!(!drained.iter().any(is_card_expiry_notice), "{drained:?}");
+    }
+
+    /// A card parked with no home is queued unscoped, and no chat claimed it
+    /// before its window closed, so no chat drew it. Its expiry notice must not
+    /// go to the unscoped queue, where whichever loop drains next would show it
+    /// in a chat that never saw the card. It goes only to a chat the card was
+    /// escalated into, and with none, nowhere.
+    ///
+    /// The unscoped queue is shared by every test in this binary, so this test
+    /// takes out only its own card and its own notice, by ID.
+    #[tokio::test(start_paused = true)]
+    async fn a_card_no_chat_drew_announces_its_expiry_only_where_it_was_escalated() {
+        use crate::action_required_manager::ActionRequiredManager;
+        let manager = ActionRequiredManager::global();
+        let registry = Arc::new(PendingUserActions::default());
+
+        // Shown nowhere: no home, no escalation.
+        let nowhere = registry.park(None, None, approval("developer__shell"));
+        let nowhere_id = nowhere.id().to_string();
+        manager.take_unscoped(|message| card_id(message).as_deref() == Some(nowhere_id.as_str()));
+        assert_eq!(
+            nowhere.wait(Duration::from_secs(300), None).await,
+            UserActionOutcome::TimedOut
+        );
+        let leaked =
+            manager.take_unscoped(|message| expired_card_id(message) == Some(nowhere_id.as_str()));
+        assert!(
+            leaked.is_empty(),
+            "an expiry no chat can place must not be queued for any chat: {leaked:?}"
+        );
+
+        // No home, but escalated into a watching chat: that chat hears it, and
+        // the unscoped queue still gets nothing.
+        let watcher = format!("expiry-unscoped-watcher-{}", Uuid::new_v4());
+        let mut watching = crate::session_events::subscribe(&watcher);
+        let escalated = registry.park(None, None, folder_card("/synthetic/unscoped"));
+        let escalated_id = escalated.id().to_string();
+        manager.take_unscoped(|message| card_id(message).as_deref() == Some(escalated_id.as_str()));
+        assert!(escalated.also_surface_in(&watcher));
+        assert_eq!(
+            escalated.wait(Duration::from_secs(300), None).await,
+            UserActionOutcome::TimedOut
+        );
+        let leaked = manager
+            .take_unscoped(|message| expired_card_id(message) == Some(escalated_id.as_str()));
+        assert!(leaked.is_empty(), "{leaked:?}");
+        let mut heard = Vec::new();
+        while let Ok(crate::session_events::SessionBusEvent::Agent(
+            crate::agents::AgentEvent::Message(message),
+        )) = watching.try_recv()
+        {
+            heard.push(message);
+        }
+        assert_eq!(
+            heard.iter().filter_map(expired_card_id).collect::<Vec<_>>(),
+            [escalated_id.as_str()],
+            "{heard:?}"
+        );
     }
 
     /// The refusal text must never tell a model that a chat message can approve
