@@ -8,7 +8,8 @@
 > **Status:** Current. Built in the Codex simplicity redesign (WS-SUMMARY, October 2026); the
 > content was made calmer after the live QA of 2026-11-10 (collapsed sections, the subagent
 > peek), then divided into labelled sections with the agent grid on 2026-11-11, and made
-> sections without boxes (headings and hairlines, no phase cards) on 2026-11-12.
+> sections without boxes (headings and hairlines, no phase cards) on 2026-11-12, with no red,
+> solid text and a flag for a phase gate later that day.
 > **Audience:** developers working on the chat pane's layout, the summary, the artifact preview
 > or the yield ladder.
 
@@ -196,7 +197,7 @@ designed. The structure is carried by two simple things instead:
   `summary/summaryAgents.css`), so a phase never reads as a section. A divider between sections
   is a structural line, the kind `design.md` 9.11 keeps.
 
-The grid's marks, the rows and the gate's circle sit directly on the card's ground, and a row
+The grid's marks, the rows and the gate's flag sit directly on the card's ground, and a row
 answers the pointer with the card's hover step. Only the subagent card (the hover peek, and the
 same card once kept) floats with a surface of its own. The footer is parted from the body by
 space. Where the list overflows, the edge that hides rows fades over 16px:
@@ -204,6 +205,17 @@ the bottom while there is more below, the top once the list has scrolled. The fa
 body's own scroll position (a CSS scroll timeline), so it needs no listener and moves nothing,
 and a focused body drops it so its focus edge is drawn whole. Two type sizes only, 13px for rows
 and 12px for labels.
+
+**Red is rare, and text reads solid** (owner direction, 2026-11-12; `design.md` 9.13 and 9.14).
+Nothing in the summary is drawn in a danger or warning ink. A failed subagent, a gate that did
+not pass and a decision check that errored are found by their shape and their word ("Failed",
+"Not passed", "Error"); a run or a gate that needs the person by its half fill or its accent and
+its word ("Needs an answer", "Needs you"); a failed refresh is a sentence in the default ink
+beside its Retry. A name, a phase title and a value are in the default ink at every status, and
+secondary text (a second line, a count, a key, a section label) is `--text-muted` itself, never
+the subtler step, a mix or an opacity fade. Every ink is a token, so a change to the app's inks
+(the ui-readability lane strengthens `--text-muted` at the token layer) reaches the summary with
+no edit here. `styles/summaryRail.test.ts` holds both rules at the source.
 
 The body is divided into sections a person can scan (owner request, 2026-11-11, modelled on
 Claude Code's Background tasks panel): **To do**, **Plan** (or **Agents** when the chat has
@@ -222,7 +234,7 @@ mounted for the chat.
   28px rows. It starts collapsed when the chat has a phase plan, because the Plan section is then
   what the person opened the summary for, and open otherwise. Each status has its own
   glyph shape, an open circle (pending), a dashed circle in the accent ink (running), a check
-  (complete) and an alert (blocked), so status never depends on colour. The status word is read
+  (complete) and an alert in the default ink (blocked), so status never depends on colour. The status word is read
   to assistive technology ahead of the task text. There is no "no tasks" sentence; a failed
   refresh shows one line, "To do could not refresh.", with Retry, whose label ends on the
   values' right edge. On the card the 4px track rests on `--background-fill-strong`: the
@@ -238,25 +250,28 @@ mounted for the chat.
   switch is not disabled for it, and its help says so.
   - **The notation.** One small mark per piece of work. Its shape says what kind of model did
     it: a **square** for a language-model agent, a **circle** for decision-model work (a
-    subagent whose own model is a decision model, a phase gate, and every Decisions row). Its
-    fill says where it stands, so status never depends on colour alone: hollow (waiting to
-    start), hollow with a core (running), half full (stalled, or waiting for the person), solid
-    (finished), solid with a cross cut out (failed), hollow with a bar (no outcome: status
-    unknown, skipped, off). Its ink comes from existing semantic tokens: running
-    `--text-info` (the info blue), waiting `--text-warning`, failed `--text-danger`, finished a
-    calm sage (`--text-success` greyed 60:40 with `--text-muted`, then set at 70% over
-    `--background-fill`), and the rest `--text-muted`. Every ink clears 3:1 against the card's
-    fill in both modes and every family (the sage is the lowest, 3.3:1 in Alma Mater light). A
-    running child's core breathes (an opacity pulse over 1.6s), never under reduced motion. In
-    forced colours every mark is the system ink (running the highlight ink) and the shapes still
-    tell the statuses apart. The marks are SVG in `currentColor`; the cross is a hole cut out of
-    the solid shape, so a failed mark reads the same on the card or a popover.
+    subagent whose own model is a decision model, and every Decisions row). A phase gate is a
+    flag, never a circle, so a circle only ever means decision-model work. Its fill says where
+    it stands, so status never depends on colour alone: hollow (waiting to start), hollow with
+    a core (running), half full (stalled, or waiting for the person), solid (finished), hollow
+    with a small cross (failed), hollow with a bar (no outcome: status unknown, skipped, off).
+    Its ink comes from existing tokens, never a danger or warning one: running `--text-info`
+    (the info blue), waiting or stalled `--text-default` (the half fill in the ink itself),
+    finished a calm sage (`--text-success` greyed 60:40 with `--text-muted`, then set at 70%
+    over `--background-fill`), and failed and the rest `--text-muted`, at full strength. A
+    failure is calm: its cross tells it from a mark not started, and its row and its card say
+    "Failed". Every ink clears 3:1 against the card's fill in both modes and every family (the
+    sage is the lowest, 3.3:1 in Alma Mater light). A running child's core breathes (an opacity
+    pulse over 1.6s), never under reduced motion. In forced colours every mark is the system ink
+    (running the highlight ink) and the shapes still tell the statuses apart. The marks are SVG
+    in `currentColor`; the failed cross is stroked like the outline, so it reads the same on the
+    card or a popover.
   - **Which status is which mark** (`AGENT_STATUS_MARKS`): waiting to start is hollow; running
     and stopping are the core; completed is solid; a run that needs an answer, was stopped
     before it finished ("Stopped") or was interrupted is half full, as is an active child with
     no recorded activity for 180 seconds ("Quiet for 4m", never "stalled"; the threshold is the
-    daemon's `QUIET_AFTER_SECONDS` in `orchestration_plan.rs`); failed is the cut cross; status
-    unknown is the bar. The precise word ("Stopped", "Interrupted", "Needs an answer") is in the
+    daemon's `QUIET_AFTER_SECONDS` in `orchestration_plan.rs`); failed is the outline with its
+    small cross; status unknown is the bar. The precise word ("Stopped", "Interrupted", "Needs an answer") is in the
     mark's name and its card.
   - **The size scales with the count** (`agentGridSize`). With four agents or fewer in the chat,
     every agent is a two-line row led by a 14px mark (the to-do list's glyph size, so a few
@@ -266,7 +281,8 @@ mounted for the chat.
     its result line (else its status word). With five to 99, each group draws a grid of 10px
     squares 4px apart, one square per agent in spawn order, so a square never moves while the
     group runs; under it, the first five agents as 28px rows (the mark, the name, the run time
-    or "quiet 4m"), then "Show N more" for the rest and "Show fewer" back. From 100 the squares
+    or "quiet 4m", and for a failure "Failed · 1m45s" in the default ink), then "Show N more"
+    for the rest and "Show fewer" back. From 100 the squares
     are 7px, 2px apart, in a dense block. The notation is the same at every size. A group of
     one agent in a larger chat is its row alone, with no grid: a single square above the one
     row it repeats said nothing the row's own mark does not (`groupDrawsGrid`).
@@ -277,8 +293,9 @@ mounted for the chat.
   - **With a phase plan**, the section is **Plan**: its heading counts the phases done ("1 of
     4", announced "1 of 4 phases complete"; its accessible name carries the plan's title), and
     each phase, in plan order, is a **chunk** with no box of its own: its line is its heading
-    (the chevron, the title, which wraps to a second line before it is cut, "done of total" on
-    the right, and the gate's mark), then its grid, its first rows and "Show N more", all on the
+    (the chevron, the title on one line, cut with an ellipsis, with the whole title as its
+    tooltip, "done of total" on the right, and the gate's flag, the count and the flag always
+    on the title's line), then its grid, its first rows and "Show N more", all on the
     card's ground. A phase after the first opens on an inset hairline. These chunks replaced
     phase cards (each phase a filled, rounded band on the page ground) that read as white boxes
     on the grey rail. A phase that used no subagents shows where it
@@ -289,9 +306,11 @@ mounted for the chat.
     open, and in a plan of more than three phases the others start folded. A folded phase keeps
     its grid while anything in it is not finished, so its live state is still in view, a phase of
     one agent included, whose square is then the only sign of where it stands; a folded phase
-    whose every agent finished is its line alone (`groupDrawsGridFolded`). Under the line, a
-    muted line appears only when an earlier gate holds the phase ("Waits for Build's gate"), on
-    the title's text edge. Its failed and blocked subagents are its grid's crosses and half marks, and words in
+    whose every agent finished is its line alone (`groupDrawsGridFolded`). A phase title is in
+    the default ink whatever the phase's status; its count or status word says where it stands.
+    Under the line, a muted line appears only when an earlier gate holds the phase ("Waits for
+    the gate after Build"), on the title's text edge. It names the gated phase last, so a long
+    title is cut at the line's end and the sentence still reads. Its failed and blocked subagents are its grid's crosses and half marks, and words in
     its accessible name ("1 failed"). Subagents in no phase the plan knows are a last chunk,
     **Other agents**.
   - **Without a plan**, the section is **Agents**, its heading "2 running · 4 of 10" (announced
@@ -304,13 +323,17 @@ mounted for the chat.
     of the last phase. A roster of one kind draws none. It is hidden from assistive technology,
     because every square and row already says "decision model" in its name. The terminal's pane
     writes the same key under its own heading.
-  - **Phase gates** are decision-model work, so a gate is a circle at the end of its phase's
-    line, on the card's ground with no fill of its own in any state, filled by its state: hollow while not asked yet, solid once passed (or passed by the
-    person), the cut cross when not passed or blocked, half full when it needs the person, the
-    bar when skipped. Its word ("Needs you", "Not passed", "Blocked") is drawn beside it, in the
-    circle's ink, only when the gate wants a look; otherwise the mark stands alone. Its tooltip
-    and accessible name are the full sentence with the probability named ("Gate not passed ·
-    P(yes) 0.62 · threshold 0.80 · attempt 2 of 3"). It opens the phase gate dialog, where the
+  - **Phase gates** are a 12px flag (the registry's `Flag`) at the end of the phase's line, on
+    the card's ground with no fill of its own in any state. A gate is decision-model work, but it
+    is drawn as a flag and never a circle: as a circle it read as one more decision-model mark
+    (vision review, 2026-11-12). The flag is an outline in the muted ink while not asked yet or
+    skipped, solid in the finished sage once passed (or passed by the person), and its word
+    ("Needs you", "Not passed", "Blocked") is drawn beside it only when the gate wants a look:
+    not passed and blocked in the default ink, needs you in the accent, the one colour the
+    summary keeps for what needs the person, never red. Its tooltip and accessible name are the
+    full sentence, which always opens on "Gate", with the probability named ("Gate not passed ·
+    P(yes) 0.62 · threshold 0.80 · attempt 2 of 3", "Gate passed by you"); where the gate is not
+    a control, the sentence is its title. It opens the phase gate dialog, where the
     person passes or skips the phase, and its `⋯` menu holds Try again, Edit gate, Decision
     history and Remove gate ([the phase gate dialog](decision-models.md#the-phase-gate-dialog)).
     A gate is never a row of its own, here or in the Decisions section. An open phase with no
@@ -356,10 +379,11 @@ mounted for the chat.
   when a monitor fired or a check errored, then one 28px row per monitor that exists now and one
   for the agent's `decide` calls, each led by a circle of the notation (decision-model work) and
   ending in a word (Fired, Quiet, Not checked yet, Off, Error) or a count, with no probabilities
-  and no bars. A monitor that fired is half full in the warning ink, one that checked and stayed
+  and no bars. A monitor that fired is half full in the default ink, one that checked and stayed
   quiet is solid (never the failed cross: it did nothing wrong), one not checked yet is hollow,
-  one switched off has the bar, and an error is the cut cross; `decide` batches and a decision
-  chat's answers are solid (`DECISION_STATE_MARKS`). The section stays aggregate: never one row
+  one switched off has the bar, and an error is the outline with its small cross in the muted
+  ink, never red; `decide` batches and a decision chat's answers are solid
+  (`DECISION_STATE_MARKS`). The section stays aggregate: never one row
   per call. A Monitors icon button sits on its heading line. The rules are in
   [the Decisions section](decision-models.md#the-decisions-section-of-the-chat-summary).
 - **This chat** (**Subagent chat** in a subagent's own tab, so its figures read as the
@@ -549,18 +573,18 @@ or the pointer is over the summary.
 | `components/summary/SummaryHeaderButton.test.tsx` | The button's two modes, its tooltip, focus return, the dot with its count (to-do steps and running subagents, alone and together), and which flips of the pressed fill snap (geometry) and which fade (a press, the popover, the first turn) |
 | `utils/sessionSubagents.test.ts` | The contract read from the Rust side (every run status, phase kind and phase status, and the quiet threshold), the parser (every field, an unknown status kept as unknown, a row without an id dropped, malformed fields degraded, a plan with an unknown kind or status), the groups and counts, the layout switch at five, phase membership and default disclosure, the labels (short model names, run time, the second line), the roster revision (which tools move it, a script's sub-calls, no move for prose, an unanswered call or a replay) and `openSubagentTab` on and off `/pair` |
 | `hooks/useSessionSubagents.test.tsx` | No read while hidden and idle, the read with the user proof once shown, a re-read when a roster tool answers and not for prose, the 2s poll while a child is active (stopping once none is), the poll outliving the hidden rail, the turn's poll only in a chat with subagents, no re-render for a hidden summary's ticking counters (and the newest answer shown at once when it is shown again), the last good data kept on a failed read, a missing route read as no roster, and a superseded read aborted and ignored |
-| `components/summary/SummarySubagents.test.tsx` | The gate's words and sentences for every state, its circle filled by state with its word only when it wants a look, the person's decisions and "needs you", the gate opening the gate dialog, the held line, and the compact "Add gate" plus in the gate's place on hover and focus and in the arrow-key order (and none where the gate is not a control); and nothing drawn for an empty roster, rows in a chat of four or fewer (the square and the role or name, the run time, the model and the second line status by status, quiet read as waiting, the muted lock, a decision model's circle), a click keeping the card and not opening the tab, "Open in a tab" opening it with its role, five or more as a grid of 10px squares in spawn order named in words, the first five rows (waiting, failed, running, then the newest), a square that never moves when its child finishes, Show N more and Show fewer, folding the Agents section with its count kept, a square's card, the phases (a chunk with the title and count and no bar, failures in the name and not under the line, the phase's grid, no "0 of 0" for a phase with no subagents, default disclosure, a folded phase's grid kept while anything in it is unfinished, a group of one drawn as its row alone and as its square only while folded and unfinished, Other agents inside Plan, a plan with no subagents), the card's content (task, result, Open in a tab, the setup by name under Details, no provider key, dated slug, raw extension key or knowledge base id, a decision model with where it runs) and its lazy build, the key only while squares and circles mix, a Tab previewing with the row at rest, Enter keeping the card and moving focus in and Escape returning it, one tab stop with the arrows moving between rows and opening nothing, the grid as one stop that Left and Right walk, a kept card and its row kept through a poll that ranks the child out of the five, focus kept on a row whose child finishes or a fifth spawn turns into a grid (and left alone once moved out of the list), and a failed refresh with Retry |
+| `components/summary/SummarySubagents.test.tsx` | The gate's words and sentences for every state (each opening on "Gate"), its flag (never a circle) with its state and its word only when it wants a look, a failed row saying "Failed · 1m" beside its crossed mark and on its card, the person's decisions and "needs you", the gate opening the gate dialog, the held line, and the compact "Add gate" plus in the gate's place on hover and focus and in the arrow-key order (and none where the gate is not a control); and nothing drawn for an empty roster, rows in a chat of four or fewer (the square and the role or name, the run time, the model and the second line status by status, quiet read as waiting, the muted lock, a decision model's circle), a click keeping the card and not opening the tab, "Open in a tab" opening it with its role, five or more as a grid of 10px squares in spawn order named in words, the first five rows (waiting, failed, running, then the newest), a square that never moves when its child finishes, Show N more and Show fewer, folding the Agents section with its count kept, a square's card, the phases (a chunk with the title and count and no bar, failures in the name and not under the line, the phase's grid, no "0 of 0" for a phase with no subagents, default disclosure, a folded phase's grid kept while anything in it is unfinished, a group of one drawn as its row alone and as its square only while folded and unfinished, Other agents inside Plan, a plan with no subagents), the card's content (task, result, Open in a tab, the setup by name under Details, no provider key, dated slug, raw extension key or knowledge base id, a decision model with where it runs) and its lazy build, the key only while squares and circles mix, a Tab previewing with the row at rest, Enter keeping the card and moving focus in and Escape returning it, one tab stop with the arrows moving between rows and opening nothing, the grid as one stop that Left and Right walk, a kept card and its row kept through a poll that ranks the child out of the five, focus kept on a row whose child finishes or a fifth spawn turns into a grid (and left alone once moved out of the list), and a failed refresh with Retry |
 | `components/summary/ChatSummary.subagents.test.tsx` | The Agents section between the to-do list and This chat, nothing for it without the prop or with an empty roster, a subagent's card naming the chat's monitors that watch its subagents, and BaseChat's wiring at the source: the hook's place and gate, both surfaces fed from `summaryProps`, the tab opener, and the button's running count only while the rail is hidden |
 | `components/summary/summaryAgents.browser.test.tsx` | In Chromium, in the rail's own grid at 240px (a 228px card): 30 subagents with every row shown as 28px rows that scroll inside the card with the footer in view and nothing overflowing sideways (with names long enough to overflow, the instrument); three subagents as 44px two-line rows with one muted second line; a kept card to the left of its row, its top on the row's, the row filled and marked `data-pinned`, and one card open at a time; a 30-subagent phase plan with the same rows and width; a gated phase whose count stays on one line while its long title wraps to two |
-| `components/summary/agentGrid.test.ts` | The notation without rendering: the size tiers (rows to 4, a grid to 99, a dense block from 100; 14, 10 and 7px), the grid drawn for an open group of two or more and for a folded group while an agent in it is unfinished, every run status's mark and a quiet child read as waiting, the pulse only on a running child, a decision-model subagent, a gate and every Decisions row as circles with their fills, the monitors that watch subagents, the head order and the five with kept rows past them, and the groups by phase in plan order with Other last |
-| `components/summary/summaryAgentGrid.browser.test.tsx` | In Chromium, in the rail at 240px: one agent as a 44px row led by a 14px square and no grid; eight as one line of 10px squares 4px apart and five 28px rows with 10px marks; 150 as 7px squares in lines 9px apart, all inside the card, nothing sideways; a square's hover card, once Radix has placed it, 8px clear of the rail's edge with its name, model and tier, status, Open in a tab and "Watched by", the square at rest until a click keeps it; each kind drawn by its own parts and ink, gates and Decisions rows as circles; the owner's sections rule in the real cascade (the first section with no line and each later one a 1px hairline across the card, each phase after the first an inset one, every element between a square and the card transparent with no radius or side border, the gate's circle unfilled, the key on one line under the Plan heading and above the first phase, and a phase with no subagents ending its one-line title's line with "Pending" on the rows' right edge). With `SUMMARY_GRID_SHOTS=<dir>` it saves the review screenshots in light and dark: three agents, a 20-agent plan with gates, monitors and a decision-model subagent, 150 agents across three phases with decision-model subagents among them, and a square's card |
+| `components/summary/agentGrid.test.ts` | The notation without rendering: the size tiers (rows to 4, a grid to 99, a dense block from 100; 14, 10 and 7px), the grid drawn for an open group of two or more and for a folded group while an agent in it is unfinished, every run status's mark and a quiet child read as waiting, the pulse only on a running child, a decision-model subagent and every Decisions row as circles with their fills, a gate's state for its flag, the monitors that watch subagents, the head order and the five with kept rows past them, and the groups by phase in plan order with Other last |
+| `components/summary/summaryAgentGrid.browser.test.tsx` | In Chromium, in the rail at 240px: one agent as a 44px row led by a 14px square and no grid; eight as one line of 10px squares 4px apart and five 28px rows with 10px marks; 150 as 7px squares in lines 9px apart, all inside the card, nothing sideways; a square's hover card, once Radix has placed it, 8px clear of the rail's edge with its name, model and tier, status, Open in a tab and "Watched by", the square at rest until a click keeps it; each kind drawn by its own parts and ink, nothing in the Plan or Decisions section in a danger or warning hue and the failed mark in the muted ink, gates as flags named "Gate …" and Decisions rows as circles; the owner's sections rule in the real cascade (the first section with no line and each later one a 1px hairline across the card, each phase after the first an inset one, every element between a square and the card transparent with no radius or side border, the gate's flag unfilled, the key on one line under the Plan heading and above the first phase, a phase with no subagents ending its one-line title's line with "Pending" on the rows' right edge, every phase title one 18px line with its tooltip and its count and gate on that line, the long one cut, and the held line "Waits for the gate after Draft the dosing tables"). With `SUMMARY_GRID_SHOTS=<dir>` it saves the review screenshots in light and dark: three agents, a 20-agent plan with gates, monitors and a decision-model subagent (a failed, a stalled, a queued and a running agent among them), 150 agents across three phases with decision-model subagents among them, and a failed square's card saying "Failed" |
 | `components/subagent/subagentStatus.test.ts` | Every run status has a glyph and a word, and a stopped run is never the running glyph |
 | `components/settings/app/OpenSubagentTabsRow.test.tsx` | "Open subagent tabs automatically": the key `BIOROUTER_WORKSPACE_OPEN_SUBAGENT_TABS`, off by default, written on toggle and rolled back on a failed write, held unpainted until read, a later visit painted from the last answer (the `openSubagentTabs` key of `settings/lastKnown.ts`), and help that names "Never open tabs automatically" as the setting that wins |
 | `components/settings/app/AppSettingsSection.test.tsx`, `components/settings/warmSettings.test.ts`, `components/settings/tabSwitchFrames.browser.test.tsx` | The switch named by its label, its place right after "Never open tabs automatically" and before Show costs, held with the other four until read; its key warmed while Settings opens; and in Chromium, painted with its saved value in the first commit and every frame of a visit to the App tab |
 | `components/ToolCallWithResponse.subagentCopy.test.ts` | The delegation row naming the role, each `workspace_orchestrate` action's label and its done form, and no row claiming a tab |
 | `components/summary/summaryPopover.browser.test.tsx` | In Chromium, with the whole stylesheet, in a band shaped like BaseChat's header: the old wiring landing on the band line and past the window (the instrument); the popover 4px below the band line and 8px above the window's bottom with its body scrolling, at 1300x900, beside a side preview, at a device pixel ratio of 2 and in a 600px window; a short list at its natural height |
 | `components/alerts/toastClearance.test.ts` (WS-MOTION's) | The two class names the toast stack steps aside for, each held at the component that renders it; the stack joining the docked card's column (as wide as the card, right edges aligned, 8px under it, or at the rail top over a card that fills the rail), never left of it over the conversation; and 16px left of the popover |
-| `styles/summaryRail.test.ts` | The exact grid templates, the `:not([data-preview-layout])` key, unlayered rules, no condition, transition or animation in the geometry, the card's motion, one rail in BaseChat, the `paddingX={6}` and `const contentClassName = 'px-1';` literals the 56px comes from, and the fill: the card's fill and transparent border, one hairline in the content (the section divider, across the card) and no other line, fill or radius, the track's ground, the scroll-edge fades, the pressed fill and the dot's ring; and for `summaryAgents.css`, the same two sizes, one line (the inset hairline between two phases; every other border a reset), 28px rows, no section spacing of its own, a phase with no fill, radius or padding and no container of a phase, grid or row with a fill or radius, the caps section label, the restated focus fill, and no `Button` in `SummarySubagents.tsx`; and for `summaryAgentGrid.css`, the status inks from semantic tokens, no type of its own, the system ink in forced colours, and the opacity-only pulse that stops under reduced motion |
+| `styles/summaryRail.test.ts` | The exact grid templates, the `:not([data-preview-layout])` key, unlayered rules, no condition, transition or animation in the geometry, the card's motion, one rail in BaseChat, the `paddingX={6}` and `const contentClassName = 'px-1';` literals the 56px comes from, and the fill: the card's fill and transparent border, one hairline in the content (the section divider, across the card) and no other line, fill or radius, the track's ground, the scroll-edge fades, the pressed fill and the dot's ring; and for `summaryAgents.css`, the same two sizes, one line (the inset hairline between two phases; every other border a reset), 28px rows, no section spacing of its own, a phase with no fill, radius or padding and no container of a phase, grid or row with a fill or radius, the caps section label, the restated focus fill, and no `Button` in `SummarySubagents.tsx`; a phase title on one line cut with an ellipsis, names and titles in the default ink at every status, secondary text on `--text-muted` itself, and every text ink in the rail one of the default, the muted and the accent; no danger or warning token anywhere in the summary's four stylesheets, a gate wanting a look in the default ink and one needing the person in the accent, and the refresh error in the default ink; and for `summaryAgentGrid.css`, the status inks from tokens (waiting the default ink, failed the muted), the failed cross stroked like the ring, no type of its own, the system ink in forced colours, and the opacity-only pulse that stops under reduced motion |
 | `components/BaseChat.summaryRail.test.ts` | BaseChat's wiring: the button, the to-do hook's order and argument, the popover closing for the rail, the composer bar's and the subagent line's gutters, the first turn counted from the commit that creates a new chat, no titlebar padding under the header band, the message list memoised against everything the rail, the popover and the preview change, a loading chat's row reaching the rail, the chip, the placeholder and the ring, the commit before the load counted as loading (rail and empty state), a pending chat's composer bar and subagent line at opacity 0 and never `inert`, the Tokens value and the footer cost waiting for the ledger, which is keyed on the live counters (`liveTokens: tokenState`) as well as the row, and the transcript's follow hook (its arguments, both props, above the early return, the clicked card's hold), and the list settling through `useTranscriptSettle` with no first-settle force of its own (declared after the follow hook, whose hold it asks), the late row hold's arguments, its `followGrowth` on the transcript's `ScrollArea` and the one `ChatTurnError` drawing the row it decided about, and the first send: started in the commit that starts creating the chat, the chat named once created, ended wherever the composer gets the text back, drawn in the transcript slot, the four figures from `summaryFigures`, and the composer's `followUp` from `composerFollowsUp`, with the row kept out of `messagesLength`, and the composer's `reasoningDraftKey` taken from the tab alone, so the hand-off across the first send's remount finds it |
 | `components/summary/useFirstSend.test.tsx` | A new chat's first send against a fake daemon (`/agent/start` after 500ms, a 280ms load, the ledger 50ms after the session), on the real hook, `summaryFigures`, `ChatSummary`, `FirstSendTranscript` and `ProgressiveMessageList`: the old wiring leaving the text off screen and reading Tokens "0", nothing, "N/A" (the instrument); the text in the first commit after the send and in every commit after it; Tokens from empty to its answer once, the counts held at zero; the stored row the same markup as the first-send row, at rest; a placeholder that follows the store asking the open question under the drawn message (the instrument), and "Ask a follow-up" from the commit that draws it. Also the hook's life (begin, created, spent, another chat, a failure, attachments alone), `composerFollowsUp` and `summaryFigures`' cases |
 | `components/summary/transcriptSettle.test.ts` | The settle rule: the first settle lands at once while following, nothing for a reader who scrolled up (first settle too) or while a late row is held, later settles smooth, the first counted at the first settle that has messages and spent on a reader who scrolled up |
