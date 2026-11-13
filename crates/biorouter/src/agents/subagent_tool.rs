@@ -1016,7 +1016,8 @@ const MODELS_LISTED_PER_PROVIDER: usize = 6;
 
 /// The `settings.provider` description. With a roster it names, one line each,
 /// the chat providers set up on this computer with their models, then one line
-/// of the providers that are not set up; without one (the static listing,
+/// of the hosted providers that are not set up and one of the local engines
+/// that are not; without one (the static listing,
 /// before [`describe_provider_choices`] runs) it says only what is refused.
 ///
 /// The decision-model sentence is named from the list the refusal checks, so
@@ -1050,15 +1051,34 @@ pub(crate) fn provider_override_description(
             lines.push(format!("- {}: {}", status.name, listed_models(status)));
         }
     }
-    let not_set_up: Vec<_> = roster.not_configured().map(|s| s.name.as_str()).collect();
+    // Local engines get their own line: for a private chat they are exactly the
+    // providers a child may use, so lumping them in with the hosted ones read as
+    // if local models were forbidden.
+    let (local_not_set_up, not_set_up): (Vec<&str>, Vec<&str>) = roster
+        .not_configured()
+        .map(|s| s.name.as_str())
+        .partition(|name| is_local_provider(name));
     if !not_set_up.is_empty() {
         lines.push(format!(
-            "Not set up on this computer, refused: {}.",
+            "Not set up on this computer, so a subagent cannot use them yet: {}.",
             not_set_up.join(", ")
+        ));
+    }
+    if !local_not_set_up.is_empty() {
+        lines.push(format!(
+            "Local, not set up: {}. A private chat can use only these or other private models.",
+            local_not_set_up.join(", ")
         ));
     }
     lines.push(decision);
     lines.join("\n")
+}
+
+/// One of the two local engines (Llama Server, Ollama), by name: the same
+/// test the prompt clock uses, without its this-machine half, because a
+/// provider that is not set up has no instance to ask.
+fn is_local_provider(name: &str) -> bool {
+    crate::agents::prompt_manager::is_local_engine(name, false)
 }
 
 /// One configured provider's models for its description line: the default
@@ -9109,8 +9129,82 @@ mod tests {
              - claude_code: sonnet (default), opus, haiku\n\
              - versa_azure: gpt-5.5-2026-04-24 (default), gpt-5.4, gpt-5.4-mini, gpt-5.2, \
              gpt-5.1, gpt-5, +3 more\n\
-             Not set up on this computer, refused: codex, openai.\n\
+             Not set up on this computer, so a subagent cannot use them yet: codex, openai.\n\
              A decision model provider (baseten_decision, ollama_decision) is refused."
+        );
+    }
+
+    /// The local engines that are not set up get a line of their own, never the
+    /// hosted list: for a private chat they are the providers a child may use,
+    /// and listing them as refused read as if local models were forbidden. A
+    /// local engine that is set up is listed with the others, not here.
+    #[test]
+    fn local_engines_that_are_not_set_up_get_their_own_line() {
+        use crate::providers::readiness::{ChatProviderRoster, ProviderReadiness};
+        let roster = ChatProviderRoster::from_rows([
+            (
+                roster_metadata("versa_azure", "gpt-5.5-2026-04-24", &[]),
+                ProviderReadiness::Configured,
+            ),
+            (
+                roster_metadata("openai", "gpt-5.5", &[]),
+                ProviderReadiness::NotConfigured,
+            ),
+            (
+                roster_metadata("llamacpp", "qwen3.8-27b", &[]),
+                ProviderReadiness::NotConfigured,
+            ),
+            (
+                roster_metadata("ollama", "qwen3.8:27b", &[]),
+                ProviderReadiness::NotConfigured,
+            ),
+        ]);
+        let description = provider_override_description(Some(&roster));
+        assert!(
+            description.contains(
+                "\nNot set up on this computer, so a subagent cannot use them yet: openai.\n"
+            ),
+            "{description}"
+        );
+        assert!(
+            description.contains(
+                "\nLocal, not set up: llamacpp, ollama. A private chat can use only these or \
+                 other private models.\n"
+            ),
+            "{description}"
+        );
+        assert!(!description.contains("refused:"), "{description}");
+
+        // Ollama set up: listed with its model, and only Llama Server is left
+        // on the local line.
+        let roster = ChatProviderRoster::from_rows([
+            (
+                roster_metadata("llamacpp", "qwen3.8-27b", &[]),
+                ProviderReadiness::NotConfigured,
+            ),
+            (
+                roster_metadata("ollama", "qwen3.8:27b", &[]),
+                ProviderReadiness::Configured,
+            ),
+        ]);
+        let description = provider_override_description(Some(&roster));
+        assert!(
+            description.contains("\n- ollama: qwen3.8:27b (default)\n"),
+            "{description}"
+        );
+        assert!(
+            description.contains("\nLocal, not set up: llamacpp. "),
+            "{description}"
+        );
+        assert!(
+            !description.contains("Not set up on this computer"),
+            "no hosted provider is missing: {description}"
+        );
+
+        // No local engine missing: no local line.
+        assert!(
+            !provider_override_description(Some(&qa_roster())).contains("Local, not set up"),
+            "the QA machine lists no local engine"
         );
     }
 
@@ -9132,7 +9226,9 @@ mod tests {
             "{description}"
         );
         assert!(
-            description.contains("Not set up on this computer, refused: openai."),
+            description.contains(
+                "Not set up on this computer, so a subagent cannot use them yet: openai."
+            ),
             "{description}"
         );
     }
