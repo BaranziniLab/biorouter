@@ -623,6 +623,17 @@ pub struct DecisionService {
     warm: Mutex<HashSet<String>>,
 }
 
+/// Some of a call's chunks, sorted by whether each fits a model's window
+/// beside the questions asked ([`DecisionService::split_by_window`]).
+#[derive(Debug, Default)]
+pub struct WindowSplit {
+    /// The chunks that fit, in order, each with its place in the call.
+    pub fits: Vec<(usize, DecisionChunk)>,
+    /// Each chunk too large for the model, by id, in order, with the sentence
+    /// that says how large it is and how much the model takes.
+    pub too_large: Vec<(String, DecisionError)>,
+}
+
 static GLOBAL: LazyLock<DecisionService> =
     LazyLock::new(|| DecisionService::new(Arc::new(ConfiguredDecisionModels)));
 
@@ -1979,38 +1990,66 @@ impl DecisionService {
         Ok(model)
     }
 
-    /// Whether every chunk of a batch could be sent to the model `wanted`
-    /// names, asking `questions`, for `session`: every check
-    /// [`Self::check_model_use`] makes, then the size check that runs before
-    /// each chunk is sent, chunk by chunk. Nothing of the chat is sent. The
-    /// outer `Err` is the model's own refusal; the list holds each chunk the
-    /// size check refuses, with its refusal, in `chunks` order. For a caller
-    /// that sends to a second model only after a first one answered (the
-    /// `decide` tool's `escalate`), so a model that could never take the batch
-    /// is refused before the first model is asked anything.
-    pub async fn check_batch_fits(
+    /// Whether the model `wanted` names could be asked `questions` for
+    /// `session`: every model-wide check [`Self::check_model_use`] makes (the
+    /// chat's Crew grant, the resolution, the chat's bound model, Gate H and
+    /// affiliation, the server's refusal to load the model) and the question
+    /// kinds, but nothing about size, neither the questions' fit in the window
+    /// nor any chunk's. Nothing of the chat is sent. For a caller that sends
+    /// to a second model only after a first one answered (the `decide` tool's
+    /// `escalate`): a model this chat may not use is refused before the first
+    /// model is asked anything, while what is too large for it can only be
+    /// known once the first model has said which chunks, and which of their
+    /// questions, are asked again ([`Self::split_by_window`]).
+    pub async fn check_model_takes(
         &self,
         session: &DecisionSession,
         wanted: &DecisionModelRef,
         questions: &IndexMap<String, Question>,
-        chunks: &[&DecisionChunk],
         source: ModelSource,
-    ) -> DecisionResult<Vec<(String, DecisionError)>> {
+    ) -> DecisionResult<()> {
         let model = self.checked_model(session, Some(wanted), source).await?;
         let caps = model.caps();
-        self.check_kinds(model.as_ref(), &caps, questions)?;
-        check_fit(model.as_ref(), &caps, questions)?;
-        let mut refused = Vec::new();
-        for chunk in chunks {
+        self.check_kinds(model.as_ref(), &caps, questions)
+    }
+
+    /// `chunks` sorted by whether each fits the model `wanted` names beside
+    /// `questions`, by the size check that runs before a chunk is sent (its
+    /// window, and its request limit where it has one): the chunks that fit,
+    /// in order and with their places, and each chunk too large for it with
+    /// the sentence that says how large. Nothing of the chat is sent and
+    /// nothing is recorded; the model-wide checks are left to the batch that
+    /// sends what fits. `Err` is the model's own: it could not be opened. For
+    /// a caller that asks a second model about part of a call (the `decide`
+    /// tool's `escalate`), so a chunk too large for it is left out, and only
+    /// that chunk, rather than refusing the call.
+    ///
+    /// This is a size sort only, never a gate: it opens the model directly,
+    /// not through [`Self::checked_model`], so a chunk that fits says nothing
+    /// about whether this chat may use the model. [`Self::check_model_takes`]
+    /// asks the model-wide checks before the first model is asked anything,
+    /// and the batch that sends asks Gate H, affiliation and the Crew grant
+    /// again, for the batch and before every chunk.
+    pub async fn split_by_window(
+        &self,
+        wanted: &DecisionModelRef,
+        questions: &IndexMap<String, Question>,
+        chunks: Vec<(usize, DecisionChunk)>,
+    ) -> DecisionResult<WindowSplit> {
+        let model = self.source.open(wanted).await?;
+        let caps = model.caps();
+        let mut split = WindowSplit::default();
+        for (place, chunk) in chunks {
             let request = DecisionRequest {
                 questions: questions.clone(),
                 context: chunk.context.clone(),
             };
-            if let Err(error) = check_size(model.as_ref(), &caps, &request, Some(&chunk.id)).await {
-                refused.push((chunk.id.clone(), error));
+            match check_size(model.as_ref(), &caps, &request, Some(&chunk.id)).await {
+                Ok(()) => split.fits.push((place, chunk)),
+                Err(error) => split.too_large.push((chunk.id, error)),
             }
         }
-        Ok(refused)
+        Ok(split)
     }
 
     /// Whether the chat `session` could run what saving `settings` over

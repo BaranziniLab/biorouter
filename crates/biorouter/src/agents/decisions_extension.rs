@@ -630,20 +630,30 @@ pub struct EscalationSummary {
     pub below: f64,
     /// Chunks the first model decided.
     pub first_decided: usize,
-    /// Chunks asked again, about at least one question.
+    /// Chunks escalated: each had at least one answer under `below`, to be
+    /// asked again (those too large for the second model never were; see
+    /// `too_large_ids`).
     pub escalated: usize,
-    /// Answers asked again (a chunk asked two questions again counts two).
+    /// Answers escalated (a chunk with two unsure answers counts two).
     pub answers: usize,
     /// Of those, answers the second model gave.
     pub decided: usize,
     /// Of those, answers that differ from the first model's.
     pub changed: usize,
-    /// Answers asked again that failed: the first model's answer stands.
+    /// Answers escalated that the second model gave no answer to, so the
+    /// first model's answer stands: it failed, or the chunk was too large
+    /// for it. `answers` is `decided` plus `errors`.
     pub errors: usize,
-    /// Every chunk asked again, in call order (at most [`MAX_TOOL_CHUNKS`]).
+    /// Every chunk escalated, in call order (at most [`MAX_TOOL_CHUNKS`]).
     pub items: Vec<EscalatedItem>,
-    /// The second model's distinct errors, each with the chunks it hit.
+    /// The second model's distinct errors, each with the chunks it hit; a
+    /// chunk too large for it is not among them.
     pub error_groups: Vec<ErrorGroup>,
+    /// Every escalated chunk too large for the second model's window beside
+    /// the questions asked again, in call order and never capped: it was not
+    /// sent to that model, and the first model's answers stand for it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub too_large_ids: Vec<String>,
 }
 
 /// One chunk asked again.
@@ -672,6 +682,10 @@ pub struct EscalatedAnswer {
     /// Why the second model gave no answer, when it did not.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// True when the chunk was too large for the second model's window, so
+    /// it was never sent to it; `error` says how large.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub too_large: bool,
 }
 
 /// One question's aggregate over a batch.
@@ -1148,9 +1162,13 @@ struct EscalationRun {
     model: DecisionModelRef,
     tier: Option<ProviderTier>,
     below: f64,
-    /// The second model's outcome for each chunk asked again, in call order,
-    /// each with only the questions asked again.
+    /// The second model's outcome for each chunk escalated, in call order,
+    /// each with only the questions asked again. A chunk too large for it
+    /// has an outcome with no answer and the sentence that says how large.
     outcomes: Vec<ChunkOutcome>,
+    /// The escalated chunks too large for the second model's window beside
+    /// the questions they would be asked again, never sent to it.
+    too_large: std::collections::HashSet<String>,
 }
 
 /// Per decided chunk, in call order, the questions whose top answer is less
@@ -1193,13 +1211,14 @@ fn escalation_groups(targets: &[(String, Vec<String>)]) -> IndexMap<Vec<String>,
 
 /// One question asked again: the second model's answer, written into `slot`
 /// in place of the first model's, or the first model's kept with the reason
-/// the second model gave none.
+/// the second model gave none (`too_large` when its chunk was never sent).
 fn escalated_answer(
     name: &str,
     slot: &mut Decision,
     again: &ChunkOutcome,
     label: &str,
     first_label: &str,
+    too_large: bool,
 ) -> EscalatedAnswer {
     let (first_key, first_p) = (answer_key(slot), top_p(slot));
     let replacement = again
@@ -1221,6 +1240,7 @@ fn escalated_answer(
                 first_label: first_key,
                 first_p,
                 error: None,
+                too_large: false,
             }
         }
         None => EscalatedAnswer {
@@ -1236,14 +1256,15 @@ fn escalated_answer(
                     .clone()
                     .unwrap_or_else(|| "no answer".to_string()),
             ),
+            too_large,
         },
     }
 }
 
 /// The first model's outcomes with each answer the second model gave in its
 /// place, and what the escalation did. An answer the second model failed to
-/// give keeps the first model's. Pure, so the merge is testable without a
-/// model.
+/// give, or was never asked because its chunk was too large for it, keeps the
+/// first model's. Pure, so the merge is testable without a model.
 fn merge_escalation(
     questions: &IndexMap<String, Question>,
     first: Vec<ChunkOutcome>,
@@ -1290,7 +1311,15 @@ fn merge_escalation(
                 if !asked || !unsure(slot, run.below) {
                     continue;
                 }
-                item_answers.push(escalated_answer(name, slot, again, &label, first_label));
+                let too_large = run.too_large.contains(&outcome.chunk_id);
+                item_answers.push(escalated_answer(
+                    name,
+                    slot,
+                    again,
+                    &label,
+                    first_label,
+                    too_large,
+                ));
             }
             if !item_answers.is_empty() {
                 items.push(EscalatedItem {
@@ -1308,6 +1337,19 @@ fn merge_escalation(
         .filter(|a| a.error.is_none() && a.label != a.first_label)
         .count();
     let errors = answers - decided;
+    let too_large_ids = items
+        .iter()
+        .filter(|item| item.answers.iter().any(|answer| answer.too_large))
+        .map(|item| item.chunk_id.clone())
+        .collect();
+    // A chunk too large for the second model did not fail there: it was
+    // never sent, and the result says so on its own line.
+    let failed: Vec<ChunkOutcome> = run
+        .outcomes
+        .iter()
+        .filter(|outcome| !run.too_large.contains(&outcome.chunk_id))
+        .cloned()
+        .collect();
     let summary = EscalationSummary {
         model: run.model,
         label,
@@ -1321,7 +1363,8 @@ fn merge_escalation(
         changed,
         errors,
         items,
-        error_groups: error_groups(&run.outcomes),
+        error_groups: error_groups(&failed),
+        too_large_ids,
     };
     (merged, summary)
 }
@@ -1334,15 +1377,21 @@ fn ids_line(ids: &[String], more: usize) -> String {
     line
 }
 
-/// What a line says after an answer that was asked again: the first model's
-/// answer, or that the second model failed and the first answer stands.
-fn escalated_note(answer: &EscalatedAnswer, first_label: &str) -> String {
+/// What a line says after an answer that was escalated: the first model's
+/// answer, or that the chunk was too large for the second model, or that the
+/// second model failed, and the first answer stands.
+fn escalated_note(answer: &EscalatedAnswer, escalation: &EscalationSummary) -> String {
+    let first = &escalation.first_label;
     match &answer.error {
         None => format!(
-            " (escalated; {first_label} said {}, P {:.2})",
+            " (escalated; {first} said {}, P {:.2})",
             answer.first_label, answer.first_p
         ),
-        Some(_) => format!(" (escalation failed; {first_label}'s answer stands)"),
+        Some(_) if answer.too_large => format!(
+            " (too large for {}; {first}'s answer stands)",
+            escalation.label
+        ),
+        Some(_) => format!(" (escalation failed; {first}'s answer stands)"),
     }
 }
 
@@ -1364,18 +1413,18 @@ fn chunk_line(
             .items
             .iter()
             .find(|item| item.chunk_id == outcome.chunk_id)
-            .map(|item| (item, escalation.first_label.as_str()))
+            .map(|item| (item, escalation))
     });
     let parts: Vec<String> = questions
         .iter()
         .filter_map(|(name, question)| {
             let decision = decisions.iter().find(|d| &d.question == name)?;
             let note = escalated
-                .and_then(|(item, first)| {
+                .and_then(|(item, escalation)| {
                     item.answers
                         .iter()
                         .find(|answer| &answer.question == name)
-                        .map(|answer| escalated_note(answer, first))
+                        .map(|answer| escalated_note(answer, escalation))
                 })
                 .unwrap_or_default();
             // Never a bare "fail": an agent reads that as a no, and a near
@@ -1495,7 +1544,7 @@ fn question_paragraph(question: &QuestionSummary, chunks: usize, list_answers: b
 }
 
 /// The escalation's paragraph: how many chunks each model decided, what the
-/// second model changed, and its failures.
+/// second model changed, the chunks too large for it, and its failures.
 fn escalation_paragraph(escalation: &EscalationSummary) -> String {
     let plural = |n: usize| if n == 1 { "" } else { "s" };
     let tier = escalation
@@ -1527,23 +1576,88 @@ fn escalation_paragraph(escalation: &EscalationSummary) -> String {
         ));
         return text;
     }
-    text.push_str(&format!(
-        " {} gave {} of them, {} different from {}'s. Every answer below is final: {}'s where \
-         escalated, {}'s elsewhere.",
-        escalation.label,
-        escalation.decided,
-        escalation.changed,
-        escalation.first_label,
-        escalation.label,
-        escalation.first_label,
-    ));
-    if escalation.errors > 0 {
+    let too_large = &escalation.too_large_ids;
+    let too_large_answers = escalation
+        .items
+        .iter()
+        .flat_map(|item| &item.answers)
+        .filter(|answer| answer.too_large)
+        .count();
+    // The answers the second model was asked about: every escalated answer
+    // but those of a chunk too large for it.
+    let sent = escalation.answers.saturating_sub(too_large_answers);
+    if sent > 0 {
         text.push_str(&format!(
-            " {} escalated answer{} failed, so {}'s answer stands for {}.",
-            escalation.errors,
-            plural(escalation.errors),
+            " {} gave {} of them, {} different from {}'s. Every answer below is final: {}'s \
+             where it answered, {}'s elsewhere.",
+            escalation.label,
+            escalation.decided,
+            escalation.changed,
             escalation.first_label,
-            if escalation.errors == 1 { "it" } else { "them" },
+            escalation.label,
+            escalation.first_label,
+        ));
+    }
+    if !too_large.is_empty() {
+        let one = too_large.len() == 1;
+        let outcome = if sent == 0 {
+            format!(
+                "so {} was asked nothing and every answer below is {}'s",
+                escalation.label, escalation.first_label
+            )
+        } else {
+            format!(
+                "so {} not sent to it and {}'s answer stands for {}",
+                if one { "it was" } else { "they were" },
+                escalation.first_label,
+                if one { "it" } else { "them" },
+            )
+        };
+        text.push_str(&format!(
+            " {} escalated chunk{} {} too large for {}'s window beside the questions asked \
+             again, {outcome}.",
+            too_large.len(),
+            plural(too_large.len()),
+            if one { "was" } else { "were" },
+            escalation.label,
+        ));
+    }
+    let failed = escalation.errors.saturating_sub(too_large_answers);
+    if failed > 0 {
+        text.push_str(&format!(
+            " {failed} escalated answer{} failed, so {}'s answer stands for {}.",
+            plural(failed),
+            escalation.first_label,
+            if failed == 1 { "it" } else { "them" },
+        ));
+    }
+    text.push_str(&escalation_detail_lines(escalation));
+    text
+}
+
+/// The lines under the escalation paragraph that name the chunks the second
+/// model never answered: those too large for its window, then each group of
+/// chunks whose escalation failed.
+fn escalation_detail_lines(escalation: &EscalationSummary) -> String {
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    let too_large = &escalation.too_large_ids;
+    let mut text = String::new();
+    if !too_large.is_empty() {
+        let (listed, more) = capped(too_large.clone(), LISTED_ERROR_IDS);
+        let how_large = escalation
+            .items
+            .iter()
+            .flat_map(|item| &item.answers)
+            .find(|answer| answer.too_large)
+            .and_then(|answer| answer.error.as_deref())
+            .map(|why| format!(" {why}"))
+            .unwrap_or_default();
+        text.push_str(&format!(
+            "\nToo large for {} ({} chunk{}): {}.{how_large}",
+            escalation.label,
+            too_large.len(),
+            plural(too_large.len()),
+            ids_line(&listed, more),
         ));
     }
     for group in &escalation.error_groups {
@@ -1577,6 +1691,10 @@ fn escalated_lines(escalation: &EscalationSummary) -> String {
                     "{} {} P {:.2}, was {} P {:.2}",
                     answer.question, answer.label, answer.p, answer.first_label, answer.first_p
                 ),
+                Some(_) if answer.too_large => format!(
+                    "{} {} P {:.2}, too large for {}",
+                    answer.question, answer.label, answer.p, escalation.label
+                ),
                 Some(_) => format!(
                     "{} {} P {:.2}, escalation failed",
                     answer.question, answer.label, answer.p
@@ -1588,11 +1706,15 @@ fn escalated_lines(escalation: &EscalationSummary) -> String {
     let rest = escalation.items.get(PER_CHUNK_LINES..).unwrap_or_default();
     if !rest.is_empty() {
         // Never capped, so every chunk's model can be told: named here, the
-        // escalation model's answer (or, where it failed, the first model's);
-        // not named, the first model's.
-        let (failed, answered): (Vec<&EscalatedItem>, Vec<&EscalatedItem>) = rest
+        // escalation model's answer (or, where it failed or the chunk was too
+        // large for it, the first model's); not named, the first model's.
+        let (too_large, rest): (Vec<&EscalatedItem>, Vec<&EscalatedItem>) = rest
             .iter()
+            .partition(|item| item.answers.iter().any(|answer| answer.too_large));
+        let (failed, answered): (Vec<&EscalatedItem>, Vec<&EscalatedItem>) = rest
+            .into_iter()
             .partition(|item| item.answers.iter().any(|answer| answer.error.is_some()));
+        let rest_len = too_large.len() + failed.len() + answered.len();
         let ids = |items: &[&EscalatedItem]| {
             items
                 .iter()
@@ -1601,15 +1723,22 @@ fn escalated_lines(escalation: &EscalationSummary) -> String {
                 .join(", ")
         };
         text.push_str(&format!(
-            "\n(and {} more escalated chunk{}, their final answers in the lists above.",
-            rest.len(),
-            if rest.len() == 1 { "" } else { "s" }
+            "\n(and {rest_len} more escalated chunk{}, their final answers in the lists above.",
+            if rest_len == 1 { "" } else { "s" }
         ));
         if !answered.is_empty() {
             text.push_str(&format!(
                 " Answered by {}: {}.",
                 escalation.label,
                 ids(&answered)
+            ));
+        }
+        if !too_large.is_empty() {
+            text.push_str(&format!(
+                " Too large for {}, so {}'s answer stands: {}.",
+                escalation.label,
+                escalation.first_label,
+                ids(&too_large)
             ));
         }
         if !failed.is_empty() {
@@ -1901,11 +2030,14 @@ impl DecisionsClient {
         let model = self.model_to_ask(&session, params.model.as_deref()).await?;
 
         // The escalation model is checked before the first model is asked
-        // anything: a model this chat may not use, or one that can read no
-        // chunk of the call, refuses the whole call with nothing sent.
+        // anything: a model this chat may not use refuses the whole call with
+        // nothing sent. Its window is not: only the chunks the first model is
+        // unsure of are sent to it, so a chunk too large for it is known, and
+        // left out with its first answer standing, once the first model has
+        // answered.
         let escalation = match escalation {
             Some(ask) => Some(
-                self.check_escalation(&session, model.as_ref(), &ask, &questions, &chunks)
+                self.check_escalation(&session, model.as_ref(), &ask, &questions)
                     .await?,
             ),
             None => None,
@@ -1981,20 +2113,20 @@ impl DecisionsClient {
 
     /// `escalate`'s model, resolved and checked the way any decide model is
     /// before anything is sent: named as `model` takes it (a model this chat
-    /// may not use is refused with its reason), then every check a decision
-    /// makes before it sends, the size check included, for every chunk of the
-    /// call. A refusal refuses the call before the first model is asked
-    /// anything. The size check refuses only a model that can read no chunk
-    /// of the call: one that can read some is used for those, and an unsure
-    /// chunk too large for it fails at its turn, where the first model's
-    /// answer stands and the result says so.
+    /// may not use is refused with its reason), then every model-wide check a
+    /// decision makes before it sends, and the question kinds. A refusal
+    /// refuses the call before the first model is asked anything. The size
+    /// check is not made here: which chunks, and which of their questions,
+    /// are asked again is known only once the first model has answered, so
+    /// [`Self::run_escalation`] checks each escalated chunk against the
+    /// second model's window then, and leaves out only the ones too large
+    /// for it, whose first answers stand.
     async fn check_escalation(
         &self,
         session: &DecisionSession,
         first: Option<&DecisionModelRef>,
         ask: &EscalationAsk,
         questions: &IndexMap<String, Question>,
-        chunks: &CallChunks,
     ) -> Result<(DecisionModelRef, EscalationAsk), String> {
         let refused = |why: String| {
             format!("Nothing was decided: `escalate` names a model this call cannot use. {why}")
@@ -2019,41 +2151,20 @@ impl DecisionsClient {
             ));
         }
         let source = ModelSource::of(Some(session), Some(&model));
-        let every_chunk: Vec<&DecisionChunk> = chunks.iter().map(|(_, chunk)| chunk).collect();
-        let too_large = self
-            .service
-            .check_batch_fits(session, &model, questions, &every_chunk, source)
+        self.service
+            .check_model_takes(session, &model, questions, source)
             .await
             .map_err(|error| refused(error.to_string()))?;
-        // While some chunk fits, the second model is asked about those; a chunk
-        // too large for it fails when it is asked, and its first answer stands.
-        let Some((_, first_refusal)) = too_large
-            .first()
-            .filter(|_| too_large.len() == every_chunk.len())
-        else {
-            return Ok((model, ask.clone()));
-        };
-        let others: Vec<String> = too_large.iter().skip(1).map(|(id, _)| id.clone()).collect();
-        let (listed, more) = capped(others, LISTED_ERROR_IDS);
-        let mut text = format!(
-            "Nothing was decided: `escalate`'s model {} cannot read any chunk of this call. \
-             {first_refusal}",
-            model_label(&model)
-        );
-        if !listed.is_empty() {
-            text.push_str(&format!(
-                " Too large for it as well: {}.",
-                ids_line(&listed, more)
-            ));
-        }
-        text.push_str(" Split the chunks, or name a model with a larger window in `escalate`.");
-        Err(text)
+        Ok((model, ask.clone()))
     }
 
     /// The escalation stage: each chunk whose top answer to a question is
     /// less probable than `below` is asked those questions again of `model`,
     /// one batch per set of questions, under the call's batch id, so the
-    /// decision history holds both stages, each row naming its model. A batch
+    /// decision history holds both stages, each row naming its model. Before
+    /// a batch is sent, each of its chunks is checked against `model`'s
+    /// window beside that batch's questions: a chunk too large for it is left
+    /// out of the batch, never sent, and its first answers stand. A batch
     /// the service refuses as a whole fails its chunks, whose first answers
     /// then stand.
     #[allow(clippy::too_many_arguments)]
@@ -2076,15 +2187,53 @@ impl DecisionsClient {
         let targets = escalation_targets(questions, first, below);
         let mut answered: std::collections::HashMap<String, ChunkOutcome> =
             std::collections::HashMap::new();
+        let mut too_large = std::collections::HashSet::new();
         for (names, ids) in escalation_groups(&targets) {
             let asked: IndexMap<String, Question> = names
                 .iter()
                 .filter_map(|name| Some((name.clone(), questions.get(name)?.clone())))
                 .collect();
-            let chunks: CallChunks = ids
-                .iter()
-                .filter_map(|id| chunk_texts.get(id).cloned())
-                .collect();
+            let texts = |ids: &[String]| -> CallChunks {
+                ids.iter()
+                    .filter_map(|id| chunk_texts.get(id).cloned())
+                    .collect()
+            };
+            // Only what fits the second model's window is sent to it. When
+            // the model cannot be opened to tell, the whole batch goes to the
+            // service, whose own checks refuse it and record the refusal.
+            let split = self
+                .service
+                .split_by_window(&model, &asked, texts(&ids))
+                .await;
+            let (ids, chunks) = match split {
+                Ok(split) => {
+                    for (id, error) in split.too_large {
+                        too_large.insert(id.clone());
+                        answered.insert(
+                            id.clone(),
+                            ChunkOutcome {
+                                chunk_id: id,
+                                decisions: None,
+                                error: Some(error.to_string()),
+                                billed_usage: None,
+                            },
+                        );
+                    }
+                    let ids: Vec<String> = split
+                        .fits
+                        .iter()
+                        .map(|(_, chunk)| chunk.id.clone())
+                        .collect();
+                    (ids, split.fits)
+                }
+                Err(_) => {
+                    let chunks = texts(&ids);
+                    (ids, chunks)
+                }
+            };
+            if chunks.is_empty() {
+                continue;
+            }
             let run =
                 self.service
                     .decide_batch_at(Some(session), Some(&model), &asked, chunks, batch_id);
@@ -2123,6 +2272,7 @@ impl DecisionsClient {
             tier,
             below,
             outcomes,
+            too_large,
         })
     }
 
@@ -4447,14 +4597,61 @@ mod tests {
         assert_eq!(second_calls.load(Ordering::SeqCst), 0);
     }
 
-    /// A second model that can read no chunk of the call is refused before
-    /// the first model is asked anything: it could never answer.
+    /// The owner's case: the old preflight refused the whole call because
+    /// the second model could hold no chunk, although it would never have
+    /// been asked about any. The window is checked against what is
+    /// escalated, so a call whose first answers are all confident runs, and
+    /// the second model is asked nothing.
     #[tokio::test]
-    async fn an_escalation_model_too_small_for_every_chunk_refuses_the_call_before_anything_is_sent(
-    ) {
+    async fn a_second_model_too_small_for_every_chunk_is_no_reason_to_refuse_confident_answers() {
         let (first, second) = first_and_second(ProviderTier::Private, 512);
         let (first_calls, second_calls) = (first.calls.clone(), second.calls.clone());
         let (client, session) = client_with(vec![first, second], false).await;
+        let chunks = json!([
+            {"id": "long-1", "text": format!("[state-p=0.97] {}", "word ".repeat(700))},
+            {"id": "long-2", "text": format!("[state-p=0.03] {}", "word ".repeat(800))},
+        ]);
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"q": {"instructions": "yes?"}}, "chunks": chunks,
+                   "model": "tev1", "escalate": {"model": "clef"}}),
+            enforced(),
+        )
+        .await;
+        let body = text(&result);
+        assert_eq!(result.is_error, Some(false), "{body}");
+        assert_eq!(first_calls.load(Ordering::SeqCst), 2, "{body}");
+        assert_eq!(second_calls.load(Ordering::SeqCst), 0, "{body}");
+        let summary: DecideSummary =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(summary.decided, 2);
+        let escalation = summary.escalation.as_ref().unwrap();
+        assert_eq!((escalation.escalated, escalation.errors), (0, 0));
+        assert!(escalation.too_large_ids.is_empty());
+        assert!(
+            body.contains("No answer was under 0.80, so clef was asked nothing.")
+                && !body.contains("too large")
+                && !body.contains("Nothing was decided"),
+            "{body}"
+        );
+    }
+
+    /// Every chunk unsure and every chunk too large for the second model: the
+    /// first model decides them all, nothing reaches the second model, and
+    /// each line says why the first answer stands. Never an error, never a
+    /// failure: nothing was sent that could fail.
+    #[tokio::test]
+    async fn unsure_chunks_too_large_for_the_second_model_keep_their_first_answers() {
+        let (first, second) = first_and_second(ProviderTier::Private, 512);
+        let (first_calls, second_calls) = (first.calls.clone(), second.calls.clone());
+        let rows = Arc::new(Rows::default());
+        let (client, session) = client_with(vec![], false).await;
+        let client = client.with_service(test_support::service_with_sink(
+            vec![first, second],
+            rows.clone(),
+        ));
         let chunks = json!([
             {"id": "long-1", "text": "word ".repeat(700)},
             {"id": "long-2", "text": "word ".repeat(800)},
@@ -4469,21 +4666,71 @@ mod tests {
         )
         .await;
         let body = text(&result);
-        assert_eq!(result.is_error, Some(true), "{body}");
+        assert_eq!(result.is_error, Some(false), "{body}");
+        assert_eq!(first_calls.load(Ordering::SeqCst), 2, "the first pass ran");
+        assert_eq!(second_calls.load(Ordering::SeqCst), 0, "nothing was sent");
+        let summary: DecideSummary =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!((summary.decided, summary.errors), (2, 0));
+        let escalation = summary.escalation.as_ref().unwrap();
+        assert_eq!(
+            (
+                escalation.escalated,
+                escalation.answers,
+                escalation.decided,
+                escalation.errors
+            ),
+            (2, 2, 0, 2)
+        );
+        assert_eq!(escalation.too_large_ids, ["long-1", "long-2"]);
+        assert!(escalation.error_groups.is_empty(), "nothing failed");
+        for item in &escalation.items {
+            let answer = &item.answers[0];
+            assert_eq!(answer.by, "tev1", "{}", item.chunk_id);
+            assert!(answer.too_large, "{}", item.chunk_id);
+            assert!(
+                answer
+                    .error
+                    .as_deref()
+                    .is_some_and(|why| why.contains("its window is 512 tokens")),
+                "{answer:?}"
+            );
+        }
+        assert_eq!(summary.low_confidence_ids, ["long-1", "long-2"]);
         assert!(
-            body.contains("`escalate`'s model clef cannot read any chunk of this call.")
-                && body.contains("Chunk `long-1` is about")
-                && body.contains("Too large for it as well: long-2.")
-                && body.contains("larger window"),
+            body.contains(
+                "2 escalated chunks were too large for clef's window beside the questions asked \
+                 again, so clef was asked nothing and every answer below is tev1's."
+            ) && body.contains(
+                "\nToo large for clef (2 chunks): long-1, long-2. Chunk `long-1` is about"
+            ) && body.contains(
+                "- long-1: q P(yes) 0.50 review (too large for clef; tev1's answer stands)"
+            ) && !body.contains("gave 0 of them")
+                && !body.contains("escalated answer")
+                && !body.contains("Escalation failed"),
             "{body}"
         );
-        assert_eq!(first_calls.load(Ordering::SeqCst), 0, "stage 1 never ran");
-        assert_eq!(second_calls.load(Ordering::SeqCst), 0);
+        // The second model has no row: it was asked nothing.
+        let logged = rows.0.lock().unwrap().clone();
+        assert!(
+            logged.iter().all(|(model, _)| model == "tev1"),
+            "{logged:?}"
+        );
+
+        let wire = result.structured_content.clone().unwrap();
+        assert_eq!(
+            wire["escalation"]["tooLargeIds"],
+            json!(["long-1", "long-2"])
+        );
+        assert_eq!(
+            wire["escalation"]["items"][0]["answers"][0]["tooLarge"],
+            true
+        );
     }
 
-    /// A second model that can read some chunks of the call is used for
-    /// those. An unsure chunk too large for it is never sent to it: the
-    /// first model's answer stands, and the result says so and why.
+    /// A second model that can read some escalated chunks is asked about
+    /// those. An unsure chunk too large for it is never sent to it: the first
+    /// model's answer stands, and the result says so and why.
     #[tokio::test]
     async fn an_escalation_model_too_small_for_some_chunks_keeps_their_first_answers() {
         let (first, second) = first_and_second(ProviderTier::Private, 512);
@@ -4518,14 +4765,16 @@ mod tests {
             (escalation.escalated, escalation.decided, escalation.errors),
             (3, 1, 2)
         );
+        assert_eq!(escalation.too_large_ids, ["long-1", "long-2"]);
         let short = &escalation.items[0];
         assert_eq!(short.chunk_id, "short");
         assert_eq!(
             (
                 short.answers[0].by.as_str(),
-                short.answers[0].error.is_none()
+                short.answers[0].error.is_none(),
+                short.answers[0].too_large
             ),
-            ("clef", true)
+            ("clef", true, false)
         );
         for item in &escalation.items[1..] {
             let answer = &item.answers[0];
@@ -4534,15 +4783,166 @@ mod tests {
                 "the first answer stands for {}",
                 item.chunk_id
             );
-            assert!(answer.error.is_some());
+            assert!(answer.too_large && answer.error.is_some(), "{answer:?}");
         }
-        assert_eq!(escalation.error_groups[0].chunk_ids, ["long-1", "long-2"]);
+        assert!(
+            escalation.error_groups.is_empty(),
+            "a chunk too large is not a failure: {:?}",
+            escalation.error_groups
+        );
         assert_eq!(summary.low_confidence_ids, ["long-1", "long-2"]);
         assert!(
-            body.contains("2 escalated answers failed, so tev1's answer stands for them.")
+            body.contains(
+                "clef gave 1 of them, 0 different from tev1's. Every answer below is final: \
+                 clef's where it answered, tev1's elsewhere. 2 escalated chunks were too large \
+                 for clef's window beside the questions asked again, so they were not sent to \
+                 it and tev1's answer stands for them."
+            ) && body.contains(
+                "\nToo large for clef (2 chunks): long-1, long-2. Chunk `long-1` is about"
+            ) && body.contains("- short: q P(yes) 0.90 (escalated; tev1 said yes, P 0.60)")
+                && !body.contains("Escalation failed")
+                && !body.contains("escalated answer"),
+            "{body}"
+        );
+    }
+
+    /// The second model failing on a chunk it was sent, and a chunk too
+    /// large for it, are told apart: each keeps its first answer, the failure
+    /// is grouped with its error, and the chunk too large is named on its own
+    /// line.
+    #[tokio::test]
+    async fn a_failure_and_a_chunk_too_large_for_the_second_model_are_told_apart() {
+        let (first, mut second) = first_and_second(ProviderTier::Private, 512);
+        second.fail_all = true;
+        let second_calls = second.calls.clone();
+        let (client, session) = client_with(vec![first, second], false).await;
+        let chunks = json!([
+            {"id": "short", "text": "note [state-p=0.6]"},
+            {"id": "long", "text": "word ".repeat(700)},
+        ]);
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"q": {"instructions": "yes?"}}, "chunks": chunks,
+                   "model": "tev1", "escalate": {"model": "clef"}}),
+            enforced(),
+        )
+        .await;
+        let body = text(&result);
+        assert_eq!(result.is_error, Some(false), "{body}");
+        assert_eq!(
+            second_calls.load(Ordering::SeqCst),
+            1,
+            "only `short` was sent"
+        );
+        let summary: DecideSummary =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        let escalation = summary.escalation.as_ref().unwrap();
+        assert_eq!(
+            (escalation.escalated, escalation.decided, escalation.errors),
+            (2, 0, 2)
+        );
+        assert_eq!(escalation.too_large_ids, ["long"]);
+        assert_eq!(escalation.error_groups.len(), 1);
+        assert_eq!(escalation.error_groups[0].chunk_ids, ["short"]);
+        assert_eq!(summary.low_confidence_ids, ["short", "long"]);
+        assert!(
+            body.contains(
+                "1 escalated chunk was too large for clef's window beside the questions asked \
+                 again, so it was not sent to it and tev1's answer stands for it. 1 escalated \
+                 answer failed, so tev1's answer stands for it."
+            ) && body.contains("\nToo large for clef (1 chunk): long. Chunk `long` is about")
+                && body
+                    .contains("\nEscalation failed (1 chunk): short: the decision server failed")
                 && body.contains(
-                    "Escalation failed (2 chunks): long-1, long-2: Chunk `long-1` is about"
+                    "- short: q P(yes) 0.60 review (escalation failed; tev1's answer stands)"
+                )
+                && body.contains(
+                    "- long: q P(yes) 0.50 review (too large for clef; tev1's answer stands)"
                 ),
+            "{body}"
+        );
+    }
+
+    /// The window is checked against the questions a chunk is asked again,
+    /// not every question of the call: a chunk the second model could not
+    /// read beside every question, but can beside the one it was unsure of,
+    /// is sent.
+    #[tokio::test]
+    async fn the_window_check_counts_only_the_questions_asked_again() {
+        let (first, second) = first_and_second(ProviderTier::Private, 512);
+        let (first_calls, second_calls) = (first.calls.clone(), second.calls.clone());
+        let (client, session) = client_with(vec![first, second], false).await;
+        // tev1 reads each question's own `[p=…]`; clef reads the chunk's.
+        let long_question = format!("Is this note long? [p=0.97] {}", "word ".repeat(400));
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"long": {"instructions": long_question},
+                                 "short": {"instructions": "Is it short? [p=0.6]"}},
+                   "chunks": [{"id": "a", "text": "a note [esc-p=0.9]"}],
+                   "model": "tev1", "escalate": {"model": "clef"}}),
+            enforced(),
+        )
+        .await;
+        let body = text(&result);
+        assert_eq!(result.is_error, Some(false), "{body}");
+        assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(second_calls.load(Ordering::SeqCst), 1, "{body}");
+        let summary: DecideSummary =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        let escalation = summary.escalation.as_ref().unwrap();
+        assert!(escalation.too_large_ids.is_empty(), "{body}");
+        assert_eq!((escalation.answers, escalation.decided), (1, 1));
+        let answer = &escalation.items[0].answers[0];
+        assert_eq!(
+            (answer.question.as_str(), answer.by.as_str()),
+            ("short", "clef")
+        );
+        assert!((answer.p - 0.9).abs() < 1e-9, "{answer:?}");
+    }
+
+    /// A big batch has no line per chunk: the escalated lines say which
+    /// chunks were too large, and the ones past the listed lines are named
+    /// apart from the answered ones.
+    #[tokio::test]
+    async fn a_big_batch_names_its_chunks_too_large_for_the_second_model() {
+        let (first, second) = first_and_second(ProviderTier::Private, 512);
+        let second_calls = second.calls.clone();
+        let (client, session) = client_with(vec![first, second], false).await;
+        let chunks: Vec<serde_json::Value> = (0..30)
+            .map(|i| {
+                let text = if i % 10 == 9 {
+                    format!("[state-p=0.6] {}", "word ".repeat(700))
+                } else {
+                    "note [state-p=0.6] [esc-p=0.95]".to_string()
+                };
+                json!({"id": format!("n{i:02}"), "text": text})
+            })
+            .collect();
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"q": {"instructions": "yes?"}}, "chunks": chunks,
+                   "model": "tev1", "escalate": {"model": "clef"}}),
+            enforced(),
+        )
+        .await;
+        let body = text(&result);
+        assert_eq!(result.is_error, Some(false), "{body}");
+        assert_eq!(second_calls.load(Ordering::SeqCst), 27, "{body}");
+        let summary: DecideSummary =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        let escalation = summary.escalation.as_ref().unwrap();
+        assert_eq!(escalation.too_large_ids, ["n09", "n19", "n29"]);
+        assert_eq!(summary.low_confidence_ids, ["n09", "n19", "n29"]);
+        assert!(
+            body.contains("- n09: q yes P 0.60, too large for clef")
+                && body.contains("- n00: q yes P 0.95, was yes P 0.60")
+                && body.contains(" Too large for clef, so tev1's answer stands: n29.)"),
             "{body}"
         );
     }
