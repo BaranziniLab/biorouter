@@ -1117,6 +1117,28 @@ async fn start_agent(
         }
     }
 
+    // DD-56 at the new-chat door (owner decision 2026-11-13, found by review): a chat that
+    // starts with the Dictionary attached lets it learn from that chat, so a request that
+    // names it, in the overrides or in a workflow's own extension list, is asked the same
+    // person's-choice rule as `POST /agent/add_extension`, before any chat exists. The
+    // capabilities the person enabled machine-wide are theirs and are not asked again.
+    let names_dictionary = extension_overrides
+        .iter()
+        .flatten()
+        .chain(
+            original_workflow
+                .as_ref()
+                .and_then(|workflow| workflow.extensions.as_deref())
+                .into_iter()
+                .flatten(),
+        )
+        .any(|config| biorouter::dictation::activation::is_dictionary_name(&config.name()));
+    if names_dictionary {
+        crate::routes::dictionary::admit_dictionary_attach(&headers)
+            .await
+            .map_err(|(status, message)| ErrorResponse { status, message })?;
+    }
+
     // Always create new sessions with the same human-friendly placeholder.
     // The numbered variant ("New session 154") leaked process-internal counter
     // state into the UI and made it hard for the frontend to recognize a name
