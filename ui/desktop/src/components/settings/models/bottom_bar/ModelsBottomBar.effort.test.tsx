@@ -50,7 +50,6 @@ vi.mock('../../../ModelAndProviderContext', () => ({
   }),
 }));
 vi.mock('../subcomponents/SwitchModelModal', () => ({ SwitchModelModal: () => null }));
-vi.mock('../subcomponents/LeadWorkerSettings', () => ({ LeadWorkerSettings: () => null }));
 
 const SCOPE = 'session:s1';
 
@@ -293,10 +292,6 @@ describe('the model and effort chip', () => {
     await user.keyboard('{ArrowUp}');
     expect(deep).toHaveFocus();
     expect(getReasoningEffort(SCOPE)).toBe('deep');
-    await user.keyboard('{ArrowDown}{ArrowDown}');
-    await waitFor(() =>
-      expect(screen.getByRole('menuitem', { name: MODEL_COPY.leadWorker })).toHaveFocus()
-    );
   });
 
   // Tab leaves an open menu and Radix's Up and Down visit rows only, so the menu's InfoTips (the
@@ -363,14 +358,14 @@ describe('the model and effort chip', () => {
     expect(screen.queryByText(MODEL_COPY.effortGroup)).toBeNull();
   });
 
-  it('offers the two actions with an ellipsis and no trailing icons', async () => {
+  it('offers Change model with an ellipsis and no trailing icon', async () => {
     renderChip();
     await openMenu();
     const change = await screen.findByRole('menuitem', { name: MODEL_COPY.changeModel });
-    const leadWorker = screen.getByRole('menuitem', { name: MODEL_COPY.leadWorker });
     expect(change.querySelector('svg')).toBeNull();
-    expect(leadWorker.querySelector('svg')).toBeNull();
     expect(change).not.toHaveAttribute('title');
+    // Lead/worker mode is retired: the default worker model is a Settings row.
+    expect(screen.getAllByRole('menuitem')).toHaveLength(1);
   });
 
   it('keeps the chat’s privacy line visible in the menu', async () => {

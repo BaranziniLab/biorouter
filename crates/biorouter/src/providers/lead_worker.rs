@@ -1,3 +1,8 @@
+//! The lead/worker composite, kept only so that a chat saved in the retired
+//! lead/worker mode restores as it was (`factory::create_from_persisted`). New
+//! chats run on one model and subagents on the default worker model
+//! (`agents::default_worker`); nothing builds a new pair (owner, 2026-11-11).
+
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -583,9 +588,10 @@ impl Provider for LeadWorkerProvider {
     ///
     /// ⚠ The affiliation census in `factory.rs` structurally cannot catch that:
     /// it enumerates what `register_builtin_providers` registers, and this
-    /// composite is never registered — `factory::create` constructs it directly
-    /// whenever `BIOROUTER_LEAD_MODEL` is set. The fold itself, and why `Local`
-    /// is its identity, is documented on `providers::composite_affiliation`.
+    /// composite is never registered — `factory::create_from_persisted`
+    /// constructs it directly when a saved chat's binding is a lead/worker pair.
+    /// The fold itself, and why `Local` is its identity, is documented on
+    /// `providers::composite_affiliation`.
     fn affiliation(&self) -> Option<ModelAffiliation> {
         crate::providers::composite_affiliation(
             self.lead_provider.affiliation(),

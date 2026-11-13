@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
+use crate::agents::default_worker;
 use crate::agents::subagent_handle::{self, BackgroundSubagent};
 use crate::agents::subagent_handler::{run_complete_subagent_task_outcome, SubagentRunOutcome};
 use crate::agents::subagent_result::SubagentResult;
@@ -1014,11 +1015,19 @@ pub struct SubagentSettings {
 /// long; the rest are counted ("+3 more") rather than named.
 const MODELS_LISTED_PER_PROVIDER: usize = 6;
 
+/// What a spawn that names no provider and no model runs on, said once in the
+/// `settings.provider` description: the resolution order of
+/// [`default_worker::child_model_for_spawn`] after the named step.
+pub(crate) const UNNAMED_SPAWN_MODEL_SENTENCE: &str = "Omit provider and model to use the \
+     user's default worker model, or this chat's model when none is set.";
+
 /// The `settings.provider` description. With a roster it names, one line each,
 /// the chat providers set up on this computer with their models, then one line
 /// of the hosted providers that are not set up and one of the local engines
 /// that are not; without one (the static listing,
 /// before [`describe_provider_choices`] runs) it says only what is refused.
+/// Both say once what omitting the provider and the model runs on
+/// ([`UNNAMED_SPAWN_MODEL_SENTENCE`]).
 ///
 /// The decision-model sentence is named from the list the refusal checks, so
 /// the advice cannot drift from it.
@@ -1030,23 +1039,23 @@ pub(crate) fn provider_override_description(
         crate::providers::decision::chat::DECISION_CHAT_PROVIDERS.join(", ")
     );
     let Some(roster) = roster else {
-        return format!("Override LLM provider. Use a chat model: {decision}");
+        return format!(
+            "Override LLM provider. Use a chat model: {decision} {UNNAMED_SPAWN_MODEL_SENTENCE}"
+        );
     };
 
     let mut lines = Vec::new();
     let configured: Vec<_> = roster.configured().collect();
     if configured.is_empty() {
-        lines.push(
+        lines.push(format!(
             "Run the subagent on another chat provider. No chat provider is set up on this \
-             computer, so omit this to keep yours."
-                .to_string(),
-        );
+             computer. {UNNAMED_SPAWN_MODEL_SENTENCE}"
+        ));
     } else {
-        lines.push(
-            "Run the subagent on another chat provider; omit to keep yours. Set up on this \
-             computer (provider: models):"
-                .to_string(),
-        );
+        lines.push(format!(
+            "Run the subagent on another chat provider. {UNNAMED_SPAWN_MODEL_SENTENCE} Set up \
+             on this computer (provider: models):"
+        ));
         for status in configured {
             lines.push(format!("- {}: {}", status.name, listed_models(status)));
         }
@@ -1323,6 +1332,8 @@ pub(crate) fn build_tool_description(sub_workflows: &[SubWorkflow]) -> String {
          3. Augmented: Provide both `subworkflow` and `instructions` to add context\n\n\
          The subagent has access to the same tools as you by default. \
          Use `extensions` to limit which extensions the subagent can use.\n\n\
+         With no provider and no model named in `settings`, a subagent runs on the \
+         user's default worker model when one is set, and otherwise on this chat's model.\n\n\
          Subagents run in the BACKGROUND by default and open no tab. Each one is \
          listed in this chat's side panel with its status, model and setup, and the \
          user can open any of them as a tab from there to read it while it works and \
@@ -2503,6 +2514,11 @@ async fn run_blocking_child(
     if let Some(note) = affiliation_note {
         call_result.content.push(Content::text(note));
     }
+    // The default worker model could not run this child, which ran on the
+    // chat's model instead.
+    if let Some(note) = child_privacy.default_worker_note {
+        call_result.content.push(Content::text(note));
+    }
     Ok(call_result)
 }
 
@@ -3042,6 +3058,12 @@ async fn spawn_background_subagent(
         text.push_str("\n\n");
         text.push_str(&note);
     }
+    // The default worker model could not run this child, which runs on the
+    // chat's model instead: said once, here, for the same reason.
+    if let Some(note) = &child_privacy.default_worker_note {
+        text.push_str("\n\n");
+        text.push_str(note);
+    }
 
     CallToolResult {
         content: vec![Content::text(text)],
@@ -3483,6 +3505,11 @@ pub(crate) struct ChildPrivacy {
     /// public: the drop note then names the parent's decision model rather
     /// than claiming the subagent runs on a public model.
     pub(crate) public_by_ceiling: bool,
+    /// Why this child runs on its chat's model rather than on the default
+    /// worker model, when one is set and could not be used
+    /// ([`default_worker::fallback_note`]). Pushed into the spawn's result at
+    /// both doors, once.
+    pub(crate) default_worker_note: Option<String>,
 }
 
 impl ChildPrivacy {
@@ -3539,28 +3566,125 @@ pub(crate) async fn resolve_child_privacy(
     mut task_config: TaskConfig,
     params: &SubagentParams,
 ) -> Result<(TaskConfig, ChildPrivacy)> {
-    use crate::privacy::decision_axes;
-
     // Sample the parent before an override can replace its provider instance.
     // `E_p`: the slot's value, the decision-bound wrapper's when there is one.
-    let parent_effective = task_config.provider.tier();
-    let parent_effective_affiliation = task_config.provider.affiliation();
-    let parent_lowered_by = task_config.provider.decision_lowered_by().cloned();
+    let effective = task_config.provider.tier();
+    let effective_affiliation = task_config.provider.affiliation();
+    let lowered_by = task_config.provider.decision_lowered_by().cloned();
     // `P_model`: the parent's model alone. The child is handed the inner
     // provider, never the wrapper, so the parent's axes never ride into it
     // (`update_provider` unwraps anyway; this keeps the override below and the
     // composite fork working on the real instance).
     task_config.provider =
         crate::providers::decision_bound::unwrap_decision_bound(task_config.provider);
-    let parent_model = task_config.provider.tier();
-    let privacy_enforced = crate::privacy::privacy_tiers_enabled();
+    let parent = ParentSample {
+        effective,
+        effective_affiliation,
+        lowered_by,
+        model: task_config.provider.tier(),
+        privacy_enforced: crate::privacy::privacy_tiers_enabled(),
+    };
+
+    // The default worker model (owner, 2026-11-11): a spawn that names no
+    // provider and no model runs on it when one is set. It is judged exactly
+    // like a named provider, and when it may not or cannot run this chat's
+    // subagent the subagent runs on the chat's model, as it did before the
+    // default existed, and the parent is told why. The default never fails a
+    // spawn.
+    let mut default_worker_note = None;
+    if let Some(worker) = default_worker_for(params, &task_config) {
+        match on_default_worker(task_config.clone(), params, &worker, &parent).await {
+            Ok(resolved) => return Ok(resolved),
+            Err(error) => {
+                let reason = default_worker::fallback_reason(&error);
+                tracing::info!(
+                    worker = %worker.label(),
+                    %reason,
+                    "a subagent runs on its chat's model, not the default worker model"
+                );
+                default_worker_note = Some(default_worker::fallback_note(&worker, &reason));
+            }
+        }
+    }
 
     apply_provider_override_and_composite_fork(&mut task_config, params.settings.as_ref()).await?;
+    let (task_config, mut privacy) = judge_child(task_config, params, &parent)?;
+    privacy.default_worker_note = default_worker_note;
+    Ok((task_config, privacy))
+}
+
+/// What a spawn read off its parent before anything replaced the provider:
+/// the four privacy values [`judge_child`] compares the child against, and the
+/// one master-switch read every decision of the spawn shares.
+struct ParentSample {
+    /// `E_p`: the parent's effective tier (the decision-bound wrapper's).
+    effective: crate::privacy::ProviderTier,
+    effective_affiliation: Option<crate::privacy::affiliation::ModelAffiliation>,
+    lowered_by: Option<crate::privacy::decision_axes::LoweredBy>,
+    /// `P_model`: the parent's model alone.
+    model: crate::privacy::ProviderTier,
+    privacy_enforced: bool,
+}
+
+/// The default worker model this spawn would run on: set, not named over by
+/// the spawn, and not the chat's own model ([`default_worker::child_model_for_spawn`]).
+fn default_worker_for(
+    params: &SubagentParams,
+    task_config: &TaskConfig,
+) -> Option<default_worker::DefaultWorker> {
+    let settings = params.settings.as_ref();
+    let chat_model = task_config.provider.get_model_config().model_name;
+    match default_worker::child_model_for_spawn(
+        settings.and_then(|settings| settings.provider.as_deref()),
+        settings.and_then(|settings| settings.model.as_deref()),
+        default_worker::configured_default_worker(),
+        task_config.provider.get_name(),
+        &chat_model,
+    ) {
+        default_worker::ChildModel::DefaultWorker(worker) => Some(worker),
+        default_worker::ChildModel::Named | default_worker::ChildModel::ChatModel => None,
+    }
+}
+
+/// The child on the default worker model, judged by the same rules as every
+/// other child. An `Err` is the reason it may not or cannot run there, which
+/// the caller turns into the parent's note and a spawn on the chat's model.
+async fn on_default_worker(
+    mut task_config: TaskConfig,
+    params: &SubagentParams,
+    worker: &default_worker::DefaultWorker,
+    parent: &ParentSample,
+) -> Result<(TaskConfig, ChildPrivacy)> {
+    let temperature = params
+        .settings
+        .as_ref()
+        .and_then(|settings| settings.temperature);
+    let chat_model = task_config.provider.get_model_config();
+    task_config.provider =
+        default_worker::create_worker_provider(worker, &chat_model, temperature).await?;
+    judge_child(task_config, params, parent)
+}
+
+/// Judge the child's constructed provider against its parent (R4, DR-19,
+/// DR-31), stamp the classification its row is born with, and filter the
+/// extensions it inherits. Every spawn passes here exactly once on the path it
+/// returns, whichever model it resolved.
+fn judge_child(
+    mut task_config: TaskConfig,
+    params: &SubagentParams,
+    parent: &ParentSample,
+) -> Result<(TaskConfig, ChildPrivacy)> {
+    use crate::privacy::decision_axes;
+    let parent_effective = parent.effective;
+    let parent_effective_affiliation = parent.effective_affiliation;
+    let parent_lowered_by = parent.lowered_by.clone();
+    let parent_model = parent.model;
+    let privacy_enforced = parent.privacy_enforced;
 
     // The tool entry point refused a decision model by the requested name. The
-    // instance can still be one: with `BIOROUTER_LEAD_MODEL` set the factory
-    // returns a composite whose name is its lead's, and `Agent::reply` routes
-    // on that name. Asked here, before the row exists, on both spawn doors.
+    // instance can still be one: a persisted lead/worker composite's name is its
+    // lead's, and `Agent::reply` routes on that name. Asked here, before the
+    // row exists, on both spawn doors.
     if let Some(refusal) = decision_model_refusal(task_config.provider.get_name()) {
         return Err(anyhow!(refusal));
     }
@@ -3637,6 +3761,7 @@ pub(crate) async fn resolve_child_privacy(
         ChildPrivacy {
             ceiling,
             public_by_ceiling,
+            default_worker_note: None,
         },
     ))
 }
@@ -7149,11 +7274,10 @@ mod tests {
 
     /// The requested NAME is `ollama` for BOTH tiered asks, deliberately.
     ///
-    /// §8.2 is validated on the CONSTRUCTED INSTANCE, never on the name:
-    /// `providers::create` can hand back something other than what was asked for
-    /// (the `BIOROUTER_LEAD_MODEL` intercept fires before the registry lookup),
-    /// and when only `model` is given today's code keeps the parent's provider
-    /// name and swaps the model string. `ollama` is the one registry entry that
+    /// §8.2 is validated on the CONSTRUCTED INSTANCE, never on the name: one
+    /// provider name can construct instances of different tiers, and when only
+    /// `model` is given today's code keeps the parent's provider name and swaps
+    /// the model string. `ollama` is the one registry entry that
     /// constructs with no credential and no network *and* reads its tier off the
     /// resolved base URL — so one real `providers::create` call yields a Private
     /// instance pointed at this machine and a Public one pointed off it, under
@@ -9025,48 +9149,7 @@ mod tests {
         }
     }
 
-    /// The constructed instance, which the requested name does not decide:
-    /// with `BIOROUTER_LEAD_MODEL` set, `providers::create("ollama", ..)`
-    /// returns a lead/worker composite whose name is its lead's. The entry
-    /// point sees `ollama`; `apply_settings_overrides` sees the decision model.
-    #[tokio::test]
-    async fn a_composite_led_by_a_decision_model_is_refused_and_creates_no_child() {
-        // The blocking door claims a concurrency permit before it resolves the
-        // provider, so it must not run while a queue-depth test holds them all.
-        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
-        let mut overrides = off_box_ollama();
-        overrides.insert("BIOROUTER_LEAD_MODEL".to_string(), "joey-1".to_string());
-        overrides.insert(
-            "BIOROUTER_LEAD_PROVIDER".to_string(),
-            "baseten_decision".to_string(),
-        );
-        for door in BOTH_DOORS {
-            let (result, sessions) = spawn_through(
-                door,
-                json!({
-                    "instructions": "Summarise the cohort.",
-                    "settings": { "provider": "ollama" }
-                }),
-                public_tiered_parent(),
-                overrides.clone(),
-            )
-            .await;
-            let err =
-                result.expect_err("a composite led by a decision model cannot run a subagent");
-            assert_eq!(err.code, ErrorCode::INVALID_PARAMS, "{door:?}");
-            assert_eq!(
-                err.message,
-                decision_refusal_sentence("baseten_decision"),
-                "{door:?}"
-            );
-            assert_eq!(
-                sessions, 0,
-                "{door:?}: the refusal must precede the child's row"
-            );
-        }
-    }
-
-    /// The control for the three tests above: the same parent, the same off-box
+    /// The control for the two tests above: the same parent, the same off-box
     /// host and the same door code resolve an ordinary chat provider, so what
     /// they refuse is the decision model and nothing about the harness.
     #[tokio::test]
@@ -9165,16 +9248,18 @@ mod tests {
         ])
     }
 
-    /// The whole text, written out, so a change to the wording fails here: one
-    /// line per configured provider with its default first, at most six names
-    /// and a count of the rest, then the providers that are not set up by name,
-    /// then the decision-model sentence the refusal is named from.
+    /// The whole text, written out, so a change to the wording fails here: what
+    /// omitting the provider and the model runs on, one line per configured
+    /// provider with its default first, at most six names and a count of the
+    /// rest, then the providers that are not set up by name, then the
+    /// decision-model sentence the refusal is named from.
     #[test]
     fn the_provider_description_lists_what_is_set_up_and_what_is_not() {
         assert_eq!(
             provider_override_description(Some(&qa_roster())),
-            "Run the subagent on another chat provider; omit to keep yours. Set up on this \
-             computer (provider: models):\n\
+            "Run the subagent on another chat provider. Omit provider and model to use the \
+             user's default worker model, or this chat's model when none is set. Set up on \
+             this computer (provider: models):\n\
              - claude_code: sonnet (default), opus, haiku\n\
              - versa_azure: gpt-5.5-2026-04-24 (default), gpt-5.4, gpt-5.4-mini, gpt-5.2, \
              gpt-5.1, gpt-5, +3 more\n\
@@ -9257,10 +9342,10 @@ mod tests {
         );
     }
 
-    /// No chat provider set up: the model is told to keep its own rather than
-    /// offered an empty list.
+    /// No chat provider set up: the model is told what omitting the provider
+    /// runs on rather than offered an empty list.
     #[test]
-    fn with_nothing_set_up_the_description_says_keep_yours() {
+    fn with_nothing_set_up_the_description_says_what_omitting_runs_on() {
         use crate::providers::readiness::{ChatProviderRoster, ProviderReadiness};
         let roster = ChatProviderRoster::from_rows([(
             roster_metadata("openai", "gpt-5.5", &[]),
@@ -9270,7 +9355,8 @@ mod tests {
         assert!(
             description.starts_with(
                 "Run the subagent on another chat provider. No chat provider is set up on this \
-                 computer, so omit this to keep yours."
+                 computer. Omit provider and model to use the user's default worker model, or \
+                 this chat's model when none is set."
             ),
             "{description}"
         );
@@ -9312,6 +9398,33 @@ mod tests {
         let provider = settings["provider"]["description"].as_str().unwrap();
         assert!(provider.contains("is refused"), "{provider}");
         assert!(provider.contains("baseten_decision"), "{provider}");
+    }
+
+    /// The default worker sentence is said once in `settings.provider`, in the
+    /// static listing and in the roster text the model is offered alike, and
+    /// nowhere else in the spawn's schema.
+    #[test]
+    fn the_provider_description_names_the_default_worker_once() {
+        let empty = crate::providers::readiness::ChatProviderRoster::default();
+        for description in [
+            provider_override_description(None),
+            provider_override_description(Some(&qa_roster())),
+            provider_override_description(Some(&empty)),
+        ] {
+            assert_eq!(
+                description.matches(UNNAMED_SPAWN_MODEL_SENTENCE).count(),
+                1,
+                "{description}"
+            );
+        }
+        let mut tool = create_subagent_tool(&[]);
+        describe_provider_choices(&mut tool, &qa_roster());
+        let schema = serde_json::to_string(&*tool.input_schema).unwrap();
+        assert_eq!(
+            schema.matches("default worker model").count(),
+            1,
+            "{schema}"
+        );
     }
 
     /// The tool description says how many run at once and that the rest
@@ -10437,3 +10550,9 @@ mod decision_tier_spawn_tests;
 #[cfg(test)]
 #[path = "subagent_tool_person_hint_tests.rs"]
 mod person_hint_tests;
+
+/// The default worker model at the spawn: named, then the default worker, then
+/// the chat's model, with the privacy fallback.
+#[cfg(test)]
+#[path = "subagent_tool_default_worker_tests.rs"]
+mod default_worker_spawn_tests;

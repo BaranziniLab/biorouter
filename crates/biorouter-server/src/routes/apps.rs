@@ -12496,8 +12496,6 @@ mod tests {
             vec![
                 ("OLLAMA_HOST", Some(host.to_string())),
                 ("OLLAMA_TIMEOUT", Some("1".to_string())),
-                ("BIOROUTER_LEAD_MODEL", None),
-                ("BIOROUTER_LEAD_PROVIDER", None),
                 (
                     "BIOROUTER_PROVIDER",
                     Some("no-such-provider-for-this-test".to_string()),

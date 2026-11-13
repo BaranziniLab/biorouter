@@ -379,7 +379,7 @@ Subagents use the following pre-configured settings, but you can override any de
 | **Max turns** | 25 | Use natural language or set `BIOROUTER_SUBAGENT_MAX_TURNS` |
 | **Timeout** | 5 minutes | Request longer timeout in your prompt |
 | **Extensions** | Inherited from parent | Specify which extensions to use in your prompt |
-| **Model** | Inherited from parent | Name another chat model in your prompt (see [Model control](#model-control)) |
+| **Model** | The default worker model, or the parent's model when none is set | Choose a default worker model in Settings, or name another chat model in your prompt (see [Model control](#model-control)) |
 | **Return mode** | All subagent information provided in main session | Specify how much detail you want in your prompt |
 
 ### Customizing settings in prompts
@@ -410,7 +410,15 @@ Control which tools and capabilities subagents can access. By default, subagents
 
 ### Model control
 
-A subagent runs on the model of the chat that started it. You can ask for another model in your prompt, and biorouter passes it to the subagent as a provider, model or temperature override. The [privacy tier rules](#a-child-cannot-change-the-privacy-tier) below apply to whichever model you name.
+Which model a subagent runs on is decided in this order:
+
+1. **A model the spawn names.** You can ask for another model in your prompt, and biorouter passes it to the subagent as a provider, model or temperature override. A named provider or model always wins. A provider named without a model runs on that provider's own default model. The agent is told which chat providers are set up on this computer, and a spawn that names one that is not set up is refused before the subagent is created, with the names of the ones that are.
+2. **The default worker model**, when one is set. It is optional and nothing is set by default. Choose it in **Settings > Models > Default model > Default worker model**, or with `biorouter configure` (Settings, then Default Worker Model). It is the model a subagent runs on when the agent names none, typically a lighter or more token-efficient model than the chat's own. It is stored as `BIOROUTER_WORKER_PROVIDER` and `BIOROUTER_WORKER_MODEL`, and both must be set for it to apply.
+3. **The model of the chat that started it**, which is how every subagent ran before the default worker model existed.
+
+The [privacy tier rules](#a-child-cannot-change-the-privacy-tier) below apply to whichever model is chosen, including the default worker model. A default worker model never fails a spawn: when the rules refuse it for a chat (a public model under a private chat, or a private model under a public one), when it is a decision model, or when it cannot be started (its provider is not set up on this computer, for example), the subagent runs on the chat's own model instead, and the result the agent gets back says so once, with the reason. So a public default worker model is used by your public chats and your private chats keep their own model, with nothing to change.
+
+The default worker model replaced lead/worker mode, in which a lead model answered a chat's first turns and a worker took over. A lead/worker setup in your config file is carried across the first time the app or the command line tool starts on this version: the old lead model becomes the model new chats start on, and the old worker model becomes the default worker model. A chat saved in lead/worker mode keeps running that way.
 
 The model must be a chat model. A [decision model](decision-models.md) (any `baseten_decision` or `ollama_decision` model) answers a yes/no, choice or score question about the text it is sent and cannot carry out a task, so a spawn that would run on one is refused before the subagent is created. The check is made on the provider the subagent would really run on, so it also covers one that would inherit a decision model, although a decision chat never runs tools and so never spawns one today. The refusal tells the agent to give the subagent a chat model, or to call `decisions__decide`, which asks a decision model its questions about each item and returns the answers.
 

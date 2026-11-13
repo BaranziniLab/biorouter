@@ -30,7 +30,7 @@ Your experience with biorouter is shaped by your choice of LLM, as it handles al
 
 ### Pair two models to save money
 
-Use [lead/worker mode](../configuration/environment-variables.md#leadworker-model-configuration) to have biorouter use a "lead" model for early planning before handing the task to a lower-cost "worker" model for execution.
+Choose a [default worker model](../agent-loop/subagents.md#model-control) in Settings > Models. Your chat keeps its own model for planning and conversation, and the subagents it starts run on the lighter, lower-cost model you chose unless the agent names another.
 
 ## Managing context and chats
 

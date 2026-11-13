@@ -29,11 +29,6 @@ export interface ModelEffortChipProps {
   /** Opens the provider catalog when no model is configured. */
   setView: (view: View, options?: ViewOptions) => void;
   /**
-   * The composer's lasting identity, under which the chip hands what it has
-   * read to the chip that replaces it (`composer/composerHandOff.ts`).
-   */
-  handOffKey?: string;
-  /**
    * The composer's dictation key, under which a draft dictated with private
    * terms eligible is flagged (DD-71): switching an unsent chat holding one to a
    * public model asks MSG-PRIVATE-DRAFT-SWITCH first.
@@ -48,7 +43,6 @@ export function ModelEffortChip({
   privacyTier,
   privacyBasis,
   setView,
-  handOffKey,
   dictationDraftKey,
 }: ModelEffortChipProps) {
   return (
@@ -60,7 +54,6 @@ export function ModelEffortChip({
         privacyBasis={privacyBasis}
         setView={setView}
         reasoningScope={reasoningScope}
-        handOffKey={handOffKey}
         dictationDraftKey={dictationDraftKey}
         hideAlertPopover
       />

@@ -373,9 +373,10 @@ async fn install_user_action_proof() -> Option<[u8; 32]> {
 }
 
 /// The tier SD-1 pins for every session a serve daemon runs: the DECLARED tier
-/// of the provider the operator configured, reduced with `least` over the lead
-/// provider when a lead model is configured — the reduction a bound lead/worker
-/// pair gets, since its transcript reaches both.
+/// of the provider the operator configured. Lead/worker mode, which reduced it
+/// with `least` over a lead provider, is retired, and its setup was carried
+/// onto `BIOROUTER_PROVIDER` at the top of [`run`]; a subagent's default worker
+/// model never changes a chat's tier, so it is not folded in either.
 ///
 /// Read ONCE, at launch. The operator made this choice at the terminal before
 /// anyone opened a tab (SD-1), and `config.yaml` is agent-writable (DR-17), so a
@@ -390,14 +391,7 @@ async fn served_operator_capability() -> biorouter::privacy::ProviderTier {
     let Ok(provider) = config.get_biorouter_provider() else {
         return ProviderTier::Public;
     };
-    let mut capability = declared_provider_tier(&provider).await;
-    if config.get_param::<String>("BIOROUTER_LEAD_MODEL").is_ok() {
-        let lead = config
-            .get_param::<String>("BIOROUTER_LEAD_PROVIDER")
-            .unwrap_or_else(|_| provider.clone());
-        capability = ProviderTier::least(capability, declared_provider_tier(&lead).await);
-    }
-    capability
+    declared_provider_tier(&provider).await
 }
 
 fn response_compression() -> CompressionLayer<impl Predicate> {
@@ -557,6 +551,11 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     // any route is mounted so no request is served against `standard` on a
     // machine whose user chose `strict`.
     biorouter::privacy::load_mixing_policy_from_record();
+    // Lead/worker mode is retired: carry an old setup onto the chat model and
+    // the default worker model before anything reads the default provider,
+    // and before `install_user_action_proof` pins the capability keys this
+    // daemon was launched with (SD-12), so the pin records the migrated values.
+    biorouter::config::retired_lead_worker::migrate_on_start();
 
     let secret_key = std::env::var("BIOROUTER_SERVER__SECRET_KEY").unwrap_or_else(|_| {
         let bytes: [u8; 16] = rand::random();

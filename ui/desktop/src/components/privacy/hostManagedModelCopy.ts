@@ -20,7 +20,7 @@ import { isBrowserSurface } from '../../utils/surface';
  *
  * ⚠ **One definition, seven surfaces.** The onboarding gate, the composer's
  * model chip, the switch-model dialog, Settings > Models, the reset control, the
- * provider grid, the lead/worker dialog and the config editor all render these
+ * provider grid and the config editor all render these
  * same sentences. A second copy of a sentence is a sentence that goes stale in
  * one of its homes and stays wrong there.
  */

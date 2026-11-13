@@ -47,7 +47,6 @@ vi.mock('../subcomponents/SwitchModelModal', () => ({
     return <div data-testid="switch-model-modal" />;
   },
 }));
-vi.mock('../subcomponents/LeadWorkerSettings', () => ({ LeadWorkerSettings: () => null }));
 
 const row = (name: string, tier: 'public' | 'private') => ({
   name,

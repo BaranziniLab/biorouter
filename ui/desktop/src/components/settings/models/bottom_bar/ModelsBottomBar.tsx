@@ -1,11 +1,10 @@
 import '../../../bottom_menu/pickers.css';
 import { ChevronDown } from '../../../icons/app-icons';
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useModelAndProvider } from '../../../ModelAndProviderContext';
 import { NO_MODEL_CHIP_LABEL, hasNoModelConfigured } from '../../../composerNoProvider';
 import { SwitchModelModal } from '../subcomponents/SwitchModelModal';
 import { usePendingChatModel } from '../pendingChatModel';
-import { LeadWorkerSettings } from '../subcomponents/LeadWorkerSettings';
 import { View, type ViewOptions } from '../../../../utils/navigationUtils';
 import {
   DropdownMenu,
@@ -54,15 +53,6 @@ import type {
   SessionClassification,
 } from '../../../../api/types.gen';
 import type { PinnedModelView } from '../../../../hooks/chatStreamStore';
-import { subscribeAppModelSelectionChanges } from '../../../../utils/sessionBindingSync';
-import { readComposerHandOff, useComposerHandOff } from '../../../composer/composerHandOff';
-import {
-  DEFAULT_LEAD_TURNS,
-  leadWorkerChip,
-  leadWorkerHandoverNote,
-  readLeadTurns,
-  type LeadWorkerChip,
-} from './leadWorkerLabel';
 
 /**
  * Round 3 / N1 — the one line explaining why the chip may not name the model the
@@ -154,23 +144,6 @@ function sampleCatalog(
   return new Map(rows.map((row) => [row.name, sampleProviderRow(row)]));
 }
 
-/** The lead/worker selection as one read of its four keys. */
-interface LeadWorkerRead {
-  leadModel: string;
-  leadProvider: string;
-  activeModel: string;
-  turns: number;
-}
-
-const NO_PAIR_READ: LeadWorkerRead = {
-  leadModel: '',
-  leadProvider: '',
-  activeModel: '',
-  turns: DEFAULT_LEAD_TURNS,
-};
-
-const LEAD_WORKER_HAND_OFF = 'lead-worker';
-
 interface ModelsBottomBarProps {
   sessionId: string | null;
   /** Legacy: nothing reads it. Kept optional so older callers still compile. */
@@ -230,12 +203,6 @@ interface ModelsBottomBarProps {
    */
   reasoningScope?: string;
   /**
-   * The composer's lasting identity (`ChatInput`'s hand-off key), under which
-   * the lead/worker read is handed to the chip that replaces this one: a new
-   * chat's first send remounts the composer (`composer/composerHandOff.ts`).
-   */
-  handOffKey?: string;
-  /**
    * The composer's dictation key (`ChatInput`): while its draft holds text
    * dictated with private terms eligible (DD-71), moving this unsent chat to a
    * model that is not known to be private asks MSG-PRIVATE-DRAFT-SWITCH first.
@@ -253,7 +220,6 @@ export default function ModelsBottomBar({
   privacyBasis = null,
   effectiveModel,
   reasoningScope,
-  handOffKey,
   dictationDraftKey,
 }: ModelsBottomBarProps) {
   const effort = useReasoningEffortValue(reasoningScope);
@@ -270,7 +236,7 @@ export default function ModelsBottomBar({
     localModelDisplayName,
     loadLocalModelNames,
   } = useModelAndProvider();
-  const { read, getProviders, providersList } = useConfig();
+  const { getProviders, providersList } = useConfig();
   /**
    * W2-PRV-6. A chat that has not been sent yet is still a chat: its switch
    * holds a model for it (see `pendingChatModel.ts`) instead of rewriting the
@@ -305,7 +271,6 @@ export default function ModelsBottomBar({
   const [displayProvider, setDisplayProvider] = useState<string | null>(null);
   const [displayModelName, setDisplayModelName] = useState<string>('Select Model');
   const [isAddModelModalOpen, setIsAddModelModalOpen] = useState(false);
-  const [isLeadWorkerModalOpen, setIsLeadWorkerModalOpen] = useState(false);
   // The model menu, controlled for the chip's whole life so its hint can stay shut over it: the
   // chip's tooltip names the model on a hover and never comes back over the open menu (H2).
   const [menuOpen, setMenuOpen] = useState(false);
@@ -350,158 +315,27 @@ export default function ModelsBottomBar({
    */
   const hostManaged = isBrowserSurface();
 
-  // The app-wide lead/worker selection, as its three config keys state it.
-  // `BIOROUTER_MODEL` IS the worker while a pair is on, so there is no
-  // "which half is live" key to read — see `leadWorkerLabel.ts` for what that
-  // leaves knowable, and for the false `(worker)` it used to produce.
-  //
-  // ⚠ V2-R8-3: one state, handed to the chip that replaces this one when a new
-  // chat's first send remounts the composer (`composer/composerHandOff.ts`).
-  // Started from nothing, the new chip named the worker until its own read
-  // landed and then the lead again. `null` is "not read yet", which states no
-  // pair, as the four empty answers it replaces did; only a read is handed on.
-  const [pairRead, setPairRead] = useState<LeadWorkerRead | null>(() =>
-    readComposerHandOff<LeadWorkerRead>(handOffKey, LEAD_WORKER_HAND_OFF)
-  );
-  useComposerHandOff(handOffKey, LEAD_WORKER_HAND_OFF, pairRead);
-  const {
-    leadModel: leadModelName,
-    leadProvider: leadProviderName,
-    activeModel: currentActiveModel,
-    turns: leadTurns,
-  } = pairRead ?? NO_PAIR_READ;
-
-  /**
-   * One read for the whole lead/worker question: is a pair configured, what are
-   * the lead's model and provider, what does `BIOROUTER_MODEL` name, and how many
-   * turns the lead opens with.
-   *
-   * ⚠ **The answers move together or not at all.** They used to be three reads
-   * across two effects and a modal-close handler, so "is a pair configured" could
-   * be refreshed while `currentActiveModel` stayed behind — and a half-refreshed
-   * chip puts the wrong role on the right model, which is worse than carrying no
-   * role. D7's two new answers joined the same `Promise.all` for that reason
-   * rather than taking reads of their own.
-   */
-  const refreshLeadWorker = useCallback(async () => {
-    try {
-      const [leadModel, leadProvider, activeModel, turns] = await Promise.all([
-        read('BIOROUTER_LEAD_MODEL', false),
-        read('BIOROUTER_LEAD_PROVIDER', false),
-        read('BIOROUTER_MODEL', false),
-        read('BIOROUTER_LEAD_TURNS', false),
-      ]);
-      setPairRead({
-        leadModel: (leadModel as string) || '',
-        leadProvider: (leadProvider as string) || '',
-        activeModel: (activeModel as string) || '',
-        turns: readLeadTurns(turns),
-      });
-    } catch (error) {
-      console.error('Error reading the lead/worker selection:', error);
-      // A selection we could not read is not a pair, and must not leave a stale
-      // `(lead)` on a name from the last successful read.
-      setPairRead((previous) => ({
-        ...(previous ?? NO_PAIR_READ),
-        leadModel: '',
-        leadProvider: '',
-      }));
-    }
-  }, [read]);
-
-  /**
-   * F3's other half. Saving a lead/worker pair rewrites `BIOROUTER_MODEL` to
-   * the WORKER, and that write is announced on `sessionBindingSync`, so since
-   * #247 every window's chip already follows the new *value*. Nothing told the
-   * other windows about the *role*: they kept the `isLeadWorkerActive: false`
-   * they had read at mount, so the window that saved drew
-   * `gpt-4.1-mini-2025-04-14 (worker)` and every other window drew a bare
-   * `gpt-4.1-mini-2025-04-14`.
-   *
-   * Two windows of one app then said different things about one selection, and
-   * the one saying less was saying the more misleading thing: a bare name reads
-   * as "this is simply the model", with nothing to suggest a lead is configured
-   * at all.
-   *
-   * ⚠ Mount-once, with the handler reached through a ref — the subscription
-   * belongs to the mount, not to a callback's identity. Hanging it off
-   * `refreshLeadWorker` would tear it down and remake it every time `read`'s
-   * identity moved (the rule `ConfigContext`'s catalogue subscription and
-   * `ModelAndProviderContext`'s selection subscription both record).
-   */
-  const refreshLeadWorkerRef = useRef(refreshLeadWorker);
-  useEffect(() => {
-    refreshLeadWorkerRef.current = refreshLeadWorker;
-  }, [refreshLeadWorker]);
-
-  useEffect(() => {
-    void refreshLeadWorkerRef.current();
-    return subscribeAppModelSelectionChanges(() => {
-      void refreshLeadWorkerRef.current();
-    });
-  }, []);
-
-  // Refresh when the modal closes as well. The save inside it announces, so
-  // this covers a close that wrote nothing through that channel — a cancel
-  // after an edit, or a save that failed part-way.
-  const handleLeadWorkerModalClose = () => {
-    setIsLeadWorkerModalOpen(false);
-    void refreshLeadWorker();
-  };
-
-  /**
-   * D7 — the name and role a lead/worker pair earns on THIS surface. `sessionId`
-   * is the whole input: with no chat the next message opens a new session and the
-   * lead answers it, so the chip names the lead; inside a chat the live half
-   * depends on a turn count the renderer is never served, so no role is claimed.
-   * `leadWorkerLabel.ts` carries the measurement and the reasoning.
-   *
-   * A chat with its own binding runs a single provider, so the pair is not in
-   * play at all and is not asked about — the rule {@link effectiveProvider}
-   * below also records.
-   */
-  const pair = {
-    leadModel: leadModelName,
-    // `create_lead_worker_from_env` falls back to the default provider for an
-    // unset `BIOROUTER_LEAD_PROVIDER`, so the fallback is resolved here and
-    // nothing downstream has to know about it.
-    leadProvider: leadProviderName || currentProvider || '',
-    workerModel: currentActiveModel,
-    leadTurns,
-  };
-  const chipPair: LeadWorkerChip = effectiveModel ? {} : leadWorkerChip(pair, !!sessionId);
-  const handoverNote = effectiveModel ? null : leadWorkerHandoverNote(pair);
-
   /**
    * Issue #56 Gate B. What actually runs in THIS chat: the pin when there is
-   * one, then the half of a lead/worker pair the chip is naming, then the app's
-   * global selection.
-   *
-   * ⚠ The chat's own binding outranks lead/worker. Such a chat runs the single
-   * provider its session row names, so a lead/worker pair configured globally is
-   * not what answers here, and labelling the chip `(lead)` would name a mechanism
-   * that is not in play.
+   * one, then the app's global selection.
    *
    * ⚠ **It must follow the name the chip prints, not the app-wide selection.**
    * Every other fact below — the tier padlock, the affiliation glyph, the
-   * disclosure line — is read off ONE catalog row for this provider. When the chip
-   * names the lead (D7, no chat) and this still named the worker's provider, the
-   * chip hung the worker's tier on the lead's name: a public lead wore the
-   * worker's Private padlock over turns that really go to a public endpoint.
+   * disclosure line — is read off ONE catalog row for this provider, so a chip
+   * naming one provider's model must hang that provider's tier on it.
    */
-  const effectiveProvider = effectiveModel?.provider ?? chipPair.provider ?? currentProvider;
+  const effectiveProvider = effectiveModel?.provider ?? currentProvider;
 
-  // Determine which model to display. The pair's own answer outranks the app-wide
-  // selection; a chat's own binding outranks both.
+  // Determine which model to display. A chat's own binding outranks the app-wide
+  // selection.
   //
   // ⚠ A branch used to sit here reading the live model from a React context in
   // `BaseChat.tsx` that nothing ever provided, so it could not run on any
-  // surface. See `leadWorkerLabel.ts`.
+  // surface; `src/test/contextProviders.test.ts` fails on the next context
+  // created without a provider.
   const displayModel =
-    effectiveModel?.model ??
-    chipPair.model ??
-    (currentModel || providerDefaultModel || displayModelName);
-  const fullModelLabel = chipPair.role ? `${displayModel} (${chipPair.role})` : displayModel;
+    effectiveModel?.model ?? (currentModel || providerDefaultModel || displayModelName);
+  const fullModelLabel = displayModel;
 
   /**
    * W2-5. A Llama Server model goes by its catalog name, the one the model
@@ -511,11 +345,7 @@ export default function ModelsBottomBar({
    * optionally, so a context that predates the two members still names the id.
    */
   const localModelName = localModelDisplayName?.(effectiveProvider, displayModel) ?? null;
-  const spokenModelLabel = localModelName
-    ? chipPair.role
-      ? `${localModelName} (${chipPair.role})`
-      : localModelName
-    : fullModelLabel;
+  const spokenModelLabel = localModelName ?? fullModelLabel;
   // The selection's own local model is read by the model context; a chat bound
   // to one while the selection is elsewhere asks for the catalog here.
   useEffect(() => {
@@ -693,7 +523,7 @@ export default function ModelsBottomBar({
 
   /**
    * The two names in the dropdown's "Current model" block, pinned binding first,
-   * then the lead the chip above is naming, then the app's global selection.
+   * then the app's global selection.
    *
    * Layered here rather than inside the effects that fill `displayModelName` /
    * `displayProvider`: those two describe the app's GLOBAL selection, which is
@@ -701,14 +531,12 @@ export default function ModelsBottomBar({
    * effects race to own one state was how the earlier drafts of this went
    * wrong.
    *
-   * ⚠ **The same model as the chip, always.** The note under these names says
-   * "New chats in every window start on this model" — so with a pair configured
-   * it had to name the lead too, or that sentence pointed at the worker, which
-   * is not what a new chat starts on.
+   * ⚠ **The same model as the chip, always.**
    */
-  const shownModelName = effectiveModel?.model ?? chipPair.model ?? displayModelName;
-  const shownProviderName =
-    effectiveModel || chipPair.model ? (pinnedProviderName ?? effectiveProvider) : displayProvider;
+  const shownModelName = effectiveModel?.model ?? displayModelName;
+  const shownProviderName = effectiveModel
+    ? (pinnedProviderName ?? effectiveProvider)
+    : displayProvider;
 
   // What is true of the MODEL, as one clause: its tier, then who covers it.
   // Both axes come off one sample of one endpoint, so they can be said in one
@@ -754,20 +582,14 @@ export default function ModelsBottomBar({
     decisionChat && effectiveProvider && displayModel
       ? decisionModelLabel({ provider: effectiveProvider, model: displayModel })
       : null;
-  const chipModelName = localModelName ?? friendlyModelName(displayModel);
-  const chipModelLabel = decisionAlias
-    ? decisionAlias
-    : chipPair.role
-      ? `${chipModelName} (${chipPair.role})`
-      : chipModelName;
+  const chipModelLabel = decisionAlias ?? localModelName ?? friendlyModelName(displayModel);
   // A decision model has no reasoning effort to set: it answers in one step.
   const showEffort = !decisionChat && effort !== null && effort !== DEFAULT_REASONING_EFFORT;
-  // The InfoTip's notes: where a choice here reaches, and the lead/worker pair.
-  // At most one of the first two applies (Home vs a chat with its own binding).
+  // The InfoTip's notes: where a choice here reaches. At most one applies (Home
+  // vs a chat with its own binding).
   const notes = [
     !sessionId && !unsentChat ? NEW_CHATS_MODEL_NOTE : null,
     effectiveModel ? CHAT_KEEPS_ITS_MODEL_NOTE : null,
-    handoverNote,
   ]
     .filter(Boolean)
     .join(' ');
@@ -939,16 +761,6 @@ export default function ModelsBottomBar({
           >
             {MODEL_COPY.changeModel}
           </DropdownMenuItem>
-          {/* Lead and worker pairs two chat models for one turn; a decision chat
-              runs no turns of that kind, so it is not offered there (B-3). */}
-          {!decisionChat && (
-            <DropdownMenuItem
-              disabled={hostManaged}
-              onClick={hostManaged ? undefined : () => setIsLeadWorkerModalOpen(true)}
-            >
-              {MODEL_COPY.leadWorker}
-            </DropdownMenuItem>
-          )}
         </DropdownMenuContent>
       </DropdownMenu>
 
@@ -985,10 +797,6 @@ export default function ModelsBottomBar({
           unsentChatTabId={unsentChat ? pendingChat?.tabId : undefined}
           onClose={() => setIsAddModelModalOpen(false)}
         />
-      ) : null}
-
-      {isLeadWorkerModalOpen ? (
-        <LeadWorkerSettings isOpen={isLeadWorkerModalOpen} onClose={handleLeadWorkerModalClose} />
       ) : null}
 
       <ConfirmationModal

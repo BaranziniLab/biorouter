@@ -1226,10 +1226,11 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     };
     let provider_for_display = Arc::clone(&new_provider);
 
+    // Only a chat saved before lead/worker mode was retired restores as a pair.
     if let Some(lead_worker) = new_provider.as_lead_worker() {
         let (lead_model, worker_model) = lead_worker.get_model_info();
         tracing::info!(
-            "Lead/worker mode enabled: lead model (first 3 turns): {}, worker model (turn 4+): {}, auto-fallback on failures: enabled",
+            "Restored a chat saved in lead/worker mode: lead model {}, worker model {}",
             lead_model,
             worker_model
         );

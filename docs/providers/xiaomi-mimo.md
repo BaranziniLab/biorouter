@@ -47,7 +47,7 @@ backend-driven and required no MiMo-specific code.
 | Provider configuration modal | `XIAOMI_MIMO_API_KEY` (secret) + optional `XIAOMI_MIMO_HOST` fields, rendered from backend `config_keys` | Labels in `ui/desktop/src/utils/configUtils.ts` |
 | Onboarding | Listed under "Auto-detect from API key", and on the first run screen's *Public* tab | Auto-detect in `crates/biorouter/src/providers/auto_detect.rs`; text in `ui/desktop/src/components/onboarding/CommercialSetupCard.tsx` |
 | Main model selector (bottom menu / `SwitchModelModal`) | Once configured, `mimo-*` models appear in the picker | Backend-driven |
-| Leader/Worker mode | MiMo models selectable for both lead and worker | `LeadWorkerSettings.tsx`, backend-driven |
+| Default worker model | MiMo models selectable as the default worker model for subagents | `DefaultWorkerModelRow.tsx`, backend-driven |
 | Knowledge base ingestion/digestion | MiMo models selectable for ingest | `IngestModelPicker.tsx`, backend-driven |
 | CLI (`biorouter configure`) | Appears in the one provider list, which has no group headings, after the local and Versa providers in display-name order; usable via `biorouter run --provider xiaomi_mimo --model mimo-v2.6-flash` | Registry-driven |
 | TUI | Stores the selected provider/model string; no separate list | — |

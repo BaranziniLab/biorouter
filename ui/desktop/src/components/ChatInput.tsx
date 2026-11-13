@@ -3608,7 +3608,6 @@ export default function ChatInput({
               privacyTier={sessionPrivacyTier}
               privacyBasis={privacyBasis}
               setView={setView}
-              handOffKey={handOffKey}
               dictationDraftKey={dictationKey}
             />
           </div>

@@ -44,6 +44,26 @@ export const crewTaskModelCopy = {
   saveFailed: (reason: string) => `Couldn’t save. ${reason}`,
 } as const;
 
+/**
+ * The Default model section's **Subagents** row: the default worker model, the model a subagent
+ * runs on when the agent names none, stored as `BIOROUTER_WORKER_PROVIDER` and
+ * `BIOROUTER_WORKER_MODEL`. It replaced lead/worker mode (owner, 2026-11-11).
+ */
+export const defaultWorkerModelCopy = {
+  row: 'Default worker model',
+  help: 'Subagents use this model unless the agent picks another. Choose a lighter model to save tokens.',
+  /** The value while subagents use each chat's own model, and the picker's first row. */
+  sameAsChat: 'Same as the chat’s model',
+  change: 'Change…',
+  /** The button's accessible name. */
+  changeName: 'Choose the default worker model',
+  /** The picker's list. */
+  listLabel: 'Models for subagents',
+  /** The stored model names a provider that is not set up any more. */
+  unavailable: (model: string) => `${model} isn’t set up, so subagents use the chat’s model.`,
+  saveFailed: (reason: string) => `Couldn’t save. ${reason}`,
+} as const;
+
 /** `256k`: a context window in thousands of tokens, the unit every row, summary and detail uses. */
 const contextAmount = (tokens: number | null | undefined) => {
   if (typeof tokens !== 'number' || !Number.isFinite(tokens) || tokens <= 0) return null;
@@ -349,32 +369,6 @@ export const modelsDangerCopy = {
     'New chats will have no provider or model until you choose them again. If no defaults are available, Biorouter opens the welcome screen.',
   confirm: 'Reset',
   cancel: 'Cancel',
-} as const;
-
-export const leadWorkerCopy = {
-  /** The dialog's title and the switch's name: pinned by the tests and the composer chip. */
-  title: 'Lead/worker mode',
-  mode: 'Lead/worker mode',
-  modeHelp:
-    'A stronger lead model plans and recovers from failures, and a faster worker model does the routine steps.',
-  leadModel: 'Lead model',
-  leadModelHelp: 'The strong model for initial planning and for recovery after failures.',
-  workerModel: 'Worker model',
-  workerModelHelp: 'The fast model for routine execution steps.',
-  leadPlaceholder: 'Select lead model…',
-  workerPlaceholder: 'Select worker model…',
-  customPlaceholder: 'Type model name here',
-  backToList: 'Back to model list',
-  leadTurns: 'Initial lead turns',
-  leadTurnsHelp: 'How many turns the lead model takes at the start.',
-  failureThreshold: 'Failure threshold',
-  failureThresholdHelp: 'How many failures in a row hand the work back to the lead model.',
-  fallbackTurns: 'Fallback turns',
-  fallbackTurnsHelp: 'How many turns the lead model takes after a fallback.',
-  loading: 'Loading…',
-  cancel: 'Cancel',
-  /** The button's name: pinned by hostManagedSettings and the dialog's tests. */
-  save: 'Save settings',
 } as const;
 
 export const switchModelCopy = {

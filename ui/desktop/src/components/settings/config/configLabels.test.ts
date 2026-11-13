@@ -25,7 +25,7 @@ describe('configFieldLabel', () => {
   it.each([
     ['BIOROUTER_PROVIDER', 'Provider'],
     ['BIOROUTER_MODE', 'Mode'],
-    ['BIOROUTER_LEAD_PROVIDER', 'Lead provider'],
+    ['BIOROUTER_WORKER_PROVIDER', 'Default worker provider'],
     ['BIOROUTER_TOOLSHIM_OLLAMA_MODEL', 'Tool shim Ollama model'],
     ['BIOROUTER_CLI_MIN_PRIORITY', 'CLI min priority'],
     ['BIOROUTER_ALLOWLIST', 'Allow list'],

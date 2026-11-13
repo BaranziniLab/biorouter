@@ -69,11 +69,10 @@ fn resolve_kb(
 /// the provider that was actually constructed (issue #56).
 ///
 /// The tier comes back from here rather than being re-derived by each handler,
-/// because `providers::create` intercepts `BIOROUTER_LEAD_MODEL` *before* the
-/// registry lookup: `--provider ollama` can construct a lead/worker composite
-/// whose tier is `least(lead, worker)` and therefore not the requested name's.
-/// `ProviderCompleter::paired` reads the tier off the same `Arc` the completer
-/// wraps, so the two cannot come from different providers.
+/// because the tier is a property of the instance, not of the requested name:
+/// `--provider ollama` is Private on a loopback `OLLAMA_HOST` and Public off
+/// it. `ProviderCompleter::paired` reads the tier off the same `Arc` the
+/// completer wraps, so the two cannot come from different providers.
 async fn build_completer(
     provider: Option<String>,
     model: Option<String>,
@@ -1440,8 +1439,6 @@ mod tests {
         fn base_env(host: &str) -> Vec<(&'static str, Option<String>)> {
             vec![
                 ("BIOROUTER_KNOWLEDGE_TEST_MODE", None),
-                ("BIOROUTER_LEAD_MODEL", None),
-                ("BIOROUTER_LEAD_PROVIDER", None),
                 ("BIOROUTER_DISABLE_KEYRING", Some("1".to_string())),
                 ("OLLAMA_HOST", Some(host.to_string())),
                 ("OLLAMA_TIMEOUT", Some("1".to_string())),
@@ -1477,32 +1474,6 @@ mod tests {
                         .unwrap();
                 assert_eq!(tier, want, "OLLAMA_HOST={host}");
             }
-        }
-
-        #[tokio::test]
-        #[serial]
-        async fn the_cli_capability_follows_the_instance_not_the_name_the_user_typed() {
-            // The row that fails `provider_name == "ollama"`. `providers::create`
-            // intercepts BIOROUTER_LEAD_MODEL *before* the registry lookup, so
-            // `--provider ollama` can construct a lead/worker composite whose
-            // tier is `least(lead, worker)` — and a PUBLIC lead makes the whole
-            // instance Public even though the name typed was the private one.
-            let mut env = base_env("http://127.0.0.1:1");
-            env.push(("BIOROUTER_LEAD_MODEL", Some("gpt-5".to_string())));
-            env.push((
-                "BIOROUTER_LEAD_PROVIDER",
-                Some("github_copilot".to_string()),
-            ));
-            let _env = lock_env(env);
-
-            let (_c, tier, _a) = build_completer(Some("ollama".into()), Some("qwen3.5:4b".into()))
-                .await
-                .unwrap();
-            assert_eq!(
-                tier,
-                ProviderTier::Public,
-                "the CLI keyed its capability on the name the user typed"
-            );
         }
 
         /// `service()` is `KnowledgeService::new_default()`, whose root is

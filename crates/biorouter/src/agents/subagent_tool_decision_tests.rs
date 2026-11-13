@@ -298,6 +298,7 @@ async fn the_childs_row_is_stamped_with_the_ceiling_and_folds_public() {
             Some(done_monitor()),
         )),
         public_by_ceiling: true,
+        default_worker_note: None,
     };
     let child = create_subagent_session_under(
         &config,

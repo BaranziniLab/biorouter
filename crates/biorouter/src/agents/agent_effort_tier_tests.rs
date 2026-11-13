@@ -404,7 +404,9 @@ fn every_bridge_provider_is_public_so_a_fold_cannot_change_it() {
         .unwrap(),
     );
     // A lead/worker pair needs a bridge when either half does, and is the
-    // least of its halves, so a private lead does not make it private.
+    // least of its halves, so a private lead does not make it private. Nothing
+    // builds a new pair, but a chat saved as one still restores as one
+    // (`factory::create_from_persisted`), so the case stays live.
     let composite: Arc<dyn Provider> =
         Arc::new(crate::providers::lead_worker::LeadWorkerProvider::new(
             model("versa_azure", ProviderTier::Private, false),

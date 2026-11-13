@@ -189,27 +189,6 @@ For detailed steps on updating your LLM provider, refer to the [installation gui
 
 If you encounter errors when configuring GitHub Copilot as your provider, try these workarounds for common scenarios.
 
-#### OAuth error with lead/worker models
-
-If the [lead/worker model](../configuration/environment-variables.md#leadworker-model-configuration) feature is configured in your environment, you might see the following error during GitHub Copilot setup. This feature conflicts with the OAuth flow to connect to the provider.
-
-```text
-Failed to authenticate: Execution error: OAuth configuration not supported by this provider
-```
-
-To resolve:
-
-1. Temporarily comment out or remove lead/worker model variables from the main config file (`~/.config/biorouter/config.yaml`):
-
-   ```yaml
-   # BIOROUTER_LEAD_MODEL: your-model
-   # BIOROUTER_WORKER_MODEL: your-model
-   ```
-
-2. Run `biorouter configure` again to set up GitHub Copilot.
-3. Complete the OAuth authentication flow.
-4. Re-enable your lead/worker model settings as needed.
-
 #### Container and keyring issues
 
 If you're running biorouter in Docker containers or Linux environments without keyring support, authentication may fail with keyring errors like:
@@ -704,7 +683,7 @@ Still running into issues? [Open an issue on GitHub][github-issues] where the bi
 - [Diagnostics and bug reports](diagnostics-and-bug-reports.md) — how to generate the bundle every issue report should carry, and where to file the report.
 - [Installation](../getting-started/installation.md) — the install and reinstall path several fixes above end in.
 - [Choosing a model provider](../getting-started/choosing-a-model-provider.md) — provider setup, including Ollama and its current default models.
-- [Environment variables](../configuration/environment-variables.md) — `BIOROUTER_DISABLE_KEYRING`, `BIOROUTER_TERMINAL`, lead/worker settings, and provider retry tuning.
+- [Environment variables](../configuration/environment-variables.md): `BIOROUTER_DISABLE_KEYRING`, `BIOROUTER_TERMINAL`, the default worker model, and provider retry tuning.
 - [Secret storage](../security/secret-storage.md) — what biorouter puts in the system keychain and how the plaintext fallback works.
 - [Dictation surfaces](../dictation/surfaces.md#message-catalog): every dictation message, where it appears and what it means.
 - [Dictation test checklist](../releases/dictation-test-checklist.md): the microphone checks per operating system that a release passes.

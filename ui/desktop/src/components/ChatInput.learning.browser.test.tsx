@@ -25,6 +25,7 @@ const stubs: Record<string, string> = {
   DictationButton: `export const DictationButton = () => null; export const DictationHoldReason = () => null; export const DictationNotices = () => null;`,
   useDictationComposer: `export const dictationContext = () => ''; export const useDictationComposer = () => ({ available: false, holdsComposer: false, handleKeyDown: () => false, noteInterest: () => {} });`,
   dictationSession: `export const isDictationInserting = () => false; export const noteDictationEdit = () => {};`,
+  dictationApi: `export const streamDecisionModels = (models) => models.map(({ provider, model, adapter }) => (adapter ? { provider, model, adapter } : { provider, model }));`,
   useBoundProviderTier: `export const readResolvedProviderTier = async () => 'public';`,
   chatStreamStore: `export const isRunningState = () => false;`,
   ChatCrewAccessBar: `export const useCrewComposerHold = () => null;`,

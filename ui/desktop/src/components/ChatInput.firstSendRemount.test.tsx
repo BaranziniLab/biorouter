@@ -120,9 +120,6 @@ vi.mock('./bottom_menu/useSessionUsageLimit', () => ({
 vi.mock('./settings/models/subcomponents/SwitchModelModal', () => ({
   SwitchModelModal: () => null,
 }));
-vi.mock('./settings/models/subcomponents/LeadWorkerSettings', () => ({
-  LeadWorkerSettings: () => null,
-}));
 vi.mock('../hooks/useDiverge', () => ({
   useDiverge: () => ({ diverge: vi.fn() }),
 }));

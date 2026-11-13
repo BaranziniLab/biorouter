@@ -59,8 +59,8 @@ export const SELECT_OPTION_CLASS_NAME = `${MENU_ROW_CLASS_NAME} cursor-pointer`;
  */
 // --z-modal-dropdown, deliberately NOT --z-dropdown (200): react-select renders its
 // menu into a portal, so it is a SIBLING of any dialog content (--z-modal, 400) that
-// hosts it. LeadWorkerSettings and SwitchModelModal both put a Select inside a
-// DialogContent — this tier is exactly what stops the menu painting under them.
+// hosts it. SwitchModelModal puts a Select inside a DialogContent — this tier is
+// exactly what stops the menu painting under it.
 const MENU_Z = 500;
 
 /**

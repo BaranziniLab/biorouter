@@ -54,12 +54,11 @@ pub type BindTier = (ProviderTier, Option<ModelAffiliation>);
 /// model is built with it; a pick of the configured provider with no model takes the
 /// configured model; any other pick takes the provider's default model.
 ///
-/// The provider is built exactly as `/agent/start` builds it (`providers::create`, which
-/// takes the lead and worker path while `BIOROUTER_LEAD_MODEL` is set), and the answer is
-/// the instance's own `tier()` and `affiliation()`, never a declared tier: `ollama`
-/// declares Private and is Public for a cloud tag or a remote `OLLAMA_HOST`, `llamacpp`
-/// likewise for a remote `LLAMACPP_EXTERNAL_HOST`, and a lead and worker pair is the
-/// lesser of its two halves (`ProviderTier::least` inside the composite's `tier()`).
+/// The provider is built exactly as `/agent/start` builds it (`providers::create`; a new
+/// chat runs on one model since lead and worker mode was retired), and the answer is the
+/// instance's own `tier()` and `affiliation()`, never a declared tier: `ollama` declares
+/// Private and is Public for a cloud tag or a remote `OLLAMA_HOST`, and `llamacpp`
+/// likewise for a remote `LLAMACPP_EXTERNAL_HOST`.
 ///
 /// Answers are cached by the pick and the value of every key a tier input file reads,
 /// `privacy::CAPABILITY_CONFIG_KEYS` and `privacy::NOT_CAPABILITY_CONFIG_KEYS` both,
@@ -414,8 +413,7 @@ mod tests {
 
     /// DD-30: a new chat is judged by the tier its bind would produce, never by a
     /// declared tier. `ollama` declares Private; a remote `OLLAMA_HOST` or a cloud tag is
-    /// Public, and a private worker under a public lead binds the lesser of the two.
-    /// Building these providers opens no connection.
+    /// Public. Building these providers opens no connection.
     #[tokio::test]
     async fn a_new_chat_is_judged_by_the_tier_its_bind_would_produce() {
         use crate::config::with_config_overrides;
@@ -450,20 +448,6 @@ mod tests {
             tier,
             ProviderTier::Public,
             "a cloud tag through a loopback host"
-        );
-
-        let pair = overrides(&[
-            ("BIOROUTER_PROVIDER", "llamacpp"),
-            ("BIOROUTER_MODEL", "qwen3.8-27b"),
-            ("BIOROUTER_LEAD_PROVIDER", "ollama"),
-            ("BIOROUTER_LEAD_MODEL", "qwen3.8:27b"),
-            ("OLLAMA_HOST", "https://ollama.example"),
-        ]);
-        let (tier, _) = with_config_overrides(pair, new_chat_bind_tier(None, None)).await;
-        assert_eq!(
-            tier,
-            ProviderTier::Public,
-            "a private worker under a public lead binds the lesser"
         );
 
         // A pick replaces the configured provider; a pick of a provider this install

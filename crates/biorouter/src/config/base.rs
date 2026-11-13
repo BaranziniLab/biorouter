@@ -2006,6 +2006,24 @@ impl Config {
         Ok(result)
     }
 
+    /// Read the config file's own values (never the environment), let `edit`
+    /// change them, and write the result as **one** config write, under the
+    /// same guard and through the same [`Self::save_values`] as
+    /// [`Self::set_params`]. Nothing is written when `edit` changes nothing.
+    ///
+    /// For a migration that moves several keys at once, where a reader between
+    /// two writes would see a half-moved setup.
+    pub fn edit_values<R>(&self, edit: impl FnOnce(&mut Mapping) -> R) -> Result<R, ConfigError> {
+        let _guard = self.guard.lock().unwrap();
+        let mut values = self.load()?;
+        let before = values.clone();
+        let result = edit(&mut values);
+        if values != before {
+            self.save_values(values)?;
+        }
+        Ok(result)
+    }
+
     /// The default provider and the model it is to be used with, written
     /// together or not at all.
     ///

@@ -282,7 +282,7 @@ You'll see the following prompts:
 │  ○ Tool Permission
 │  ○ Tool Output
 │  ○ Max Turns
-│  ○ Lead/Worker Model
+│  ○ Default Worker Model
 │  ○ Secret Storage
 │  ○ Toggle Experiment
 // highlight-start

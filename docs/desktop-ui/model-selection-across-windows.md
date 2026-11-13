@@ -63,9 +63,10 @@ daemon.
 - **Every renderer write announces.** `changeModel`, the first-run seeding of the bundled
   default (`getFallbackModelAndProvider`), and `ConfigContext.upsert` / `remove` of either key
   call `announceAppModelSelection` (`utils/sessionBindingSync.ts`). The last one covers the
-  writers that never pass through `changeModel`: the local and coding-agent onboarding cards,
-  Lead/Worker settings and Settings' reset. Before F3 those did not update even their own
-  window's chip.
+  writers that never pass through `changeModel`: the local and coding-agent onboarding cards
+  and Settings' reset. Before F3 those did not update even their own window's chip. The default
+  worker model's two keys (`BIOROUTER_WORKER_PROVIDER`, `BIOROUTER_WORKER_MODEL`) are announced
+  the same way, so every window's Settings row names the model subagents run on.
 - **The announcement is a nudge, not a payload.** It travels on the same `BroadcastChannel`
   as the per-chat binding (`biorouter:session-binding`), shaped `{ kind: 'app-model-selection' }`
   and carrying no provider and no model. Two windows' writes can be announced in the opposite
@@ -109,8 +110,6 @@ the daemon classifies the chat by what it binds, whatever this check does.
 - **The pin still outranks the row.** An app-wide change touches neither a session row nor a
   turn-reported pin, and a chat's chip goes on naming its own binding. The cross-window suite
   pins this.
-- **Lead/Worker's `(lead)` / `(worker)` suffix** is read by `ModelsBottomBar` when it mounts.
-  The model name beside it is live; the suffix in a second window is not.
 - **An unannounced write while the window keeps focus** leaves the chip stale until the next
   focus change or the next new-chat send, which re-reads before it creates anything. An
   existing chat is unaffected either way: it runs on its own row.

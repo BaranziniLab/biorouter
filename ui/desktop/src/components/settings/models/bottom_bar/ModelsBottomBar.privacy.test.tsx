@@ -48,7 +48,6 @@ vi.mock('../../../ModelAndProviderContext', () => ({
 }));
 
 vi.mock('../subcomponents/SwitchModelModal', () => ({ SwitchModelModal: () => null }));
-vi.mock('../subcomponents/LeadWorkerSettings', () => ({ LeadWorkerSettings: () => null }));
 
 // `RefObject<HTMLDivElement>` is non-nullable in this React version, and the
 // bar only forwards it to a wrapper `div`.

@@ -2,7 +2,8 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ModelSettingsButtons from './models/subcomponents/ModelSettingsButtons';
 import ResetProviderSection from './reset_provider/ResetProviderSection';
-import { LeadWorkerSettings } from './models/subcomponents/LeadWorkerSettings';
+import { DefaultWorkerModelRow } from './models/subcomponents/DefaultWorkerModelRow';
+import { defaultWorkerModelCopy } from './models/copy';
 import ConfigSettings from './config/ConfigSettings';
 import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
 
@@ -15,8 +16,6 @@ import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
  * - `ResetProviderSection` → `/config/remove` on `BIOROUTER_PROVIDER`. ⚠ Easy
  *   to miss: a delete is guarded by the SAME predicate as a write, because a
  *   delete is not the absence of a write — it is a write of the key's default.
- * - `LeadWorkerSettings` → `/config/upsert` on three capability keys, and
- *   `/config/remove` on two of them when the mode is switched off.
  * - `ConfigSettings` → `/config/upsert` on whichever key the row names, which
  *   is why that one is guarded per key rather than per page.
  */
@@ -157,65 +156,19 @@ describe('Settings > Models — Reset provider and model', () => {
   });
 });
 
-describe('Settings > Models — Lead/Worker', () => {
+describe('Settings > Models — Default worker model', () => {
   /**
-   * The dialog opens with a pair saved and the person switches it off, which is a
-   * change Save can write (the removal branch). Save also waits for a change
-   * (V4-R7-4 follow-up, LeadWorkerSettings), so on a dialog nobody touched a
-   * disabled Save would prove nothing about the browser surface.
+   * The control that is NOT host-managed. The default worker model is not a
+   * capability key: a subagent always runs at its chat's privacy tier, and a
+   * default the daemon may not use for a chat runs that chat's subagents on the
+   * chat's model. So the row stays live on a browser surface, like Crew tasks.
    */
-  async function openSavedPairAndSwitchItOff() {
-    mocks.read.mockImplementation(async (key: string) =>
-      key === 'BIOROUTER_LEAD_MODEL' ? 'gpt-5.5' : ''
-    );
-    render(<LeadWorkerSettings isOpen onClose={vi.fn()} />);
-    const toggle = await screen.findByRole('switch', { name: 'Lead/worker mode' });
-    expect(toggle).toHaveAttribute('aria-checked', 'true');
-    fireEvent.click(toggle);
-    expect(toggle).toHaveAttribute('aria-checked', 'false');
-    return screen.getByRole('button', { name: 'Save settings' });
-  }
-
-  /**
-   * ⚠ Fails against today's code: Save is enabled whenever the mode is off
-   * (the existing `disabled` only covers the enabled-but-incomplete case), so a
-   * browser user can click it and fire five refused config writes at once.
-   */
-  it('disables Save with a reason on a browser surface', async () => {
+  it('stays live on a browser surface', async () => {
     browser();
-    const save = await openSavedPairAndSwitchItOff();
-
-    expect(save).toBeDisabled();
-    expect(screen.getByTestId('host-managed-model-note')).toBeInTheDocument();
-  });
-
-  /**
-   * The write, not the attribute. `handleSave` carries its own guard, and
-   * without this a rewrite could drop it and still pass the test above.
-   */
-  it('performs no config write if Save is clicked anyway', async () => {
-    browser();
-    fireEvent.click(await openSavedPairAndSwitchItOff());
-    await waitFor(() => expect(mocks.read).toHaveBeenCalled());
-    expect(mocks.upsert).not.toHaveBeenCalled();
-    expect(mocks.remove).not.toHaveBeenCalled();
-  });
-
-  /**
-   * The control. ⚠ Note it asserts the write REACHES the config, not merely
-   * that the button is enabled — the desktop path has to keep working, and
-   * "enabled" alone would still pass if `handleSave` returned early for
-   * everyone.
-   */
-  it('still saves in the desktop application', async () => {
-    const save = await openSavedPairAndSwitchItOff();
-
-    expect(save).toBeEnabled();
-    expect(screen.queryByTestId('host-managed-model-note')).toBeNull();
-
-    fireEvent.click(save);
-    // The pair was saved and is now off, so Save takes the removal branch.
-    await waitFor(() => expect(mocks.remove).toHaveBeenCalledWith('BIOROUTER_LEAD_MODEL', false));
+    render(<DefaultWorkerModelRow />);
+    const change = screen.getByRole('button', { name: defaultWorkerModelCopy.changeName });
+    await waitFor(() => expect(change).toBeEnabled());
+    expect(screen.getByText(defaultWorkerModelCopy.sameAsChat)).toBeInTheDocument();
   });
 });
 

@@ -1465,8 +1465,8 @@ async fn new_chat_scope(
 }
 
 /// DD-30 for `new_chat`: the tier the new chat's bind would produce. The tab's pick
-/// counts only with the proof; an `ollama` cloud tag, a remote `OLLAMA_HOST` and a
-/// private worker under a public lead are public, whatever `ollama` declares.
+/// counts fully only with the proof, and without it can only lower the target; an
+/// `ollama` cloud tag and a remote `OLLAMA_HOST` are public, whatever `ollama` declares.
 #[tokio::test(flavor = "multi_thread")]
 #[serial]
 async fn a_new_chat_is_judged_by_the_tier_its_bind_would_produce() {
@@ -1527,18 +1527,6 @@ async fn a_new_chat_is_judged_by_the_tier_its_bind_would_produce() {
         new_chat_scope(&app, Caller::Proof, cloud, None).await,
         "public",
         "an ollama cloud tag"
-    );
-    let pair = configured(&[
-        ("BIOROUTER_PROVIDER", "llamacpp"),
-        ("BIOROUTER_MODEL", "qwen3.8-27b"),
-        ("BIOROUTER_LEAD_PROVIDER", "ollama"),
-        ("BIOROUTER_LEAD_MODEL", "qwen3.8:27b"),
-        ("OLLAMA_HOST", "https://ollama.example"),
-    ]);
-    assert_eq!(
-        new_chat_scope(&app, Caller::Proof, pair, None).await,
-        "public",
-        "a private worker under a public lead"
     );
 }
 

@@ -90,6 +90,11 @@ async fn async_main() -> ExitCode {
     // invisible. `strict` failing quietly back to `standard` would be the same
     // kind of silence.
     biorouter::privacy::load_mixing_policy_from_record();
+    // Lead/worker mode is retired: carry an old setup onto the chat model and
+    // the default worker model before any subcommand reads the default
+    // provider. The daemon does the same as it starts; whichever runs first
+    // moves it, and the other finds nothing left to move.
+    biorouter::config::retired_lead_worker::migrate_on_start();
 
     let result = cli(command_line).await;
     stop_local_model_server().await;

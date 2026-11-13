@@ -1,6 +1,5 @@
 crates/biorouter-bench/src/eval_suites/core/developer/simple_repo_clone_test.rs::line-22
 crates/biorouter-cli/src/cli.rs::handle_session_subcommand
-crates/biorouter-cli/src/commands/configure.rs::configure_lead_worker_dialog
 crates/biorouter-cli/src/commands/doctor.rs::handle_doctor
 crates/biorouter-cli/src/commands/extension.rs::handle_install
 crates/biorouter-cli/src/session/markdown.rs::start_tag
