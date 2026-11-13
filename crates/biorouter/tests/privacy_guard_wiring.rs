@@ -1644,6 +1644,28 @@ const REGISTRY: &[Guard] = &[
         ),
         sites: &[],
     },
+    Guard {
+        ident: "no_wider_than",
+        defined_in: "crates/biorouter/src/privacy/capability.rs",
+        decides: "how far a call on a running turn reaches: the lesser of the slot sampled now \
+                  and the capability the turn started with, so a model switch that lands while \
+                  a turn runs widens nothing until the next turn (issue #56). The reply loop \
+                  pins the provider a turn's requests run on for the whole turn, so without it \
+                  a public chat switched to a private model mid-turn had private extension \
+                  results sent to the public model",
+        status: Status::Wired,
+        sites: &[Site {
+            file: "crates/biorouter/src/agents/agent.rs",
+            counts: c(2, 0, 0),
+            kind: SiteKind::Guard,
+            what: "`Agent::capped_to_turn`, which every call on a running turn is admitted \
+                   through (`sample_turn_call`: the loop's tool calls, the schedule branch, the \
+                   prefetch, Gate E's roster and the spawn check), and `TurnCeilings::lower`, \
+                   which narrows a turn's ceiling to the slot as the loop pinned its provider. \
+                   Losing either caller leaves every behavioural gate test green on a turn \
+                   that never switches model, which is all of them but one",
+        }],
+    },
 ];
 
 // ---------------------------------------------------------------------------

@@ -4903,6 +4903,138 @@ impl CachedClassification {
     }
 }
 
+/// Issue #56: the capability each chat's running turn started with.
+///
+/// The reply loop pins the provider a turn's requests run on for the whole
+/// turn (`reply_internal`'s `reply_provider`), while Gate C and Gate E sample
+/// the slot on every call. A person who switched a public chat to a private
+/// model while a turn ran therefore had private extension calls admitted for
+/// the rest of that turn, and their results went to the public model the turn
+/// was still sending to. Every call on a turn's path is now admitted on the
+/// lesser of the slot sampled then and this ceiling
+/// ([`crate::privacy::CallCapability::no_wider_than`]): a switch to a less
+/// private model applies at once, and a switch to a more private one at the
+/// next turn, whose Gate B takes a new ceiling.
+///
+/// Keyed by chat because `biorouter web` shares one agent across chats. On the
+/// Agent rather than in the reply generator (the stack cliff); a plain `Mutex`
+/// because it is never held across an await.
+#[derive(Default)]
+pub(super) struct TurnCeilings {
+    /// Per chat: the token of the turn that opened the entry, and its ceiling.
+    by_session: std::sync::Mutex<HashMap<String, (u64, crate::privacy::CallCapability)>>,
+    next_token: AtomicU64,
+}
+
+impl TurnCeilings {
+    fn lock(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<String, (u64, crate::privacy::CallCapability)>> {
+        self.by_session
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Record `ceiling` for the turn of `session_id` that is starting. It holds
+    /// until the returned guard is dropped, which the reply stream does however
+    /// the turn ends, a Stop included. A newer turn's entry replaces this one,
+    /// and this guard then leaves it alone.
+    pub(super) fn open(
+        &self,
+        session_id: &str,
+        ceiling: crate::privacy::CallCapability,
+    ) -> TurnCeilingHeld<'_> {
+        let token = self.next_token.fetch_add(1, Ordering::Relaxed);
+        self.lock().insert(session_id.to_string(), (token, ceiling));
+        TurnCeilingHeld {
+            ceilings: self,
+            session_id: session_id.to_string(),
+            token,
+        }
+    }
+
+    /// The running turn's ceiling, or `None` outside a turn.
+    fn get(&self, session_id: &str) -> Option<crate::privacy::CallCapability> {
+        self.lock().get(session_id).map(|(_, ceiling)| *ceiling)
+    }
+
+    /// Narrow the running turn's ceiling to `observed`. Never widens it.
+    fn lower(&self, session_id: &str, observed: crate::privacy::CallCapability) {
+        if let Some((_, ceiling)) = self.lock().get_mut(session_id) {
+            *ceiling = observed.no_wider_than(*ceiling);
+        }
+    }
+}
+
+/// A running turn's hold on its ceiling. See [`TurnCeilings::open`].
+pub(super) struct TurnCeilingHeld<'a> {
+    ceilings: &'a TurnCeilings,
+    session_id: String,
+    token: u64,
+}
+
+impl Drop for TurnCeilingHeld<'_> {
+    fn drop(&mut self) {
+        let mut by_session = self.ceilings.lock();
+        if by_session
+            .get(&self.session_id)
+            .is_some_and(|(token, _)| *token == self.token)
+        {
+            by_session.remove(&self.session_id);
+        }
+    }
+}
+
+/// One sample of the slot, and what a call made now on the chat's running turn
+/// is admitted on. See [`Agent::sample_turn_call`].
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TurnCall {
+    /// The slot as sampled.
+    slot: crate::privacy::CallCapability,
+    /// `slot`, never wider than the capability the running turn started with.
+    admitted: crate::privacy::CallCapability,
+}
+
+impl TurnCall {
+    /// A model switch landed while this turn ran and waits for the next turn:
+    /// the turn's ceiling narrowed what the slot alone would admit, on the tier
+    /// or on the affiliation. Never with the master switch off, where nothing
+    /// is refused.
+    ///
+    /// ⚠ **The affiliation arm is deliberate.** Between two private models at
+    /// different institutions the tier alone would admit a spawn, but the child
+    /// takes the slot's affiliation, so it reaches that institution's
+    /// connectors with no cross-affiliation warning, and its report goes to the
+    /// model this turn still runs on, which that institution does not cover.
+    /// That is the change DR-31 refuses across a spawn (affiliation equality in
+    /// `resolve_child_privacy`), reached through a mid-turn switch instead of a
+    /// provider override. A local slot after an institutional turn waits too,
+    /// because a local child reaches every institution's connectors. A local
+    /// ceiling is the identity of `composite_affiliation`, so the opposite
+    /// switch, from a local model to an institution's, waits for nothing here.
+    /// `a_spawn_waits_for_a_switch_to_another_institution` pins every row.
+    ///
+    /// The whole-capability comparison is exactly "the tier or the affiliation
+    /// narrowed": `no_wider_than` takes the master switch from the slot, and the
+    /// decision-model flag from whichever sample gave the tier, so neither can
+    /// differ on its own (the flag rows of the same test). It is not spelled
+    /// as two field comparisons because an affiliation compared outside
+    /// `privacy::affiliation::compatible` is a second implementation of DR-26's
+    /// table (`compatible_is_the_only_function_that_compares_two_affiliations`).
+    fn waits_for_next_turn(&self) -> bool {
+        self.admitted.enforced() && self.admitted != self.slot
+    }
+}
+
+/// The refusal a subagent spawn gets while a model switch waits for the next
+/// turn. Every child would either run at the slot's reach and report to the
+/// model this turn still runs on, or be refused by DR-19 anyway, so refusing is
+/// the whole of the answer for this turn.
+const SPAWN_WAITS_FOR_NEXT_TURN: &str =
+    "This chat was switched to another model while this turn was running, and the \
+     switch applies from the next message. A subagent cannot be started until then. Do \
+     not retry in this turn; finish without it, or tell the person.";
+
 /// The main biorouter Agent
 pub struct Agent {
     pub(super) provider: SharedProvider,
@@ -5077,6 +5209,9 @@ pub struct Agent {
     /// The `turn_end` monitors this turn has already said it did not check.
     /// See [`UncheckedMonitorsNamed`].
     pub(super) unchecked_monitors_named: UncheckedMonitorsNamed,
+    /// Issue #56: the capability each chat's running turn started with, which
+    /// no call on that turn may exceed. See [`TurnCeilings`].
+    pub(super) turn_ceilings: TurnCeilings,
 }
 
 /// What an accepted steer is waiting behind. See [`AgentEvent::SteerWaiting`].
@@ -6329,6 +6464,7 @@ impl Agent {
             pending_retry_note: std::sync::Mutex::new(None),
             decisions: Default::default(),
             unchecked_monitors_named: Default::default(),
+            turn_ceilings: TurnCeilings::default(),
         }
     }
 
@@ -7965,6 +8101,51 @@ impl Agent {
         output
     }
 
+    /// Issue #56: one sample of `slot`, and what a call made now on the running
+    /// turn of `session_id` is admitted on: that sample, never wider than the
+    /// capability the turn started with ([`TurnCeilings`]). Outside a turn the
+    /// two are the same sample.
+    ///
+    /// `slot` is the agent's own provider slot everywhere but the subagent
+    /// spawn, which passes a slot pinned to the very provider its child
+    /// inherits, so the check and the child cannot be two reads apart.
+    pub(super) async fn sample_turn_call(
+        &self,
+        session_id: &str,
+        slot: &SharedProvider,
+    ) -> TurnCall {
+        let sampled = crate::privacy::CallCapability::sample(slot).await;
+        TurnCall {
+            slot: sampled,
+            admitted: self.capped_to_turn(session_id, sampled),
+        }
+    }
+
+    /// The capability a call made now on `session_id`'s running turn is
+    /// admitted on. Sampled once, here, and carried by the caller: the agent
+    /// loop's tool calls, the schedule branch, the prefetch and Gate E's
+    /// model-facing roster all take it from this one place.
+    pub(crate) async fn call_capability(&self, session_id: &str) -> crate::privacy::CallCapability {
+        self.sample_turn_call(session_id, &self.provider)
+            .await
+            .admitted
+    }
+
+    /// `sampled`, never wider than the capability the running turn of
+    /// `session_id` started with, or `sampled` itself outside a turn. For a
+    /// branch of `dispatch_tool_call` that samples a provider it pinned for
+    /// itself, so its capability obeys the same ceiling as the loop's.
+    pub(crate) fn capped_to_turn(
+        &self,
+        session_id: &str,
+        sampled: crate::privacy::CallCapability,
+    ) -> crate::privacy::CallCapability {
+        match self.turn_ceilings.get(session_id) {
+            Some(ceiling) => sampled.no_wider_than(ceiling),
+            None => sampled,
+        }
+    }
+
     async fn call_prefetch_tool(
         &self,
         session_id: &str,
@@ -7974,10 +8155,11 @@ impl Agent {
         crate::crew::manager()?
             .authorize_session_tool(session_id, tool_name)
             .await?;
-        // Issue #56: one of the four production entries that sample a capability.
-        // The pre-turn prefetch is its own entry because it dispatches outside
-        // `Self::dispatch_tool_call` entirely.
-        let cap = crate::privacy::CallCapability::sample(&self.provider).await;
+        // Issue #56: its own entry because it dispatches outside
+        // `Self::dispatch_tool_call` entirely. It runs while the turn is being
+        // prepared, after the turn's ceiling is open, so it is capped like
+        // every other call on the turn.
+        let cap = self.call_capability(session_id).await;
         let tool = self
             .extension_manager
             .dispatch_tool_call(
@@ -10234,8 +10416,9 @@ impl Agent {
             // had no capability in scope at all — and two of its actions read
             // another chat's content. Sampled here, on the same provider mutex and
             // for the same reason: the value the call is granted must be fixed
-            // before the call runs, not re-read while it runs.
-            let cap = crate::privacy::CallCapability::sample(&self.provider).await;
+            // before the call runs, not re-read while it runs. Capped by the
+            // turn's ceiling like the loop's own sample.
+            let cap = self.call_capability(&session.id).await;
             // The turn's token, so a Stop releases an approval card nobody has
             // answered rather than leaving the turn parked on it.
             let result = self
@@ -10448,6 +10631,27 @@ impl Agent {
                     );
                 }
             };
+            // Issue #56: the child takes its parent's reach from `provider`, the
+            // slot, while its report goes to the model this turn pinned. After a
+            // switch that waits for the next turn, every child would either reach
+            // past what that model may see or be refused by DR-19 anyway. Judged
+            // on the very provider the child inherits, so the check and the child
+            // cannot disagree.
+            let inherited: SharedProvider = Arc::new(Mutex::new(Some(Arc::clone(&provider))));
+            if self
+                .sample_turn_call(&session.id, &inherited)
+                .await
+                .waits_for_next_turn()
+            {
+                return (
+                    request_id,
+                    Err(ErrorData::new(
+                        ErrorCode::INVALID_REQUEST,
+                        SPAWN_WAITS_FOR_NEXT_TURN.to_string(),
+                        None,
+                    )),
+                );
+            }
 
             let extensions = self.get_extension_configs().await;
             // The child asks the decision models this agent asks.
@@ -10490,8 +10694,11 @@ impl Agent {
             // once, and carried the rest of the way — every barrier downstream
             // reads this value rather than the provider mutex, so a swap that
             // lands while the call sits behind the dispatch semaphore cannot
-            // change what the call already got permission to do.
-            let cap = crate::privacy::CallCapability::sample(&self.provider).await;
+            // change what the call already got permission to do. Never wider
+            // than the capability the turn started with: the turn still sends
+            // this call's result to the model it pinned, so a switch to a more
+            // private model applies at the next turn.
+            let cap = self.call_capability(&session.id).await;
 
             // Clone the result to ensure no references to extension_manager are returned
             let result = self
@@ -11154,6 +11361,30 @@ impl Agent {
         }
     }
 
+    /// Issue #56 Gate E, at the capability a call on this chat's running turn
+    /// is admitted on, so a turn is never offered a tool its own dispatch would
+    /// refuse after a switch to a more private model. Outside a turn this is
+    /// the slot's sample, as it always was.
+    async fn model_facing_tools(
+        &self,
+        session_id: &str,
+        extension_name: Option<&str>,
+    ) -> ExtensionResult<Vec<Tool>> {
+        let capability = self.call_capability(session_id).await;
+        match extension_name {
+            Some(name) => {
+                self.extension_manager
+                    .get_prefixed_tools_for_extension_and_capability(name, capability)
+                    .await
+            }
+            None => {
+                self.extension_manager
+                    .get_prefixed_tools_for_capability(capability)
+                    .await
+            }
+        }
+    }
+
     async fn list_tools_for(
         &self,
         session_id: &str,
@@ -11187,8 +11418,7 @@ impl Agent {
 
         let mut prefixed_tools = match audience {
             ToolAudience::Model => {
-                self.extension_manager
-                    .get_prefixed_tools(extension_name.clone())
+                self.model_facing_tools(session_id, extension_name.as_deref())
                     .await
             }
             ToolAudience::PermissionEditor => {
@@ -11929,6 +12159,28 @@ impl Agent {
             return Ok(refused);
         }
 
+        // Issue #56: the capability this turn starts with, taken after Gate B's
+        // repair and ratchet and before the reply loop pins the provider its
+        // requests run on. It is this turn's ceiling from here until the turn's
+        // stream is dropped, however the turn ends (the hold moves into the
+        // stream below), and no call on the turn is admitted on more
+        // ([`TurnCeilings`]): a switch to a more private model while the turn
+        // runs applies at the next turn. A path below that returns without a
+        // turn drops the hold as it returns.
+        //
+        // ⚠ Taken AFTER the ratchet, which is what makes it sound. With tiers
+        // on, a Private sample here has just raised the row to Private, and
+        // Gate A refuses a public bind on a private row, so the model the loop
+        // pins cannot be less private than this ceiling unless the person
+        // declassifies the chat first (and `reply_internal` narrows the ceiling
+        // to the slot it pins from, for that case). A raw sample and not
+        // `call_capability`: a new turn's ceiling is never capped by a previous
+        // turn's.
+        let turn_ceiling_held = self.turn_ceilings.open(
+            &session_config.id,
+            crate::privacy::CallCapability::sample(&self.provider).await,
+        );
+
         // A daemon restart drops the in-memory goal registry and its Stop-hook
         // judge, while the goal itself persists in the session's extension_data
         // (like todos). Restore it before handling this turn so an active /goal
@@ -12293,6 +12545,8 @@ impl Agent {
         let conversation_to_compact = stored_conversation.clone();
 
         Ok(Box::pin(async_stream::try_stream! {
+            // Issue #56: the turn's ceiling lives exactly as long as this stream.
+            let _turn_ceiling_held = turn_ceiling_held;
             if let Some(published) = prestream_published {
                 yield published;
             }
@@ -14236,6 +14490,12 @@ impl Agent {
             Some(provider) => provider,
             None => self.provider().await?,
         };
+        // Issue #56: the turn's ceiling, opened at Gate B, narrowed to the slot
+        // as the pin found it, so a slot that moved to a less private model
+        // between Gate B and the pin keeps the turn there even if it is moved
+        // back before the turn ends.
+        let pinned_with = self.call_capability(&session_config.id).await;
+        self.turn_ceilings.lower(&session_config.id, pinned_with);
         let context = self
             .prepare_reply_context(
                 &session_config.id,
@@ -31782,3 +32042,9 @@ mod decision_axes_agent_tests {
 #[cfg(test)]
 #[path = "agent_effort_tier_tests.rs"]
 mod effort_tier_tests;
+
+/// A model switch that lands while a turn runs: the turn's capability is never
+/// wider than the one it started with.
+#[cfg(test)]
+#[path = "agent_mid_turn_switch_tests.rs"]
+mod mid_turn_switch_tests;

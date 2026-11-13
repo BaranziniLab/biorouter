@@ -169,6 +169,76 @@ async fn a_slot_lowered_by_a_decision_model_samples_public_and_says_so() {
     assert!(!CallCapability::public_enforced().lowered_by_decision());
 }
 
+/// Issue #56, a model switch while a turn runs: a call on a running turn is
+/// admitted on the lesser of the slot sampled now and the capability the turn
+/// started with, both real samples. A switch to a more private model waits for
+/// the next turn; a switch to a less private one applies at once; and a turn a
+/// decision model made public stays public, saying so, after the slot moves to
+/// a plain private model.
+#[tokio::test]
+async fn a_running_turn_is_never_wider_than_the_capability_it_started_with() {
+    use biorouter::decision::settings::DecisionSettings;
+    use biorouter::decision::DecisionModelRef;
+    use biorouter::privacy::decision_axes::{self, AxesInputs, BasisAuthor, PublicBasis};
+    use biorouter::privacy::SessionClassification;
+    use biorouter::providers::decision_bound::DecisionBoundProvider;
+    use biorouter::session::SessionType;
+
+    let unbound: SharedProvider = std::sync::Arc::new(tokio::sync::Mutex::new(None));
+    let versa: SharedProvider =
+        std::sync::Arc::new(tokio::sync::Mutex::new(Some(std::sync::Arc::new(Versa))));
+    let public = CallCapability::sample(&unbound).await;
+    let private = CallCapability::sample(&versa).await;
+    assert_eq!(public.tier(), ProviderTier::Public);
+    assert_eq!(private.tier(), ProviderTier::Private);
+
+    let waits = private.no_wider_than(public);
+    assert_eq!(
+        waits.tier(),
+        ProviderTier::Public,
+        "a switch to a private model widened the turn that started public"
+    );
+    assert_eq!(waits.affiliation(), None);
+    assert!(waits.restricts_private_data());
+
+    let at_once = public.no_wider_than(private);
+    assert_eq!(
+        at_once.tier(),
+        ProviderTier::Public,
+        "a switch to a public model waited for the next turn"
+    );
+
+    let same = private.no_wider_than(private);
+    assert_eq!(same.tier(), ProviderTier::Private);
+    assert_eq!(same.affiliation(), private.affiliation());
+
+    let settings = DecisionSettings {
+        default_model: Some(DecisionModelRef::new("baseten_decision", "joey-1")),
+        monitors: vec![],
+    };
+    let basis = PublicBasis::new("chat", BasisAuthor::Person, "test", vec![]);
+    let axes = decision_axes::fold(&AxesInputs {
+        session_id: "chat",
+        classification: SessionClassification::Public,
+        session_type: SessionType::User,
+        parent_session_id: None,
+        settings: decision_axes::SettingsInput::Parsed(&settings),
+        plan: None,
+        basis: Some(&basis),
+        ceiling: None,
+    });
+    let lowered_slot: SharedProvider = std::sync::Arc::new(tokio::sync::Mutex::new(Some(
+        DecisionBoundProvider::bind(std::sync::Arc::new(Versa), axes),
+    )));
+    let lowered = CallCapability::sample(&lowered_slot).await;
+    let still_lowered = private.no_wider_than(lowered);
+    assert_eq!(still_lowered.tier(), ProviderTier::Public);
+    assert!(
+        still_lowered.lowered_by_decision(),
+        "the turn is public because of its decision model, and a refusal must say so"
+    );
+}
+
 /// Design §7.2's added assertion: `lowered_by_decision` is SET only inside
 /// `sample` (and the `cfg(test)` constructor that says so). A second
 /// production constructor that set it would let a capability claim a decision
@@ -254,21 +324,35 @@ const EXPECTED: &[Site] = &[
     Site {
         needle: "CallCapability::sample(",
         file: "crates/biorouter/src/agents/agent.rs",
-        count: 5,
-        what: "`call_prefetch_tool` (which dispatches before the turn), the agent \
-               loop's own tool-call sample, `cross_affiliation_grant_subject` \
-               (which composes the sentence the user is asked to accept), the \
-               schedule branch of `dispatch_tool_call`, which returns before the \
-               loop's own sample, so `platform__manage_schedule` had no capability \
-               in scope while two of its actions read another chat's content — and \
-               `issue_tool_bridge`, which decides for a caller that is not in this \
-               process at all. A bridged coding agent (`claude_code`, `codex`) runs \
-               its own loop in a child and reaches Biorouter's tools by calling back \
-               in over MCP, so the child's calls arrive with no capability of their \
-               own to inherit. Sampling once when the grant is issued and carrying it \
-               in the lease is what fixes a bridged call's capability BEFORE it runs, \
-               which is the whole reason this type exists; re-reading per callback \
-               would be the two-reads race with a process boundary through the middle",
+        count: 4,
+        what: "(1) `reply`'s turn ceiling: the capability a turn starts with, sampled \
+               right after Gate B's repair and ratchet. The reply loop pins the provider \
+               a turn's requests run on for the whole turn, so a call on that turn is \
+               admitted on no more than this (`CallCapability::no_wider_than`), and a \
+               switch to a more private model while the turn runs applies at the next \
+               turn. It is a raw sample on purpose: capping it with a previous turn's \
+               ceiling would carry that turn's model into this one. \
+               (2) `Agent::sample_turn_call`, the one sample a call on a running turn \
+               is admitted on, capped by that turn's ceiling: the agent loop's tool \
+               calls, the schedule branch of `dispatch_tool_call` (which returns before \
+               the loop's own call, so `platform__manage_schedule` had no capability in \
+               scope while two of its actions read another chat's content), \
+               `call_prefetch_tool` (which dispatches while the turn is being \
+               prepared), Gate E's model-facing roster (`list_tools`) and the subagent \
+               spawn's check. Outside a turn it is the slot's sample as it is. \
+               (3) `cross_affiliation_grant_subject`, which composes the sentence the \
+               user is asked to accept about the model bound right now, so it is not \
+               capped by a turn. \
+               (4) `prepare_coding_agent_bridge_plan`, which decides for a caller that \
+               is not in this process at all. A bridged coding agent (`claude_code`, \
+               `codex`) runs its own loop in a child and reaches Biorouter's tools by \
+               calling back in over MCP, so the child's calls arrive with no capability \
+               of their own to inherit. It samples once, off the lesser of the slot's \
+               provider and the request's (`judged`), when the plan is prepared, and \
+               `issue_tool_bridge` carries that capability in the lease, which is what \
+               fixes a bridged call's capability BEFORE it runs, the whole reason this \
+               type exists; re-reading per callback would be the two-reads race with a \
+               process boundary through the middle",
     },
     Site {
         needle: "CallCapability::sample(",
@@ -378,8 +462,8 @@ const EXPECTED: &[Site] = &[
         count: 1,
         what: "#109's `complete_with_dispatch`, the seam that lets a knowledge macro \
                run under a coding-agent provider. It is a decider for the same \
-               reason `issue_tool_bridge` is and it is a SECOND one rather than a \
-               duplicate: a macro calls `Provider::complete` directly, so no agent \
+               reason `prepare_coding_agent_bridge_plan` is and it is a SECOND one \
+               rather than a duplicate: a macro calls `Provider::complete` directly, so no agent \
                loop has sampled anything, and the bridged calls arrive from a child \
                process with no capability of their own to inherit. This is the one \
                place holding the `Arc<dyn Provider>` those calls will run under, so \
@@ -471,8 +555,9 @@ const EXPECTED: &[Site] = &[
                `privacy/grant.rs`'s test helper is — a line-wise grep cannot tell a \
                `#[cfg(test)]` block from production, and a filter that tried would \
                blind the census to production too. The production side of this \
-               bridge decides in `Agent::issue_tool_bridge`, which is a `sample(` \
-               row above. ⚠ This row read `dummy_grant()` while four inline \
+               bridge decides in `Agent::prepare_coding_agent_bridge_plan`, which is a \
+               `sample(` row above, and `Agent::issue_tool_bridge` carries that \
+               capability into the lease. ⚠ This row read `dummy_grant()` while four inline \
                spellings had accumulated in that file, so the census sat RED \
                through a whole branch whose own gate list never ran this binary. \
                The single helper is what stops it drifting that way again: a new \
