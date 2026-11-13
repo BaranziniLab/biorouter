@@ -720,6 +720,7 @@ The daemon answers these codes too. A command prints the sentence beside each, a
 | `crew_join_device_conflict`, `crew_join_identity_conflict`, `crew_join_refused` | This computer's key is already in the workspace, another member has your username, or the workspace refused. Tell your host. A host refused `crew_join_identity_conflict` after its account was renamed reads what to do instead ([Add this computer again from a terminal](#add-this-computer-again-from-a-terminal)). |
 | `crew_idempotency_conflict` | The `--request-id` belongs to a different request. Use a new ID. |
 | `crew_start_outcome_unknown` | A task start was admitted but not finished. Check the task before starting another. |
+| `crew_usage_limit_reached` | A usage limit is reached, so no task was started: the month's limit for any task, or the asking chat's own limit for a chat's `tasks_ask`. A task that a limit stopped part way ends as failed with this error and posts no result. Raise or lift the limit in **Settings** > **App** > **Usage**. See [Usage limits](../agent-loop/usage-limits.md). |
 | `crew_cancel_persistence_failed` | A task's stop could not be saved. Check the task, then cancel again. |
 | `crew_session_unavailable` | The chat is not open in the shared daemon, or is out of reach. |
 | `crew_grant_not_found`, `crew_grant_other_connection`, `crew_grant_replaced` | The chat holds no grant here, its grant is on another connection, or it was granted again while you revoked it. |

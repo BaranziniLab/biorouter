@@ -132,6 +132,14 @@ Other spending doors follow the same rule:
   leaves too little for one more request, is a success: its transcript ends on the same
   stop notice, so the scheduler asks the agent whether the limit cut the reply short
   (`Agent::usage_limit_interrupted_reply`) rather than reading the transcript.
+- **Crew tasks.** A task runs in a chat of its own, so its spend counts toward that
+  chat and the month, never the chat that asked for it. While the month is at its limit
+  no task starts, from Crew or from a chat. A chat at its own limit also cannot start one
+  with `tasks_ask`; it gets no approval card. Both refusals carry `crew_usage_limit_reached`.
+  A task that a limit stops part way ends as failed with the usage-limit error
+  (`CREW_TASK_STOPPED_AT_LIMIT`) and posts no result, the way a limit-stopped scheduled run
+  is recorded; Crew asks the same question the scheduler does
+  (`Agent::usage_limit_interrupted_reply`).
 - **Overflow compaction.** When a request overflows the model's window and the chat is
   already at a limit, the chat is not compacted and the turn ends.
 - **Decision models.** A monitor, a `decide` batch or a phase gate is counted, through the
@@ -147,7 +155,8 @@ Other spending doors follow the same rule:
 In short, a limit holds these model calls: every request of a turn, a message sent to a
 paused chat, automatic, overflow and background compaction, `/compact`, the self-critique
 pass, the `/goal` judge and prompt Stop hooks, starting a subagent and each of its
-requests, a chat's title, and the start of a scheduled run (monthly limit). It does not
+requests, a chat's title, the start of a scheduled run (monthly limit), and the start of a
+Crew task (the month, and the asking chat for `tasks_ask`). It does not
 hold decision models or workflow generation, which are counted but not stopped, nor
 prompt hooks on events other than Stop (for example `UserPromptSubmit` or `PreToolUse`).
 

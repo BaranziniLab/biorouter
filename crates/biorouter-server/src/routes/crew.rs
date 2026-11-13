@@ -53,6 +53,8 @@ const RUN_SLOTS_FULL: &str =
     "Four Crew tasks are already active on this computer. Finish or cancel one first.";
 /// A cancel naming a task this computer's ledger does not hold on that connection.
 const TASK_NOT_OWNED: &str = "This task is not owned by this computer and connection.";
+/// A Crew task refused, or stopped, at a usage limit (#483's limits).
+pub(crate) const CREW_USAGE_LIMIT_REACHED: &str = "crew_usage_limit_reached";
 static LEDGERS: LazyLock<Mutex<HashMap<PathBuf, Arc<RunLedger>>>> = LazyLock::new(Mutex::default);
 struct RunLedger {
     path: PathBuf,
@@ -986,6 +988,52 @@ struct RunLifetime {
     _permit: OwnedSemaphorePermit,
 }
 
+/// The usage limit's refusal for a Crew task about to start, as both doors answer it: at the
+/// month's limit for any task, and at the asking chat's own for a chat's `tasks_ask`
+/// ([`biorouter::agents::usage_limit::crew_task_refusal`]).
+pub(crate) async fn refuse_at_usage_limit(
+    state: &AppState,
+    asking_chat: Option<&str>,
+) -> Result<(), CrewRouteError> {
+    match biorouter::agents::usage_limit::crew_task_refusal(
+        state.session_manager(),
+        asking_chat,
+        &biorouter::config::usage::UsageLimits::load(),
+    )
+    .await
+    {
+        Some(refusal) => Err(CrewRouteError::new(
+            StatusCode::TOO_MANY_REQUESTS,
+            CREW_USAGE_LIMIT_REACHED,
+            refusal,
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Whether this exact task request was admitted before: an idempotent retry, which
+/// [`start_owned_run`] answers with the task it already started. A usage limit reached since
+/// must not hide that task, so `tasks_ask` asks this before it refuses at a limit. A ledger that
+/// cannot be read answers `false`: the caller then refuses as it would for a new request.
+pub(crate) async fn already_admitted(connection_id: &str, body: &StartRunRequest) -> bool {
+    let (Ok(ledger), Ok((key, hash))) = (
+        run_ledger().await,
+        run_request_identity(connection_id, body),
+    ) else {
+        return false;
+    };
+    let stored = ledger.state.lock().await;
+    admitted_before(&stored.requests, &key, &hash)
+}
+
+/// [`already_admitted`]'s decision: a receipt under `key` for the same payload. A receipt for a
+/// different payload is a conflict, which [`start_owned_run`] refuses on its own.
+fn admitted_before(requests: &HashMap<String, StartReceipt>, key: &str, hash: &str) -> bool {
+    requests
+        .get(key)
+        .is_some_and(|receipt| receipt.payload_hash == hash)
+}
+
 fn run_request_identity(
     connection_id: &str,
     body: &StartRunRequest,
@@ -1073,6 +1121,7 @@ fn run_policy(body: &StartRunRequest, origin: &RunOrigin) -> biorouter::crew::Ru
         (status = 415, description = "`crew_request_invalid`: the body is not sent as `application/json`", body = CrewError),
         (status = 422, description = "`crew_request_invalid`: a body with a missing, mistyped or unknown field; `detail` says which", body = CrewError),
         (status = 409, description = "`crew_idempotency_conflict`: the `request_id` belongs to a different task request; `crew_start_outcome_unknown`: that request was admitted but its setup did not complete, so inspect it before starting another; `crew_not_connected`: the connection is down and nothing is dialling it again, so connect it (signing in if asked) and try again; `workspace` names it. Nothing was sent", body = CrewError),
+        (status = 429, description = "`crew_usage_limit_reached`: this month's usage limit is reached, so no task was started; `error` says where the limit is raised. A chat's Crew tools answer it too when the asking chat's own limit is reached. A retry of a request already admitted is answered with its task instead", body = CrewError),
         (status = 503, description = "The request did not go through: `crew_not_sent` (nothing reached the workspace; `ssh_code` when an SSH failure caused it), `crew_outcome_unknown` (the bridge was lost after the request was written; retry with `request_id`, its idempotency key) or `crew_reconnecting` (Biorouter is dialling the workspace again; `workspace` names it)", body = CrewError)
     ),
     tag = "Crew"
@@ -1138,6 +1187,7 @@ pub(crate) async fn start_owned_run(
             "Crew task history has reached its 4096-request safety limit",
         )?;
     }
+    refuse_at_usage_limit(&state, None).await?;
     let permit = Arc::clone(&RUN_SLOTS)
         .try_acquire_owned()
         .map_err(|_| anyhow::anyhow!(RUN_SLOTS_FULL))?;
@@ -1776,6 +1826,11 @@ async fn execute_run(
     .await?;
     if cancel.is_cancelled() {
         anyhow::bail!("Task cancelled by its owner.");
+    }
+    // The usage limit gate ends a reply on a stop notice and a normal end of stream, so only
+    // the agent can say it cut this one short; such a task has no result to post.
+    if agent.usage_limit_interrupted_reply() {
+        anyhow::bail!(biorouter::agents::usage_limit::CREW_TASK_STOPPED_AT_LIMIT);
     }
     publish_run_result(state, &crew, &view.session_id, cancel).await
 }
@@ -4166,8 +4221,12 @@ mod provenance_tests {
 
 #[cfg(test)]
 mod grant_rollback_tests {
-    use super::finish_grant_or_revoke;
+    use super::{
+        admitted_before, finish_grant_or_revoke, run_request_identity, StartReceipt,
+        StartRunRequest,
+    };
     use serde_json::json;
+    use std::collections::HashMap;
 
     /// DAEMON-2: a grant whose setup fails after the workspace admitted it is revoked, whatever
     /// step failed, and the person reads the setup's own error. Only the first step used to be
@@ -4209,6 +4268,104 @@ mod grant_rollback_tests {
         .await
         .unwrap();
         assert_eq!(revoked.load(Ordering::SeqCst), 0);
+    }
+
+    /// Usage limits at a Crew task's two doors (#483): `start_owned_run` refuses at the monthly
+    /// limit after an idempotent replay is answered and before a run slot or a ledger receipt is
+    /// taken, and `execute_run` ends a task the limit gate cut short as stopped, never publishing
+    /// its partial reply as the result. [`biorouter::agents::usage_limit::crew_task_refusal`] is
+    /// tested where it lives.
+    #[test]
+    fn a_crew_task_honours_the_usage_limit_at_start_and_at_the_end() {
+        let source = include_str!("crew.rs");
+        let start = crate::routes::body_of(source, "pub(crate) async fn start_owned_run(");
+        let refusal = start
+            .find("refuse_at_usage_limit(&state, None).await?;")
+            .expect("start_owned_run asks the usage limit for the month only");
+        let helper = crate::routes::body_of(source, "pub(crate) async fn refuse_at_usage_limit(");
+        assert!(
+            helper.contains("usage_limit::crew_task_refusal("),
+            "{helper}"
+        );
+        assert!(helper.contains("CREW_USAGE_LIMIT_REACHED"), "{helper}");
+        for later in ["RUN_SLOTS", "stored.requests.insert(", "launch_run("] {
+            let at = start.find(later).unwrap_or_else(|| panic!("{later}"));
+            assert!(refusal < at, "the limit is asked before {later}");
+        }
+        let replay = start
+            .find("return Ok(Json(view));")
+            .expect("an admitted request is answered again");
+        assert!(replay < refusal, "a replay is answered even at the limit");
+
+        let run = crate::routes::body_of(source, "async fn execute_run(");
+        let interrupted = run
+            .find("agent.usage_limit_interrupted_reply()")
+            .expect("execute_run reads the usage limit gate");
+        let published = run
+            .find("publish_run_result(")
+            .expect("execute_run publishes the result");
+        assert!(interrupted < published, "{run}");
+        let between = run.get(interrupted..published).unwrap_or_default();
+        assert!(between.contains("CREW_TASK_STOPPED_AT_LIMIT"), "{run}");
+    }
+
+    /// A retried task request is recognised by its key and payload, so a usage limit reached
+    /// since its start does not hide the task it started: the same request is admitted, while
+    /// another request ID, another payload or an empty ledger is not.
+    #[test]
+    fn a_retried_task_request_is_recognised_as_admitted() {
+        let body = StartRunRequest {
+            expected_mode: None,
+            expected_policy_epoch: None,
+            expected_workspace_policy_epoch: None,
+            request_id: Some("chat-call-0".to_string()),
+            channel_id: "c-methods".to_string(),
+            prompt: "Summarise the week".to_string(),
+            provider: "versa_azure".to_string(),
+            model: "gpt-5.6-luna-2026-07-09".to_string(),
+            context_channels: Vec::new(),
+            posting_grant: true,
+        };
+        let (key, hash) =
+            run_request_identity("conn-lab", &body).unwrap_or_else(|_| panic!("a valid request"));
+        let mut requests = HashMap::new();
+        assert!(
+            !admitted_before(&requests, &key, &hash),
+            "nothing admitted yet"
+        );
+        requests.insert(
+            key.clone(),
+            StartReceipt {
+                payload_hash: hash.clone(),
+                run_id: Some("run-1".to_string()),
+                session_id: Some("task-chat".to_string()),
+            },
+        );
+        let (retry_key, retry_hash) =
+            run_request_identity("conn-lab", &body).unwrap_or_else(|_| panic!("a valid request"));
+        assert!(
+            admitted_before(&requests, &retry_key, &retry_hash),
+            "a retry"
+        );
+
+        let mut changed = body.clone();
+        changed.prompt = "Something else".to_string();
+        let (changed_key, changed_hash) = run_request_identity("conn-lab", &changed)
+            .unwrap_or_else(|_| panic!("a valid request"));
+        assert_eq!(changed_key, key, "the same request ID");
+        assert!(
+            !admitted_before(&requests, &changed_key, &changed_hash),
+            "another payload under the same ID is a conflict, not a retry"
+        );
+
+        let mut other = body.clone();
+        other.request_id = Some("chat-call-1".to_string());
+        let (other_key, other_hash) =
+            run_request_identity("conn-lab", &other).unwrap_or_else(|_| panic!("a valid request"));
+        assert!(
+            !admitted_before(&requests, &other_key, &other_hash),
+            "a new request"
+        );
     }
 
     /// The grant route sends every step after admission through [`finish_grant_or_revoke`]:

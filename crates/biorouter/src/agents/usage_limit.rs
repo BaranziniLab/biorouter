@@ -78,6 +78,23 @@ pub const SCHEDULED_RUN_MONTH_LIMIT: &str = "Monthly usage limit reached: this s
 pub const SUBAGENT_LIMIT_REFUSAL: &str = "A usage limit is reached, so no subagent was \
      started. Do not retry: tell the user, who can raise or lift the limit.";
 
+/// Why a Crew task was not started at the monthly limit (`POST /crew/connections/{id}/runs`
+/// and a chat's `tasks_ask`). A task runs in a chat of its own, so the month is the only limit
+/// in force before it starts.
+pub const CREW_TASK_MONTH_LIMIT: &str = "Monthly usage limit reached: this Crew task was not \
+     started. To run it, raise or lift the monthly limit in Settings > App > Usage.";
+
+/// Why a chat's `tasks_ask` started no task: the asking chat is at its own limit. The task's
+/// spend is still its own task chat's and the month's, never the asking chat's.
+pub const CREW_TASK_ASK_LIMIT_REFUSAL: &str = "A usage limit is reached for this chat, so no \
+     Crew task was started. Do not retry: tell the user, who can raise or lift the limit in \
+     Settings > App > Usage.";
+
+/// How a Crew task that a usage limit stopped part way ends, in place of its result.
+pub const CREW_TASK_STOPPED_AT_LIMIT: &str = "A usage limit stopped this Crew task before it \
+     finished, so it posted no result. Its owner can raise or lift the limit in Settings > App \
+     > Usage and ask again.";
+
 /// A chat's own limit, as stored. Absence of the key is "inherit".
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
@@ -1009,6 +1026,37 @@ pub async fn reached_limit(session_manager: &SessionManager, session_id: &str) -
     }
 }
 
+/// Why a Crew task may not start now, `None` when it may. `asking_chat` is the chat whose
+/// `tasks_ask` asked for it, `None` for a task started from Crew itself: that chat is refused at
+/// its own limit as well as the month's ("refuse at limit only", owner 2026-11-13), while the
+/// task's spend stays on its own task chat and the month. A failed read is logged and does not
+/// refuse, like [`reached_limit`].
+pub async fn crew_task_refusal(
+    session_manager: &SessionManager,
+    asking_chat: Option<&str>,
+    config: &UsageLimits,
+) -> Option<&'static str> {
+    if let Some(chat) = asking_chat {
+        match check_with(session_manager, chat, config).await {
+            Ok(found) => {
+                if let Some(hit) = found.reached {
+                    return Some(match hit.scope {
+                        LimitScope::Month => CREW_TASK_MONTH_LIMIT,
+                        LimitScope::Chat => CREW_TASK_ASK_LIMIT_REFUSAL,
+                    });
+                }
+            }
+            Err(e) => tracing::warn!(
+                session_id = chat,
+                "usage limit check failed, not enforced this time: {e:#}"
+            ),
+        }
+    }
+    reached_monthly_limit_with(session_manager, config)
+        .await
+        .map(|_| CREW_TASK_MONTH_LIMIT)
+}
+
 /// A month-only check, for doors that are not tied to one chat's limit (a
 /// scheduled run starts a new chat).
 pub async fn reached_monthly_limit(session_manager: &SessionManager) -> Option<LimitHit> {
@@ -1160,6 +1208,82 @@ mod tests {
             .await
             .unwrap();
         (sm, session.id)
+    }
+
+    /// Crew tasks: the asking chat is refused at its own limit and the month's, a task started
+    /// from Crew only at the month's, and nothing is refused below them or with no limit set.
+    #[tokio::test]
+    async fn a_crew_task_is_refused_only_at_a_reached_limit() {
+        use crate::session::SideUsageEntry;
+        let temp = tempfile::tempdir().unwrap();
+        let (sm, asking) = manager_and_session(&temp).await;
+        sm.apply_side_usage_event(SideUsageEntry {
+            event_key: "crew-task-test:1".to_string(),
+            session_id: asking.clone(),
+            provider: "openai".to_string(),
+            model_id: "gpt-test".to_string(),
+            input_tokens: Some(600),
+            output_tokens: Some(0),
+        })
+        .await
+        .unwrap();
+
+        let chat_full = UsageLimits {
+            default_session_token_limit: Some(500),
+            ..UsageLimits::default()
+        };
+        assert_eq!(
+            crew_task_refusal(&sm, Some(&asking), &chat_full).await,
+            Some(CREW_TASK_ASK_LIMIT_REFUSAL),
+            "the asking chat is at its own limit"
+        );
+        assert_eq!(
+            crew_task_refusal(&sm, None, &chat_full).await,
+            None,
+            "a task started from Crew has no asking chat, and its own chat has spent nothing"
+        );
+
+        // A subagent asks under its parent's limit: it is billed to the parent, so a parent at
+        // its limit refuses the subagent's task too, though the subagent spent nothing.
+        let subagent = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "child".to_string(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        sm.update(&subagent.id)
+            .parent_session_id(Some(asking.clone()))
+            .apply()
+            .await
+            .unwrap();
+        assert_eq!(
+            crew_task_refusal(&sm, Some(&subagent.id), &chat_full).await,
+            Some(CREW_TASK_ASK_LIMIT_REFUSAL),
+            "a subagent asks under its parent chat's limit"
+        );
+
+        let month_full = UsageLimits {
+            monthly_token_limit: Some(600),
+            ..UsageLimits::default()
+        };
+        for asking_chat in [Some(asking.as_str()), None] {
+            let refusal = crew_task_refusal(&sm, asking_chat, &month_full).await;
+            assert_eq!(refusal, Some(CREW_TASK_MONTH_LIMIT), "{asking_chat:?}");
+            assert!(refusal.unwrap().starts_with(MONTH_LIMIT_REACHED_PREFIX));
+        }
+
+        let below = UsageLimits {
+            default_session_token_limit: Some(10_000),
+            monthly_token_limit: Some(10_000),
+            ..UsageLimits::default()
+        };
+        assert_eq!(crew_task_refusal(&sm, Some(&asking), &below).await, None);
+        assert_eq!(
+            crew_task_refusal(&sm, Some(&asking), &UsageLimits::default()).await,
+            None
+        );
     }
 
     #[tokio::test]
