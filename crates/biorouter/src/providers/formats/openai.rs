@@ -421,6 +421,41 @@ fn content_filter_blocked_message(
 /// provider prose. `None` for any other response, which the caller maps as it
 /// always has.
 pub fn azure_content_filter_refusal(status: u16, payload: &Value) -> Option<ProviderError> {
+    content_filter_refusal_owned_by(status, payload, |_| FilterOwner::Azure)
+}
+
+/// A refusal of a request whose prompt a content filter blocked, from any
+/// OpenAI-compatible server (the `openai` provider and the custom providers
+/// built on it): HTTP 400 with `error.code` `content_filter`. Read as
+/// [`azure_content_filter_refusal`] reads Azure's, in the same words, of the
+/// same kind and never retried, except for whose filter the sentence names:
+/// Azure's, with the flagged categories, when the error carries Azure's
+/// verdict under `innererror` (an Azure resource reached through this
+/// provider), and the provider's otherwise, naming nothing. That is the rule a
+/// non-streamed reply's block follows (`content_filter_block_in_choice`).
+/// `None` for any other response.
+pub fn content_filter_refusal(status: u16, payload: &Value) -> Option<ProviderError> {
+    content_filter_refusal_owned_by(status, payload, |inner| {
+        if inner.is_some_and(|inner| {
+            CONTENT_FILTER_RESULT_KEYS
+                .iter()
+                .any(|key| inner.get(*key).is_some())
+        }) {
+            FilterOwner::Azure
+        } else {
+            FilterOwner::Provider
+        }
+    })
+}
+
+/// The one reading of an HTTP 400 with `error.code` `content_filter` both
+/// refusals share; `owner` says whose filter it was from the error's
+/// `innererror`, when there is one.
+fn content_filter_refusal_owned_by(
+    status: u16,
+    payload: &Value,
+    owner: impl FnOnce(Option<&Value>) -> FilterOwner,
+) -> Option<ProviderError> {
     if status != 400 {
         return None;
     }
@@ -428,8 +463,8 @@ pub fn azure_content_filter_refusal(status: u16, payload: &Value) -> Option<Prov
     if error.get("code").and_then(Value::as_str) != Some("content_filter") {
         return None;
     }
-    let categories = error
-        .get("innererror")
+    let inner = error.get("innererror");
+    let categories = inner
         .map(|inner| {
             filtered_categories_in(
                 CONTENT_FILTER_RESULT_KEYS
@@ -450,7 +485,7 @@ pub fn azure_content_filter_refusal(status: u16, payload: &Value) -> Option<Prov
         "Provider content filter refused the request"
     );
     Some(ProviderError::RequestFailed(
-        content_filter_blocked_message(FilterOwner::Azure, FilterBlocked::Request, &categories),
+        content_filter_blocked_message(owner(inner), FilterBlocked::Request, &categories),
     ))
 }
 
@@ -553,6 +588,22 @@ pub fn content_filter_block_in_completion(response: &Value) -> Option<ProviderEr
         }
     }
     None
+}
+
+/// A reply a content filter stopped where the response names neither whose
+/// filter it was nor which categories it flagged: the Responses route's
+/// `incomplete_details.reason` of `content_filter`, streamed
+/// (`response.incomplete`) or not. Logged, worded and classified as the Chat
+/// Completions block is ([`content_filter_block_in_completion`]), so it is a
+/// policy refusal and is never retried or continued: the same request is
+/// filtered the same way.
+pub(crate) fn content_filter_stopped_reply() -> ProviderError {
+    log_content_filter_stop("content_filter", &[]);
+    ProviderError::RequestFailed(content_filter_blocked_message(
+        FilterOwner::Provider,
+        FilterBlocked::Reply,
+        &[],
+    ))
 }
 
 /// One chunk on its own, as the tests read it.
@@ -4519,7 +4570,79 @@ data: [DONE]
             json!({}),
         ] {
             assert!(azure_content_filter_refusal(400, &body).is_none(), "{body}");
+            assert!(content_filter_refusal(400, &body).is_none(), "{body}");
         }
+        assert!(content_filter_refusal(500, &filtered).is_none());
+        assert!(content_filter_refusal(429, &filtered).is_none());
+    }
+
+    /// The provider-neutral reading the `openai` provider uses: a 400 with
+    /// code `content_filter` from a server that names no verdict is the
+    /// provider's block, naming nothing and carrying none of the server's
+    /// paragraph; one carrying Azure's verdict under `innererror` is Azure's,
+    /// with its categories, exactly as [`azure_content_filter_refusal`] reads
+    /// it. Either way it is a policy refusal, logged once and never retried.
+    #[test]
+    fn a_provider_neutral_400_content_filter_names_whose_filter_it_was() {
+        let bare = json!({
+            "error": {
+                "code": "content_filter",
+                "type": "invalid_request_error",
+                "message": "SECRET_PROVIDER_PARAGRAPH Your prompt was flagged."
+            }
+        });
+        let capture = FilterLogCapture::default();
+        let error = tracing::subscriber::with_default(capture.subscriber(), || {
+            content_filter_refusal(400, &bare)
+        })
+        .expect("a filtered prompt is a refusal");
+        let log = capture.text();
+        assert_eq!(
+            error,
+            ProviderError::RequestFailed(
+                "The provider's content filter blocked this request. Revise the request or \
+                 contact your provider administrator."
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            error.kind(),
+            crate::providers::errors::ProviderErrorKind::Policy
+        );
+        assert!(!crate::agents::mistakes::is_recoverable(&error));
+        assert!(!crate::providers::retry::should_retry(&error));
+        assert_eq!(
+            log.matches("Provider content filter refused the request")
+                .count(),
+            1,
+            "{log}"
+        );
+        assert!(log.contains("categories=\"-\""), "{log}");
+        assert!(!log.contains("SECRET_PROVIDER_PARAGRAPH"), "{log}");
+
+        let azure_shaped = json!({
+            "error": {
+                "code": "content_filter",
+                "message": "SECRET_PROVIDER_PARAGRAPH",
+                "innererror": {
+                    "code": "ResponsibleAIPolicyViolation",
+                    "content_filter_result": {
+                        "violence": {"filtered": true, "severity": "high"},
+                        "hate": {"filtered": false, "severity": "safe"}
+                    }
+                }
+            }
+        });
+        let error = content_filter_refusal(400, &azure_shaped).expect("Azure's refusal");
+        assert_eq!(
+            error,
+            azure_content_filter_refusal(400, &azure_shaped).expect("Azure's refusal")
+        );
+        assert_eq!(
+            error.to_string(),
+            "Request failed: Azure's content filter blocked this request (flagged: violence). \
+             Revise the request or contact your provider administrator."
+        );
     }
 
     /// Azure's "Scenario 5" without streaming: HTTP 200, an empty message,
@@ -4631,5 +4754,37 @@ data: [DONE]
                 "{clean}"
             );
         }
+    }
+
+    /// The Responses route's stop names no owner and no category, so it reads
+    /// as the provider's block, in the same words, of the same kind and with
+    /// the same one warning as a Chat Completions block.
+    #[test]
+    fn a_stop_that_names_nothing_is_the_providers_block() {
+        let capture = FilterLogCapture::default();
+        let error =
+            tracing::subscriber::with_default(capture.subscriber(), content_filter_stopped_reply);
+        assert_eq!(
+            error,
+            ProviderError::RequestFailed(
+                "The provider's content filter blocked this reply. Revise the request or \
+                 contact your provider administrator."
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            error.kind(),
+            crate::providers::errors::ProviderErrorKind::Policy
+        );
+        assert!(!crate::providers::retry::should_retry(&error));
+        assert!(!crate::agents::mistakes::is_recoverable(&error));
+        let log = capture.text();
+        assert_eq!(
+            log.matches("Provider content filter blocked the reply")
+                .count(),
+            1,
+            "{log}"
+        );
+        assert!(log.contains("categories=\"-\""), "{log}");
     }
 }
