@@ -287,8 +287,10 @@ this order, and only then consults your `Stop` hooks:
 1. the done gate, when you configured one (`BIOROUTER_DONE_GATE`);
 2. the self-critique pass, when you enabled it;
 3. the Todo checklist check: a turn that created or changed the checklist may
-   not end while items are unfinished, unless the final message names each open
-   item. See [What Biorouter enforces](../../extensions/built-in/todo.md#what-biorouter-enforces).
+   not end while items are pending or in progress, unless the final message
+   names each of them. An item marked blocked never holds the turn, so a
+   checklist whose only unfinished items are blocked lets the stop through to
+   your hooks. See [What Biorouter enforces](../../extensions/built-in/todo.md#what-biorouter-enforces).
 
 A built-in check that blocks ends that stop attempt, so your hooks run on the
 next one. The checklist check runs ahead of your hooks because it is

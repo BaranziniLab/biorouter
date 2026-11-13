@@ -219,12 +219,33 @@ and every `decisions__*` tool row (`utils/toolGlyph.ts`, whose test reads the to
   tall as the loaded rows, and the next page is asked for once the last loaded row is within 20
   rows of the view. The arrow keys, Home, End and the page keys move the selection, which is the
   list's active descendant and is kept in the DOM wherever the window is.
+  - **A `decide` call's rows stay together.** The daemon stores every row of a batch with the
+    time its first row was stored (`insert_decision_into!` in
+    `crates/biorouter/src/decision/log.rs`), so each chunk shows that one time, and the page order
+    (`PAGE_ORDER` there) puts a batch's rows next to each other in chunk order, the last chunk on
+    top as in the rest of the newest-first list. A row that names no chunk (a stopped batch's) sits
+    above its chunks, and a vote's models answer the same chunk side by side. A monitor that
+    checked while the batch ran lists above the whole batch. Before this, each row took the time
+    it was stored, so chunks listed in the order they finished.
+  - **It follows a running chat.** While the view is open and the window visible, it reads the
+    list's own first call every 4 seconds (`FOLLOW_INTERVAL_MS`, the same filter, one row) and
+    compares it with what the list's first page read. A new call reloads the list in place when
+    the list is within 24px of the top; otherwise the preview bar offers "Show 3 new", so the rows
+    under the reader never move. It compares with the list's own read, not with a separate summary
+    read: a call that landed between those two reads used to stay missing from the list until
+    Refresh. It counts only calls the filter shows.
 - **A row** is the glyph, the title (a monitor by its name; a call that asked several monitors at
   once "2 monitors", with their names on the second line; a gate by its phase; a `decide` chunk by
   the id the agent gave it, else "Chunk 30"), and on the right the verdict ("Fired", "Quiet",
   "1 of 2 fired", "Passed", "Not passed") or, for a `decide`, chat or ad hoc call, the answer.
-  The second line holds the time and, for a one-question call, a small bar with its named
-  probability. The model and the latency are under Details.
+  The second line holds the time (and a several-monitor call's names) and, for a one-question
+  call, a small bar with its named probability. When the rows loaded so far came from more than
+  one model (a vote, or monitors on different models), the second line also ends with each row's
+  model, with where it runs when that is short: "1:31:02 PM · joey-1 · Baseten",
+  "1:31:02 PM · tev1:0.8b · this computer" (the longer place a `biorouter serve` browser shows
+  stays under Details). The row's accessible name then ends with the model too (`rowModel` and
+  `listsSeveralModels` in `DecisionHistory.tsx`). A chat whose calls all used one model keeps
+  the model under Details, and the latency is always there.
 - **The detail pane** shows, up front: the title once, one muted line with the kind and the time
   ("Monitor · 1:26:51 PM"), an error or a refusal and the privacy note when they apply, then per
   question the question in plain words (never its name, never in mono), the answer with its own
@@ -866,7 +887,8 @@ not something it used.
 | The hook's gate, re-reads and polling | `hooks/useSessionDecisions.test.tsx` |
 | The section's rows (one per monitor that exists now, a several-monitor call on each, no row for a removed monitor or a gate), the trailing words, the closed line, opening on a fire or an error, a person's toggle holding, the Monitors button and its absence in a decision chat, and the stylesheet rules | `components/summary/SummaryDecisions.test.tsx`, `components/summary/summaryDecisionRows.test.ts` |
 | The section at 240px in Chromium: five 28px rows for 5,000 calls, no bar, the heading's 24px Monitors button, nothing past the card | `components/summary/summaryDecisions.browser.test.tsx` |
-| The history view's window, paging, selection, filters (Source, Outcome per source, the Filters popover and its label, the chips no picker names), row titles and verdicts, the detail up front and under Details, and the Model tier label | `components/decisions/DecisionHistory.test.tsx` |
+| The history view's window, paging, selection, filters (Source, Outcome per source, the Filters popover and its label, the chips no picker names), row titles and verdicts, the model on the second line only when the list holds several models, following new calls against the list's own read, the detail up front and under Details, and the Model tier label | `components/decisions/DecisionHistory.test.tsx` |
+| A `decide` call's rows at one time and in chunk order, a vote's models side by side, pages walking them once each, and a cursor that resumes only from a row of this chat | `crates/biorouter/src/decision/log.rs` (`cargo test -p biorouter --lib decision::log`) |
 | In Chromium: 2,000 rows scrolled to the end, ten calls hugged in a narrow panel, the Filters popover kept open by a nested pick, Escape closing one layer at a time, and the dark popover's strong step | `components/decisions/decisionHistory.browser.test.tsx` |
 | The `decisions` kind in the side panel | `components/decisions/decisionsArtifact.test.tsx` |
 | The Monitors dialog: each change written at once over a fresh read (an agent's monitor added meanwhile kept, Undo putting back only its own monitor), the status and Undo, rows and their peek, the editor in place with More options and its starting state, Fires when and the 21-stop threshold, Stop only once, choice descriptions, validation and the daemon's refusals, owner badges and the transfer to the person, privacy reasons and the Crew rows, the model list's missing route, refusal and failure with Retry, and the browser | `components/decisions/MonitorsDialog.test.tsx`, `utils/sessionDecisions.test.ts` |
