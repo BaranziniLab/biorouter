@@ -180,7 +180,12 @@ async function bundle(variant: Variant): Promise<{ script: string; css: string }
     format: 'iife',
     jsx: 'automatic',
     platform: 'browser',
-    define: { 'process.env.NODE_ENV': '"production"' },
+    // Vite defines `import.meta.env`; a module the row reaches may read it at load (Crew's
+    // draft stash reads `MODE`), and esbuild leaves it undefined unless told.
+    define: {
+      'process.env.NODE_ENV': '"production"',
+      'import.meta.env': JSON.stringify({ MODE: 'production', DEV: false, PROD: true }),
+    },
     loader: {
       '.css': 'css',
       '.svg': 'dataurl',
