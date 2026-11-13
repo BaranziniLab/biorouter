@@ -473,7 +473,7 @@
 }
 
 /* A call that failed or was refused: the failure glyph and the words, in the
-   primary ink, never a status hue (red is rare, design.md 9.13). */
+   primary ink, never a status hue (red is rare, design.md 9.14). */
 .br-dh-detail__error {
   display: flex;
   align-items: flex-start;
@@ -872,7 +872,7 @@
 }
 
 /* The "Waiting for you" chip and its tip on one line (R2-7): a neutral chip, never a
-   tinted banner (red is rare, design.md 9.13). */
+   tinted banner (red is rare, design.md 9.14). */
 .br-gate-waiting {
   display: inline-flex;
   align-items: center;
@@ -1047,7 +1047,7 @@
 
 /* A field's problem, or a save or load that failed: the primary ink and the words,
    and for a failure the failure glyph before them. Never a status hue: red is rare
-   (design.md 9.13), and an invalid field keeps its one red edge on the field. */
+   (design.md 9.14), and an invalid field keeps its one red edge on the field. */
 .br-monitors__error {
   margin: 0;
   font-size: var(--text-supporting);

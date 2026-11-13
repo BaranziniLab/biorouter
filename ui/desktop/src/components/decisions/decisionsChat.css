@@ -214,7 +214,7 @@
 }
 
 /* A call with no answer: the primary ink, the words and the failure glyph, never a
-   status hue (red is rare, design.md 9.13). */
+   status hue (red is rare, design.md 9.14). */
 .br-decision-card__error {
   display: flex;
   align-items: flex-start;
@@ -449,7 +449,7 @@
 }
 
 /* A problem (a refused save, a threshold out of range) is said in the primary ink:
-   red is rare (design.md 9.13), and the words and the failure glyph carry it. */
+   red is rare (design.md 9.14), and the words and the failure glyph carry it. */
 .br-decision-composer__status[data-tone='problem'] {
   color: var(--text-default);
 }

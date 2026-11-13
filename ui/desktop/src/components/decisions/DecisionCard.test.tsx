@@ -317,7 +317,7 @@ describe('the decision card', () => {
     show('dec-3');
     const error = await screen.findByTestId('decision-error');
     expect(error).toHaveTextContent('Not decided: The decision model did not answer in 10 s');
-    // Red is rare (design.md 9.13): the failure glyph and the words, nothing in a status hue.
+    // Red is rare (design.md 9.14): the failure glyph and the words, nothing in a status hue.
     expect(within(error).getByTestId('decision-error-glyph').innerHTML).toBe(failureGlyph());
     expect(error.outerHTML).not.toMatch(/danger|warning/);
   });

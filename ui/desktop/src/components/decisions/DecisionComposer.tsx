@@ -372,7 +372,7 @@ export function DecisionComposer({ sessionId }: DecisionComposerProps) {
   // The one thing the status says, and how: a short state at the end of the question
   // line, a longer sentence on its own line under it (the same node either way).
   const problem = !verdict.ok && draft.instructions.trim() !== '' ? verdict.problem : null;
-  // Red is rare (design.md 9.13): a problem is said in the primary ink, never in a
+  // Red is rare (design.md 9.14): a problem is said in the primary ink, never in a
   // status hue. A refused save is a failure, so it also draws the failure glyph; a
   // threshold out of range is an invalid field, whose field keeps the one red edge.
   const status: {

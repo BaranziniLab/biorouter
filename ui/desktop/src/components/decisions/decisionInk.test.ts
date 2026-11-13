@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Red is rare in the decision UI (design.md 9.13; owner, 2026-11-12). A failed or
+ * Red is rare in the decision UI (design.md 9.14; owner, 2026-11-12). A failed or
  * refused decision, a monitor that could not be saved, a gate that waits for the
  * person: each is said in words, in the primary ink, with the failure glyph
  * (`AlertCircle`) for a failure and a neutral chip for something that needs the

@@ -157,7 +157,7 @@ describe('the decision composer', () => {
       )
     );
     // On its own line, in the primary ink with the failure glyph (red is rare,
-    // design.md 9.13), and still the one status node.
+    // design.md 9.14), and still the one status node.
     const status = screen.getByTestId('decision-composer-status');
     expect(status).toHaveAttribute('data-wide', 'true');
     expect(status).toHaveAttribute('data-tone', 'problem');

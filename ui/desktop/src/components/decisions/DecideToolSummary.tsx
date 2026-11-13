@@ -461,7 +461,7 @@ export function DecideToolSummary({
           <ul className="br-decide-card__errors" data-testid="decide-tool-errors">
             {summary.errorGroups.map((group) => (
               <li key={group.message} className="br-decide-card__error">
-                {/* Red is rare (design.md 9.13): a chunk the model failed is the
+                {/* Red is rare (design.md 9.14): a chunk the model failed is the
                     failure glyph and words in ink, never a status hue. */}
                 <AlertCircle aria-hidden data-testid="decide-tool-error-glyph" />
                 <span className="br-decide-card__error-count">
