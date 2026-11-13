@@ -503,10 +503,11 @@ describe('the subagents in the summary card, in a real layout engine', () => {
       });
       expect(phase.gate, 'the instrument: the phase has its gate chip').toBe(true);
       expect(phase.text).toBe('4 of 4');
-      // The count never wraps; the long title is what gives way, on two lines at most
-      // (18px each inside the row's 5px padding).
+      // The count never wraps, and the long title gives way on its one line, cut with an
+      // ellipsis (vision review, 2026-11-12: a title on two lines pushed the count and the
+      // gate down): one 18px line inside the row's 5px padding.
       expect(phase.lines).toBe(1);
-      expect(phase.height).toBe(46);
+      expect(phase.height).toBe(28);
     } finally {
       await tab.close();
     }

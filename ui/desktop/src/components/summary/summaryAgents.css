@@ -35,7 +35,7 @@
 }
 
 /* A PHASE IS A CHUNK, NOT A BOX. Its line (the chevron, the title, the count
-   and the gate's circle) is its heading; its grid and rows follow on the card's
+   and the gate's flag) is its heading; its grid and rows follow on the card's
    own ground, with no fill, radius or padding of its own. A phase after the
    first is parted from the one above by a hairline inset to the content, 4px of
    space on either side (9 to 10px from the line to the text): inset, where the
@@ -131,15 +131,15 @@
   white-space: nowrap;
 }
 
-/* A phase's title is what tells one chunk from the next, so it wraps to a
-   second line before it is cut ("Audit the sou…" said nothing at 240px). */
+/* A phase's title is one line, cut with an ellipsis, so its count and its gate
+   always stay on that line beside it (vision review, 2026-11-12: a title that
+   wrapped to a second line pushed them down). The whole title is the title's
+   own tooltip, the phase toggle's accessible name and the gate's. */
 .br-agents__phase-title {
-  display: -webkit-box;
   min-width: 0;
   overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .br-agents__name,
@@ -174,13 +174,13 @@
   max-width: 45%;
 }
 
-.br-agents__row[data-quiet] .br-agents__trailing {
-  color: var(--text-warning);
-}
-
-.br-agents__row[data-status='completed'] .br-agents__name,
-.br-agents__row[data-status='unknown'] .br-agents__name {
-  color: var(--text-muted);
+/* A quiet child's "quiet 4m" and a failure's "Failed · 1m45s" read in the
+   default ink: the word is what tells them apart, never a warning or danger
+   hue (owner direction, 2026-11-12). A name is the default ink at every
+   status, finished ones included. */
+.br-agents__row[data-quiet] .br-agents__trailing,
+.br-agents__row[data-mark='failed'] .br-agents__trailing {
+  color: var(--text-default);
 }
 
 /* The lock: a shape, in the row's muted ink (F-16): an all-private roster is
@@ -200,7 +200,7 @@
 }
 
 /* PHASES (F-1). One 28px line per group: the toggle (title, "2 of 5",
-   chevron) and, at the line's end, the gate's circle or "Add gate". Two
+   chevron) and, at the line's end, the gate's flag or "Add gate". Two
    siblings, never a button inside a button. A muted line under it only when
    there is something to act on. */
 .br-agents__phase-line {
@@ -216,7 +216,7 @@
   flex: 1 1 auto;
 }
 
-/* The chevron, the count and the gate keep to the title's first line. */
+/* The chevron, the count and the gate share the title's one line. */
 .br-agents__phase-toggle {
   align-items: flex-start;
 }
@@ -274,14 +274,10 @@
   visibility: hidden;
 }
 
-.br-agents__phase[data-status='completed'] .br-agents__phase-title,
-.br-agents__phase[data-status='skipped'] .br-agents__phase-title,
-.br-agents__phase[data-status='pending'] .br-agents__phase-title {
-  color: var(--text-muted);
-}
-
-/* The held line ("Waits for Build's gate") sits on the title's text edge, past
-   the chevron's column, so it reads as the phase's and not the section's. */
+/* A phase's title is the default ink whatever the phase's status: its count
+   or status word says where it stands. The held line ("Waits for the gate
+   after Build") sits on the title's text edge, past the chevron's column, so
+   it reads as the phase's and not the section's. */
 .br-agents__phase-counts {
   margin: 0 0 2px;
   padding-left: 22px;

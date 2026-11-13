@@ -416,6 +416,14 @@ describe('the subagents keep the summary’s rules', () => {
   const AGENTS_TSX = codeWithoutComments(
     readFileSync(join(__dirname, '../components/summary/SummarySubagents.tsx'), 'utf8')
   );
+  const DECISIONS_CSS = readFileSync(
+    join(__dirname, '../components/summary/summaryDecisions.css'),
+    'utf8'
+  ).replace(/\/\*[\s\S]*?\*\//g, '');
+  const SUMMARY_CSS = readFileSync(
+    join(__dirname, '../components/summary/chatSummary.css'),
+    'utf8'
+  ).replace(/\/\*[\s\S]*?\*\//g, '');
 
   /** The body of the one top-level rule whose selector list is exactly `selector`. */
   function agentsRule(selector: string): string {
@@ -522,22 +530,106 @@ describe('the subagents keep the summary’s rules', () => {
     expect([...frames.matchAll(/([a-z-]+)\s*:/g)].map((m) => m[1])).toEqual(['opacity']);
   });
 
-  it('inks every status with an existing semantic token, and draws it in forced colours', () => {
+  /**
+   * Owner direction, 2026-11-12: red is rare (design.md 9.13). A failed mark is the outline with
+   * a small cross in the muted ink, and a mark waiting for the person (or stalled) the half fill
+   * in the default ink, so neither reaches for a danger or warning hue; the word says which.
+   */
+  it('inks every status with an existing token, never red, and draws it in forced colours', () => {
     for (const [kind, ink] of [
       ['running', 'var(--text-info)'],
-      ['waiting', 'var(--text-warning)'],
-      ['failed', 'var(--text-danger)'],
+      ['waiting', 'var(--text-default)'],
+      ['failed', 'var(--text-muted)'],
     ]) {
       const rule = GRID_CSS.match(
         new RegExp(`\\.br-agent-mark\\[data-kind='${kind}'\\] \\{([^}]*)\\}`)
       );
       expect(property(rule?.[1] ?? '', 'color'), kind).toBe(ink);
     }
-    expect(GRID_CSS).toMatch(/\.br-agent-mark\[data-kind='done'\] \{[^}]*--text-success/);
+    expect(GRID_CSS).toMatch(/\.br-agent-mark\[data-kind='done'\][^{]*\{[^}]*--text-success/);
+    // The failed mark is the ring and its small cross, both stroked at the ring's width.
+    expect(GRID_CSS).toMatch(
+      /\.br-agent-mark__ring,\s*\.br-agent-mark__cross \{[^}]*stroke: currentColor;/
+    );
     // The grid declares no type of its own.
     expect(GRID_CSS).not.toMatch(/font-size:/);
     const forced = GRID_CSS.slice(GRID_CSS.indexOf('@media (forced-colors: active)'));
     expect(forced).toMatch(/\.br-agent-mark \{\s*color: CanvasText;/);
+  });
+
+  it('names no danger or warning ink anywhere in the summary', () => {
+    for (const [name, css] of [
+      ['chatSummary.css', SUMMARY_CSS],
+      ['summaryAgents.css', AGENTS_CSS],
+      ['summaryAgentGrid.css', GRID_CSS],
+      ['summaryDecisions.css', DECISIONS_CSS],
+    ]) {
+      expect(css, name).not.toMatch(/--(?:text|background|border|wash)-(?:danger|warning)/);
+    }
+    // A gate that wants a look reads solid, and one that waits for the person takes the accent.
+    expect(
+      property(
+        DECISIONS_CSS.match(/\.br-agents__gate\[data-attention\] \{([^}]*)\}/)?.[1] ?? '',
+        'color'
+      )
+    ).toBe('var(--text-default)');
+    expect(
+      property(
+        DECISIONS_CSS.match(/\.br-agents__gate\[data-needs-person\] \{([^}]*)\}/)?.[1] ?? '',
+        'color'
+      )
+    ).toBe('var(--text-accent)');
+    // A failed refresh is a sentence in the default ink beside its Retry.
+    expect(property(SUMMARY_CSS.match(/\.br-summary__error \{([^}]*)\}/)?.[1] ?? '', 'color')).toBe(
+      'var(--text-default)'
+    );
+  });
+
+  /**
+   * Owner direction, 2026-11-12: text reads solid. A name, a phase title and a value keep the
+   * default ink at every status; secondary text is the muted token itself, never the subtler
+   * step, a mix or an opacity fade. The ui-readability lane strengthens `--text-muted` at the
+   * token layer (design.md 9.14), so the rail takes that change with no edit here.
+   */
+  it('keeps names and phase titles in the default ink, and secondary text on the muted token', () => {
+    // No rule fades a name or a title.
+    expect(AGENTS_CSS).not.toMatch(/__name[^{]*\{[^}]*color: var\(--text-muted\)/);
+    expect(AGENTS_CSS).not.toMatch(/__phase-title[^{]*\{[^}]*color/);
+    expect(AGENTS_CSS).not.toMatch(/\[data-status='[a-z_]+'\] \.br-agents__(?:name|phase-title)/);
+    for (const selector of [
+      '.br-agents__meta, .br-agents__trailing, .br-agents__phase-counts',
+      '.br-agents__more',
+      '.br-agents__key',
+    ]) {
+      expect(property(agentsRule(selector), 'color'), selector).toBe('var(--text-muted)');
+    }
+    // Every text ink in the rail is a token: the default, the muted or the accent (a running
+    // to-do's glyph). Never the subtle step, a mix or a literal.
+    for (const [name, css] of [
+      ['chatSummary.css', SUMMARY_CSS],
+      ['summaryAgents.css', AGENTS_CSS],
+      ['summaryDecisions.css', DECISIONS_CSS],
+    ]) {
+      const inks = [...css.matchAll(/(?:^|[\s;{])color:\s*([^;]+);/g)].map((m) => m[1].trim());
+      expect(inks.length, name).toBeGreaterThan(0);
+      for (const ink of inks) {
+        expect(
+          ['var(--text-default)', 'var(--text-muted)', 'var(--text-accent)', 'inherit'],
+          `${name}: ${ink}`
+        ).toContain(ink);
+      }
+      expect(css, name).not.toMatch(/--text-subtle/);
+    }
+    // Text never fades by opacity (only the quiet "Add gate" plus does, in summaryDecisions.css).
+    expect(AGENTS_CSS).not.toMatch(/opacity:/);
+  });
+
+  it('keeps a phase title to one line, cut with an ellipsis', () => {
+    const title = agentsRule('.br-agents__phase-title');
+    expect(property(title, 'white-space')).toBe('nowrap');
+    expect(property(title, 'text-overflow')).toBe('ellipsis');
+    expect(property(title, 'overflow')).toBe('hidden');
+    expect(title).not.toMatch(/line-clamp/);
   });
 
   it('draws its rows as plain buttons, so the card’s three Buttons stay three', () => {

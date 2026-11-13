@@ -140,7 +140,7 @@ describe('decision-model work is a circle', () => {
     expect(agentMarkShape(one({ providerName: null }))).toBe('square');
   });
 
-  it('fills a gate by its state: passed, needs you, not passed, skipped, not asked', () => {
+  it('names a gate’s state for its flag: passed, needs you, not passed, skipped, not asked', () => {
     expect(gateMarkKind(gate({ lastPassed: true }))).toBe('done');
     expect(gateMarkKind(gate({ lastPassed: false }))).toBe('failed');
     expect(gateMarkKind(gate({ needsPerson: true, blocked: true }))).toBe('waiting');

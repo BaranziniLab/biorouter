@@ -8,16 +8,16 @@ import './summaryAgentGrid.css';
  *
  * Drawn in a 12-unit box and scaled to `size`, in `currentColor`, so the status
  * ink is one `color` (summaryAgentGrid.css) and forced colours repaint the whole
- * mark in the system ink while its shape still says where it stands. The cross a
- * failure cuts out is a hole (`evenodd`), not a stroke in the ground's colour, so
- * the mark reads the same on the card, a popover or a recessed ground.
+ * mark in the system ink while its shape still says where it stands. A failure
+ * is the outline with a small cross inside, in the muted ink at full strength
+ * (owner direction, 2026-11-12: calm, never red, never faded), and its word
+ * says "Failed".
  *
  * Always `aria-hidden`: the control that carries a mark names the status in words.
  */
 
-/** The cross a failed mark cuts out, centred in the box (arms 1.9 units wide). */
-const CROSS =
-  'M4.06 9.29 L6 7.34 L7.94 9.29 L9.29 7.94 L7.34 6 L9.29 4.06 L7.94 2.71 L6 4.66 L4.06 2.71 L2.71 4.06 L4.66 6 L2.71 7.94 Z';
+/** The small cross inside a failed mark's outline, drawn with the ring's stroke. */
+const CROSS = 'M4.25 4.25 L7.75 7.75 M7.75 4.25 L4.25 7.75';
 
 const SOLID: Record<AgentMarkShape, string> = {
   square:
@@ -68,7 +68,10 @@ function body(kind: AgentMarkKind, shape: AgentMarkShape): ReactNode {
       return <path className="br-agent-mark__fill" d={SOLID[shape]} />;
     case 'failed':
       return (
-        <path className="br-agent-mark__fill" fillRule="evenodd" d={`${SOLID[shape]} ${CROSS}`} />
+        <>
+          <Ring shape={shape} />
+          <path className="br-agent-mark__cross" d={CROSS} />
+        </>
       );
     case 'idle':
       return (

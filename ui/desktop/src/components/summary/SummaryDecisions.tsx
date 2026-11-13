@@ -103,7 +103,8 @@ function SourceRow({
             once a monitor fired, solid for one that checked and stayed quiet
             (never the failed cross: a quiet monitor did nothing wrong, R1) and
             for `decide` batches and a decision chat's answers, hollow for one
-            not checked yet, a bar when off, the cut cross for an error. */}
+            not checked yet, a bar when off, the outline with a small cross
+            for an error. */}
         <span className="br-summary__glyph br-decisions__glyph" aria-hidden="true">
           <AgentMark
             kind={DECISION_STATE_MARKS[row.state]}

@@ -21,14 +21,20 @@
   color: var(--text-muted);
 }
 
-.br-agent-mark__ring {
+.br-agent-mark__ring,
+.br-agent-mark__cross {
   fill: none;
   stroke: currentColor;
   stroke-width: 1.5;
 }
 
+.br-agent-mark__cross {
+  stroke-linecap: round;
+}
+
 /* At 7px a 1.5-unit ring is under a pixel: the dense block draws it at 2. */
-.br-agent-mark[data-small] .br-agent-mark__ring {
+.br-agent-mark[data-small] .br-agent-mark__ring,
+.br-agent-mark[data-small] .br-agent-mark__cross {
   stroke-width: 2;
 }
 
@@ -37,26 +43,34 @@
   fill: currentColor;
 }
 
-/* THE INKS. Running: the info blue. Waiting for the person, or stalled: the
-   warning amber. Failed: the danger red. Finished: a calm sage, the success ink
-   greyed with the muted ink (60:40) and set at 70% over the card's fill. Measured
-   against that fill it is 3.3:1 at its lowest (Alma Mater light) and 4.4:1 at
-   its highest (Alma Mater dark), so a block of finished work recedes beside the
-   live and failed marks and still clears the 3:1 a graphic needs. Not started
-   and no outcome stay in the muted ink. */
+/* THE INKS (owner direction, 2026-11-12: red is rare, and a failure is calm;
+   design.md 9.13). Running: the info blue. Finished: a calm sage, the success
+   ink greyed with the muted ink (60:40) and set at 70% over the card's fill.
+   Measured against that fill it is 3.3:1 at its lowest (Alma Mater light) and
+   4.4:1 at its highest (Alma Mater dark), so a block of finished work recedes
+   beside the live marks and still clears the 3:1 a graphic needs. Waiting for
+   the person, stalled, stopped or interrupted: the half fill in the default
+   ink, with no hue of its own. Failed: the outline with a small cross, in the
+   muted ink at full strength, never the danger red and never an opacity fade;
+   its cross tells it from a mark not started, and the word "Failed" is on its
+   row and its card. Not started and no outcome stay in the muted ink, told
+   apart by their hollow shapes. Every one is a token, so a change to the app's
+   inks reaches the grid. */
 .br-agent-mark[data-kind='running'] {
   color: var(--text-info);
 }
 
 .br-agent-mark[data-kind='waiting'] {
-  color: var(--text-warning);
+  color: var(--text-default);
 }
 
 .br-agent-mark[data-kind='failed'] {
-  color: var(--text-danger);
+  color: var(--text-muted);
 }
 
-.br-agent-mark[data-kind='done'] {
+/* A passed gate's flag (SummarySubagents.tsx) wears the finished sage too. */
+.br-agent-mark[data-kind='done'],
+.br-agents__gate-glyph[data-kind='done'] {
   color: color-mix(
     in srgb,
     color-mix(in srgb, var(--text-success) 60%, var(--text-muted)) 70%,
@@ -155,7 +169,7 @@
 }
 
 /* Forced colours repaint every mark in the one system ink; the shapes (hollow,
-   core, half, solid, cut cross, bar) still tell the statuses apart. Running takes
+   core, half, solid, cross, bar) still tell the statuses apart. Running takes
    the highlight ink, the one other colour the system offers. */
 @media (forced-colors: active) {
   .br-agent-mark {
