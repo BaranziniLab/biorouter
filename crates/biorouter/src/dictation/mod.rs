@@ -37,7 +37,10 @@ pub use service::{
     service, DictatedRecording, DictationError, DictationService, EngineBuild, EngineState,
     EngineStatus, MemoryShortfall, SegmentDecode, TranscribeRequest, WarmUp, WorkerProbe,
 };
-pub use target::{chat_reach, cli_bias, new_chat_bind_tier, ChatReach, CliTerminal};
+pub use target::{
+    chat_reach, cli_bias, new_chat_bind_tier, new_chat_target_tier, ChatReach, CliTerminal,
+    NewChatDraft,
+};
 
 /// MSG-NO-ENGINE.
 pub const MSG_NO_ENGINE: &str = "This build of Biorouter has no local dictation engine.";

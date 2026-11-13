@@ -32,6 +32,7 @@ import {
   selectDictationModel,
 } from '../../api';
 import type {
+  DecisionModelRef as GeneratedDecisionModelRef,
   DictationAudioAck as GeneratedAudioAck,
   DictationBench as GeneratedBench,
   DictationCancelled as GeneratedCancelled,
@@ -46,6 +47,7 @@ import type {
   DictationTranscript as GeneratedTranscript,
 } from '../../api';
 import { getApiUrl } from '../../config';
+import type { DecisionModelRef } from '../../utils/sessionDecisions';
 import { userActionHeaders } from '../../utils/userAction';
 
 export type DictationTargetKind = 'chat' | 'new_chat' | 'editor' | 'crew' | 'external';
@@ -62,10 +64,27 @@ export interface StreamRequest {
   new_chat_provider?: string;
   /** `new_chat` only, beside `new_chat_provider` and under the same rule. */
   new_chat_model?: string;
+  /**
+   * `new_chat` only: every decision model the composer's draft names, which the start
+   * will carry (DR-33). It can only make the target more public; honoured only with the
+   * user action proof, and without it a draft makes the new chat public.
+   */
+  new_chat_decision_models?: GeneratedDecisionModelRef[];
   /** `crew` and `external` only; sent only after MSG-PRIVATE-TERMS, for one recording. */
   include_private_terms?: boolean;
   /** At most 2 KiB, ranking only. */
   context?: string;
+}
+
+/** A draft's decision models in the shape `new_chat_decision_models` carries. */
+export function streamDecisionModels(
+  models: readonly DecisionModelRef[]
+): GeneratedDecisionModelRef[] {
+  return models.map((ref) => ({
+    provider: ref.provider,
+    model: ref.model,
+    ...(ref.adapter ? { adapter: ref.adapter } : {}),
+  }));
 }
 
 export interface StreamCreated {

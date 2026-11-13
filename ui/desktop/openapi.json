@@ -18519,6 +18519,14 @@
             "description": "A language code, or `auto`; the configured language when absent.",
             "nullable": true
           },
+          "new_chat_decision_models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DecisionModelRef"
+            },
+            "description": "`new_chat` only: every decision model the composer's draft names for the new chat,\nits default and each monitor's, from the draft `/agent/start` will carry as\n`decision_settings` (DR-33). A public one makes the target public, as it will make\nthe chat. Honoured only with the user action proof; without the proof, or when it\ndoes not parse, the new chat is judged public. It can only make the target more\npublic, never more private.",
+            "nullable": true
+          },
           "new_chat_model": {
             "type": "string",
             "description": "`new_chat` only: the tab's model pick, beside `new_chat_provider` and under the same\nrule, so a provider whose tier reads the model (an Ollama cloud tag) is judged as\nthe new chat will bind it.",

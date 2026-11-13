@@ -64,6 +64,7 @@ import {
   transcript,
 } from './dictation/dictationTestKit';
 import { isPrivateDraft, resetPrivateDraftsForTests } from './dictation/privateDraft';
+import { parseDecisionSettings } from '../utils/sessionDecisions';
 import { readComposerDraft, resetComposerDraftsForTests } from '../utils/composerDrafts';
 
 let captures: FakeCapture[] = [];
@@ -358,5 +359,75 @@ describe('the stream target', () => {
       new_chat_model: 'gpt-5.5',
     });
     expect(streams[0].request).not.toHaveProperty('session_id');
+  });
+
+  // DR-33: the decision models the new chat's start will carry count toward its tier,
+  // so the daemon judges the dictation with them.
+  it('on Home, names every decision model the draft names', async () => {
+    const draft = parseDecisionSettings({
+      defaultModel: { provider: 'ollama_decision', model: 'tev1:0.8b' },
+      monitors: [
+        {
+          id: 'done',
+          name: 'Done',
+          question: { instructions: 'Is the task done?', kind: { binary: {} } },
+          threshold: 0.85,
+          action: 'notify',
+          model: { provider: 'baseten_decision', model: 'joey-1' },
+        },
+        {
+          id: 'off',
+          name: 'Off',
+          question: { instructions: 'Is it off?', kind: { binary: {} } },
+          threshold: 0.85,
+          action: 'notify',
+          enabled: false,
+          model: { provider: 'baseten_decision', model: 'joey-2', adapter: 'logprob' },
+        },
+        {
+          id: 'same',
+          name: 'Same',
+          question: { instructions: 'Is it the same?', kind: { binary: {} } },
+          threshold: 0.85,
+          action: 'notify',
+          model: { provider: 'baseten_decision', model: 'joey-1' },
+        },
+      ],
+    })!;
+    renderComposer({
+      sessionId: null,
+      effectiveModel: { provider: 'versa_azure', model: 'gpt-5.5' },
+      draftDecisionSettings: draft,
+    });
+    await record();
+    expect(streams[0].request).toMatchObject({
+      target_kind: 'new_chat',
+      new_chat_provider: 'versa_azure',
+      new_chat_decision_models: [
+        { provider: 'ollama_decision', model: 'tev1:0.8b' },
+        { provider: 'baseten_decision', model: 'joey-1' },
+        { provider: 'baseten_decision', model: 'joey-2', adapter: 'logprob' },
+      ],
+    });
+    expect(streams[0].request.new_chat_decision_models).toHaveLength(3);
+  });
+
+  it('sends no decision models without a draft', async () => {
+    renderComposer({ sessionId: null, draftDecisionSettings: null });
+    await record();
+    expect(streams[0].request).toMatchObject({ target_kind: 'new_chat' });
+    expect(streams[0].request).not.toHaveProperty('new_chat_decision_models');
+  });
+
+  it('sends no decision models into a chat that exists', async () => {
+    renderComposer({
+      draftDecisionSettings: parseDecisionSettings({
+        defaultModel: { provider: 'baseten_decision', model: 'joey-1' },
+        monitors: [],
+      }),
+    });
+    await record();
+    expect(streams[0].request).toMatchObject({ target_kind: 'chat' });
+    expect(streams[0].request).not.toHaveProperty('new_chat_decision_models');
   });
 });

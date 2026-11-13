@@ -167,6 +167,9 @@ export default function Hub({
             toolCount={0}
             onWorkingDirChange={setWorkingDir}
             onOpenDecisionMonitors={() => setMonitorsOpen(true)}
+            // DR-33: dictation here is judged with the decision models the start
+            // will carry.
+            draftDecisionSettings={draftDecisions?.settings ?? null}
           />
         </div>
       </div>

@@ -50,6 +50,7 @@ import {
   DictationNotices,
 } from './dictation/DictationButton';
 import { DICTATION_ACTIONS, DICTATION_LABELS, dictationMessage } from './dictation/copy';
+import { streamDecisionModels } from './dictation/dictationApi';
 import {
   isDictationInserting,
   noteDictationEdit,
@@ -119,7 +120,8 @@ import {
   settleDecisionQuestion,
 } from './decisions/DecisionComposer';
 import { isDecisionProvider } from './decisions/decisionWire';
-import type { PrivacyBasis } from '../utils/sessionDecisions';
+import type { DecisionSettings, PrivacyBasis } from '../utils/sessionDecisions';
+import { draftDecisionModels } from './decisions/draftDecisionSettings';
 
 /**
  * Queued messages as a draft, for a composer with no chat to keep a queue for.
@@ -463,6 +465,12 @@ interface ChatInputProps {
    * `privacyBasis`, read by `BaseChat`), for the model chip's tip and its switch.
    */
   privacyBasis?: PrivacyBasis | null;
+  /**
+   * DR-33: the decision settings drafted for a chat that does not exist yet, which its
+   * start will carry. A new chat's dictation names their models, so the daemon judges
+   * the chat as the start will make it.
+   */
+  draftDecisionSettings?: DecisionSettings | null;
 }
 
 export default function ChatInput({
@@ -501,6 +509,7 @@ export default function ChatInput({
   onOpenDecisionMonitors,
   usageLimitNoticeKey,
   privacyBasis,
+  draftDecisionSettings,
 }: ChatInputProps) {
   const [anonymousReasoningDraftKey] = useState(() => crypto.randomUUID());
   // A new chat's unsent message, as its tab last held it. Read ONCE, in the
@@ -1861,6 +1870,8 @@ export default function ChatInput({
   composerCommandRef.current = composerCommand;
   const isComposingRef = useRef(isComposing);
   isComposingRef.current = isComposing;
+  const draftDecisionSettingsRef = useRef(draftDecisionSettings);
+  draftDecisionSettingsRef.current = draftDecisionSettings;
   const dictationTarget = (): DictationTarget => {
     const field = textAreaRef.current;
     const prose = composerProseRef.current;
@@ -1869,11 +1880,16 @@ export default function ChatInput({
     const withContext = context ? { context } : {};
     if (sessionId) return { target_kind: 'chat', session_id: sessionId, ...withContext };
     // Home and a new tab: the daemon judges the tier the new chat's bind would
-    // produce, from the tab's own pick when it has one (DD-30).
+    // produce, from the tab's own pick when it has one (DD-30), with the decision
+    // models its draft names, which the start will carry (DR-33).
+    const draftModels = draftDecisionModels(draftDecisionSettingsRef.current);
     return {
       target_kind: 'new_chat',
       ...(effectiveModel
         ? { new_chat_provider: effectiveModel.provider, new_chat_model: effectiveModel.model }
+        : {}),
+      ...(draftModels.length > 0
+        ? { new_chat_decision_models: streamDecisionModels(draftModels) }
         : {}),
       ...withContext,
     };

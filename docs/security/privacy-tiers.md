@@ -418,7 +418,11 @@ this section is the ledger.
   - **The daemon decides the target, never the client.** A stream into a chat asks
     `session_reach` first, then `chat_reach` (`crates/biorouter/src/dictation/target.rs`) over the
     chat's stored classification and the live agent's bound provider; Home and a new tab take the
-    tier their bind would produce (`new_chat_bind_tier`). An unknown chat counts as public for a
+    tier their bind would produce (`new_chat_bind_tier`), with the decision models the composer's
+    draft names folded in through the check `/agent/start` runs on them (`new_chat_target_tier`,
+    DR-33), so a draft naming a public decision model makes the target public before the chat
+    exists, as it will be after. That field can only make a target more public; without the
+    proof, or unreadable, it makes the target public. An unknown chat counts as public for a
     target and as private for a stamp, each the safe side. A refused `session_id` degrades to
     public with a byte identical response.
   - **Standing.** `HttpCaller::dictation_standing` reads the user action proof and a stated

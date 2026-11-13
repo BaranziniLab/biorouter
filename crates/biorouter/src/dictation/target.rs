@@ -14,11 +14,16 @@ use std::sync::{Mutex, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::config::Config;
+use crate::decision::save::{tier_change, AfterSave, LoweringConsent, SaveDoor};
+use crate::decision::settings::{validate, DecisionSettings, MAX_MONITORS};
+use crate::decision::{DecisionModelRef, DecisionSession};
 use crate::model::ModelConfig;
 use crate::privacy::config_keys::NOT_CAPABILITY_CONFIG_KEYS;
+use crate::privacy::decision_axes;
 use crate::privacy::{
     ModelAffiliation, ProviderTier, SessionClassification, CAPABILITY_CONFIG_KEYS,
 };
+use crate::session::Session;
 
 use super::bias::{BiasTarget, Standing};
 
@@ -107,6 +112,109 @@ pub async fn new_chat_bind_tier(pick: Option<&str>, pick_model: Option<&str>) ->
         }
         _ => (ProviderTier::Public, None),
     }
+}
+
+/// What the composer holds for a chat that does not exist yet beside its model pick: the
+/// decision models its draft names, which its first message will start it with as
+/// `/agent/start`'s `decision_settings` (DR-33).
+#[derive(Clone, Copy, Debug)]
+pub enum NewChatDraft<'a> {
+    /// No draft: the chat starts with no decision models.
+    None,
+    /// Every decision model the draft names: its default and each monitor's, on or off.
+    Models(&'a [DecisionModelRef]),
+    /// A draft whose effect cannot be told: one that does not parse, or one sent without
+    /// the user action proof. The new chat is then judged public.
+    Unknown,
+}
+
+/// The most decision models a draft can name: its default and one per monitor.
+const MAX_DRAFT_MODELS: usize = MAX_MONITORS + 1;
+
+/// The id the draft chat is checked under. It names no stored chat; [`with_draft_decisions`]
+/// reads and writes nothing.
+const DRAFT_CHAT_ID: &str = "draft";
+
+/// The tier and model affiliation a chat that does not exist yet would start at (DD-30,
+/// DR-33): the bind [`new_chat_bind_tier`] would produce, with the draft's decision models
+/// folded in by [`with_draft_decisions`]. An [`NewChatDraft::Unknown`] draft answers
+/// Public without building anything.
+///
+/// `enforced` is the privacy master switch as the caller sampled it, the value
+/// `/agent/start` passes to the same check.
+pub async fn new_chat_target_tier(
+    pick: Option<&str>,
+    pick_model: Option<&str>,
+    draft: NewChatDraft<'_>,
+    enforced: bool,
+) -> BindTier {
+    if matches!(draft, NewChatDraft::Unknown) {
+        return (ProviderTier::Public, None);
+    }
+    let bind = new_chat_bind_tier(pick, pick_model).await;
+    with_draft_decisions(bind, draft, enforced)
+}
+
+/// `bind` (a new chat's model tier and affiliation) with a draft's decision models folded
+/// in, as `POST /agent/start` folds the `decision_settings` it carries.
+///
+/// The start saves them through `decision::save::save_checked_by`, whose tier check is
+/// [`tier_change`], on the chat it just created: classified Public, holding no message,
+/// bound to the model it built. This asks that same check of the same chat before it
+/// exists: an empty Public chat (`Session::default()`, as `GET /decisions/models` builds a
+/// draft's), with `bind`'s tier as the bound model's and the person's lowering taken as
+/// accepted, since a start whose lowering the person refuses creates no chat at all. The
+/// check is asked once per model, each as the draft's default: a chat is as private as
+/// its least private model, so the draft lowers the chat when any one of its models
+/// would. A result the check calls `lowered_after_save` is a chat its decision models
+/// made public, and the slot of the started chat then folds the same names
+/// (`decision_axes::from_row` over the basis the save writes).
+///
+/// Every model the draft names is asked, a monitor that is off included: the fold leaves
+/// such a monitor out, and counting it can only make the answer more public.
+///
+/// Doubt answers Public. That is the opposite of the fold's own rule (doubt never lowers a
+/// chat) and points the same way, toward the safe side: a stream target that failed
+/// toward private would let private terms shape text bound for a chat whose tier nobody
+/// knows. So a draft that is [`NewChatDraft::Unknown`], one that
+/// names more models than a draft can, a model whose provider declares nothing (an
+/// unknown provider, an Ollama host that does not resolve), a model the start would
+/// refuse as malformed, and a check that refuses, each answer Public with no affiliation.
+/// Through a draft, the answer is only ever `bind` or more public than it.
+pub fn with_draft_decisions(bind: BindTier, draft: NewChatDraft<'_>, enforced: bool) -> BindTier {
+    const PUBLIC: BindTier = (ProviderTier::Public, None);
+    let models = match draft {
+        NewChatDraft::None => return bind,
+        NewChatDraft::Unknown => return PUBLIC,
+        NewChatDraft::Models(models) => models,
+    };
+    if models.len() > MAX_DRAFT_MODELS {
+        return PUBLIC;
+    }
+    let chat = Session {
+        id: DRAFT_CHAT_ID.to_string(),
+        ..Session::default()
+    };
+    let checked = DecisionSession::new(DRAFT_CHAT_ID, chat.privacy_tier, enforced)
+        .with_bound_model_tier(Some(bind.0).filter(|_| enforced));
+    let door = SaveDoor::person("dictation", LoweringConsent::Confirmed);
+    for model in models {
+        if decision_axes::declared_name(model).is_none() {
+            return PUBLIC;
+        }
+        let named = DecisionSettings {
+            default_model: Some(model.clone()),
+            monitors: Vec::new(),
+        };
+        if validate(&named).is_err() {
+            return PUBLIC;
+        }
+        match tier_change(&checked, &chat, AfterSave::Settings(&named), &door) {
+            Ok(change) if !change.lowered_after_save => {}
+            _ => return PUBLIC,
+        }
+    }
+    bind
 }
 
 type BindCache = HashMap<String, (Instant, BindTier)>;
@@ -372,6 +480,123 @@ mod tests {
         // Nothing configured and no pick: Public.
         let (tier, _) = with_config_overrides(HashMap::new(), new_chat_bind_tier(None, None)).await;
         assert_eq!(tier, ProviderTier::Public);
+    }
+
+    fn decision_model(provider: &str, model: &str) -> DecisionModelRef {
+        DecisionModelRef::new(provider, model)
+    }
+
+    /// [`with_draft_decisions`] with `OLLAMA_HOST` on this computer, so an
+    /// `ollama_decision` model declares Private whatever the test machine configures.
+    async fn fold_on_loopback(bind: BindTier, draft: NewChatDraft<'_>, enforced: bool) -> BindTier {
+        let loopback = overrides(&[("OLLAMA_HOST", "127.0.0.1")]);
+        crate::config::with_config_overrides(loopback, async move {
+            with_draft_decisions(bind, draft, enforced)
+        })
+        .await
+    }
+
+    /// DR-33 for a chat that does not exist yet: the draft's decision models fold in as
+    /// `/agent/start` folds them. A Versa bind with a Baseten model in the draft is a
+    /// public chat; with a model on this computer, or with no draft, it keeps its tier.
+    /// A draft can only make the answer more public.
+    #[tokio::test]
+    async fn a_draft_decision_model_folds_in_as_the_start_folds_it() {
+        use crate::privacy::affiliation::InstitutionId;
+
+        let versa = (
+            ProviderTier::Private,
+            Some(ModelAffiliation::institution(InstitutionId::new("ucsf"))),
+        );
+        let public = (ProviderTier::Public, None);
+        let joey = [decision_model("baseten_decision", "joey-1")];
+        let local = [decision_model("ollama_decision", "tev1:0.8b")];
+        let both = [local[0].clone(), joey[0].clone()];
+        let fold = fold_on_loopback;
+
+        assert_eq!(fold(versa, NewChatDraft::None, true).await, versa);
+        assert_eq!(
+            fold(versa, NewChatDraft::Models(&[]), true).await,
+            versa,
+            "an empty draft names nothing"
+        );
+        assert_eq!(
+            fold(versa, NewChatDraft::Models(&joey), true).await,
+            public,
+            "Versa plus a Baseten decision model is a public chat"
+        );
+        assert_eq!(
+            fold(versa, NewChatDraft::Models(&local), true).await,
+            versa,
+            "Versa plus a decision model on this computer stays private"
+        );
+        assert_eq!(
+            fold(versa, NewChatDraft::Models(&both), true).await,
+            public,
+            "the least private model sets the chat"
+        );
+        // A public model's chat is public whatever it names.
+        assert_eq!(
+            fold(public, NewChatDraft::Models(&local), true).await,
+            public
+        );
+        assert_eq!(
+            fold(public, NewChatDraft::Models(&joey), true).await,
+            public
+        );
+        // With the master switch off the start lowers nothing, and neither does this.
+        assert_eq!(fold(versa, NewChatDraft::Models(&joey), false).await, versa);
+    }
+
+    /// Doubt answers Public, the safe side of a stream target: a draft that cannot be
+    /// told, a model whose provider declares nothing, a model the start would refuse as
+    /// malformed, and more models than a draft can name.
+    #[tokio::test]
+    async fn a_draft_whose_effect_cannot_be_told_is_public() {
+        let versa = (ProviderTier::Private, None);
+        let public = (ProviderTier::Public, None);
+        let unknown = [decision_model("no_such_decision_provider", "m")];
+        let blank = [decision_model("baseten_decision", " ")];
+        let many: Vec<DecisionModelRef> = (0..=MAX_MONITORS + 1)
+            .map(|i| decision_model("ollama_decision", &format!("tev{i}:0.8b")))
+            .collect();
+        let fold = |draft| fold_on_loopback(versa, draft, true);
+        assert_eq!(fold(NewChatDraft::Unknown).await, public);
+        assert_eq!(fold(NewChatDraft::Models(&unknown)).await, public);
+        assert_eq!(fold(NewChatDraft::Models(&blank)).await, public);
+        assert_eq!(fold(NewChatDraft::Models(&many)).await, public);
+        assert_eq!(
+            fold(NewChatDraft::Models(&many[..MAX_DRAFT_MODELS])).await,
+            versa,
+            "a full draft of local models stays private"
+        );
+    }
+
+    /// The whole new chat target: the bind `/agent/start` would build, then its draft. A
+    /// configured Versa chat is private alone and public once its draft names joey-1, and
+    /// an unknown draft builds nothing. Building these providers opens no connection.
+    #[tokio::test]
+    async fn a_new_chat_whose_draft_names_a_public_decision_model_is_public() {
+        use crate::config::with_config_overrides;
+        use crate::providers::versa_azure::VERSA_AZURE_DEFAULT_MODEL;
+
+        let versa = overrides(&[
+            ("BIOROUTER_PROVIDER", "versa_azure"),
+            ("BIOROUTER_MODEL", VERSA_AZURE_DEFAULT_MODEL),
+            ("VERSA_AZURE_API_KEY", "placeholder-never-sent"),
+            ("OLLAMA_HOST", "127.0.0.1"),
+        ]);
+        let joey = [decision_model("baseten_decision", "joey-1")];
+        for (draft, expected) in [
+            (NewChatDraft::None, ProviderTier::Private),
+            (NewChatDraft::Models(&joey), ProviderTier::Public),
+            (NewChatDraft::Unknown, ProviderTier::Public),
+        ] {
+            let (tier, _) =
+                with_config_overrides(versa.clone(), new_chat_target_tier(None, None, draft, true))
+                    .await;
+            assert_eq!(tier, expected, "{draft:?}");
+        }
     }
 
     /// The cache key moves with every key a tier input file reads, both lists of

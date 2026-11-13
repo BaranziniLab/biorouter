@@ -1531,6 +1531,269 @@ async fn a_new_chat_is_judged_by_the_tier_its_bind_would_produce() {
     );
 }
 
+// ── DR-33: a chat's decision models count toward its tier ───────────────────────────
+
+/// The configured Versa chat, with `OLLAMA_HOST` on this computer so a decision model
+/// served by Ollama declares Private.
+fn versa_with_local_ollama() -> HashMap<String, String> {
+    let mut config = versa();
+    config.insert("OLLAMA_HOST".to_string(), "127.0.0.1".to_string());
+    config
+}
+
+const JOEY: (&str, &str) = ("baseten_decision", "joey-1");
+const LOCAL_MONITOR: (&str, &str) = ("ollama_decision", "tev1:0.8b");
+
+fn decision_models(models: &[(&str, &str)]) -> Value {
+    Value::Array(
+        models
+            .iter()
+            .map(|(provider, model)| json!({"provider": provider, "model": model}))
+            .collect(),
+    )
+}
+
+/// A private row that names no institution, so any private target may use it. The row
+/// is removed when the answer drops, so a failed assertion leaves no row for the next
+/// test in this binary.
+fn add_private_row(written: &str) -> PrivateRow {
+    let id = match open_store()
+        .write(|file| {
+            file.add(
+                store::NewTerm::person(written, store::EntryTier::Private),
+                store::Reach::All,
+                store::schema::now(),
+            )
+        })
+        .expect("added")
+    {
+        store::AddOutcome::Created { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+    PrivateRow(id)
+}
+
+struct PrivateRow(store::EntryId);
+
+impl Drop for PrivateRow {
+    fn drop(&mut self) {
+        let removed = open_store().write(|file| file.remove(&self.0, store::schema::now()));
+        if removed.is_err() && !std::thread::panicking() {
+            panic!("the test row could not be removed: {removed:?}");
+        }
+    }
+}
+
+fn new_chat_draft_request(draft: Option<Value>) -> Value {
+    let mut body = request("new_chat");
+    if let Some(draft) = draft {
+        body["new_chat_decision_models"] = draft;
+    }
+    body
+}
+
+/// A `new_chat` stream's scope with `draft` as its `new_chat_decision_models`.
+async fn new_chat_draft_scope(app: &Router, caller: Caller, draft: Option<Value>) -> String {
+    let transcript = with_config_env(
+        versa_with_local_ollama(),
+        dictate(
+            app,
+            caller,
+            new_chat_draft_request(draft),
+            near_silence(1.0),
+        ),
+    )
+    .await;
+    transcript["bias_scope"].as_str().unwrap().to_string()
+}
+
+/// The written forms a proven `new_chat` stream with `draft` may use.
+async fn new_chat_draft_terms(
+    state: &Arc<AppState>,
+    app: &Router,
+    draft: Option<Value>,
+) -> Vec<String> {
+    with_config_env(
+        versa_with_local_ollama(),
+        eligible_terms(state, app, new_chat_draft_request(draft)),
+    )
+    .await
+}
+
+/// DR-33 before the first message: a new chat whose draft names a public decision model
+/// starts public (Versa plus joey-1 on Baseten), so its dictation gets no private terms,
+/// as `/agent/start` will make it. Versa alone, and Versa with a decision model on this
+/// computer, stay private. A draft sent without the proof, or one that does not parse,
+/// makes the new chat public: its tier cannot be told.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_new_chat_whose_draft_names_a_public_decision_model_gets_no_private_terms() {
+    if !engine_runs() || !biorouter::privacy::privacy_tiers_enabled() {
+        return;
+    }
+    let state = state().await;
+    let app = app(&state);
+
+    // The terms themselves: a private row that names no institution reaches Versa alone,
+    // and not Versa with joey-1 in the draft.
+    let row = add_private_row("Draftanine");
+    let alone = new_chat_draft_terms(&state, &app, None).await;
+    let with_joey = new_chat_draft_terms(&state, &app, Some(decision_models(&[JOEY]))).await;
+    drop(row);
+    assert!(alone.iter().any(|t| t == "Draftanine"), "{alone:?}");
+    assert!(
+        !with_joey.iter().any(|t| t == "Draftanine"),
+        "{with_joey:?}"
+    );
+
+    assert_eq!(
+        new_chat_draft_scope(&app, Caller::Proof, None).await,
+        "private",
+        "Versa alone"
+    );
+    assert_eq!(
+        new_chat_draft_scope(&app, Caller::Proof, Some(decision_models(&[JOEY]))).await,
+        "public",
+        "Versa plus a Baseten decision model"
+    );
+    assert_eq!(
+        new_chat_draft_scope(&app, Caller::Proof, Some(decision_models(&[LOCAL_MONITOR]))).await,
+        "private",
+        "Versa plus a decision model on this computer"
+    );
+    assert_eq!(
+        new_chat_draft_scope(
+            &app,
+            Caller::Proof,
+            Some(decision_models(&[LOCAL_MONITOR, JOEY]))
+        )
+        .await,
+        "public",
+        "the least private model sets the chat"
+    );
+    assert_eq!(
+        new_chat_draft_scope(&app, Caller::Proof, Some(json!([{"provider": "x"}]))).await,
+        "public",
+        "a draft that does not parse"
+    );
+    assert_eq!(
+        new_chat_draft_scope(&app, Caller::StatedPrivate, None).await,
+        "private",
+        "private standing without the proof, and no draft"
+    );
+    assert_eq!(
+        new_chat_draft_scope(
+            &app,
+            Caller::StatedPrivate,
+            Some(decision_models(&[LOCAL_MONITOR]))
+        )
+        .await,
+        "public",
+        "a draft without the proof"
+    );
+}
+
+/// DR-33 after the first message: the started chat's slot is the decision-bound
+/// provider, Versa folded with joey-1, and the stream reads that slot, so the chat's
+/// dictation gets no private terms either. Its reasoning effort at Quick or Deep changes
+/// what one turn's requests are built on, never the slot, and so never the target.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+async fn a_started_chat_whose_slot_carries_a_public_decision_model_gets_no_private_terms() {
+    use biorouter::agents::effort::ReasoningEffort;
+    use biorouter::conversation::message::Message;
+    use biorouter::decision::settings::{
+        DecisionSettings, DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION,
+    };
+    use biorouter::decision::DecisionModelRef;
+    use biorouter::privacy::decision_axes::{BasisAuthor, PublicBasis};
+    use biorouter::privacy::ProviderTier;
+    use biorouter::session::session_manager::{BasisWrite, BasisWriteOutcome};
+
+    if !engine_runs() || !biorouter::privacy::privacy_tiers_enabled() {
+        return;
+    }
+    let state = state().await;
+    let app = app(&state);
+    let chat = seed_chat(&state, false).await;
+    let manager = state.session_manager();
+
+    // `/agent/start`'s order: bind the chat's model, save the decision settings with the
+    // person's basis in one statement, then lower the agent the start holds.
+    let agent = state.get_agent(chat.clone()).await.unwrap();
+    let provider = with_config_overrides(versa(), async {
+        biorouter::providers::create(
+            "versa_azure",
+            ModelConfig::new(VERSA_AZURE_DEFAULT_MODEL).unwrap(),
+        )
+        .await
+    })
+    .await
+    .expect("a versa provider");
+    agent.update_provider(provider, &chat).await.unwrap();
+    // Before its decision model: a private row that names no institution reaches the chat
+    // its live Versa makes private.
+    let term = add_private_row("Startanine");
+    let before = eligible_terms(&state, &app, chat_request(&chat)).await;
+    assert!(before.iter().any(|t| t == "Startanine"), "{before:?}");
+    let settings = DecisionSettings {
+        default_model: Some(DecisionModelRef::new(JOEY.0, JOEY.1)),
+        monitors: Vec::new(),
+    };
+    let value = serde_json::to_value(&settings).unwrap();
+    let written = manager
+        .write_public_basis(
+            &chat,
+            BasisWrite::Set(PublicBasis::new(
+                chat.clone(),
+                BasisAuthor::Person,
+                "agent-start",
+                vec![JOEY.1.to_string()],
+            )),
+            move |data| {
+                data.set_extension_state(DECISION_SETTINGS_STATE, DECISION_SETTINGS_VERSION, value);
+                Ok(())
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(written, BasisWriteOutcome::Written(()));
+    let row = manager.get_session(&chat, false).await.unwrap();
+    assert!(
+        agent.lower_decision_axes(&row).await,
+        "the start lowers its agent"
+    );
+    // The first message.
+    manager
+        .add_message(&chat, &Message::user().with_text("first message"))
+        .await
+        .unwrap();
+    assert_eq!(agent.bound_model_tier().await, ProviderTier::Private);
+    assert_eq!(
+        agent.provider().await.unwrap().tier(),
+        ProviderTier::Public,
+        "the slot folds joey-1 into Versa"
+    );
+
+    let started = dictate(&app, Caller::Proof, chat_request(&chat), near_silence(1.0)).await;
+    assert_eq!(started["bias_scope"], "public");
+    let after = eligible_terms(&state, &app, chat_request(&chat)).await;
+    assert!(!after.iter().any(|t| t == "Startanine"), "{after:?}");
+    for effort in [ReasoningEffort::Quick, ReasoningEffort::Deep] {
+        agent.set_reasoning_effort(&chat, effort).await;
+        let at = dictate(&app, Caller::Proof, chat_request(&chat), near_silence(1.0)).await;
+        assert_eq!(at["bias_scope"], "public", "{effort:?}");
+        let terms = eligible_terms(&state, &app, chat_request(&chat)).await;
+        assert!(
+            !terms.iter().any(|t| t == "Startanine"),
+            "{effort:?} {terms:?}"
+        );
+    }
+    drop(term);
+    state.clear_cached_agents().await;
+    manager.delete_session(&chat).await.unwrap();
+}
+
 /// O-8: `include_private_terms` on a Crew or outside target admits private entries only
 /// from a caller with the proof and private standing; anything less is public.
 #[tokio::test(flavor = "multi_thread")]

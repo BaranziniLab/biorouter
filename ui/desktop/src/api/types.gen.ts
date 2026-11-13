@@ -2644,6 +2644,15 @@ export type DictationStreamRequest = {
      */
     language?: string | null;
     /**
+     * `new_chat` only: every decision model the composer's draft names for the new chat,
+     * its default and each monitor's, from the draft `/agent/start` will carry as
+     * `decision_settings` (DR-33). A public one makes the target public, as it will make
+     * the chat. Honoured only with the user action proof; without the proof, or when it
+     * does not parse, the new chat is judged public. It can only make the target more
+     * public, never more private.
+     */
+    new_chat_decision_models?: Array<DecisionModelRef> | null;
+    /**
      * `new_chat` only: the tab's model pick, beside `new_chat_provider` and under the same
      * rule, so a provider whose tier reads the model (an Ollama cloud tag) is judged as
      * the new chat will bind it.

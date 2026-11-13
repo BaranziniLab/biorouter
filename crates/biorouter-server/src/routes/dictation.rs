@@ -21,12 +21,13 @@
 //! * **The daemon decides the bias once per stream** (DD-30), on a task of its own after
 //!   the 201: from the target chat's tier and live model, read only after
 //!   `session_reach` admits the caller, with any refusal degrading silently to public
-//!   terms and a byte identical answer; from the tier a new chat's bind would produce;
-//!   or public for Crew and outside targets unless the person included private terms for
-//!   this recording (O-8). Standing is `HttpCaller::dictation_standing`. A chat's live
-//!   model is read within 250 ms, and never for a chat a Crew grant scopes, whose
-//!   provider check can ask the Crew workspace over SSH; either way the stream then
-//!   fails toward public terms.
+//!   terms and a byte identical answer; from the tier a new chat's bind would produce,
+//!   with the decision models its draft names folded in as `/agent/start` will fold them
+//!   (DR-33); or public for Crew and outside targets unless the person included private
+//!   terms for this recording (O-8). Standing is `HttpCaller::dictation_standing`. A
+//!   chat's live model is read within 250 ms, and never for a chat a Crew grant scopes,
+//!   whose provider check can ask the Crew workspace over SSH; either way the stream
+//!   then fails toward public terms.
 //! * **Authority** (DD-29, O-17): every route takes the daemon secret through
 //!   `check_token`; streams need nothing more. Installing, selecting and deleting a
 //!   model need the user action proof on a daemon that holds a key (DD-20), and on a
@@ -59,6 +60,7 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
+use biorouter::decision::DecisionModelRef;
 use biorouter::dictation::audio::{
     plan_closed_segments, plan_final_segments, PcmSlice, Span, MAX_SEGMENT_MS, SAMPLES_PER_MS,
     STREAM_VAD_TRIGGER_MS,
@@ -70,7 +72,8 @@ use biorouter::dictation::paths::{self, Roots};
 use biorouter::dictation::recognize::{text, BiasScope, RetryReason};
 use biorouter::dictation::service::{self, DictationError};
 use biorouter::dictation::{
-    hardware, models, BiasChannels, BiasTarget, DictionaryRequest, LoadSpec, TranscribeRequest,
+    hardware, models, BiasChannels, BiasTarget, DictionaryRequest, LoadSpec, NewChatDraft,
+    TranscribeRequest,
 };
 use biorouter::managed::{Allowance, DictationPolicy, ManagedPolicy};
 use biorouter::privacy::{ModelAffiliation, ProviderTier, SessionClassification};
@@ -217,6 +220,15 @@ pub struct DictationStreamRequest {
     /// the new chat will bind it.
     #[serde(default)]
     pub new_chat_model: Option<String>,
+    /// `new_chat` only: every decision model the composer's draft names for the new chat,
+    /// its default and each monitor's, from the draft `/agent/start` will carry as
+    /// `decision_settings` (DR-33). A public one makes the target public, as it will make
+    /// the chat. Honoured only with the user action proof; without the proof, or when it
+    /// does not parse, the new chat is judged public. It can only make the target more
+    /// public, never more private.
+    #[serde(default)]
+    #[schema(value_type = Option<Vec<DecisionModelRef>>)]
+    pub new_chat_decision_models: Option<serde_json::Value>,
     /// `crew` and `external` only: sent only after the person confirmed MSG-PRIVATE-TERMS
     /// for this recording, honoured only with the proof and private standing (O-8).
     #[serde(default)]
@@ -1930,13 +1942,15 @@ pub async fn dictation_status(
 // ── streams ──────────────────────────────────────────────────────────────────────────
 
 /// The bias target of DD-30, decided once per stream from what the daemon reads, never
-/// from a tier the client states.
+/// from a tier the client states. A new chat's draft decision models are the one thing a
+/// client names here, and they can only make the target more public.
 async fn stream_target(
     state: &AppState,
     request: &DictationStreamRequest,
     headers: &HeaderMap,
     standing: biorouter::dictation::Standing,
     proven: bool,
+    enforced: bool,
 ) -> BiasTarget {
     match (request.target_kind, request.session_id.as_deref()) {
         (DictationTargetKind::Chat | DictationTargetKind::Editor, Some(id)) => {
@@ -1972,7 +1986,20 @@ async fn stream_target(
             // choose the tier its own stream is judged by.
             let pick = request.new_chat_provider.as_deref().filter(|_| proven);
             let model = request.new_chat_model.as_deref().filter(|_| proven);
-            let (tier, affiliation) = biorouter::dictation::new_chat_bind_tier(pick, model).await;
+            // DR-33: the draft's decision models, folded in as the start will fold them. A
+            // draft sent without the proof, or one that does not parse, makes the new chat
+            // public: its tier cannot be told.
+            let named = request.new_chat_decision_models.as_ref();
+            let parsed = named
+                .filter(|_| proven)
+                .and_then(|value| Vec::<DecisionModelRef>::deserialize(value).ok());
+            let draft = match (named, &parsed) {
+                (None, _) => NewChatDraft::None,
+                (Some(_), Some(models)) => NewChatDraft::Models(models),
+                (Some(_), None) => NewChatDraft::Unknown,
+            };
+            let (tier, affiliation) =
+                biorouter::dictation::new_chat_target_tier(pick, model, draft, enforced).await;
             BiasTarget {
                 private: tier.is_private(),
                 affiliation,
@@ -2035,7 +2062,7 @@ async fn stream_dictionary(
     let standing = caller.dictation_standing();
     let enforced = biorouter::privacy::privacy_tiers_enabled();
     let proven = user_action_proof(&headers) == UserActionProof::Proven;
-    let target = stream_target(&state, &request, &headers, standing, proven).await;
+    let target = stream_target(&state, &request, &headers, standing, proven, enforced).await;
     let target_ms = started.elapsed().as_millis() as u64;
     let context = request.context.unwrap_or_default();
     let channels = BiasChannels::for_dictation();
