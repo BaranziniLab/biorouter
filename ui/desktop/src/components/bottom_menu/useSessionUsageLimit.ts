@@ -21,8 +21,9 @@ import {
  *
  * Read when the chat changes, whenever `refreshKey` changes (`ChatInput` moves it after each turn,
  * when the chat's recorded usage moves, a title's side call included, and when a stored limit
- * notice lands), when the cost card opens (`reload`), and when Settings says a limit changed
- * (`USAGE_LIMITS_CHANGED_EVENT`).
+ * notice lands), when the cost card opens (`reload`), when Settings says a limit changed
+ * (`USAGE_LIMITS_CHANGED_EVENT`), and, while a limit holds the composer, each time its window
+ * regains focus or becomes visible (a change made in another window says nothing here).
  *
  * A composer with no chat yet (Home, a new tab) has no per-chat limit to read, but the monthly
  * limit already holds it: it reads the month from `GET /usage/summary` instead (`month`), so Send
@@ -144,6 +145,25 @@ export function useSessionUsageLimit(
     window.addEventListener(USAGE_LIMITS_CHANGED_EVENT, onChanged);
     return () => window.removeEventListener(USAGE_LIMITS_CHANGED_EVENT, onChanged);
   }, [reload]);
+
+  // While a limit holds this composer, read again whenever its window comes back to the person.
+  // `USAGE_LIMITS_CHANGED_EVENT` is said on one window only, and a held composer cannot send, so
+  // a limit raised in another Biorouter window (or Settings opened there) would otherwise leave
+  // this one's Send disabled until the cost card is opened.
+  const paused = chatId ? held?.sessionId === chatId && held.state.paused : month?.reached === true;
+  useEffect(() => {
+    if (!paused) return;
+    const onFocus = () => reload();
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') reload();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [paused, reload]);
 
   const save = useCallback(async (body: SetSessionUsageLimitRequest) => {
     const forSession = current.current;

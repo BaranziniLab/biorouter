@@ -45,6 +45,21 @@ describe('reading a typed limit', () => {
   it('refuses a token count that rounds to nothing', () => {
     expect(parseLimitInput('0.2', 'tokens').ok).toBe(false);
   });
+
+  it('reads a comma only as a thousands separator, and refuses a decimal comma', () => {
+    expect(parseLimitInput('1,000', 'usd')).toEqual({ ok: true, value: 1000 });
+    expect(parseLimitInput('$1,250.50', 'usd')).toEqual({ ok: true, value: 1250.5 });
+    expect(parseLimitInput('1,000,000', 'usd')).toEqual({ ok: true, value: 1_000_000 });
+    expect(parseLimitInput('250,000', 'tokens')).toEqual({ ok: true, value: 250_000 });
+    expect(parseLimitInput('1,500k', 'tokens')).toEqual({ ok: true, value: 1_500_000 });
+    // A decimal comma is not dropped: "0,50" would otherwise be $50, a hundred times too much.
+    for (const text of ['0,50', '5,5', '$0,50', '1,5', '12,34', '1,0000', ',500', '1,000,00']) {
+      expect(parseLimitInput(text, 'usd')).toEqual({ ok: false });
+    }
+    for (const text of ['1,5m', '2,5k', '1,5']) {
+      expect(parseLimitInput(text, 'tokens')).toEqual({ ok: false });
+    }
+  });
 });
 
 describe('writing a limit', () => {

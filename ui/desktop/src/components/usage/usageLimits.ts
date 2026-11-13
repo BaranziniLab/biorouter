@@ -22,15 +22,24 @@ export const MAX_USD_DECIMALS = 4;
 
 const MULTIPLIERS: Record<string, number> = { k: 1_000, m: 1_000_000, b: 1_000_000_000 };
 
+/** A number whose commas are all well-formed thousands groups: "1,000", "$1,250.50", "1,500k". */
+const THOUSANDS_GROUPED = /^\$?\d{1,3}(,\d{3})+(\.\d*)?[kmb]?$/i;
+
 /**
  * Reads a limit as typed: "$5", "5.50", "0.013" and "1,000" for dollars; "250000", "250,000",
  * "250k" and "1.5m" for tokens. A dollar amount must be above 0 and is kept exactly as typed, to
  * at most four decimals (more is refused, never rounded, so a sub-cent limit is stored as the
  * person wrote it); a token count is rounded to a whole number and must be at least 1. Anything
  * else is not a limit.
+ *
+ * A comma is read only as a thousands separator ("1,000", "250,000"). Any other comma is refused
+ * rather than dropped: "0,50" written with a decimal comma would otherwise become $50, a limit a
+ * hundred times what the person meant.
  */
 export function parseLimitInput(text: string, unit: LimitUnit): ParsedLimit {
-  let cleaned = text.trim().replace(/[,_\s]/g, '');
+  const compact = text.trim().replace(/[_\s]/g, '');
+  if (compact.includes(',') && !THOUSANDS_GROUPED.test(compact)) return { ok: false };
+  let cleaned = compact.replace(/,/g, '');
   if (unit === 'usd') cleaned = cleaned.replace(/^\$/, '');
   let multiplier = 1;
   if (unit === 'tokens') {

@@ -4,6 +4,7 @@ import ToolCallWithResponse, {
   logToString,
   summarizeTodoSidecar,
   summarizeToolCall,
+  TODO_SIDECAR_NOT_APPLIED,
 } from './ToolCallWithResponse';
 import { toolRowLabel } from './toolCallCopy';
 import type {
@@ -322,6 +323,54 @@ describe('summarizeToolCall', () => {
       expect(summarizeTodoSidecar({ code: 'x', todo })).toBeNull();
     }
     expect(summarizeTodoSidecar(undefined)).toBeNull();
+  });
+
+  it('says what the todo field did only once the call succeeded, since a failed call applies none of it', () => {
+    const request: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'sidecar-1',
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'developer__shell',
+          arguments: { command: 'make test', todo: { done: [1, 2] } },
+        },
+      },
+    };
+    const response = (isError: boolean): ToolResponseMessageContent => ({
+      type: 'toolResponse',
+      id: 'sidecar-1',
+      toolResult: {
+        status: 'success',
+        value: { content: [{ type: 'text', text: isError ? 'exit 2' : 'ok' }], isError },
+      },
+    });
+    const row = (toolResponse?: ToolResponseMessageContent, turnActive = false) =>
+      render(
+        <ToolCallWithResponse
+          isCancelledMessage={false}
+          toolRequest={request}
+          toolResponse={toolResponse}
+          turnActive={turnActive}
+          onOpenArtifact={noopOpenArtifact}
+        />
+      );
+
+    const succeeded = row(response(false));
+    expect(screen.getByText(/Completing 2 tasks/)).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(TODO_SIDECAR_NOT_APPLIED))).not.toBeInTheDocument();
+    succeeded.unmount();
+
+    const failed = row(response(true));
+    expect(screen.getByText('Failed to run make test')).toBeInTheDocument();
+    expect(screen.queryByText(/Completing 2 tasks/)).not.toBeInTheDocument();
+    expect(screen.getByText(new RegExp(TODO_SIDECAR_NOT_APPLIED))).toBeInTheDocument();
+    failed.unmount();
+
+    // Still running: nothing has been applied yet, so the row claims nothing.
+    row(undefined, true);
+    expect(screen.queryByText(/Completing 2 tasks/)).not.toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(TODO_SIDECAR_NOT_APPLIED))).not.toBeInTheDocument();
   });
 
   it('never cuts a to-do item or a query in its middle (V2-R3-2)', () => {
