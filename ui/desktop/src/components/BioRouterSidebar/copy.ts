@@ -24,6 +24,17 @@ export const sidebarCopy = {
     moreActions: (title: string) => `More actions for ${title}`,
     untitled: 'Untitled chat',
     messages: (count: number) => `${count} ${count === 1 ? 'message' : 'messages'}`,
+    /**
+     * The hover card's note on a chat a public decision model made public
+     * (DR-33, owner decision 3): no glyph, just the reason.
+     */
+    publicBecause: (model: string, place: string, others = 0) => {
+      const first = `Public: its decision model ${model} runs on ${place}`;
+      if (others <= 0) return `${first}.`;
+      return others === 1
+        ? `${first}, and 1 other decision model is public too.`
+        : `${first}, and ${others} other decision models are public too.`;
+    },
   },
   folder: {
     newChat: (folder: string) => `New chat in ${folder}`,

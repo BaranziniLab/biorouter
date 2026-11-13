@@ -5330,7 +5330,8 @@ export type PrivacyBarrierBody = {
  * design §5): the decision model it names, as the daemon computed it, so no
  * renderer recomputes the fold. Present only on the single-session read, and
  * only when a decision model (or a public parent's ceiling) is what made the
- * chat public; a listing row shows its lock and nothing more.
+ * chat public. A sidebar row carries the short form, [`PublicBecause`], from
+ * the same reading (owner decision 3), and only for a decision model.
  */
 export type PrivacyBasis = {
     host: HostLabel;
@@ -6736,6 +6737,26 @@ export type SessionSummary = {
      */
     parent_session_id?: string | null;
     privacy_tier?: SessionClassification;
+    /**
+     * The public decision model that made a chat public (DR-33), as a sidebar row
+     * names it. The daemon fills it from the same reading `GET /sessions/{id}`'s
+     * `privacyBasis` comes from, so no renderer recomputes the fold.
+     */
+    public_because?: {
+        /**
+         * The model as a person reads it (`joey-1`).
+         */
+        model: string;
+        /**
+         * How many other public decision models the chat also names. Zero, and
+         * then absent, when this is the only one.
+         */
+        others?: number;
+        /**
+         * Where it runs, in words (`Baseten`, `Ollama's cloud`).
+         */
+        place: string;
+    } | null;
     /**
      * BR-71: the session's type as stored (`user`/`scheduled`/`sub_agent`).
      */

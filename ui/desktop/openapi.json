@@ -21991,7 +21991,7 @@
       },
       "PrivacyBasis": {
         "type": "object",
-        "description": "Why a chat is public when its own language model is private (DR-33,\ndesign §5): the decision model it names, as the daemon computed it, so no\nrenderer recomputes the fold. Present only on the single-session read, and\nonly when a decision model (or a public parent's ceiling) is what made the\nchat public; a listing row shows its lock and nothing more.",
+        "description": "Why a chat is public when its own language model is private (DR-33,\ndesign §5): the decision model it names, as the daemon computed it, so no\nrenderer recomputes the fold. Present only on the single-session read, and\nonly when a decision model (or a public parent's ceiling) is what made the\nchat public. A sidebar row carries the short form, [`PublicBecause`], from\nthe same reading (owner decision 3), and only for a decision model.",
         "required": [
           "kind",
           "source",
@@ -24610,6 +24610,35 @@
           },
           "privacy_tier": {
             "$ref": "#/components/schemas/SessionClassification"
+          },
+          "public_because": {
+            "allOf": [
+              {
+                "type": "object",
+                "description": "The public decision model that made a chat public (DR-33), as a sidebar row\nnames it. The daemon fills it from the same reading `GET /sessions/{id}`'s\n`privacyBasis` comes from, so no renderer recomputes the fold.",
+                "required": [
+                  "model",
+                  "place"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string",
+                    "description": "The model as a person reads it (`joey-1`)."
+                  },
+                  "others": {
+                    "type": "integer",
+                    "format": "int32",
+                    "description": "How many other public decision models the chat also names. Zero, and\nthen absent, when this is the only one.",
+                    "minimum": 0
+                  },
+                  "place": {
+                    "type": "string",
+                    "description": "Where it runs, in words (`Baseten`, `Ollama's cloud`)."
+                  }
+                }
+              }
+            ],
+            "nullable": true
           },
           "session_type": {
             "type": "string",
