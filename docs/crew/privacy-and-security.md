@@ -12,6 +12,8 @@ A private model runs on your computer or at your institution. Biorouter lists it
 
 Crew decides by a model's privacy, never by its provider. Claude Code and Codex, which run on your own vendor subscription, are public models like any other on the **Public** tab: Crew admits them for a task, a connected chat or a chat that reads Crew as you wherever it admits a public model, and refuses them wherever it refuses one.
 
+A private model, such as Versa, may read a Public workspace too. A chat that is already Private, because it used a private model or read private data, keeps its privacy there: it connects only to a workspace whose host set its institution (unlabelled ones refuse it with "Confirm this workspace's institution before granting an agent"), and everything it posts there is Restricted, so public models never read it. A new chat that has not used a private model yet connects like any other.
+
 In each workspace, your connection is "Private" or "Public". You choose it, and this computer saves it. The workspace is "Private for everyone" or "Allows Public". Only the host changes it, and a new workspace starts "Private for everyone" with no institution. Your privacy is Public only when your connection is Public and the workspace allows it. A Public connection never changes what you can read.
 
 Crew protects what an agent reads when your privacy is Private, when a channel it reads is Restricted or holds anything Restricted, when it uses your remote work folder, or when the chat already holds Restricted material.
