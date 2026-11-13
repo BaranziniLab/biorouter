@@ -48,6 +48,13 @@ pub struct CallCapability {
     /// decides nothing: the gates read [`Self::tier`]. Set only by
     /// [`Self::sample`].
     lowered_by_decision: bool,
+    /// Issue #56: the slot already holds a private model, but this call is on a
+    /// turn that started public, so it is admitted at the turn's tier and the
+    /// private model applies from the next message. Like the flag above it
+    /// decides nothing; it lets a refusal say that instead of asking the person
+    /// to switch to a private model they just chose. Set only by
+    /// [`Self::no_wider_than`].
+    private_from_next_turn: bool,
 }
 
 impl CallCapability {
@@ -73,6 +80,7 @@ impl CallCapability {
             affiliation,
             enforced: crate::privacy::privacy_tiers_enabled(),
             lowered_by_decision,
+            private_from_next_turn: false,
         }
     }
 
@@ -89,6 +97,7 @@ impl CallCapability {
             // regardless.
             affiliation: None,
             lowered_by_decision: false,
+            private_from_next_turn: false,
         }
     }
 
@@ -134,6 +143,7 @@ impl CallCapability {
             enforced,
             affiliation,
             lowered_by_decision: false,
+            private_from_next_turn: false,
         }
     }
 
@@ -149,6 +159,7 @@ impl CallCapability {
             enforced,
             affiliation,
             lowered_by_decision: false,
+            private_from_next_turn: false,
         }
     }
 
@@ -161,6 +172,7 @@ impl CallCapability {
             enforced,
             affiliation: None,
             lowered_by_decision: true,
+            private_from_next_turn: false,
         }
     }
 
@@ -189,7 +201,9 @@ impl CallCapability {
     ///    runs on the public model, so the ceiling is the answer and the switch
     ///    applies at the next turn, whose Gate B takes a new ceiling. Its
     ///    decision-model cause, if any, is the ceiling's, because that is why
-    ///    the turn is public.
+    ///    the turn is public. This is the one case that sets
+    ///    [`Self::private_from_next_turn`], so a refusal can say the new model
+    ///    starts with the next message.
     ///  * **Both Private.** The tier stays Private, and the affiliation is the
     ///    one a lead/worker pair carries
     ///    ([`crate::providers::composite_affiliation`]): what a call returns
@@ -211,6 +225,7 @@ impl CallCapability {
         if !ceiling.tier.is_private() {
             return Self {
                 enforced: self.enforced,
+                private_from_next_turn: true,
                 ..ceiling
             };
         }
@@ -219,6 +234,7 @@ impl CallCapability {
                 self.affiliation,
                 ceiling.affiliation,
             ),
+            private_from_next_turn: false,
             ..self
         }
     }
@@ -238,6 +254,16 @@ impl CallCapability {
     /// provider's `decision_lowered_by()` on the refusal path only.
     pub const fn lowered_by_decision(&self) -> bool {
         self.lowered_by_decision
+    }
+
+    /// Issue #56: the chat was switched to a private model while this call's
+    /// turn ran, and this call is admitted at the turn's public tier until the
+    /// next message ([`Self::no_wider_than`]). A refusal branches on it to say
+    /// the new model takes effect from the next message, rather than asking the
+    /// person to switch to a private model they just chose. It decides nothing:
+    /// the gates read [`Self::tier`].
+    pub const fn private_from_next_turn(&self) -> bool {
+        self.private_from_next_turn
     }
 
     /// Whose agreements cover the model this call was admitted on — DR-26's
@@ -768,5 +794,31 @@ mod tests {
             "moving the mixing policy moved the MASTER SWITCH, which is a different \
              control, with a different disclosure and a different write"
         );
+    }
+
+    /// Issue #56: a refusal can tell a switch that waits for the next message
+    /// from a chat that is simply public, because `no_wider_than` marks the one
+    /// case where the turn's public ceiling held back a private slot, and no
+    /// other.
+    #[test]
+    fn only_a_private_slot_under_a_public_turn_waits_for_the_next_message() {
+        let private = CallCapability::for_test(ProviderTier::Private, true);
+        let public = CallCapability::for_test(ProviderTier::Public, true);
+
+        let waits = private.no_wider_than(public);
+        assert_eq!(waits.tier(), ProviderTier::Public);
+        assert!(waits.private_from_next_turn());
+
+        assert!(!public.no_wider_than(private).private_from_next_turn());
+        assert!(!public.no_wider_than(public).private_from_next_turn());
+        assert!(!private.no_wider_than(private).private_from_next_turn());
+        for cap in [private, public] {
+            assert!(!cap.private_from_next_turn(), "{cap:?}");
+        }
+
+        // A ceiling already narrowed this way stays a ceiling: a public slot
+        // under it is public at once, and says nothing about a next message.
+        assert!(!public.no_wider_than(waits).private_from_next_turn());
+        assert!(private.no_wider_than(waits).private_from_next_turn());
     }
 }

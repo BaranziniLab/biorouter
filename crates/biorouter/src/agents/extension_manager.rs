@@ -3957,8 +3957,13 @@ impl ExtensionManager {
             // circular for a chat that already runs on one. The words are read
             // off the slot on the refusal path only, where they decide nothing.
             // A lowered sample is Public, so a private extension is exactly the
-            // refusal path.
-            let lowered_by = if cap.lowered_by_decision() && ext_class.tier.is_private() {
+            // refusal path. Issue #56: a chat switched to a private model while
+            // this turn ran is told the new model starts with the next message,
+            // decided off the same sample, so the slot's words are not read.
+            let lowered_by = if cap.lowered_by_decision()
+                && !cap.private_from_next_turn()
+                && ext_class.tier.is_private()
+            {
                 self.provider
                     .lock()
                     .await
@@ -3971,6 +3976,7 @@ impl ExtensionManager {
                 client_name,
                 ext_class.tier,
                 cap.tier(),
+                cap.private_from_next_turn(),
                 cap.lowered_by_decision(),
                 lowered_by.as_ref(),
             ) {

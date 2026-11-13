@@ -410,7 +410,9 @@ const EXPECTED: &[Site] = &[
                alone before audit finding 17: the tier fed a candidate list that \
                names knowledge bases to the model, so a cross-institution chat was \
                handed the ids of bases the KB barrier then refused. It now samples \
-               both axes at one instant and crosses them to `KbCaller`",
+               both axes at one instant and crosses them to `KbCaller`, capped to the \
+               running turn (`Agent::capped_to_turn`), so a public turn whose chat was \
+               switched to a private model mid-turn is named no private base's id",
     },
     Site {
         needle: "CallCapability::sample(",
@@ -425,7 +427,8 @@ const EXPECTED: &[Site] = &[
                the candidate list its no-target error may name. That list is \
                exactly what audit finding 17 was about, so the branch that \
                builds it has to decide the pair itself rather than inherit one \
-               that is not in scope yet",
+               that is not in scope yet. The pair is capped to the running turn \
+               (`Agent::capped_to_turn`), as the conversation-ingest branch's is",
     },
     Site {
         needle: "CallCapability::sample(",
