@@ -1458,7 +1458,7 @@ let target = match (req.target_kind, req.session_id.as_deref()) {
         }
     }
     (TargetKind::NewChat, _) => {
-        // DD-30: the tier the new chat's bind would produce; the per tab pick counts only with the proof
+        // DD-30: the tier the new chat's bind would produce; without the proof the per tab pick only lowers it
         let pick = req.new_chat_provider.as_deref().filter(|_| proven);
         let model = req.new_chat_model.as_deref().filter(|_| proven);
         // DR-33: the draft's decision models; without the proof, or unreadable, the target is public

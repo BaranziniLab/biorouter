@@ -1982,7 +1982,7 @@ async fn stream_target(
             }
         }
         (DictationTargetKind::NewChat, _) => {
-            // The per tab pick counts only with the proof, so an unproven caller cannot
+            // The per tab pick counts fully only with the proof, so an unproven caller cannot
             // choose the tier its own stream is judged by.
             let pick = request.new_chat_provider.as_deref().filter(|_| proven);
             let model = request.new_chat_model.as_deref().filter(|_| proven);
@@ -1998,8 +1998,25 @@ async fn stream_target(
                 (Some(_), Some(models)) => NewChatDraft::Models(models),
                 (Some(_), None) => NewChatDraft::Unknown,
             };
-            let (tier, affiliation) =
+            let mut target =
                 biorouter::dictation::new_chat_target_tier(pick, model, draft, enforced).await;
+            // Without the proof the pick cannot choose a MORE private tier than the
+            // configured default, but `/agent/start` binds a public pick without the proof,
+            // so ignoring it outright left dictation more private than the chat the start
+            // creates. The less private of the two counts: an unproven pick only lowers.
+            if !proven {
+                if let Some(unproven_pick) = request.new_chat_provider.as_deref() {
+                    let picked = biorouter::dictation::new_chat_target_tier(
+                        Some(unproven_pick),
+                        request.new_chat_model.as_deref(),
+                        draft,
+                        enforced,
+                    )
+                    .await;
+                    target = less_private(target, picked);
+                }
+            }
+            let (tier, affiliation) = target;
             BiasTarget {
                 private: tier.is_private(),
                 affiliation,
@@ -2018,6 +2035,23 @@ async fn stream_target(
         }
         _ => BiasTarget::public(),
     }
+}
+
+/// The less private of two answers for a new chat's target. Two private answers whose
+/// institutions differ keep none, which admits only the private rows that name no
+/// institution, as for a model whose affiliation is unstated.
+fn less_private(
+    a: biorouter::dictation::BindTier,
+    b: biorouter::dictation::BindTier,
+) -> biorouter::dictation::BindTier {
+    let tier = ProviderTier::least(a.0, b.0);
+    let affiliation = match (a.0 == tier, b.0 == tier) {
+        (true, false) => a.1,
+        (false, true) => b.1,
+        _ if a.1 == b.1 => a.1,
+        _ => None,
+    };
+    (tier, affiliation)
 }
 
 /// A live chat's bound model, its tier and its affiliation, for the stream target: read

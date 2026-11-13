@@ -1495,7 +1495,18 @@ async fn a_new_chat_is_judged_by_the_tier_its_bind_would_produce() {
     assert_eq!(
         new_chat_scope(&app, Caller::StatedPrivate, remote.clone(), pick).await,
         "public",
-        "the pick is ignored without the proof"
+        "an unproven pick cannot make the target more private than the default"
+    );
+    assert_eq!(
+        new_chat_scope(
+            &app,
+            Caller::StatedPrivate,
+            versa(),
+            Some(("ollama", "gemma4:31b-cloud"))
+        )
+        .await,
+        "public",
+        "an unproven public pick lowers a private default: /agent/start binds it as public"
     );
     assert_eq!(
         new_chat_scope(&app, Caller::Proof, versa(), None).await,

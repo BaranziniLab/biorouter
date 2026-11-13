@@ -38,8 +38,8 @@ pub use service::{
     EngineStatus, MemoryShortfall, SegmentDecode, TranscribeRequest, WarmUp, WorkerProbe,
 };
 pub use target::{
-    chat_reach, cli_bias, new_chat_bind_tier, new_chat_target_tier, ChatReach, CliTerminal,
-    NewChatDraft,
+    chat_reach, cli_bias, new_chat_bind_tier, new_chat_target_tier, BindTier, ChatReach,
+    CliTerminal, NewChatDraft,
 };
 
 /// MSG-NO-ENGINE.
