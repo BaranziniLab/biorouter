@@ -207,9 +207,17 @@ jobs:
     #           run still in `cargo test` when 40 hit (39057096529, main)
     #
     # Main run 41393586499 reached 60 minutes during host Clippy after all
-    # tests and the socket gate passed. 90 leaves room for that cold build
+    # tests and the socket gate passed. 90 left room for that cold build
     # and cache upload while keeping a hung job bounded.
-    timeout-minutes: 90
+    #
+    # 120 since 2026-11-13: with the dictation engine (whisper.cpp, Metal) and
+    # the Crew work merged, macOS took 77, 86 and 87 minutes on
+    # feat/local-dictation (runs 43376048191, 43389839745, 43389847969), and
+    # both runs with Crew merged in (43406267556, 43406263024) hit 90 inside
+    # `cargo test` with every test so far passing: the workspace lib and bins
+    # step alone took 76 minutes, and the engine binaries' first Metal run
+    # in each test process takes over a minute. Still bounded for a hang.
+    timeout-minutes: 120
     if: github.event_name != 'schedule'
     strategy:
       fail-fast: false
