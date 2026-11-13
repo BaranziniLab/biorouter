@@ -763,8 +763,10 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
 
   /**
    * WS-TOKENS-10 (vision V1-R2-5): a nav row is one ink. Its icon wears `--sidebar-icon`, the
-   * muted label ink, at rest, and the label's own ink once the row is lit; the icon used to stay
-   * muted beside a default-ink label on hover and on the current row.
+   * label's resting ink, at rest, and the label's own ink once the row is lit; the icon used to
+   * stay muted beside a default-ink label on hover and on the current row. Since 2026-11-12 the
+   * resting ink is the primary ink (design.md 9.14: the muted one read grey), so a row is the
+   * same ink at rest and lit, and its fill alone says it is hovered or current.
    */
   it('paints a nav row’s icon in its label’s ink, at rest and lit', async (ctx) => {
     if (!browser) return ctx.skip();
@@ -789,7 +791,8 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
 
         await away(tab);
         await settle(tab);
-        expect(await inks(home), `${mode}: at rest`).toEqual({ icon: muted, label: muted });
+        expect(await inks(home), `${mode}: at rest`).toEqual({ icon: ink, label: ink });
+        expect(ink, `${mode}: the resting ink is not the muted one`).not.toBe(muted);
         for (const row of [home, '[data-testid="sidebar-components-disclosure"]']) {
           await tab.hover(row);
           await settle(tab);

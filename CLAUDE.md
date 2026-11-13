@@ -1178,11 +1178,28 @@ Key invariants, each learned from a real bug:
   `ui/desktop/scripts/lib/theme-contract.mjs`, declared as a hex once per mode in
   the base block and nowhere in a family, which `styles/themeNeutrals.test.ts` asserts;
   the only other declaration is the dark popover's re-pointing (see "Fills
-  before lines" below). Since the redesign every family's `sidebar-icon` is its
-  muted label ink (it was the accent in Alma Mater and Roche Limit, the full ink
-  in Parchment), so a nav icon is one ink with its label and the accent is held
-  for the active row's rail and the lock badge; it still differs per family
-  because the ink does.
+  before lines" below). A nav icon is one ink with its label, and the accent is
+  held for the active row's rail and the lock badge. Since 2026-11-12 that ink is
+  the PRIMARY ink: sidebar rows and their icons rest on `--text-default`
+  (`--sidebar-foreground`, `--sidebar-icon`), because the muted ink they wore
+  after the redesign read grey (owner). It still differs per family because the
+  ink does.
+- **Solid ink, and red is rare** ([design.md](design.md) 9.13, 9.14; owner,
+  2026-11-12). The primary ink is near-black in light mode and near-white in
+  dark, and `muted`/`subtle` are one small step stronger with less tint. The
+  danger tone is drawn in INK, not red, at the token layer: `--text-danger` is
+  the primary ink, `--background-danger` the secondary ink and `--wash-danger`
+  that ink at 8%, in every family and mode, so a failure, a risk chip, a
+  destructive button or an error note reads calm and is identified by its words
+  and glyph (`FAILED_GLYPH`, a circled ✕, in `TranscriptRow.tsx` for a failed line;
+  a permission prompt's Destructive grade is the `strong` neutral Badge). The one
+  red left in the chrome is `--border-danger`, the edge of an invalid field or a
+  refusing drop zone; never use it for a card, banner or status, and never bring
+  red back with a hex or a `--color-red-*` utility. `styles/redIsRare.test.ts`
+  holds both rules. Stroke weight comes from rendering, not a weight step (Arial
+  draws only 400 and 700): `body` does not set `-webkit-font-smoothing:
+  antialiased` in light mode, so macOS draws text a hair heavier; dark mode keeps
+  it, because there stem darkening read semi-bold.
 - **`terminalGround` is now the same token in all three** — `--background-muted`,
   in both modes. The warning that used to sit here was right and still is, aimed
   at a changed fact: Parchment dark really did paint `--background-code`, and

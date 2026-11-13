@@ -175,7 +175,7 @@ export default function TunnelSection() {
         </CardHeader>
         <CardContent className="pt-4 px-4 space-y-4">
           {error && (
-            <div className="p-3 bg-background-danger/10 border border-border-danger/40 rounded text-sm text-text-danger">
+            <div className="p-3 bg-background-danger/10 border border-transparent rounded text-sm text-text-danger">
               {error}
             </div>
           )}

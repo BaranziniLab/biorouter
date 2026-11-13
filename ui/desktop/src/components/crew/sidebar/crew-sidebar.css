@@ -324,7 +324,11 @@
   border-radius: var(--radius-element);
   font-size: var(--text-body);
   line-height: var(--text-body--line-height);
-  color: var(--text-muted);
+  /* The primary ink at rest, as in the app sidebar and with this row's own icon
+     (`--sidebar-icon`; owner, 2026-11-12, design.md 9.14: the muted ink read
+     grey). Unread still stands out by its 600 weight; archived and quiet rows
+     keep the subtle ink. */
+  color: var(--sidebar-foreground);
   text-align: start;
   transition: background-color var(--dur-fast-min) var(--ease-out);
 }
@@ -374,7 +378,8 @@
   }
 }
 
-/* Unread is weight and ink, never a hue; the count is a neutral badge. */
+/* Unread is weight, never a hue (every row now rests on the primary ink); the
+   count is a neutral badge. */
 .crew-sidebar-row[data-unread='true'] {
   font-weight: 600;
   color: var(--text-default);

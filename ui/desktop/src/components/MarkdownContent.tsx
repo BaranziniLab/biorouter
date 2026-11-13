@@ -759,9 +759,11 @@ const REHYPE_PLUGINS: NonNullable<Options['rehypePlugins']> = [
     rehypeKatex,
     {
       throwOnError: false,
-      // KaTeX takes a raw colour string, not a CSS var. Keep it in step
-      // with --text-danger (light).
-      errorColor: '#b3261e',
+      // KaTeX writes this string into an inline `style="color: …"`, so a CSS
+      // var resolves there like anywhere else. It follows `--text-danger`, which
+      // is ink, not red (design.md 9.13): unparsed maths reads as its source
+      // text, not as an alarm. It used to be the light red hex, in both modes.
+      errorColor: 'var(--text-danger)',
       strict: false,
     },
   ],

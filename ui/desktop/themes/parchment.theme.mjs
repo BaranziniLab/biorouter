@@ -54,7 +54,11 @@ export default {
       // each set it to its own `text-default` — but a tooltip is a SURFACE, so
       // all three now paint it and place their own `text-inverse` on top.
       'background-inverse': '#1f1e1c',
-      'background-danger': '#b3261e',
+      // RED IS RARE (design.md 9.13): the danger tone is drawn in ink, not red.
+      // Its fill is the secondary ink, its text the primary ink; the words and
+      // the glyph say "failed" or "deletes". Only `border-danger`, the edge of
+      // an invalid field, keeps the family's red.
+      'background-danger': '#4f4a45',
       'background-success': '#1f7a3d',
       'background-info': '#1e5fbf',
       'background-warning': '#8a5a00',
@@ -67,15 +71,19 @@ export default {
       'border-success': '#1f7a3d',
       'border-warning': '#8a5a00',
       'border-info': '#1e5fbf',
-      'text-default': '#2a2520',
-      'text-muted': '#635c54',
-      'text-subtle': '#6e6760',
+      // Solid, near-black ink (owner, 2026-11-12): text reads dark and clear,
+      // not tinted or faded. Secondary and tertiary are one small step stronger
+      // than before and carry less warmth. Order stays default → muted → subtle.
+      'text-default': '#16120d',
+      'text-muted': '#4f4a45',
+      'text-subtle': '#5d5852',
       'text-inverse': '#ffffff',
       // Status inks are held to 4.5:1 on their OWN WASH (`--wash-X`, the hue at
       // 22% over the ground), not just on white: a Note paints the pair, and the
       // old stops measured 3.5–4.5:1 there (live QA T-18). Darkened in OKLCH
       // lightness at a fixed hue; `check-contrast.mjs` asserts every pair.
-      'text-danger': '#a51a14',
+      // Danger is the exception: it is the primary ink (red is rare, above).
+      'text-danger': '#16120d',
       'text-success': '#05662d',
       'text-warning': '#7a5000',
       'text-info': '#1053b0',
@@ -90,14 +98,15 @@ export default {
       'heat-3': '#c6774c',
       'heat-4': '#a04a27',
       sidebar: '#f7f7f5',
-      'sidebar-foreground': '#2a2520',
-      // Nav icons wear the row's resting ink, the muted label ink, so the icon
-      // column is one ink with the labels and the chat glyphs below (V1-R2-5).
-      'sidebar-icon': '#635c54',
+      'sidebar-foreground': '#16120d',
+      // Nav icons wear the row's resting ink, so the icon column is one ink with
+      // the labels and the chat glyphs below (V1-R2-5). Rows rest on the
+      // primary ink since 2026-11-12 (they read grey on the muted one).
+      'sidebar-icon': '#16120d',
       'sidebar-hover': '#efefec',
       'sidebar-active': '#eaeae6',
       'sidebar-accent': '#efefec',
-      'sidebar-accent-foreground': '#2a2520',
+      'sidebar-accent-foreground': '#16120d',
       'sidebar-border': '#e7e7e3',
       'sidebar-ring': '#5c5a55',
       // ── PERSON AVATAR HUES (D-AVATAR) ─────────────────────────────────────
@@ -205,7 +214,7 @@ export default {
       'background-medium': '#2c2c29',
       'background-strong': '#3a3a36',
       'background-inverse': '#ededea',
-      'background-danger': '#f07575',
+      'background-danger': '#bdb7aa',
       'background-success': '#7ac87c',
       'background-info': '#7aabf5',
       'background-warning': '#f0c84a',
@@ -218,12 +227,12 @@ export default {
       'border-success': '#7ac87c',
       'border-warning': '#f0c84a',
       'border-info': '#7aabf5',
-      'text-default': '#f4f0e6',
-      'text-muted': '#b0a892',
-      'text-subtle': '#9c937b',
+      'text-default': '#f6f4ee',
+      'text-muted': '#bdb7aa',
+      'text-subtle': '#a8a193',
       'text-inverse': '#16120c',
       // Status inks are held to 4.5:1 on their OWN WASH; see the light block.
-      'text-danger': '#ff8f8c',
+      'text-danger': '#f6f4ee',
       'text-success': '#7ac87c',
       'text-warning': '#f0c84a',
       'text-info': '#80b0fa',
@@ -236,12 +245,12 @@ export default {
       'heat-3': '#b0653a',
       'heat-4': '#e8895f',
       sidebar: '#171716',
-      'sidebar-foreground': '#f4f0e6',
-      'sidebar-icon': '#b0a892', // the muted label ink, as in light
+      'sidebar-foreground': '#f6f4ee',
+      'sidebar-icon': '#f6f4ee', // the row's resting ink, the primary ink, as in light
       'sidebar-hover': '#232320',
       'sidebar-active': '#2e2e2a',
       'sidebar-accent': '#232320',
-      'sidebar-accent-foreground': '#f4f0e6',
+      'sidebar-accent-foreground': '#f6f4ee',
       'sidebar-border': '#2a2a27',
       'sidebar-ring': '#a5a39d',
       // Person avatar hues (D-AVATAR): the light set's hues at fill L 0.39 and

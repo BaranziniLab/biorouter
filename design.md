@@ -282,6 +282,10 @@ This is the same convention GitHub's contribution graph uses. Absolute values li
 
 #### Text colours
 
+> **Inks superseded 2026-11-12 ([9.14](#914--solid-ink)).** The primary ink is near-black (`#16120d` light,
+> `#f6f4ee` dark) and the secondary steps are one small step stronger. The tables below are the record of
+> how the earlier values were chosen.
+
 **This is Parchment's axis.** Now that the grounds are shared, the ink below is most of what makes the
 family. It was not retuned by the 2026-08-08 unification — every value held on the shared grounds, and
 the minima moved only because the grounds did.
@@ -1091,7 +1095,7 @@ All three: 8px gap to a 14/21 label; the **label is part of the hit target**; mi
 | Navigation row | 32px, 12px horizontal inset, `--radius-md`, 8px gap, 16px icon + 14/20 label; no inter-row gap |
 | Recent session row | 32px, 12px horizontal inset, plain 14/20 title text; no leading icon; single-line ellipsis at the fixed sidebar width; running indicator only when live; full title and metadata remain available on hover/focus |
 | Compact titlebar controls | Three 32px controls in an explicit non-drag layer above the chat header; the session title starts 8px after their measured endpoint and moves beyond the 240px sidebar when it overlays the canvas |
-| Rest | transparent, `--text-muted` icon + label |
+| Rest | transparent, `--text-default` icon + label (`--sidebar-foreground`, `--sidebar-icon`; was `--text-muted` until 2026-11-12, [9.14](#914--solid-ink)) |
 | Hover | `--sidebar-hover` |
 | Active | `--sidebar-active`, `--text-default`, **plus a 2px accent bar on the leading edge** |
 | Section label | 11px caps `+0.08em` `--text-subtle`, 8px inset |
@@ -1938,6 +1942,9 @@ stay at `--row-height` 40px, because A-03's 36px is not part of this pass.
     Never borrow a `crew-*` class outside `crew/`.
 12. **Simplicity never costs accessibility.** Everything hidden stays reachable by keyboard and by screen
     reader, and the contrast gates pass, including the 3:1 control assertions in 9.5.
+13. **Red is rare** (owner, 2026-11-12; 9.13). Red never marks a failure, a risk, a permission or a
+    destructive action. Words and a glyph do that, in ink. The one red left in the chrome is the edge of an
+    invalid field.
 
 Copy rules: sentence case, the noun is "chat", "Biorouter" and "BAAM", the typographic ellipsis, American
 spelling, no em or en dashes as punctuation, no marketing words. A one-line menu label takes no trailing
@@ -2309,3 +2316,77 @@ hard to find. The rule applies to all of Biorouter, not only those surfaces.
 | ID | Decision | Resolved value |
 |---|---|---|
 | D-44 | **Simplicity first** | **A general principle, P9.** Up front only the most important information and the primary action; secondary operations in a dropdown, a `⋯` menu or a quiet button; complexity hidden by default behind a disclosure or an InfoTip, every option still reachable. It sits beside D-43 (hover peeks, click pins) and the owner's standing rule of one format across sibling surfaces. **First applied** to the Monitors dialog (each change applies as made; a row is a name, a switch and one line, with a peek and a `⋯`; the rest under More options), the decision history (Source and Outcome up front, the rest under Filters and Details), the `decide` card and turn marker (counts, not ids or thresholds), the phase gate dialog (one primary action only when the person is needed), the decision chat's composer and card, the Chat summary (Details, collapsed sections, one line per monitor) and the subagent roster (a row is a role, a status and one line; the rest in a peek). Records: `docs/desktop-ui/decision-models.md`, `docs/desktop-ui/chat-summary-rail.md`. |
+
+### 9.13 · Red is rare
+
+The owner, 2026-11-12: failed tool calls were "glaring red", permission prompts showed big red badges such
+as "Destructive", and red is not the way Biorouter should mark a critical or risky operation. Tool calls fail
+all the time, usually from a model's misstep, and are rarely a big deal. A permission prompt already asks for
+attention. Red on either one turns something routine into an alarm, and a person who sees alarms all day
+stops reading them.
+
+**The rule of thumb.** Before reaching for red, name the one thing it would tell the person that the words
+and the glyph do not. If there is none, and there almost never is, do not use red.
+
+| The case | How it is drawn | Never |
+|---|---|---|
+| A failed tool call, run, agent or task; an error note, toast or inline error message | The row's muted ink or the primary ink, a failure glyph (a failed transcript line draws `FAILED_GLYPH`, a circled ✕, in the primary ink) and words that say what failed ("Failed to read …", "Couldn't connect"). The details stay one click away. | A red line, icon, wash or dot |
+| Something that needs the person: a permission prompt, its risk grade, a decision | The card itself asks. Its risk chip is neutral, and the riskiest grade is the same chip in the primary ink (Badge `strong`), read first without a colour. A warning line keeps only its triangle in the warning hue; the sentence is ink. | A red badge, a red card edge, a paragraph set in a status hue |
+| A destructive action: Delete chat, Reset, Remove | Its verb, its glyph (trash, reset) and, where it cannot be undone, a confirmation that names what goes. The button and the menu item are the ordinary ones. | A red button or menu item |
+| A field whose value is invalid, a drop zone that refused a file | The one red left in the chrome: the 1px edge in `--border-danger`, beside a message in ink that says how to fix it | Red text, a red box round the form |
+| Data whose meaning is a colour | Terminal ANSI red, a chart series, an avatar hue. These are content, not chrome | |
+
+**How it is built, so new work follows by default.** The danger tone is a role, not a hue. In every family
+and mode `--text-danger` is the primary ink, `--background-danger` is the secondary ink, and `--wash-danger`
+is that ink at 8%, about the strong fill step. Every `danger` Badge, Note, StatusDot and Progress fill, every
+destructive Button and menu item, the error toast chip and every `text-text-danger` therefore reads as calm
+ink with no change at its call site, and UI written later that reaches for "danger" stays calm.
+`--border-danger` keeps each family's red because it marks exactly one thing, the invalid edge: never use it
+for a card, a banner or a status. Do not bring red back through a hex, a `--color-red-*` utility or a status
+token borrowed for its hue.
+
+- **Failed tool calls.** A failed row (`TranscriptRow`, `tone="danger"`) keeps the muted ink its neighbours
+  wear and draws `FAILED_GLYPH`, a circled ✕ in the primary ink, in place of its tool's glyph; its label
+  already opens with "Failed to". The ✕ is what makes a failure findable in a long group. The well's failure
+  notice titles in ink.
+- **Permission risk.** `ToolRiskBadge` (`ToolCallPreview.tsx`): Read-only, Modifies data and Unverified are
+  neutral chips, Destructive is the `strong` neutral chip (the primary ink). The grade lives in the word. The
+  accent was tried first and dropped: Parchment's coral wash read as a pinkish red.
+- **Gauges.** A context or usage bar past its limit fills with the danger tone, the secondary ink: full, not
+  alarmed. The label says what happens next.
+
+### 9.14 · Solid ink
+
+The owner, 2026-11-12: text in the sidebar and in the summary rail read "a little grayed out", with a stroke
+on the thin side. Wanted: dark, solid, smooth text (black in light mode), strokes "a tiny, tiny bit thicker",
+secondary grey "a tiny bit more pronounced", as one systematic change and not a redesign. The references were
+the Claude and Codex desktop sidebars: rows in the primary ink, section labels in a quieter grey, no tint.
+
+| Token | Parchment light, was → now | Parchment dark, was → now |
+|---|---|---|
+| `--text-default` | `#2a2520` → `#16120d` | `#f4f0e6` → `#f6f4ee` |
+| `--text-muted` | `#635c54` → `#4f4a45` | `#b0a892` → `#bdb7aa` |
+| `--text-subtle` | `#6e6760` → `#5d5852` | `#9c937b` → `#a8a193` |
+
+Alma Mater's primary ink moves from UCSF navy `#052049` to a near-black navy, `#08111f`, and Roche Limit's to
+`#111110`; their secondary steps move the same small distance, with less tint. The theme files hold the
+values. The order default → muted → subtle holds, and every step clears the contrast floors with more room
+than before (`npm run check:contrast`).
+
+- **Sidebar rows rest on the primary ink.** Nav rows, chat rows and their icons (`--sidebar-foreground`,
+  `--sidebar-icon`) are the primary ink at rest; hover, the current row and focus are told apart by their
+  fills and the accent rail. The Chats header, folder headers and date buckets stay on the secondary inks,
+  which is the hierarchy. This supersedes 4.11's resting `--text-muted`; V1-R2-5 still holds, the icon
+  column is one ink with its labels.
+- **Stroke weight comes from rendering, not from a weight step.** Arial draws only 400 and 700 (9.3), so a
+  heavier weight would be bold. In light mode `body` no longer sets `-webkit-font-smoothing: antialiased`,
+  which switched off macOS stem darkening and drew every glyph a hair thinner than the system's own apps;
+  `auto` draws dark text the way macOS does everywhere else. Dark mode keeps `antialiased`: stem darkening
+  fattens light-on-dark text far more, and with it on the dark UI read semi-bold beside the Codex reference
+  (vision review, 2026-11-12). There the brighter ink is what makes text solid. Windows and Linux ignore the
+  property and are unchanged.
+- **Hover tints keep their strength.** `--overlay-*` and `--border-emphasized` are mixed from the primary
+  ink, so the same percentage of a near-black ink would have deepened every hover and selection. In light mode
+  each step is re-weighed so its composite over white lands where the 2026-10 one did (4.8 / 9.1 / 12.7 / 17.2,
+  and 21.7 for the emphasized border), so only the text got darker; `.dark` restates the 2026-10 percentages.
+

@@ -49,7 +49,9 @@ export default {
       'background-medium': '#ecece9',
       'background-strong': '#dcdcd8',
       'background-inverse': '#1f1e1c',
-      'background-danger': '#c4232b',
+      // Red is rare (design.md 9.13): danger is drawn in ink, the fill being
+      // the secondary ink and the text the primary ink. See Parchment.
+      'background-danger': '#4a4945',
       'background-success': '#0f7150',
       'background-info': '#0a69bc',
       'background-warning': '#6e6300',
@@ -62,15 +64,15 @@ export default {
       'border-success': '#0f7150',
       'border-warning': '#6e6300',
       'border-info': '#0a69bc',
-      'text-default': '#1f1e1c',
-      'text-muted': '#5c5a55',
-      'text-subtle': '#69675f',
+      'text-default': '#111110',
+      'text-muted': '#4a4945',
+      'text-subtle': '#5a5853',
       'text-inverse': '#ffffff',
       // Status inks are held to 4.5:1 on their OWN WASH (`--wash-X`, the hue at
       // 22% over the ground), not just on white: a Note paints the pair, and the
       // old stops measured 3.5–4.5:1 there (live QA T-18). Darkened in OKLCH
       // lightness at a fixed hue; `check-contrast.mjs` asserts every pair.
-      'text-danger': '#a8061c',
+      'text-danger': '#111110',
       'text-success': '#026546',
       'text-warning': '#625800',
       'text-info': '#0258a2',
@@ -83,16 +85,16 @@ export default {
       'heat-3': '#ee8b45',
       'heat-4': '#c4560e',
       sidebar: '#f7f7f5',
-      'sidebar-foreground': '#1f1e1c',
-      // Nav icons wear the row's resting ink, the muted label ink, as in
+      'sidebar-foreground': '#111110',
+      // Nav icons wear the row's resting ink, the primary ink since 2026-11-12, as in
       // Parchment and Alma Mater: one ink with the labels and the chat glyphs
       // below (V1-R2-5). The accent is held for the active rail and the lock
       // badge (redesign principle 7); orange icons were accent outside it (V1-M3).
-      'sidebar-icon': '#5c5a55',
+      'sidebar-icon': '#111110',
       'sidebar-hover': '#efefec',
       'sidebar-active': '#eaeae6',
       'sidebar-accent': '#efefec',
-      'sidebar-accent-foreground': '#1f1e1c',
+      'sidebar-accent-foreground': '#111110',
       'sidebar-border': '#e7e7e3',
       'sidebar-ring': '#5c5a55',
       // ── PERSON AVATAR HUES (D-AVATAR) ─────────────────────────────────────
@@ -221,7 +223,9 @@ export default {
       'background-medium': '#2c2c29',
       'background-strong': '#3a3a36',
       'background-inverse': '#ededea',
-      'background-danger': '#ff9592',
+      // Red is rare (design.md 9.13): danger is drawn in ink, the fill being
+      // the secondary ink and the text the primary ink. See Parchment.
+      'background-danger': '#b6b4ae',
       'background-success': '#3dd68c',
       'background-info': '#70b8ff',
       'background-warning': '#f2e06b',
@@ -234,11 +238,11 @@ export default {
       'border-success': '#3dd68c',
       'border-warning': '#f2e06b',
       'border-info': '#70b8ff',
-      'text-default': '#ededea',
-      'text-muted': '#a5a39d',
-      'text-subtle': '#9c9a93',
+      'text-default': '#f4f4f1',
+      'text-muted': '#b6b4ae',
+      'text-subtle': '#a6a49e',
       'text-inverse': '#131312',
-      'text-danger': '#ff9592',
+      'text-danger': '#f4f4f1',
       'text-success': '#3dd68c',
       'text-warning': '#f2e06b',
       'text-info': '#70b8ff',
@@ -251,12 +255,12 @@ export default {
       'heat-3': '#b45f18',
       'heat-4': '#ee6c1a',
       sidebar: '#171716',
-      'sidebar-foreground': '#ededea',
-      'sidebar-icon': '#a5a39d', // the muted label ink, as in light
+      'sidebar-foreground': '#f4f4f1',
+      'sidebar-icon': '#f4f4f1', // the row's resting ink, the primary ink, as in light
       'sidebar-hover': '#232320',
       'sidebar-active': '#2e2e2a',
       'sidebar-accent': '#232320',
-      'sidebar-accent-foreground': '#ededea',
+      'sidebar-accent-foreground': '#f4f4f1',
       'sidebar-border': '#2a2a27',
       'sidebar-ring': '#a5a39d',
       // Person avatar hues (D-AVATAR): the light set's hues at fill L 0.39 and

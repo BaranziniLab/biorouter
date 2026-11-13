@@ -70,7 +70,11 @@
   font-size: var(--text-secondary);
   line-height: var(--text-secondary--line-height);
   font-weight: 400;
-  color: var(--text-muted);
+  /* Rows rest on the primary ink, the way the system's own sidebars draw them
+     (owner, 2026-11-12: the muted ink read grey). Hover, the current row and
+     focus are told apart by their fills and the accent rail, not by ink. Section
+     and bucket labels stay on the secondary inks, which is the hierarchy. */
+  color: var(--sidebar-foreground);
   text-align: start;
   background-color: transparent;
   transition:
@@ -161,6 +165,15 @@
 .br-sidebar-folder[data-menu-open] .br-sidebar-folder-toggle :is(.br-nav-row-icon, .br-nav-chevron),
 .br-sidebar-chats-toggle:is(:hover, :focus-visible) > .br-nav-chevron {
   color: currentColor;
+}
+
+/* A chat row's glyph is the row's resting ink too, so a chat row and a nav row
+   read alike (V1-R2-5). `ChatKindIcon` paints its body muted at rest for the
+   surfaces whose labels rest muted (the tab strip, History); in the sidebar the
+   labels rest on the primary ink (2026-11-12), and this unlayered rule wins over
+   that utility. The lock badge keeps its accent (`.br-icon-lock-badge`). */
+.br-nav-row .br-chat-kind-icon {
+  color: var(--sidebar-icon);
 }
 
 /* The Update row's download glyph is the accent (principle 7). */

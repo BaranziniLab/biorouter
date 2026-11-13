@@ -212,17 +212,17 @@ describe('the control edge, the off track and the fills are shared neutrals', ()
  * per-family token so a family COULD tint its icons, and Alma Mater and Roche
  * Limit did: teal and orange on Home, New chat, Crew and every Components row,
  * which put the accent outside the zest list. The accent belongs to the active
- * rail and the lock badge. The resting ink is the MUTED one: a nav row's label
- * and a chat row's glyph both wear `--text-muted` at rest, so an icon in
- * `--sidebar-foreground` (the default ink, which V1-M3 first chose) read heavier
- * than its own label and gave the 16px icon column two inks. Crew's sidebar (the
- * reference design) reads the same token beside its own muted rows.
+ * rail and the lock badge. The resting ink is the PRIMARY one since 2026-11-12
+ * (owner: sidebar text read grey on the muted ink; design.md 9.14): a nav row's
+ * label, a chat row's glyph and Crew's rows all rest on `--sidebar-foreground`,
+ * so the icon is that same ink and the 16px icon column is still one ink with
+ * its labels.
  */
 describe.each(['light', 'dark'] as const)('%s: nav icons wear the resting label ink', (mode) => {
   it.each(Object.keys(FAMILIES) as (keyof typeof FAMILIES)[])('%s', (id) => {
     const tokens = FAMILIES[id][mode].tokens as Record<string, string>;
-    expect(tokens['sidebar-icon']).toBe(tokens['text-muted']);
-    expect(tokens['sidebar-icon']).not.toBe(tokens['sidebar-foreground']);
+    expect(tokens['sidebar-icon']).toBe(tokens['sidebar-foreground']);
+    expect(tokens['sidebar-foreground']).toBe(tokens['text-default']);
     expect(tokens['sidebar-icon']).not.toBe(tokens['text-accent']);
   });
 });

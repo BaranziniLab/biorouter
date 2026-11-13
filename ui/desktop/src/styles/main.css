@@ -345,16 +345,26 @@
      hexes (three families × two modes × two tokens, none of them documenting
      their relationship to the surface they sit on) and the 42%-vs-38%
      `color-mix` fork between list rows and settings rows for one gesture. */
-  --overlay-hover: color-mix(in oklab, var(--text-default) 5%, transparent);
-  --overlay-pressed: color-mix(in oklab, var(--text-default) 10%, transparent);
-  --overlay-selected: color-mix(in oklab, var(--text-default) 14%, transparent);
+  /* Light-mode steps are re-weighed from the 2026-10 ladder (5 / 10 / 14 / 19,
+     and 24 for the emphasized border below): the primary ink went near-black on
+     2026-11-12 (design.md 9.14), and the same percentage of a darker ink would
+     have deepened every hover and selection with it. Each step is the share of
+     the new ink whose composite over white lands where the old one did, so only
+     the TEXT got darker. Hover sits a hair above that match (4.8, not 4.5): it is
+     held between the strong fill step and the page ground by
+     `groundsAndRows.browser.test.tsx` and `tabFill.browser.test.ts`. `.dark`
+     restates the 2026-10 percentages, because there the ink got brighter by a
+     hair, not darker. */
+  --overlay-hover: color-mix(in oklab, var(--text-default) 4.8%, transparent);
+  --overlay-pressed: color-mix(in oklab, var(--text-default) 9.1%, transparent);
+  --overlay-selected: color-mix(in oklab, var(--text-default) 12.7%, transparent);
   /* A selected row still has to answer the pointer. Selected sits at 14% and
      pressed at 10%, so there was no tint that darkens PAST selected — a
      migration hit this and had to drop the hover step on selected rows rather
      than invert the gesture. This is the fourth rung, and it exists only for the
      selected+interactive combination below; a static wash (inline code, a
      selected chip that is not a target) must never react to a passing pointer. */
-  --overlay-selected-hover: color-mix(in oklab, var(--text-default) 19%, transparent);
+  --overlay-selected-hover: color-mix(in oklab, var(--text-default) 17.2%, transparent);
   /* Accent at a low alpha: inset focus rings and selected accents. Reaching for
      the solid accent at 8% opacity instead would tint toward the ground it sits
      on; mixing to transparent keeps the hue and lets it composite. */
@@ -362,7 +372,7 @@
   /* The border an INTERACTIVE element carries — inputs, selects, the things you
      are invited to click into. Heavier than `--border-subtle` (which separates)
      and lighter than `--border-strong` (which encloses). */
-  --border-emphasized: color-mix(in oklab, var(--text-default) 24%, transparent);
+  --border-emphasized: color-mix(in oklab, var(--text-default) 21.7%, transparent);
 
   /* @ws WS-TOKENS begin: control edges */
   /* The resting EDGE of a control you operate: every input, checkbox, radio,
@@ -773,8 +783,11 @@
      here, but that file is still the theme's stated source of truth and feeds
      the derived artifacts. */
   --background-inverse: #1f1e1c;
-  /* Status FILLS — a solid background. The ink placed on top is --text-on-*. */
-  --background-danger: var(--color-red-600);
+  /* Status FILLS — a solid background. The ink placed on top is --text-on-*.
+     RED IS RARE (design.md 9.13): the danger fill is the secondary ink, not red,
+     so a failed status, a destructive button and a risk chip read as calm ink and
+     their words and glyph say what happened. Mirrored in each theme file. */
+  --background-danger: #4f4a45;
   --background-success: var(--color-green-600);
   --background-info: var(--color-blue-700);
   --background-warning: var(--color-yellow-700);
@@ -788,6 +801,8 @@
   --border-strong: var(--color-neutral-300);
   --border-input: #c9c9c3;
   --border-default: var(--border-subtle);
+  /* The one red left in the chrome (design.md 9.13): the edge of a field whose
+     value is invalid, or of a drop zone that refused a file. Nothing else. */
   --border-danger: var(--color-red-600);
   --border-success: var(--color-green-600);
   --border-warning: var(--color-yellow-700);
@@ -798,10 +813,14 @@
      had them inverted. All three clear 4.5:1 on every ground they can land on:
      white, muted #f4f4f2, medium #ecece9, code #f5f5f3 and sidebar #f7f7f5.
      The minima below are the WORST of those, measured by check-contrast.mjs —
-     re-measure rather than carry them forward if a neutral changes. */
-  --text-default: #2a2520; /* min 12.82:1, on --background-medium */
-  --text-muted: #635c54; /* min 5.56:1, on --background-medium */
-  --text-subtle: #6e6760; /* min 5.06:1, on --background-muted */
+     re-measure rather than carry them forward if a neutral changes.
+
+     SOLID INK (owner, 2026-11-12): the primary ink is near-black, so text reads
+     dark, clear and untinted; secondary and tertiary are one small step stronger
+     than the 2026-10 values (#2a2520 / #635c54 / #6e6760) and carry less warmth. */
+  --text-default: #16120d; /* min 15.46:1, on --background-medium */
+  --text-muted: #4f4a45; /* min 7.26:1, on --background-medium */
+  --text-subtle: #5d5852; /* min 5.84:1, on --background-medium */
   --text-inverse: var(--color-white);
 
   /* Status TEXT/ICON colours — must themselves pass on the page ground AND on
@@ -819,8 +838,12 @@
      ground; `check-contrast.mjs` asserts that pair for every tone, family and
      mode. The figures below are that worst case (the wash over
      `--background-muted`) — re-measure rather than carry them forward.
-     Mirrored in `themes/parchment.theme.mjs`; change the two together. */
-  --text-danger: #a51a14; /* 4.69:1 on its wash, 7.61:1 on white */
+     Mirrored in `themes/parchment.theme.mjs`; change the two together.
+
+     Danger is not a hue here (design.md 9.13, red is rare): its ink IS the
+     primary ink, and its wash is a light neutral step (8%, below), so an error
+     note, a failed state or a "Delete" item reads as plain ink with its glyph. */
+  --text-danger: #16120d;
   --text-success: #05662d; /* 4.60:1 on its wash */
   --text-warning: #7a5000; /* 4.61:1 on its wash */
   --text-info: #1053b0; /* 4.69:1 on its wash */
@@ -841,7 +864,9 @@
      background-COLOR (a chip brings no ground of its own), whereas the overlay
      tints are painted as a background-IMAGE by `tint-interactive` precisely
      because they must composite over one. */
-  --wash-danger: color-mix(in oklab, var(--text-danger) 22%, transparent);
+  /* Danger's ink is the primary ink, so its wash is 8%, not 22%: about the
+     strong fill step, a quiet neutral rather than a grey slab. */
+  --wash-danger: color-mix(in oklab, var(--text-danger) 8%, transparent);
   --wash-success: color-mix(in oklab, var(--text-success) 22%, transparent);
   --wash-warning: color-mix(in oklab, var(--text-warning) 22%, transparent);
   --wash-info: color-mix(in oklab, var(--text-info) 22%, transparent);
@@ -855,7 +880,7 @@
      mix against the ground is the only stop that lands on the note's actual
      composite. Same formula, same derivation from `--text-*`, so a family that
      re-points its status inks moves both together. */
-  --wash-solid-danger: color-mix(in oklab, var(--text-danger) 22%, var(--background-default));
+  --wash-solid-danger: color-mix(in oklab, var(--text-danger) 8%, var(--background-default));
   --wash-solid-success: color-mix(in oklab, var(--text-success) 22%, var(--background-default));
   --wash-solid-warning: color-mix(in oklab, var(--text-warning) 22%, var(--background-default));
   --wash-solid-info: color-mix(in oklab, var(--text-info) 22%, var(--background-default));
@@ -896,12 +921,13 @@
   --sidebar: #f7f7f5;
   --sidebar-foreground: var(--text-default);
   /* Nav-icon colour. PER FAMILY, so a family could tint it; none does. Every
-     family points it at its muted ink, the ink a nav row's label and a chat
-     row's glyph wear at rest, so the sidebar's icon column is one ink (vision
-     V1-R2-5; the accent is held for the active rail and the lock badge, V1-M3).
+     family points it at the ink a nav row's label and a chat row's glyph wear at
+     rest, so the sidebar's icon column is one ink (vision V1-R2-5; the accent is
+     held for the active rail and the lock badge, V1-M3). Since 2026-11-12 that
+     resting ink is the PRIMARY ink, not the muted one, which read grey (owner).
      Defined here (and in .dark) so every theme resolves it and
      check-contrast.mjs can assert it across all six scopes. */
-  --sidebar-icon: var(--text-muted);
+  --sidebar-icon: var(--text-default);
   --sidebar-hover: #efefec;
   --sidebar-active: #eaeae6;
   --sidebar-accent: var(--sidebar-hover);
@@ -1019,7 +1045,8 @@
   --background-fill-strong: #2c2c29;
   /* @ws WS-TOKENS end: fill tokens (dark) */
   --background-inverse: #ededea;
-  --background-danger: var(--color-red-100);
+  /* Red is rare (design.md 9.13): the dark danger fill is the secondary ink. */
+  --background-danger: #bdb7aa;
   --background-success: var(--color-green-100);
   --background-info: var(--color-blue-100);
   --background-warning: var(--color-yellow-100);
@@ -1037,6 +1064,7 @@
   --control-track-off: #33332f;
   /* @ws WS-TOKENS end: control edges (dark) */
   --border-default: var(--border-subtle);
+  /* The invalid-field edge, the one red left in the chrome (design.md 9.13). */
   --border-danger: var(--color-red-100);
   --border-success: var(--color-green-100);
   --border-warning: var(--color-yellow-100);
@@ -1044,17 +1072,25 @@
 
   /* Text — PARCHMENT'S AXIS, written as literals rather than through the
      neutral ramp, because that ramp is now shared and carries no family bias.
-     Pure white on near-black is harsh; the warm bone reads calmer. `subtle` was
-     neutral-500, which failed AA on the sidebar ground. Minima are the worst
-     over every asserted ground; re-measure if a neutral changes. */
-  --text-default: #f4f0e6; /* min 12.31:1, on --background-medium */
-  --text-muted: #b0a892; /* min 5.91:1, on --background-medium */
-  --text-subtle: #9c937b; /* min 5.16:1, on --background-muted */
+     Pure white on near-black is harsh; a barely warm white reads calmer. `subtle`
+     was neutral-500, which failed AA on the sidebar ground. Minima are the worst
+     over every asserted ground; re-measure if a neutral changes. Solid ink since
+     2026-11-12 (owner): brighter and less cream than the 2026-10 bone (#f4f0e6 /
+     #b0a892 / #9c937b), with the secondary steps one small step stronger. */
+  --text-default: #f6f4ee; /* min 12.73:1, on --background-medium */
+  --text-muted: #bdb7aa; /* min 7.01:1, on --background-medium */
+  --text-subtle: #a8a193; /* min 5.46:1, on --background-medium */
   --text-inverse: #16120c;
+  /* Interaction tints at their 2026-10 strength (see the light ladder in :root). */
+  --overlay-hover: color-mix(in oklab, var(--text-default) 5%, transparent);
+  --overlay-pressed: color-mix(in oklab, var(--text-default) 10%, transparent);
+  --overlay-selected: color-mix(in oklab, var(--text-default) 14%, transparent);
+  --overlay-selected-hover: color-mix(in oklab, var(--text-default) 19%, transparent);
+  --border-emphasized: color-mix(in oklab, var(--text-default) 24%, transparent);
   /* Status inks are held to 4.5:1 on their own wash (see the light block):
-     danger and info were lifted off `red-100` / `blue-100` (4.32 / 4.86 on the
-     wash over the card ground, 3.95 / 4.43 over `--background-muted`). */
-  --text-danger: #ff8f8c; /* 4.66:1 on its wash */
+     info was lifted off `blue-100` (4.86 on the wash over the card ground, 4.43
+     over `--background-muted`). Danger is the primary ink (red is rare). */
+  --text-danger: #f6f4ee;
   --text-success: var(--color-green-100);
   --text-warning: var(--color-yellow-100);
   --text-info: #80b0fa; /* 4.62:1 on its wash */
@@ -1081,7 +1117,7 @@
      main canvas, with its own hover/active steps. Shared, like light. */
   --sidebar: #171716;
   --sidebar-foreground: var(--text-default);
-  --sidebar-icon: var(--text-muted);
+  --sidebar-icon: var(--text-default);
   --sidebar-hover: #232320;
   --sidebar-active: #2e2e2a;
   --sidebar-accent: var(--sidebar-hover);
@@ -1187,7 +1223,7 @@
   --background-medium: #ecece9;
   --background-strong: #dcdcd8;
   --background-inverse: #1f1e1c;
-  --background-danger: #e61048;
+  --background-danger: #43526b;
   --background-success: #007242;
   --background-info: #0f388a;
   --background-warning: #8a5a00;
@@ -1200,11 +1236,11 @@
   --border-success: #007242;
   --border-warning: #8a5a00;
   --border-info: #0f388a;
-  --text-default: #052049;
-  --text-muted: #506380;
-  --text-subtle: #586780;
+  --text-default: #08111f;
+  --text-muted: #43526b;
+  --text-subtle: #4e5b71;
   --text-inverse: #ffffff;
-  --text-danger: #a8032f;
+  --text-danger: #08111f;
   --text-success: #02653a;
   --text-warning: #7a5000;
   --text-info: #0f388a;
@@ -1217,12 +1253,12 @@
   --heat-3: #16a0ac;
   --heat-4: #0e5258;
   --sidebar: #f7f7f5;
-  --sidebar-foreground: #052049;
-  --sidebar-icon: #506380;
+  --sidebar-foreground: #08111f;
+  --sidebar-icon: #08111f;
   --sidebar-hover: #efefec;
   --sidebar-active: #eaeae6;
   --sidebar-accent: #efefec;
-  --sidebar-accent-foreground: #052049;
+  --sidebar-accent-foreground: #08111f;
   --sidebar-border: #e7e7e3;
   --sidebar-ring: #5c5a55;
   --avatar-hue-1-bg: #ffcbc5;
@@ -1266,7 +1302,7 @@
   --background-medium: #2c2c29;
   --background-strong: #3a3a36;
   --background-inverse: #ededea;
-  --background-danger: #f5768a;
+  --background-danger: #c0c5cb;
   --background-success: #5fbf74;
   --background-info: #7fb3e6;
   --background-warning: #feb80a;
@@ -1279,11 +1315,11 @@
   --border-success: #5fbf74;
   --border-warning: #feb80a;
   --border-info: #7fb3e6;
-  --text-default: #f2f3f4;
-  --text-muted: #b4b9bf;
-  --text-subtle: #909aa6;
+  --text-default: #f5f6f7;
+  --text-muted: #c0c5cb;
+  --text-subtle: #a1aab5;
   --text-inverse: #052049;
-  --text-danger: #fd90a0;
+  --text-danger: #f5f6f7;
   --text-success: #63c277;
   --text-warning: #feb80a;
   --text-info: #7fb3e6;
@@ -1296,12 +1332,12 @@
   --heat-3: #16a0ac;
   --heat-4: #60d0da;
   --sidebar: #171716;
-  --sidebar-foreground: #f2f3f4;
-  --sidebar-icon: #b4b9bf;
+  --sidebar-foreground: #f5f6f7;
+  --sidebar-icon: #f5f6f7;
   --sidebar-hover: #232320;
   --sidebar-active: #2e2e2a;
   --sidebar-accent: #232320;
-  --sidebar-accent-foreground: #f2f3f4;
+  --sidebar-accent-foreground: #f5f6f7;
   --sidebar-border: #2a2a27;
   --sidebar-ring: #a5a39d;
   --avatar-hue-1-bg: #6b302d;
@@ -1377,7 +1413,7 @@
   --background-medium: #ecece9;
   --background-strong: #dcdcd8;
   --background-inverse: #1f1e1c;
-  --background-danger: #c4232b;
+  --background-danger: #4a4945;
   --background-success: #0f7150;
   --background-info: #0a69bc;
   --background-warning: #6e6300;
@@ -1390,11 +1426,11 @@
   --border-success: #0f7150;
   --border-warning: #6e6300;
   --border-info: #0a69bc;
-  --text-default: #1f1e1c;
-  --text-muted: #5c5a55;
-  --text-subtle: #69675f;
+  --text-default: #111110;
+  --text-muted: #4a4945;
+  --text-subtle: #5a5853;
   --text-inverse: #ffffff;
-  --text-danger: #a8061c;
+  --text-danger: #111110;
   --text-success: #026546;
   --text-warning: #625800;
   --text-info: #0258a2;
@@ -1407,12 +1443,12 @@
   --heat-3: #ee8b45;
   --heat-4: #c4560e;
   --sidebar: #f7f7f5;
-  --sidebar-foreground: #1f1e1c;
-  --sidebar-icon: #5c5a55;
+  --sidebar-foreground: #111110;
+  --sidebar-icon: #111110;
   --sidebar-hover: #efefec;
   --sidebar-active: #eaeae6;
   --sidebar-accent: #efefec;
-  --sidebar-accent-foreground: #1f1e1c;
+  --sidebar-accent-foreground: #111110;
   --sidebar-border: #e7e7e3;
   --sidebar-ring: #5c5a55;
   --avatar-hue-1-bg: #ffcbc5;
@@ -1456,7 +1492,7 @@
   --background-medium: #2c2c29;
   --background-strong: #3a3a36;
   --background-inverse: #ededea;
-  --background-danger: #ff9592;
+  --background-danger: #b6b4ae;
   --background-success: #3dd68c;
   --background-info: #70b8ff;
   --background-warning: #f2e06b;
@@ -1469,11 +1505,11 @@
   --border-success: #3dd68c;
   --border-warning: #f2e06b;
   --border-info: #70b8ff;
-  --text-default: #ededea;
-  --text-muted: #a5a39d;
-  --text-subtle: #9c9a93;
+  --text-default: #f4f4f1;
+  --text-muted: #b6b4ae;
+  --text-subtle: #a6a49e;
   --text-inverse: #131312;
-  --text-danger: #ff9592;
+  --text-danger: #f4f4f1;
   --text-success: #3dd68c;
   --text-warning: #f2e06b;
   --text-info: #70b8ff;
@@ -1486,12 +1522,12 @@
   --heat-3: #b45f18;
   --heat-4: #ee6c1a;
   --sidebar: #171716;
-  --sidebar-foreground: #ededea;
-  --sidebar-icon: #a5a39d;
+  --sidebar-foreground: #f4f4f1;
+  --sidebar-icon: #f4f4f1;
   --sidebar-hover: #232320;
   --sidebar-active: #2e2e2a;
   --sidebar-accent: #232320;
-  --sidebar-accent-foreground: #ededea;
+  --sidebar-accent-foreground: #f4f4f1;
   --sidebar-border: #2a2a27;
   --sidebar-ring: #a5a39d;
   --avatar-hue-1-bg: #6b302d;
@@ -6762,10 +6798,27 @@ input[type='radio']:checked ~ .br-radio-dot {
   background-color: var(--text-subtle);
 }
 
+/* Stroke weight (owner, 2026-11-12: text read thin). `antialiased` switched off
+   macOS's stem darkening and drew every glyph a hair thinner than the system's
+   own apps; `auto` lets macOS draw text the way Finder and the references do, a
+   tiny bit heavier and never bold. Windows and Linux ignore the property and are
+   unchanged. Arial draws only 400 and 700, so this, not a weight step, is the
+   lever (design.md 9.14).
+
+   Dark mode keeps `antialiased`: stem darkening fattens light-on-dark text far
+   more than dark-on-light, and with it on the dark UI read semi-bold beside the
+   Codex reference (vision review, 2026-11-12). There the brighter ink is what
+   makes the text solid. */
 body {
   background-color: var(--background-app);
-  -webkit-font-smoothing: antialiased;
+  -webkit-font-smoothing: auto;
+  -moz-osx-font-smoothing: auto;
   text-rendering: optimizeLegibility;
+}
+
+.dark body {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body.biorouter-headless-browser {

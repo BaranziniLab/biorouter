@@ -337,13 +337,16 @@ export default function ToolConfirmation({
 
   // The finding is a security fact, so it stays visible on every state of the
   // card: a warning line, not a tinted band (a band inside a card is a box in
-  // a box).
+  // a box). Only the triangle wears the warning hue; the sentence is the
+  // primary ink, because a paragraph in amber reads as an alarm and reads worse
+  // (owner, 2026-11-12: permission prompts ask for attention without alarm;
+  // design.md 9.13).
   const findingLine = securityFinding ? (
     <div
       data-testid="tool-security-finding"
-      className="flex items-start gap-2 text-body text-text-warning"
+      className="flex items-start gap-2 text-body text-text-default"
     >
-      <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+      <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-text-warning" />
       {/* A Crew card's summary and the lines under it are separate lines (live QA: "as you It
           can then read…" ran together). */}
       <span className={crewPerson ? 'min-w-0 whitespace-pre-line' : 'min-w-0'}>

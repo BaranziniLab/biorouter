@@ -35,6 +35,7 @@ import {
   Circle as _Circle,
   CircleDotDashed as _CircleDotDashed,
   CircleHelp as _CircleHelp,
+  CircleX as _CircleX,
   Clipboard as _Clipboard,
   ClipboardList as _ClipboardList,
   Clock as _Clock,
@@ -205,6 +206,8 @@ export const CircleDotDashed = light(_CircleDotDashed);
 /** The privacy axes' "unstated" mark — see `Landmark` below for the trio. */
 export const CircleHelp = light(_CircleHelp);
 export const CircleHelpIcon = CircleHelp;
+/** A failed transcript line's glyph (`FAILED_GLYPH`): "this failed", said by shape, not by red. */
+export const CircleX = light(_CircleX);
 export const Clipboard = light(_Clipboard);
 export const ClipboardList = light(_ClipboardList);
 export const Clock = light(_Clock);
