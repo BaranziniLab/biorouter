@@ -13,7 +13,7 @@ import { Note } from '../../ui/note';
 import { SettingRow, SettingSection } from '../../ui/setting-row';
 import { ModalShell } from '../../ModalShell';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
-import { resetBrowserReason } from './resetOnBrowser';
+import { RESET_NEEDS_HOST_LABEL, RESET_NEEDS_HOST_WHY, resetBrowserReason } from './resetOnBrowser';
 import { resetCopy } from './copy';
 
 type ResetPanelProps = {
@@ -265,10 +265,11 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
       </SettingRow>
 
       {hostOnly !== null && (
-        // The whole reason, beside the control it disables, so the person reads
-        // it before reaching for the control rather than after.
+        // The refusal, beside the control it disables, so the person reads it
+        // before reaching for the control rather than after. Why, and the
+        // terminal alternative, are the InfoTip beside it (owner, 2026-11-13).
         <Note tone="neutral" testId="reset-needs-host-note" className="mt-2">
-          {hostOnly}
+          {hostOnly} <InfoTip label={RESET_NEEDS_HOST_LABEL} help={RESET_NEEDS_HOST_WHY} />
         </Note>
       )}
 

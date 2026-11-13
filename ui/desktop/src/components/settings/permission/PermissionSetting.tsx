@@ -8,10 +8,14 @@ import { Button } from '../../ui/button';
 import { getConfigurableExtensions, permissionExtensionTitle } from './PermissionRulesModal';
 import { permissionDialogCopy } from '../chat/copy';
 
+/**
+ * One extension: its name and a chevron. The daemon's description of the extension used to sit
+ * under the name, unbounded, and became part of the button's name; the Extensions page holds it,
+ * and `PermissionRulesModal` dropped it for the same reason (owner, 2026-11-13: one line up front).
+ */
 function RuleItem({ extension }: { extension: FixedExtensionEntry }) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const title = permissionExtensionTitle(extension);
-  const description = 'description' in extension ? extension.description || '' : '';
 
   return (
     <>
@@ -25,9 +29,6 @@ function RuleItem({ extension }: { extension: FixedExtensionEntry }) {
           <h3 className="text-label text-text-default break-words [overflow-wrap:anywhere]">
             {title}
           </h3>
-          <p className="mt-1 text-supporting text-text-muted break-words [overflow-wrap:anywhere]">
-            {description}
-          </p>
         </div>
         <ChevronRight className="h-4 w-4 flex-shrink-0" />
       </Button>

@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useId, useState } from 'react';
+import { Fragment, useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { memoryDeleteCategory, memoryDeleteEntry, memoryInventory } from '../../../api';
 import type {
   MemoryCategoryInventory,
@@ -8,9 +8,11 @@ import type {
 } from '../../../api';
 import { toastError, toastSuccess } from '../../../toasts';
 import { getInitialWorkingDir } from '../../../utils/workingDir';
+import { homeFolder, tildePath } from '../../../utils/folderPath';
 import { ConfirmationModal } from '../../ui/ConfirmationModal';
 import { ChevronDown, ChevronRight, RefreshCw, Trash2 } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
+import { Button } from '../../ui/button';
 import { InfoTip } from '../../ui/info-tip';
 import { Note } from '../../ui/note';
 import { IconAction, RowActions } from '../../ui/row-actions';
@@ -200,10 +202,11 @@ export default function MemorySection() {
       const count = pending.category.entries.length;
       return {
         title: `Delete the ${scopeNoun(pending.scope)} category “${pending.category.name}”?`,
+        // The consequence and who loses it, at the decision. "Biorouter keeps no copy" said
+        // "cannot be undone" a second time, so it went (owner, 2026-11-13).
         message:
           `This permanently deletes ${count === 1 ? '1 memory' : `${count} memories`} that ` +
-          `${scopeAudience(pending.scope)} can read. Biorouter keeps no copy: this cannot be ` +
-          `undone.`,
+          `${scopeAudience(pending.scope)} can read. This cannot be undone.`,
       };
     }
     return {
@@ -212,9 +215,7 @@ export default function MemorySection() {
         `“${quote(pending.entry.content)}” will be permanently removed from the ` +
         `${scopeNoun(pending.scope)} category “${pending.category.name}”, which ` +
         `${scopeAudience(pending.scope)} can read. This cannot be undone.` +
-        (pending.isLastInCategory
-          ? ` It is the last memory in “${pending.category.name}”, so the category goes with it.`
-          : ''),
+        (pending.isLastInCategory ? ' As its last memory, the category goes with it.' : ''),
     };
   })();
 
@@ -388,11 +389,12 @@ function StoreBlock({
     <StoreFrame
       heading={heading}
       tipLabel={tipLabel}
-      // The folder is a machine string, so it is mono and on its own line, and it stays in the DOM
-      // (the tip's hidden description) for anything that reads it.
+      // The folder says where the store lives, so it is a name with a place, in the body face and
+      // written from `~` (design.md D-42), on its own line; it stays in the DOM (the tip's hidden
+      // description) for anything that reads it.
       help={
         <>
-          {audience} <span className="br-memory-path">{store.path}</span>
+          {audience} <span className="br-memory-path">{tildePath(store.path, homeFolder())}</span>
         </>
       }
       count={total === 0 ? undefined : countLabelFor(total)}
@@ -423,6 +425,66 @@ function StoreBlock({
 }
 
 const countLabelFor = (count: number) => (count === 1 ? '1 memory' : `${count} memories`);
+
+/** How many lines of a memory show before "Show more" (owner, 2026-11-13). */
+export const MEMORY_ENTRY_LINES = 3;
+
+/**
+ * One memory's text: its first three lines, and the rest behind "Show more", expanding in place.
+ * Entries are written by a model or a person and can run to paragraphs, so an open category was a
+ * wall of text. The clamp is authored CSS (`.br-memory-entry-clamp`); whether the text runs past
+ * it is MEASURED, as `Note` measures its ceiling, so a memory that fits never carries a control
+ * that reveals nothing. jsdom has no layout, so there the text is whole and the control absent.
+ */
+function EntryContent({ content }: { content: string }) {
+  const ref = useRef<HTMLParagraphElement>(null);
+  const id = useId();
+  const [overflows, setOverflows] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const measure = () => {
+      const lineHeight = Number.parseFloat(getComputedStyle(element).lineHeight);
+      setOverflows(
+        Number.isFinite(lineHeight) && element.scrollHeight > lineHeight * MEMORY_ENTRY_LINES + 1
+      );
+    };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [content]);
+
+  const clamped = overflows && !expanded;
+  return (
+    <>
+      <p
+        ref={ref}
+        id={id}
+        className={`min-w-0 whitespace-pre-wrap break-words text-secondary text-text-default [overflow-wrap:anywhere]${
+          clamped ? ' br-memory-entry-clamp' : ''
+        }`}
+      >
+        {content}
+      </p>
+      {overflows && (
+        <Button
+          type="button"
+          variant="link"
+          className="mt-1 h-auto p-0 text-supporting font-normal"
+          aria-expanded={expanded}
+          aria-controls={id}
+          onClick={() => setExpanded((open) => !open)}
+        >
+          {expanded ? 'Show less' : 'Show more'}
+        </Button>
+      )}
+    </>
+  );
+}
 
 /**
  * A category and, when open, its entries as SIBLING rows. They used to render inside the category
@@ -511,9 +573,7 @@ function CategoryRow({
                   ))}
                 </div>
               )}
-              <p className="min-w-0 whitespace-pre-wrap break-words text-secondary text-text-default [overflow-wrap:anywhere]">
-                {entry.content}
-              </p>
+              <EntryContent content={entry.content} />
             </div>
             <div className="br-setting-row-control">
               <RowActions

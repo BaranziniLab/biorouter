@@ -1,8 +1,29 @@
 import { useState, useEffect } from 'react';
 import { Switch } from '../../ui/switch';
 import { Input } from '../../ui/input';
-import { Note } from '../../ui/note';
+import { InfoTip, useInfoTipId } from '../../ui/info-tip';
+import { SettingRow } from '../../ui/setting-row';
 import { AlertCircle } from '../../icons/app-icons';
+
+/**
+ * The section's words. Each explanation is an InfoTip, two sentences at most; the restart the
+ * switch needs is said once, in its own help.
+ */
+export const externalBackendCopy = {
+  section: 'Biorouter server',
+  sectionHelp:
+    'By default Biorouter starts a server for you. Use this to connect to a Biorouter server running elsewhere.',
+  useExternal: 'Use external server',
+  useExternalHelp:
+    'Changes take effect after you restart Biorouter. New chat windows then connect to the external server.',
+  url: 'Server URL',
+  secret: 'Secret key',
+  secretHelp:
+    'The secret key the biorouterd server was configured with (BIOROUTER_SERVER__SECRET_KEY).',
+  userActionKey: 'User action key',
+  userActionKeyHelp:
+    'Proves a request came from you, not the model; the server gets its SHA-256 on stdin at start. Without it, private chats can’t be opened, branched or reported here.',
+} as const;
 
 interface ExternalBiorouterdConfig {
   enabled: boolean;
@@ -53,6 +74,8 @@ export default function ExternalBackendSection() {
   const [config, setConfig] = useState<ExternalBiorouterdConfig>(DEFAULT_CONFIG);
   const [isSaving, setIsSaving] = useState(false);
   const [urlError, setUrlError] = useState<string | null>(null);
+  const secretHelpId = useInfoTipId();
+  const userActionKeyHelpId = useInfoTipId();
 
   useEffect(() => {
     const loadSettings = async () => {
@@ -123,37 +146,42 @@ export default function ExternalBackendSection() {
   // now lands right the day it is wired in, rather than arriving as the one
   // section on the tab with a card, a title style and a row spec of its own.
   return (
-    <section id="external-backend" className="biorouter-settings-section">
-      <div className="biorouter-settings-section-header">
-        <h2 className="text-caps text-text-muted mb-1">Biorouter Server</h2>
-        <p className="text-supporting text-text-muted">
-          By default Biorouter launches a server for you, use this to connect to an external
-          Biorouter server
-        </p>
+    <section
+      id="external-backend"
+      aria-labelledby="external-backend-title"
+      className="biorouter-settings-section"
+    >
+      {/* One label per thing, the explanation behind its InfoTip (owner, 2026-11-13). The
+          section's caption, the row's description, three field paragraphs and a restart note said
+          "requires a restart" twice and stacked about 600 characters under four labels. */}
+      <div className="biorouter-settings-section-header br-setting-section-header">
+        <h2
+          id="external-backend-title"
+          className="br-setting-section-title text-caps text-text-muted"
+        >
+          {externalBackendCopy.section}
+        </h2>
+        <InfoTip label={externalBackendCopy.section} help={externalBackendCopy.sectionHelp} />
       </div>
 
       <div className="biorouter-settings-list">
-        <div className="biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2.5">
-          <div className="min-w-0 flex-1">
-            <h3 className="text-label text-text-default">Use external server</h3>
-            <p className="mt-0.5 max-w-md text-supporting text-text-muted">
-              Connect to a Biorouter server running elsewhere (requires app restart)
-            </p>
-          </div>
+        <SettingRow
+          label={externalBackendCopy.useExternal}
+          help={externalBackendCopy.useExternalHelp}
+        >
           <Switch
             checked={config.enabled}
             onCheckedChange={(checked) => saveConfig(updateField('enabled', checked))}
             disabled={isSaving}
-            aria-label="Use external server"
           />
-        </div>
+        </SettingRow>
       </div>
 
       {config.enabled && (
         <div className="mt-3 space-y-4 px-3">
           <div className="space-y-2">
             <label htmlFor="external-url" className="text-label text-text-default">
-              Server URL
+              {externalBackendCopy.url}
             </label>
             <Input
               id="external-url"
@@ -174,9 +202,16 @@ export default function ExternalBackendSection() {
           </div>
 
           <div className="space-y-2">
-            <label htmlFor="external-secret" className="text-label text-text-default">
-              Secret Key
-            </label>
+            <div className="flex items-center gap-1">
+              <label htmlFor="external-secret" className="text-label text-text-default">
+                {externalBackendCopy.secret}
+              </label>
+              <InfoTip
+                id={secretHelpId}
+                label={externalBackendCopy.secret}
+                help={externalBackendCopy.secretHelp}
+              />
+            </div>
             <Input
               id="external-secret"
               type="password"
@@ -185,16 +220,21 @@ export default function ExternalBackendSection() {
               onChange={(e) => updateField('secret', e.target.value)}
               onBlur={() => saveConfig(config)}
               disabled={isSaving}
+              aria-describedby={secretHelpId}
             />
-            <p className="text-supporting text-text-muted">
-              The secret key configured on the biorouterd server (BIOROUTER_SERVER__SECRET_KEY)
-            </p>
           </div>
 
           <div className="space-y-2">
-            <label htmlFor="external-user-action-key" className="text-label text-text-default">
-              User Action Key
-            </label>
+            <div className="flex items-center gap-1">
+              <label htmlFor="external-user-action-key" className="text-label text-text-default">
+                {externalBackendCopy.userActionKey}
+              </label>
+              <InfoTip
+                id={userActionKeyHelpId}
+                label={externalBackendCopy.userActionKey}
+                help={externalBackendCopy.userActionKeyHelp}
+              />
+            </div>
             <Input
               id="external-user-action-key"
               type="password"
@@ -203,18 +243,9 @@ export default function ExternalBackendSection() {
               onChange={(e) => updateField('userActionKey', e.target.value)}
               onBlur={() => saveConfig(config)}
               disabled={isSaving}
+              aria-describedby={userActionKeyHelpId}
             />
-            <p className="text-supporting text-text-muted">
-              Proves a request came from you rather than from the model. The server is given the
-              SHA-256 of this key on stdin when it starts. Without it, private chats cannot be
-              opened, branched, or reported through this backend.
-            </p>
           </div>
-
-          <Note tone="warning">
-            <strong className="font-semibold">Note:</strong> Changes require restarting Biorouter to
-            take effect. New chat windows will connect to the external server.
-          </Note>
         </div>
       )}
     </section>

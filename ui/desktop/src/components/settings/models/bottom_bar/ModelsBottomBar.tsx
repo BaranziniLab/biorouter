@@ -683,13 +683,19 @@ export default function ModelsBottomBar({
             )}
             {/* A decision model answers each message with a choice and its
                 probabilities, not with text; said here so the chip's menu names
-                what kind of model the chat runs on. */}
+                what kind of model the chat runs on. The state word is the line;
+                what it means sits in the InfoTip beside it (owner, 2026-11-13). */}
             {decisionChat && (
               <div
                 data-testid="model-decision-line"
-                className="text-supporting text-text-muted [overflow-wrap:anywhere]"
+                className="flex items-center gap-1 text-supporting text-text-muted"
               >
-                {`${switchModelCopy.decisionModel}: ${switchModelCopy.decisionDetail.toLowerCase()}`}
+                <span>{switchModelCopy.decisionModel}</span>
+                <InfoTip
+                  label={switchModelCopy.decisionModel.toLowerCase()}
+                  help={`${switchModelCopy.decisionDetail}.`}
+                  data-testid="model-decision-info"
+                />
               </div>
             )}
             {showPrivacyBlock && (
@@ -710,7 +716,9 @@ export default function ModelsBottomBar({
           {/*
             SD-1. Both items below write `BIOROUTER_PROVIDER`, and a browser-served
             daemon refuses them with a 409. The note says so inside the same block
-            as the items, so the reason is visible where they are grey.
+            as the items, so the reason is visible where they are grey. Its info
+            icon is an arrow-key stop like the menu's other InfoTips
+            (`moveFocusAcrossMenuStops`), so the full form stays reachable here.
           */}
           <HostManagedModelNote variant="inset" />
           {effort !== null && reasoningScope && !decisionChat && (

@@ -83,8 +83,13 @@ describe('the model chip of a decision chat', () => {
       />
     );
     await openMenu();
+    // The state word is the visible line; what it means is the InfoTip beside it.
     expect(screen.getByTestId('model-decision-line')).toHaveTextContent(
-      `${switchModelCopy.decisionModel}: answers with a choice and its probabilities, not text`
+      switchModelCopy.decisionModel
+    );
+    const info = screen.getByRole('button', { name: 'About decision model' });
+    expect(info).toHaveAccessibleDescription(
+      'Answers with a choice and its probabilities, not text.'
     );
   });
 

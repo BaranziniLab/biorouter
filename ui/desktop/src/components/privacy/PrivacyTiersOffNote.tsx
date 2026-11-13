@@ -1,5 +1,6 @@
 import { useNavigate } from 'react-router-dom';
 import { Button } from '../ui/button';
+import { Disclosure } from '../ui/disclosure';
 import { Note } from '../ui/note';
 import { usePrivacyTiersEnabled, usePrivacyTiersRecord } from '../ConfigContext';
 import { PRIVACY_TIERS_OFF_CONSEQUENCE, privacyTiersOffCopy } from './privacyTiersOffCopy';
@@ -34,6 +35,12 @@ import { RecordedIn } from './RecordedIn';
  * level with the sidebar's and the artifact strip's (`--chrome-height`), and
  * not as a new app-wide strip, which the `h-screen` routes inside the shell
  * would overflow.
+ *
+ * ⚠ **The headline and the consequence stay on the note; how the switch got to
+ * off and where it is recorded fold under Details** (owner, 2026-11-13: no
+ * solid chunk of text above every composer). The two visible sentences are the
+ * disclosure DR-17 requires announced, and the danger tone still marks the
+ * unrecorded case; the account of how is one click away and word for word.
  */
 export function PrivacyTiersOffNote({
   className,
@@ -65,9 +72,15 @@ export function PrivacyTiersOffNote({
         </Button>
       }
     >
-      <strong className="font-semibold">{copy.headline}</strong> {copy.how && <>{copy.how} </>}
-      {PRIVACY_TIERS_OFF_CONSEQUENCE}
-      <RecordedIn path={copy.path} />
+      <strong className="font-semibold">{copy.headline}</strong> {PRIVACY_TIERS_OFF_CONSEQUENCE}
+      {copy.how || copy.path ? (
+        <Disclosure label="Details">
+          <p data-testid="privacy-tiers-off-how">
+            {copy.how}
+            <RecordedIn path={copy.path} />
+          </p>
+        </Disclosure>
+      ) : null}
     </Note>
   );
 }

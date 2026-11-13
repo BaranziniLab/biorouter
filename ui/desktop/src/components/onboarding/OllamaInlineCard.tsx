@@ -76,9 +76,10 @@ function configuredHost(baseUrl: string): string {
 
 /**
  * A warning in the panel: the shared Note's warning recipe (a wash, never a coloured border), kept
- * as a plain `role="note"` block because the public-server note is frozen privacy copy whose role
- * and test id stay as they are (class-only changes, ruling 15). Its words are unchanged; the host
- * it names is the configured one (`configuredHost`).
+ * as a plain `role="note"` block because the public-server note is privacy copy whose role and
+ * test id stay as they are (class-only changes, ruling 15). Its consequence line is always
+ * visible, its explanation is an InfoTip (design.md 9.16), and the host it names is the
+ * configured one (`configuredHost`).
  */
 function WarningNote({ testId, children }: { testId: string; children: React.ReactNode }) {
   return (
@@ -350,8 +351,13 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
     </div>
   );
 
+  // The consequence stays in view; which addresses count as this computer, and what a chat sends
+  // to any other, are the InfoTip at its end (design.md 9.16).
   const publicNote = isPublicServer ? (
-    <WarningNote testId="ollama-public-note">{ollamaCopy.publicNote(shownHost)}</WarningNote>
+    <WarningNote testId="ollama-public-note">
+      {ollamaCopy.publicNoteShort(shownHost)}{' '}
+      <InfoTip label={ollamaCopy.publicTierTipLabel} help={ollamaCopy.publicTierTip} />
+    </WarningNote>
   ) : null;
 
   // Below 32 GB, or an Intel Mac: the default is still offered (there is no

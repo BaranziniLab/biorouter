@@ -2,8 +2,10 @@ import { render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HostManagedModelNote } from './HostManagedModelNote';
 import {
+  HOST_MANAGED_DESTINATION_HELP,
   HOST_MANAGED_DESTINATION_REASON,
   HOST_MANAGED_DESTINATION_SHORT,
+  HOST_MANAGED_MODEL_HELP,
   HOST_MANAGED_MODEL_REASON,
   HOST_MANAGED_MODEL_SHORT,
 } from './hostManagedModelCopy';
@@ -42,7 +44,20 @@ describe('HostManagedModelNote', () => {
     render(<HostManagedModelNote />);
     const note = screen.getByTestId('host-managed-model-note');
     expect(note).toHaveClass('rounded-element', 'bg-background-fill', 'border-transparent');
+    // The whole reason still reaches the page: the line, then the info icon's description.
     expect(note).toHaveTextContent(HOST_MANAGED_MODEL_REASON);
+  });
+
+  // Owner, 2026-11-13: one line up front, the detail on hover. The refusal's reason is the line;
+  // what to run on the host and why a browser tab cannot switch are the info icon's.
+  it('shows the one-line reason and puts what to do behind the info icon', () => {
+    render(<HostManagedModelNote />);
+    expect(screen.getByText(HOST_MANAGED_MODEL_SHORT)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'About choosing the model on the host' })
+    ).toHaveAccessibleDescription(HOST_MANAGED_MODEL_HELP);
+    expect(HOST_MANAGED_MODEL_HELP).toMatch(/biorouter configure/);
+    expect(HOST_MANAGED_MODEL_HELP).toMatch(/private conversation/);
   });
 
   /**
@@ -69,6 +84,8 @@ describe('HostManagedModelNote', () => {
     expect(screen.getByTestId('host-managed-model-note')).toHaveTextContent(
       HOST_MANAGED_MODEL_SHORT
     );
+    // Short means no room for the icon either.
+    expect(screen.queryByRole('button')).toBeNull();
     rerender(<HostManagedModelNote short variant="inset" />);
     expect(screen.getByTestId('host-managed-model-note')).toHaveTextContent(
       HOST_MANAGED_MODEL_SHORT
@@ -96,6 +113,9 @@ describe('HostManagedModelNote', () => {
     expect(note).toHaveTextContent(HOST_MANAGED_DESTINATION_REASON);
     expect(note.textContent).not.toContain('the model comes from');
     expect(note.textContent).toContain('biorouter configure');
+    expect(
+      screen.getByRole('button', { name: 'About changing this on the host' })
+    ).toHaveAccessibleDescription(HOST_MANAGED_DESTINATION_HELP);
   });
 
   it('has a one-line destination form for a settings row', () => {

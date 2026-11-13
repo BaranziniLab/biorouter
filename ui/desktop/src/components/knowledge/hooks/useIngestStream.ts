@@ -21,12 +21,19 @@ export interface StreamRunResult {
 }
 
 /**
- * Shown when the response body ends before the backend sent `event: done` or
- * `event: error`. The client cannot infer whether backend work committed from a
- * broken stream, so the message directs the user back to authoritative state.
+ * The error when the response body ends before the backend sent `event: done` or
+ * `event: error`: one line, because it is what the digest log's header and the
+ * staged source's status line show (owner, 2026-11-13: one line up front).
  */
-export const STREAM_ENDED_WITHOUT_TERMINAL =
-  'The digest stopped without reporting a result because the connection to the Biorouter backend ended mid-stream. The outcome is uncertain: curation may have committed or rolled back, and the raw source may have been retained. Refresh the knowledge base and history before retrying.';
+export const STREAM_ENDED_WITHOUT_TERMINAL = 'The digest stopped without reporting a result.';
+
+/**
+ * What that error means and what to do, for the digest log under the header
+ * (`DispatchProgress`). The client cannot infer whether backend work committed
+ * from a broken stream, so it directs the user back to authoritative state.
+ */
+export const STREAM_ENDED_DETAIL =
+  'The connection to the Biorouter backend ended mid-stream. The outcome is uncertain: curation may have committed or rolled back, and the raw source may have been retained. Refresh the knowledge base and history before retrying.';
 
 function extractErrorMessage(raw: string): string {
   const trimmed = raw.trim();

@@ -282,9 +282,14 @@ describe('Copilot result and the Configuration editor under the fill rule (R-27)
         expect(drawsNothing(await edge(tab, '#copilot-setup-details')), `${mode} block edge`).toBe(
           true
         );
-        // A fill never sits on a fill: "Check again" steps back to the page.
+        // A fill never sits on a fill: "Check again" steps back to the page. Found by its name,
+        // because the block now carries InfoTip triggers (buttons too) before it.
+        const checkAgain = tab
+          .locator('#copilot-setup-details')
+          .getByRole('button', { name: 'Check again', exact: true });
+        expect(await checkAgain.count(), `${mode} one Check again button`).toBe(1);
         expect(
-          await ground(tab, '#copilot-setup-details button'),
+          await checkAgain.evaluate((el) => getComputedStyle(el).backgroundColor),
           `${mode} Check again steps back one ground`
         ).toBe(page);
         expect(page).not.toBe(fill);

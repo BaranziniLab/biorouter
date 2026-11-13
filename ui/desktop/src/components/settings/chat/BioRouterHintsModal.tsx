@@ -7,6 +7,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { ModalShell } from '../../ModalShell';
 import { useTransientFlag, useTransientValue } from '../../../hooks/useTransientFlag';
 import { copyToClipboard } from '../../../utils/clipboard';
+import { homeFolder, tildePath } from '../../../utils/folderPath';
 import { hintsDialogCopy } from './copy';
 
 const getBioRouterHintsFile = async (filePath: string) => await window.electron.readFile(filePath);
@@ -94,8 +95,10 @@ export const BioRouterHintsModal = ({
                   {hintsDialogCopy.copyPath}
                 </Button>
               </TooltipTrigger>
+              {/* Which file, as where it lives: a name with a place, in the body face and
+                  written from `~` (design.md D-42). Copy path still copies the whole path. */}
               <TooltipContent>
-                <span className="font-mono">{biorouterHintsFilePath}</span>
+                <span className="break-all">{tildePath(biorouterHintsFilePath, homeFolder())}</span>
               </TooltipContent>
             </Tooltip>
             {saveSuccess ? (

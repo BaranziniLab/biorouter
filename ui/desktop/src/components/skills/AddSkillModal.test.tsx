@@ -158,6 +158,14 @@ describe('AddSkillModal', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Look up' }));
 
     expect(await screen.findByText(/declares no package manifest/)).toBeInTheDocument();
+    // One line, counting the skills; why it asks is the InfoTip's, and the second sentence was
+    // what the two footer buttons already say.
+    expect(screen.getByText(/declares no package manifest/)).toHaveTextContent(
+      'This source holds 2 skills side by side and declares no package manifest.'
+    );
+    expect(screen.getByRole('button', { name: 'About this choice' })).toHaveAccessibleDescription(
+      /cannot tell whether they belong together/
+    );
     // No plain "Install" button while the question is open.
     expect(screen.queryByRole('button', { name: /^Install \d/ })).not.toBeInTheDocument();
 
@@ -191,8 +199,15 @@ describe('AddSkillModal', () => {
       dataTransfer: { files: [new File(['x'], 'pack.zip')] },
     });
 
-    expect(await screen.findByText(/running on another machine/)).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent(ADD_SKILL_COPY.remoteDaemon);
     expect(mocks.previewSkillPackage).not.toHaveBeenCalled();
+    // The refusal is one line; how to install the skill on that machine folds under it, with the
+    // command as a value to copy (design.md 9.16).
+    expect(screen.queryByText(ADD_SKILL_COPY.remoteDaemonSteps)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: ADD_SKILL_COPY.remoteDaemonHow }));
+    expect(await screen.findByText(ADD_SKILL_COPY.remoteDaemonSteps)).toBeVisible();
+    expect(screen.getByText(ADD_SKILL_COPY.remoteDaemonCommand)).toBeInTheDocument();
+    expect(screen.getByText(ADD_SKILL_COPY.remoteDaemonUrl)).toBeInTheDocument();
   });
 });
 

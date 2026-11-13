@@ -17,12 +17,15 @@ import { localModelsCopy } from '../settings/models/copy';
 import { factsLine, speedDetail } from '../settings/models/localModelFacts';
 import { InfoTip } from '../ui/info-tip';
 import {
+  acceleratorMemoryExplanation,
   fitLine,
   fitWarning,
   llamaMemoryWarning,
   windowsVramNote,
 } from '../settings/models/localModelMemory';
-import { llamaCopy } from './copy';
+import { homeFolder, tildePath } from '../../utils/folderPath';
+import { llamaCopy, splitMemoryWarning } from './copy';
+import { CopyField } from '../ui/copy-field';
 import './onboarding.css';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { Spinner } from '../ui/spinner';
@@ -97,30 +100,47 @@ const fallbackDownloadState = (model: LlamaCppModel | undefined) => {
 };
 
 /**
- * One row of the Advanced list: a sans label and its value. A machine value (a model id, a Hugging
- * Face spec, a path) is set in mono at the supporting size, as the Settings info dialog sets them;
- * everything else is the sans face (principle 3, vision FR-R1-3: the label "Store:" was mono too).
+ * One row of the Advanced list: a sans label and its value, in one of three kinds (design.md D-42):
+ * - `id`: a value read character by character (the Ollama tag), in mono at the code role, 12/20,
+ *   which every code surface in the app uses;
+ * - `path`: a folder or file shown as where the model lives (the model store, the model file), in
+ *   the sans face, written with `~` for the home folder as every other folder in the app is;
+ * - prose (the default): a size, a speed, a sentence, in the sans face.
+ * The label is always sans (principle 3, vision FR-R1-3: the label "Store:" was mono too).
  */
 function DetailRow({
   label,
-  machine = false,
+  kind = 'prose',
   children,
 }: {
   label: string;
-  machine?: boolean;
+  kind?: 'prose' | 'id' | 'path';
   children: React.ReactNode;
 }) {
   return (
     <>
       <dt className="text-supporting text-text-muted">{label}</dt>
       <dd
-        className={`min-w-0 text-supporting text-text-default ${
-          machine ? 'font-mono [overflow-wrap:anywhere]' : 'break-words'
+        className={`min-w-0 text-text-default ${
+          kind === 'id'
+            ? 'font-mono text-code [overflow-wrap:anywhere]'
+            : kind === 'path'
+              ? 'text-supporting [overflow-wrap:anywhere]'
+              : 'text-supporting break-words'
         }`}
       >
         {children}
       </dd>
     </>
+  );
+}
+
+/** A folder or file written for a person to read: `~` for the home folder, the absolute path kept. */
+function PlacePath({ path }: { path: string }) {
+  return (
+    <span dir="ltr" data-path={path}>
+      {tildePath(path, homeFolder())}
+    </span>
   );
 }
 
@@ -323,6 +343,12 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
     () => (selectedEntry && system ? llamaMemoryWarning(selectedEntry, system) : null),
     [selectedEntry, system]
   );
+  // The confirmation says the consequence; what the memory figure means on this kind of machine
+  // folds behind "Why?", as Settings' Local models confirmation folds it (owner, 2026-11-13).
+  const confirmWords = splitMemoryWarning(
+    modelMemoryWarning ?? llamaCopy.confirmLoadFallback,
+    system ? acceleratorMemoryExplanation(system.accelerator_memory_kind) : null
+  );
 
   const handleStart = (model: string) => {
     if (isStarting || isConnecting) return;
@@ -390,10 +416,17 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
         ) : binaryMissing ? (
           <div className="space-y-3">
             <div>{statusPill}</div>
-            <p className="text-supporting text-text-muted">
-              The bundled llama-server binary is missing (development build?). Install llama.cpp
-              (e.g. <code>brew install llama.cpp</code>) or set <code>BIOROUTER_LLAMACPP_BIN</code>.
+            {/* One instruction and the command to paste; the other ways out are the InfoTip's
+                (owner, 2026-11-13). The pill above already says what is missing. */}
+            <p className="flex min-w-0 flex-wrap items-center text-supporting text-text-muted">
+              <span className="min-w-0">{llamaCopy.binaryMissingInstruction}</span>
+              <InfoTip label={llamaCopy.binaryMissingTipLabel} help={llamaCopy.binaryMissingTip} />
             </p>
+            {/* The AI agents rows' command block: the copy field, named by the command itself. */}
+            <CopyField
+              value={llamaCopy.binaryMissingCommand}
+              label={llamaCopy.binaryMissingCommand}
+            />
           </div>
         ) : (
           <div className="space-y-3">
@@ -468,28 +501,29 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                       ) : null}
                     </DetailRow>
                     {selectedEntry.ollama_name ? (
-                      <DetailRow label={detail.ollamaModel} machine>
+                      <DetailRow label={detail.ollamaModel} kind="id">
                         {selectedEntry.ollama_name}
                       </DetailRow>
                     ) : null}
-                    {/* A name, and the spec it downloads in mono; where the download stands is a
-                        sans word after it, not part of the label. */}
+                    {/* A name, and the spec it downloads in mono at the code role; where the
+                        download stands is a sans word after it, not part of the label. */}
                     <DetailRow label={detail.fallbackDownload}>
-                      <span className="font-mono [overflow-wrap:anywhere]">
+                      <span className="font-mono text-code [overflow-wrap:anywhere]">
                         {selectedEntry.hf_spec}
                       </span>
                       {fallbackState ? (
                         <span className="text-text-muted"> · {fallbackState}</span>
                       ) : null}
                     </DetailRow>
+                    {/* Where the model lives: a place, in sans and from `~` (D-42). */}
                     {selectedEntry.model_path ? (
-                      <DetailRow label={detail.modelBlob} machine>
-                        {selectedEntry.model_path}
+                      <DetailRow label={detail.modelBlob} kind="path">
+                        <PlacePath path={selectedEntry.model_path} />
                       </DetailRow>
                     ) : null}
                     {system?.model_cache_dir ? (
-                      <DetailRow label={detail.modelStore} machine>
-                        {system.model_cache_dir}
+                      <DetailRow label={detail.modelStore} kind="path">
+                        <PlacePath path={system.model_cache_dir} />
                       </DetailRow>
                     ) : null}
                   </dl>
@@ -544,7 +578,9 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
       <ConfirmationModal
         isOpen={pendingModelStart !== null}
         title={llamaCopy.confirmLoadTitle(selectedEntry?.display_name)}
-        message={modelMemoryWarning ?? llamaCopy.confirmLoadFallback}
+        message={confirmWords.consequence}
+        details={confirmWords.meaning ?? undefined}
+        detailsLabel={llamaCopy.why}
         confirmLabel={llamaCopy.confirmLoad}
         cancelLabel={llamaCopy.chooseAnother}
         onConfirm={() => {

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ModelsBottomBar from './ModelsBottomBar';
 import { __resetDisclosureStoreForTests } from '../../../privacy/disclosureCopy';
@@ -101,6 +101,15 @@ describe('ModelsBottomBar on a browser-served surface', () => {
 
     const note = await screen.findByTestId('host-managed-model-note');
     expect(note.textContent).toMatch(/biorouter serve/);
+    // The note's info icon sits inside a menu, and is still in the keyboard's reach: the menu's
+    // Up and Down visit its InfoTips as well as its rows (`moveFocusAcrossMenuStops`). Here both
+    // rows are disabled, so from the open menu the first Down lands on it.
+    const tip = note.querySelector<HTMLElement>('[data-slot="info-tip-trigger"]')!;
+    expect(tip).not.toBeNull();
+    const menu = note.closest<HTMLElement>('[role="menu"]')!;
+    act(() => menu.focus());
+    fireEvent.keyDown(menu, { key: 'ArrowDown' });
+    expect(tip).toHaveFocus();
 
     expect(screen.getByRole('menuitem', { name: /Change model/ })).toHaveAttribute(
       'aria-disabled',

@@ -137,8 +137,16 @@ export default function ExtensionCredentialsDialog({ name, onClose, onDeleted }:
         </p>
       )}
       {error && (
+        // The error's line stays on screen; a failed deletion's cause and next step are the
+        // InfoTip beside it (owner, 2026-11-13).
         <p role="alert" className="text-body text-text-danger">
           {error}
+          {error === COPY.deleteFailed && (
+            <>
+              {' '}
+              <InfoTip label={COPY.deleteFailedLabel} help={COPY.deleteFailedHelp} />
+            </>
+          )}
         </p>
       )}
     </ModalShell>

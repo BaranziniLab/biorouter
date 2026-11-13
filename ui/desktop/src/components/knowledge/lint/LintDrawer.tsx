@@ -13,7 +13,7 @@ import { knowledgeCopy } from '../copy';
 import { KnowledgePaneHeader } from '../KnowledgePaneHeader';
 import { useModelAndProvider } from '../../ModelAndProviderContext';
 import { useKnowledge } from '../KnowledgeContext';
-import { useIngestStream } from '../hooks/useIngestStream';
+import { STREAM_ENDED_WITHOUT_TERMINAL, useIngestStream } from '../hooks/useIngestStream';
 import { resolveIngestModel } from '../IngestPanel/resolveIngestModel';
 
 /**
@@ -315,7 +315,14 @@ export function LintDrawer({ open, onOpenChange }: Props) {
               compact
               icon={AlertCircle}
               title="The check did not finish"
-              description={stream.error ?? 'The stream ended without reporting a result.'}
+              // The shared stream's no-result line names a digest; a check is read-only, so it
+              // says the check's own sentence (and the digest's advice about curation that may
+              // have committed does not apply here).
+              description={
+                !stream.error || stream.error === STREAM_ENDED_WITHOUT_TERMINAL
+                  ? 'The stream ended without reporting a result.'
+                  : stream.error
+              }
               actions={
                 <Button variant="secondary" onClick={run}>
                   Try again
@@ -357,7 +364,7 @@ export function LintDrawer({ open, onOpenChange }: Props) {
                               releases and the message is prose that will be
                               reworded — so it is the half a user can search for,
                               quote in an issue, or match a fix against. */}
-                          <span className="shrink-0 font-mono text-supporting text-text-muted">
+                          <span className="shrink-0 font-mono text-code text-text-muted">
                             {d.rule}
                           </span>
                           {/* WRAPPED, not truncated. The subject is a page's
@@ -370,8 +377,10 @@ export function LintDrawer({ open, onOpenChange }: Props) {
                           </span>
                         </div>
                         <p className="min-w-0 break-words text-body text-text-muted">{d.message}</p>
+                        {/* Where the page lives, so sans (design.md D-42): a location,
+                            not a value to retype. */}
                         {d.path && (
-                          <p className="min-w-0 break-all font-mono text-supporting text-text-muted">
+                          <p className="min-w-0 break-words text-supporting text-text-muted">
                             {d.path}
                           </p>
                         )}
@@ -396,7 +405,8 @@ export function LintDrawer({ open, onOpenChange }: Props) {
               </div>
               <ul className="flex flex-col gap-1 px-4 py-2">
                 {l.entries.map((entry) => (
-                  <li key={entry} className="min-w-0 break-all font-mono text-supporting">
+                  // A page, named by where it lives: sans (design.md D-42).
+                  <li key={entry} className="min-w-0 break-words text-supporting">
                     {entry}
                   </li>
                 ))}

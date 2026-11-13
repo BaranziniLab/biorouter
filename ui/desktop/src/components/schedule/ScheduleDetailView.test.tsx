@@ -379,6 +379,51 @@ describe('the detail view is rows and hairlines, not boxes', () => {
     expect(workflowRow).not.toHaveTextContent('/tmp/');
     // The cron reads as a phrase with its frequency, never "At 03:00 AM" (V3-15).
     expect(screen.getByText('Every day at 3:00 AM')).toBeInTheDocument();
+    // One hover away: the raw cron in the code face AND size, and the workflow's path, which
+    // says where the file lives, in sans from `~` (design.md D-42). jsdom opens no tooltip, so
+    // the source is what is read.
+    expect(CODE).toContain('<span className="font-mono text-code">{scheduleDetails.cron}</span>');
+    expect(CODE).toContain('tooltip={tildePath(scheduleDetails.source, homeFolder())}');
+    expect(CODE).not.toMatch(/className="font-mono">/);
+  });
+
+  /**
+   * A failing job's last error says its first sentence on the row and folds the rest (owner,
+   * 2026-11-13): a provider's multi-line answer used to fill the facts card with red text. The
+   * first sentence stays in view, because an error is never folded away entirely.
+   */
+  it('shows the first sentence of a long last error and folds the whole message', async () => {
+    const lastError =
+      'The provider refused the request. It answered 400 with {"error":{"message":"model not ' +
+      'found","type":"invalid_request_error"}}\n  at run_job (scheduler.rs:812)';
+    mocks.listSchedules.mockResolvedValue([{ ...schedule, last_error: lastError }]);
+    const user = userEvent.setup();
+    renderDetails();
+
+    const row = (await screen.findByText(scheduleCopy.detail.lastError)).closest(
+      '.br-schedule-fact'
+    ) as HTMLElement;
+    expect(row).toHaveTextContent('The provider refused the request.');
+    expect(row).not.toHaveTextContent('invalid_request_error');
+    expect(screen.getByText('The provider refused the request.')).toHaveClass('text-text-danger');
+
+    await user.click(screen.getByRole('button', { name: scheduleCopy.detail.fullError }));
+    // The whole message, with a Copy action, one press away.
+    expect(row).toHaveTextContent('invalid_request_error');
+    expect(row).toHaveTextContent('scheduler.rs:812');
+    expect(screen.getByRole('button', { name: /Copy last error/ })).toBeInTheDocument();
+  });
+
+  it('says a one-sentence last error whole, with nothing to unfold', async () => {
+    mocks.listSchedules.mockResolvedValue([
+      { ...schedule, last_error: 'No provider is configured for this schedule.' },
+    ]);
+    renderDetails();
+
+    expect(
+      await screen.findByText('No provider is configured for this schedule.')
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: scheduleCopy.detail.fullError })).toBeNull();
   });
 
   /**
@@ -510,7 +555,7 @@ describe('the detail view is rows and hairlines, not boxes', () => {
     await screen.findByRole('heading', { level: 1, name: 'Daily Meditation' });
     openBandMenu();
     fireEvent.click(await screen.findByRole('menuitem', { name: scheduleCopy.delete }));
-    expect(screen.getByRole('dialog')).toHaveTextContent(/workflow it runs is left in place/);
+    expect(screen.getByRole('dialog')).toHaveTextContent(/leaves its workflow in place/);
     fireEvent.click(screen.getByRole('button', { name: scheduleCopy.deleteConfirm }));
 
     await waitFor(() => expect(mocks.deleteSchedule).toHaveBeenCalledWith('daily-meditation'));

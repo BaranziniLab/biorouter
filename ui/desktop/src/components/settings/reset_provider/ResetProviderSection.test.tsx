@@ -51,7 +51,11 @@ describe('ResetProviderSection', () => {
 
     await user.click(screen.getByRole('button', { name: modelsDangerCopy.row }));
     expect(remove).not.toHaveBeenCalled();
-    expect(await screen.findByRole('dialog')).toHaveTextContent(modelsDangerCopy.confirmTitle);
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent(modelsDangerCopy.confirmTitle);
+    // The consequence is the one line at the decision; the welcome-screen fallback is the row's tip.
+    expect(dialog).toHaveAccessibleDescription(modelsDangerCopy.confirmMessage);
+    expect(modelsDangerCopy.rowHelp).toMatch(/welcome screen/);
 
     await user.click(screen.getByRole('button', { name: modelsDangerCopy.cancel }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());

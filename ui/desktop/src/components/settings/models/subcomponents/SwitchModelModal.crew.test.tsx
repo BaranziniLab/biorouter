@@ -1,10 +1,11 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails, ProviderTier } from '../../../../api';
 import { CREW_MODEL_FIXED_TEXT } from '../../../ModelAndProviderContext';
 import {
+  PRIVATE_MODEL_IN_PUBLIC_CHAT_HELP,
   PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP,
   PUBLIC_MODEL_IN_PRIVATE_CHAT,
   SwitchModelModal,
@@ -177,7 +178,11 @@ describe('SwitchModelModal public to private', () => {
     );
     const tip = await screen.findByTestId('switch-model-becomes-private');
     expect(tip).toHaveTextContent(PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP);
-    expect(PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP).toMatch(/make it public from History/);
+    // What going private means, and the one way back, are the InfoTip beside the line.
+    expect(
+      within(tip).getByRole('button', { name: 'About this chat going private' })
+    ).toHaveAccessibleDescription(PRIVATE_MODEL_IN_PUBLIC_CHAT_HELP);
+    expect(PRIVATE_MODEL_IN_PUBLIC_CHAT_HELP).toMatch(/make it public from History/);
     // A tip, not a refusal.
     await screen.findByText('Claude Opus 4.8');
     await waitFor(() => expect(screen.getByRole('button', { name: 'Select model' })).toBeEnabled());

@@ -43,7 +43,7 @@ export const catalogCopy = {
   /** Shown under the Institutional tab, once. */
   otherInstitutions: "Don't see your institution?",
   otherInstitutionsHelp:
-    'A gateway appears here once Biorouter recognizes its endpoint as private. Anything else can be added under Public with Add custom provider, and is treated as public.',
+    'A gateway appears here once Biorouter recognizes its endpoint as private. Add anything else under Public with Add custom provider; it is treated as public.',
   /**
    * Where a tab's decision-model providers went (Settings only): they are not chat providers,
    * so they have no row. Each name is plural ("Ollama decision models"), hence "are".
@@ -51,8 +51,9 @@ export const catalogCopy = {
   decisionModels: (names: readonly string[]) =>
     `${names.join(' and ')} are chosen per chat in the model picker, under Decision models.`,
   decisionModelsLabel: 'Decision models',
+  /** Two sentences, the InfoTip's limit: what a decision model is, who uses it, where it runs. */
   decisionModelsHelp:
-    'A decision model answers a yes or no, choice or score question about the text it reads, with probabilities, and writes no chat replies. Monitors and the decide tool use them too. Each one runs on the setup of its provider in this list: the Ollama host, or the Baseten key.',
+    'A decision model answers yes or no, choice or score questions with probabilities, not replies. Monitors and the decide tool use them too, on their provider’s setup here.',
 } as const;
 
 /**
@@ -125,10 +126,20 @@ export const providerSetupCopy = {
   inUse: 'This provider is in use. Switch to a different model first.',
   deleteConsequence: 'This will permanently delete the current provider configuration.',
   needsAttention: 'Configuration needs attention',
-  agentCheckFailed:
-    'The configuration check did not complete. Follow the setup steps below, then retry.',
+  /** The setup steps are on screen below it, so the subtitle does not point at them. */
+  agentCheckFailed: 'The configuration check did not complete.',
+  /**
+   * A coding agent's failed check: the title's InfoTip, what the agent runs on and the API-key
+   * provider to choose instead. It was a paragraph above the recovery steps.
+   */
+  agentRecoveryHelp: (name: string, apiProvider: string) =>
+    `${name} uses its installed command-line app and your subscription sign-in. To use an ${apiProvider} API key instead, choose ${apiProvider} under API providers.`,
   checkFailed: 'There was an error checking this provider configuration.',
   tryAgain: 'Check your configuration again to use this provider.',
+  /** Ollama's check failed: the InfoTip beside `tryAgain`, named "About the Ollama host". */
+  ollamaHostLabel: 'the Ollama host',
+  ollamaHostHelp:
+    'The host address tells Biorouter where to connect; it does not start Ollama. Open Ollama on the computer at that address, then choose Check again.',
   completeCliSetup: 'Complete CLI setup before choosing a model.',
   editCommandPath: 'Edit command path',
   goBack: 'Go back',

@@ -28,6 +28,8 @@ import { llamaServerStore } from '../models/llamaServerStore';
 import { catalogCopy, customProviderCopy, providerPageCopy, providerRowSummary } from './copy';
 import './providers.css';
 import {
+  RETIRED_AZURE_ENDPOINT_HELP,
+  RETIRED_AZURE_ENDPOINT_HELP_LABEL,
   RETIRED_AZURE_ENDPOINT_NOTICE,
   isRetiredAzureDefaultEndpoint,
 } from './azureRetiredEndpoint';
@@ -727,7 +729,8 @@ export default function ProviderCatalog({
             </Button>
           }
         >
-          {RETIRED_AZURE_ENDPOINT_NOTICE}
+          {RETIRED_AZURE_ENDPOINT_NOTICE}{' '}
+          <InfoTip label={RETIRED_AZURE_ENDPOINT_HELP_LABEL} help={RETIRED_AZURE_ENDPOINT_HELP} />
         </Note>
       ) : null;
 

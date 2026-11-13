@@ -177,9 +177,8 @@ export function KbFormatChooser({ open, onOpenChange, initialName = '', onCreate
           helper={
             <span className="flex min-w-0 items-center gap-1">
               <span className="shrink-0">{knowledgeCopy.format.folderLabel}</span>
-              <span className="min-w-0 truncate font-mono">
-                {knowledgeCopy.format.folder(id || '…')}
-              </span>
+              {/* Where the base will live, so sans (design.md D-42), in the helper's own type. */}
+              <span className="min-w-0 truncate">{knowledgeCopy.format.folder(id || '…')}</span>
               <InfoTip
                 label={knowledgeCopy.format.folderInfoLabel}
                 help={knowledgeCopy.format.folderInfo}

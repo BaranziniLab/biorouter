@@ -38,8 +38,9 @@ export const workflowsCopy = {
   modified: (when: string) => `Modified ${when}`,
 
   deleteTitle: (title: string) => `Delete ${title}?`,
-  // A destructive consequence: stays visible at the moment of decision (principle 2).
-  deleteMessage: 'This permanently removes the workflow file. This action cannot be undone.',
+  // A destructive consequence: stays visible at the moment of decision (principle 2), as one
+  // line. "Permanently" already says it cannot be undone, so that sentence is not repeated.
+  deleteMessage: 'This permanently removes the workflow file.',
   deleteConfirm: 'Delete',
   cancel: 'Cancel',
 

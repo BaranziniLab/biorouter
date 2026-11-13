@@ -9,8 +9,15 @@ export const privacyRowCopy = {
   /** Also the switch's accessible name; tests and the privacy-off note find it by this. */
   label: 'Privacy tiers',
   /**
-   * ⚠ Wording kept from the paragraph it replaces (two clauses, see the comment at the row in
-   * `PrivacyPanel.tsx`). Only its place changed: it is the row's InfoTip now.
+   * ⚠ The two clauses of the paragraph it replaces (see the comment at the row in
+   * `PrivacyPanel.tsx`), tightened to the InfoTip's two-sentence, ~160-character limit (owner,
+   * 2026-11-13). It is the row's InfoTip.
    */
-  help: 'Chats on private models stay private: a public model can’t read them and can’t call a private extension. A private model is one your institution hosts, or one that runs on this machine.',
+  help: 'Chats on private models stay private: public models can’t read them or call private extensions. A private model runs at your institution or on this machine.',
+} as const;
+
+/** The enforcement-off strip's words that are not the composer note's shared ones. */
+export const privacyOffStripCopy = {
+  /** The disclosure under the strip's state line that holds the consequence. */
+  whatThisMeans: 'What this means',
 } as const;

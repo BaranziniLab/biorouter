@@ -10,6 +10,11 @@ import type { PrivacyTiersRecord } from '../settings/privacy/privacyTiers';
  * the sentence that sent the user to it. Each surface keeps its own statement
  * of the consequence; the headline, the HOW and the path are shared.
  *
+ * The composer note shows the headline and the consequence, which together are
+ * the disclosure, and folds the HOW and the path under Details (owner,
+ * 2026-11-13: no solid chunk of text above every composer). The danger tone
+ * stays the signal for the unrecorded case.
+ *
  * ⚠ **What the origin can and cannot vouch for.** The record is an ordinary
  * file DR-17 leaves writable by anything holding `developer__shell`, so the
  * stamp that makes an origin `settings` can be forged by something that knows
@@ -81,7 +86,7 @@ export function privacyTiersOffCopy(record: PrivacyTiersRecord | null): PrivacyT
           ? `The last change recorded in the app turned them on${on(when)}, so their record ` +
             'has been edited since.'
           : 'No change in Settings → App → Privacy is recorded for them: their record was edited ' +
-            'directly — by hand, by a script or by an agent with a shell — or written by an ' +
+            'directly (by hand, by a script or by an agent with a shell) or written by an ' +
             'older version of Biorouter.',
         path: record.path,
       };

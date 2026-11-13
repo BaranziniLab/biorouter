@@ -11,7 +11,7 @@ describe('InlineCodeText', () => {
     );
     const code = container.querySelector('code');
     expect(code).toHaveTextContent('claude');
-    expect(code).toHaveClass('font-mono');
+    expect(code).toHaveClass('font-mono', 'text-code');
     expect(container.textContent).toBe('Uses your own installed claude command-line app.');
   });
 

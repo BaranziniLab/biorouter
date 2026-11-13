@@ -1,7 +1,11 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ResetPanel from './ResetPanel';
-import { RESET_NEEDS_HOST_REASON } from './resetOnBrowser';
+import {
+  RESET_NEEDS_HOST_LABEL,
+  RESET_NEEDS_HOST_REASON,
+  RESET_NEEDS_HOST_WHY,
+} from './resetOnBrowser';
 import { resetCopy } from './copy';
 import { BROWSER_SURFACE_MARKER } from '../../../utils/surface';
 
@@ -196,9 +200,12 @@ describe('ResetPanel', () => {
     document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
     render(<ResetPanel />);
 
-    expect(await screen.findByTestId('reset-needs-host-note')).toHaveTextContent(
-      RESET_NEEDS_HOST_REASON
-    );
+    const note = await screen.findByTestId('reset-needs-host-note');
+    expect(note).toHaveTextContent(RESET_NEEDS_HOST_REASON);
+    // Why, and the terminal alternative, are the InfoTip beside the refusal.
+    expect(
+      within(note).getByRole('button', { name: `About ${RESET_NEEDS_HOST_LABEL}` })
+    ).toHaveAccessibleDescription(RESET_NEEDS_HOST_WHY);
     const open = screen.getByRole('button', { name: resetCopy.row });
     expect(open).toBeDisabled();
     fireEvent.click(open);

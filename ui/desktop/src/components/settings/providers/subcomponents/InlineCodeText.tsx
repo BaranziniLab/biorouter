@@ -2,7 +2,8 @@
  * Text the daemon wrote with Markdown backticks around a command (`claude`), drawn as inline code
  * instead of with the literal marks (V4-26). A provider's description comes from the daemon, so
  * the renderer cannot rewrite the sentence; it can only draw its machine string the way a machine
- * string is drawn everywhere else (mono, principle 3). Only a closed pair of backticks on one line
+ * string is drawn everywhere else (mono at the code role, 12/20, as chat's inline code is; principle
+ * 3). Only a closed pair of backticks on one line
  * counts: a stray one stays as text, and nothing else is interpreted, so the text can never
  * become markup.
  */
@@ -13,7 +14,7 @@ export function InlineCodeText({ text }: { text: string }) {
     <>
       {parts.map((part, index) =>
         index % 2 === 1 ? (
-          <code key={index} className="font-mono">
+          <code key={index} className="font-mono text-code">
             {part}
           </code>
         ) : (

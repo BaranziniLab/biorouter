@@ -76,6 +76,34 @@ describe('ExtensionLoadFailureNotice', () => {
     expect(screen.getByText(error)).toBeInTheDocument();
   });
 
+  // Owner, 2026-11-13: one line up front, the detail a click away. A multi-line process error
+  // keeps its first line on screen (it just happened) and folds the rest under Details, in the
+  // code face because it is output. Copy error still copies all of it.
+  it('keeps the first line of a multi-line error visible and folds the rest under Details', () => {
+    const error =
+      'failed to start the MCP server: spawn uvx ENOENT\n  at ChildProcess._handle.onexit\n  at node:internal/child_process:284';
+    recordExtensionLoadResults([{ name: 'cdwagent', success: false, error }]);
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+
+    render(<ExtensionLoadFailureNotice />);
+
+    expect(
+      screen.getByText('failed to start the MCP server: spawn uvx ENOENT')
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/ChildProcess/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+    const rest = screen.getByText(/ChildProcess/);
+    expect(rest).toHaveTextContent(
+      'at ChildProcess._handle.onexit at node:internal/child_process:284'
+    );
+    expect(rest).toHaveClass('font-mono', 'text-code');
+
+    fireEvent.click(screen.getByRole('button', { name: COPY.copyError }));
+    expect(writeText).toHaveBeenCalledWith(error);
+  });
+
   // Principle 10. The daemon reports a config KEY, and title-casing it read "Cdwagent failed to
   // load" and "Computercontroller failed to load" on the page that otherwise says CDWAgent and
   // Biorouter Copilot. The notice asks the one resolver for the name a person already knows.

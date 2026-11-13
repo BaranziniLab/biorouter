@@ -1,5 +1,10 @@
 import { cn } from '../../utils';
-import { STEER_UNAVAILABLE_REASON, STEER_UNAVAILABLE_SHORT } from './steerUnavailableCopy';
+import { InfoTip } from '../ui/info-tip';
+import {
+  STEER_UNAVAILABLE_NAME,
+  STEER_UNAVAILABLE_SHORT,
+  STEER_UNAVAILABLE_WHY,
+} from './steerUnavailableCopy';
 import { isBrowserSurface } from '../../utils/surface';
 
 /**
@@ -17,16 +22,18 @@ import { isBrowserSurface } from '../../utils/surface';
  * separated, no card. It sits INSIDE the queue widget, which is itself a
  * bordered strip above the composer, and a rounded box on a strip would read as
  * a second object rather than as a footnote to the row above it.
+ *
+ * One line wherever it sits, the collapsed row and the open list alike: what
+ * cannot happen and the button that does work. Why (the machine cannot tell a
+ * person from the model) and where steering works are the info icon beside it
+ * (owner, 2026-11-13: one line up front, the detail on hover).
  */
 export function SteerUnavailableNote({
   className,
-  short = false,
   testId = 'steer-unavailable-note',
 }: {
   /** Layout only: `mt-*`, `mb-*`, `min-w-0`. */
   className?: string;
-  /** The one-line form, for a row with no space for the reason. */
-  short?: boolean;
   /** Overridable so a surface mounting two of these can tell them apart. */
   testId?: string;
 }) {
@@ -40,7 +47,8 @@ export function SteerUnavailableNote({
         className
       )}
     >
-      {short ? STEER_UNAVAILABLE_SHORT : STEER_UNAVAILABLE_REASON}
+      {STEER_UNAVAILABLE_SHORT}{' '}
+      <InfoTip label={STEER_UNAVAILABLE_NAME} help={STEER_UNAVAILABLE_WHY} />
     </p>
   );
 }

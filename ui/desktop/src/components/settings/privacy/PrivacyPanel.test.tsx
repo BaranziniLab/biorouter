@@ -1,8 +1,9 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import PrivacyPanel, { DISABLE_PHRASE, PRIVACY_TIERS_KEY } from './PrivacyPanel';
 import { PRIVACY_TIERS_RECORD_KEY } from './privacyTiers';
+import { privacyOffStripCopy } from './copy';
 import { __resetDisclosureStoreForTests } from '../../privacy/disclosureCopy';
 
 const mocks = vi.hoisted(() => ({
@@ -392,10 +393,20 @@ describe('Settings > Privacy', () => {
     });
 
     it('the panel states the limit even when enforcement is off', async () => {
+      const user = userEvent.setup();
       mocks.value = 'off';
       render(<PrivacyPanel />);
 
-      expect(await screen.findByText(/enforcement off/i)).toBeInTheDocument();
+      // The strip's consequence is one click away, under "What this means" (owner, 2026-11-13).
+      const strip = await screen.findByTestId('privacy-enforcement-off-strip');
+      expect(strip).not.toHaveTextContent(/enforcement off/i);
+      await user.click(
+        within(strip).getByRole('button', { name: privacyOffStripCopy.whatThisMeans })
+      );
+      expect(strip).toHaveTextContent(/Every badge in the app reads enforcement off/i);
+      expect(strip).toHaveTextContent(
+        /Turning them back on restores them for what is already marked private/i
+      );
       expect(await screen.findByTestId('non-private-model-statement')).toHaveTextContent(
         /can read files on this computer/i
       );

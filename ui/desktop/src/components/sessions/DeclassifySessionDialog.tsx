@@ -11,6 +11,7 @@ import { isDefaultSessionName } from '../../utils/sessionNameSync';
 import { DangerousConfirmDialog } from '../ui/DangerousConfirmDialog';
 import { Button } from '../ui/button';
 import { Note } from '../ui/note';
+import { InfoTip } from '../ui/info-tip';
 import { ModalShell } from '../ModalShell';
 import { fetchDecisionCatalog, fetchDecisionSettings } from '../../utils/sessionDecisions';
 import { TIER_EFFECT_COPY, declassifyDecisionLines } from '../decisions/decisionWords';
@@ -308,10 +309,11 @@ export interface DeclassifySessionDialogProps {
  *
  *  * Every other provenance — `mcp:*`, but also `inherited:*`, `diverged:*`,
  *    `backfill:*`, `imported` and anything unrecognised — asks the user to
- *    retype the last six characters of its id, shown beside the field, above a
+ *    retype the last six characters of its id, shown beside the field, with a
  *    sentence naming the reason that is actually true of that chat
- *    (`strongConfirmationReason`). It is NOT one sentence about reaching a data
- *    source: most of these chats did not.
+ *    (`strongConfirmationReason`) in the InfoTip beside the consequence line. It
+ *    is NOT one sentence about reaching a data source: most of these chats did
+ *    not.
  *  * A chat that merely ran turns against a private **model** gets a single
  *    click, with an undo window — and the request is HELD for that window
  *    rather than sent and reversed, because declassification is one-way at the
@@ -486,24 +488,39 @@ export function DeclassifySessionDialog({
     );
   }
 
+  // One line of consequence stays at the decision (an irreversible action says so where it is
+  // decided, spec 2.6); why THIS chat is private, and what the escalation means, sit in the
+  // InfoTip beside it (owner, 2026-11-13: one line up front, the detail on hover). The InfoTip's
+  // words are in the dialog's DOM, so they are still part of the dialog's description for a
+  // screen reader, and `strongReason` is still said whole, clause for clause.
+  const consequence = gradedStrong
+    ? 'A public model will then be able to open it. This cannot be undone.'
+    : escalated
+      ? // Not the strong sentence: nothing here established that this chat
+        // reached a private data source, and saying so would be a claim
+        // about the conversation rather than about the refusal.
+        // The refusal keeps its reason in view.
+        "That request was refused because this chat's record has changed. This cannot be undone."
+      : `A public model will then be able to open it. You will have ${undoSeconds} seconds to undo.`;
+  const background = gradedStrong
+    ? `This chat ${strongReason}. Its contents are unchanged.`
+    : escalated
+      ? 'The record changed after this list was loaded, so this chat now takes the typed confirmation.'
+      : 'This chat only ran turns against a private model. Its contents are unchanged.';
+
   return (
     <DangerousConfirmDialog
       open={open}
       busy={phase === 'sending'}
       title="Make this chat public?"
       description={
-        gradedStrong
-          ? `This chat ${strongReason}. Marking it public removes its private ` +
-            'marker and lets it be opened by a public model. Its contents are unchanged, and ' +
-            'this cannot be undone.'
-          : escalated
-            ? // Not the sentence above: nothing here established that this chat
-              // reached a private data source, and saying so would be a claim
-              // about the conversation rather than about the refusal.
-              "That request was refused. This chat's record has changed since this list was " +
-              'loaded, so it now takes the typed confirmation. Marking it public cannot be undone.'
-            : `This chat only ran turns against a private model. Marking it public removes its ` +
-              `private marker; you will have ${undoSeconds} seconds to undo.`
+        <>
+          {consequence}{' '}
+          <InfoTip
+            label={escalated && !gradedStrong ? 'this refusal' : "this chat's private marker"}
+            help={background}
+          />
+        </>
       }
       phrase={needsPhrase ? phrase : undefined}
       fieldLabel="Type the last 6 characters of this chat's ID"
@@ -528,7 +545,7 @@ export function DeclassifySessionDialog({
         <p className="truncate text-label text-text-default" title={session.name}>
           {session.name}
         </p>
-        <p className="mt-0.5 font-mono text-supporting text-text-muted">{session.id}</p>
+        <p className="mt-0.5 font-mono text-code text-text-muted">{session.id}</p>
       </Note>
       {/* DR-33: the public decision models the declassification turns off, named
           before the person agrees, and what a public one may do afterwards. */}

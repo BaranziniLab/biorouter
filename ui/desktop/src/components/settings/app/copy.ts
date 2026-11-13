@@ -39,7 +39,7 @@ export const generalCopy = {
    */
   openSubagentTabs: 'Open subagent tabs automatically',
   openSubagentTabsHelp:
-    'When off, subagents run in the background and the chat summary lists them. When on, each opens in its own tab, unless “Never open tabs automatically” is on.',
+    'When off, subagents run in the background, listed in the chat summary. When on, each opens in a tab unless “Never open tabs automatically” is on.',
   showCosts: 'Show costs',
   showCostsHelp: 'Model prices and usage costs, in chats and on this page.',
 } as const;

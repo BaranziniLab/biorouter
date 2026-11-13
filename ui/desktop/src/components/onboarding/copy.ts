@@ -33,6 +33,15 @@ export const llamaCopy = {
   advanced: 'Advanced',
   /** Only news is a status: a running server, or one that cannot start. */
   binaryMissing: 'llama-server binary not found',
+  /**
+   * Under that status: one instruction and the command, with the other ways out in an InfoTip
+   * (owner, 2026-11-13). It was a two-sentence paragraph with the command and the variable inline.
+   */
+  binaryMissingInstruction: 'Install llama.cpp, for example with Homebrew:',
+  binaryMissingCommand: 'brew install llama.cpp',
+  binaryMissingTipLabel: 'the missing llama-server',
+  binaryMissingTip:
+    'A development build may ship without the bundled llama-server. You can also set BIOROUTER_LLAMACPP_BIN to its full path.',
   running: 'Running · ready',
   warmUpNeeded: 'Running · warm-up needed',
   checking: 'Checking Llama Server…',
@@ -61,7 +70,31 @@ export const llamaCopy = {
   confirmLoad: 'Load model',
   chooseAnother: 'Choose another model',
   confirmLoadFallback: 'This model may exceed the available GPU memory.',
+  /**
+   * The disclosure under that confirmation's sentence, holding what the memory figure means on
+   * this kind of machine: the word Settings' Local models confirmation uses for the same fold.
+   */
+  why: 'Why?',
 } as const;
+
+/**
+ * A memory warning (`llamaMemoryWarning`) split for a surface that says one thing up front: the
+ * consequence (the figures and what may happen), and the sentence that says what the memory figure
+ * means on this kind of machine (`acceleratorMemoryExplanation`), which folds behind "Why?". A
+ * warning that does not carry that sentence stays whole. Settings' Local models confirmation folds
+ * the same sentence the same way, so the two surfaces that say this warning agree.
+ */
+export function splitMemoryWarning(
+  warning: string,
+  meaning: string | null | undefined
+): { consequence: string; meaning: string | null } {
+  if (!meaning || !warning.includes(meaning)) return { consequence: warning, meaning: null };
+  const consequence = warning
+    .replace(meaning, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return consequence ? { consequence, meaning } : { consequence: warning, meaning: null };
+}
 
 /** The institutional gateway form a Versa row opens in place (`InstitutionalSetupCard`). */
 export const institutionalCopy = {
@@ -105,7 +138,7 @@ export const agentCopy = {
   apiKeyTail: 'provider under API providers.',
   apiKeyTipLabel: 'API key sign-in',
   apiKeyTip:
-    'With an API key a run would bill per token, and this provider removes API credentials from the environment it starts, so it cannot run this way.',
+    'With an API key a run would bill per token. This provider removes API credentials from the CLI it starts, so it cannot run that way.',
   indeterminate: 'Biorouter could not tell whether this CLI is usable.',
   /** The panel's version line: "Version 2.1.283 · Max plan · ada@example.edu" (FR-R3-6). */
   version: 'Version',
@@ -196,9 +229,18 @@ export const ollamaCopy = {
    * machine, so the panel says it first. The note under it says what that means.
    */
   publicTier: 'Public',
-  /** The public server's privacy note. Always visible (principle 2): it is a privacy disclosure. */
-  publicNote: (host: string) =>
-    `Biorouter treats the Ollama server at ${host} as public, not private: it counts only localhost, 127.0.0.1 and ::1 as this computer. Chats send their prompts and files to that server, and a private chat cannot use it.`,
+  /**
+   * The public server's privacy note, in two layers (owner, 2026-11-13; design.md 9.16). The
+   * consequence is always visible (principle 2: it is a privacy disclosure); what counts as this
+   * computer and what is sent are the InfoTip at its end. Together they say every word the one
+   * paragraph said ("public, not private: it counts only localhost, 127.0.0.1 and ::1 as this
+   * computer. Chats send their prompts and files to that server, and a private chat cannot use it").
+   */
+  publicNoteShort: (host: string) =>
+    `Biorouter treats the Ollama server at ${host} as public, so a private chat cannot use it.`,
+  publicTierTipLabel: 'public Ollama servers',
+  publicTierTip:
+    'Only localhost, 127.0.0.1 and ::1 count as this computer. Chats send their prompts and files to any other server.',
   /** A server this screen cannot ask (the CSP admits only 127.0.0.1): this computer's, at ::1. */
   atHost: (host: string) => `Ollama at ${host}`,
   /** The same, on another computer. */
