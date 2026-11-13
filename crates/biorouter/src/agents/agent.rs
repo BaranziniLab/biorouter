@@ -22337,6 +22337,19 @@ mod tests {
             ProviderTier::Public,
             "the chat is public, by its decision model"
         );
+
+        // A slot holding another provider (a model switched since the iteration began) is not
+        // what the child talks to: a public child keeps its own Public capability, never the
+        // private slot's.
+        *agent.provider.lock().await = Some(Arc::clone(&inner));
+        let public_child: Arc<dyn Provider> = Arc::new(BridgedChildProvider {
+            name: "claude_code",
+        });
+        let plan = agent
+            .prepare_coding_agent_bridge_plan(&session_id, &public_child, &tools)
+            .await
+            .expect("a bridge plan");
+        assert_eq!(plan.capability.tier(), ProviderTier::Public);
     }
 
     /// ⚠ The name still says "withholds arbitrary host tools", and that is
