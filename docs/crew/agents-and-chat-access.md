@@ -67,7 +67,7 @@ A start that fails shows "Couldn’t start your agent." with the reason, and the
 ## Start a task with Ask my agent
 
 1. Open the channel that should get the result. Text already in the message box is copied into the task.
-2. Choose **Ask my agent**, the robot icon left of the send button. An archived channel, or one Crew is still verifying, has no such button.
+2. Choose **Ask my agent**, the robot icon left of the microphone and the send button. An archived channel, or one Crew is still verifying, has no such button.
 3. Check the pane's first line, such as "Posts to #methods in Analysis Lab · lab".
 4. Type the task in **Task**. Enter adds a new line.
 5. Check **Model**, which starts on [your model for Crew tasks](#choose-the-model-for-crew-tasks), or choose **Change**. See [Choose a model](#choose-a-model).

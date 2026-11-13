@@ -1054,7 +1054,9 @@ export function useRestoredDraftCaret(
     }
     placed.current = true;
     const selection = typeof document.getSelection === 'function' ? document.getSelection() : null;
-    const card = node.parentElement;
+    // The card, not the field's own box: since the one-line row (2026-11-13) the
+    // textarea sits in `.crew-compose-field` inside the row inside the card.
+    const card = node.closest('.crew-compose-card') ?? node.parentElement;
     if (
       selection &&
       document.activeElement !== node &&
@@ -1229,9 +1231,12 @@ function ComposerCard({
 
   return (
     <div
+      // The chat composer's one-line card (owner, 2026-11-13): the same surface,
+      // 8px all round (`.crew-compose-card`), what goes with the message above,
+      // then ONE row of `+`, the text, the agent, the microphone and Send.
       className={cn(
         'biorouter-composer-card crew-compose-card relative flex min-w-0 flex-col rounded-container',
-        'bg-background-default border border-border-subtle/60 py-2.5 pr-3 pl-4'
+        'bg-background-default border border-border-subtle/60'
       )}
       // A post on its way: the card says so, and Send shows its spinner. The text stays writable.
       aria-busy={posting || undefined}
@@ -1257,85 +1262,99 @@ function ComposerCard({
           onPick={acceptRow}
         />
       )}
-      <textarea
-        ref={setTextarea}
-        className="crew-compose-input block w-full resize-none border-none bg-transparent px-0 py-1.5 text-body text-text-default placeholder:text-text-muted"
-        aria-label={composerCopy.label(name)}
-        placeholder={composerCopy.placeholder(name)}
-        rows={1}
-        // Laid out in the direction of what is typed (QA M13): Hebrew or Arabic runs right to left.
-        dir="auto"
-        value={body}
-        // The suggestion list it offers (`@agent`, `/task`, people): named, and its row pointed at,
-        // while focus stays here. The accessible name stays the pinned "Message #name" (C6).
-        aria-autocomplete="list"
-        aria-controls={suggestions.open ? listId : undefined}
-        aria-activedescendant={
-          suggestions.open ? suggestionId(listId, suggestions.active) : undefined
-        }
-        aria-describedby={agentLine ? hintId : undefined}
-        // Writable while a post is on its way (QA M8): what is typed now stays, because success
-        // takes out only what was sent.
-        onChange={(event) => {
-          caret.typed(event.target.value);
-          setBody(event.target.value);
-          setCaretAt(event.target.selectionStart);
-          setFocused(true);
-        }}
-        onSelect={(event) => setCaretAt(event.currentTarget.selectionStart)}
-        onKeyDown={(event) => {
-          caret.touched();
-          onKeyDown(event);
-        }}
-        onPointerDown={caret.touched}
-        onCompositionStart={() => {
-          composing.current = true;
-        }}
-        onCompositionEnd={() => {
-          composing.current = false;
-        }}
-        onFocus={(event) => {
-          setFocused(true);
-          caret.focused(event);
-        }}
-        onBlur={() => setFocused(false)}
-        onPaste={onPaste}
-      />
       <DictationNotices dictationKey={dictationKey} />
       {agentLine}
-      <div className="crew-compose-controls">
-        <AttachMenu
-          onUpload={() => void upload.upload()}
-          onSharePath={onSharePath}
-          uploading={upload.choosing}
-        />
+      <div className="crew-compose-row">
+        <span className="crew-compose-slot">
+          <AttachMenu
+            onUpload={() => void upload.upload()}
+            onSharePath={onSharePath}
+            uploading={upload.choosing}
+          />
+        </span>
+        <div className="crew-compose-field">
+          <textarea
+            ref={setTextarea}
+            className="crew-compose-input block w-full resize-none border-none bg-transparent px-0 py-1.5 text-body text-text-default placeholder:text-text-muted"
+            aria-label={composerCopy.label(name)}
+            placeholder={composerCopy.placeholder(name)}
+            rows={1}
+            // Laid out in the direction of what is typed (QA M13): Hebrew or Arabic runs right to left.
+            dir="auto"
+            value={body}
+            // The suggestion list it offers (`@agent`, `/task`, people): named, and its row pointed at,
+            // while focus stays here. The accessible name stays the pinned "Message #name" (C6).
+            aria-autocomplete="list"
+            aria-controls={suggestions.open ? listId : undefined}
+            aria-activedescendant={
+              suggestions.open ? suggestionId(listId, suggestions.active) : undefined
+            }
+            aria-describedby={agentLine ? hintId : undefined}
+            // Writable while a post is on its way (QA M8): what is typed now stays, because success
+            // takes out only what was sent.
+            onChange={(event) => {
+              caret.typed(event.target.value);
+              setBody(event.target.value);
+              setCaretAt(event.target.selectionStart);
+              setFocused(true);
+            }}
+            onSelect={(event) => setCaretAt(event.currentTarget.selectionStart)}
+            onKeyDown={(event) => {
+              caret.touched();
+              onKeyDown(event);
+            }}
+            onPointerDown={caret.touched}
+            onCompositionStart={() => {
+              composing.current = true;
+            }}
+            onCompositionEnd={() => {
+              composing.current = false;
+            }}
+            onFocus={(event) => {
+              setFocused(true);
+              caret.focused(event);
+            }}
+            onBlur={() => setFocused(false)}
+            onPaste={onPaste}
+          />
+        </div>
         {/* A toggle for the agent pane: it says whether the pane is open, and which element it
-            opens, as the channel header's details toggle says it is pressed (Q3-23). */}
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          aria-expanded={agentOpen}
-          aria-controls={agentPaneId}
-          onClick={onAskAgent}
-        >
-          <Bot aria-hidden />
-          {composerCopy.askAgent}
-        </Button>
-        <span className="crew-compose-spacer" />
-        <CrewDictationButton
-          control={dictation}
-          target={dictationTarget}
-          onSettings={() => {
-            window.location.hash = '#/settings?section=dictation';
-          }}
-        />
+            opens, as the channel header's details toggle says it is pressed (Q3-23). An icon in
+            the one line, named and tipped "Ask my agent", beside the microphone. */}
+        <span className="crew-compose-slot">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                shape="round"
+                aria-label={composerCopy.askAgent}
+                aria-expanded={agentOpen}
+                aria-controls={agentPaneId}
+                onClick={onAskAgent}
+                className="crew-compose-agent-toggle text-text-muted hover:text-text-default"
+              >
+                <Bot aria-hidden />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{composerCopy.askAgent}</TooltipContent>
+          </Tooltip>
+        </span>
+        <span className="crew-compose-slot">
+          <CrewDictationButton
+            control={dictation}
+            target={dictationTarget}
+            onSettings={() => {
+              window.location.hash = '#/settings?section=dictation';
+            }}
+          />
+        </span>
         {/* One node in both modes. For a draft that starts a task it is "Start agent task", described
             by the consent line, and disabled while a task is starting (single flight) or when
             nothing would start; "Send message" stays its name for every other draft (C6). */}
         <Tooltip>
           <TooltipTrigger asChild>
-            <span className="crew-compose-send">
+            <span className="crew-compose-slot crew-compose-send">
               <Button
                 type="button"
                 shape="round"

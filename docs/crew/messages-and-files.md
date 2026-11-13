@@ -8,8 +8,9 @@
 > **Audience:** Crew members who use the Biorouter desktop app.
 
 This page assumes you have joined a workspace (see [Joining a workspace](joining-a-workspace.md)).
-The message box at the bottom of a channel holds the paperclip button (tooltip "Attach"),
-**Ask my agent** and the round Send button.
+The message box at the bottom of a channel is one line, like a chat's: the `+` button (tooltip
+"Attach") on the left, then the text, the robot icon **Ask my agent**, the microphone and the round
+Send button. Longer text grows the box upward and the buttons stay on its last line.
 
 The microphone before Send and the microphone beside **Start my agent and allow posting here**
 put speech in their own text boxes for review. Their tooltip reads "Dictate. The text goes into the

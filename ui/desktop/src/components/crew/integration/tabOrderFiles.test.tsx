@@ -94,10 +94,15 @@ describe('file cards and the Tab order through a channel (Q3-05)', () => {
     return userEvent.setup({ pointerEventsCheck: 0 });
   }
 
-  it('goes from the log to the composer in one stop, past both cards', async () => {
+  // The composer is one line since 2026-11-13, as the chat's: its `+` (Attach) comes before the
+  // message on screen and in the Tab order. So the log reaches the composer in one stop and the
+  // message in the next, and never stops on a file card on the way.
+  it('goes from the log to the composer in one stop and to the message in the next, past both cards', async () => {
     const user = await openChannel();
     const log = screen.getByRole('log');
     act(() => log.focus());
+    await user.tab();
+    expect(document.activeElement).toHaveAccessibleName('Attach');
     expect(await tabsToComposer(user)).toBe(1);
   });
 
@@ -107,9 +112,11 @@ describe('file cards and the Tab order through a channel (Q3-05)', () => {
     expect(await tabsToComposer(user)).toBeLessThanOrEqual(3);
   });
 
-  it('comes back from the composer to the log in one Shift+Tab, not onto the last card', async () => {
+  it('comes back from the composer to the log past its `+`, not onto the last card', async () => {
     const user = await openChannel();
     act(() => composer().focus());
+    await user.tab({ shift: true });
+    expect(document.activeElement).toHaveAccessibleName('Attach');
     await user.tab({ shift: true });
     expect(screen.getByRole('log')).toHaveFocus();
   });
