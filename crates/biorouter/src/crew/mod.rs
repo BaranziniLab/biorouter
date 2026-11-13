@@ -1821,9 +1821,6 @@ fn hello_nonce() -> String {
 }
 #[cfg(test)]
 pub(super) static TEST_HELLO_NONCE: StdMutex<Option<String>> = StdMutex::new(None);
-/// What a public model is told when the chat asking for Crew access has used a private one: its
-/// history carries private context a public model must not continue with (W2-DMN-9).
-
 /// What `crew_credential_store_unavailable` says to a profile that holds no Crew identity yet,
 /// where an encrypted vault can still be set up (W2-DMN-1).
 pub const CREDENTIAL_STORE_UNAVAILABLE_TEXT: &str = "This computer has no keyring service Biorouter can use. Run `biorouter crew credentials init` to keep Crew keys in an encrypted vault, then try again.";
