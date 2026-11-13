@@ -4,7 +4,10 @@ use crate::config::paths::Paths;
 use crate::model::ModelConfig;
 use crate::privacy::ProviderTier;
 use crate::providers::errors::ProviderError;
-use crate::providers::formats::openai::{decode_streaming_message, ReasoningDisplay};
+use crate::providers::formats::openai::{
+    azure_content_filter_refusal, content_filter_refusal, decode_streaming_message,
+    ReasoningDisplay,
+};
 use anyhow::{anyhow, Result};
 use async_stream::try_stream;
 use base64::Engine;
@@ -390,6 +393,72 @@ pub async fn handle_status_openai_compat(response: Response) -> Result<Response,
 pub async fn handle_response_openai_compat(response: Response) -> Result<Value, ProviderError> {
     let response = handle_status_openai_compat(response).await?;
 
+    response.json::<Value>().await.map_err(|e| {
+        ProviderError::RequestFailed(format!("Response body is not valid JSON: {}", e))
+    })
+}
+
+/// [`handle_status_openai_compat`] for an Azure OpenAI resource, on either
+/// route: a prompt Azure's content filter refused (HTTP 400, code
+/// `content_filter`) reads as a policy block naming the flagged categories in
+/// plain words, is not retried, and carries none of Azure's own paragraph
+/// ([`azure_content_filter_refusal`]). Every other status reads as it always
+/// has. Without it the `azure_openai` provider said "Bad request (400): The
+/// response was filtered due to the prompt triggering Azure OpenAI's content
+/// management policy…", naming no category.
+pub async fn handle_status_azure_openai(response: Response) -> Result<Response, ProviderError> {
+    handle_status_reading_filter_refusal(response, azure_content_filter_refusal).await
+}
+
+/// [`handle_response_openai_compat`], with an Azure resource's status read by
+/// [`handle_status_azure_openai`].
+pub async fn handle_response_azure_openai(response: Response) -> Result<Value, ProviderError> {
+    let response = handle_status_azure_openai(response).await?;
+    response_json(response).await
+}
+
+/// [`handle_status_openai_compat`] for the `openai` provider and the custom
+/// providers built on it: a prompt a content filter refused (HTTP 400, code
+/// `content_filter`) reads as a policy block, is not retried, and carries
+/// none of the server's own paragraph ([`content_filter_refusal`]). It names
+/// Azure's filter and its categories when the error carries Azure's verdict,
+/// and the provider's otherwise. Every other status reads as it always has.
+/// Without it such a refusal read "Bad request (400): " plus the server's
+/// paragraph.
+pub async fn handle_status_openai_provider(response: Response) -> Result<Response, ProviderError> {
+    handle_status_reading_filter_refusal(response, content_filter_refusal).await
+}
+
+/// [`handle_response_openai_compat`], with the status read by
+/// [`handle_status_openai_provider`].
+pub async fn handle_response_openai_provider(response: Response) -> Result<Value, ProviderError> {
+    let response = handle_status_openai_provider(response).await?;
+    response_json(response).await
+}
+
+/// A status read as [`handle_status_openai_compat`] reads it, except that an
+/// HTTP 400 is first offered to `refusal`, which turns a content filter's
+/// refusal into its policy block.
+async fn handle_status_reading_filter_refusal(
+    response: Response,
+    refusal: fn(u16, &Value) -> Option<ProviderError>,
+) -> Result<Response, ProviderError> {
+    let status = response.status();
+    if status != StatusCode::BAD_REQUEST {
+        return handle_status_openai_compat(response).await;
+    }
+    let body = response.text().await.unwrap_or_default();
+    let payload = serde_json::from_str::<Value>(&body).ok();
+    if let Some(refusal) = payload
+        .as_ref()
+        .and_then(|payload| refusal(status.as_u16(), payload))
+    {
+        return Err(refusal);
+    }
+    Err(map_http_error_to_provider_error(status, payload))
+}
+
+async fn response_json(response: Response) -> Result<Value, ProviderError> {
     response.json::<Value>().await.map_err(|e| {
         ProviderError::RequestFailed(format!("Response body is not valid JSON: {}", e))
     })
