@@ -46,6 +46,12 @@ pub const BEDROCK_KNOWN_MODELS: &[&str] = &[
     // Its reasoning blocks are bound to the conversation prefix, so
     // `to_bedrock_messages` strips them from the history it replays.
     "us.anthropic.claude-opus-5-5",
+    // Claude Sonnet 5.5 and Haiku 5.5 (1M context, 128K output). Same
+    // preserved-thinking handling, and neither takes a temperature. Both ids
+    // answered through UCSF's Versa Bedrock gateway on 2026-11-12, which
+    // forwards AWS's own ids, so these spellings are AWS's.
+    "us.anthropic.claude-sonnet-5-5",
+    "us.anthropic.claude-haiku-5-5",
     // Claude Fable 5.1 (2026-09-01, 1M). Same preserved-thinking handling.
     // The AWS account must set Bedrock's data-retention mode to `aws_review`
     // or every request fails, and it runs blocking cyber/life-science

@@ -649,6 +649,11 @@ fn claude_family_pricing(model: &str) -> Option<ProviderModelPricing> {
         ("sonnet", 4, None | Some(0 | 5)) | ("sonnet", 3, None | Some(5 | 7)) => {
             cached(3.0, 15.0, 200_000)
         }
+        // Haiku 5.5 has two rate cards chosen by the prompt's length: $0.10 /
+        // $0.50 for 100K tokens or fewer, $0.50 / $2.50 above that (cache
+        // reads 0.1x input, 5-minute writes 1.25x). This row is the short
+        // card, which a turn under 100K pays; a longer prompt reads low here.
+        ("haiku", 5, Some(5)) => with_cache(0.10, 0.50, 1_000_000, 0.1, 1.25),
         ("haiku", 4, Some(5)) => cached(1.0, 5.0, 200_000),
         ("haiku", 3, Some(5)) => cached(0.80, 4.0, 200_000),
         ("haiku", 3, None) => cached(0.25, 1.25, 200_000),
@@ -1576,6 +1581,8 @@ mod tests {
                 "claude-3-7-sonnet-20250219",
                 (3.0, 15.0, 200_000, 0.30, 3.75),
             ),
+            // Haiku 5.5's short card (a prompt of 100K tokens or fewer).
+            ("claude-haiku-5-5", (0.10, 0.50, 1_000_000, 0.01, 0.125)),
             ("claude-haiku-4-5-20251001", (1.0, 5.0, 200_000, 0.10, 1.25)),
             (
                 "claude-3-5-haiku-20241022",
@@ -1643,6 +1650,10 @@ mod tests {
             (
                 "us.anthropic.claude-sonnet-4-6",
                 (3.0, 15.0, 1_000_000, 0.30, 3.75),
+            ),
+            (
+                "us.anthropic.claude-haiku-5-5",
+                (0.10, 0.50, 1_000_000, 0.01, 0.125),
             ),
             (
                 "us.anthropic.claude-haiku-4-5-20251001-v1:0",

@@ -941,6 +941,25 @@ async fn test_versa_bedrock_provider_sonnet_5_5() -> Result<()> {
     .await
 }
 
+/// Haiku 5.5 over the Versa proxy: first answered through UCSF's gateway on
+/// 2026-11-12 (a reply and a tool call). Pinned literally, like the tests
+/// above.
+#[tokio::test]
+#[ignore = "live billed Versa Bedrock call; run deliberately with --ignored"]
+async fn test_versa_bedrock_provider_haiku_5_5() -> Result<()> {
+    run_live_suite(
+        "versa_bedrock (haiku-5-5)",
+        "versa_bedrock",
+        "us.anthropic.claude-haiku-5-5",
+        &[
+            Credential::EnvOrSecret("VERSA_BEDROCK_ACCESS_KEY_ID"),
+            Credential::EnvOrSecret("VERSA_BEDROCK_SECRET_ACCESS_KEY"),
+        ],
+        None,
+    )
+    .await
+}
+
 /// The other half of the 2026-10-05 measurement: Opus 5 and Opus 4.7 stay off
 /// `VERSA_BEDROCK_KNOWN_MODELS` because UCSF's account is refused them
 /// (`AccessDeniedException`), and a chat still bound to one must hear that the
