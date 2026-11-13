@@ -306,8 +306,14 @@ describe.each(['light', 'dark'] as const)('the Create knowledge base dialog (%s)
 
       // Typing lifts it: the folder line is back, the edge is quiet, nothing moves.
       await page.keyboard.type('Cohort notes');
-      await page.waitForTimeout(100);
-      expect(await page.locator('[role="alert"]').count()).toBe(0);
+      // Waited for, not slept on: a loaded runner can take longer than any fixed pause to
+      // re-render, and a fixed pause then reads the old state (main's CI, 2026-11-13).
+      await expect
+        .poll(() => page.locator('[role="alert"]').count(), {
+          timeout: 5_000,
+          message: 'typing lifts the alert',
+        })
+        .toBe(0);
       const typed = await look(page, NAME);
       expect(typed.edge).not.toBe(edge.edge);
       expect(Math.abs((await look(page, CREATE)).top - createBefore.top)).toBeLessThan(0.6);
@@ -348,8 +354,9 @@ describe.each(['light', 'dark'] as const)('the Create knowledge base dialog (%s)
       // A usable name: the accent, and Cancel stays where it was.
       await page.fill(NAME, '');
       await page.keyboard.type('Cohort notes');
-      await page.waitForTimeout(200);
-      expect(await ground(CREATE), 'a usable Name: the accent').toBe(accent);
+      await expect
+        .poll(() => ground(CREATE), { timeout: 5_000, message: 'a usable Name: the accent' })
+        .toBe(accent);
       expect(await ground(CANCEL)).toBe(cancel);
       expect(await page.isEnabled(CREATE)).toBe(true);
       if (SHOTS) {
@@ -358,8 +365,12 @@ describe.each(['light', 'dark'] as const)('the Create knowledge base dialog (%s)
 
       // Emptied again, it steps back, and a click still says what is missing.
       await page.fill(NAME, '');
-      await page.waitForTimeout(200);
-      expect(await ground(CREATE)).toBe(cancel);
+      await expect
+        .poll(() => ground(CREATE), {
+          timeout: 5_000,
+          message: 'emptied again: the control ground',
+        })
+        .toBe(cancel);
       await page.click(CREATE);
       await page.waitForSelector('[role="alert"]');
       expect(await page.locator('[role="alert"]').innerText()).toBe('Enter a name.');
@@ -413,11 +424,14 @@ describe.each(['light', 'dark'] as const)('the Create knowledge base dialog (%s)
       const accent = await ground('#probe-accent');
       expect(await ground(SAVE), 'a name to save: the accent').toBe(accent);
       await page.fill(INPUT, '');
-      await page.waitForTimeout(200);
+      // Waited for, not slept on: under load the step back from the accent had not finished
+      // after a fixed 200 ms, and the check read the accent still (main's CI, 2026-11-13).
+      const cancelGround = await ground('button:has-text("Cancel")');
+      expect(cancelGround, 'the instrument: Cancel is not the accent').not.toBe(accent);
+      await expect
+        .poll(() => ground(SAVE), { timeout: 5_000, message: 'emptied: the control ground' })
+        .toBe(cancelGround);
       expect(await ground(SAVE), 'emptied: not the accent').not.toBe(accent);
-      expect(await ground(SAVE), 'emptied: the control ground').toBe(
-        await ground('button:has-text("Cancel")')
-      );
       const restEdge = (await look(page, INPUT)).edge;
       await page.click('[data-testid="knowledge-kb-submit"]');
       await page.waitForSelector('[role="alert"]');
