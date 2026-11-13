@@ -1359,9 +1359,10 @@ impl SkillsClient {
     /// *bundle* wrote a name this test never matched, and changed nothing.
     /// One rule, two readers.
     ///
-    /// `hidden_contexts` is passed empty here because
-    /// [`Self::enabled_skill_entries`] applies that filter itself, ahead of the
-    /// session test, for the reason recorded there.
+    /// `hidden_contexts` is passed empty here, because this is the LOAD test: a
+    /// Context switched off in Settings stays loadable by exact name (see
+    /// [`hidden_contexts_in`]). The list the model browses is
+    /// [`Self::is_listed_for_session`], which passes the hidden set.
     fn is_skill_enabled_for_session(
         name: &str,
         skill: &Skill,
@@ -1378,31 +1379,44 @@ impl SkillsClient {
         .effective
     }
 
+    /// Is this skill in the list the model browses, in this session?
+    ///
+    /// [`skill_catalog::compose_state`] with the Contexts switched off in
+    /// Settings, so this list and the interface's switches read one rule: a
+    /// per-chat choice first (a per-chat `add` puts back a Context switched off
+    /// in Settings, owner ruling 2026-11-13), then the machine-wide answer.
+    /// That rule tests a skill's BUNDLE as well as its own name, because a
+    /// Context row may stand for a whole bundle (see [`context_ids`]) and a
+    /// member carries its own `name:`.
+    fn is_listed_for_session(
+        name: &str,
+        skill: &Skill,
+        machine_disabled: &std::collections::HashSet<String>,
+        hidden_contexts: &std::collections::HashSet<String>,
+        over: &crate::agents::session_skills::SessionSkillOverride,
+    ) -> bool {
+        skill_catalog::compose_state(
+            name,
+            skill.bundle_name.as_deref(),
+            machine_disabled,
+            hidden_contexts,
+            over,
+        )
+        .effective
+    }
+
     /// The catalog as one session sees it. `over` is always the caller's — read
     /// from the `McpMeta` of the dispatch in flight, never from client state
     /// (see [`SkillsClient`]). The machine-wide view is
     /// `&SessionSkillOverride::default()`.
     ///
-    /// This is **the one surface a Context toggle acts on**: everything the
-    /// model can browse through `searchSkills` comes through
-    /// here, while [`Self::handle_load_skill`] deliberately does not, so a
-    /// switched-off Context stays loadable by exact name (see
-    /// [`hidden_contexts_in`] for why that asymmetry is required rather than
-    /// merely tolerated). [`session_skill_inventory_instructions`] reads the
-    /// same composition through [`skill_catalog::SkillCatalog::view`].
-    /// Is this skill hidden by a Context switch — its own, or its bundle's?
-    ///
-    /// The same two-key test [`skill_catalog::compose_state`] applies, kept as
-    /// one function so the model-facing filter and the interface's switches
-    /// cannot come to disagree about what a bundle-level Context covers.
-    fn is_hidden_context(
-        name: &str,
-        bundle: Option<&str>,
-        hidden_contexts: &std::collections::HashSet<String>,
-    ) -> bool {
-        hidden_contexts.contains(name) || bundle.is_some_and(|b| hidden_contexts.contains(b))
-    }
-
+    /// This is **the one surface a Settings Context switch acts on**: everything
+    /// the model can browse through `searchSkills` comes through here, while
+    /// [`Self::handle_load_skill`] deliberately does not, so a Context switched
+    /// off in Settings stays loadable by exact name (see [`hidden_contexts_in`]
+    /// for why that asymmetry is required rather than merely tolerated).
+    /// [`session_skill_inventory_instructions`] reads the same composition
+    /// through [`skill_catalog::SkillCatalog::view`].
     fn enabled_skill_entries<'a>(
         skills: &'a HashMap<String, Skill>,
         over: &crate::agents::session_skills::SessionSkillOverride,
@@ -1412,19 +1426,7 @@ impl SkillsClient {
         let mut skill_list: Vec<_> = skills
             .iter()
             .filter(|(name, skill)| {
-                // ⚠ Checked BEFORE the session test, not folded into it. That
-                // test's first rule is "an explicit session grant wins over
-                // everything", and a Context the user switched off in Settings
-                // is not something `workspace_set_tools` should be able to put
-                // back into the catalog on the model's say-so.
-                //
-                // ⚠ The BUNDLE is tested too. A Context row may stand for a
-                // whole bundle (see [`context_ids`]), and a member carries its
-                // own `name:` — so matching only on the skill's name would
-                // leave every member of a switched-off bundle in the catalog
-                // the model is told about, while the Settings switch sat off.
-                !Self::is_hidden_context(name, skill.bundle_name.as_deref(), &hidden_contexts)
-                    && Self::is_skill_enabled_for_session(name, skill, &disabled, over)
+                Self::is_listed_for_session(name, skill, &disabled, &hidden_contexts, over)
             })
             .collect();
         skill_list.sort_by_key(|(name, _)| *name);
@@ -1774,16 +1776,10 @@ impl SkillsClient {
                 }
                 // The reason is READ off the separated fields, never
                 // re-derived — that is what they exist for.
-                let (reason, fix) = if skill.state.hidden_context {
-                    // Unreachable for a fresh install today: `refuse_shipped`
-                    // stops a package owning a shipped Context's name. Handled
-                    // rather than assumed away, and deliberately does not
-                    // suggest `setSkillEnabled`, which refuses this case.
-                    (
-                        "Hidden by a Context switched off in Settings.".to_string(),
-                        "Turn the Context back on in Settings → Contexts.".to_string(),
-                    )
-                } else if skill.state.session == SessionState::Removed {
+                // ⚠ The session test comes first, as it does in
+                // `compose_state`: a chat that switched this skill off is
+                // decided by that, whatever Settings says.
+                let (reason, fix) = if skill.state.session == SessionState::Removed {
                     let reason = if skill.state.session_via_bundle {
                         "This conversation has its bundle switched off.".to_string()
                     } else {
@@ -1794,6 +1790,17 @@ impl SkillsClient {
                     (
                         reason,
                         format!("setSkillEnabled {{ \"name\": \"{name}\", \"enabled\": true }}"),
+                    )
+                } else if skill.state.hidden_context {
+                    // Unreachable for a fresh install today: `refuse_shipped`
+                    // stops a package owning a shipped Context's name. Handled
+                    // rather than assumed away.
+                    (
+                        "Hidden by a Context switched off in Settings.".to_string(),
+                        format!(
+                            "setSkillEnabled {{ \"name\": \"{name}\", \"enabled\": true }} for this chat, \
+                             or turn the Context back on in Settings → Contexts"
+                        ),
                     )
                 } else {
                     (
@@ -2791,41 +2798,12 @@ impl SkillsClient {
             .session_target_members(name)
             .ok_or_else(|| format!("Skill or bundle '{name}' is not installed"))?;
 
-        // ⚠ **A session grant cannot lift a hidden Context, so do not report that
-        // it did.** `compose_state` computes `effective` as
-        // `!hidden_context && …` — the hidden test comes FIRST, ahead of the
-        // override — so enabling a Context the user switched off in Settings
-        // writes an override that changes nothing. The tool used to answer
-        // `{"status":"loaded"}` regardless, and the per-turn inventory lists
-        // those same skills under "installed but disabled or hidden", so a model
-        // was steered into the call, told it worked, saw no change, and either
-        // looped or told the user a skill was active when it was not.
-        //
-        // Asked through `Self::is_hidden_context`, the predicate that already
-        // owns this rule, rather than a third hand-written copy of its two-key
-        // test — a Context row may name a whole BUNDLE, and a member carries its
-        // own `name:`, so a one-key test would miss a member of a hidden bundle.
-        if enable {
-            let hidden = hidden_contexts();
-            let skills = self.skills.skills();
-            let blocked = members.iter().any(|member| {
-                Self::is_hidden_context(
-                    member,
-                    skills
-                        .get(member)
-                        .and_then(|skill| skill.bundle_name.as_deref()),
-                    &hidden,
-                )
-            }) || Self::is_hidden_context(name, None, &hidden);
-            if blocked {
-                return Err(format!(
-                    "'{name}' is switched off in Settings > Chat > Contexts, and a per-chat grant \
-                     cannot lift that — the Settings switch is checked before any session \
-                     override, so the override would be written and change nothing. Ask the user \
-                     to turn it back on there; do not retry this call."
-                ));
-            }
-        }
+        // A per-chat grant DOES lift a Context switched off in Settings now
+        // (`skill_catalog::compose_state`, owner ruling 2026-11-13): this chat's
+        // own choice beats the machine-wide answer in both directions, for a
+        // Context as for any other skill. This call used to refuse that case,
+        // because the override was written and changed nothing; it changes the
+        // list now, so the refusal would be the false statement.
 
         let names = vec![name.to_string()];
         let empty: &[String] = &[];
@@ -5936,33 +5914,49 @@ Working dir biorouter content
     /// Switching the bundle off must reach every member, and it is the BUNDLE
     /// name the config key is derived from.
     ///
-    /// ⚠ Without the bundle arm in `compose_state` / `is_hidden_context` this
-    /// fails in the most misleading way available: the switch moves, the value
-    /// is stored, and all five skills stay in the catalog the model is told
-    /// about.
+    /// ⚠ Without the bundle arm in `compose_state` this fails in the most
+    /// misleading way available: the switch moves, the value is stored, and all
+    /// five skills stay in the catalog the model is told about. Asked through
+    /// [`SkillsClient::is_listed_for_session`], the filter
+    /// `enabled_skill_entries` applies, rather than a copy of its test.
     #[test]
     fn hiding_the_knowledge_bundle_hides_every_member() {
+        let temp = TempDir::new().unwrap();
         let hidden = std::collections::HashSet::from([KNOWLEDGE_BUNDLE.to_string()]);
+        let machine = std::collections::HashSet::new();
+        let none = crate::agents::session_skills::SessionSkillOverride::default();
+        let in_bundle = |name: &str, bundle: Option<&str>| Skill {
+            bundle_name: bundle.map(str::to_string),
+            ..fixture_skill(name, temp.path())
+        };
+        let listed = |name: &str, bundle: Option<&str>| {
+            SkillsClient::is_listed_for_session(
+                name,
+                &in_bundle(name, bundle),
+                &machine,
+                &hidden,
+                &none,
+            )
+        };
         for (name, _) in KNOWLEDGE_SKILLS {
             assert!(
-                SkillsClient::is_hidden_context(name, Some(KNOWLEDGE_BUNDLE), &hidden),
+                !listed(name, Some(KNOWLEDGE_BUNDLE)),
                 "{name} survives its bundle's Context switch"
             );
             assert!(
-                !SkillsClient::is_hidden_context(name, None, &hidden),
+                listed(name, None),
                 "{name} is hidden even when it is not in the bundle"
             );
         }
         assert!(
-            SkillsClient::is_hidden_context(
+            !listed(
                 crate::knowledge::soul::SOUL_SKILL_DIR,
-                Some(KNOWLEDGE_BUNDLE),
-                &hidden
+                Some(KNOWLEDGE_BUNDLE)
             ),
             "update-soul survives its bundle's Context switch"
         );
         assert!(
-            !SkillsClient::is_hidden_context("single-cell", Some("superpowers"), &hidden),
+            listed("single-cell", Some("superpowers")),
             "an unrelated bundle's member is hidden"
         );
     }
@@ -6156,7 +6150,7 @@ Working dir biorouter content
 
         let names = |client: &SkillsClient, over: &_| -> Vec<String> { client.enabled_names(over) };
 
-        crate::config::with_config_overrides(all_on, async {
+        crate::config::with_config_overrides(all_on.clone(), async {
             assert_eq!(
                 names(&client, &over),
                 vec!["about-biorouter".to_string(), "alpha".to_string()],
@@ -6165,7 +6159,7 @@ Working dir biorouter content
         })
         .await;
 
-        crate::config::with_config_overrides(about_off, async {
+        crate::config::with_config_overrides(about_off.clone(), async {
             assert_eq!(
                 names(&client, &over),
                 vec!["alpha".to_string()],
@@ -6201,6 +6195,38 @@ Working dir biorouter content
                 .filter_map(|c| c.as_text().map(|t| t.text.clone()))
                 .collect();
             assert!(loaded.contains("about-biorouter"), "{loaded}");
+        })
+        .await;
+
+        // Owner ruling 2026-11-13: this chat's own choice beats Settings, in
+        // both directions, and reaches no other chat.
+        let granted = crate::agents::session_skills::SessionSkillOverride {
+            add: vec!["about-biorouter".to_string()],
+            ..Default::default()
+        };
+        crate::config::with_config_overrides(about_off, async {
+            assert_eq!(
+                names(&client, &granted),
+                vec!["about-biorouter".to_string(), "alpha".to_string()],
+                "a per-chat add puts back a Context switched off in Settings"
+            );
+            assert_eq!(names(&client, &over), vec!["alpha".to_string()]);
+        })
+        .await;
+        let removed = crate::agents::session_skills::SessionSkillOverride {
+            remove: vec!["about-biorouter".to_string()],
+            ..Default::default()
+        };
+        crate::config::with_config_overrides(all_on, async {
+            assert_eq!(
+                names(&client, &removed),
+                vec!["alpha".to_string()],
+                "a per-chat remove takes out a Context switched on in Settings"
+            );
+            assert_eq!(
+                names(&client, &over),
+                vec!["about-biorouter".to_string(), "alpha".to_string()]
+            );
         })
         .await;
     }

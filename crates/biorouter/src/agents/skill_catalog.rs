@@ -249,8 +249,10 @@ pub struct SkillState {
     /// looking arbitrary.
     pub session_via_bundle: bool,
     /// A shipped **Context** the user switched off in Settings → Contexts. Such
-    /// a skill is hidden from the catalog but stays loadable by exact name; see
-    /// `skills_extension::hidden_contexts_in`.
+    /// a skill is hidden from the catalog of a chat with no per-chat choice about
+    /// it, but stays loadable by exact name; see
+    /// `skills_extension::hidden_contexts_in`. A per-chat `add` still turns it on
+    /// in that chat (`compose_state`).
     pub hidden_context: bool,
     /// What the model actually sees: the composition of the three above.
     pub effective: bool,
@@ -657,9 +659,21 @@ pub struct CatalogView {
 /// what the model sees, which is the class of bug #113 catalogues. There is one
 /// copy, and both surfaces read it.
 ///
-/// The order: a hidden Context is hidden **before** the session test, because a
-/// per-chat grant must not put back something the user switched off in
-/// Settings → Contexts.
+/// The order: this chat's own choice first, then the machine-wide answer. A
+/// Context switched off in Settings → Contexts is part of the machine-wide
+/// answer, so it only decides a chat that has no opinion of its own: a per-chat
+/// `add` turns a Settings-off Context on in that chat, and a per-chat `remove`
+/// turns a Settings-on one off (owner ruling 2026-11-13: Contexts take per-chat
+/// switches in both directions, the precedence skills and extensions already
+/// had). `hidden_context` is still reported on its own, so the interface can say
+/// where the machine-wide answer came from.
+///
+/// ⚠ It used to test the hidden Context **before** the session, so a per-chat
+/// grant could not put back a Context switched off in Settings. That made the
+/// composer's per-chat Context switch a control that moved and changed nothing
+/// in one direction. A hidden Context stays loadable by exact name either way
+/// (`SkillsClient::handle_load_skill` passes no hidden set), so the old order
+/// never kept a Context away from the model; it only kept it out of the list.
 pub(crate) fn compose_state(
     name: &str,
     bundle: Option<&str>,
@@ -681,12 +695,11 @@ pub(crate) fn compose_state(
         OverrideMatch::None => (SessionState::Default, false),
     };
 
-    let effective = !hidden_context
-        && match session {
-            SessionState::Added => true,
-            SessionState::Removed => false,
-            SessionState::Default => machine_enabled,
-        };
+    let effective = match session {
+        SessionState::Added => true,
+        SessionState::Removed => false,
+        SessionState::Default => machine_enabled && !hidden_context,
+    };
 
     SkillState {
         machine_enabled,
@@ -808,14 +821,13 @@ mod tests {
 
     /// ⚠ **`compose_state`'s bundle arm, tested where it lives.**
     ///
-    /// `SkillsClient::is_hidden_context` is a *different function on a
-    /// different path*: `is_skill_enabled_for_session` passes an empty hidden
-    /// set, so the two arms are genuinely independent and a test of one says
-    /// nothing about the other. An earlier draft tested only that one and
-    /// claimed both — delete the `|| bundle.is_some_and(...)` clause below and
-    /// every `CatalogSkill` row for a bundle member reports
-    /// `hiddenContext: false, effective: true`, which is the answer the
-    /// INTERFACE renders, with the whole suite green.
+    /// The model-facing list (`SkillsClient::enabled_skill_entries`) reads this
+    /// same function, but the load path (`is_skill_enabled_for_session`) passes
+    /// an empty hidden set, so a test of that path says nothing about this arm.
+    /// An earlier draft tested only that one and claimed both: delete the
+    /// `|| bundle.is_some_and(...)` clause below and every `CatalogSkill` row for
+    /// a bundle member reports `hiddenContext: false, effective: true`, which is
+    /// the answer the INTERFACE renders, with the whole suite green.
     #[test]
     fn a_hidden_context_that_names_a_bundle_hides_the_bundles_members() {
         let none = SessionSkillOverride::default();
@@ -855,29 +867,94 @@ mod tests {
         assert!(!compose_state("knowledge-lint", None, &machine, &hidden, &none).hidden_context);
     }
 
-    /// A per-chat grant must not put back something switched off in Settings —
-    /// the `hidden_context` test sits OUTSIDE the session match, and adding the
-    /// bundle arm must not have moved it.
+    /// Owner ruling 2026-11-13: a chat's own choice decides a Context in BOTH
+    /// directions, as it does for every other skill. Settings → Contexts is the
+    /// machine-wide answer, and it decides only a chat with no opinion.
+    ///
+    /// ⚠ This test replaced one that pinned the opposite order (a per-chat grant
+    /// could not put back a Context switched off in Settings). Under that order
+    /// the composer's per-chat switch moved and changed nothing.
     #[test]
-    fn a_per_chat_grant_cannot_resurrect_a_hidden_context_bundle() {
+    fn settings_off_and_a_per_chat_add_is_effective() {
         let machine = HashSet::new();
         let hidden = HashSet::from(["knowledge-bases".to_string()]);
+
+        // Granted by the bundle's name, which is what the composer's Knowledge
+        // row writes, and by a member's own name.
+        for grant in ["knowledge-bases", "knowledge-lint"] {
+            let granted = SessionSkillOverride {
+                add: vec![grant.to_string()],
+                ..Default::default()
+            };
+            let member = compose_state(
+                "knowledge-lint",
+                Some("knowledge-bases"),
+                &machine,
+                &hidden,
+                &granted,
+            );
+            assert_eq!(member.session, SessionState::Added, "{grant}");
+            assert!(
+                member.effective,
+                "a per-chat add of {grant} lost to Settings"
+            );
+            // Still reported, so the interface can say where the machine-wide
+            // answer came from.
+            assert!(member.hidden_context, "{grant}");
+        }
+
+        // The bundle row the composer reads its switch from.
         let granted = SessionSkillOverride {
-            add: vec!["knowledge-lint".to_string()],
+            add: vec!["knowledge-bases".to_string()],
             ..Default::default()
         };
-        let state = compose_state(
+        let row = compose_state("knowledge-bases", None, &machine, &hidden, &granted);
+        assert!(row.effective && row.hidden_context);
+
+        // A plain skill-named Context, switched off in Settings and on here.
+        let hidden = HashSet::from(["about-biorouter".to_string()]);
+        let granted = SessionSkillOverride {
+            add: vec!["about-biorouter".to_string()],
+            ..Default::default()
+        };
+        assert!(compose_state("about-biorouter", None, &machine, &hidden, &granted).effective);
+
+        // No opinion in this chat: Settings decides, and it says off.
+        let none = SessionSkillOverride::default();
+        assert!(!compose_state("about-biorouter", None, &machine, &hidden, &none).effective);
+    }
+
+    #[test]
+    fn settings_on_and_a_per_chat_remove_is_not_effective() {
+        let machine = HashSet::new();
+        let nothing_hidden = HashSet::new();
+
+        let removed = SessionSkillOverride {
+            remove: vec!["knowledge-bases".to_string()],
+            ..Default::default()
+        };
+        let member = compose_state(
             "knowledge-lint",
             Some("knowledge-bases"),
             &machine,
-            &hidden,
-            &granted,
+            &nothing_hidden,
+            &removed,
         );
-        assert_eq!(state.session, SessionState::Added);
+        assert_eq!(member.session, SessionState::Removed);
+        assert!(member.session_via_bundle);
+        assert!(!member.effective && !member.hidden_context);
         assert!(
-            !state.effective,
-            "a session grant overrode a Settings switch"
+            !compose_state("knowledge-bases", None, &machine, &nothing_hidden, &removed).effective
         );
+
+        let removed = SessionSkillOverride {
+            remove: vec!["office-word".to_string()],
+            ..Default::default()
+        };
+        assert!(!compose_state("office-word", None, &machine, &nothing_hidden, &removed).effective);
+        // Another chat, with no opinion, keeps the Settings answer.
+        let none = SessionSkillOverride::default();
+        assert!(compose_state("office-word", None, &machine, &nothing_hidden, &none).effective);
     }
 
     /// The bundles a temporary root actually contains.

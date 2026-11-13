@@ -1,16 +1,19 @@
 import * as React from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   skillCatalogToggleKey,
   useSkillCatalog,
   type SkillCatalogEntry,
 } from '../skills/useSkillCatalog';
 import { rankCatalogEntries } from '../skills/searchCatalog';
+import { rankEntries, SKILL_NOISE, Weight, type SearchField } from '../baam/search';
+import { useConfig } from '../ConfigContext';
+import { contextConfigKey, type ContextMeta } from '../settings/contexts/contexts';
 import { toastService } from '../../toasts';
 import BuiltInBadge from '../ui/BuiltInBadge';
 import { uiCopy } from '../ui/copy';
 import { SKILLS_COPY, TOOLS_COPY } from './copy';
-import { PickerPanel, PickerRow } from './PickerPanel';
+import { PickerDisclosure, PickerPanel, PickerRow, useBuiltInDisclosure } from './PickerPanel';
 
 /** What the skills list needs from its picker state (see `useSkillPicker`). */
 export interface SkillPicker {
@@ -29,6 +32,47 @@ export interface SkillPicker {
   toggle: (entry: SkillCatalogEntry) => void;
   bulk: { label: string; onClick: () => void } | null;
   emptyText: string;
+  /**
+   * The shipped Contexts, behind a disclosure after the installed skills.
+   * Optional so a picker built by hand need not describe them; absent means the
+   * section is not drawn (in a chat, until its catalog has answered).
+   */
+  contexts?: BuiltInContexts;
+}
+
+/** The "Built-in contexts" section of the list (owner, 2026-11-13). */
+export interface BuiltInContexts {
+  /** The Contexts the search matches; `CONTEXTS` order while browsing. */
+  rows: ContextRow[];
+  /** How many are on, whatever the search. */
+  onCount: number;
+  expanded: boolean;
+  setExpanded: (expanded: boolean) => void;
+  toggle: (row: ContextRow) => void;
+}
+
+export interface ContextRow {
+  context: ContextMeta;
+  /**
+   * In a chat, the catalog row the switch writes (a skill, or the
+   * `knowledge-bases` bundle); `null` when the catalog lists none. Unused on
+   * Home, where the switch is the Context's config key.
+   */
+  entry: SkillCatalogEntry | null;
+  checked: boolean;
+  /** In a chat, nothing in its catalog to switch. */
+  unavailable: boolean;
+  /** A Home write for this row is still in flight. */
+  busy: boolean;
+}
+
+/** What a person reads on a Context row, then its id: the matcher's fields. */
+function contextSearchFields(row: ContextRow): SearchField[] {
+  return [
+    [row.context.label, Weight.Name],
+    [row.context.id, Weight.Name],
+    [row.context.description, Weight.Prose],
+  ];
 }
 
 /**
@@ -132,6 +176,111 @@ export function useSkillPicker(sessionId: string | null, { open }: { open: boole
         ? SKILLS_COPY.noMatch
         : SKILLS_COPY.empty;
 
+  /**
+   * The shipped Contexts, each with its state (owner, 2026-11-13).
+   *
+   * - **In a chat** the switch is the per-chat override, `POST /skills/session`
+   *   through `setEnabled`, keyed by the skill's name or, for Knowledge, the
+   *   bundle's (`skillCatalogToggleKey`). Its state is the catalog's composed
+   *   `effective`, in which this chat's own choice beats Settings → Contexts in
+   *   both directions (`compose_state`).
+   * - **On Home** there is no chat to hold an override, so the switch writes the
+   *   Context's config key, exactly as Settings → Contexts does, and the scope
+   *   line already says "New chats". Its state is the machine-wide catalog's
+   *   answer, which also honours the key Knowledge inherits from `update-soul`.
+   *
+   * ⚠ Never part of `activeCount`, "Enable all" or the ranked `entries`: on
+   * Home those write `skills-config.json`, whose `disabled[]` would make
+   * `loadSkill` refuse a Context (see `contexts.ts`).
+   */
+  const { config, upsert } = useConfig();
+  const [homePending, setHomePending] = useState<ReadonlyMap<string, boolean>>(new Map());
+  // Home writes for the same key land in the order they were made.
+  const homeQueue = useRef<Promise<unknown>>(Promise.resolve());
+  const homeTokens = useRef(new Map<string, number>());
+  const catalogAnswered = catalog.generation > 0;
+
+  const contextRows = useMemo<ContextRow[]>(
+    () =>
+      catalog.contexts.map(({ context, entry }) => {
+        if (!sessionId) {
+          // Before the catalog answers, the key as Settings reads it: absent is on.
+          const stored = (config as Record<string, unknown> | undefined)?.[
+            contextConfigKey(context.id)
+          ];
+          return {
+            context,
+            entry: null,
+            checked:
+              homePending.get(context.id) ??
+              entry?.enabled ??
+              (typeof stored === 'boolean' ? stored : true),
+            unavailable: false,
+            busy: homePending.has(context.id),
+          };
+        }
+        return {
+          context,
+          entry,
+          checked: entry?.enabled ?? false,
+          unavailable: entry === null,
+          busy: false,
+        };
+      }),
+    [catalog.contexts, sessionId, homePending, config]
+  );
+
+  const toggleContext = useCallback(
+    (row: ContextRow) => {
+      const next = !row.checked;
+      if (sessionId) {
+        if (row.entry) void applyToggle([skillCatalogToggleKey(row.entry)], next);
+        return;
+      }
+      const id = row.context.id;
+      const token = (homeTokens.current.get(id) ?? 0) + 1;
+      homeTokens.current.set(id, token);
+      setHomePending((prev) => new Map(prev).set(id, next));
+      const run = async () => {
+        try {
+          await upsert(contextConfigKey(id), next, false);
+          // The catalog reads the key fresh on every view.
+          await reload();
+        } catch (error) {
+          toastService.error({
+            title: SKILLS_COPY.updateFailedTitle,
+            msg: SKILLS_COPY.updateFailed(
+              error instanceof Error ? error.message : 'the request failed.'
+            ),
+          });
+        } finally {
+          if (homeTokens.current.get(id) === token) {
+            setHomePending((prev) => {
+              const rest = new Map(prev);
+              rest.delete(id);
+              return rest;
+            });
+          }
+        }
+      };
+      const queued = homeQueue.current.then(run, run);
+      homeQueue.current = queued;
+    },
+    [applyToggle, reload, sessionId, upsert]
+  );
+
+  const matchingContexts = useMemo(
+    () =>
+      rankEntries(searchQuery, SKILL_NOISE, contextRows, contextSearchFields).hits.map(
+        (hit) => hit.entry
+      ),
+    [contextRows, searchQuery]
+  );
+  const [contextsExpanded, setContextsExpanded] = useBuiltInDisclosure(
+    open,
+    searchQuery.trim() !== '' && matchingContexts.length > 0
+  );
+
   return {
     sessionId,
     activeCount,
@@ -151,6 +300,18 @@ export function useSkillPicker(sessionId: string | null, { open }: { open: boole
           }
         : null,
     emptyText,
+    // In a chat, not before its catalog has answered: until then every row
+    // would read as missing.
+    contexts:
+      sessionId && !catalogAnswered
+        ? undefined
+        : {
+            rows: matchingContexts,
+            onCount: contextRows.filter((row) => row.checked).length,
+            expanded: contextsExpanded,
+            setExpanded: setContextsExpanded,
+            toggle: toggleContext,
+          },
   };
 }
 
@@ -162,6 +323,12 @@ export function SkillsPanel({
   picker: SkillPicker;
   inputRef?: React.Ref<HTMLInputElement>;
 }) {
+  const contexts = picker.contexts;
+  // Drawn while browsing, and under a search only when it matches a Context.
+  const showContexts = !!contexts && (picker.query.trim() === '' || contexts.rows.length > 0);
+  // A search that found only Contexts is not "No skills found".
+  const onlyContextsMatch =
+    showContexts && picker.query.trim() !== '' && picker.entries.length === 0;
   return (
     <PickerPanel
       data-testid="tools-skills-panel"
@@ -172,8 +339,32 @@ export function SkillsPanel({
       scopeLabel={picker.sessionId ? TOOLS_COPY.scope.thisChat : TOOLS_COPY.scope.newChats}
       scopeHelp={picker.sessionId ? SKILLS_COPY.helpChat : SKILLS_COPY.helpNewChats}
       bulk={picker.bulk}
-      emptyText={picker.emptyText}
+      emptyText={onlyContextsMatch ? null : picker.emptyText}
       inputRef={inputRef}
+      trailing={
+        showContexts ? (
+          <PickerDisclosure
+            data-testid="tools-builtin-contexts"
+            label={SKILLS_COPY.contextsLabel}
+            summary={SKILLS_COPY.contextsSummary(contexts.onCount)}
+            open={contexts.expanded}
+            onOpenChange={contexts.setExpanded}
+          >
+            {contexts.rows.map((row) => (
+              <PickerRow
+                key={row.context.id}
+                name={row.context.label}
+                checked={row.checked}
+                disabled={row.unavailable}
+                busy={row.busy}
+                onToggle={() => contexts.toggle(row)}
+                note={row.unavailable ? SKILLS_COPY.contextUnavailable : undefined}
+                description={row.context.description}
+              />
+            ))}
+          </PickerDisclosure>
+        ) : undefined
+      }
     >
       {picker.entries.map((entry) => (
         <SkillRow key={entry.key} entry={entry} onToggle={picker.toggle} />

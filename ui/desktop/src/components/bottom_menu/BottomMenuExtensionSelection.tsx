@@ -3,7 +3,12 @@ import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import BuiltInBadge from '../ui/BuiltInBadge';
 import { uiCopy } from '../ui/copy';
 import { FixedExtensionEntry, useConfig } from '../ConfigContext';
-import { isCapabilityExtension } from '../settings/capabilities/capabilities';
+import {
+  CAPABILITIES,
+  isCapabilityExtension,
+  type CapabilityMeta,
+} from '../settings/capabilities/capabilities';
+import { nameToKey } from '../settings/extensions/utils';
 import { toastService } from '../../toasts';
 import { isBuiltInExtension } from '../settings/extensions/subcomponents/ExtensionList';
 import { extensionDisplayName } from '../settings/extensions/extensionDisplayName';
@@ -19,9 +24,32 @@ import {
   type SessionToolEventDetail,
 } from '../../utils/sessionToolEvents';
 import { EXTENSIONS_COPY, TOOLS_COPY } from './copy';
-import { PickerPanel, PickerRow } from './PickerPanel';
+import { PickerDisclosure, PickerPanel, PickerRow, useBuiltInDisclosure } from './PickerPanel';
 
 const NO_EXTENSIONS: ExtensionConfig[] = [];
+
+/**
+ * The shipped capabilities a chat may switch on its own, in Settings order.
+ *
+ * Two are left out, because a per-chat switch would not hold:
+ *
+ * - **Workspace Control** (`workspace`). In Completely Autonomous mode the agent
+ *   puts it back on every turn it may delegate (`Agent::ensure_spawn_extension`,
+ *   an auto-injected copy holding the subagent tool and its supervision tools),
+ *   and that copy is never saved, so the chat's saved list would read off while
+ *   the agent kept delegating.
+ * - **Crew** (`crew`). A chat connected with `/crew`, and a Crew task, get these
+ *   tools from their grant (`grant_session` and `configure_run_agent` in
+ *   `routes/crew.rs`), and only Revoke ends that access. Removing the tools from
+ *   one chat left the grant standing (NOVICE-BASELINE F3), which is why the row
+ *   left this list in the first place.
+ *
+ * Both stay switchable in Settings → Chat → Capabilities, as defaults.
+ */
+const NOT_SWITCHABLE_PER_CHAT: ReadonlySet<string> = new Set(['workspace', 'crew']);
+const PER_CHAT_CAPABILITIES: readonly CapabilityMeta[] = CAPABILITIES.filter(
+  (capability) => !NOT_SWITCHABLE_PER_CHAT.has(capability.key)
+);
 
 /** What the extensions list needs from its picker state (see `useExtensionPicker`). */
 export interface ExtensionPicker {
@@ -48,6 +76,35 @@ export interface ExtensionPicker {
   rows: ExtensionRow[];
   toggle: (ext: FixedExtensionEntry, next?: boolean) => void;
   bulk: { label: string; onClick: () => void; disabled: boolean } | null;
+  /**
+   * The shipped capabilities, switched for this chat behind a disclosure after
+   * the person's own rows. Optional so a picker built by hand (a test, a stub)
+   * need not describe them; absent means the section is not drawn.
+   */
+  builtIns?: BuiltInCapabilities;
+}
+
+/** The "Built-in capabilities" section of the list (owner, 2026-11-13). */
+export interface BuiltInCapabilities {
+  /** The capabilities the search matches, in `CAPABILITIES` order. */
+  rows: BuiltInCapabilityRow[];
+  /** How many are on for this chat (on Home, for the next chat), whatever the search. */
+  onCount: number;
+  expanded: boolean;
+  setExpanded: (expanded: boolean) => void;
+}
+
+export interface BuiltInCapabilityRow {
+  capability: CapabilityMeta;
+  /**
+   * The configuration's entry, carrying this chat's state as `enabled`: what
+   * `toggle` adds or removes. Absent when the daemon lists no entry for the
+   * capability, so there is nothing to add from.
+   */
+  ext?: FixedExtensionEntry;
+  checked: boolean;
+  disabled: boolean;
+  pending: boolean;
 }
 
 export interface ExtensionRow {
@@ -302,9 +359,9 @@ export function useExtensionPicker(
   const extensionsList = useMemo(() => {
     const hubOverrides = getExtensionOverrides();
 
-    // Shipped capabilities are managed in Settings → Chat → Capabilities, not
-    // overridden per conversation. The chat menu contains only user-installed
-    // extensions.
+    // Shipped capabilities are not among these rows: they have their own
+    // section after them (`builtInRows`), which never joins the bulk action or
+    // the chip's count.
     const togglable = allExtensions.filter((ext) => !isCapabilityExtension(ext));
 
     if (isHubView) {
@@ -406,9 +463,10 @@ export function useExtensionPicker(
   const activeCount = useMemo(() => {
     const hubOverrides = getExtensionOverrides();
 
-    // ⚠ SHIPPED CAPABILITIES DO NOT COUNT. They come with the app, they are
-    // managed in Settings → Chat → Capabilities rather than here, and every
-    // chat has them — so counting them makes the chip a constant with a small
+    // ⚠ SHIPPED CAPABILITIES DO NOT COUNT. They come with the app, their
+    // defaults live in Settings → Chat → Capabilities (a chat switches them in
+    // the list's own "Built-in capabilities" section), and nearly every chat
+    // has them, so counting them makes the chip a constant with a small
     // number added, which is not what a reader takes it to mean. The number is
     // "extensions I added", and the exclusion uses `isCapabilityExtension`, the
     // same predicate the menu already filters its own contents by, so the chip
@@ -524,6 +582,84 @@ export function useExtensionPicker(
     adoptSessionExtensions,
   ]);
 
+  /**
+   * The built-in capabilities, each with this chat's state.
+   *
+   * A row is on when the chat holds the capability, matched through `nameToKey`
+   * (the daemon sends `Workspace`, the registry says `workspace`). Before the
+   * chat's read lands, or after it failed, the configuration stands in, the
+   * fallback `activeCount` and the daemon both use. A toggle goes through
+   * `handleToggle`, the user extensions' own chain, so it is serialised,
+   * pending and refetched the same way, and a removal is saved with the chat
+   * (`persist_extension_state`). On Home it writes the override the next chat
+   * is created with, as a user extension's does.
+   *
+   * ⚠ Never part of `activeCount` or of the bulk action: those are about the
+   * extensions the person added, and "Disable all" must not strip the shell
+   * from a chat.
+   */
+  const builtInRows = useMemo<BuiltInCapabilityRow[]>(() => {
+    const hubOverrides = getExtensionOverrides();
+    const entries = new Map(allExtensions.map((ext) => [nameToKey(ext.name), ext]));
+    const held = new Set(sessionExtensions.map((ext) => nameToKey(ext.name)));
+    return PER_CHAT_CAPABILITIES.map((capability) => {
+      const entry = entries.get(capability.key);
+      if (!entry) {
+        // Nothing to add from; in a chat the read still says whether it is held.
+        return {
+          capability,
+          checked: !isHubView && sessionExtensionsLoaded && held.has(capability.key),
+          disabled: true,
+          pending: false,
+        };
+      }
+      const checked = isHubView
+        ? hubOverrides.has(entry.name)
+          ? hubOverrides.get(entry.name)!
+          : entry.enabled
+        : sessionOverrides.has(entry.name)
+          ? sessionOverrides.get(entry.name)!
+          : sessionExtensionsLoaded
+            ? held.has(capability.key)
+            : entry.enabled;
+      return {
+        capability,
+        ext: { ...entry, enabled: checked } as FixedExtensionEntry,
+        checked,
+        disabled: bulkInFlight,
+        pending: pendingExtensionNames.has(entry.name),
+      };
+    });
+    // hubUpdateTrigger re-reads the hub override map, which mutates in place.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    allExtensions,
+    sessionExtensions,
+    sessionExtensionsLoaded,
+    sessionOverrides,
+    pendingExtensionNames,
+    bulkInFlight,
+    isHubView,
+    hubUpdateTrigger,
+  ]);
+
+  // The same substring test as the person's own rows: the name, the key, the description.
+  const matchingBuiltIns = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return builtInRows;
+    return builtInRows.filter(
+      ({ capability }) =>
+        capability.label.toLowerCase().includes(query) ||
+        capability.key.toLowerCase().includes(query) ||
+        capability.description.toLowerCase().includes(query)
+    );
+  }, [builtInRows, searchQuery]);
+
+  const [builtInsExpanded, setBuiltInsExpanded] = useBuiltInDisclosure(
+    isOpen,
+    searchQuery.trim() !== '' && matchingBuiltIns.length > 0
+  );
+
   const rows = useMemo<ExtensionRow[]>(
     () =>
       sortedExtensions.map((ext) => {
@@ -568,6 +704,12 @@ export function useExtensionPicker(
     rows,
     toggle: handleToggle,
     bulk,
+    builtIns: {
+      rows: matchingBuiltIns,
+      onCount: builtInRows.filter((row) => row.checked).length,
+      expanded: builtInsExpanded,
+      setExpanded: setBuiltInsExpanded,
+    },
   };
 }
 
@@ -610,6 +752,11 @@ export function ExtensionsPanel({
   picker: ExtensionPicker;
   inputRef?: React.Ref<HTMLInputElement>;
 }) {
+  const builtIns = picker.builtIns;
+  // Drawn while browsing, and under a search only when it matches a built-in.
+  const showBuiltIns = !!builtIns && (picker.query.trim() === '' || builtIns.rows.length > 0);
+  // A search that found only built-in rows is not "No extensions found".
+  const onlyBuiltInsMatch = showBuiltIns && picker.query.trim() !== '' && picker.rows.length === 0;
   return (
     <PickerPanel
       data-testid="tools-extensions-panel"
@@ -620,9 +767,33 @@ export function ExtensionsPanel({
       scopeLabel={picker.isHubView ? TOOLS_COPY.scope.nextChat : TOOLS_COPY.scope.thisChat}
       scopeHelp={picker.isHubView ? EXTENSIONS_COPY.helpNextChat : EXTENSIONS_COPY.helpChat}
       bulk={picker.bulk}
-      emptyText={extensionsEmptyText(picker)}
+      emptyText={onlyBuiltInsMatch ? null : extensionsEmptyText(picker)}
       emptyHelp={extensionsEmptyHelp(picker)}
       inputRef={inputRef}
+      trailing={
+        showBuiltIns ? (
+          <PickerDisclosure
+            data-testid="tools-builtin-capabilities"
+            label={EXTENSIONS_COPY.builtInsLabel}
+            summary={EXTENSIONS_COPY.builtInsSummary(builtIns.onCount)}
+            open={builtIns.expanded}
+            onOpenChange={builtIns.setExpanded}
+          >
+            {builtIns.rows.map(({ capability, ext, checked, disabled, pending }) => (
+              <PickerRow
+                key={capability.key}
+                name={capability.label}
+                checked={checked}
+                disabled={disabled}
+                busy={pending}
+                onToggle={() => ext && picker.toggle(ext, !checked)}
+                note={ext ? undefined : EXTENSIONS_COPY.builtInUnavailable}
+                description={capability.description}
+              />
+            ))}
+          </PickerDisclosure>
+        ) : undefined
+      }
     >
       {picker.rows.map(({ ext, title, pairingRefused, disabled, pending }) => (
         <PickerRow

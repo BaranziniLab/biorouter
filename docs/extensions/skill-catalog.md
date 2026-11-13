@@ -79,23 +79,32 @@ from a chat would change every other conversation.
 from the machine-wide answer, not a copy of it, so a machine-wide change still
 reaches a chat that has no opinion about that skill.
 
-Precedence, most specific first — one function, `compose_state`, and both the
-model's filter and the interface's switch read it:
+Precedence, most specific first. One function, `compose_state`, holds it, and
+both the model's filter and the interface's switch read it:
 
-1. a Context switched off in Settings → Contexts hides the skill **before**
-   anything below is consulted, so a per-chat grant cannot put back something
-   the user turned off in Settings (it stays loadable by exact name; see
-   [built-in/skills.md](built-in/skills.md)). ⚠ A Context id may name a
-   **bundle** — `knowledge-bases` covers the four knowledge-format skills plus
-   `update-soul` — so this step tests a skill's bundle as well as its own name,
-   exactly as step 6 does
-2. the session `add` list names the skill
-3. the session `remove` list names the skill
-4. the session `add` list names the skill's **bundle**
-5. the session `remove` list names the skill's bundle
-6. `skills-config.json` names the skill or its bundle
+1. the session `add` list names the skill
+2. the session `remove` list names the skill
+3. the session `add` list names the skill's **bundle**
+4. the session `remove` list names the skill's bundle
+5. `skills-config.json` names the skill or its bundle
+6. a Context switched off in Settings → Contexts is off. ⚠ A Context id may
+   name a **bundle**: `knowledge-bases` covers the four knowledge-format skills
+   plus `update-soul`, so this step tests a skill's bundle as well as its own
+   name, exactly as step 5 does
 
-⚠ Steps 4 and 5 are why a per-chat bundle toggle persists the **bundle's** name
+Steps 5 and 6 are the machine-wide answer, and they decide only a chat with no
+opinion of its own. So a Context follows the same rule as every other skill: a
+per-chat `add` turns on a Context switched off in Settings, in that chat only,
+and a per-chat `remove` turns off one that Settings has on (owner ruling,
+2026-11-13). The composer's Skills list offers these switches under **Built-in
+contexts**. Before that ruling the Settings switch was tested first, so a
+per-chat grant could not put a Context back, and the per-chat switch moved
+without changing anything. A Context switched off in Settings stays loadable by
+exact name either way (see [built-in/skills.md](built-in/skills.md)); one a chat
+switched off is refused to that chat's `loadSkill`, like any skill a chat
+switched off.
+
+⚠ Steps 3 and 4 are why a per-chat bundle toggle persists the **bundle's** name
 rather than expanding its members at click time: a bundle that later gains a
 skill stays covered, where an expanded list would silently stop covering it.
 
@@ -290,9 +299,10 @@ and is asked for by `skills/SkillsView.tsx` alone.
    "removed"` means this chat, and `sessionViaBundle: true` means the chat
    turned off the bundle rather than the skill.
 4. `hiddenContext: true` means Settings → Contexts, and the skill is still
-   loadable by exact name — that asymmetry is intentional. For a bundle member
-   the switch is the **bundle's**: `knowledge-bases` is one Context row over
-   five skills.
+   loadable by exact name. That asymmetry is intentional. It decides
+   `effective` only while `session` is `"default"`: a chat that added the
+   Context has it on whatever Settings says. For a bundle member the switch is
+   the **bundle's**: `knowledge-bases` is one Context row over five skills.
 5. `builtin: true` — on a skill row or a bundle row — means Biorouter seeded it,
    so no surface offers a Delete, and `skill_package::remove` **and `install`**
    both refuse that name under Biorouter's own skills root. It is restored on

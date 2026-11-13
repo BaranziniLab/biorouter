@@ -15,7 +15,9 @@ Skills are read from `.agents/skills/` in your project directory and `~/.config/
 Settings → Chat → Contexts includes Word documents (`office-word`), PowerPoint
 (`office-powerpoint`), Excel spreadsheets (`office-excel`), and PDF documents
 (`office-pdf`). They ship in the binary and are restored at startup. They do not
-require installing a vendor skill package or the BiorOffice extension.
+require installing a vendor skill package or the BiorOffice extension. Those
+switches set the default; one chat can differ from it, through **Built-in
+contexts** in the composer's Skills list, in either direction.
 
 The session prompt contains a short format-to-context routing hint, not the four
 instruction bodies. For a relevant request the agent calls `skills__loadSkill`

@@ -67,7 +67,16 @@ export const EXTENSIONS_COPY = {
   /** What the empty line's InfoTip is about: its name reads "About built-in capabilities". */
   emptyHelpAbout: 'built-in capabilities',
   /** The empty line's InfoTip, in a chat and on Home alike. */
-  emptyHelp: 'Built-in capabilities are always on; manage them in Settings.',
+  emptyHelp: 'Built-in capabilities stay on until you switch them off, below or in Settings.',
+  /**
+   * The disclosure after the person's own rows (owner, 2026-11-13): the shipped
+   * capabilities, switched for this chat (or the next one, on Home).
+   */
+  builtInsLabel: 'Built-in capabilities',
+  /** Beside the label: how many are on for this chat. */
+  builtInsSummary: (n: number) => `${n} on`,
+  /** A capability the daemon lists no entry for, so there is nothing to add. */
+  builtInUnavailable: 'Not available in this app',
   /** The list while this chat's extensions have not answered yet (A-6). */
   loading: 'Loading extensions…',
   /** The list when this chat's extensions could not be read (A-6). */
@@ -93,10 +102,20 @@ export const SKILLS_COPY = {
   enableAll: (n: number) => `Enable all (${n})`,
   disableAll: (n: number) => `Disable all (${n})`,
   loading: 'Loading skills…',
-  empty: 'No skills available',
+  /** The installed list is empty; the shipped Contexts are below it, not counted here. */
+  empty: 'No skills installed',
   noMatch: 'No skills found',
   bundleCount: (n: number) => count(n, 'skill', 'skills'),
   bundleMembers: (names: string[]) => `Includes ${names.join(', ')}`,
+  /**
+   * The disclosure after the installed skills (owner, 2026-11-13): the shipped
+   * Contexts, switched for this chat, or on Home as Settings → Contexts does.
+   */
+  contextsLabel: 'Built-in contexts',
+  /** Beside the label: how many are on. */
+  contextsSummary: (n: number) => `${n} on`,
+  /** A Context the chat's catalog does not list, so a switch would name nothing. */
+  contextUnavailable: 'Not available in this app',
   updateFailedTitle: 'Skill update failed',
   updateFailed: (reason: string) => `The change was not saved: ${reason}`,
 } as const;

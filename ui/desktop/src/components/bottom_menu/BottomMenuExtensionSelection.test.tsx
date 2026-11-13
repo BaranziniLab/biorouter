@@ -11,6 +11,7 @@ import {
 import { EXTENSIONS_COPY, TOOLS_COPY } from './copy';
 import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
 import { toastService } from '../../toasts';
+import { CAPABILITIES } from '../settings/capabilities/capabilities';
 
 /**
  * The extensions list as the Tools chip holds it (spec 3.7): the hook lives for
@@ -804,6 +805,184 @@ describe('BottomMenuExtensionSelection', () => {
       expect(order.indexOf('Playwright Agent')).toBeLessThan(order.indexOf('Playwrightaardvark'));
     });
   });
+
+  /**
+   * Owner, 2026-11-13: a person switches each shipped capability on or off for
+   * ONE chat from here, behind a "Built-in capabilities" disclosure after their
+   * own extensions. The fixture's four capabilities (two on in the config, two
+   * off) are the ones with entries to add from; every other capability has none
+   * and is listed disabled with its reason.
+   */
+  describe('built-in capabilities, switched per chat', () => {
+    const disclosure = () => screen.getByRole('button', { name: EXTENSIONS_COPY.builtInsLabel });
+    const perChatLabels = CAPABILITIES.filter(
+      (capability) => capability.key !== 'workspace' && capability.key !== 'crew'
+    ).map((capability) => capability.label);
+
+    function holds(...names: string[]) {
+      mocks.getSessionExtensions.mockResolvedValue({
+        data: {
+          extensions: names.map((name) => ({
+            type: name === 'example' || name === 'notetaker' ? 'stdio' : 'platform',
+            name,
+          })),
+        },
+      } as never);
+    }
+
+    it('keeps them out of the list until the disclosure is opened, then lists them in Settings order', async () => {
+      holds('autovisualiser', 'code_execution', 'example');
+      render(<BottomMenuExtensionSelection sessionId="session-1" />);
+      toggleList();
+
+      // Closed: the person's own three rows, and a trigger that says how many are on.
+      await waitFor(() => expect(screen.getAllByRole('option')).toHaveLength(3));
+      expect(screen.queryByRole('option', { name: 'Auto Visualiser' })).toBeNull();
+      await waitFor(() =>
+        expect(disclosure()).toHaveAccessibleDescription(EXTENSIONS_COPY.builtInsSummary(2))
+      );
+      expect(disclosure()).toHaveAttribute('aria-expanded', 'false');
+
+      fireEvent.click(disclosure());
+      expect(disclosure()).toHaveAttribute('aria-expanded', 'true');
+      const group = screen.getByRole('group', { name: EXTENSIONS_COPY.builtInsLabel });
+      const rows = Array.from(group.querySelectorAll('[role="option"]'));
+      expect(rows.map((row) => row.querySelector('.br-picker-row__name')?.textContent)).toEqual(
+        perChatLabels
+      );
+      // Workspace Control and Crew do not hold a per-chat switch, so they have no row.
+      expect(perChatLabels).not.toContain('Workspace Control');
+      expect(perChatLabels).not.toContain('Crew');
+      expect(screen.getByRole('option', { name: 'Auto Visualiser' })).toHaveAttribute(
+        'aria-selected',
+        'true'
+      );
+      expect(screen.getByRole('option', { name: 'Chat Recall' })).toHaveAttribute(
+        'aria-selected',
+        'false'
+      );
+      // Each row says what the capability does, as Settings does.
+      expect(screen.getByRole('option', { name: 'Chat Recall' })).toHaveAttribute(
+        'aria-description',
+        CAPABILITIES.find((capability) => capability.key === 'chatrecall')!.description
+      );
+    });
+
+    it('adds and removes one for this chat through the chat’s own extension routes', async () => {
+      holds('autovisualiser', 'example');
+      render(<BottomMenuExtensionSelection sessionId="session-1" />);
+      toggleList();
+      await waitFor(() => expect(disclosure()).toBeInTheDocument());
+      fireEvent.click(disclosure());
+
+      const recall = await screen.findByRole('option', { name: 'Chat Recall' });
+      fireEvent.click(recall);
+      await waitFor(() => expect(mocks.addToAgent).toHaveBeenCalledTimes(1));
+      expect(mocks.addToAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'chatrecall' }),
+        'session-1',
+        true
+      );
+
+      await waitFor(() =>
+        expect(screen.getByRole('option', { name: 'Auto Visualiser' })).toHaveAttribute(
+          'aria-selected',
+          'true'
+        )
+      );
+      fireEvent.click(screen.getByRole('option', { name: 'Auto Visualiser' }));
+      await waitFor(() =>
+        expect(mocks.removeFromAgent).toHaveBeenCalledWith('autovisualiser', 'session-1', true)
+      );
+      // Neither joined the chip, which counts what the person added.
+      expect(screen.getByLabelText('Manage extensions (1 added)')).toBeInTheDocument();
+    });
+
+    it('on Home, writes the next chat’s override and calls no chat', async () => {
+      render(<BottomMenuExtensionSelection sessionId={null} />);
+      toggleList();
+      fireEvent.click(await screen.findByRole('button', { name: EXTENSIONS_COPY.builtInsLabel }));
+
+      const recall = await screen.findByRole('option', { name: 'Chat Recall' });
+      expect(recall).toHaveAttribute('aria-selected', 'false');
+      fireEvent.click(recall);
+      await waitFor(() => expect(recall).toHaveAttribute('aria-selected', 'true'));
+      expect(mocks.overrides.get('chatrecall')).toBe(true);
+      expect(mocks.addToAgent).not.toHaveBeenCalled();
+      // The Home chip still counts the person's own: Spoke and Notetaker.
+      expect(screen.getByLabelText('Manage extensions (2 added)')).toBeInTheDocument();
+    });
+
+    it('never joins Disable all, which reaches only the person’s own extensions', async () => {
+      holds('autovisualiser', 'code_execution', 'example', 'notetaker');
+      render(<BottomMenuExtensionSelection sessionId="session-1" />);
+      toggleList();
+      await waitFor(() =>
+        expect(screen.getByLabelText('Manage extensions (2 added)')).toBeInTheDocument()
+      );
+      fireEvent.click(disclosure());
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Disable all (2)' }));
+      await waitFor(() => expect(mocks.removeFromAgent).toHaveBeenCalledTimes(2));
+      const removed = mocks.removeFromAgent.mock.calls.map((call) => (call as unknown[])[0]);
+      expect(removed.sort()).toEqual(['example', 'notetaker']);
+    });
+
+    it('lists a capability with no entry to add from as unavailable, and says why', async () => {
+      render(<BottomMenuExtensionSelection sessionId="session-1" />);
+      toggleList();
+      await waitFor(() => expect(disclosure()).toBeInTheDocument());
+      fireEvent.click(disclosure());
+
+      const developer = await screen.findByRole('option', {
+        name: `Developer ${EXTENSIONS_COPY.builtInUnavailable}`,
+      });
+      expect(developer).toHaveAttribute('aria-disabled', 'true');
+      fireEvent.click(developer);
+      expect(mocks.addToAgent).not.toHaveBeenCalled();
+    });
+
+    it('puts its rows in the field’s arrow keys once open, so Enter switches one', async () => {
+      holds('example');
+      render(<BottomMenuExtensionSelection sessionId="session-1" />);
+      toggleList();
+      const field = await screen.findByPlaceholderText(EXTENSIONS_COPY.search);
+      await waitFor(() => expect(disclosure()).toBeInTheDocument());
+      fireEvent.click(disclosure());
+      field.focus();
+
+      // End: the last row that can be switched. Rows with nothing to add from are
+      // disabled, so the highlight passes them by: here that is Chat Recall.
+      fireEvent.keyDown(field, { key: 'End' });
+      const recall = screen.getByRole('option', { name: 'Chat Recall' });
+      await waitFor(() => expect(field).toHaveAttribute('aria-activedescendant', recall.id));
+      fireEvent.keyDown(field, { key: 'Enter' });
+      await waitFor(() =>
+        expect(mocks.addToAgent).toHaveBeenCalledWith(
+          expect.objectContaining({ name: 'chatrecall' }),
+          'session-1',
+          true
+        )
+      );
+      expect(field).toHaveFocus();
+    });
+
+    it('opens itself for a search that matches one, and hides itself for one that does not', async () => {
+      render(<BottomMenuExtensionSelection sessionId="session-1" />);
+      toggleList();
+      const field = await screen.findByPlaceholderText(EXTENSIONS_COPY.search);
+
+      fireEvent.change(field, { target: { value: 'chat recall' } });
+      expect(await screen.findByRole('option', { name: 'Chat Recall' })).toBeInTheDocument();
+      expect(screen.getAllByRole('option')).toHaveLength(1);
+      // Found, so not "No extensions found".
+      expect(screen.queryByText(EXTENSIONS_COPY.noMatch)).toBeNull();
+
+      fireEvent.change(field, { target: { value: 'zzz' } });
+      expect(screen.getByText(EXTENSIONS_COPY.noMatch)).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: EXTENSIONS_COPY.builtInsLabel })).toBeNull();
+    });
+  });
 });
 
 /** A-6: an empty list says why it is empty, and only a real answer says "none". */
@@ -830,7 +1009,7 @@ describe('extensionsEmptyText', () => {
     // The second sentence is the InfoTip beside that line (design.md 9.16), word for word.
     expect(extensionsEmptyHelp(picker)).toEqual({
       about: 'built-in capabilities',
-      text: 'Built-in capabilities are always on; manage them in Settings.',
+      text: 'Built-in capabilities stay on until you switch them off, below or in Settings.',
     });
   });
   it('speaks of the next chat on Home, where the list is the next chat’s', () => {
@@ -838,7 +1017,7 @@ describe('extensionsEmptyText', () => {
     expect(extensionsEmptyText(picker)).toBe('No extensions added for the next chat.');
     expect(extensionsEmptyHelp(picker)).toEqual({
       about: 'built-in capabilities',
-      text: 'Built-in capabilities are always on; manage them in Settings.',
+      text: 'Built-in capabilities stay on until you switch them off, below or in Settings.',
     });
   });
   it('never calls an empty list unavailable', () => {
@@ -870,11 +1049,11 @@ describe('extensionsEmptyText', () => {
     expect(screen.getByText('No extensions added to this chat.')).toBeVisible();
     const tip = screen.getByRole('button', { name: 'About built-in capabilities' });
     expect(tip).toHaveAccessibleDescription(
-      'Built-in capabilities are always on; manage them in Settings.'
+      'Built-in capabilities stay on until you switch them off, below or in Settings.'
     );
     // The help is not a visible paragraph: only the tip's hidden description holds it.
     expect(
-      screen.queryByText(/^Built-in capabilities are always on/, { selector: ':not(.sr-only)' })
+      screen.queryByText(/^Built-in capabilities stay on/, { selector: ':not(.sr-only)' })
     ).toBeNull();
   });
 

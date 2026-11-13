@@ -51,7 +51,12 @@ import type { CatalogBundle, CatalogSkill, CatalogView, SkillRoot } from '../../
 import { refreshSkillCatalog, setSessionSkills, skillCatalogHandler } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
-import { isContextBundle, isContextSkill } from '../settings/contexts/contexts';
+import {
+  CONTEXTS,
+  isContextBundle,
+  isContextSkill,
+  type ContextMeta,
+} from '../settings/contexts/contexts';
 import {
   loadSkillOverrides,
   saveSkillOverrides,
@@ -65,6 +70,16 @@ export type SkillMutationResult = { ok: true } | { ok: false; error: string };
 export type SkillCatalogEntry =
   | { kind: 'single'; key: string; skill: CatalogSkill; enabled: boolean }
   | { kind: 'bundle'; key: string; bundle: CatalogBundle; enabled: boolean };
+
+/**
+ * One shipped Context, with the catalog row a per-chat switch writes: a single
+ * skill, or for `knowledge-bases` the bundle. `entry` is `null` when the catalog
+ * lists no such skill or bundle, so a switch would name nothing.
+ */
+export interface ContextCatalogEntry {
+  context: ContextMeta;
+  entry: SkillCatalogEntry | null;
+}
 
 /** Physical row identity. Bundle names are only logical toggle identities. */
 export function bundleCatalogEntryKey(bundle: CatalogBundle): string {
@@ -91,6 +106,18 @@ export interface SkillCatalogState {
    */
   bundles: CatalogBundle[];
   roots: SkillRoot[];
+  /**
+   * The shipped Contexts in `CONTEXTS` order, each with its catalog row and
+   * the composed `effective` state for this chat (owner, 2026-11-13: a chat
+   * switches a Context in both directions).
+   *
+   * ⚠ For their own per-chat section only. A Context must never reach a bulk
+   * action or a machine-wide write: on Home `setEnabled` writes
+   * `skills-config.json`, whose `disabled[]` makes `loadSkill` refuse a skill
+   * outright (see `contexts.ts`). On Home a Context is the config key
+   * `contextConfigKey(id)`, as Settings → Contexts writes it.
+   */
+  contexts: ContextCatalogEntry[];
   /** Bumped by the daemon on every rescan. */
   generation: number;
   loading: boolean;
@@ -335,11 +362,41 @@ export function useSkillCatalog(sessionId: string | null): SkillCatalogState {
     return [...bundles, ...singles];
   }, [view]);
 
+  // From the UNFILTERED view: these are exactly the rows `entries` leaves out.
+  const contexts = useMemo(
+    (): ContextCatalogEntry[] =>
+      CONTEXTS.map((context) => {
+        const bundle = view.bundles.find((candidate) => candidate.name === context.id);
+        if (bundle) {
+          return {
+            context,
+            entry: {
+              kind: 'bundle',
+              key: bundleCatalogEntryKey(bundle),
+              bundle,
+              enabled: bundle.state.effective,
+            },
+          };
+        }
+        const skill = view.skills.find(
+          (candidate) => candidate.name === context.id && !candidate.bundle
+        );
+        return {
+          context,
+          entry: skill
+            ? { kind: 'single', key: skill.name, skill, enabled: skill.state.effective }
+            : null,
+        };
+      }),
+    [view]
+  );
+
   return {
     entries,
     skills: view.skills,
     bundles: pickerBundles(view),
     roots: view.roots,
+    contexts,
     generation: view.generation,
     loading,
     error,
