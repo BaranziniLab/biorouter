@@ -41,14 +41,34 @@ cd ui/desktop && npm run test:run               # Run frontend unit tests (Vites
 cd ui/desktop && npm run test-e2e               # Run Playwright E2E tests
 ```
 
-**What CI runs.** `rust.yml`'s `test` job runs `--lib --bins` on all three OSes and, on
-ubuntu only, every `tests/*.rs` integration binary **except** the exclusion table inside its
-`cargo test (integration binaries, no network)` step. That step runs in a loopback-only network
-namespace and never passes `--ignored`. So a new integration binary is covered the day it lands,
-and a test that reaches the network fails there rather than passing while the third party is up.
-If a binary genuinely cannot run offline, put its live tests behind `#[ignore]`, or give the binary
-a line in that table saying why. Before 2026-09, `rust.yml` ran only the sandbox's integration
-target, so a green run said nothing about the rest of `tests/`.
+**What CI runs.** Full table, timings and the reasons:
+[`docs/testing/continuous-integration.md`](docs/testing/continuous-integration.md).
+- **Every pull request** runs the whole workspace on ubuntu, split across jobs that run at once:
+  `lib tests (ubuntu)` (`cargo test --workspace --lib`) and three `integration (ubuntu, N/3)`
+  shards (the bin targets, Ollama, sandbox, and every `tests/*.rs` binary **except** the
+  exclusion table inside the `cargo test (integration binaries, no network)` step; shard 3 also
+  checks the `serve` browser contract and the generated API contract). That step runs in a
+  loopback-only network namespace and never passes `--ignored`, so a new integration binary is
+  covered the day it lands and a test that reaches the network fails there rather than passing
+  while the third party is up. If a binary genuinely cannot run offline, put its live tests behind
+  `#[ignore]`, or give it a line in that table saying why. The windows-gnu `cross-check`, its
+  hostname-call clippy gate and the socket gate run on every pull request too.
+- **macOS and Windows** run only their OS-specific subset on a pull request (the sandbox suites;
+  on Windows also the console-window test), unless the change touches code specific to that OS,
+  which `scripts/ci/choose-os-suite.sh` decides from the diff (a `cfg` for the OS in a changed
+  hunk, a path naming it, and on Windows the dependency set), or the pull request carries the
+  `ci:full` label (add it, then push). The full macOS and Windows suites run on every push to
+  `main`, nightly and on dispatch. So a pull request that changes, say, a Windows-only branch deep
+  inside a shared file without its `cfg` in view can still pass and turn `main` red; read `main`'s
+  run after a merge.
+- **Required checks** are gate jobs that fail unless every job they name passed:
+  `test (ubuntu-latest)` (guards, cross-check, socket gate, lib tests, the three shards) and
+  `Unit tests (vitest)` (three vitest shards, `Static checks`, `Registry generator`), plus
+  `test (macos-latest)`, `test (windows-latest)` and `no-ai-coauthor`. Those five names are what
+  branch protection requires: renaming one blocks every merge.
+- Before 2026-09, `rust.yml` ran only the sandbox's integration target, so a green run said
+  nothing about the rest of `tests/`; before 2026-11-13, one `test` job per OS ran everything in
+  sequence and a pull request took 60 to 90 minutes.
 
 ### Code Quality
 
@@ -2151,14 +2171,15 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   its own address (`proxyPrefix`). Don't reintroduce a root-absolute `/apps/{id}/` in any of them.
 - **Tests:** `cargo test -p biorouter-server --lib -- routes::web_ui routes::shell` (the `--`
   is required: cargo takes one filter before it and rejects a second with a usage error),
-  `cargo test -p biorouter-cli --lib commands::serve`, the `serve` job in
-  `.github/workflows/rust.yml`, and `smoke_serve` in
+  `cargo test -p biorouter-cli --lib commands::serve`, the serve steps of `rust.yml`'s
+  `integration (ubuntu, 3/3)` job, and `smoke_serve` in
   `scripts/smoke-test-release-artifacts.sh`. The lifecycle has its own binary,
   `cargo test -p biorouter-cli --test serve_lifecycle`, which runs the real `serve` and
   signals it by pid; ⚠ it needs a `biorouterd` from the same tree beside `biorouter`, which
   `cargo test -p biorouter-cli` does not build — run `cargo build -p biorouter-cli -p
-  biorouter-server` first. CI runs it in the `serve` job, because the workspace test job is
-  `--lib --bins` and never runs an integration binary.
+  biorouter-server` first. CI runs it with the other integration binaries, in whichever
+  `integration (ubuntu, N/3)` shard the round-robin deals it to; a workspace-wide `cargo test`
+  builds `biorouterd` for `biorouter-server`'s own integration tests.
 
 ### Crew (lab workspaces on a shared server)
 

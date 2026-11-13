@@ -12,6 +12,7 @@ subsystem it exercises, and the crate-level commands are in
 | Document | What it covers |
 |---|---|
 | [Verifying Biorouter Copilot on Windows](windows-computer-use-verification.md) | The procedure for the one check continuous integration structurally cannot run — Windows Biorouter Copilot needs a signed-in interactive desktop session, which a hosted runner has not got — plus the measurements already taken, so a reader does not re-derive them. |
+| [Continuous integration: what runs when](continuous-integration.md) | Which GitHub Actions checks run on a pull request, after a merge to `main`, nightly and on a release; the measured cost of each job; why macOS and Windows run a subset on a pull request and what sends one to the full suite; the gate jobs behind the required check names; and where every check that left the pull request set runs now. |
 | [Process-global state in the Rust workspace](process-global-state.md) | The audit of every process-global value the crates read and write — environment variables, `Paths::*`, statics frozen at first read, mutable registries — plus the ledger of unlocked readers, the two non-interchangeable remedies, and the recipes to re-measure it all. |
 
 ## Related documentation
