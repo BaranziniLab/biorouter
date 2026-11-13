@@ -311,6 +311,18 @@ export function FolderAccessDetails({ preview }: { preview: FolderAccessPreview 
   );
 }
 
+/**
+ * The folder-access card's helper text, behind the info icon beside its question: what
+ * the grant covers and how long a session grant lasts. Kept to two sentences.
+ */
+export function folderAccessHelp(preview: { access: string; onceDescendants?: boolean }): string {
+  const access = preview.access.charAt(0).toUpperCase() + preview.access.slice(1);
+  const once = preview.onceDescendants
+    ? 'Allow once covers this folder and its subfolders for this operation only.'
+    : 'Allow once covers only the files in this operation.';
+  return `${access} access, including subfolders. ${once} ${folderAccessLifetime()}`;
+}
+
 /** Render whatever the backend resolved this call into. */
 export function ToolCallPreview({ preview }: { preview: ToolPreview }) {
   switch (preview.kind) {

@@ -55,9 +55,14 @@ describe('folder-scoped browser approval', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Details' }));
     expect(screen.getByTestId('folder-access-preview')).toHaveTextContent('backend restarts');
     expect(screen.getByTestId('folder-access-preview')).not.toHaveTextContent('desktop app quits');
+    // What a grant covers and how long it lasts is the question's info icon now (owner,
+    // 2026-11-13), and a browser's grant outlives the page, not the desktop app.
+    const about = screen.getByRole('button', { name: 'About this folder access' });
+    expect(about).toHaveAccessibleDescription(/backend restarts/);
+    expect(about).not.toHaveAccessibleDescription(/desktop app quits/);
     const key = screen.getByLabelText('Folder approval key');
     expect(key).toHaveAccessibleName('Folder approval key');
-    expect(key).toHaveAccessibleDescription(/Use the separate key set with/);
+    expect(key).toHaveAccessibleDescription(/separate key set with/);
     const allow = screen.getByRole('button', { name: 'Allow for this session' });
     expect(allow).toBeDisabled();
     fireEvent.change(key, { target: { value: 'human-held-folder-key' } });

@@ -3,7 +3,8 @@ import PermissionModal from './settings/permission/PermissionModal';
 import { Check, Clock, X, AlertTriangle } from './icons/app-icons';
 import { confirmToolAction, ActionRequired } from '../api';
 import { Button } from './ui/button';
-import { ToolCallPreview, ToolRiskBadge } from './ToolCallPreview';
+import { folderAccessHelp, ToolCallPreview, ToolRiskBadge } from './ToolCallPreview';
+import { InfoTip } from './ui/info-tip';
 import { TranscriptRow } from './TranscriptRow';
 import {
   APPROVAL_COPY,
@@ -42,6 +43,10 @@ function refusalIsPermanent(error: unknown): boolean {
     (error as { reason?: unknown }).reason === 'noKeyInstalled'
   );
 }
+
+/** The browser folder-key field's help, behind its info icon. */
+const FOLDER_KEY_HELP =
+  'The separate key set with biorouter serve --folder-access-approval, cleared after each decision. Without it, restart the server with that flag and retry.';
 
 /** A leading warning sign (with or without its emoji selector) and the space after it. */
 const LEADING_WARNING_GLYPH = /^\s*\u26A0\uFE0F?\s*/u;
@@ -408,7 +413,8 @@ export default function ToolConfirmation({
               )
             }
           />
-          {findingLine && <div className="pl-6">{findingLine}</div>}
+          {/* A folder card's prompt restates its preview; the answered row says enough. */}
+          {findingLine && !folderAccess && <div className="pl-6">{findingLine}</div>}
         </div>
         {isModalOpen && (
           <PermissionModal onClose={handleModalClose} extensionName={getExtensionName(toolName)} />
@@ -423,7 +429,10 @@ export default function ToolConfirmation({
   return (
     <>
       <div className="biorouter-message-content br-action-card br-fill-surface br-enter text-body">
-        {findingLine}
+        {/* A folder-access card's prompt is the daemon's long restatement of its own
+            preview, so it is not drawn: the question, its info icon and the folded file
+            list carry it (owner, 2026-11-13: one line up front, the detail on hover). */}
+        {!folderAccess && findingLine}
 
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-label text-text-default">
@@ -435,12 +444,18 @@ export default function ToolConfirmation({
                 <span> keeps the name a distinct node, which is what lets a test
                 assert on the name alone rather than on the whole sentence. */}
             {preview?.kind === 'folderAccess' ? (
-              <span data-testid="folder-access-question">
-                {FOLDER_ACCESS_COPY.question({
-                  requester: folderRequester,
-                  access: preview.access,
-                  folder: folderShown(preview.folder, preview.files),
-                })}
+              <span className="inline-flex items-center gap-1">
+                <span data-testid="folder-access-question">
+                  {FOLDER_ACCESS_COPY.question({
+                    requester: folderRequester,
+                    access: preview.access,
+                    folder: folderShown(preview.folder, preview.files),
+                  })}
+                </span>
+                {/* What a grant covers and how long it lasts, on hover (owner, 2026-11-13: the
+                    question is enough up front; the disclaimer is the small icon beside it). The
+                    exact paths and terms stay under Details. */}
+                <InfoTip label="this folder access" help={folderAccessHelp(preview)} />
               </span>
             ) : (
               <>
@@ -456,7 +471,10 @@ export default function ToolConfirmation({
 
         {browserFolderAccess && (
           <div className="flex flex-col gap-1 text-body">
-            <label htmlFor={`${toolConfirmationId}-folder-key`}>Folder approval key</label>
+            <span className="inline-flex items-center gap-1">
+              <label htmlFor={`${toolConfirmationId}-folder-key`}>Folder approval key</label>
+              <InfoTip label="the folder approval key" help={FOLDER_KEY_HELP} />
+            </span>
             <input
               id={`${toolConfirmationId}-folder-key`}
               type="password"
@@ -466,10 +484,9 @@ export default function ToolConfirmation({
               className="rounded border border-border-default bg-background-default px-2 py-1"
               aria-describedby={`${toolConfirmationId}-folder-key-help`}
             />
-            <span id={`${toolConfirmationId}-folder-key-help`} className="text-text-muted">
-              Use the separate key set with biorouter serve --folder-access-approval. It is cleared
-              after each decision and grants no other protected permission. If setup was omitted,
-              restart the server with that flag, then retry the file operation.
+            {/* Read by a screen reader with the field; seen on hover through the InfoTip. */}
+            <span id={`${toolConfirmationId}-folder-key-help`} className="sr-only">
+              {FOLDER_KEY_HELP}
             </span>
           </div>
         )}
