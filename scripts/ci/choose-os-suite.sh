@@ -46,7 +46,9 @@ decide() {
 case "$os" in
   windows)
     path_re='windows|win32|msvc|\.ps1$'
-    code_re='cfg\((all\(|any\(|not\()?(windows|target_os = "windows"|target_family = "windows")'
+    # `cfg(windows)`, `cfg!(windows)`, `not(windows)`, `all(test, windows)`,
+    # `any(unix, windows)` and the target_os / target_family spellings.
+    code_re='target_os = "windows"|target_family = "windows"|[(, !]windows[),]'
     deps_re='(^|/)(Cargo\.lock|Cargo\.toml|rust-toolchain\.toml)$|(^|/)\.cargo/config(\.toml)?$'
     ;;
   macos)
