@@ -1555,7 +1555,7 @@ async fn subagent_slash(session: &CliSession, app: &mut App, text: &str) {
 /// (`/compact` is handled in `submit` since it drives a turn.)
 #[cfg(feature = "dictation")]
 async fn review_dictionary(app: &mut App, tui: &mut Tui, rx: &mut Events) -> Result<()> {
-    use crate::commands::dictionary::{authorize_session_action, Action};
+    use crate::commands::dictionary::{authorize_session_action, dismiss_pending, Action};
     use biorouter::security::dictionary_store::{
         open_store,
         store::{Entry, EntrySource, EntryStatus},
@@ -1577,6 +1577,7 @@ async fn review_dictionary(app: &mut App, tui: &mut Tui, rx: &mut Events) -> Res
         app.push_note("Nothing to review.");
         return Ok(());
     }
+    let mut decided = false;
     for row in rows {
         app.modal = Some(PermissionModal {
             prompt: Some(format!(
@@ -1626,6 +1627,7 @@ async fn review_dictionary(app: &mut App, tui: &mut Tui, rx: &mut Events) -> Res
                         biorouter::security::dictionary_store::store::schema::now(),
                     )
                 })?;
+                decided = true;
                 app.push_note("Kept.");
             }
             1 => {
@@ -1633,19 +1635,37 @@ async fn review_dictionary(app: &mut App, tui: &mut Tui, rx: &mut Events) -> Res
                     ids: vec![id.to_string()],
                 })
                 .map_err(anyhow::Error::msg)?;
-                store.write(|file| {
-                    Ok(file.remove_confirmed(
-                        &[id],
-                        pending,
-                        biorouter::security::dictionary_store::store::schema::now(),
-                    ))
-                })?;
+                // A dismissed chat suggestion counts as a Dismiss in the person's measure.
+                let now = biorouter::security::dictionary_store::store::schema::now();
+                store.write(|file| Ok(dismiss_pending(file, &[id], now)))?;
+                decided = true;
                 app.push_note("Dismissed.");
             }
             _ => break,
         }
     }
+    note_suggestion_offer(app, &store, decided);
     Ok(())
+}
+
+/// After a review that kept or dismissed anything, the offer to turn chat suggestions off
+/// when most were dismissed, as one note.
+#[cfg(feature = "dictation")]
+fn note_suggestion_offer(
+    app: &mut App,
+    store: &biorouter::security::dictionary_store::store::DictionaryStore,
+    decided: bool,
+) {
+    if !decided {
+        return;
+    }
+    let offer = store
+        .view()
+        .ok()
+        .and_then(|view| crate::commands::dictionary::offer_turning_off(view.file()));
+    if let Some(offer) = offer {
+        app.push_note(&offer);
+    }
 }
 
 async fn handle_slash(
@@ -3252,6 +3272,48 @@ mod tests {
         assert_eq!(app.dictated_spans.len(), 1);
         app.set_input("older message".into());
         assert!(app.dictated_spans.is_empty());
+    }
+
+    /// After a dictionary review that kept or dismissed anything, the TUI notes the offer
+    /// to turn chat suggestions off when most were dismissed, the sentence `biorouter
+    /// dictionary suggestions` prints; not after a review that decided nothing, and not
+    /// while suggestions are off.
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn a_dictionary_review_that_decided_notes_the_offer_to_turn_suggestions_off() {
+        use biorouter::security::dictionary_store::store::DictionaryStore;
+        let root = tempfile::tempdir().unwrap();
+        let store = DictionaryStore::open(root.path().join("dictionary"));
+        store
+            .write(|file| {
+                file.settings.learn_from_chats = true;
+                for _ in 0..20 {
+                    file.chat_learning.record(false);
+                }
+                Ok(())
+            })
+            .unwrap();
+        let offer = crate::commands::dictionary::msg_suggest_fewer(4);
+        let noted = |decided: bool| {
+            let mut app = App::new(StatusInfo::default());
+            note_suggestion_offer(&mut app, &store, decided);
+            app.scrollback.iter().any(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+                    == offer
+            })
+        };
+        assert!(noted(true));
+        assert!(!noted(false));
+        store
+            .write(|file| {
+                file.settings.learn_from_chats = false;
+                Ok(())
+            })
+            .unwrap();
+        assert!(!noted(true), "suggestions are off");
     }
 
     #[cfg(feature = "dictation")]

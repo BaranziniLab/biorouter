@@ -16,7 +16,11 @@
 //! * managed `dictionary: false` refuses `import` with the policy's sentence and still
 //!   exports;
 //! * `settings` prints its three settings without a terminal, and the refused
-//!   `--suggest-from-chats on` leaves the `dictionary` capability off (PR-23).
+//!   `--suggest-from-chats on` leaves the `dictionary` capability off (PR-23);
+//! * `suggestions` lists the public suggestions without a terminal, as text or JSON, and
+//!   `suggestions keep`, `dismiss` and `scan` are writes like the rest; at a terminal (a
+//!   pseudo terminal here, on Unix) `scan` says to turn suggestions on first while they are
+//!   off, and reads an empty session store to its end while they are on.
 
 #[path = "../src/test_sandbox.rs"]
 mod test_sandbox;
@@ -130,6 +134,9 @@ const WRITES: &[&[&str]] = &[
     &["settings", "--suggest-from-chats", "on"],
     &["settings", "--suggest-from-chats", "off"],
     &["clear"],
+    &["suggestions", "keep", "EPAS1"],
+    &["suggestions", "dismiss", "EPAS1"],
+    &["suggestions", "scan"],
 ];
 
 #[test]
@@ -415,4 +422,163 @@ fn settings_print_without_a_terminal() {
         stdout(&output),
         "agent_writes: on_request\nsuggest_from_chats: off\nlearn_from_chats: off\n"
     );
+}
+
+/// The account's store under `root`, opened in this process the way the binary opens it.
+fn store_at(root: &Path) -> biorouter::security::dictionary_store::store::DictionaryStore {
+    biorouter::security::dictionary_store::store::DictionaryStore::open(
+        store_file(root).parent().unwrap(),
+    )
+}
+
+/// `words` as the chat extractor writes them after finding each in two chats.
+fn found_in_chats(
+    root: &Path,
+    tier: biorouter::security::dictionary_store::store::EntryTier,
+    words: &[&str],
+) {
+    store_at(root)
+        .write(|file| {
+            let now = biorouter::security::dictionary_store::store::schema::now();
+            for word in words {
+                for chat in ["chat-a", "chat-b"] {
+                    file.observe_auto_suggestion(word, tier, chat, None, now)?;
+                }
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
+/// `suggestions` reads without a terminal: the public suggestions, one line each with
+/// where it came from, or as JSON with the person's measure; a private one is withheld.
+#[test]
+fn suggestions_list_without_a_terminal() {
+    use biorouter::security::dictionary_store::store::EntryTier;
+    let root = sandbox();
+    found_in_chats(root.path(), EntryTier::Public, &["EPAS1"]);
+    found_in_chats(root.path(), EntryTier::Private, &["PHD2"]);
+
+    let output = run(root.path(), &["suggestions"], "", &[]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    let text = stdout(&output);
+    assert_eq!(text.lines().count(), 1, "{text}");
+    assert!(
+        text.starts_with("EPAS1 · found in your chats · dct_"),
+        "{text}"
+    );
+    assert!(!(text.clone() + &stderr(&output)).contains("PHD2"));
+    assert_eq!(
+        stdout(&run(root.path(), &["suggestions", "list"], "", &[])),
+        text,
+        "`list` is the same listing"
+    );
+
+    for args in [
+        &["suggestions", "--format", "json"][..],
+        &["suggestions", "list", "--format", "json"][..],
+    ] {
+        let output = run(root.path(), args, "", &[]);
+        assert!(output.status.success(), "{}", stderr(&output));
+        let answer: Value = serde_json::from_slice(&output.stdout)
+            .unwrap_or_else(|e| panic!("not JSON ({e}): {}", stdout(&output)));
+        let rows = answer["suggestions"].as_array().unwrap();
+        assert_eq!(rows.len(), 1, "{args:?}");
+        assert_eq!(rows[0]["written"], "EPAS1");
+        assert_eq!(answer["required_chats"], 2);
+        assert_eq!(answer["recent_decisions"], 0);
+        assert_eq!(answer["offer_turning_off"], false);
+    }
+}
+
+/// `biorouter dictionary <args>` with stdin and stderr on a pseudo terminal, so
+/// `prompt_can_run()` is true as for a person at a terminal; stdout stays a pipe. What the
+/// command drew on the terminal is returned as `stderr`.
+#[cfg(unix)]
+fn at_a_terminal(root: &Path, args: &[&str]) -> Output {
+    use std::io::Read;
+    use std::os::fd::{FromRawFd, OwnedFd};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
+
+    let (mut master, mut slave) = (-1, -1);
+    // SAFETY: openpty writes two new descriptors into `master` and `slave`; the name, the
+    // terminal settings and the window size are not asked for.
+    let rc = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    assert_eq!(rc, 0, "openpty: {}", std::io::Error::last_os_error());
+    // SAFETY: both descriptors are open and owned by nothing else.
+    let (master, slave) = unsafe { (OwnedFd::from_raw_fd(master), OwnedFd::from_raw_fd(slave)) };
+    let mut command = command(root, args, &[("TERM", "xterm")]);
+    command
+        .stdin(Stdio::from(slave.try_clone().expect("a second descriptor")))
+        .stderr(Stdio::from(slave));
+    let child = command.spawn().expect("run biorouter");
+    drop(command);
+    let written = Arc::new(Mutex::new(Vec::new()));
+    let reader = {
+        let written = Arc::clone(&written);
+        let mut terminal = std::fs::File::from(master);
+        std::thread::spawn(move || {
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = terminal.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                written.lock().unwrap().extend_from_slice(&buf[..n]);
+            }
+        })
+    };
+    let mut output = child.wait_with_output().expect("biorouter ends");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !reader.is_finished() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    output.stderr = written.lock().unwrap().clone();
+    output
+}
+
+/// At a terminal, `suggestions scan` while suggestions are off answers MSG-SCAN-OFF and
+/// how to turn them on here (exit 1), and writes nothing.
+#[cfg(unix)]
+#[test]
+fn suggestions_scan_says_to_turn_suggestions_on_first() {
+    let root = sandbox();
+    let output = at_a_terminal(root.path(), &["suggestions", "scan"]);
+    assert_eq!(output.status.code(), Some(1), "{}", stderr(&output));
+    let terminal = stderr(&output);
+    assert!(
+        terminal.contains(biorouter::dictation::suggestion_scan::MSG_SCAN_OFF),
+        "{terminal}"
+    );
+    assert!(
+        terminal.contains("biorouter dictionary settings --learn-from-chats on"),
+        "{terminal}"
+    );
+    assert!(stdout(&output).is_empty(), "{}", stdout(&output));
+    assert!(!store_file(root.path()).exists(), "nothing was written");
+}
+
+/// At a terminal with suggestions on, `suggestions scan` reads this account's session
+/// store, here holding no chat, and says so.
+#[cfg(unix)]
+#[test]
+fn suggestions_scan_at_a_terminal_reads_the_session_store() {
+    let root = sandbox();
+    store_at(root.path())
+        .write(|file| {
+            file.settings.learn_from_chats = true;
+            Ok(())
+        })
+        .unwrap();
+    let output = at_a_terminal(root.path(), &["suggestions", "scan"]);
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(stdout(&output), "Read 0 chats. No new words found.\n");
 }

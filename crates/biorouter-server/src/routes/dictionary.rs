@@ -2636,7 +2636,8 @@ mod tests {
 
     /// PR-23, DD-56: `GET /dictionary/settings` carries the person's activation choice as
     /// `suggest_from_chats`, and `POST /dictionary/settings` takes only `learn_from_chats`
-    /// and `agent_writes`. The request does not refuse a field it does not know, so a body
+    /// and `agent_writes`, plus, since 2026-11-13, the person's `keep_suggesting` answer to
+    /// the offer to turn suggestions off. The request does not refuse a field it does not know, so a body
     /// that also names `suggest_from_chats` is accepted (200), and the activation stays as
     /// it was, in the answer, in the configuration and in its version marker: only
     /// `POST /dictionary/activation` changes it.
@@ -2648,7 +2649,8 @@ mod tests {
         crate::routes::session::diverge_tests::install_test_user_action_key();
         let state = AppState::new().await.unwrap();
 
-        // The request type names exactly the two store settings.
+        // The request type names exactly the two store settings and the person's answer to
+        // the offer to turn suggestions off; none of them is `suggest_from_chats`.
         let fields = serde_json::to_value(DictionarySettingsRequest::default()).unwrap();
         let fields: BTreeSet<&str> = fields
             .as_object()
@@ -2656,7 +2658,10 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect();
-        assert_eq!(fields, BTreeSet::from(["agent_writes", "learn_from_chats"]));
+        assert_eq!(
+            fields,
+            BTreeSet::from(["agent_writes", "keep_suggesting", "learn_from_chats"])
+        );
 
         let activation = suggest_from_chats();
         let marker = || {
