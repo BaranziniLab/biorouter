@@ -76,7 +76,8 @@ export function agentMarkPulses(row: Pick<SubagentRow, 'status' | 'quietSeconds'
 
 /**
  * `rows`: four agents or fewer in the chat. Every one is a two-line row led by a
- * 12px mark, and nothing draws a grid. `grid`: five to 99. Each group draws its
+ * 14px mark (the to-do list's glyph size, so a few agents read larger than a grid's
+ * squares), and nothing draws a grid. `grid`: five to 99. Each group draws its
  * grid of 10px squares, then its first rows. `dense`: 100 or more, 7px squares
  * in a tight block.
  */
@@ -92,7 +93,7 @@ export const AGENT_DENSE_FROM = 100;
 export const AGENT_HEAD_ROWS = 5;
 
 /** A mark's side in CSS pixels, per size. Rows of the grid sizes lead with the grid's square. */
-export const AGENT_MARK_PX: Record<AgentGridSize, number> = { rows: 12, grid: 10, dense: 7 };
+export const AGENT_MARK_PX: Record<AgentGridSize, number> = { rows: 14, grid: 10, dense: 7 };
 
 /** The gap between two squares of a grid, per size. */
 export const AGENT_GRID_GAP_PX: Record<AgentGridSize, number> = { rows: 4, grid: 4, dense: 2 };
@@ -102,7 +103,7 @@ export function agentGridSize(total: number): AgentGridSize {
   return total >= AGENT_DENSE_FROM ? 'dense' : 'grid';
 }
 
-/** The size a row's own mark takes: 12px in a chat of rows, else the grid's 10px. */
+/** The size a row's own mark takes: 14px in a chat of rows, else the grid's 10px. */
 export function agentRowMarkPx(size: AgentGridSize): number {
   return size === 'rows' ? AGENT_MARK_PX.rows : AGENT_MARK_PX.grid;
 }

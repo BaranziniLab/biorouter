@@ -93,7 +93,7 @@ describe('up to four subagents: comfortable two-line rows', () => {
     expect(mark).toHaveAttribute('data-shape', 'square');
     expect(mark).toHaveAttribute('data-kind', 'running');
     expect(mark).toHaveAttribute('data-pulse', '');
-    expect(mark).toHaveAttribute('width', '12');
+    expect(mark).toHaveAttribute('width', '14');
     expect(first).toHaveAccessibleName('Running, Reviewer, claude-sonnet-4-5, 1m');
     expect(first).toHaveTextContent(/^Reviewer1mclaude-sonnet-4-5 · Working…$/);
     const second = screen.getByTestId('subagent-row-b');
@@ -223,8 +223,8 @@ describe('up to four subagents: comfortable two-line rows', () => {
       />
     );
     expect(screen.queryByTestId('summary-agents-key')).toBeNull();
-    // Both: a square, "Language model", a circle, "Decision model", as the
-    // terminal's pane writes "■ language model  ● decision model".
+    // Both: "Models:", a square, "language", a circle, "decision", as the
+    // terminal's pane writes "models: ■ language  ● decision".
     rerender(
       <SummarySubagents
         data={data([reader, judge])}
@@ -235,7 +235,7 @@ describe('up to four subagents: comfortable two-line rows', () => {
       />
     );
     const key = screen.getByTestId('summary-agents-key');
-    expect(key).toHaveTextContent(`${copy.languageModel}${copy.decisionModel}`);
+    expect(key).toHaveTextContent(`${copy.keyLabel}${copy.keyLanguage}${copy.keyDecision}`);
     expect(key).toHaveAttribute('aria-hidden', 'true');
     expect(
       [...key.querySelectorAll('.br-agent-mark')].map((mark) => [

@@ -3562,14 +3562,14 @@ mod tests {
         let mut app = app_with(PaneModel::default());
         for width in [160, 90] {
             let text = buffer_text(&mut app, width, 30);
-            assert!(!text.contains("Subagents"), "width {width}:\n{text}");
+            assert!(!text.contains("AGENTS"), "width {width}:\n{text}");
             assert!(text.contains("hello parent"));
         }
         // The person can still ask for it, and it says why it is empty.
         on_key(&mut app, ctrl('b'));
         assert!(app.subagents.visible());
         let text = buffer_text(&mut app, 160, 30);
-        assert!(text.contains("Subagents"), "{text}");
+        assert!(text.contains("AGENTS"), "{text}");
         assert!(text.contains("No subagents in this chat yet"), "{text}");
         let narrow = buffer_text(&mut app, 90, 30);
         assert!(narrow.contains("none in this chat yet"), "{narrow}");
@@ -3580,7 +3580,7 @@ mod tests {
         let mut app = app_with(two_subagents());
         let lines = buffer_lines(&mut app, 160, 30);
         let all = lines.join("\n");
-        let (header, _) = line_with(&lines, "Subagents").expect("a header");
+        let (header, _) = line_with(&lines, "AGENTS").expect("a header");
         assert!(lines[header].contains("running 1 · done 1/2"), "{all}");
         // A running language-model agent leads with the grid's running square.
         let (name_at, name_line) = line_with(&lines, "▣ researcher").expect("the row");
@@ -3700,11 +3700,15 @@ mod tests {
         );
 
         // Selecting the last row scrolls it into view and counts what is above.
+        // The last row is the implementation phase's last in head order (a
+        // queued one, past the five the phase lists), drawn because it is
+        // selected.
         on_key(&mut app, ctrl('o'));
         on_key(&mut app, press(KeyCode::End));
+        let last = app.subagents.selected_row().unwrap().label().to_string();
         let lines = buffer_lines(&mut app, 160, 30);
         let all = lines.join("\n");
-        assert!(all.contains("implementation agent 25"), "{all}");
+        assert!(all.contains(&format!("▸ □ {last} ")), "{all}");
         assert!(all.contains("↑ "), "{all}");
         assert!(all.contains("│ testing · not started"), "{all}");
     }
@@ -3724,7 +3728,7 @@ mod tests {
         let lines = buffer_lines(&mut app, 90, 30);
         let all = lines.join("\n");
         assert_eq!(subagents::strip_height(&app.subagents), 6);
-        let (strip_at, _) = line_with(&lines, "Subagents").expect("the strip");
+        let (strip_at, _) = line_with(&lines, "AGENTS").expect("the strip");
         let (status_at, _) = line_with(&lines, "gpt-5.2").expect("the status line");
         assert!(
             strip_at < status_at,

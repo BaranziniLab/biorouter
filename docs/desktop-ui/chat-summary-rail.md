@@ -259,7 +259,8 @@ mounted for the chat.
     unknown is the bar. The precise word ("Stopped", "Interrupted", "Needs an answer") is in the
     mark's name and its card.
   - **The size scales with the count** (`agentGridSize`). With four agents or fewer in the chat,
-    every agent is a two-line row led by a 12px mark: the role the parent gave (else the session
+    every agent is a two-line row led by a 14px mark (the to-do list's glyph size, so a few
+    agents read larger than a grid's squares): the role the parent gave (else the session
     name) with the run time on the right, then in 12px muted ink the model's short name and what
     it is doing ("Working…", "Waiting to start", "Quiet for 4m", "Stopping…") or, once it ended,
     its result line (else its status word). With five to 99, each group draws a grid of 10px
@@ -279,7 +280,10 @@ mounted for the chat.
     card's ground. A phase after the first opens on an inset hairline. These chunks replaced
     phase cards (each phase a filled, rounded band on the page ground) that read as white boxes
     on the grey rail. A phase that used no subagents shows where it
-    stands instead of "0 of 0" ("Pending", "Skipped"). The phase in progress (or blocked) is
+    stands instead of "0 of 0" ("Pending", "Skipped"), on the rows' right edge where a row's run
+    time sits; while such a phase is hovered, or its plus focused, "Add gate" takes the word's
+    place, as a sidebar row's time gives way to its menu (a slot held for the plus left the word
+    adrift mid-line and pushed the title onto two lines). The phase in progress (or blocked) is
     open, and in a plan of more than three phases the others start folded. A folded phase keeps
     its grid while anything in it is not finished, so its live state is still in view; a folded
     phase whose every agent finished is its line alone. Under the line, a muted line appears
@@ -290,11 +294,13 @@ mounted for the chat.
   - **Without a plan**, the section is **Agents**, its heading "2 running · 4 of 10" (announced
     "4 of 10 done"), holding the whole roster as one group with no phase line.
   - **The key.** While decision-model subagents (circles) mix with language-model ones
-    (squares), one muted 12px line at the foot of the roster says which is which: a solid square,
-    "Language model", a solid circle, "Decision model", in the muted ink (the shapes say kind
-    here, not status). It wraps to two lines in a 240px rail. A roster of one kind draws none.
-    It is hidden from assistive technology, because every square and row already says "decision
-    model" in its name. The terminal's pane writes the same key.
+    (squares), one muted 12px line under the section's heading, before the grid it explains,
+    says which is which: "Models:", a solid square, "language", a solid circle, "decision", in
+    the muted ink (the shapes say kind here, not status). It fits one line in the 240px rail;
+    "Language model" and "Decision model" took two, and at the roster's foot the key read as part
+    of the last phase. A roster of one kind draws none. It is hidden from assistive technology,
+    because every square and row already says "decision model" in its name. The terminal's pane
+    writes the same key under its own heading.
   - **Phase gates** are decision-model work, so a gate is a circle at the end of its phase's
     line, on the card's ground with no fill of its own in any state, filled by its state: hollow while not asked yet, solid once passed (or passed by the
     person), the cut cross when not passed or blocked, half full when it needs the person, the
@@ -317,7 +323,8 @@ mounted for the chat.
     `--background-fill-strong`, a square is ringed in the default ink, and Enter or Space moves
     focus into the card. Escape (focus back on the trigger), a press outside or a second click
     closes it, and one card is open at a time. The card is the light popover card, to the left
-    of its trigger (`summary/SubagentPeek.tsx`): the title with the subagent glyph; under it the
+    of its trigger and 8px clear of the summary card's own edge, whichever square or row opened
+    it, so it never lies over the rows' marks (`summary/SubagentPeek.tsx`): the title with the subagent glyph; under it the
     model and where it runs (`sonnet-4-5 · Public`, the tier while privacy tiers are on, or for a
     decision model `Decision model · tev1:0.8b · this computer`) and, when any of the chat's
     monitors also watches its subagents (`applyToSubagents`, while on), "Watched by Scope
@@ -543,7 +550,7 @@ or the pointer is over the summary.
 | `components/summary/ChatSummary.subagents.test.tsx` | The Agents section between the to-do list and This chat, nothing for it without the prop or with an empty roster, a subagent's card naming the chat's monitors that watch its subagents, and BaseChat's wiring at the source: the hook's place and gate, both surfaces fed from `summaryProps`, the tab opener, and the button's running count only while the rail is hidden |
 | `components/summary/summaryAgents.browser.test.tsx` | In Chromium, in the rail's own grid at 240px (a 228px card): 30 subagents with every row shown as 28px rows that scroll inside the card with the footer in view and nothing overflowing sideways (with names long enough to overflow, the instrument); three subagents as 44px two-line rows with one muted second line; a kept card to the left of its row, its top on the row's, the row filled and marked `data-pinned`, and one card open at a time; a 30-subagent phase plan with the same rows and width; a gated phase whose count stays on one line while its long title wraps to two |
 | `components/summary/agentGrid.test.ts` | The notation without rendering: the size tiers (rows to 4, a grid to 99, a dense block from 100; 12, 10 and 7px), every run status's mark and a quiet child read as waiting, the pulse only on a running child, a decision-model subagent, a gate and every Decisions row as circles with their fills, the monitors that watch subagents, the head order and the five with kept rows past them, and the groups by phase in plan order with Other last |
-| `components/summary/summaryAgentGrid.browser.test.tsx` | In Chromium, in the rail at 240px: one agent as a 44px row led by a 12px square and no grid; eight as one line of 10px squares 4px apart and five 28px rows with 10px marks; 150 as 7px squares in lines 9px apart, all inside the card, nothing sideways; a square's hover card to the left of the rail with its name, model and tier, status, Open in a tab and "Watched by", the square at rest until a click keeps it; each kind drawn by its own parts and ink, gates and Decisions rows as circles; the owner's sections rule in the real cascade (the first section with no line and each later one a 1px hairline across the card, each phase after the first an inset one, every element between a square and the card transparent with no radius or side border, the gate's circle unfilled, and the key under a roster with a decision-model subagent). With `SUMMARY_GRID_SHOTS=<dir>` it saves the review screenshots in light and dark: three agents, a 20-agent plan with gates, monitors and a decision-model subagent, 150 agents across three phases with decision-model subagents among them, and a square's card |
+| `components/summary/summaryAgentGrid.browser.test.tsx` | In Chromium, in the rail at 240px: one agent as a 44px row led by a 14px square and no grid; eight as one line of 10px squares 4px apart and five 28px rows with 10px marks; 150 as 7px squares in lines 9px apart, all inside the card, nothing sideways; a square's hover card, once Radix has placed it, 8px clear of the rail's edge with its name, model and tier, status, Open in a tab and "Watched by", the square at rest until a click keeps it; each kind drawn by its own parts and ink, gates and Decisions rows as circles; the owner's sections rule in the real cascade (the first section with no line and each later one a 1px hairline across the card, each phase after the first an inset one, every element between a square and the card transparent with no radius or side border, the gate's circle unfilled, the key on one line under the Plan heading and above the first phase, and a phase with no subagents ending its one-line title's line with "Pending" on the rows' right edge). With `SUMMARY_GRID_SHOTS=<dir>` it saves the review screenshots in light and dark: three agents, a 20-agent plan with gates, monitors and a decision-model subagent, 150 agents across three phases with decision-model subagents among them, and a square's card |
 | `components/subagent/subagentStatus.test.ts` | Every run status has a glyph and a word, and a stopped run is never the running glyph |
 | `components/settings/app/OpenSubagentTabsRow.test.tsx` | "Open subagent tabs automatically": the key `BIOROUTER_WORKSPACE_OPEN_SUBAGENT_TABS`, off by default, written on toggle and rolled back on a failed write, held unpainted until read, a later visit painted from the last answer (the `openSubagentTabs` key of `settings/lastKnown.ts`), and help that names "Never open tabs automatically" as the setting that wins |
 | `components/settings/app/AppSettingsSection.test.tsx`, `components/settings/warmSettings.test.ts`, `components/settings/tabSwitchFrames.browser.test.tsx` | The switch named by its label, its place right after "Never open tabs automatically" and before Show costs, held with the other four until read; its key warmed while Settings opens; and in Chromium, painted with its saved value in the first commit and every frame of a visit to the App tab |
