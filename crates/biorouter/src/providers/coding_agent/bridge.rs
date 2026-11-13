@@ -110,6 +110,37 @@ pub trait BridgeToolDispatch: Send + Sync {
     ) -> Result<CallToolResult, String>;
 }
 
+/// What the child is told when a bridged call fails: the error's own sentence,
+/// as every provider format tells its model (`formats::tool_error_text`).
+///
+/// This used to be "`{name}` failed: {e}", and `ErrorData`'s `Display` puts the
+/// JSON-RPC code in front of the message and its `data` after it, so a refusal
+/// written to be read as it stands reached the child, and the transcript card
+/// showing the call, as "`<tool>` failed: -32602: <the sentence>". The child
+/// knows which tool it called, and the code is a wire detail. The call fails
+/// exactly as before; only the words changed. Same rule as
+/// `bridged_spawn_error_text` for the spawn tool in `agents/agent.rs`.
+fn bridged_call_error_text(error: &rmcp::model::ErrorData) -> String {
+    crate::providers::formats::tool_error_text(error)
+}
+
+/// [`bridged_call_error_text`] for a dispatch that failed before the tool ran.
+/// `dispatch_tool_call`'s refusals are `ErrorData` inside an `anyhow::Error`,
+/// and anything else becomes one the way the chat loop does it
+/// (`Agent::dispatch_tool_call`), so the child reads what a chat model would.
+fn bridged_dispatch_error_text(error: anyhow::Error) -> String {
+    let error = error
+        .downcast::<rmcp::model::ErrorData>()
+        .unwrap_or_else(|other| {
+            rmcp::model::ErrorData::new(
+                rmcp::model::ErrorCode::INTERNAL_ERROR,
+                other.to_string(),
+                None,
+            )
+        });
+    bridged_call_error_text(&error)
+}
+
 #[async_trait::async_trait]
 impl BridgeToolDispatch for ExtensionManager {
     async fn dispatch(
@@ -119,15 +150,11 @@ impl BridgeToolDispatch for ExtensionManager {
         capability: CallCapability,
         cancel: CancellationToken,
     ) -> Result<CallToolResult, String> {
-        let name = call.name.to_string();
         let result = self
             .dispatch_tool_call(session_id, call, capability, cancel)
             .await
-            .map_err(|e| format!("`{name}` failed: {e}"))?;
-        result
-            .result
-            .await
-            .map_err(|e| format!("`{name}` failed: {e}"))
+            .map_err(bridged_dispatch_error_text)?;
+        result.result.await.map_err(|e| bridged_call_error_text(&e))
     }
 }
 
@@ -621,9 +648,12 @@ impl BridgeGrant {
                 pending
             }
         };
-        let mut call = approved
-            .tool_call
-            .map_err(|e| format!("`{name}` was approved but is not a usable call: {e}"))?;
+        let mut call = approved.tool_call.map_err(|e| {
+            format!(
+                "`{name}` was approved but is not a usable call: {}",
+                bridged_call_error_text(&e)
+            )
+        })?;
         if !crate::agents::agent::is_spawn_tool_call(call.name.as_ref()) {
             self.apply_vault(&mut call);
         }
@@ -3499,5 +3529,55 @@ mod tests {
         // that are about the frame set this to `Annotate` themselves.
         grant.tool_output_guardrail = ToolOutputGuardrailMode::Off;
         grant
+    }
+
+    /// A bridged call that fails reads as the error's own sentence: no
+    /// "`<tool>` failed:" in front, and no JSON-RPC code. The child knows which
+    /// tool it called, and the code is a wire detail. A refusal that is not an
+    /// `ErrorData` keeps its text, the way the chat loop keeps it.
+    #[test]
+    fn a_bridged_failure_reads_as_the_errors_own_sentence() {
+        use rmcp::model::{ErrorCode, ErrorData};
+
+        let sentence = "This chat is running on a public model, so it cannot reach that \
+                        knowledge base.";
+        let refused = ErrorData::new(ErrorCode::INVALID_PARAMS, sentence.to_string(), None);
+        assert_eq!(bridged_call_error_text(&refused), sentence);
+        assert_eq!(
+            bridged_dispatch_error_text(anyhow::Error::new(refused)),
+            sentence
+        );
+        assert_eq!(
+            bridged_dispatch_error_text(anyhow::anyhow!("the extension is still starting")),
+            "the extension is still starting"
+        );
+        assert_eq!(
+            bridged_call_error_text(&ErrorData::new(ErrorCode::INTERNAL_ERROR, "", None)),
+            "The tool call failed without saying why."
+        );
+    }
+
+    /// The same, through the real `ExtensionManager` dispatcher: a tool no
+    /// extension serves used to come back as "`nope__missing` failed: -32002:
+    /// Tool 'nope__missing' not found".
+    #[tokio::test]
+    async fn the_extension_dispatcher_reports_a_missing_tool_in_plain_words() {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let extensions = ExtensionManager::new_without_provider(dir.path().to_path_buf());
+        let error = BridgeToolDispatch::dispatch(
+            &extensions,
+            &format!("bridge-plain-error-{}", uuid::Uuid::new_v4()),
+            CallToolRequestParams {
+                name: "nope__missing".to_string().into(),
+                arguments: None,
+                meta: None,
+                task: None,
+            },
+            test_capability(),
+            CancellationToken::new(),
+        )
+        .await
+        .expect_err("no extension serves this tool");
+        assert_eq!(error, "Tool 'nope__missing' not found");
     }
 }

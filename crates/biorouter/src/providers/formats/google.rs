@@ -118,7 +118,8 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
                             parts.push(json!(part));
                         }
                         Err(e) => {
-                            parts.push(json!({"text":format!("Error: {}", e)}));
+                            let text = format!("Error: {}", super::tool_error_text(e));
+                            parts.push(json!({"text": text}));
                         }
                     },
                     MessageContent::ToolResponse(response) => {
@@ -190,12 +191,13 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
                                 parts.push(json!(part));
                             }
                             Err(e) => {
+                                let text = format!("Error: {}", super::tool_error_text(e));
                                 let mut part = Map::new();
                                 let mut function_response = Map::new();
                                 function_response.insert("name".to_string(), json!(response.id));
                                 function_response.insert(
                                     "response".to_string(),
-                                    json!({"content": {"text": format!("Error: {}", e)}}),
+                                    json!({"content": {"text": text}}),
                                 );
                                 part.insert(
                                     "functionResponse".to_string(),

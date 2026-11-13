@@ -122,10 +122,11 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
                         }));
                     }
                     Err(tool_error) => {
+                        let text = format!("Error: {}", super::tool_error_text(tool_error));
                         content.push(json!({
                             TYPE_FIELD: TOOL_RESULT_TYPE,
                             TOOL_USE_ID_FIELD: tool_response.id,
-                            CONTENT_FIELD: format!("Error: {}", tool_error),
+                            CONTENT_FIELD: text,
                             IS_ERROR_FIELD: true
                         }));
                     }
@@ -2712,10 +2713,9 @@ data: [DONE]
         assert_eq!(spec[1]["role"], "user");
         assert_eq!(spec[1]["content"][0]["type"], "tool_result");
         assert_eq!(spec[1]["content"][0]["tool_use_id"], "tool_1");
-        assert_eq!(
-            spec[1]["content"][0]["content"],
-            "Error: -32603: Tool failed"
-        );
+        // The error's own sentence, never `ErrorData`'s `Display`, which put the
+        // JSON-RPC code in front of it ("Error: -32603: Tool failed").
+        assert_eq!(spec[1]["content"][0]["content"], "Error: Tool failed");
         assert_eq!(spec[1]["content"][0]["is_error"], true);
     }
 

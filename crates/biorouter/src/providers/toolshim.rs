@@ -507,7 +507,13 @@ pub fn convert_tool_messages_to_text(messages: &[Message]) -> Conversation {
                                     .collect();
                                 format!("Tool result:\n{}", text_contents.join("\n"))
                             }
-                            Err(e) => format!("Tool error: {}", e),
+                            // The error's own sentence, as every provider
+                            // format sends it, never `ErrorData`'s `Display`
+                            // (the JSON-RPC code in front, `data` after).
+                            Err(e) => format!(
+                                "Tool error: {}",
+                                crate::providers::formats::tool_error_text(e)
+                            ),
                         };
                         new_content.push(MessageContent::text(text));
                     }
@@ -877,6 +883,34 @@ mod tests {
                 "{local}"
             );
         }
+    }
+
+    /// A failed tool call reaches a toolshim model as the error's own sentence,
+    /// the words every provider format sends. `ErrorData`'s `Display` put the
+    /// JSON-RPC code in front and the `data` payload, an internal tag here,
+    /// after it.
+    #[test]
+    fn a_tool_error_reaches_the_model_as_its_own_sentence() {
+        use rmcp::model::{ErrorCode, ErrorData};
+        let sentence = "This chat is running on a public model, so it cannot delegate to a \
+                        private one.";
+        let message = Message::user().with_tool_response(
+            "call-1",
+            Err(ErrorData::new(
+                ErrorCode::INVALID_PARAMS,
+                sentence.to_string(),
+                Some(serde_json::json!({"biorouterToolCallFailure": "invalid_arguments"})),
+            )),
+        );
+
+        let converted = convert_tool_messages_to_text(&[message]);
+        let text = match &converted.messages()[0].content[0] {
+            MessageContent::Text(text) => text.text.clone(),
+            other => panic!("the tool error should have become text, got {other:?}"),
+        };
+        assert_eq!(text, format!("Tool error: {sentence}"));
+        assert!(!text.contains("-32602"), "{text}");
+        assert!(!text.contains("biorouterToolCallFailure"), "{text}");
     }
 
     /// A loopback Ollama forwards a cloud model to ollama.com, so the loopback

@@ -100,7 +100,11 @@ fn format_tool_response(
         Err(e) => {
             result.push(DatabricksMessage {
                 role: "tool".to_string(),
-                content: format!("The tool call returned the following error:\n{}", e).into(),
+                content: format!(
+                    "The tool call returned the following error:\n{}",
+                    super::tool_error_text(e)
+                )
+                .into(),
                 tool_call_id: Some(response.id.clone()),
                 tool_calls: None,
             });
@@ -179,8 +183,8 @@ fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<Data
                             }));
                         }
                         Err(e) => {
-                            content_array
-                                .push(json!({"type": "text", "text": format!("Error: {}", e)}));
+                            let text = format!("Error: {}", super::tool_error_text(e));
+                            content_array.push(json!({"type": "text", "text": text}));
                         }
                     }
                 }
@@ -197,7 +201,9 @@ fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<Data
                             tool_call.name,
                             serde_json::to_string_pretty(&tool_call.arguments).unwrap()
                         ),
-                        Err(e) => format!("Frontend tool request error: {}", e),
+                        Err(e) => {
+                            format!("Frontend tool request error: {}", super::tool_error_text(e))
+                        }
                     };
                     content_array.push(json!({"type": "text", "text": text}));
                 }

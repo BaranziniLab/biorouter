@@ -572,7 +572,7 @@ fn function_call_output_item(response: &ToolResponse, images: &mut Vec<Value>) -
             json!({
                 "type": "function_call_output",
                 "call_id": response.id,
-                "output": format!("Error: {}", error_data.message)
+                "output": format!("Error: {}", super::tool_error_text(error_data))
             })
         }
     }
