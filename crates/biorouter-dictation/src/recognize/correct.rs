@@ -947,8 +947,7 @@ pub fn double_metaphone(key: &str) -> (String, String) {
         .collect();
     let mut primary = String::new();
     let mut alternate = String::new();
-    let at = |i: usize| w.get(i).copied().unwrap_or('\0');
-    let vowel = |c: char| matches!(c, 'A' | 'E' | 'I' | 'O' | 'U' | 'Y');
+    let at = |i: usize| metaphone_letter(&w, i);
     let mut push = |p: &str, a: &str| {
         primary.push_str(p);
         alternate.push_str(a);
@@ -965,164 +964,231 @@ pub fn double_metaphone(key: &str) -> (String, String) {
         i = 1;
     }
     while i < w.len() {
-        let c = at(i);
-        let next = at(i + 1);
-        let mut step = 1;
-        match c {
-            _ if vowel(c) => {
-                if i == 0 {
-                    push("A", "A");
-                }
-            }
-            'B' => {
-                push("P", "P");
-                if next == 'B' {
-                    step = 2;
-                }
-            }
-            'C' => {
-                if next == 'H' {
-                    if matches!(at(i + 2), 'R' | 'L') || (i == 0 && !vowel(at(i + 2))) {
-                        push("K", "K");
-                    } else {
-                        push("X", "K");
-                    }
-                    step = 2;
-                } else if next == 'I' && at(i + 2) == 'A' {
-                    push("X", "X");
-                    step = 3;
-                } else if matches!(next, 'E' | 'I' | 'Y') {
-                    push("S", "S");
-                    step = 2;
-                } else if next == 'C' && matches!(at(i + 2), 'E' | 'I' | 'Y') {
-                    push("KS", "KS");
-                    step = 3;
-                } else {
-                    push("K", "K");
-                    if matches!(next, 'K' | 'Q' | 'C') {
-                        step = 2;
-                    }
-                }
-            }
-            'D' => {
-                if next == 'G' && matches!(at(i + 2), 'E' | 'I' | 'Y') {
-                    push("J", "J");
-                    step = 3;
-                } else {
-                    push("T", "T");
-                    if matches!(next, 'T' | 'D') {
-                        step = 2;
-                    }
-                }
-            }
-            'F' | 'V' => {
-                push("F", "F");
-                if matches!(next, 'F' | 'V') {
-                    step = 2;
-                }
-            }
-            'G' => {
-                if next == 'H' {
-                    if i == 0 {
-                        push("K", "K");
-                    }
-                    step = 2;
-                } else if next == 'N' {
-                    push("N", "KN");
-                    step = 2;
-                } else if matches!(next, 'E' | 'I' | 'Y') {
-                    push("J", "K");
-                    step = 2;
-                } else {
-                    push("K", "K");
-                    if next == 'G' {
-                        step = 2;
-                    }
-                }
-            }
-            'H' => {
-                if (i == 0 || vowel(at(i.wrapping_sub(1)))) && vowel(next) {
-                    push("H", "H");
-                    step = 2;
-                }
-            }
-            'J' => push("J", "H"),
-            'K' | 'Q' => {
-                push("K", "K");
-                if matches!(next, 'K' | 'Q') {
-                    step = 2;
-                }
-            }
-            'L' | 'M' | 'N' | 'R' => {
-                let s = c.to_string();
-                push(&s, &s);
-                if next == c {
-                    step = 2;
-                }
-            }
-            'P' => {
-                if next == 'H' {
-                    push("F", "F");
-                    step = 2;
-                } else {
-                    push("P", "P");
-                    if matches!(next, 'P' | 'B') {
-                        step = 2;
-                    }
-                }
-            }
-            'S' => {
-                if next == 'H' {
-                    push("X", "X");
-                    step = 2;
-                } else if next == 'C' && at(i + 2) == 'H' {
-                    push("SK", "SK");
-                    step = 3;
-                } else if next == 'I' && matches!(at(i + 2), 'O' | 'A') {
-                    push("X", "S");
-                    step = 3;
-                } else {
-                    push("S", "S");
-                    if matches!(next, 'S' | 'Z') {
-                        step = 2;
-                    }
-                }
-            }
-            'T' => {
-                if next == 'H' {
-                    push("0", "T");
-                    step = 2;
-                } else if next == 'I' && matches!(at(i + 2), 'O' | 'A') {
-                    push("X", "X");
-                    step = 3;
-                } else if next == 'C' && at(i + 2) == 'H' {
-                    step = 1;
-                } else {
-                    push("T", "T");
-                    if matches!(next, 'T' | 'D') {
-                        step = 2;
-                    }
-                }
-            }
-            'W' => {
-                if vowel(next) {
-                    push("W", "F");
-                }
-            }
-            'X' => push("KS", "KS"),
-            'Z' => {
-                push("S", "TS");
-                if next == 'Z' {
-                    step = 2;
-                }
-            }
-            _ => {}
-        }
-        i += step;
+        i += metaphone_step(&w, i, &mut push);
     }
     primary.truncate(6);
     alternate.truncate(6);
     (primary, alternate)
+}
+
+/// The letter at `i` of a [`double_metaphone`] key, or `'\0'` past its end.
+fn metaphone_letter(w: &[char], i: usize) -> char {
+    w.get(i).copied().unwrap_or('\0')
+}
+
+/// The letters [`double_metaphone`] treats as vowels.
+fn metaphone_vowel(c: char) -> bool {
+    matches!(c, 'A' | 'E' | 'I' | 'O' | 'U' | 'Y')
+}
+
+/// One position of [`double_metaphone`]'s main loop: pushes the codes for the letter at
+/// `i` and returns how many letters it consumed. The letters whose code depends on the
+/// letters after them (C, D, G, P, S and T) each have their own function.
+fn metaphone_step(w: &[char], i: usize, push: &mut impl FnMut(&str, &str)) -> usize {
+    let at = |i: usize| metaphone_letter(w, i);
+    let vowel = metaphone_vowel;
+    let c = at(i);
+    let next = at(i + 1);
+    let mut step = 1;
+    match c {
+        _ if vowel(c) => {
+            if i == 0 {
+                push("A", "A");
+            }
+        }
+        'B' => {
+            push("P", "P");
+            if next == 'B' {
+                step = 2;
+            }
+        }
+        'C' => step = metaphone_c(w, i, push),
+        'D' => step = metaphone_d(w, i, push),
+        'F' | 'V' => {
+            push("F", "F");
+            if matches!(next, 'F' | 'V') {
+                step = 2;
+            }
+        }
+        'G' => step = metaphone_g(w, i, push),
+        'H' => {
+            if (i == 0 || vowel(at(i.wrapping_sub(1)))) && vowel(next) {
+                push("H", "H");
+                step = 2;
+            }
+        }
+        'J' => push("J", "H"),
+        'K' | 'Q' => {
+            push("K", "K");
+            if matches!(next, 'K' | 'Q') {
+                step = 2;
+            }
+        }
+        'L' | 'M' | 'N' | 'R' => {
+            let s = c.to_string();
+            push(&s, &s);
+            if next == c {
+                step = 2;
+            }
+        }
+        'P' => step = metaphone_p(w, i, push),
+        'S' => step = metaphone_s(w, i, push),
+        'T' => step = metaphone_t(w, i, push),
+        'W' => {
+            if vowel(next) {
+                push("W", "F");
+            }
+        }
+        'X' => push("KS", "KS"),
+        'Z' => {
+            push("S", "TS");
+            if next == 'Z' {
+                step = 2;
+            }
+        }
+        _ => {}
+    }
+    step
+}
+
+/// [`double_metaphone`]'s C at `i`: CH, CIA, a soft C before E, I or Y, CC before E, I
+/// or Y, and a hard C. Returns the letters consumed.
+fn metaphone_c(w: &[char], i: usize, push: &mut impl FnMut(&str, &str)) -> usize {
+    let at = |i: usize| metaphone_letter(w, i);
+    let vowel = metaphone_vowel;
+    let next = at(i + 1);
+    let mut step = 1;
+    if next == 'H' {
+        if matches!(at(i + 2), 'R' | 'L') || (i == 0 && !vowel(at(i + 2))) {
+            push("K", "K");
+        } else {
+            push("X", "K");
+        }
+        step = 2;
+    } else if next == 'I' && at(i + 2) == 'A' {
+        push("X", "X");
+        step = 3;
+    } else if matches!(next, 'E' | 'I' | 'Y') {
+        push("S", "S");
+        step = 2;
+    } else if next == 'C' && matches!(at(i + 2), 'E' | 'I' | 'Y') {
+        push("KS", "KS");
+        step = 3;
+    } else {
+        push("K", "K");
+        if matches!(next, 'K' | 'Q' | 'C') {
+            step = 2;
+        }
+    }
+    step
+}
+
+/// [`double_metaphone`]'s D at `i`: DGE, DGI and DGY, else a T. Returns the letters
+/// consumed.
+fn metaphone_d(w: &[char], i: usize, push: &mut impl FnMut(&str, &str)) -> usize {
+    let at = |i: usize| metaphone_letter(w, i);
+    let next = at(i + 1);
+    let mut step = 1;
+    if next == 'G' && matches!(at(i + 2), 'E' | 'I' | 'Y') {
+        push("J", "J");
+        step = 3;
+    } else {
+        push("T", "T");
+        if matches!(next, 'T' | 'D') {
+            step = 2;
+        }
+    }
+    step
+}
+
+/// [`double_metaphone`]'s G at `i`: GH, GN, a soft G before E, I or Y, and a hard G.
+/// Returns the letters consumed.
+fn metaphone_g(w: &[char], i: usize, push: &mut impl FnMut(&str, &str)) -> usize {
+    let at = |i: usize| metaphone_letter(w, i);
+    let next = at(i + 1);
+    let mut step = 1;
+    if next == 'H' {
+        if i == 0 {
+            push("K", "K");
+        }
+        step = 2;
+    } else if next == 'N' {
+        push("N", "KN");
+        step = 2;
+    } else if matches!(next, 'E' | 'I' | 'Y') {
+        push("J", "K");
+        step = 2;
+    } else {
+        push("K", "K");
+        if next == 'G' {
+            step = 2;
+        }
+    }
+    step
+}
+
+/// [`double_metaphone`]'s P at `i`: PH as F, else a P. Returns the letters consumed.
+fn metaphone_p(w: &[char], i: usize, push: &mut impl FnMut(&str, &str)) -> usize {
+    let at = |i: usize| metaphone_letter(w, i);
+    let next = at(i + 1);
+    let mut step = 1;
+    if next == 'H' {
+        push("F", "F");
+        step = 2;
+    } else {
+        push("P", "P");
+        if matches!(next, 'P' | 'B') {
+            step = 2;
+        }
+    }
+    step
+}
+
+/// [`double_metaphone`]'s S at `i`: SH, SCH, SIO and SIA, else an S. Returns the letters
+/// consumed.
+fn metaphone_s(w: &[char], i: usize, push: &mut impl FnMut(&str, &str)) -> usize {
+    let at = |i: usize| metaphone_letter(w, i);
+    let next = at(i + 1);
+    let mut step = 1;
+    if next == 'H' {
+        push("X", "X");
+        step = 2;
+    } else if next == 'C' && at(i + 2) == 'H' {
+        push("SK", "SK");
+        step = 3;
+    } else if next == 'I' && matches!(at(i + 2), 'O' | 'A') {
+        push("X", "S");
+        step = 3;
+    } else {
+        push("S", "S");
+        if matches!(next, 'S' | 'Z') {
+            step = 2;
+        }
+    }
+    step
+}
+
+/// [`double_metaphone`]'s T at `i`: TH, TIO and TIA, a silent T before CH, else a T.
+/// Returns the letters consumed.
+fn metaphone_t(w: &[char], i: usize, push: &mut impl FnMut(&str, &str)) -> usize {
+    let at = |i: usize| metaphone_letter(w, i);
+    let next = at(i + 1);
+    let mut step = 1;
+    if next == 'H' {
+        push("0", "T");
+        step = 2;
+    } else if next == 'I' && matches!(at(i + 2), 'O' | 'A') {
+        push("X", "X");
+        step = 3;
+    } else if next == 'C' && at(i + 2) == 'H' {
+        step = 1;
+    } else {
+        push("T", "T");
+        if matches!(next, 'T' | 'D') {
+            step = 2;
+        }
+    }
+    step
 }
 
 /// How alike two words sound: the best normalized Levenshtein similarity over their

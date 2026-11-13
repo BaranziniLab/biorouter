@@ -26,7 +26,7 @@ use super::exit;
 use crate::build_info::{self, fixtures};
 use crate::catalog::{Catalog, SttKind, CATALOG};
 use crate::cpu::{self, CpuReport, HardwareClass};
-use crate::engine::{self, Backend, Engine, LoadOptions};
+use crate::engine::{self, Backend, Engine, LoadOptions, VadParams};
 
 /// jfk.wav is 11.0 s long; a span "within the clip" ends by then.
 const JFK_END_MS: u64 = 11_100;
@@ -99,24 +99,9 @@ pub fn run_with(
     }
 
     // 2. Only pinned files (P-11): a release binary carries no "load any file" path.
-    let model = absolute(&args.model);
-    let vad = absolute(&args.vad);
-    let wav = absolute(&args.wav);
-    if !is_pinned(&model, &fixtures::MODEL_PINS, SttKind::Speech, &CATALOG)
-        || !is_pinned(&vad, &fixtures::DETECTOR_PINS, SttKind::Vad, &CATALOG)
-    {
-        let _ = writeln!(
-            err,
-            "The self test accepts only pinned files: the fixtures and the speech model catalog. The model or the voice detector file is missing, unreadable or not pinned."
-        );
-        return fail(out, "pin", exit::NOT_PINNED, None);
-    }
-    let pcm = match read_wav(&wav) {
-        Ok(pcm) => pcm,
-        Err(why) => {
-            let _ = writeln!(err, "The sample could not be read: {why}.");
-            return fail(out, "args", exit::NO_SUCH_ROLE, None);
-        }
+    let (model, vad, pcm) = match pinned_inputs(&args, out, err) {
+        Ok(inputs) => inputs,
+        Err(code) => return code,
     };
 
     // 3. The instruction set this build was configured with is really compiled in.
@@ -151,44 +136,14 @@ pub fn run_with(
 
     // 5. The separate detector: speech in the sample, none in silence.
     let vad_params = engine::vad_params();
-    let speech = engine.vad_spans(&pcm, &vad_params);
-    let silence = engine.vad_spans(&vec![0.0f32; 5 * 16_000], &vad_params);
-    let found_speech = speech.as_ref().is_ok_and(|spans| {
-        spans
-            .iter()
-            .any(|s| s.t0_ms < s.t1_ms && s.t1_ms <= JFK_END_MS)
-    });
-    let quiet_silence = silence.as_ref().is_ok_and(|spans| spans.is_empty());
-    if !found_speech || !quiet_silence {
-        let _ = writeln!(
-            err,
-            "The voice detector did not find speech in the sample, or found speech in silence."
-        );
-        return fail(out, "vad", exit::CHECK_FAILED, None);
+    if let Err(code) = check_detector(&mut engine, &pcm, &vad_params, out, err) {
+        return code;
     }
 
     // 6. A decode with the production parameters, integrated detector on. The fixture
     // model has no tensors, so the text is empty [M].
-    let abort = AtomicI32::new(0);
-    let decoded = engine.transcribe(
-        &pcm,
-        &engine::decode_params("en", threads),
-        &vad_params,
-        &abort,
-    );
-    match &decoded {
-        Ok(output) if output.text.is_empty() => {}
-        Ok(_) => {
-            let _ = writeln!(
-                err,
-                "Decoding the sample with the fixture model returned text."
-            );
-            return fail(out, "decode", exit::CHECK_FAILED, None);
-        }
-        Err(e) => {
-            let _ = writeln!(err, "Decoding the sample failed: {e}.");
-            return fail(out, "decode", exit::CHECK_FAILED, None);
-        }
+    if let Err(code) = check_decode(&mut engine, &pcm, threads, &vad_params, out, err) {
+        return code;
     }
 
     let backend = engine.backend();
@@ -203,6 +158,99 @@ pub fn run_with(
     };
     write_line(out, &line);
     exit::OK
+}
+
+/// Step 2 of [`run_with`]: the model and detector paths, made absolute, once both are
+/// pinned, and the sample's samples. On a failure it writes the reason and the failed
+/// line and returns the exit code as the error.
+fn pinned_inputs(
+    args: &Args,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<(PathBuf, PathBuf, Vec<f32>), i32> {
+    let model = absolute(&args.model);
+    let vad = absolute(&args.vad);
+    let wav = absolute(&args.wav);
+    if !is_pinned(&model, &fixtures::MODEL_PINS, SttKind::Speech, &CATALOG)
+        || !is_pinned(&vad, &fixtures::DETECTOR_PINS, SttKind::Vad, &CATALOG)
+    {
+        let _ = writeln!(
+            err,
+            "The self test accepts only pinned files: the fixtures and the speech model catalog. The model or the voice detector file is missing, unreadable or not pinned."
+        );
+        return Err(fail(out, "pin", exit::NOT_PINNED, None));
+    }
+    let pcm = match read_wav(&wav) {
+        Ok(pcm) => pcm,
+        Err(why) => {
+            let _ = writeln!(err, "The sample could not be read: {why}.");
+            return Err(fail(out, "args", exit::NO_SUCH_ROLE, None));
+        }
+    };
+    Ok((model, vad, pcm))
+}
+
+/// Step 5 of [`run_with`]: the detector finds speech within the sample and none in five
+/// seconds of silence. On a failure it writes the reason and the failed line and returns
+/// the exit code as the error.
+fn check_detector(
+    engine: &mut Engine,
+    pcm: &[f32],
+    vad_params: &VadParams,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<(), i32> {
+    let speech = engine.vad_spans(pcm, vad_params);
+    let silence = engine.vad_spans(&vec![0.0f32; 5 * 16_000], vad_params);
+    let found_speech = speech.as_ref().is_ok_and(|spans| {
+        spans
+            .iter()
+            .any(|s| s.t0_ms < s.t1_ms && s.t1_ms <= JFK_END_MS)
+    });
+    let quiet_silence = silence.as_ref().is_ok_and(|spans| spans.is_empty());
+    if !found_speech || !quiet_silence {
+        let _ = writeln!(
+            err,
+            "The voice detector did not find speech in the sample, or found speech in silence."
+        );
+        return Err(fail(out, "vad", exit::CHECK_FAILED, None));
+    }
+    Ok(())
+}
+
+/// Step 6 of [`run_with`]: a decode of the sample returns no text and no error. On a
+/// failure it writes the reason and the failed line and returns the exit code as the
+/// error.
+fn check_decode(
+    engine: &mut Engine,
+    pcm: &[f32],
+    threads: u32,
+    vad_params: &VadParams,
+    out: &mut dyn Write,
+    err: &mut dyn Write,
+) -> Result<(), i32> {
+    let abort = AtomicI32::new(0);
+    let decoded = engine.transcribe(
+        pcm,
+        &engine::decode_params("en", threads),
+        vad_params,
+        &abort,
+    );
+    match &decoded {
+        Ok(output) if output.text.is_empty() => {}
+        Ok(_) => {
+            let _ = writeln!(
+                err,
+                "Decoding the sample with the fixture model returned text."
+            );
+            return Err(fail(out, "decode", exit::CHECK_FAILED, None));
+        }
+        Err(e) => {
+            let _ = writeln!(err, "Decoding the sample failed: {e}.");
+            return Err(fail(out, "decode", exit::CHECK_FAILED, None));
+        }
+    }
+    Ok(())
 }
 
 fn backend_name(backend: Backend) -> &'static str {
