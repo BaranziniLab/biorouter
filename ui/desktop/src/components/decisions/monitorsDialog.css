@@ -1,0 +1,154 @@
+/*
+ * THE MONITORS DIALOG (components/decisions/MonitorsDialog.tsx): rows, the in-place
+ * editor's grids, and the foot row with its saved status and Undo.
+ *
+ * Authored CSS, not new Tailwind strings: under BIOROUTER_NO_HMR a newly written
+ * utility can silently fail to generate (CLAUDE.md, "Desktop shell geometry"). The
+ * shared `.br-monitors*` rules the dialog still uses (the editor's filled box, notes,
+ * errors, the score levels, the editor's action row) live in `decisionsPanel.css`.
+ *
+ * Rows, not cards (design.md 9.2 principle 4): each monitor is a `biorouter-list-row`
+ * in a `br-rows-flat` shell, so it reads apart by air and the hover wash, and only
+ * the one being edited is a filled box.
+ */
+
+/* Segmented controls hug their segments: the field stacks are `flex-col`, which
+   stretched a two-segment track across the whole dialog (F-17). Never `fill`. */
+.br-monitors .br-segmented {
+  align-self: flex-start;
+}
+
+.br-monitors__rows {
+  margin: 0;
+  padding: 0;
+  gap: 2px;
+  list-style: none;
+}
+
+.br-monitors__row-text {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.br-monitors__row-title {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  align-items: center;
+  gap: 8px;
+}
+
+.br-monitors__row-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The peek's trigger: one line, cut with an ellipsis, so a long rule never grows the row.
+   Its kept state is the InfoTip target's own pressed plate (`.br-info-tip-target`). */
+.br-monitors__row-line {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-monitors__editor-item {
+  padding-block: 4px;
+}
+
+/* Inside "More options": the same 12px rhythm as the editor's own fields. */
+.br-monitors__more {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 12px;
+  padding-top: 8px;
+}
+
+/* A choice's options: the name, what it means (twice the room), then the round ×. */
+.br-monitors__option-grid {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  flex-direction: column;
+  gap: 4px;
+  list-style: none;
+}
+
+.br-monitors__option-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+/* "Fires when": the answer it watches and the side on one line, the slider, the sentence. */
+.br-monitors__fires {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.br-monitors__fires-line {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.br-monitors__watched {
+  width: 240px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* The foot row: Add at the start, the status (words only) and Undo at the end. */
+.br-monitors__foot {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.br-monitors__status-slot {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  margin-inline-start: auto;
+}
+
+.br-monitors__status {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+}
+
+/* "Saved" is a state, not evidence: muted ink, never success green. */
+.br-monitors__status > svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+
+/* A link button inside a line of text (Retry, Undo): no inline padding of its own. */
+.br-monitors__inline-link {
+  padding-inline: 0;
+}
+
+.br-monitors__empty {
+  padding-block: 24px;
+}

@@ -37,6 +37,12 @@ export interface ExtensionPicker {
    * chip shows no number (V2-R7-3).
    */
   answered: boolean;
+  /**
+   * This chat's read failed: the list shown, if any, is the configuration's
+   * fallback, and an empty one must not read as "this chat has none" (A-6).
+   * Optional for pickers built by hand in tests; absent means it did not fail.
+   */
+  failed?: boolean;
   query: string;
   setQuery: (query: string) => void;
   rows: ExtensionRow[];
@@ -100,6 +106,8 @@ export function useExtensionPicker(
   } | null>(null);
   // The chat whose first read has settled, answered or failed.
   const [settledFor, setSettledFor] = useState<string | null>(null);
+  // The chat whose LAST read failed; cleared by the next read that answers.
+  const [failedFor, setFailedFor] = useState<string | null>(null);
   const sessionExtensionsLoaded = sessionRead !== null && sessionRead.sessionId === sessionId;
   const sessionExtensions = sessionExtensionsLoaded ? sessionRead.extensions : NO_EXTENSIONS;
   // A read that lands after the chat changed is dropped: written into the one
@@ -184,11 +192,18 @@ export function useExtensionPicker(
         if (!current) return;
         if (response.data?.extensions) {
           adoptSessionExtensions(sessionId, response.data.extensions);
+          setFailedFor(null);
+        } else {
+          // An answer with no list is not this chat's list either.
+          setFailedFor(sessionId);
         }
         setSettledFor(sessionId);
       } catch (error) {
         console.error('Failed to fetch session extensions:', error);
-        if (current) setSettledFor(sessionId);
+        if (current) {
+          setFailedFor(sessionId);
+          setSettledFor(sessionId);
+        }
       }
     };
 
@@ -547,12 +562,31 @@ export function useExtensionPicker(
     isHubView,
     activeCount,
     answered: isHubView || settledFor === sessionId,
+    failed: !isHubView && failedFor === sessionId,
     query: searchQuery,
     setQuery: setSearchQuery,
     rows,
     toggle: handleToggle,
     bulk,
   };
+}
+
+/**
+ * What an empty list says (A-6): a typed query that matches nothing, a list that
+ * has not answered yet, a read that failed, or a chat that really has none. Only
+ * the last may say there are none: before the answer, or after a
+ * failure, that sentence was false while fourteen extensions loaded. And even
+ * then it says none were ADDED, and that built-in capabilities stay on: they run
+ * in every chat, so "none available" read as nothing running at all.
+ */
+export function extensionsEmptyText(
+  picker: Pick<ExtensionPicker, 'query' | 'answered' | 'failed'> &
+    Partial<Pick<ExtensionPicker, 'isHubView'>>
+): string {
+  if (picker.query) return EXTENSIONS_COPY.noMatch;
+  if (!picker.answered) return EXTENSIONS_COPY.loading;
+  if (picker.failed) return EXTENSIONS_COPY.loadFailed;
+  return picker.isHubView ? EXTENSIONS_COPY.emptyNextChat : EXTENSIONS_COPY.empty;
 }
 
 /** The extensions list inside the Tools popover. */
@@ -573,7 +607,7 @@ export function ExtensionsPanel({
       scopeLabel={picker.isHubView ? TOOLS_COPY.scope.nextChat : TOOLS_COPY.scope.thisChat}
       scopeHelp={picker.isHubView ? EXTENSIONS_COPY.helpNextChat : EXTENSIONS_COPY.helpChat}
       bulk={picker.bulk}
-      emptyText={picker.query ? EXTENSIONS_COPY.noMatch : EXTENSIONS_COPY.empty}
+      emptyText={extensionsEmptyText(picker)}
       inputRef={inputRef}
     >
       {picker.rows.map(({ ext, title, pairingRefused, disabled, pending }) => (

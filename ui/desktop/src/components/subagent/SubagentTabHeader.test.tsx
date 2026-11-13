@@ -21,7 +21,7 @@ vi.mock('../../utils/userAction', async (importOriginal) => {
   return { ...actual, userActionHeaders: async () => ({ 'X-User-Action': 'test-key' }) };
 });
 
-import { SubagentTabHeader } from './SubagentTabHeader';
+import { SUBAGENT_HEADER_COPY, SubagentTabHeader, grantsHelp } from './SubagentTabHeader';
 import { announceSessionName } from '../../utils/sessionNameSync';
 import { GUARDRAIL_FRAME_CLOSE, GUARDRAIL_FRAME_OPEN } from '../../utils/guardrailFrame';
 import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
@@ -29,7 +29,9 @@ import { SUBAGENT_STOP_NEEDS_DESKTOP, SUBAGENT_STOP_NEEDS_DESKTOP_HELP } from '.
 import { transcriptCopy } from '../transcript/copy';
 
 const copy = transcriptCopy.subagent;
-const contextButton = () => screen.getByRole('button', { name: copy.context });
+const contextButton = () => screen.getByRole('button', { name: SUBAGENT_HEADER_COPY.instructions });
+const grantsTip = () =>
+  screen.getByRole('button', { name: `About ${SUBAGENT_HEADER_COPY.whatItCanUse}` });
 
 const props = {
   sessionId: 'child-1',
@@ -52,19 +54,14 @@ describe('SubagentTabHeader', () => {
     render(<SubagentTabHeader {...props} />);
     expect(screen.getByText(copy.of)).toBeTruthy();
     expect(screen.getByText(/Planning chat/)).toBeTruthy();
-    // ⚠ Counts on the line, names in each count's InfoTip. The header used to
-    // print one chip per grant in an uncapped flex-wrap, so a subagent tab grew
-    // taller than an ordinary one with every extension, and, before the backend
-    // fix, the names it printed were the user's whole globally-enabled set
-    // rather than the child's grants. The names must stay REACHABLE (by
-    // keyboard and screen reader too, which a `title` never was), which is what
-    // the description asserts; they must not set the line's height.
-    const exts = screen.getByText('2 extensions');
-    expect(exts).toHaveAccessibleDescription('developer, todo');
-    expect(exts).toHaveAttribute('tabindex', '0');
-    expect(exts).not.toHaveAttribute('title');
-    const kbs = screen.getByText('2 knowledge bases');
-    expect(kbs).toHaveAccessibleDescription('kb-papers, kb-methods');
+    // F-15: no counts on the line; one "What it can use" InfoTip names the
+    // grants by display name, reachable by hover, Tab and screen reader.
+    expect(screen.queryByText('2 extensions')).toBeNull();
+    expect(screen.queryByText('2 knowledge bases')).toBeNull();
+    expect(grantsTip()).toHaveAccessibleDescription(
+      'Extensions: Developer and Todo. Knowledge bases: Kb papers and Kb methods.'
+    );
+    expect(screen.getByTestId('subagent-header-child-1')).not.toHaveTextContent(/developer|kb-/);
     // Collapsed by default; expanding reveals the spawn context.
     expect(screen.queryByText(/count the files/)).toBeNull();
     fireEvent.click(contextButton());
@@ -141,7 +138,7 @@ describe('SubagentTabHeader', () => {
       render(<SubagentTabHeader {...props} />);
       fireEvent.click(screen.getByRole('button', { name: 'Planning chat' }));
       expect(props.onOpenParent).toHaveBeenCalledOnce();
-      expect(screen.getByText('2 extensions')).toHaveAccessibleDescription('developer, todo');
+      expect(grantsTip()).toHaveAccessibleDescription(/^Extensions: Developer and Todo\./);
       fireEvent.click(contextButton());
       expect(screen.getByText(/count the files/)).toBeTruthy();
     });
@@ -201,13 +198,15 @@ describe('SubagentTabHeader', () => {
       expect(props.onOpenParent).toHaveBeenCalledOnce();
     });
 
-    it('keeps the id in the link tooltip', async () => {
+    it('shows no id tooltip on the link, and no mono anywhere (R6, R9)', async () => {
       mocks.getSession.mockResolvedValue({ data: { id: 'parent-1', name: PARENT_NAME } });
-      render(<SubagentTabHeader {...unnamed} />);
+      const { container } = render(<SubagentTabHeader {...unnamed} />);
       const link = await screen.findByRole('button', { name: PARENT_NAME });
       await userEvent.setup().tab();
       expect(link).toHaveFocus();
-      expect(await screen.findByRole('tooltip')).toHaveTextContent('parent-1');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(screen.queryByRole('tooltip')).toBeNull();
+      expect(container.querySelector('.font-mono')).toBeNull();
     });
 
     it('takes the name from the chat list when it holds the parent, with no read', () => {
@@ -225,7 +224,7 @@ describe('SubagentTabHeader', () => {
       expect(screen.queryByText(copy.of)).toBeNull();
       expect(line()).not.toHaveTextContent('parent-1');
       // The rest of the line is already there.
-      expect(screen.getByText('2 extensions')).toBeInTheDocument();
+      expect(grantsTip()).toBeInTheDocument();
     });
 
     it('says "another chat" when the row cannot be read, still linking the parent', async () => {
@@ -273,7 +272,7 @@ describe('SubagentTabHeader', () => {
     // but a toggle that can only ever open onto nothing is a dead control.
     render(<SubagentTabHeader {...props} spawnContext={undefined} />);
     expect(screen.getByText(copy.of)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: copy.context })).toBeNull();
+    expect(screen.queryByRole('button', { name: SUBAGENT_HEADER_COPY.instructions })).toBeNull();
   });
 
   /**
@@ -396,5 +395,34 @@ describe('SubagentTabHeader', () => {
     fireEvent.click(toggle);
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(document.getElementById(controls!)?.textContent).toContain('count the files');
+  });
+});
+
+describe('grantsHelp', () => {
+  it('names at most three per list, then how many more, and leaves out an empty list', () => {
+    expect(grantsHelp(['A', 'B', 'C', 'D', 'E'], ['Soul'])).toBe(
+      'Extensions: A, B, C and 2 more. Knowledge base: Soul.'
+    );
+    expect(grantsHelp([], ['Soul', 'Trials'])).toBe('Knowledge bases: Soul and Trials.');
+    expect(grantsHelp(['Developer'], [])).toBe('Extensions: Developer.');
+    expect(grantsHelp([], [])).toBeNull();
+  });
+});
+
+describe('the Instructions panel', () => {
+  it('draws the spawn record in sans, in the well, never mono', () => {
+    render(<SubagentTabHeader {...props} />);
+    fireEvent.click(contextButton());
+    const panel = screen.getByText(/count the files/);
+    expect(panel.tagName).not.toBe('PRE');
+    expect(panel).not.toHaveClass('font-mono');
+    expect(panel).toHaveClass('text-secondary', 'bg-background-well', 'whitespace-pre-wrap');
+  });
+
+  it('draws no InfoTip when the child was given nothing to name', () => {
+    render(<SubagentTabHeader {...props} extensions={[]} knowledgeBases={[]} />);
+    expect(
+      screen.queryByRole('button', { name: `About ${SUBAGENT_HEADER_COPY.whatItCanUse}` })
+    ).toBeNull();
   });
 });

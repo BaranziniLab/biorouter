@@ -197,6 +197,51 @@ pub struct PanePhase {
     /// The title (else the id) of the earlier gated phase this open phase
     /// waits for, when one holds it.
     pub held_by: Option<String>,
+    /// What the phase's gate has come to, when it has one.
+    pub gate: Option<PaneGate>,
+}
+
+/// A phase gate as the pane marks it on its phase's heading.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneGate {
+    /// Not asked yet, or asked and the phase is still open to try again.
+    Waiting,
+    /// Its last evaluation passed.
+    Passed,
+    /// Its last evaluation did not pass; the agent may try again.
+    NotPassed,
+    /// Every attempt is spent, or it could not be asked: the person decides.
+    Blocked,
+    /// The person passed or skipped it.
+    ByYou,
+}
+
+impl PaneGate {
+    pub fn of(gate: &biorouter::agents::orchestration_plan::PhaseGateSnapshot) -> Self {
+        if gate.person_decision.is_some() {
+            return Self::ByYou;
+        }
+        if gate.blocked || gate.needs_person {
+            return Self::Blocked;
+        }
+        match gate.last_passed {
+            Some(true) => Self::Passed,
+            Some(false) => Self::NotPassed,
+            None => Self::Waiting,
+        }
+    }
+
+    /// The words on the phase's heading: a gate passes or does not, never
+    /// "fails".
+    fn words(self) -> &'static str {
+        match self {
+            Self::Waiting => "gated",
+            Self::Passed => "gate passed",
+            Self::NotPassed => "gate not passed yet",
+            Self::Blocked => "gate blocked · needs you",
+            Self::ByYou => "gate decided by you",
+        }
+    }
 }
 
 impl PanePhase {
@@ -212,6 +257,7 @@ impl PanePhase {
             agent_ids: Vec::new(),
             handoff: None,
             held_by: None,
+            gate: None,
         }
     }
 
@@ -268,6 +314,7 @@ impl PaneModel {
                             agent_ids: p.agent_ids.clone(),
                             handoff: p.handoff.clone(),
                             held_by: p.held_by.as_deref().map(label),
+                            gate: p.gate.as_ref().map(PaneGate::of),
                         })
                         .collect(),
                 }
@@ -328,6 +375,7 @@ impl PaneModel {
                 Bucket::Active,
                 Bucket::Blocked,
                 Bucket::Failed,
+                Bucket::Stopped,
                 Bucket::Done,
                 Bucket::Unknown,
             ]
@@ -417,13 +465,16 @@ impl PaneModel {
 }
 
 /// Counts over a set of rows. `running` is queued, running or stopping;
-/// `failed` is failed, incomplete or interrupted (the plan's own buckets).
+/// `failed` is failed or interrupted; `stopped` is incomplete, which is what
+/// a subagent the person stopped (Ctrl-C, Stop) ends as, so it is not counted
+/// as a failure.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Tally {
     pub total: usize,
     pub running: usize,
     pub done: usize,
     pub failed: usize,
+    pub stopped: usize,
     pub blocked: usize,
     pub quiet: usize,
 }
@@ -437,6 +488,7 @@ impl Tally {
                 Bucket::Active => t.running += 1,
                 Bucket::Done => t.done += 1,
                 Bucket::Failed => t.failed += 1,
+                Bucket::Stopped => t.stopped += 1,
                 Bucket::Blocked => t.blocked += 1,
                 Bucket::Unknown => {}
             }
@@ -455,6 +507,9 @@ impl Tally {
         if self.failed > 0 {
             s.push_str(&format!(" · failed {}", self.failed));
         }
+        if self.stopped > 0 {
+            s.push_str(&format!(" · stopped {}", self.stopped));
+        }
         if self.blocked > 0 {
             s.push_str(&format!(" · blocked {}", self.blocked));
         }
@@ -470,6 +525,7 @@ pub enum Bucket {
     Active,
     Blocked,
     Failed,
+    Stopped,
     Done,
     Unknown,
 }
@@ -481,9 +537,8 @@ impl Bucket {
             | SubagentRunStatus::Running
             | SubagentRunStatus::Cancelling => Bucket::Active,
             SubagentRunStatus::Blocked => Bucket::Blocked,
-            SubagentRunStatus::Failed
-            | SubagentRunStatus::Incomplete
-            | SubagentRunStatus::Interrupted => Bucket::Failed,
+            SubagentRunStatus::Failed | SubagentRunStatus::Interrupted => Bucket::Failed,
+            SubagentRunStatus::Incomplete => Bucket::Stopped,
             SubagentRunStatus::Completed => Bucket::Done,
             SubagentRunStatus::Unknown => Bucket::Unknown,
         }
@@ -494,6 +549,7 @@ impl Bucket {
             Bucket::Active => "running",
             Bucket::Blocked => "blocked",
             Bucket::Failed => "failed",
+            Bucket::Stopped => "stopped",
             Bucket::Done => "done",
             Bucket::Unknown => "unknown",
         }
@@ -503,7 +559,7 @@ impl Bucket {
         match self {
             Bucket::Active => "◐",
             Bucket::Blocked => "⏸",
-            Bucket::Failed => "✗",
+            Bucket::Failed | Bucket::Stopped => "✗",
             Bucket::Done => "●",
             Bucket::Unknown => "·",
         }
@@ -873,6 +929,16 @@ fn dense_tail(row: &PaneRow) -> String {
 }
 
 fn phase_head_text(phase: &PanePhase, counts: &PhaseCounts) -> String {
+    let mut s = phase_head_counts(phase, counts);
+    // E-7: the phase's gate, passed or blocked, on its own heading.
+    if let Some(gate) = phase.gate {
+        s.push_str(" · ");
+        s.push_str(gate.words());
+    }
+    s
+}
+
+fn phase_head_counts(phase: &PanePhase, counts: &PhaseCounts) -> String {
     let mut s = format!("{} {}", phase_glyph(phase.status), phase.label());
     // A phase an earlier gate holds says what it waits for, in place of "not
     // started" or "starting", which it cannot do until that gate is through.
@@ -946,8 +1012,10 @@ fn group_head_line(model: &PaneModel, group: &Group, width: usize) -> Option<Lin
             let counts = phase_counts(model, phase, &group.rows);
             (phase_head_text(phase, &counts), phase_style(phase.status))
         }
+        // The rows under it say how many there are; a number after the label
+        // read as part of it ("no phase 2").
         GroupHead::Unphased => (
-            format!("· no phase {}", group.rows.len()),
+            "· no phase".to_string(),
             Style::new().add_modifier(Modifier::BOLD),
         ),
         GroupHead::State(bucket) => (
@@ -2151,6 +2219,83 @@ mod tests {
             phase_head_text(&blocked, &PhaseCounts::default()),
             "⏸ Write · blocked · waits for Research's gate"
         );
+    }
+
+    /// E-9: a subagent the person stopped (it ends incomplete) is counted as
+    /// stopped, never as a failure; E-8: the rows a plan does not place sit
+    /// under "no phase", with no count run into the label.
+    #[test]
+    fn stopped_subagents_are_not_failures_and_no_phase_has_no_count() {
+        let mut model = PaneModel {
+            rows: vec![
+                row("a", "a", SubagentRunStatus::Completed),
+                row("b", "b", SubagentRunStatus::Incomplete),
+                row("c", "c", SubagentRunStatus::Incomplete),
+                row("d", "d", SubagentRunStatus::Failed),
+            ],
+            plan: None,
+        };
+        let tally = model.tally();
+        assert_eq!((tally.stopped, tally.failed), (2, 1));
+        assert_eq!(tally.text(), "running 0 · done 1/4 · failed 1 · stopped 2");
+        model.plan = Some(PanePlan {
+            title: "Plan".into(),
+            phases: vec![PanePhase::new(
+                "build",
+                PhaseKind::Implementation,
+                PhaseStatus::Completed,
+            )],
+        });
+        let groups = model.groups();
+        let unphased = groups
+            .iter()
+            .find(|g| g.head == Some(GroupHead::Unphased))
+            .unwrap();
+        let line = group_head_line(&model, unphased, 40).unwrap();
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "· no phase");
+    }
+
+    /// E-7: a phase's heading marks its gate: passed, blocked (the person's
+    /// to decide), not passed yet, or decided by the person.
+    #[test]
+    fn a_phase_heading_marks_its_gate() {
+        use biorouter::agents::orchestration_plan::PhaseGateSnapshot;
+        let mut gate: PhaseGateSnapshot = serde_json::from_value(serde_json::json!({
+            "threshold": 0.6,
+            "questionCount": 1,
+            "attempts": 1,
+            "maxAttempts": 3,
+            "lastPassed": true,
+            "lastMinP": 0.74,
+            "blocked": false,
+            "needsPerson": false,
+        }))
+        .expect("a gate snapshot");
+        let mut build = PanePhase::new("build", PhaseKind::Implementation, PhaseStatus::Completed);
+        build.title = "Build".into();
+        build.gate = Some(PaneGate::of(&gate));
+        let one = PhaseCounts {
+            total: 1,
+            done: 1,
+            ..PhaseCounts::default()
+        };
+        assert_eq!(phase_head_text(&build, &one), "● Build 1/1 · gate passed");
+
+        gate.last_passed = Some(false);
+        gate.blocked = true;
+        gate.needs_person = true;
+        build.status = PhaseStatus::Blocked;
+        build.gate = Some(PaneGate::of(&gate));
+        assert_eq!(
+            phase_head_text(&build, &one),
+            "⏸ Build 1/1 · gate blocked · needs you"
+        );
+        gate.blocked = false;
+        gate.needs_person = false;
+        assert_eq!(PaneGate::of(&gate), PaneGate::NotPassed);
+        gate.last_passed = None;
+        assert_eq!(PaneGate::of(&gate), PaneGate::Waiting);
     }
 
     #[test]

@@ -132,11 +132,8 @@ export const transcriptCopy = {
     of: 'Subagent of',
     /** The parent link's words when the parent's row holds no name or cannot be read. */
     parentFallback: 'another chat',
-    context: 'Context',
     stop: 'Stop',
     stopLabel: 'Stop subagent',
-    extensions: (count: number) => `${count} extension${count === 1 ? '' : 's'}`,
-    knowledgeBases: (count: number) => `${count} knowledge base${count === 1 ? '' : 's'}`,
   },
 
   /** A workflow chat's starter prompts. */

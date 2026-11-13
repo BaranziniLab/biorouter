@@ -137,8 +137,16 @@ pub const PHASE_MONITORS_NOT_RETROACTIVE: &str = "Subagents already in this phas
 /// Evaluations in a row that end in an error before the phase is blocked.
 pub const GATE_ERRORS_TO_BLOCK: u32 = 2;
 /// The state a gate's decision model reads, at most. Sized like the monitor
-/// window's default, so it fits a small local decision model.
+/// window's default; [`fit_gate_state`] narrows it further to the gate
+/// model's own window.
 pub const GATE_STATE_MAX_CHARS: usize = 6_000;
+/// The fewest characters a gate's state is narrowed to. A model too small
+/// for even this is refused by the size check before sending, which names its
+/// window, rather than asked about nothing.
+pub const GATE_STATE_MIN_CHARS: usize = 400;
+/// Rounds of narrowing [`fit_state_to_window`] makes before it sends what it
+/// has to the size check.
+const GATE_FIT_ROUNDS: usize = 6;
 
 /// What a phase is for. Drives the glyph a surface draws; carries no behaviour.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, ToSchema)]
@@ -777,9 +785,10 @@ pub struct PhaseGateInput {
         skip_serializing_if = "Option::is_none"
     )]
     pub allow_uncalibrated: Option<bool>,
-    /// Optional decision model as provider/model, from decision_models. Left
-    /// out, this chat's default decision model, else the configured default,
-    /// else the first model this chat may use.
+    /// Optional decision model as provider/model, or by its name when that
+    /// names one model decision_models lists (`tev1:0.8b`). Left out, this
+    /// chat's default decision model, else the configured default, else the
+    /// first model this chat may use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
 }
@@ -2357,8 +2366,9 @@ fn blocked_gate_guidance(gate: &PhaseGateSnapshot, held_by: Option<&str>) -> Str
 }
 
 /// A gate's state in a few words: "2 questions at P(yes) >= 0.80, 1 of 3
-/// attempts used, last failed (lowest P(yes) 0.42), set by the agent, holds
-/// verify".
+/// attempts used, last not passed (lowest P(yes) 0.42), set by the agent,
+/// holds verify". A gate "passed" or was "not passed" (R1, live QA
+/// 2026-11-10), never "failed", which a person reads as an error.
 pub fn gate_words(gate: &PhaseGateSnapshot) -> String {
     let mut words = format!(
         "{} question{} at P(yes) >= {:.2}, {} of {} attempts used",
@@ -2370,8 +2380,10 @@ pub fn gate_words(gate: &PhaseGateSnapshot) -> String {
     );
     match (gate.last_passed, gate.last_min_p) {
         (Some(true), _) => words.push_str(", passed"),
-        (Some(false), Some(p)) => words.push_str(&format!(", last failed (lowest P(yes) {p:.2})")),
-        (Some(false), None) => words.push_str(", last failed"),
+        (Some(false), Some(p)) => {
+            words.push_str(&format!(", last not passed (lowest P(yes) {p:.2})"))
+        }
+        (Some(false), None) => words.push_str(", last not passed"),
         (None, _) => {}
     }
     if gate.blocked {
@@ -2445,12 +2457,54 @@ pub async fn validate_spawn_phase(
     parent_session_id: &str,
     phase_id: &str,
 ) -> Result<(), String> {
+    validate_spawn_phase_classified(session_manager, parent_session_id, phase_id)
+        .await
+        .map_err(|refusal| refusal.sentence)
+}
+
+/// A refused spawn into a phase, with what kind of refusal it is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpawnPhaseRefusal {
+    /// The sentence the model reads.
+    pub sentence: String,
+    /// True when the call itself named nothing (no plan, or a phase not in
+    /// it): the same arguments fail again until the call changes. False when
+    /// the phase exists and the plan's state refuses it now (closed, held by
+    /// an earlier gate, the plan's subagent limit, an unreadable plan), which
+    /// the agent answers by changing the plan rather than the call. C-5 (live
+    /// QA 2026-11-10): a held phase used to be reported as rejected arguments,
+    /// whose guidance "Fix the call itself; the same arguments will fail
+    /// again" was false, since the same call succeeds once the gate passes.
+    pub fix_the_call: bool,
+}
+
+/// [`validate_spawn_phase`], keeping whether the refusal is about the call's
+/// arguments or about the plan's state at this moment.
+pub async fn validate_spawn_phase_classified(
+    session_manager: &SessionManager,
+    parent_session_id: &str,
+    phase_id: &str,
+) -> Result<(), SpawnPhaseRefusal> {
     let plan = load_plan(session_manager, parent_session_id)
         .await
-        .map_err(|e| {
-            format!("Could not read this chat's orchestration plan: {e}. Nothing was created.")
+        .map_err(|e| SpawnPhaseRefusal {
+            sentence: format!(
+                "Could not read this chat's orchestration plan: {e}. Nothing was created."
+            ),
+            fix_the_call: false,
         })?;
-    check_spawn_phase(plan.as_ref(), phase_id)
+    classify_spawn_phase(plan.as_ref(), phase_id)
+}
+
+/// Pure half of [`validate_spawn_phase_classified`].
+pub(crate) fn classify_spawn_phase(
+    plan: Option<&OrchestrationPlan>,
+    phase_id: &str,
+) -> Result<(), SpawnPhaseRefusal> {
+    check_spawn_phase(plan, phase_id).map_err(|sentence| SpawnPhaseRefusal {
+        sentence,
+        fix_the_call: plan.is_none_or(|plan| plan.phase(phase_id.trim()).is_none()),
+    })
 }
 
 /// Pure half of [`validate_spawn_phase`].
@@ -3102,6 +3156,71 @@ pub(crate) fn gate_state_text(phase: &PlanPhase, agents: &[PhaseAgentState]) -> 
     truncate_chars(&text, GATE_STATE_MAX_CHARS)
 }
 
+/// `state` narrowed to the window of the model the gate asks
+/// ([`DecisionService::context_tokens_for`]), as a monitor's window is fitted
+/// to its model. F1 (live QA 2026-11-10): the state was cut at a flat
+/// [`GATE_STATE_MAX_CHARS`], so a gate on `tev1:0.8b` (a 2,048-token window)
+/// over a phase with numeric results was refused before sending ("about 3878
+/// tokens, which does not fit") and, after two such errors, blocked the phase.
+/// Unchanged when the listing does not show the model; the size check still
+/// judges then.
+async fn fit_gate_state(
+    service: &DecisionService,
+    session: &DecisionSession,
+    model: Option<&DecisionModelRef>,
+    questions: &IndexMap<String, Question>,
+    state: String,
+) -> String {
+    let Some(context_tokens) = service.context_tokens_for(Some(session), model).await else {
+        return state;
+    };
+    // The fit counts with the size check's own tokenizer, without waiting.
+    crate::decision::service::load_token_counter().await;
+    fit_state_to_window(&state, context_tokens, questions)
+}
+
+/// `state`, kept from its start (the phase, its goal and hand-off come first),
+/// narrowed until the size check's estimate of it beside `questions` fits a
+/// model of `context_tokens`: first to the state budget the monitor's window
+/// fit uses ([`crate::decision::service::state_budget_tokens`], at three
+/// characters a token), then by the share of the overflow, because a state of
+/// numbers spends a token on every digit. Never below
+/// [`GATE_STATE_MIN_CHARS`].
+pub(crate) fn fit_state_to_window(
+    state: &str,
+    context_tokens: usize,
+    questions: &IndexMap<String, Question>,
+) -> String {
+    use crate::decision::service::{context_margin, estimate_tokens_now, state_budget_tokens};
+    let floor = GATE_STATE_MIN_CHARS;
+    let budget_chars = state_budget_tokens(context_tokens, questions)
+        .saturating_mul(3)
+        .max(floor);
+    let mut text = truncate_chars(state, budget_chars.min(GATE_STATE_MAX_CHARS));
+    let allowed = context_tokens.saturating_sub(context_margin(context_tokens));
+    for _ in 0..GATE_FIT_ROUNDS {
+        let tokens = estimate_tokens_now(&DecisionRequest {
+            questions: questions.clone(),
+            context: DecisionContext::Text(text.clone()),
+        });
+        let chars = text.chars().count();
+        if tokens <= allowed || chars <= floor {
+            break;
+        }
+        let state_tokens = estimate_tokens_now(&DecisionRequest {
+            questions: IndexMap::new(),
+            context: DecisionContext::Text(text.clone()),
+        });
+        let cut = ((tokens - allowed) * chars).div_ceil(state_tokens.max(1));
+        let next = chars.saturating_sub(cut).max(floor);
+        if next >= chars {
+            break;
+        }
+        text = truncate_chars(state, next);
+    }
+    text
+}
+
 /// One gate question's answer.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct GateAnswer {
@@ -3144,6 +3263,7 @@ pub(crate) async fn evaluate_gate(
             )
         })
         .collect();
+    let state = fit_gate_state(service, session, gate.model.as_ref(), &questions, state).await;
     let request = DecisionRequest {
         questions,
         context: DecisionContext::Text(state),
@@ -5597,6 +5717,22 @@ mod tests {
         .is_ok());
     }
 
+    /// C-5: a held phase is a refusal about the plan's state, not about the
+    /// call, so it must not be reported as rejected arguments. A phase the plan
+    /// does not name, or a spawn with no plan, still is the call's fault.
+    #[test]
+    fn a_held_spawn_is_not_a_fault_in_the_call() {
+        let plan = held_plan();
+        let held = classify_spawn_phase(Some(&plan), "verify").unwrap_err();
+        assert!(!held.fix_the_call, "{held:?}");
+        assert!(held.sentence.contains("waits for phase \"build\"'s gate"));
+        let unknown = classify_spawn_phase(Some(&plan), "nope").unwrap_err();
+        assert!(unknown.fix_the_call, "{unknown:?}");
+        let no_plan = classify_spawn_phase(None, "verify").unwrap_err();
+        assert!(no_plan.fix_the_call, "{no_plan:?}");
+        assert!(classify_spawn_phase(Some(&plan), "build").is_ok());
+    }
+
     /// An open gate holds every phase listed after it, by position: "verify"
     /// names no dependency and still waits.
     #[test]
@@ -6940,7 +7076,7 @@ mod tests {
         let snapshot = snapshot_of(&workflow, &[]);
         let text = render_snapshot_text(&snapshot);
         assert!(
-            text.contains("last failed (lowest P(yes) 0.40), blocked, set by the workflow"),
+            text.contains("last not passed (lowest P(yes) 0.40), blocked, set by the workflow"),
             "{text}"
         );
         assert!(
@@ -7540,6 +7676,74 @@ mod tests {
                 .chars()
                 .count()
                 <= GATE_STATE_MAX_CHARS
+        );
+    }
+
+    /// F1 (live QA 2026-11-10): a gate's state is fitted to the gate model's
+    /// window, as a monitor's window is. The QA's shape, a phase whose 40
+    /// children reported lines full of numbers cut at 6,000 characters, was
+    /// refused by `tev1:0.8b`'s 2,048-token window ("about 3878 tokens");
+    /// fitted, the size check's own estimate admits it, and the phase and its
+    /// goal survive at the start.
+    #[tokio::test]
+    async fn a_gate_state_is_fitted_to_the_gate_models_window() {
+        use crate::decision::service::{context_margin, estimate_tokens, load_token_counter};
+        load_token_counter().await;
+        let mut plan = gated_plan();
+        plan.phase_mut("build").unwrap().goal = Some("Analyse every sample".into());
+        let line = "Ran 14 samples on 2026-11-05, mean glucose 104.2 mg/dL (SD 3.1), HbA1c \
+                    6.1%, p=0.0042, n=1204, output /data/run_20261105_0913/result.csv";
+        let agents: Vec<PhaseAgentState> = (0..40)
+            .map(|i| {
+                state(
+                    &format!("worker-{i}"),
+                    SubagentRunStatus::Completed,
+                    Some(line),
+                )
+            })
+            .collect();
+        let phase = plan.phase("build").unwrap();
+        let gate = phase.gate.as_ref().unwrap();
+        let questions: IndexMap<String, Question> = gate
+            .questions
+            .iter()
+            .map(|(name, question)| {
+                (
+                    name.clone(),
+                    Question {
+                        threshold: Some(Threshold::Yes(gate.threshold)),
+                        ..question.clone()
+                    },
+                )
+            })
+            .collect();
+        let state_text = gate_state_text(phase, &agents);
+        let fits = |text: &str| {
+            let request = DecisionRequest {
+                questions: questions.clone(),
+                context: DecisionContext::Text(text.to_string()),
+            };
+            async move { estimate_tokens(&request).await + context_margin(2_048) <= 2_048 }
+        };
+        assert!(
+            !fits(&state_text).await,
+            "the fixture must overflow the window"
+        );
+
+        let fitted = fit_state_to_window(&state_text, 2_048, &questions);
+        assert!(
+            fits(&fitted).await,
+            "{} chars still overflow",
+            fitted.chars().count()
+        );
+        assert!(fitted.starts_with("Phase \""), "{fitted}");
+        assert!(fitted.contains("Goal: Analyse every sample"), "{fitted}");
+        assert!(fitted.chars().count() >= GATE_STATE_MIN_CHARS);
+
+        // A model with room for it reads the state unchanged.
+        assert_eq!(
+            fit_state_to_window(&state_text, 16_000, &questions),
+            state_text
         );
     }
 

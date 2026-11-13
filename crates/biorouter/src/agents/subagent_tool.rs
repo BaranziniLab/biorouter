@@ -358,15 +358,15 @@ impl ChildVisibility {
         match self {
             ChildVisibility::Headless => format!(
                 "Subagent {child_session_id} is running without a tab: no desktop window is \
-                 attached to this backend. Do not tell the user you opened a tab or that they \
-                 can watch it. Read the child with workspace_read_conversation and report what \
-                 it did yourself."
+                 attached to this backend, so there is no tab to watch and saying there is \
+                 would be false. Read the child with workspace_read_conversation and report \
+                 what it did yourself."
             ),
             ChildVisibility::TabUndelivered { reason } => format!(
                 "Subagent {child_session_id} is running, but NO TAB was opened: the desktop \
-                 window did not take the request ({reason}). Do not tell the user you opened a \
-                 tab. They can open it from this chat's side panel or from History, and you can \
-                 read it with workspace_read_conversation."
+                 window did not take the request ({reason}), so saying a tab opened would be \
+                 false. The user can open it from this chat's side panel or from History, and \
+                 you can read it with workspace_read_conversation."
             ),
             ChildVisibility::BackgroundCapped { cap } => format!(
                 "Subagent {child_session_id} is running in the background: you already have \
@@ -376,15 +376,15 @@ impl ChildVisibility {
             ),
             ChildVisibility::AnnounceOnly => format!(
                 "Subagent {child_session_id} is running, but no tab was opened: the user \
-                 turned on \"never open tabs automatically\". Do not tell them you opened a \
-                 tab. They can open it from this chat's side panel or from History; you can \
+                 turned on \"never open tabs automatically\", so saying a tab opened would be \
+                 false. They can open it from this chat's side panel or from History; you can \
                  read it with workspace_read_conversation."
             ),
             ChildVisibility::Background => format!(
                 "Subagent {child_session_id} is running in the background. No tab was opened: \
                  it is listed in this chat's side panel, where the user can follow its progress \
                  and open it as a tab if they want to. Supervise it with workspace_watch and \
-                 workspace_read_conversation. Do not tell the user a tab opened."
+                 workspace_read_conversation. Never say a tab opened."
             ),
             ChildVisibility::Visible | ChildVisibility::OptedOut => String::new(),
         }
@@ -1433,6 +1433,23 @@ fn handle_subagent_tool_inner(
 /// lines composed from its children's results), not caller task text. Unicode
 /// tag characters are still stripped from it, because the children's result
 /// lines it may be composed from are model output.
+/// The tool error a refused phase spawn returns. A phase the plan does not
+/// name is the call's fault (`invalid_args`); a phase that exists but cannot
+/// take a subagent now (held by an earlier gate, closed, at the plan's limit)
+/// carries its own `tool_failure` envelope, because the arguments were fine and
+/// "the same arguments will fail again" would be false once the gate passes.
+fn spawn_phase_error(refusal: crate::agents::orchestration_plan::SpawnPhaseRefusal) -> ErrorData {
+    use crate::agents::tool_errors::{ToolError, ToolErrorKind};
+    let data = (!refusal.fix_the_call).then(|| {
+        ToolError::new(ToolErrorKind::ToolFailure, refusal.sentence.clone()).to_envelope()
+    });
+    ErrorData {
+        code: ErrorCode::INVALID_PARAMS,
+        message: Cow::from(refusal.sentence),
+        data,
+    }
+}
+
 async fn apply_orchestration_phase(
     config: &AgentConfig,
     parent_session_id: &str,
@@ -1442,17 +1459,13 @@ async fn apply_orchestration_phase(
     let Some(phase_id) = phase else {
         return Ok(());
     };
-    crate::agents::orchestration_plan::validate_spawn_phase(
+    crate::agents::orchestration_plan::validate_spawn_phase_classified(
         &config.session_manager,
         parent_session_id,
         phase_id,
     )
     .await
-    .map_err(|sentence| ErrorData {
-        code: ErrorCode::INVALID_PARAMS,
-        message: Cow::from(sentence),
-        data: None,
-    })?;
+    .map_err(spawn_phase_error)?;
     if let Some(handoff) = crate::agents::orchestration_plan::handoff_context_for(
         &config.session_manager,
         parent_session_id,
@@ -4498,11 +4511,101 @@ mod tests {
         assert!(note.contains("side panel"), "got: {note}");
         assert!(note.contains("workspace_watch"), "got: {note}");
         assert!(note.contains("workspace_read_conversation"), "got: {note}");
-        assert!(
-            note.contains("Do not tell the user a tab opened"),
-            "got: {note}"
-        );
+        assert!(note.contains("Never say a tab opened"), "got: {note}");
         assert!(!ChildVisibility::Background.is_visible());
+    }
+
+    /// C-5 (live QA 2026-11-10): a spawn refused because an earlier gate holds
+    /// its phase was annotated `kind=invalid_args` with "Fix the call itself;
+    /// the same arguments will fail again", which is false: the same call works
+    /// once the gate passes. Only a phase the plan does not name keeps that kind.
+    #[test]
+    fn a_gate_held_spawn_is_not_reported_as_bad_arguments() {
+        use crate::agents::orchestration_plan::SpawnPhaseRefusal;
+        use crate::agents::tool_errors::{classify_error_data, ToolErrorKind};
+        let held = spawn_phase_error(SpawnPhaseRefusal {
+            sentence: "Phase \"ship\" waits for phase \"draft\"'s gate. Nothing was created."
+                .to_string(),
+            fix_the_call: false,
+        });
+        let error = classify_error_data(&held);
+        assert_eq!(error.kind, ToolErrorKind::ToolFailure, "{error:?}");
+        assert!(
+            !error.header().contains("Fix the call itself"),
+            "{}",
+            error.header()
+        );
+        assert!(error.message.contains("waits for phase"), "{error:?}");
+
+        let unknown = spawn_phase_error(SpawnPhaseRefusal {
+            sentence: "Phase \"nope\" is not in this chat's plan.".to_string(),
+            fix_the_call: true,
+        });
+        assert_eq!(
+            classify_error_data(&unknown).kind,
+            ToolErrorKind::InvalidArgs
+        );
+    }
+
+    /// D-14 / E-1 (live QA 2026-11-10): Biorouter's own spawn result reached
+    /// the model under a `[BIOROUTER GUARDRAIL] ... (hidden-directive)` line,
+    /// because the visibility note said "Do not tell the user you opened a
+    /// tab". The guard is right to flag that shape in third-party text, and
+    /// the module refuses an allowlist by design, so our own sentence is the
+    /// thing that changes. This runs the real guard over the real result of a
+    /// background spawn, for every visibility outcome and with both drop notes
+    /// attached, and asks that nothing is flagged.
+    #[test]
+    fn the_spawn_result_does_not_trip_the_prompt_injection_guard() {
+        use crate::guardrails::tool_output::{
+            apply_from, scan_injection, ToolOutputGuardrailMode, ToolOutputVerdict,
+        };
+        let child = "20261110_2";
+        for v in [
+            ChildVisibility::Visible,
+            ChildVisibility::OptedOut,
+            ChildVisibility::Headless,
+            ChildVisibility::AnnounceOnly,
+            ChildVisibility::Background,
+            ChildVisibility::BackgroundCapped { cap: 4 },
+            ChildVisibility::TabUndelivered {
+                reason: "no GUI attached".to_string(),
+            },
+        ] {
+            let mut text = background_started_message("sub_1", child, &v.parent_note(child));
+            for note in [
+                dropped_extension_note(&["spoke_agent".to_string()]),
+                cross_affiliation_drop_note(&[(
+                    "cdw_agent".to_string(),
+                    "Holds another institution's records.".to_string(),
+                )]),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                text.push_str("\n\n");
+                text.push_str(&note);
+            }
+            assert!(
+                scan_injection(&text).is_empty(),
+                "{v:?} trips the guard: {:?}\n{text}",
+                scan_injection(&text)
+            );
+            match apply_from(
+                Some("workspace__subagent"),
+                &text,
+                ToolOutputGuardrailMode::Annotate,
+            ) {
+                ToolOutputVerdict::Framed {
+                    text: framed,
+                    summary,
+                } => {
+                    assert_eq!(summary, None, "{v:?} was flagged:\n{framed}");
+                    assert!(!framed.contains("[BIOROUTER GUARDRAIL]"), "{framed}");
+                }
+                other => panic!("{v:?}: the frame must always apply, got {other:?}"),
+            }
+        }
     }
 
     #[test]

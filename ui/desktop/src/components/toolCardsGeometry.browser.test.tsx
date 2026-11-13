@@ -16,7 +16,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { chromium, type Browser } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import MCPUIResourceRenderer from './MCPUIResourceRenderer';
-import { ToolCallPreview } from './ToolCallPreview';
+import { FolderAccessDetails, ToolCallPreview } from './ToolCallPreview';
 import type { EmbeddedResource, ToolPreview } from '../api';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -300,8 +300,8 @@ describe('the transcript cards in a real layout engine', () => {
   const APPROVAL_WIDTH = 400;
 
   /**
-   * The folder-access approval's folder and files stay mono and absolute (the exact argument of
-   * the decision), and wrap like a path: right after a separator, never inside a name that fits a
+   * The folder-access approval's exact folder and files (under its Details) stay absolute (the
+   * exact argument of the decision), in sans since R2-1, and wrap like a path: right after a separator, never inside a name that fits a
    * line. `break-all` split `results` into `resu` / `lts`; drawn as plain text, Chromium took no
    * break after a backslash before a letter, nor after "/" before a digit, and broke after a hyphen
    * and at a space inside a name (`biorouter-` / `workflows-and-skills`, `single cell ` / `atlas`)
@@ -333,7 +333,7 @@ describe('the transcript cards in a real layout engine', () => {
       '/Users/someone/מסמכים משותפים/نتائج التحليل النهائية/ניסוי-שני/analysis notebooks',
     ],
   ] as const)(
-    'breaks a folder-access approval’s long path (%s) only after a separator, in mono',
+    'breaks a folder-access approval’s long path (%s) only after a separator, in sans',
     async ([, folder], ctx) => {
       if (!browser) return ctx.skip();
       const preview = {
@@ -344,13 +344,13 @@ describe('the transcript cards in a real layout engine', () => {
         descendants: true,
         onceDescendants: false,
         actionId: 'action-1',
-      } as unknown as ToolPreview;
+      } as unknown as Extract<ToolPreview, { kind: 'folderAccess' }>;
       // `folderAccessLifetime()` reads `window.appConfig`; this file renders in node.
       const scope = globalThis as unknown as { window?: unknown };
       scope.window = {};
       let markup = '';
       try {
-        markup = renderToStaticMarkup(<ToolCallPreview preview={preview} />);
+        markup = renderToStaticMarkup(<FolderAccessDetails preview={preview} />);
       } finally {
         delete scope.window;
       }
@@ -456,7 +456,7 @@ describe('the transcript cards in a real layout engine', () => {
         expect(drawn).toHaveLength(2);
         for (const path of drawn) {
           expect(path.text).toBe(folder);
-          expect(path.family).toMatch(/mono/i);
+          expect(path.family).not.toMatch(/mono/i);
           expect(path.wordBreak).toBe('normal');
           expect(path.wide, 'every name fits a line by itself').toEqual([]);
           expect(path.breaks.length, 'it needed more than one line').toBeGreaterThan(0);
@@ -494,13 +494,13 @@ describe('the transcript cards in a real layout engine', () => {
       descendants: true,
       onceDescendants: false,
       actionId: 'action-1',
-    } as unknown as ToolPreview;
+    } as unknown as Extract<ToolPreview, { kind: 'folderAccess' }>;
     // `folderAccessLifetime()` reads `window.appConfig`; this file renders in node.
     const scope = globalThis as unknown as { window?: unknown };
     scope.window = {};
     let markup = '';
     try {
-      markup = renderToStaticMarkup(<ToolCallPreview preview={preview} />);
+      markup = renderToStaticMarkup(<FolderAccessDetails preview={preview} />);
     } finally {
       delete scope.window;
     }

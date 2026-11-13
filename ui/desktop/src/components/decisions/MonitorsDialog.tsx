@@ -1,16 +1,20 @@
-import { useEffect, useId, useMemo, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ModalShell } from '../ModalShell';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/Checkbox';
+import { Disclosure } from '../ui/disclosure';
+import { EmptyState } from '../ui/empty-state';
 import { Field, fieldLabelId } from '../ui/field';
+import { InfoTip, useInfoTipId } from '../ui/info-tip';
 import { Input } from '../ui/input';
+import { RowActions, RowContextMenu, type RowActionItem } from '../ui/row-actions';
 import { SegmentedControl } from '../ui/segmented-control';
 import { Select } from '../ui/Select';
 import { Slider } from '../ui/slider';
 import { Switch } from '../ui/switch';
 import { Textarea } from '../ui/textarea';
-import { Pencil, Plus, Trash2, X } from '../icons/app-icons';
+import { Check, Plus, SlidersHorizontal, X } from '../icons/app-icons';
 import {
   DEFAULT_MONITOR_WINDOW,
   DecisionRequestError,
@@ -26,7 +30,6 @@ import {
   refusalText,
   saveDecisionSettings,
   scoreLevelIndex,
-  thresholdSummary,
   type DecisionModelEntry,
   type DecisionModelRef,
   type DecisionSettings,
@@ -36,32 +39,58 @@ import {
   type MonitorDirection,
   type MonitorErrorPolicy,
   type MonitorTiming,
+  type Question,
+  type Threshold,
 } from '../../utils/sessionDecisions';
+import { isBrowserSurface } from '../../utils/surface';
+import { DecisionModelInstall, type DecisionInstallReason } from './DecisionModelInstall';
 import {
-  DECISION_INSTALL_COPY,
-  DecisionModelInstall,
-  type DecisionInstallReason,
-} from './DecisionModelInstall';
+  DECISION_MODEL_OPTION_COPY,
+  decisionModelKey,
+  decisionModelOptions,
+  decisionModelReason,
+  formatDecisionModelOption,
+  isDecisionModelOptionDisabled,
+  type DecisionModelOption,
+} from './decisionModelOption';
+import { decisionModelPlace, ruleInWords } from './decisionWords';
 import './decisionsPanel.css';
+import './monitorsDialog.css';
+
+/** "A, B and C" (and a lone "A"), for the peek's extras. */
+function joinWithAnd(parts: readonly string[]): string {
+  if (parts.length <= 1) return parts.join('');
+  return `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`;
+}
+
+const capitalize = (text: string) => (text ? text[0].toUpperCase() + text.slice(1) : text);
 
 export const MONITORS_COPY = {
   title: 'Monitors',
-  subtitle:
-    'A decision model reads the newest part of this chat and acts when its answer crosses the threshold.',
-  empty: 'No monitors yet.',
+  subtitle: 'Monitors ask a decision model about this chat as it runs, and act on the answer.',
+  empty: 'No monitors yet',
+  emptyDescription:
+    'A monitor watches this chat and notifies you, tells the agent or stops the turn when its question is answered.',
   add: 'Add a monitor',
   limit: `A chat can have at most ${MAX_MONITORS} monitors.`,
-  edit: (name: string) => `Edit ${name}`,
-  remove: (name: string) => `Remove ${name}`,
-  enabled: (name: string) => `${name} on`,
+  moreActions: (name: string) => `More actions for ${name}`,
+  edit: 'Edit',
+  remove: 'Remove',
+  removed: (name: string) => `Removed ${name}.`,
+  undo: 'Undo',
+  undoLabel: (name: string) => `Undo removing ${name}`,
+  saved: 'Saved',
+  saving: 'Saving…',
   name: 'Name',
   nameRequired: 'Give the monitor a name.',
   nameTooLong: `Keep the name to ${MONITOR_NAME_MAX} characters.`,
   question: 'Question',
-  questionHelp:
-    'Asked of the newest messages and tool results, for example "Has the form been submitted?"',
+  questionInfo:
+    'Asked of the newest messages and tool results. Write it so yes means act, for example “Has the form been submitted?”',
+  questionPlaceholder: 'For example: Does the newest message ask to delete files?',
   questionRequired: 'Write the question the model answers.',
-  answerType: 'Answers',
+  moreOptions: 'More options',
+  answerType: 'Answer type',
   yesNo: 'Yes or no',
   choice: 'One of several options',
   score: 'Score',
@@ -72,18 +101,28 @@ export const MONITORS_COPY = {
   scoreReadOnly: "This dialog cannot change a score question's levels or the level it watches.",
   options: 'Options',
   optionName: (n: number) => `Option ${n}`,
+  optionNameLabel: (n: number) => `Option ${n} name`,
+  optionDescription: 'What it means (optional)',
+  optionDescriptionLabel: (n: number) => `Option ${n} description`,
   addOption: 'Add an option',
   removeOption: (name: string) => `Remove option ${name || 'without a name'}`,
   optionsTooFew: 'A choice needs at least two options.',
   optionsDuplicate: 'Each option needs its own name.',
-  firesOn: 'Fires on',
-  firesOnHelp: 'The option whose probability is compared with the threshold.',
-  firesOnAnswerHelp: 'The answer whose probability is compared with the threshold.',
   firesOnMissing: 'Choose the option that fires the monitor.',
+  firesWhen: 'Fires when',
+  firesWhenInfo:
+    'The monitor acts when the probability of the answer it watches crosses this line. Higher means it acts only when the model is surer.',
+  watchedAnswer: 'Answer it watches',
+  side: 'Side',
+  threshold: 'Threshold',
+  firesSentence: (phrase: string) => `Fires ${phrase}.`,
+  chooseOptionPhrase: 'choose the option it fires on',
+  chooseOptionSentence: 'Choose the option it fires on.',
+  chooseOption: 'Choose an option',
+  nameOptionsFirst: 'Name the options first',
+  directions: { at_or_above: 'At or above', below: 'Below' } as Record<MonitorDirection, string>,
   model: 'Model',
-  chatDefault: "The chat's decision model",
-  modelPublicRefused: 'This chat is private, so a public model may not read it.',
-  modelHelp: 'Only a private model may read a private chat.',
+  modelPublicRefused: DECISION_MODEL_OPTION_COPY.publicRefused,
   catalogMissing:
     'This Biorouter service is older than the app, so it cannot list decision models. Restart Biorouter to finish updating.',
   catalogRefused: (reason: string | null) =>
@@ -96,50 +135,48 @@ export const MONITORS_COPY = {
       : 'Could not load the decision models.',
   catalogStatus: (status: number) => `Biorouter answered with status ${status}.`,
   retry: 'Retry',
-  firesWhen: 'Fires when',
-  directions: { at_or_above: 'At or above', below: 'Below' } as Record<MonitorDirection, string>,
-  threshold: 'Threshold',
-  thresholdHelp: 'Fires when the probability of the answer it watches is at or above this.',
-  thresholdHelpBelow: 'Fires when the probability of the answer it watches falls below this.',
   action: 'Then',
   actions: { stop: 'Stop the turn', notify: 'Notify me', steer: 'Tell the agent' } as Record<
     MonitorAction,
     string
   >,
-  /**
-   * A stop monitor with a re-arm level (set over HTTP or the CLI). This dialog
-   * keeps it, held at the threshold while the threshold is past it.
-   */
-  stopsOnce: (p: string) => `Stops once, then stays quiet until P falls below ${p}`,
-  stopsOnceBelow: (p: string) => `Stops once, then stays quiet until P rises to ${p}`,
-  onError: 'If a check fails',
-  onErrors: { notify: 'Notify me', pause: 'Pause the turn' } as Record<MonitorErrorPolicy, string>,
-  onErrorHelp:
-    'Pause stops the turn whenever the decision model cannot answer, so a safety rule never goes unchecked.',
-  pausesOnError: 'pauses if a check fails',
-  subagents: 'Also watch the subagents this chat starts',
-  setByAgent: 'Set by the agent',
-  inherited: 'From the chat that started this subagent',
-  noUsableModel:
-    'No decision model this chat may use is installed, so this monitor cannot run until one is.',
-  /** The install panel's first sentence, by why no model is usable (`DecisionModelInstall`). */
-  install: { ...DECISION_INSTALL_COPY.why, about: DECISION_INSTALL_COPY.about },
-  timing: 'Checks',
+  check: 'Check',
   timings: { post_iteration: 'After each step', turn_end: 'When the turn ends' } as Record<
     MonitorTiming,
     string
   >,
-  on: 'On',
-  done: 'Done',
+  ifNoAnswer: "If the model can't answer",
+  ifNoAnswerInfo:
+    'Pause the turn stops it whenever the decision model cannot answer, so a safety rule never goes unchecked.',
+  onErrors: { notify: 'Notify me', pause: 'Pause the turn' } as Record<MonitorErrorPolicy, string>,
+  stopOnlyOnce: 'Stop only once',
+  stopOnlyOnceInfo: (outcome: string, p: string) =>
+    `After it stops the turn, the monitor stays quiet until P(${outcome}) drops below ${p} again.`,
+  stopOnlyOnceInfoBelow: (outcome: string, p: string) =>
+    `After it stops the turn, the monitor stays quiet until P(${outcome}) rises to ${p} or more again.`,
+  subagents: 'Also watch the subagents this chat starts',
+  peekLabel: (name: string) => `Settings of ${name}`,
+  peekUses: (model: string, place: string | null, timing: string) =>
+    `Uses ${model}${place ? ` on ${place}` : ''}, ${timing}.`,
+  peekTimings: { post_iteration: 'after each step', turn_end: 'when the turn ends' } as Record<
+    MonitorTiming,
+    string
+  >,
+  peekStopsOnce: 'stops only once',
+  peekPauses: "pauses if the model can't answer",
+  peekSubagents: 'also watches subagents',
+  setByAgent: 'Set by the agent',
+  setByAgentInfo:
+    'The agent set this monitor. If you change it, it becomes yours and the agent can no longer change it.',
+  inherited: 'Inherited',
+  inheritedInfo: 'Copied from the chat that started this subagent.',
+  defaultModel: DECISION_MODEL_OPTION_COPY.defaultModel,
+  defaultModelInPeek: "the chat's default model",
   cancel: 'Cancel',
   save: 'Save',
-  saving: 'Saving',
   saveFailed: 'Could not save the monitors.',
   loading: 'Reading the monitors…',
   loadFailed: "Could not read this chat's monitors. Close and open again to retry.",
-  private: 'Private',
-  public: 'Public',
-  local: 'this computer',
 };
 
 const copy = MONITORS_COPY;
@@ -182,8 +219,8 @@ function stepValueFor(p: number, steps: readonly { value: string }[]): string {
  * The daemon refuses a level on the far side of the threshold (`settings.rs`'s
  * `validate`): a monitor that fires at or above re-arms below a level no higher
  * than its threshold, and one that fires below re-arms at a level no lower than
- * it. This dialog has no field for the level, so a threshold moved past a kept
- * level would make a Save the dialog could not fix. The level is held at the
+ * it. "Stop only once" has no field for the level, so a threshold moved past a
+ * kept level would make a Save the dialog could not fix. The level is held at the
  * threshold instead, so a stop monitor still stops once and then waits for P to
  * cross back over the threshold.
  *
@@ -201,16 +238,41 @@ export function rearmForThreshold(
   if (typeof kept !== 'number') {
     return { rearmBelow: draft.rearmBelow, rearmAbove: draft.rearmAbove };
   }
-  const openedLevel =
-    opened && (opened.direction === 'below') === below
-      ? below
-        ? opened.rearmAbove
-        : opened.rearmBelow
-      : null;
+  const openedLevel = openedRearm(draft, opened);
   const level = typeof openedLevel === 'number' ? openedLevel : kept;
   return below
     ? { rearmBelow: draft.rearmBelow, rearmAbove: Math.max(level, threshold) }
     : { rearmBelow: Math.min(level, threshold), rearmAbove: draft.rearmAbove };
+}
+
+/** The re-arm level the monitor opened with, on the draft's side, or `null`. */
+function openedRearm(draft: MonitorCriterion, opened: MonitorCriterion | null): number | null {
+  const below = draft.direction === 'below';
+  if (!opened || (opened.direction === 'below') !== below) return null;
+  const level = below ? opened.rearmAbove : opened.rearmBelow;
+  return typeof level === 'number' ? level : null;
+}
+
+/** The level "Stop only once" keeps: the draft's, on its side, or `null` when unchecked. */
+function rearmLevel(monitor: MonitorCriterion): number | null {
+  const level = monitor.direction === 'below' ? monitor.rearmAbove : monitor.rearmBelow;
+  return typeof level === 'number' ? level : null;
+}
+
+/**
+ * "Stop only once" checked: the re-arm level the monitor opened with, held on
+ * the right side of the threshold, else the threshold itself. Unchecked: none.
+ */
+export function stopOnlyOnce(
+  draft: MonitorCriterion,
+  checked: boolean,
+  opened: MonitorCriterion | null
+): Pick<MonitorCriterion, 'rearmBelow' | 'rearmAbove'> {
+  if (!checked) return { rearmBelow: null, rearmAbove: null };
+  const level = openedRearm(draft, opened) ?? draft.threshold;
+  return draft.direction === 'below'
+    ? { rearmBelow: null, rearmAbove: Math.max(level, draft.threshold) }
+    : { rearmBelow: Math.min(level, draft.threshold), rearmAbove: null };
 }
 
 /** `Form reached` -> `form-reached`, unique among `taken`. */
@@ -257,6 +319,26 @@ export function newMonitor(): MonitorCriterion {
 }
 
 /**
+ * Whether a monitor uses any setting "More options" hides, set differently from a
+ * new monitor's: then the editor opens with it open, so the person sees what
+ * defines this monitor without hunting for it.
+ */
+export function usesHiddenSettings(monitor: MonitorCriterion): boolean {
+  const fresh = newMonitor();
+  return (
+    monitor.question.kind.type !== 'binary' ||
+    (monitor.option !== null && monitor.option.toLowerCase() !== 'yes') ||
+    monitor.direction === 'below' ||
+    monitor.threshold !== fresh.threshold ||
+    monitor.model !== null ||
+    monitor.timing !== fresh.timing ||
+    monitor.onError !== fresh.onError ||
+    rearmLevel(monitor) !== null ||
+    monitor.applyToSubagents === true
+  );
+}
+
+/**
  * A person's change to a monitor an agent set makes it the person's: the agent
  * then can neither change nor remove it (`apply_agent_edit` in `settings.rs`
  * never touches a person's monitor). Any other monitor is returned as it is.
@@ -274,7 +356,7 @@ export interface MonitorErrors {
 }
 
 function modelEntryFor(
-  model: DecisionModelRef | null,
+  model: Pick<DecisionModelRef, 'provider' | 'model'> | null,
   models: readonly DecisionModelEntry[]
 ): DecisionModelEntry | undefined {
   if (!model) return undefined;
@@ -285,6 +367,9 @@ function modelEntryFor(
   );
 }
 
+/** A sentence a person reads: no backticks (R5). */
+const plain = (text: string) => text.replace(/`/g, '').trim();
+
 /**
  * What the daemon would refuse in one monitor (`settings.rs`'s `validate`), said
  * by the field it belongs to, and what every check of it would refuse: a model
@@ -294,7 +379,8 @@ function modelEntryFor(
  *
  * The model is judged only for a monitor that is on, as the daemon's save check
  * is: a monitor that is off never runs, so a person can always switch off (and
- * save) one whose model went away.
+ * save) one whose model went away. A private chat and a public model is said in
+ * the desktop's own line (R4), whatever the daemon's sentence holds.
  */
 export function validateMonitor(
   monitor: MonitorCriterion,
@@ -321,22 +407,12 @@ export function validateMonitor(
   }
   if (!monitor.enabled) return errors;
   const entry = modelEntryFor(monitor.model, context.models);
-  if (context.chatRefusal) errors.model = context.chatRefusal;
-  else if (entry?.unavailableReason) errors.model = entry.unavailableReason;
-  else if (context.chatTier === 'private' && entry?.tier === 'public') {
-    errors.model = copy.modelPublicRefused;
+  if (context.chatRefusal) errors.model = plain(context.chatRefusal);
+  else if (entry) {
+    const reason = decisionModelReason(entry, context.chatTier);
+    if (reason) errors.model = reason;
   }
   return errors;
-}
-
-/** Why the chat may not use a listed model, or `null` when it may (the picker's rule). */
-function modelReason(entry: DecisionModelEntry, chatTier: DecisionTier | null): string | null {
-  // The daemon's own reason first (tier, an institution, a Crew grant); the tier
-  // rule here only when it gave none (an older daemon).
-  return (
-    entry.unavailableReason ??
-    (chatTier === 'private' && entry.tier === 'public' ? copy.modelPublicRefused : null)
-  );
 }
 
 /** The opening of the Crew refusal the daemon gives a hosted model (`CREW_SCOPED_REFUSAL`). */
@@ -346,32 +422,74 @@ function hasErrors(errors: MonitorErrors): boolean {
   return Object.values(errors).some(Boolean);
 }
 
-/**
- * One line under a monitor's name: its threshold, action, timing and model, and
- * that it pauses the turn when a check fails. The threshold reads as the decision
- * card and history read the same monitor's calls (`thresholdSummary`):
- * `P(no) ≥ 0.85`, `P(rrms) ≥ 0.70`, `P(level ≥ mild) ≥ 0.85`, and `P(yes) < 0.30`
- * for a monitor that fires below its threshold.
- */
-export function monitorSummary(monitor: MonitorCriterion): string {
-  const threshold = monitorThreshold(monitor);
-  const sign = monitor.direction === 'below' ? '<' : '≥';
-  return [
-    threshold
-      ? thresholdSummary(threshold, monitor.question)
-      : `P(${monitor.option ?? 'yes'}) ${sign} ${formatProbability(monitor.threshold)}`,
-    copy.actions[monitor.action],
-    copy.timings[monitor.timing],
-    decisionModelLabel(monitor.model) ?? copy.chatDefault,
-    ...(monitor.onError === 'pause' ? [copy.pausesOnError] : []),
-  ].join(' · ');
+/** The outcome a rule watches, as `P(...)` names it: `yes`, `rrms`, `mild or a higher level`. */
+function watchedOutcome(rule: Threshold, question: Question): string {
+  switch (rule.type) {
+    case 'yes':
+      return 'yes';
+    case 'no':
+      return 'no';
+    case 'option':
+      return rule.name;
+    case 'at_least_level':
+      return `${outcomeLabel(question, String(rule.level))} or a higher level`;
+  }
 }
 
-interface ModelOption {
-  value: string;
-  label: string;
-  model: DecisionModelRef | null;
-  reason: string | null;
+/**
+ * A monitor row's second line: what it does, then its rule in words,
+ * `Stop the turn · when P(yes) is at or above 0.85` (never `≥`), or, for a choice
+ * whose option is not chosen yet, `Notify me · choose the option it fires on`.
+ */
+export function monitorRowLine(monitor: MonitorCriterion): string {
+  const rule = monitorThreshold(monitor);
+  return `${copy.actions[monitor.action]} · ${
+    rule ? ruleInWords(rule, monitor.question) : copy.chooseOptionPhrase
+  }`;
+}
+
+/**
+ * A row's peek, at most two plain sentences: the model, where it runs and when it
+ * checks (`Uses tev1:0.8b on this computer, after each step.`), then what else is
+ * set (`Stops only once and pauses if the model can't answer.`).
+ */
+export function monitorPeek(
+  monitor: MonitorCriterion,
+  models: readonly DecisionModelEntry[],
+  browser = isBrowserSurface()
+): string {
+  const entry = modelEntryFor(monitor.model, models);
+  const name = decisionModelLabel(monitor.model) ?? copy.defaultModelInPeek;
+  const place = monitor.model
+    ? decisionModelPlace(monitor.model.provider, {
+        local: entry?.local ?? null,
+        tier: entry?.tier ?? null,
+        browser,
+      })
+    : null;
+  const uses = copy.peekUses(name, place, copy.peekTimings[monitor.timing]);
+  const extras = [
+    monitor.action === 'stop' && rearmLevel(monitor) !== null ? copy.peekStopsOnce : null,
+    monitor.onError === 'pause' ? copy.peekPauses : null,
+    monitor.applyToSubagents ? copy.peekSubagents : null,
+  ].filter((part): part is string => !!part);
+  return extras.length > 0 ? `${uses} ${capitalize(joinWithAnd(extras))}.` : uses;
+}
+
+/** The closed "More options" summary: the defaults it hides, in the row's own words. */
+function hiddenSummary(monitor: MonitorCriterion): string {
+  const kind =
+    monitor.question.kind.type === 'choice'
+      ? copy.choice
+      : monitor.question.kind.type === 'score'
+        ? copy.score
+        : copy.yesNo;
+  const rule = monitorThreshold(monitor);
+  return [
+    kind,
+    rule ? ruleInWords(rule, monitor.question) : copy.chooseOptionPhrase,
+    decisionModelLabel(monitor.model) ?? copy.defaultModel,
+  ].join(' · ');
 }
 
 const menuPortalTarget = typeof document === 'undefined' ? undefined : document.body;
@@ -395,8 +513,18 @@ function catalogProblemFor(error: unknown): CatalogProblem {
   return { text: copy.catalogFailed(detail), retry: true };
 }
 
-function modelKey(model: DecisionModelRef | null): string {
-  return model ? `${model.provider}/${model.model}` : '';
+/** A refused write, in the daemon's words when it gave some. */
+function refusalOf(error: unknown): string {
+  const text = refusalText(error instanceof Error ? error.message : error);
+  return text ? plain(text) : copy.saveFailed;
+}
+
+/** The ids of the editor's fields that a Save may need to reveal and focus. */
+interface EditorIds {
+  name: string;
+  firstOption: string;
+  watched: string;
+  model: string;
 }
 
 function MonitorEditor({
@@ -406,12 +534,18 @@ function MonitorEditor({
   models,
   chatTier,
   chatRefusal,
+  defaultModel,
   catalogProblem,
   onRetryCatalog,
-  readOnly,
-  nothingUsable,
   isSubagentChat,
   opened,
+  moreOpen,
+  onMoreOpenChange,
+  ids,
+  busy,
+  refusal,
+  onCancel,
+  onSave,
 }: {
   draft: MonitorCriterion;
   onChange: (next: MonitorCriterion) => void;
@@ -420,12 +554,11 @@ function MonitorEditor({
   chatTier: DecisionTier | null;
   /** Why this chat may use no decision model at all (a Crew grant that no longer stands), or `null`. */
   chatRefusal: string | null;
+  /** The chat's stored default model, named on the picker's Default row. */
+  defaultModel: DecisionModelRef | null;
   /** Why the model list could not be read, or `null`. */
   catalogProblem: CatalogProblem | null;
   onRetryCatalog: () => void;
-  readOnly: boolean;
-  /** The list was read and no model in it may read this chat: said under Model, never a refusal. */
-  nothingUsable: boolean;
   /** A subagent's chat, whose monitors cannot be set to watch subagents of its own. */
   isSubagentChat: boolean;
   /**
@@ -437,48 +570,47 @@ function MonitorEditor({
    * (`rearmForThreshold`), for the same reason.
    */
   opened: MonitorCriterion | null;
+  moreOpen: boolean;
+  onMoreOpenChange: (open: boolean) => void;
+  ids: EditorIds;
+  busy: boolean;
+  /** The daemon's refusal of this monitor's save, or `null`. */
+  refusal: string | null;
+  onCancel: () => void;
+  onSave: () => void;
 }) {
   const base = useId();
+  const stopInfoId = useInfoTipId();
   const kind = draft.question.kind;
   const below = draft.direction === 'below';
   const thresholdSteps = thresholdStepsFor(opened?.threshold ?? draft.threshold);
-  const options: ModelOption[] = [
-    // No row stands for the chat's decision model, so the chat-wide reason is its own.
-    { value: '', label: copy.chatDefault, model: null, reason: chatRefusal },
-    ...models.map((entry) => ({
-      value: modelKey({ provider: entry.provider, model: entry.model, adapter: null }),
-      label: [
-        entry.displayName,
-        entry.tier === 'private' ? copy.private : entry.tier === 'public' ? copy.public : null,
-        entry.local ? copy.local : null,
-      ]
-        .filter(Boolean)
-        .join(' · '),
-      model: { provider: entry.provider, model: entry.model, adapter: null },
-      reason: modelReason(entry, chatTier),
-    })),
-  ];
-  // A stop monitor with a re-arm level stops once, not every turn its answer holds.
-  const rearm = below ? draft.rearmAbove : draft.rearmBelow;
-  const stopsOnce =
-    draft.action === 'stop' && typeof rearm === 'number'
-      ? (below ? copy.stopsOnceBelow : copy.stopsOnce)(formatProbability(rearm))
-      : null;
-  const selectedKey = modelKey(
+
+  const options: DecisionModelOption[] = decisionModelOptions({
+    models,
+    chatTier,
+    chatRefusal,
+    defaultModel,
+  });
+  const selectedKey = decisionModelKey(
     draft.model
       ? {
           provider: draft.model.provider,
           model: modelEntryFor(draft.model, models)?.model ?? draft.model.model,
-          adapter: null,
         }
       : null
   );
   if (draft.model && !options.some((option) => option.value === selectedKey)) {
+    // A stored model the list does not hold (removed, or not read yet): kept, by its alias.
+    const name = decisionModelLabel(draft.model) ?? selectedKey;
+    const reason = chatRefusal ? plain(chatRefusal) : null;
     options.push({
       value: selectedKey,
-      label: decisionModelLabel(draft.model) ?? selectedKey,
+      name,
+      label: [name, reason].filter(Boolean).join(', '),
+      secondary: reason,
+      isPrivate: false,
       model: draft.model,
-      reason: chatRefusal,
+      reason,
     });
   }
   const selected = options.find((option) => option.value === selectedKey) ?? options[0];
@@ -508,31 +640,59 @@ function MonitorEditor({
   // keeps its levels and watched level: shown here, and saved as they are.
   const scoreLevels = kind.type === 'score' ? kind.levels : [];
   const watchedLevel = scoreLevelIndex(scoreLevels, draft.option);
-  // Named as the summary line names it (`thresholdSummary`): the label, or "Level n".
   const watchedLevelLabel =
     watchedLevel === null
       ? (draft.option ?? '')
       : outcomeLabel(draft.question, String(watchedLevel));
-  const setOption = (index: number, name: string) => {
+  const setChoiceOptions = (next: { name: string; description: string | null }[]) =>
+    ({ ...draft.question, kind: { type: 'choice' as const, options: next } }) as Question;
+  const setOptionName = (index: number, name: string) => {
     if (kind.type !== 'choice') return;
     const previous = kind.options[index]?.name;
-    const next = kind.options.map((option, i) => (i === index ? { ...option, name } : option));
     onChange({
       ...draft,
-      question: { ...draft.question, kind: { type: 'choice', options: next } },
+      question: setChoiceOptions(
+        kind.options.map((option, i) => (i === index ? { ...option, name } : option))
+      ),
       option: draft.option === previous ? name : draft.option,
     });
   };
+  const setOptionDescription = (index: number, description: string) => {
+    if (kind.type !== 'choice') return;
+    onChange({
+      ...draft,
+      question: setChoiceOptions(
+        kind.options.map((option, i) =>
+          i === index ? { ...option, description: description || null } : option
+        )
+      ),
+    });
+  };
+
+  const rule = monitorThreshold(draft);
+  const sentence = rule
+    ? copy.firesSentence(ruleInWords(rule, draft.question))
+    : copy.chooseOptionSentence;
+  const firesLabelId = `${base}-fires-label`;
+  const sentenceId = `${base}-fires-sentence`;
+  const namedChoices = choiceOptions
+    .filter((option) => option.name.trim())
+    .map((option) => ({ value: option.name, label: option.name }));
+  const watchedChoice = namedChoices.find((option) => option.value === draft.option) ?? null;
+  const keptLevel = rearmLevel(draft);
+  const stopInfo = (below ? copy.stopOnlyOnceInfoBelow : copy.stopOnlyOnceInfo)(
+    rule ? watchedOutcome(rule, draft.question) : 'yes',
+    formatProbability(keptLevel ?? draft.threshold)
+  );
 
   return (
     // A filled box, so the fields in it rest one step back on the page ground:
     // a fill never sits on a fill (design.md 9.11).
     <div className="br-monitors__editor br-fill-surface" data-testid="monitor-editor">
-      <Field id={`${base}-name`} label={copy.name} error={errors.name} required>
+      <Field id={ids.name} label={copy.name} error={errors.name} required>
         <Input
           value={draft.name}
           maxLength={MONITOR_NAME_MAX + 20}
-          disabled={readOnly}
           data-testid="monitor-name"
           onChange={(event) => onChange({ ...draft, name: event.target.value })}
         />
@@ -540,14 +700,14 @@ function MonitorEditor({
       <Field
         id={`${base}-question`}
         label={copy.question}
-        helper={copy.questionHelp}
+        info={copy.questionInfo}
         error={errors.question}
         required
       >
         <Textarea
           rows={2}
           value={draft.question.instructions}
-          disabled={readOnly}
+          placeholder={copy.questionPlaceholder}
           data-testid="monitor-question"
           onChange={(event) =>
             onChange({
@@ -558,266 +718,12 @@ function MonitorEditor({
         />
       </Field>
       <div className="br-form-field flex min-w-0 flex-col gap-1.5">
-        <span className="text-label text-text-default" id={`${base}-kind`}>
-          {copy.answerType}
-        </span>
-        <SegmentedControl
-          aria-labelledby={`${base}-kind`}
-          value={kind.type}
-          disabled={readOnly}
-          data-testid="monitor-kind"
-          options={[
-            { value: 'binary', label: copy.yesNo },
-            { value: 'choice', label: copy.choice },
-            // Only for a monitor that already asks for a score: this dialog makes none.
-            ...(kind.type === 'score' ? [{ value: 'score', label: copy.score }] : []),
-          ]}
-          onValueChange={(value) => {
-            if (value === 'binary' || value === 'choice') setKind(value);
-          }}
-        />
-      </div>
-      {kind.type === 'binary' ? (
-        <Field id={`${base}-fires-on`} label={copy.firesOn} helper={copy.firesOnAnswerHelp}>
-          <SegmentedControl
-            aria-labelledby={fieldLabelId(`${base}-fires-on`)}
-            value={draft.option?.toLowerCase() === 'no' ? 'no' : 'yes'}
-            disabled={readOnly}
-            data-testid="monitor-fires-on"
-            options={[
-              { value: 'yes', label: copy.yes },
-              { value: 'no', label: copy.no },
-            ]}
-            // Yes is the default the daemon reads from no option at all.
-            onValueChange={(value) => onChange({ ...draft, option: value === 'no' ? 'no' : null })}
-          />
-        </Field>
-      ) : null}
-      {kind.type === 'score' ? (
-        <>
-          <div className="br-form-field flex min-w-0 flex-col gap-1.5">
-            <span className="text-label text-text-default" id={`${base}-levels`}>
-              {copy.levels}
-            </span>
-            <ol
-              className="br-monitors__levels"
-              aria-labelledby={`${base}-levels`}
-              data-testid="monitor-levels"
-            >
-              {scoreLevels.map((level, index) => (
-                <li key={index}>{level}</li>
-              ))}
-            </ol>
-          </div>
-          <div className="br-form-field flex min-w-0 flex-col gap-1.5">
-            <span className="text-label text-text-default">{copy.firesOn}</span>
-            <p className="br-monitors__value" data-testid="monitor-score-fires-on">
-              {copy.scoreFiresOn(watchedLevelLabel)}
-            </p>
-            <p className="br-monitors__note">{copy.scoreReadOnly}</p>
-          </div>
-        </>
-      ) : null}
-      {kind.type === 'choice' ? (
-        <>
-          <Field id={`${base}-options`} label={copy.options} error={errors.options}>
-            <ul className="br-monitors__options" aria-label={copy.options}>
-              {choiceOptions.map((option, index) => (
-                <li key={index} className="br-monitors__option">
-                  <Input
-                    aria-label={copy.optionName(index + 1)}
-                    value={option.name}
-                    disabled={readOnly}
-                    data-testid={`monitor-option-${index}`}
-                    onChange={(event) => setOption(index, event.target.value)}
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="xs"
-                    shape="round"
-                    disabled={readOnly || choiceOptions.length <= 2}
-                    aria-label={copy.removeOption(option.name)}
-                    onClick={() =>
-                      onChange({
-                        ...draft,
-                        question: {
-                          ...draft.question,
-                          kind: {
-                            type: 'choice',
-                            options: choiceOptions.filter((_, i) => i !== index),
-                          },
-                        },
-                        option: draft.option === option.name ? null : draft.option,
-                      })
-                    }
-                  >
-                    <X aria-hidden="true" />
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          </Field>
-          <div>
-            <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              disabled={readOnly || choiceOptions.length >= 10}
-              onClick={() =>
-                onChange({
-                  ...draft,
-                  question: {
-                    ...draft.question,
-                    kind: {
-                      type: 'choice',
-                      options: [...choiceOptions, { name: '', description: null }],
-                    },
-                  },
-                })
-              }
-            >
-              <Plus aria-hidden="true" />
-              {copy.addOption}
-            </Button>
-          </div>
-          <Field
-            id={`${base}-fires-on`}
-            label={copy.firesOn}
-            helper={copy.firesOnHelp}
-            error={errors.option}
-          >
-            <SegmentedControl
-              aria-labelledby={fieldLabelId(`${base}-fires-on`)}
-              value={draft.option ?? ''}
-              disabled={readOnly}
-              data-testid="monitor-fires-on"
-              options={choiceOptions
-                .filter((option) => option.name.trim())
-                .map((option) => ({ value: option.name, label: option.name }))}
-              onValueChange={(value) => onChange({ ...draft, option: value })}
-            />
-          </Field>
-        </>
-      ) : null}
-      <Field id={`${base}-fires-when`} label={copy.firesWhen}>
-        <SegmentedControl
-          aria-labelledby={fieldLabelId(`${base}-fires-when`)}
-          value={below ? 'below' : 'at_or_above'}
-          disabled={readOnly}
-          data-testid="monitor-direction"
-          options={(['at_or_above', 'below'] as const).map((value) => ({
-            value,
-            label: copy.directions[value],
-          }))}
-          // A re-arm level is on the other side of the threshold in each direction,
-          // so neither one survives the switch.
-          onValueChange={(value) =>
-            onChange({
-              ...draft,
-              direction: value === 'below' ? 'below' : 'at_or_above',
-              rearmBelow: null,
-              rearmAbove: null,
-            })
-          }
-        />
-      </Field>
-      <div className="br-form-field flex min-w-0 flex-col gap-1.5" data-testid="monitor-model">
-        <label htmlFor={`${base}-model`} className="text-label text-text-default">
-          {copy.model}
-        </label>
-        <Select
-          inputId={`${base}-model`}
-          options={options}
-          value={selected}
-          isSearchable={false}
-          isDisabled={readOnly}
-          menuPlacement="auto"
-          menuPortalTarget={menuPortalTarget}
-          isOptionDisabled={(raw: unknown) => !!(raw as ModelOption).reason}
-          formatOptionLabel={(raw: unknown) => {
-            const option = raw as ModelOption;
-            return (
-              <span className="flex min-w-0 flex-col">
-                <span className="truncate">{option.label}</span>
-                {option.reason ? (
-                  <span className="text-supporting text-text-muted">{option.reason}</span>
-                ) : null}
-              </span>
-            );
-          }}
-          onChange={(raw: unknown) =>
-            onChange({ ...draft, model: (raw as ModelOption | null)?.model ?? null })
-          }
-        />
-        {catalogProblem ? (
-          <p className="br-monitors__error" role="alert" data-testid="monitor-models-error">
-            {catalogProblem.text}
-            {catalogProblem.retry ? (
-              <>
-                {' '}
-                <button
-                  type="button"
-                  className="br-dh-link"
-                  data-testid="monitor-models-retry"
-                  onClick={onRetryCatalog}
-                >
-                  {copy.retry}
-                </button>
-              </>
-            ) : null}
-          </p>
-        ) : null}
-        {errors.model ? (
-          <p className="br-monitors__error" role="alert">
-            {errors.model}
-          </p>
-        ) : nothingUsable ? (
-          // A note, not a refusal: Save stays open, or a stopped Ollama would keep
-          // a person from turning monitors off or removing them.
-          <p className="br-monitors__note" data-testid="monitor-no-usable-model">
-            {copy.noUsableModel}
-          </p>
-        ) : chatTier === 'private' ? (
-          <p className="br-monitors__note">{copy.modelHelp}</p>
-        ) : null}
-      </div>
-      <div className="br-form-field flex min-w-0 flex-col gap-1.5">
-        <span className="text-label text-text-default" id={`${base}-threshold`}>
-          {copy.threshold}
-        </span>
-        <div className="br-monitors__threshold">
-          <Slider
-            aria-labelledby={`${base}-threshold`}
-            aria-describedby={`${base}-threshold-help`}
-            steps={thresholdSteps}
-            value={stepValueFor(draft.threshold, thresholdSteps)}
-            disabled={readOnly}
-            data-testid="monitor-threshold"
-            className="min-w-0 flex-1"
-            // A kept re-arm level moves with a threshold that passes it, or the
-            // daemon would refuse the Save and nothing here could change the level.
-            onValueChange={(value) => {
-              const threshold = Number(value);
-              onChange({ ...draft, threshold, ...rearmForThreshold(draft, threshold, opened) });
-            }}
-          />
-          <span className="br-monitors__threshold-value" aria-hidden="true">
-            {formatProbability(draft.threshold)}
-          </span>
-        </div>
-        <p className="br-monitors__note" id={`${base}-threshold-help`}>
-          {below ? copy.thresholdHelpBelow : copy.thresholdHelp}
-        </p>
-      </div>
-      <div className="br-form-field flex min-w-0 flex-col gap-1.5">
         <span className="text-label text-text-default" id={`${base}-action`}>
           {copy.action}
         </span>
         <SegmentedControl
           aria-labelledby={`${base}-action`}
           value={draft.action}
-          disabled={readOnly}
           data-testid="monitor-action"
           options={(['notify', 'steer', 'stop'] as const).map((value) => ({
             value,
@@ -825,64 +731,351 @@ function MonitorEditor({
           }))}
           onValueChange={(value) => onChange({ ...draft, action: value as MonitorAction })}
         />
-        {stopsOnce ? (
-          <p className="br-monitors__note" data-testid="monitor-stops-once">
-            {stopsOnce}
-          </p>
-        ) : null}
       </div>
-      <Field id={`${base}-on-error`} label={copy.onError} helper={copy.onErrorHelp}>
-        <SegmentedControl
-          aria-labelledby={fieldLabelId(`${base}-on-error`)}
-          value={draft.onError}
-          disabled={readOnly}
-          data-testid="monitor-on-error"
-          options={(['notify', 'pause'] as const).map((value) => ({
-            value,
-            label: copy.onErrors[value],
-          }))}
-          onValueChange={(value) =>
-            onChange({ ...draft, onError: value === 'pause' ? 'pause' : 'notify' })
-          }
-        />
-      </Field>
-      <div className="br-form-field flex min-w-0 flex-col gap-1.5">
-        <span className="text-label text-text-default" id={`${base}-timing`}>
-          {copy.timing}
-        </span>
-        <SegmentedControl
-          aria-labelledby={`${base}-timing`}
-          value={draft.timing}
-          disabled={readOnly}
-          data-testid="monitor-timing"
-          options={(['post_iteration', 'turn_end'] as const).map((value) => ({
-            value,
-            label: copy.timings[value],
-          }))}
-          onValueChange={(value) => onChange({ ...draft, timing: value as MonitorTiming })}
-        />
+      <Disclosure
+        label={copy.moreOptions}
+        summary={hiddenSummary(draft)}
+        open={moreOpen}
+        onOpenChange={onMoreOpenChange}
+      >
+        <div className="br-monitors__more" data-testid="monitor-more-options">
+          <div className="br-form-field flex min-w-0 flex-col gap-1.5">
+            <span className="text-label text-text-default" id={`${base}-kind`}>
+              {copy.answerType}
+            </span>
+            <SegmentedControl
+              aria-labelledby={`${base}-kind`}
+              value={kind.type}
+              data-testid="monitor-kind"
+              options={[
+                { value: 'binary', label: copy.yesNo },
+                { value: 'choice', label: copy.choice },
+                // Only for a monitor that already asks for a score: this dialog makes none.
+                ...(kind.type === 'score' ? [{ value: 'score', label: copy.score }] : []),
+              ]}
+              onValueChange={(value) => {
+                if (value === 'binary' || value === 'choice') setKind(value);
+              }}
+            />
+          </div>
+          {kind.type === 'score' ? (
+            <div className="br-form-field flex min-w-0 flex-col gap-1.5">
+              <span className="text-label text-text-default" id={`${base}-levels`}>
+                {copy.levels}
+              </span>
+              <ol
+                className="br-monitors__levels"
+                aria-labelledby={`${base}-levels`}
+                data-testid="monitor-levels"
+              >
+                {scoreLevels.map((level, index) => (
+                  <li key={index}>{level}</li>
+                ))}
+              </ol>
+              <p className="br-monitors__note">{copy.scoreReadOnly}</p>
+            </div>
+          ) : null}
+          {kind.type === 'choice' ? (
+            <div className="br-form-field flex min-w-0 flex-col gap-1.5">
+              <span className="text-label text-text-default" id={`${base}-options`}>
+                {copy.options}
+              </span>
+              <ul
+                className="br-monitors__option-grid"
+                aria-labelledby={`${base}-options`}
+                data-testid="monitor-options"
+              >
+                {choiceOptions.map((option, index) => (
+                  <li key={index} className="br-monitors__option-row">
+                    <Input
+                      id={index === 0 ? ids.firstOption : undefined}
+                      aria-label={copy.optionNameLabel(index + 1)}
+                      placeholder={copy.optionName(index + 1)}
+                      value={option.name}
+                      aria-invalid={errors.options ? true : undefined}
+                      data-testid={`monitor-option-${index}`}
+                      onChange={(event) => setOptionName(index, event.target.value)}
+                    />
+                    <Input
+                      aria-label={copy.optionDescriptionLabel(index + 1)}
+                      placeholder={copy.optionDescription}
+                      value={option.description ?? ''}
+                      data-testid={`monitor-option-description-${index}`}
+                      onChange={(event) => setOptionDescription(index, event.target.value)}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="xs"
+                      shape="round"
+                      disabled={choiceOptions.length <= 2}
+                      aria-label={copy.removeOption(option.name)}
+                      onClick={() =>
+                        onChange({
+                          ...draft,
+                          question: setChoiceOptions(choiceOptions.filter((_, i) => i !== index)),
+                          option: draft.option === option.name ? null : draft.option,
+                        })
+                      }
+                    >
+                      <X aria-hidden="true" />
+                    </Button>
+                  </li>
+                ))}
+              </ul>
+              {errors.options ? (
+                <p className="br-monitors__error" role="alert">
+                  {errors.options}
+                </p>
+              ) : null}
+              <div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  disabled={choiceOptions.length >= 10}
+                  onClick={() =>
+                    onChange({
+                      ...draft,
+                      question: setChoiceOptions([
+                        ...choiceOptions,
+                        { name: '', description: null },
+                      ]),
+                    })
+                  }
+                >
+                  <Plus aria-hidden="true" />
+                  {copy.addOption}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+          <div className="br-form-field flex min-w-0 flex-col gap-1.5">
+            <div className="flex min-w-0 items-center">
+              <span className="text-label text-text-default" id={firesLabelId}>
+                {copy.firesWhen}
+              </span>
+              <InfoTip label={copy.firesWhen} help={copy.firesWhenInfo} />
+            </div>
+            <div
+              role="group"
+              aria-labelledby={firesLabelId}
+              aria-describedby={sentenceId}
+              className="br-monitors__fires"
+              data-testid="monitor-fires-when"
+            >
+              <div className="br-monitors__fires-line">
+                {kind.type === 'binary' ? (
+                  <SegmentedControl
+                    aria-label={copy.watchedAnswer}
+                    value={draft.option?.toLowerCase() === 'no' ? 'no' : 'yes'}
+                    data-testid="monitor-fires-on"
+                    options={[
+                      { value: 'yes', label: copy.yes },
+                      { value: 'no', label: copy.no },
+                    ]}
+                    // Yes is the default the daemon reads from no option at all.
+                    onValueChange={(value) =>
+                      onChange({ ...draft, option: value === 'no' ? 'no' : null })
+                    }
+                  />
+                ) : kind.type === 'choice' ? (
+                  <div className="br-monitors__watched" data-testid="monitor-fires-on">
+                    <Select
+                      inputId={ids.watched}
+                      aria-label={copy.watchedAnswer}
+                      aria-invalid={errors.option ? true : undefined}
+                      options={namedChoices}
+                      value={watchedChoice}
+                      placeholder={
+                        namedChoices.length > 0 ? copy.chooseOption : copy.nameOptionsFirst
+                      }
+                      isDisabled={namedChoices.length === 0}
+                      isSearchable={false}
+                      menuPlacement="auto"
+                      menuPortalTarget={menuPortalTarget}
+                      onChange={(raw: unknown) => {
+                        const picked = raw as { value: string } | null;
+                        if (picked) onChange({ ...draft, option: picked.value });
+                      }}
+                    />
+                  </div>
+                ) : (
+                  <p className="br-monitors__value" data-testid="monitor-score-fires-on">
+                    {copy.scoreFiresOn(watchedLevelLabel)}
+                  </p>
+                )}
+                <SegmentedControl
+                  aria-label={copy.side}
+                  value={below ? 'below' : 'at_or_above'}
+                  data-testid="monitor-direction"
+                  options={(['at_or_above', 'below'] as const).map((value) => ({
+                    value,
+                    label: copy.directions[value],
+                  }))}
+                  // A re-arm level is on the other side of the threshold in each direction,
+                  // so neither one survives the switch.
+                  onValueChange={(value) =>
+                    onChange({
+                      ...draft,
+                      direction: value === 'below' ? 'below' : 'at_or_above',
+                      rearmBelow: null,
+                      rearmAbove: null,
+                    })
+                  }
+                />
+              </div>
+              <Slider
+                aria-label={copy.threshold}
+                aria-describedby={sentenceId}
+                steps={thresholdSteps}
+                value={stepValueFor(draft.threshold, thresholdSteps)}
+                data-testid="monitor-threshold"
+                className="min-w-0"
+                // A kept re-arm level moves with a threshold that passes it, or the
+                // daemon would refuse the Save and nothing here could change the level.
+                onValueChange={(value) => {
+                  const threshold = Number(value);
+                  onChange({ ...draft, threshold, ...rearmForThreshold(draft, threshold, opened) });
+                }}
+              />
+              <p className="br-monitors__note" id={sentenceId} data-testid="monitor-fires-sentence">
+                {sentence}
+              </p>
+            </div>
+            {errors.option ? (
+              <p className="br-monitors__error" role="alert">
+                {errors.option}
+              </p>
+            ) : null}
+          </div>
+          <div className="br-form-field flex min-w-0 flex-col gap-1.5" data-testid="monitor-model">
+            <label htmlFor={ids.model} className="text-label text-text-default">
+              {copy.model}
+            </label>
+            <Select
+              inputId={ids.model}
+              options={options}
+              value={selected}
+              isSearchable={false}
+              menuPlacement="auto"
+              menuPortalTarget={menuPortalTarget}
+              isOptionDisabled={isDecisionModelOptionDisabled}
+              formatOptionLabel={formatDecisionModelOption}
+              onChange={(raw: unknown) =>
+                onChange({ ...draft, model: (raw as DecisionModelOption | null)?.model ?? null })
+              }
+            />
+            {catalogProblem ? (
+              <p className="br-monitors__error" role="alert" data-testid="monitor-models-error">
+                {catalogProblem.text}
+                {catalogProblem.retry ? (
+                  <>
+                    {' '}
+                    <Button
+                      type="button"
+                      variant="link"
+                      size="xs"
+                      className="br-monitors__inline-link"
+                      data-testid="monitor-models-retry"
+                      onClick={onRetryCatalog}
+                    >
+                      {copy.retry}
+                    </Button>
+                  </>
+                ) : null}
+              </p>
+            ) : null}
+            {errors.model ? (
+              <p className="br-monitors__error" role="alert">
+                {errors.model}
+              </p>
+            ) : null}
+          </div>
+          <div className="br-form-field flex min-w-0 flex-col gap-1.5">
+            <span className="text-label text-text-default" id={`${base}-timing`}>
+              {copy.check}
+            </span>
+            <SegmentedControl
+              aria-labelledby={`${base}-timing`}
+              value={draft.timing}
+              data-testid="monitor-timing"
+              options={(['post_iteration', 'turn_end'] as const).map((value) => ({
+                value,
+                label: copy.timings[value],
+              }))}
+              onValueChange={(value) => onChange({ ...draft, timing: value as MonitorTiming })}
+            />
+          </div>
+          <Field id={`${base}-on-error`} label={copy.ifNoAnswer} info={copy.ifNoAnswerInfo}>
+            <SegmentedControl
+              aria-labelledby={fieldLabelId(`${base}-on-error`)}
+              value={draft.onError}
+              data-testid="monitor-on-error"
+              options={(['notify', 'pause'] as const).map((value) => ({
+                value,
+                label: copy.onErrors[value],
+              }))}
+              onValueChange={(value) =>
+                onChange({ ...draft, onError: value === 'pause' ? 'pause' : 'notify' })
+              }
+            />
+          </Field>
+          {draft.action === 'stop' ? (
+            // The InfoTip is the label's next sibling, never inside it (its own rule).
+            <div className="flex min-w-0 items-center" data-testid="monitor-stops-once">
+              <label className="br-dh-check">
+                <Checkbox
+                  checked={keptLevel !== null}
+                  aria-describedby={stopInfoId}
+                  onChange={(event) =>
+                    onChange({ ...draft, ...stopOnlyOnce(draft, event.target.checked, opened) })
+                  }
+                />
+                <span>{copy.stopOnlyOnce}</span>
+              </label>
+              <InfoTip label={copy.stopOnlyOnce} help={stopInfo} id={stopInfoId} />
+            </div>
+          ) : null}
+          {/* A subagent's own monitors never reach subagents of its own (`settings.rs`). The
+              label wraps the box, so the square itself toggles it (`ui/Checkbox`). */}
+          {isSubagentChat ? null : (
+            <label className="br-dh-check" data-testid="monitor-subagents">
+              <Checkbox
+                checked={draft.applyToSubagents === true}
+                onChange={(event) => onChange({ ...draft, applyToSubagents: event.target.checked })}
+              />
+              <span>{copy.subagents}</span>
+            </label>
+          )}
+        </div>
+      </Disclosure>
+      {refusal ? (
+        <p className="br-monitors__error" role="alert" data-testid="monitor-save-error">
+          {refusal}
+        </p>
+      ) : null}
+      <div className="br-monitors__actions">
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          data-testid="monitor-cancel"
+          onClick={onCancel}
+        >
+          {copy.cancel}
+        </Button>
+        <Button
+          type="button"
+          size="sm"
+          disabled={busy}
+          aria-busy={busy || undefined}
+          data-testid="monitor-save"
+          onClick={onSave}
+        >
+          {copy.save}
+        </Button>
       </div>
-      {/* A subagent's own monitors never reach subagents of its own (`settings.rs`). The
-          label wraps the box, so the square itself toggles it (`ui/Checkbox`). */}
-      {isSubagentChat ? null : (
-        <label className="br-dh-check" data-testid="monitor-subagents">
-          <Checkbox
-            checked={draft.applyToSubagents === true}
-            disabled={readOnly}
-            onChange={(event) => onChange({ ...draft, applyToSubagents: event.target.checked })}
-          />
-          <span>{copy.subagents}</span>
-        </label>
-      )}
-      <label className="br-dh-check">
-        <Switch
-          checked={draft.enabled}
-          disabled={readOnly}
-          data-testid="monitor-enabled"
-          onCheckedChange={(checked) => onChange({ ...draft, enabled: checked === true })}
-        />
-        <span>{copy.on}</span>
-      </label>
     </div>
   );
 }
@@ -896,13 +1089,13 @@ export interface MonitorsDialogProps {
   /**
    * The chat's settings as the caller last read them (`useSessionDecisions`), or
    * `null` before they are known. Shown at once, but every open reads what is
-   * stored now and holds every change until that answer arrives: the caller's copy
-   * can predate a write made elsewhere (`biorouter session monitors`, another
-   * window), and Save replaces the whole record, so a Save must never replace
-   * monitors it has not seen. When the read fails this copy is used.
+   * stored now and holds every change until that answer arrives, and every write
+   * reads it again: the caller's copy can predate a write made elsewhere
+   * (`biorouter session monitors`, an agent's `workspace_monitor`, another window),
+   * and a write replaces the whole record. When a read fails this copy is used.
    */
   settings: DecisionSettings | null;
-  /** The stored value after a save, so the caller can refresh what it draws. */
+  /** The stored value after each write, so the caller can refresh what it draws. */
   onSaved?: (settings: DecisionSettings) => void;
   /** For tests: the catalog, instead of `GET /decisions/models`. */
   models?: DecisionModelEntry[];
@@ -923,28 +1116,49 @@ export interface MonitorsDialogProps {
   isCrewChat?: boolean;
 }
 
+type Editing = {
+  /** The monitor's id, or `null` for a new one. */
+  id: string | null;
+  draft: MonitorCriterion;
+  /** The monitor as it was stored when the edit began, `null` for a new one. */
+  opened: MonitorCriterion | null;
+};
+
+type Status =
+  | { kind: 'idle' }
+  | { kind: 'saving' }
+  | { kind: 'saved' }
+  | { kind: 'removed'; name: string };
+
+type FocusTarget =
+  | { kind: 'row'; id: string }
+  | { kind: 'add' }
+  | { kind: 'undo' }
+  | { kind: 'field'; id: string };
+
+/** The change one write applies to what is stored now, by monitor id; `null` writes nothing. */
+type Change = (fresh: MonitorCriterion[]) => MonitorCriterion[] | null;
+
 /**
  * The chat's monitors: a decision model reading the newest part of the chat and
- * acting (notify, steer, stop) when its answer reaches a threshold. List, add,
- * edit and remove, then Save writes them all with
- * `PUT /sessions/{id}/decision-settings` and the person's proof.
+ * acting (notify, steer, stop) when its answer crosses a threshold.
  *
- * The models come from `GET /decisions/models`, each with its tier; a public
- * model is offered to a private chat disabled, with the reason, because Gate H
- * refuses it before anything is sent. What the daemon would refuse is said by
- * the field before Save is pressed, and a refusal the daemon sends anyway is
- * shown above the footer.
+ * A manager that applies each change when it is made, like the knowledge base
+ * manager: a row's Switch turns it on or off, `⋯` › Edit replaces the row with
+ * its editor (Save writes it), `⋯` › Remove removes it with Undo beside the
+ * "Removed" status. There is no footer; the × closes, also while a write is in
+ * flight (which still finishes and still calls `onSaved`).
  *
- * The write needs the person's proof on a daemon that holds a user-action key,
- * and none on one that holds no key (a `biorouter serve` browser), so the
- * dialog works the same on both surfaces; a refusal is shown, never swallowed.
- * The daemon checks that what a save turns on can run for this chat now and
- * answers 422 with its sentence when it cannot; that sentence is shown too.
+ * Every write reads what is stored now (`GET`), applies only the person's one
+ * change to that list by monitor id, and writes the whole record back
+ * (`PUT /sessions/{id}/decision-settings`, with the person's proof), so a monitor
+ * an agent or another window added meanwhile is kept, and Undo puts back only the
+ * monitor it removed.
  *
- * When the list was read and no model in it may read this chat, the install
- * panel (`DecisionModelInstall`) offers to install a local one at the top, and
- * the model list is read again once it is installed. Save is never held back for
- * that: a monitor may be removed or switched off whatever its model.
+ * The models come from `GET /decisions/models`, each with its tier and where it
+ * runs; one the chat may not use is offered disabled with the reason. When the
+ * list was read and none may read this chat, the install panel offers a local
+ * one at the top.
  */
 export function MonitorsDialog({
   open,
@@ -960,12 +1174,18 @@ export function MonitorsDialog({
   isCrewChat: givenCrewChat = false,
 }: MonitorsDialogProps) {
   const [monitors, setMonitors] = useState<MonitorCriterion[]>(settings?.monitors ?? []);
-  const [editing, setEditing] = useState<{ index: number | null; draft: MonitorCriterion } | null>(
-    null
-  );
+  const [editing, setEditing] = useState<Editing | null>(null);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [showErrors, setShowErrors] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [editorRefusal, setEditorRefusal] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<Status>({ kind: 'idle' });
+  const [undo, setUndo] = useState<{ monitor: MonitorCriterion; index: number } | null>(null);
+  const [rowErrors, setRowErrors] = useState<Record<string, string>>({});
+  /** A row switch flipped and not yet answered: shown as asked until the write settles. */
+  const [pendingToggle, setPendingToggle] = useState<{ id: string; enabled: boolean } | null>(null);
+  const [generalError, setGeneralError] = useState<string | null>(null);
+  const [focusTarget, setFocusTarget] = useState<FocusTarget | null>(null);
   const [fetchedModels, setFetchedModels] = useState<DecisionModelEntry[]>([]);
   const [fetchedChatRefusal, setFetchedChatRefusal] = useState<string | null>(null);
   // Why the model list could not be read; and Retry's count, which reads it again
@@ -978,20 +1198,43 @@ export function MonitorsDialog({
   // A Crew grant rules out every model, the chat's decision model included: no
   // row stands for that one, so the catalog says it once for the chat.
   const chatRefusal = givenModels ? (givenChatRefusal ?? null) : fetchedChatRefusal;
-  // The dialog's own read, for an open that came before the caller's.
-  const [ownSettings, setOwnSettings] = useState<DecisionSettings | null>(null);
   const [stored, setStored] = useState<'ready' | 'loading' | 'error'>('ready');
-  const base = ownSettings ?? settings;
+  /** What is stored, as last read or written: a write whose fresh read fails starts from it. */
+  const lastStored = useRef<DecisionSettings | null>(settings);
+  /** Each open's number: a write that finishes after a close (or a reopen) changes nothing here. */
+  const generation = useRef(0);
+  const openRef = useRef(open);
+  openRef.current = open;
+  const lastProp = useRef(settings);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const addRef = useRef<HTMLButtonElement | null>(null);
+  const undoRef = useRef<HTMLButtonElement | null>(null);
+  const base = useId();
+  const ids: EditorIds = {
+    name: `${base}-name`,
+    firstOption: `${base}-option-0`,
+    watched: `${base}-watched`,
+    model: `${base}-model`,
+  };
   const locked = readOnly || stored !== 'ready';
 
   // Each open starts from what is stored NOW, not from the caller's copy.
   useEffect(() => {
     if (!open) return;
+    generation.current += 1;
     setMonitors(settings?.monitors ?? []);
+    lastStored.current = settings;
+    lastProp.current = settings;
     setEditing(null);
+    setMoreOpen(false);
     setShowErrors(false);
-    setSaveError(null);
-    setOwnSettings(null);
+    setEditorRefusal(null);
+    setBusy(false);
+    setStatus({ kind: 'idle' });
+    setUndo(null);
+    setRowErrors({});
+    setPendingToggle(null);
+    setGeneralError(null);
     if (!sessionId) {
       setStored('ready');
       return;
@@ -1003,7 +1246,7 @@ export function MonitorsDialog({
       .then(({ data }) => {
         if (controller.signal.aborted) return;
         const fresh = data ?? known;
-        setOwnSettings(fresh);
+        lastStored.current = fresh;
         setMonitors(fresh?.monitors ?? []);
         setStored('ready');
       })
@@ -1015,6 +1258,17 @@ export function MonitorsDialog({
     // Only on open: a poll that re-reads the same settings must not discard an edit.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  // Between writes, while nothing is being edited or written, a newer copy from the
+  // caller's poll replaces the list: the dialog stays open across changes made elsewhere.
+  useEffect(() => {
+    if (settings === lastProp.current) return;
+    lastProp.current = settings;
+    if (!open || stored !== 'ready' || editing || busy || !settings) return;
+    lastStored.current = settings;
+    setMonitors(settings.monitors);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings]);
 
   useEffect(() => {
     if (!open) setCatalogRead(false);
@@ -1041,6 +1295,27 @@ export function MonitorsDialog({
     return () => controller.abort();
   }, [open, givenModels, sessionId, catalogAttempt]);
 
+  // Focus moves after the render that drew its target, and after a menu's own
+  // focus return (Radix restores its trigger in a timeout of its own).
+  useEffect(() => {
+    if (!focusTarget) return;
+    const timer = window.setTimeout(() => {
+      setFocusTarget(null);
+      let node: HTMLElement | null = null;
+      if (focusTarget.kind === 'add') node = addRef.current;
+      else if (focusTarget.kind === 'undo') node = undoRef.current;
+      else if (focusTarget.kind === 'field') node = document.getElementById(focusTarget.id);
+      else {
+        const row = listRef.current?.querySelector<HTMLElement>(
+          `[data-monitor-id="${CSS.escape(focusTarget.id)}"]`
+        );
+        node = row?.querySelector<HTMLElement>('[data-row-action]') ?? null;
+      }
+      node?.focus();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [focusTarget]);
+
   // The list was read, and no model in it may read this chat. A Crew grant that no
   // longer stands (`chatRefusal`) refuses every model, an installed one too, so the
   // install panel would offer what cannot help.
@@ -1048,7 +1323,7 @@ export function MonitorsDialog({
     (givenModels !== undefined || catalogRead) &&
     !catalogIssue &&
     !chatRefusal &&
-    !models.some((entry) => modelReason(entry, chatTier) === null);
+    !models.some((entry) => decisionModelReason(entry, chatTier) === null);
   const isSubagentChat =
     givenSubagentChat ||
     monitors.some((monitor) => monitor.setBy === 'agent' || !!monitor.inheritedFrom);
@@ -1060,118 +1335,358 @@ export function MonitorsDialog({
     : chatTier === 'private'
       ? 'private'
       : 'none';
+  const context = { chatTier, models, chatRefusal };
 
   const draftErrors = useMemo(
     () => (editing ? validateMonitor(editing.draft, { chatTier, models, chatRefusal }) : {}),
     [editing, chatTier, models, chatRefusal]
   );
 
-  const commitDraft = (): MonitorCriterion[] | null => {
-    if (!editing) return monitors;
-    if (hasErrors(draftErrors)) {
-      setShowErrors(true);
-      return null;
-    }
-    const taken = new Set(
-      monitors.filter((_, i) => i !== editing.index).map((monitor) => monitor.id)
+  const clearRowError = (id: string) =>
+    setRowErrors((current) => {
+      if (!(id in current)) return current;
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+
+  /**
+   * One write: read what is stored now, apply `change` to it, PUT the result,
+   * draw what the PUT returns and tell the caller. The dialog stays open. A
+   * write that finishes after the dialog closed still tells the caller.
+   */
+  const write = useCallback(
+    async (
+      change: Change,
+      outcome: {
+        done?: (stored: DecisionSettings, wrote: boolean) => void;
+        refused?: (sentence: string) => void;
+      } = {}
+    ) => {
+      const gen = generation.current;
+      const current = () => openRef.current && generation.current === gen;
+      setBusy(true);
+      setStatus({ kind: 'saving' });
+      setUndo(null);
+      setGeneralError(null);
+      let fresh = lastStored.current;
+      if (sessionId) {
+        try {
+          const { data } = await fetchDecisionSettings(sessionId);
+          if (data) fresh = data;
+        } catch {
+          // Unreadable: the last stored list this dialog holds is the best known.
+        }
+      }
+      const freshMonitors = fresh?.monitors ?? [];
+      const next = change(freshMonitors);
+      if (next === null) {
+        if (current()) {
+          const kept: DecisionSettings = {
+            defaultModel: fresh?.defaultModel ?? null,
+            monitors: freshMonitors,
+          };
+          lastStored.current = kept;
+          setMonitors(freshMonitors);
+          setBusy(false);
+          setStatus({ kind: 'saved' });
+          outcome.done?.(kept, false);
+        }
+        return;
+      }
+      try {
+        const saved = await saveDecisionSettings(sessionId, {
+          defaultModel: fresh?.defaultModel ?? null,
+          monitors: next,
+        });
+        onSaved?.(saved);
+        if (!current()) return;
+        lastStored.current = saved;
+        setMonitors(saved.monitors);
+        setBusy(false);
+        setStatus({ kind: 'saved' });
+        outcome.done?.(saved, true);
+      } catch (error) {
+        if (!current()) return;
+        if (fresh) {
+          lastStored.current = fresh;
+          setMonitors(freshMonitors);
+        }
+        setBusy(false);
+        setStatus({ kind: 'idle' });
+        outcome.refused?.(refusalOf(error));
+      }
+    },
+    [sessionId, onSaved]
+  );
+
+  const startEdit = (monitor: MonitorCriterion | null) => {
+    setUndo(null);
+    // R1-2: an earlier write's "Saved" (or "Removed") describes that write, not the
+    // editor opening now: it would read as if the new monitor were saved.
+    setStatus({ kind: 'idle' });
+    setShowErrors(false);
+    setEditorRefusal(null);
+    setMoreOpen(monitor ? usesHiddenSettings(monitor) : false);
+    setEditing(
+      monitor
+        ? { id: monitor.id, draft: monitor, opened: monitor }
+        : { id: null, draft: newMonitor(), opened: null }
     );
+    setFocusTarget({ kind: 'field', id: ids.name });
+  };
+
+  const cancelEdit = () => {
+    const id = editing?.id ?? null;
+    setEditing(null);
+    setShowErrors(false);
+    setEditorRefusal(null);
+    setFocusTarget(id ? { kind: 'row', id } : { kind: 'add' });
+  };
+
+  const saveEdit = () => {
+    if (!editing || busy || locked) return;
+    const errors = draftErrors;
+    const hiddenField = errors.options
+      ? ids.firstOption
+      : errors.option
+        ? ids.watched
+        : errors.model
+          ? ids.model
+          : null;
+    if (hasErrors(errors)) {
+      setShowErrors(true);
+      if (hiddenField) {
+        setMoreOpen(true);
+        setFocusTarget({ kind: 'field', id: hiddenField });
+      } else if (errors.name) {
+        setFocusTarget({ kind: 'field', id: ids.name });
+      }
+      return;
+    }
+    // A model list that could not be read is said under Model: reveal it once.
+    if (catalogIssue && !moreOpen) {
+      setMoreOpen(true);
+      setFocusTarget({ kind: 'field', id: ids.model });
+      return;
+    }
+    const draft = editing.draft;
     const trimmed: MonitorCriterion = {
-      ...editing.draft,
-      name: editing.draft.name.trim(),
-      id: editing.draft.id || monitorSlug(editing.draft.name, taken),
+      ...draft,
+      name: draft.name.trim(),
       question: {
-        ...editing.draft.question,
-        instructions: editing.draft.question.instructions.trim(),
+        ...draft.question,
+        instructions: draft.question.instructions.trim(),
         kind:
-          editing.draft.question.kind.type === 'choice'
+          draft.question.kind.type === 'choice'
             ? {
                 type: 'choice' as const,
-                options: editing.draft.question.kind.options.map((option) => ({
-                  ...option,
+                options: draft.question.kind.options.map((option) => ({
                   name: option.name.trim(),
+                  description: option.description?.trim() || null,
                 })),
               }
-            : editing.draft.question.kind,
+            : draft.question.kind,
       },
     };
     // An agent's monitor the person changed is the person's now; opened and
-    // closed with nothing changed, it stays the agent's.
-    const original = editing.index === null ? null : monitors[editing.index];
+    // saved with nothing changed, it stays the agent's.
+    const original = editing.opened;
     const changed =
       original !== null &&
       JSON.stringify(monitorToWire(trimmed)) !== JSON.stringify(monitorToWire(original));
-    const draft = changed ? ownedByThePerson(trimmed) : trimmed;
-    const next =
-      editing.index === null
-        ? [...monitors, draft]
-        : monitors.map((monitor, i) => (i === editing.index ? draft : monitor));
-    setMonitors(next);
-    setEditing(null);
-    setShowErrors(false);
-    return next;
+    const owned = changed ? ownedByThePerson(trimmed) : trimmed;
+    let savedId = owned.id;
+    void write(
+      (fresh) => {
+        if (editing.id !== null) {
+          const at = fresh.findIndex((monitor) => monitor.id === editing.id);
+          // Removed elsewhere meanwhile: the person just asked to save it, so it is added back.
+          return at < 0
+            ? [...fresh, owned]
+            : fresh.map((monitor, i) => (i === at ? owned : monitor));
+        }
+        savedId = monitorSlug(owned.name, new Set(fresh.map((monitor) => monitor.id)));
+        return [...fresh, { ...owned, id: savedId }];
+      },
+      {
+        done: () => {
+          setEditing(null);
+          setShowErrors(false);
+          setEditorRefusal(null);
+          setFocusTarget({ kind: 'row', id: savedId });
+        },
+        refused: (sentence) => setEditorRefusal(sentence),
+      }
+    );
   };
 
-  const save = async () => {
-    if (stored !== 'ready') return;
-    const next = commitDraft();
-    if (!next) return;
-    // Every monitor that is on is checked again: a stored one may name a model this
-    // chat can no longer use. One that is off is not, so it can always be saved off.
-    const invalid = next.findIndex((monitor) =>
-      hasErrors(validateMonitor(monitor, { chatTier, models, chatRefusal }))
+  const toggle = (monitor: MonitorCriterion, enabled: boolean) => {
+    if (busy || locked || editing) return;
+    clearRowError(monitor.id);
+    // Only the monitor being switched on is judged; one switched off never runs.
+    if (enabled) {
+      const errors = validateMonitor({ ...monitor, enabled: true }, context);
+      const first = errors.model ?? errors.option ?? errors.options ?? errors.question;
+      if (first) {
+        setRowErrors((current) => ({ ...current, [monitor.id]: first }));
+        return;
+      }
+    }
+    setPendingToggle({ id: monitor.id, enabled });
+    void write(
+      (fresh) => {
+        const at = fresh.findIndex((entry) => entry.id === monitor.id);
+        if (at < 0) return null;
+        // Switched by the person, an agent's monitor is the person's.
+        return fresh.map((entry, i) =>
+          i === at ? ownedByThePerson({ ...entry, enabled }) : entry
+        );
+      },
+      {
+        done: () => setPendingToggle(null),
+        refused: (sentence) => {
+          setPendingToggle(null);
+          setRowErrors((current) => ({ ...current, [monitor.id]: sentence }));
+        },
+      }
     );
-    if (invalid >= 0) {
-      setEditing({ index: invalid, draft: next[invalid] });
-      setShowErrors(true);
-      return;
-    }
-    setSaving(true);
-    setSaveError(null);
-    try {
-      const stored = await saveDecisionSettings(sessionId, {
-        defaultModel: base?.defaultModel ?? null,
-        monitors: next,
-      });
-      onSaved?.(stored);
-      onOpenChange(false);
-    } catch (error) {
-      setSaveError(refusalText(error instanceof Error ? error.message : error) ?? copy.saveFailed);
-    } finally {
-      setSaving(false);
-    }
+  };
+
+  const remove = (monitor: MonitorCriterion) => {
+    if (busy || locked || editing) return;
+    clearRowError(monitor.id);
+    const index = monitors.findIndex((entry) => entry.id === monitor.id);
+    void write((fresh) => fresh.filter((entry) => entry.id !== monitor.id), {
+      done: (_stored, wrote) => {
+        if (!wrote) return;
+        setStatus({ kind: 'removed', name: monitor.name });
+        setUndo({ monitor, index: Math.max(0, index) });
+        setFocusTarget({ kind: 'undo' });
+      },
+      refused: (sentence) => setRowErrors((current) => ({ ...current, [monitor.id]: sentence })),
+    });
+  };
+
+  const undoRemove = () => {
+    if (!undo || busy) return;
+    const { monitor, index } = undo;
+    void write(
+      (fresh) => {
+        // Put back elsewhere already: nothing new to write for it.
+        if (fresh.some((entry) => entry.id === monitor.id)) return null;
+        const at = Math.min(index, fresh.length);
+        return [...fresh.slice(0, at), monitor, ...fresh.slice(at)];
+      },
+      {
+        done: () => setFocusTarget({ kind: 'row', id: monitor.id }),
+        refused: (sentence) => {
+          // Still undoable: the removal it would put back stands.
+          setUndo({ monitor, index });
+          setGeneralError(sentence);
+        },
+      }
+    );
   };
 
   const atLimit = monitors.length >= MAX_MONITORS;
-  const footer = (
-    <>
-      <Button type="button" variant="ghost" onClick={() => onOpenChange(false)}>
-        {copy.cancel}
-      </Button>
-      <Button
-        type="button"
-        disabled={locked || saving}
-        aria-busy={saving || undefined}
-        data-testid="monitors-save"
-        onClick={() => void save()}
-      >
-        {saving ? copy.saving : copy.save}
-      </Button>
-    </>
-  );
+  const rowsLocked = locked || busy || editing !== null;
+  const showEmpty = stored === 'ready' && monitors.length === 0 && !editing;
+  const statusText =
+    status.kind === 'saving'
+      ? copy.saving
+      : status.kind === 'saved'
+        ? copy.saved
+        : status.kind === 'removed'
+          ? copy.removed(status.name)
+          : atLimit && !readOnly
+            ? copy.limit
+            : '';
+
+  const editor = editing ? (
+    <MonitorEditor
+      draft={editing.draft}
+      errors={showErrors ? draftErrors : {}}
+      models={models}
+      chatTier={chatTier}
+      chatRefusal={chatRefusal}
+      defaultModel={lastStored.current?.defaultModel ?? null}
+      catalogProblem={catalogIssue}
+      onRetryCatalog={() => setCatalogAttempt((attempt) => attempt + 1)}
+      isSubagentChat={isSubagentChat}
+      opened={editing.opened}
+      moreOpen={moreOpen}
+      onMoreOpenChange={setMoreOpen}
+      ids={ids}
+      busy={busy}
+      refusal={editorRefusal}
+      onCancel={cancelEdit}
+      onSave={saveEdit}
+      onChange={(draft) => setEditing({ ...editing, draft })}
+    />
+  ) : null;
+
+  const footRow =
+    !readOnly && stored === 'ready' ? (
+      <div className="br-monitors__foot" data-testid="monitors-foot">
+        {showEmpty || editing?.id === null ? null : (
+          <Button
+            ref={addRef}
+            type="button"
+            variant="secondary"
+            size="sm"
+            disabled={rowsLocked || atLimit}
+            data-testid="monitor-add"
+            onClick={() => startEdit(null)}
+          >
+            <Plus aria-hidden="true" />
+            {copy.add}
+          </Button>
+        )}
+        <span className="br-monitors__status-slot">
+          <span
+            className="br-monitors__status"
+            role="status"
+            data-state={status.kind}
+            data-testid="monitors-status"
+          >
+            {status.kind === 'saved' ? <Check aria-hidden="true" /> : null}
+            {statusText}
+          </span>
+          {undo ? (
+            <Button
+              ref={undoRef}
+              type="button"
+              variant="link"
+              size="xs"
+              className="br-monitors__inline-link"
+              aria-label={copy.undoLabel(undo.monitor.name)}
+              disabled={busy}
+              data-testid="monitor-undo"
+              onClick={undoRemove}
+            >
+              {copy.undo}
+            </Button>
+          ) : null}
+        </span>
+      </div>
+    ) : null;
 
   return (
     <ModalShell
       open={open}
       onOpenChange={onOpenChange}
       size="lg"
-      purpose={saving ? 'required' : 'form'}
+      // Constant through a write, so the × never flickers on a row flip; a form while
+      // an editor is open, so a backdrop click does not drop the draft.
+      purpose={editing ? 'form' : 'info'}
       title={copy.title}
       subtitle={copy.subtitle}
-      footer={footer}
       scrollBody
+      bodyClassName="flex flex-col gap-4 py-4"
       testId="monitors-dialog"
     >
-      <div className="br-monitors">
+      <div className="br-monitors" ref={listRef}>
         {nothingUsable && !readOnly ? (
           <DecisionModelInstall
             reason={installReason}
@@ -1187,140 +1702,187 @@ export function MonitorsDialog({
           <p className="br-monitors__error" role="alert" data-testid="monitors-load-error">
             {copy.loadFailed}
           </p>
-        ) : monitors.length === 0 && !editing ? (
-          <p className="br-monitors__note">{copy.empty}</p>
-        ) : null}
-        {monitors.length > 0 ? (
-          <ul className="br-monitors__list" aria-label={copy.title}>
-            {monitors.map((monitor, index) =>
-              editing?.index === index ? null : (
-                <li
-                  key={monitor.id || index}
-                  className="br-monitors__item br-fill-surface"
-                  data-testid="monitor-item"
+        ) : showEmpty ? (
+          <EmptyState
+            compact
+            icon={SlidersHorizontal}
+            title={copy.empty}
+            description={copy.emptyDescription}
+            className="br-monitors__empty"
+            actions={
+              readOnly ? undefined : (
+                <Button
+                  ref={addRef}
+                  type="button"
+                  size="sm"
+                  disabled={rowsLocked}
+                  data-testid="monitor-add"
+                  onClick={() => startEdit(null)}
                 >
-                  <span className="br-monitors__item-text">
-                    <span className="br-monitors__item-name">{monitor.name}</span>
-                    <span className="br-monitors__item-meta">{monitorSummary(monitor)}</span>
-                    {monitor.setBy === 'agent' || monitor.inheritedFrom ? (
-                      <span className="flex flex-wrap gap-1 pt-1">
-                        {monitor.setBy === 'agent' ? (
-                          <Badge data-testid="monitor-set-by-agent">{copy.setByAgent}</Badge>
-                        ) : null}
-                        {monitor.inheritedFrom ? (
-                          <Badge data-testid="monitor-inherited">{copy.inherited}</Badge>
-                        ) : null}
-                      </span>
-                    ) : null}
-                  </span>
-                  <Switch
-                    checked={monitor.enabled}
-                    disabled={locked}
-                    aria-label={copy.enabled(monitor.name)}
-                    onCheckedChange={(checked) =>
-                      setMonitors((current) =>
-                        current.map((entry, i) =>
-                          // Switched by the person, an agent's monitor is the person's.
-                          i === index
-                            ? ownedByThePerson({ ...entry, enabled: checked === true })
-                            : entry
-                        )
-                      )
-                    }
-                  />
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="xs"
-                    shape="round"
-                    disabled={locked || editing !== null}
-                    aria-label={copy.edit(monitor.name)}
-                    onClick={() => setEditing({ index, draft: monitor })}
-                  >
-                    <Pencil aria-hidden="true" />
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="xs"
-                    shape="round"
-                    disabled={locked || editing !== null}
-                    aria-label={copy.remove(monitor.name)}
-                    onClick={() => setMonitors((current) => current.filter((_, i) => i !== index))}
-                  >
-                    <Trash2 aria-hidden="true" />
-                  </Button>
+                  {copy.add}
+                </Button>
+              )
+            }
+          />
+        ) : null}
+        {stored !== 'error' && (monitors.length > 0 || editing) ? (
+          <ul
+            className="biorouter-list-shell br-rows-flat br-monitors__rows"
+            aria-label={copy.title}
+          >
+            {monitors.map((monitor) =>
+              editing && editing.id === monitor.id ? (
+                <li key={monitor.id} className="br-monitors__editor-item">
+                  {editor}
                 </li>
+              ) : (
+                <MonitorRow
+                  key={monitor.id}
+                  monitor={monitor}
+                  models={models}
+                  readOnly={readOnly}
+                  locked={rowsLocked}
+                  checked={
+                    pendingToggle?.id === monitor.id ? pendingToggle.enabled : monitor.enabled
+                  }
+                  error={
+                    rowErrors[monitor.id] ??
+                    (monitor.enabled ? (validateMonitor(monitor, context).model ?? null) : null)
+                  }
+                  onToggle={(enabled) => toggle(monitor, enabled)}
+                  onEdit={() => startEdit(monitor)}
+                  onRemove={() => remove(monitor)}
+                />
               )
             )}
+            {editing && editing.id === null ? (
+              <li className="br-monitors__editor-item">{editor}</li>
+            ) : null}
+            {editing && editing.id !== null && !monitors.some((m) => m.id === editing.id) ? (
+              // Its row went while it was open (changed elsewhere): the editor stays.
+              <li className="br-monitors__editor-item">{editor}</li>
+            ) : null}
           </ul>
         ) : null}
-        {editing ? (
-          <>
-            <MonitorEditor
-              draft={editing.draft}
-              errors={showErrors ? draftErrors : {}}
-              models={models}
-              chatTier={chatTier}
-              chatRefusal={chatRefusal}
-              catalogProblem={catalogIssue}
-              onRetryCatalog={() => setCatalogAttempt((attempt) => attempt + 1)}
-              readOnly={readOnly}
-              nothingUsable={nothingUsable}
-              isSubagentChat={isSubagentChat}
-              opened={editing.index === null ? null : (monitors[editing.index] ?? null)}
-              onChange={(draft) => setEditing({ ...editing, draft })}
-            />
-            <div className="br-monitors__actions">
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  setEditing(null);
-                  setShowErrors(false);
-                }}
-              >
-                {copy.cancel}
-              </Button>
-              <Button
-                type="button"
-                variant="secondary"
-                size="sm"
-                disabled={readOnly}
-                data-testid="monitor-done"
-                onClick={() => void commitDraft()}
-              >
-                {copy.done}
-              </Button>
-            </div>
-          </>
-        ) : (
-          <div>
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              disabled={locked || atLimit}
-              data-testid="monitor-add"
-              onClick={() => {
-                setEditing({ index: null, draft: newMonitor() });
-                setShowErrors(false);
-              }}
-            >
-              <Plus aria-hidden="true" />
-              {copy.add}
-            </Button>
-            {atLimit ? <p className="br-monitors__note">{copy.limit}</p> : null}
-          </div>
-        )}
-        {saveError ? (
+        {footRow}
+        {generalError ? (
           <p className="br-monitors__error" role="alert" data-testid="monitors-save-error">
-            {saveError}
+            {generalError}
           </p>
         ) : null}
       </div>
     </ModalShell>
+  );
+}
+
+/**
+ * One monitor: its name and owner badge, then two facts (what it does and its rule),
+ * whose peek holds the rest; `⋯` (and a right-click) for Edit and Remove; the Switch.
+ */
+function MonitorRow({
+  monitor,
+  models,
+  readOnly,
+  locked,
+  checked,
+  error,
+  onToggle,
+  onEdit,
+  onRemove,
+}: {
+  monitor: MonitorCriterion;
+  models: readonly DecisionModelEntry[];
+  readOnly: boolean;
+  locked: boolean;
+  checked: boolean;
+  error: string | null;
+  onToggle: (enabled: boolean) => void;
+  onEdit: () => void;
+  onRemove: () => void;
+}) {
+  const base = useId();
+  const nameId = `${base}-name`;
+  const lineId = `${base}-line`;
+  const peekId = useInfoTipId();
+  const errorId = `${base}-error`;
+  const items: RowActionItem[] = [
+    { label: copy.edit, onSelect: onEdit, disabled: locked, testId: 'monitor-edit' },
+    { kind: 'separator' },
+    {
+      label: copy.remove,
+      onSelect: onRemove,
+      destructive: true,
+      disabled: locked,
+      testId: 'monitor-remove',
+    },
+  ];
+  const row = (
+    <li
+      className="biorouter-list-row br-monitors__entry flex items-center gap-3 px-3"
+      data-testid="monitor-item"
+      data-monitor-id={monitor.id}
+    >
+      <div className="br-monitors__row-text">
+        <div className="br-monitors__row-title">
+          <span id={nameId} className="br-monitors__row-name text-label text-text-default">
+            {monitor.name}
+          </span>
+          {monitor.setBy === 'agent' ? (
+            <InfoTip label={copy.setByAgent} help={copy.setByAgentInfo} asChild>
+              <Badge data-testid="monitor-set-by-agent">{copy.setByAgent}</Badge>
+            </InfoTip>
+          ) : monitor.inheritedFrom ? (
+            <InfoTip label={copy.inherited} help={copy.inheritedInfo} asChild>
+              <Badge data-testid="monitor-inherited">{copy.inherited}</Badge>
+            </InfoTip>
+          ) : null}
+        </div>
+        {/* Below the line (R1-3): above it, the peek covered the row's own name. */}
+        <InfoTip
+          label={copy.peekLabel(monitor.name)}
+          help={monitorPeek(monitor, models)}
+          id={peekId}
+          side="bottom"
+          asChild
+        >
+          <span
+            id={lineId}
+            className="br-monitors__row-line text-supporting text-text-muted"
+            data-testid="monitor-line"
+          >
+            {monitorRowLine(monitor)}
+          </span>
+        </InfoTip>
+        {error ? (
+          <p
+            id={errorId}
+            className="br-monitors__error"
+            role="alert"
+            data-testid="monitor-row-error"
+          >
+            {error}
+          </p>
+        ) : null}
+      </div>
+      {readOnly ? null : (
+        <RowActions size="xs" menuLabel={copy.moreActions(monitor.name)} menu={items} />
+      )}
+      <Switch
+        checked={checked}
+        disabled={readOnly || locked}
+        aria-labelledby={nameId}
+        aria-describedby={[lineId, peekId, error ? errorId : null].filter(Boolean).join(' ')}
+        data-testid="monitor-switch"
+        onCheckedChange={(next) => onToggle(next === true)}
+      />
+    </li>
+  );
+  return readOnly ? (
+    row
+  ) : (
+    <RowContextMenu items={items} disabled={locked}>
+      {row}
+    </RowContextMenu>
   );
 }
 

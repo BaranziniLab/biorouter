@@ -113,7 +113,11 @@ import {
   subscribeQueuedOfferReturns,
   type QueuedMessage,
 } from '../utils/composerQueues';
-import { DecisionComposer, DECISION_CHAT_PLACEHOLDER } from './decisions/DecisionComposer';
+import {
+  DecisionComposer,
+  DECISION_CHAT_PLACEHOLDER,
+  settleDecisionQuestion,
+} from './decisions/DecisionComposer';
 import { isDecisionProvider } from './decisions/decisionWire';
 
 /**
@@ -667,6 +671,12 @@ export default function ChatInput({
   // nothing while the chat loads (V2-R4-1, round 5): until the row lands there is
   // no binding, and the lookup meanwhile measures the model for new chats.
   const contextModel = contextWindowModelKey(effectiveModel, currentProvider, currentModel);
+  /**
+   * The chat's main model is a decision model: there is no LLM loop, each message
+   * is the state the chat's question is asked of, and the reply is one decision
+   * card. The question is set above the text box (`DecisionComposer`).
+   */
+  const decisionChat = isDecisionProvider(effectiveModel?.provider ?? currentProvider);
   const [tokenLimitModel, setTokenLimitModel] = useState<string | null>(null);
   // V2-R8-3. This composer's lasting identity: the same from an empty chat to
   // the chat its first message starts. That message REMOUNTS the composer
@@ -2006,6 +2016,14 @@ export default function ChatInput({
     cursorPosition: number,
     textArea: HTMLTextAreaElement
   ) => {
+    // A decision chat offers no `/` or `@` list (R1-4): a decision model reads
+    // the text and nothing else, so no skill, extension, knowledge base, file or
+    // command in either list does anything there (`/compact` only answers that
+    // there is nothing to compact, and it still does when typed out).
+    if (decisionChat) {
+      setMentionPopover((prev) => (prev.isOpen ? { ...prev, isOpen: false } : prev));
+      return;
+    }
     const beforeCursor = text.slice(0, cursorPosition);
     const lastAtIndex = beforeCursor.lastIndexOf('@');
     let lastSlashIndex = -1;
@@ -2579,13 +2597,6 @@ export default function ChatInput({
     effectiveModel?.provider ?? currentProvider
   );
 
-  /**
-   * The chat's main model is a decision model: there is no LLM loop, each message
-   * is the state the chat's question is asked of, and the reply is one decision
-   * card. The question is set above the text box (`DecisionComposer`).
-   */
-  const decisionChat = isDecisionProvider(effectiveModel?.provider ?? currentProvider);
-
   // Why a chat whose Crew access lapsed cannot send, for Enter to say instead of doing nothing.
   const crewHold = useCrewComposerHold(sessionId);
 
@@ -2700,18 +2711,21 @@ export default function ChatInput({
         const released = releaseComposerText('send');
         const sentSpans = mapDictatedSpans(released, displayValue, textToSend);
         let acceptedSessionId = sessionId;
-        const submitted = submitComposer(
-          handleSubmit,
-          new CustomEvent('submit', {
-            detail: {
-              value: textToSend,
-              attachments: imageAttachments,
-              onAcceptedSession: (id: string) => {
-                acceptedSessionId = id;
-              },
+        const submitEvent = new CustomEvent('submit', {
+          detail: {
+            value: textToSend,
+            attachments: imageAttachments,
+            onAcceptedSession: (id: string) => {
+              acceptedSessionId = id;
             },
-          }) as unknown as React.FormEvent
-        );
+          },
+        }) as unknown as React.FormEvent;
+        // R1-6: in a decision chat the message waits for the question typed just
+        // before it to be stored, or the daemon gets a message with no question.
+        // The composer still clears at once; a refusal hands the text back below.
+        const submitted = decisionChat
+          ? settleDecisionQuestion(sessionId).then(() => submitComposer(handleSubmit, submitEvent))
+          : submitComposer(handleSubmit, submitEvent);
 
         // The composer wipes itself a few lines below, synchronously, before the
         // submit has said whether it took the message. When it did NOT — a
@@ -2795,6 +2809,7 @@ export default function ChatInput({
       canSendDroppedFileAsPath,
       canUploadDroppedImage,
       currentModelSupportsVision,
+      decisionChat,
       displayValue,
       diverge,
       draftKey,
@@ -2848,7 +2863,7 @@ export default function ChatInput({
       return;
     }
     // If mention popover is open, handle arrow keys and enter
-    if (mentionPopover.isOpen && mentionPopoverRef.current) {
+    if (mentionPopover.isOpen && !decisionChat && mentionPopoverRef.current) {
       if (evt.key === 'ArrowDown') {
         evt.preventDefault();
         const displayFiles = mentionPopoverRef.current.getDisplayFiles();
@@ -3540,16 +3555,23 @@ export default function ChatInput({
         {/* THE CONTROLS ROW: what to add, what the agent can reach, which model
             answers, and Send at the end, Crew's `.crew-compose-controls`. */}
         <div data-testid="chat-input-toolbar" className="br-composer-controls">
-          <ComposerPlusMenu
-            onAttachFiles={attachPickedFiles}
-            onInsertTrigger={insertTrigger}
-            onOpenDecisionMonitors={sessionId ? onOpenDecisionMonitors : undefined}
-          />
-          <ToolsChip
-            sessionId={sessionId}
-            privacyTier={sessionPrivacyTier}
-            handOffKey={handOffKey}
-          />
+          {/* A decision chat has nothing to attach, insert or switch on: its model
+              reads the chat and answers, and calls no tools (B-3). The monitors
+              stay reachable from an ordinary chat's `+`. */}
+          {!decisionChat && (
+            <>
+              <ComposerPlusMenu
+                onAttachFiles={attachPickedFiles}
+                onInsertTrigger={insertTrigger}
+                onOpenDecisionMonitors={sessionId ? onOpenDecisionMonitors : undefined}
+              />
+              <ToolsChip
+                sessionId={sessionId}
+                privacyTier={sessionPrivacyTier}
+                handOffKey={handOffKey}
+              />
+            </>
+          )}
           <span className="br-composer-controls__spacer" />
           <div ref={modelSlotRef} className="br-composer-controls__model">
             <ModelEffortChip
@@ -3624,7 +3646,7 @@ export default function ChatInput({
 
       <MentionPopover
         ref={mentionPopoverRef}
-        isOpen={mentionPopover.isOpen}
+        isOpen={mentionPopover.isOpen && !decisionChat}
         isSlashCommand={mentionPopover.isSlashCommand}
         onClose={() => setMentionPopover((prev) => ({ ...prev, isOpen: false }))}
         onSelect={handleMentionItemSelect}

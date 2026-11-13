@@ -95,7 +95,9 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use futures::StreamExt;
 use indexmap::IndexMap;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{oneshot, Semaphore};
+use utoipa::ToSchema;
 
 use super::error::{DecisionError, DecisionResult, INSTALL_ADVICE};
 use super::model::{DecisionCaps, DecisionModel, DecisionModelEntry, DecisionModelSource};
@@ -1318,6 +1320,23 @@ impl DecisionService {
             .map(|entry| entry.context_tokens)
     }
 
+    /// The tokens of text a decision for `session` naming `wanted` can carry
+    /// beside `questions`, on the model it would use ([`Self::model_entry_for`]),
+    /// by the size check's own arithmetic ([`state_budget_tokens`]). `None`
+    /// when the listing does not show that model. For a caller that builds a
+    /// state and must fit it to the model before sending (a phase gate's
+    /// hand-off, a monitor's window); [`fit_text_to_window`] cuts text to it.
+    pub async fn state_budget_for(
+        &self,
+        session: Option<&DecisionSession>,
+        wanted: Option<&DecisionModelRef>,
+        questions: &IndexMap<String, Question>,
+    ) -> Option<usize> {
+        self.context_tokens_for(session, wanted)
+            .await
+            .map(|window| state_budget_tokens(window, questions))
+    }
+
     /// `BIOROUTER_DECISION_PROVIDER` / `BIOROUTER_DECISION_MODEL`, or the
     /// default this service was built with.
     fn configured(&self) -> Option<ConfiguredDefault> {
@@ -1343,6 +1362,7 @@ impl DecisionService {
                 questions.len()
             )));
         }
+        let max_options = model.max_choice_options();
         for (name, question) in questions {
             if !caps.kinds.contains(&question.kind.tag()) {
                 return Err(DecisionError::Unsupported(format!(
@@ -1350,6 +1370,17 @@ impl DecisionService {
                     model.display_name(),
                     question.kind.tag()
                 )));
+            }
+            if let DecisionKind::Choice { options } = &question.kind {
+                if options.len() > max_options {
+                    return Err(DecisionError::Unsupported(format!(
+                        "`{}` takes at most {max_options} options per choice question, and \
+                         question `{name}` offers {}. Ask with fewer options, or choose \
+                         another model.",
+                        model.display_name(),
+                        options.len()
+                    )));
+                }
             }
         }
         Ok(())
@@ -1564,7 +1595,10 @@ impl DecisionService {
                 answered: Err(error),
                 in_flight,
                 ..
-            })) => (error, Some(in_flight)),
+            })) => (
+                named_for_chunk(error, attempt.chunk_id, &request.questions),
+                Some(in_flight),
+            ),
             // The call's task ended without an answer: it panicked.
             Ok(Err(_)) => (
                 DecisionError::Backend {
@@ -1841,7 +1875,10 @@ impl DecisionService {
         let caps = model.caps();
         Ok(question_sets
             .iter()
-            .map(|questions| self.check_kinds(model.as_ref(), &caps, questions))
+            .map(|questions| {
+                self.check_kinds(model.as_ref(), &caps, questions)?;
+                check_fit(model.as_ref(), &caps, questions)
+            })
             .collect())
     }
 
@@ -2447,14 +2484,20 @@ static LOADED_COUNTER: std::sync::OnceLock<Arc<crate::token_counter::TokenCounte
 /// The token estimate for a request: the state and every question's text,
 /// through the shared o200k counter with the non-OpenAI margin.
 pub async fn estimate_tokens(request: &DecisionRequest) -> usize {
+    with_margin(raw_tokens(request).await, request.questions.len())
+}
+
+/// [`estimate_tokens`] before its margin and per-question overhead: the
+/// tokens of the request's text by Biorouter's estimate, the unit
+/// [`UsableChunk::tokens`] and an over-size refusal speak in.
+async fn raw_tokens(request: &DecisionRequest) -> usize {
     let text = request_text(request);
-    let raw = match crate::token_counter::shared_token_counter().await {
+    (match crate::token_counter::shared_token_counter().await {
         Ok(counter) => LOADED_COUNTER.get_or_init(|| counter).count_tokens(&text),
         // The tokenizer failed to load: the four-characters-a-token estimate
         // the context budget uses, which errs low, so the margin below matters.
         Err(_) => crate::context_budget::estimate_tokens(&text),
-    } + extra_digit_tokens(&text);
-    with_margin(raw, request.questions.len())
+    }) + extra_digit_tokens(&text)
 }
 
 /// [`estimate_tokens`] without waiting, for fitting a state while a lock is
@@ -2555,8 +2598,6 @@ pub fn context_margin(context_tokens: usize) -> usize {
 /// check's per-digit charge ([`extra_digit_tokens`]). For building a state
 /// that fits, such as a monitor's window; the check still judges.
 pub fn state_budget_tokens(context_tokens: usize, questions: &IndexMap<String, Question>) -> usize {
-    let overhead = context_margin(context_tokens) + PER_QUESTION_OVERHEAD * questions.len();
-    let estimated_room = context_tokens.saturating_sub(overhead) as f64 / TOKEN_ESTIMATE_MARGIN;
     let question_tokens: usize = questions
         .iter()
         .map(|(name, question)| {
@@ -2565,8 +2606,217 @@ pub fn state_budget_tokens(context_tokens: usize, questions: &IndexMap<String, Q
             text.len().div_ceil(3) + extra_digit_tokens(&text)
         })
         .sum();
-    (estimated_room.floor() as usize).saturating_sub(question_tokens)
+    text_room(context_tokens, questions.len()).saturating_sub(question_tokens)
 }
+
+/// The tokens of text, by Biorouter's estimate before its margin, that a
+/// request asking `questions` questions may carry in a model of
+/// `context_tokens`, questions' own text included: the check's limit less its
+/// margin and per-question overhead, divided by its non-OpenAI factor. With no
+/// question it is [`UsableChunk::tokens`].
+fn text_room(context_tokens: usize, questions: usize) -> usize {
+    let overhead = context_margin(context_tokens) + PER_QUESTION_OVERHEAD * questions;
+    (context_tokens.saturating_sub(overhead) as f64 / TOKEN_ESTIMATE_MARGIN).floor() as usize
+}
+
+/// The text's own tokens, and the most it may have beside the questions, in
+/// the unit `decision_models` reports ([`UsableChunk::tokens`]): the request's
+/// estimate before the margin, less its questions' share. Whenever the check
+/// refuses the request, the first exceeds the second, so a refusal always reads
+/// "this much, more than that much", and the second is what `decision_models`
+/// gives less the questions' length (R3-F2: the refusal used to give the window
+/// less the margin, in margin-inflated tokens, so tev1:0.8b's 1,669 read as
+/// 1,920 there).
+async fn text_tokens_and_room(request: &DecisionRequest, context_tokens: usize) -> (usize, usize) {
+    let total = raw_tokens(request).await;
+    let questions_only = raw_tokens(&DecisionRequest {
+        questions: request.questions.clone(),
+        context: DecisionContext::Text(String::new()),
+    })
+    .await;
+    (
+        total.saturating_sub(questions_only),
+        text_room(context_tokens, request.questions.len()).saturating_sub(questions_only),
+    )
+}
+
+/// A server's own over-window refusal (an adapter's [`DecisionError::TooLarge`],
+/// which cannot know the chunk) named for the chunk it was about, as the check
+/// before sending names it.
+///
+/// The server counts the whole prompt in its own tokens. Both numbers are put
+/// in the unit the check before sending and `decision_models` use (R3-F2): the
+/// server's count less the margin's factor and the questions' share, and the
+/// room [`state_budget_tokens`] gives beside `questions`. A prompt over the
+/// window is over that room too, so the text's number stays the larger.
+fn named_for_chunk(
+    error: DecisionError,
+    chunk_id: Option<&str>,
+    questions: &IndexMap<String, Question>,
+) -> DecisionError {
+    match error {
+        DecisionError::TooLarge {
+            tokens,
+            limit,
+            model,
+            ..
+        } => {
+            let usable = state_budget_tokens(limit, questions);
+            let room = text_room(limit, questions.len());
+            let question_share = room.saturating_sub(usable);
+            let text = ((tokens as f64 / TOKEN_ESTIMATE_MARGIN).ceil() as usize)
+                .saturating_sub(question_share)
+                .max(usable + 1);
+            DecisionError::TooLarge {
+                chunk: chunk_label(chunk_id),
+                tokens: text,
+                usable,
+                limit,
+                model,
+            }
+        }
+        other => other,
+    }
+}
+
+/// How a refusal names what was too large: the chunk by its id, else the text.
+fn chunk_label(chunk_id: Option<&str>) -> String {
+    match chunk_id {
+        Some(id) => format!("Chunk `{id}`"),
+        None => "The text".to_string(),
+    }
+}
+
+/// How much text one request to a model can carry, by the arithmetic the size
+/// check before sending applies ([`state_budget_tokens`] with no question):
+/// what `decision_models` tells the agent to size chunks by, so a chunk it
+/// sizes is one the check passes. Each question asked beside the text takes
+/// its own length out of it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsableChunk {
+    /// Tokens of text, by Biorouter's estimate.
+    pub tokens: usize,
+    /// Characters of ordinary prose (about four a token, which errs low).
+    pub prose_chars: usize,
+    /// Characters of numbers, tables, ids or code: decision models' tokenizers
+    /// spend a token on every digit, so about one a token.
+    pub number_chars: usize,
+}
+
+/// Characters of prose counted to a token in [`UsableChunk::prose_chars`].
+/// o200k reads English prose at four to five; measured on tev1:0.8b
+/// (2026-11-10), 8,500 characters of clinical prose fitted the 1,669 tokens
+/// its 2,048-token window leaves, about five a token.
+const PROSE_CHARS_PER_TOKEN: usize = 4;
+/// Bytes kept below a request-size limit for the body's own fields and the
+/// questions' framing, in [`usable_chunk`].
+const REQUEST_FRAMING_BYTES: usize = 1_024;
+
+/// [`UsableChunk`] for a model of `context_tokens` whose server also refuses
+/// a body over `max_request_bytes` (Ollama's System One: 64 KiB).
+pub fn usable_chunk(context_tokens: usize, max_request_bytes: Option<usize>) -> UsableChunk {
+    let tokens = state_budget_tokens(context_tokens, &IndexMap::new());
+    let room = max_request_bytes.map(|bytes| bytes.saturating_sub(REQUEST_FRAMING_BYTES));
+    let capped = |chars: usize| room.map_or(chars, |room| chars.min(room));
+    UsableChunk {
+        tokens,
+        prose_chars: capped(tokens.saturating_mul(PROSE_CHARS_PER_TOKEN)),
+        number_chars: capped(tokens),
+    }
+}
+
+/// The fewest tokens of text a saved question set must leave beside it: a
+/// monitor window's floor ([`super::settings::MIN_WINDOW_CHARS`]) at three
+/// characters a token. A question set that leaves less can never be asked
+/// about anything, so a save refuses it ([`check_fit`]).
+const MIN_STATE_TOKENS: usize = (super::settings::MIN_WINDOW_CHARS as usize).div_ceil(3);
+
+/// Whether `questions` leave room for at least [`MIN_STATE_TOKENS`] of text in
+/// `model`'s window. Asked as a setting is saved, so a question too long for
+/// the model is refused then, naming the window, rather than at every check.
+fn check_fit(
+    model: &dyn DecisionModel,
+    caps: &DecisionCaps,
+    questions: &IndexMap<String, Question>,
+) -> DecisionResult<()> {
+    if questions.is_empty() {
+        return Ok(());
+    }
+    let room = state_budget_tokens(caps.context_tokens, questions);
+    if room >= MIN_STATE_TOKENS {
+        return Ok(());
+    }
+    Err(DecisionError::Unsupported(format!(
+        "`{}`'s {}-token window cannot hold {} beside the text {} about: Biorouter keeps \
+         room for the model's own framing, and that leaves about {room} tokens of text, under \
+         the {MIN_STATE_TOKENS} needed at the least. Shorten the {}, or choose a model with a \
+         larger window.",
+        model.display_name(),
+        caps.context_tokens,
+        if questions.len() == 1 {
+            "this question"
+        } else {
+            "these questions"
+        },
+        if questions.len() == 1 {
+            "it asks"
+        } else {
+            "they ask"
+        },
+        if questions.len() == 1 {
+            "question"
+        } else {
+            "questions"
+        },
+    )))
+}
+
+/// `text` cut, from its end, until the size check's own estimate of it beside
+/// `questions` fits a model of `context_tokens` (its margin, its factor, its
+/// per-digit charge), at a character boundary. Text that fits is returned
+/// whole. For a caller that builds the state itself and must not have it
+/// refused (a phase gate's hand-off); the check before sending still judges.
+/// Estimated without waiting ([`estimate_tokens_now`]), so it may be called
+/// while a lock is held; call [`load_token_counter`] once beforehand for the
+/// check's own tokenizer.
+pub fn fit_text_to_window(
+    text: &str,
+    context_tokens: usize,
+    questions: &IndexMap<String, Question>,
+) -> String {
+    let allowed = context_tokens.saturating_sub(context_margin(context_tokens));
+    let estimate = |text: &str| {
+        estimate_tokens_now(&DecisionRequest {
+            questions: questions.clone(),
+            context: DecisionContext::Text(text.to_string()),
+        })
+    };
+    let mut chars: Vec<char> = text.chars().collect();
+    for _ in 0..FIT_TEXT_ROUNDS {
+        let current: String = chars.iter().collect();
+        let tokens = estimate(&current);
+        if tokens <= allowed || chars.is_empty() {
+            return current;
+        }
+        // Cut by the share of the text the overflow is, and a little more,
+        // so each round makes progress on text whose tokens are uneven.
+        let over = tokens - allowed;
+        let cut = (over * chars.len()).div_ceil(tokens.max(1)) + chars.len() / 50 + 1;
+        chars.truncate(chars.len().saturating_sub(cut));
+    }
+    // The rounds ran out: halve until it fits.
+    loop {
+        let current: String = chars.iter().collect();
+        if chars.is_empty() || estimate(&current) <= allowed {
+            return current;
+        }
+        chars.truncate(chars.len() / 2);
+    }
+}
+
+/// Rounds [`fit_text_to_window`] cuts by the overflow before halving.
+const FIT_TEXT_ROUNDS: usize = 8;
 
 async fn check_size(
     model: &dyn DecisionModel,
@@ -2574,17 +2824,11 @@ async fn check_size(
     request: &DecisionRequest,
     chunk_id: Option<&str>,
 ) -> DecisionResult<()> {
-    let chunk = match chunk_id {
-        Some(id) => format!("Chunk `{id}`"),
-        None => "The state".to_string(),
-    };
+    let chunk = chunk_label(chunk_id);
     if let Some(limit) = caps.max_request_bytes {
-        let bytes = request.context.byte_len()
-            + request
-                .questions
-                .values()
-                .map(|q| q.instructions.len() + 64)
-                .sum::<usize>();
+        // The body as the adapter encodes it, which is what the server
+        // limits: escaping and the body's own fields count too.
+        let bytes = model.request_bytes(request);
         if bytes > limit {
             return Err(DecisionError::Invalid(format!(
                 "{chunk} is about {bytes} bytes, over the {limit}-byte request limit of `{}`. \
@@ -2596,9 +2840,11 @@ async fn check_size(
     let tokens = estimate_tokens(request).await;
     let limit = caps.context_tokens;
     if tokens + context_margin(limit) > limit {
+        let (tokens, usable) = text_tokens_and_room(request, limit).await;
         return Err(DecisionError::TooLarge {
             chunk,
             tokens,
+            usable,
             limit,
             model: format!("`{}`", model.display_name()),
         });
@@ -3130,7 +3376,7 @@ mod tests {
         let DecisionError::TooLarge { chunk, limit, .. } = &err else {
             panic!("{err:?}");
         };
-        assert_eq!(chunk, "The state");
+        assert_eq!(chunk, "The text");
         assert_eq!(*limit, 4_096);
         assert_eq!(calls.load(Ordering::SeqCst), 0);
 
@@ -4976,6 +5222,327 @@ mod tests {
             Err(DecisionError::Unsupported(_))
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// F2: a question set that leaves no room for text in the model's window
+    /// is refused as it is saved, naming the window, not at every check.
+    #[tokio::test]
+    async fn a_save_check_refuses_questions_the_models_window_cannot_hold() {
+        let mut small = entry("small", ProviderTier::Private, true);
+        small.context_tokens = 2_048;
+        let (svc, calls) = service(
+            vec![small, entry("roomy", ProviderTier::Private, true)],
+            Duration::ZERO,
+        );
+        let chat = public_chat("save-check-fit");
+        let long = IndexMap::from([(
+            "done".to_string(),
+            Question {
+                instructions: "Is the task done? ".repeat(400),
+                kind: DecisionKind::Binary {},
+                threshold: None,
+            },
+        )]);
+        let small_ref = DecisionModelRef::new("test_decision", "small");
+        let err = svc
+            .check_model_use(&chat, Some(&small_ref), &long, ModelSource::Setting)
+            .await
+            .unwrap_err();
+        let text = err.to_string();
+        assert!(matches!(err, DecisionError::Unsupported(_)), "{err:?}");
+        assert!(
+            text.starts_with("`small`'s 2048-token window cannot hold this question"),
+            "{text}"
+        );
+        // The same question fits a larger window, and a short one fits the small.
+        let roomy = DecisionModelRef::new("test_decision", "roomy");
+        assert!(svc
+            .check_model_use(&chat, Some(&roomy), &long, ModelSource::Setting)
+            .await
+            .is_ok());
+        let short = request("x", None).questions;
+        assert!(svc
+            .check_model_use(&chat, Some(&small_ref), &short, ModelSource::Setting)
+            .await
+            .is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 0, "a save sends nothing");
+    }
+
+    /// F7: a model that takes fewer choice options says so, and a larger
+    /// choice is refused before sending.
+    #[tokio::test]
+    async fn a_choice_over_the_models_option_limit_is_refused_before_sending() {
+        struct FewOptions(Fixed);
+        #[async_trait]
+        impl DecisionModel for FewOptions {
+            fn model_ref(&self) -> DecisionModelRef {
+                self.0.model_ref()
+            }
+            fn display_name(&self) -> String {
+                self.0.display_name()
+            }
+            fn tier(&self) -> ProviderTier {
+                self.0.tier()
+            }
+            fn affiliation(&self) -> Option<crate::privacy::affiliation::ModelAffiliation> {
+                self.0.affiliation()
+            }
+            fn caps(&self) -> DecisionCaps {
+                DecisionCaps {
+                    kinds: vec![DecisionKindTag::Choice],
+                    ..self.0.caps()
+                }
+            }
+            fn max_choice_options(&self) -> usize {
+                24
+            }
+            async fn decide(&self, request: &DecisionRequest) -> DecisionResult<ModelVerdicts> {
+                self.0.decide(request).await
+            }
+        }
+        let calls = Arc::new(AtomicUsize::new(0));
+        let model = FewOptions(Fixed {
+            entry: entry("few", ProviderTier::Private, true),
+            p: 0.9,
+            calls: calls.clone(),
+            delay: Duration::ZERO,
+        });
+        let (svc, _) = service(Vec::new(), Duration::ZERO);
+        let choice = |n: usize| DecisionRequest {
+            questions: IndexMap::from([(
+                "kind".to_string(),
+                Question {
+                    instructions: "Which?".into(),
+                    kind: DecisionKind::Choice {
+                        options: (0..n).map(|i| (format!("o{i}"), None)).collect(),
+                    },
+                    threshold: None,
+                },
+            )]),
+            context: DecisionContext::Text("A note.".into()),
+        };
+        let err = svc.check_kinds(&model, &model.caps(), &choice(25).questions);
+        assert!(
+            matches!(&err, Err(DecisionError::Unsupported(text))
+                if text.contains("at most 24 options") && text.contains("offers 25")),
+            "{err:?}"
+        );
+        assert!(svc
+            .check_kinds(&model, &model.caps(), &choice(24).questions)
+            .is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// W6: the request-size limit is judged on the bytes the adapter sends,
+    /// and refused in bytes, not as a window.
+    #[tokio::test]
+    async fn the_request_size_limit_counts_the_bytes_sent() {
+        struct Escaped(Fixed);
+        #[async_trait]
+        impl DecisionModel for Escaped {
+            fn model_ref(&self) -> DecisionModelRef {
+                self.0.model_ref()
+            }
+            fn display_name(&self) -> String {
+                self.0.display_name()
+            }
+            fn tier(&self) -> ProviderTier {
+                self.0.tier()
+            }
+            fn affiliation(&self) -> Option<crate::privacy::affiliation::ModelAffiliation> {
+                self.0.affiliation()
+            }
+            fn caps(&self) -> DecisionCaps {
+                DecisionCaps {
+                    max_request_bytes: Some(1_000),
+                    ..self.0.caps()
+                }
+            }
+            // Every byte sent twice, as escaping a newline does.
+            fn request_bytes(&self, request: &DecisionRequest) -> usize {
+                request.context.byte_len() * 2
+            }
+            async fn decide(&self, request: &DecisionRequest) -> DecisionResult<ModelVerdicts> {
+                self.0.decide(request).await
+            }
+        }
+        let model = Escaped(Fixed {
+            entry: entry("escaped", ProviderTier::Private, true),
+            p: 0.9,
+            calls: Arc::new(AtomicUsize::new(0)),
+            delay: Duration::ZERO,
+        });
+        // 600 bytes of text pass a raw count of 1,000 and fail the sent one.
+        let err = check_size(
+            &model,
+            &model.caps(),
+            &request(&"\n".repeat(600), None),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            matches!(&err, DecisionError::Invalid(text)
+                if text.contains("1200 bytes, over the 1000-byte request limit")
+                    && !text.contains("window")),
+            "{err:?}"
+        );
+        assert!(check_size(
+            &model,
+            &model.caps(),
+            &request(&"x".repeat(400), None),
+            None
+        )
+        .await
+        .is_ok());
+    }
+
+    /// F5: a server's own over-window refusal reaches the caller as the
+    /// check's own over-size error, named for the chunk.
+    #[test]
+    fn a_servers_over_window_refusal_is_named_for_its_chunk() {
+        let server = DecisionError::TooLarge {
+            chunk: "The text".into(),
+            tokens: 2_503,
+            usable: 2_048,
+            limit: 2_048,
+            model: "`tev1:0.8b`".into(),
+        };
+        // R3-F2: the server's whole-prompt count, said in the unit
+        // decision_models uses: 2,503 / 1.15, with no question to take out,
+        // beside the 1,669 decision_models gives tev1:0.8b.
+        let none = IndexMap::new();
+        let named = named_for_chunk(server.clone(), Some("note-7"), &none);
+        assert_eq!(
+            named.to_string(),
+            "Chunk `note-7` is about 2177 tokens, more than the about 1669 tokens of text \
+             `tev1:0.8b` takes beside these questions (its window is 2048 tokens). Split it \
+             into smaller pieces and ask again."
+        );
+        assert_eq!(usable_chunk(2_048, None).tokens, 1_669);
+        // Beside a question, its share comes out of both numbers.
+        let questions = request("x", None).questions;
+        let DecisionError::TooLarge { tokens, usable, .. } =
+            named_for_chunk(server.clone(), None, &questions)
+        else {
+            panic!("still a size error");
+        };
+        assert_eq!(usable, state_budget_tokens(2_048, &questions));
+        assert!(usable < 1_669 && tokens > usable, "{tokens} {usable}");
+        let other = DecisionError::Invalid("x".into());
+        assert_eq!(named_for_chunk(other.clone(), Some("a"), &none), other);
+    }
+
+    /// R3-F2: the check's own refusal says the text's size and the room
+    /// beside the questions in decision_models' unit, so the room it names is
+    /// decision_models' usable size less the question, never the window less
+    /// the margin (1,920 for tev1:0.8b, which read as more than the 1,669
+    /// decision_models gave).
+    #[tokio::test]
+    async fn the_size_refusal_speaks_in_decision_models_unit() {
+        load_token_counter().await;
+        let model = Fixed {
+            entry: DecisionModelEntry {
+                context_tokens: 2_048,
+                ..entry("tev", ProviderTier::Private, true)
+            },
+            p: 0.9,
+            calls: Arc::new(AtomicUsize::new(0)),
+            delay: Duration::ZERO,
+        };
+        let labs = "K 4.1 Na 139 Cl 101 HCO3 24 BUN 18 Cr 0.92 Glu 104\n".repeat(240);
+        let big = request(&labs, None);
+        let err = check_size(&model, &model.caps(), &big, None)
+            .await
+            .unwrap_err();
+        let DecisionError::TooLarge {
+            tokens,
+            usable,
+            limit,
+            ..
+        } = err
+        else {
+            panic!("{err:?}");
+        };
+        assert_eq!(limit, 2_048);
+        let listed = usable_chunk(2_048, Some(65_536)).tokens;
+        assert!(usable < listed, "beside a question: {usable} < {listed}");
+        assert!(listed - usable < 40, "only the question's share: {usable}");
+        let mut text_only = big.clone();
+        text_only.questions.clear();
+        let own = raw_tokens(&text_only).await;
+        assert!(
+            tokens.abs_diff(own) <= 3,
+            "the text's own tokens: {tokens} vs {own}"
+        );
+        assert!(tokens > usable);
+    }
+
+    /// The usable size `decision_models` gives is one the check passes, and
+    /// [`fit_text_to_window`] cuts a state to it (F1's helper for a gate).
+    #[tokio::test]
+    async fn a_fitted_text_and_the_usable_size_pass_the_check() {
+        load_token_counter().await;
+        let model = Fixed {
+            entry: DecisionModelEntry {
+                context_tokens: 2_048,
+                ..entry("tev", ProviderTier::Private, true)
+            },
+            p: 0.9,
+            calls: Arc::new(AtomicUsize::new(0)),
+            delay: Duration::ZERO,
+        };
+        let usable = usable_chunk(2_048, Some(65_536));
+        assert_eq!(usable.tokens, state_budget_tokens(2_048, &IndexMap::new()));
+        let prose = "The patient reports a mild headache since Tuesday. ";
+        let fits = prose.repeat(usable.prose_chars / prose.len());
+        assert!(fits.len() <= usable.prose_chars);
+        let mut bare = request(&fits, None);
+        bare.questions.clear();
+        check_size(&model, &model.caps(), &bare, None)
+            .await
+            .expect("usable prose passes the check");
+        let numbers: String = (0..)
+            .map(|i: u32| format!("{} ", i % 10))
+            .take(usable.number_chars / 2)
+            .collect();
+        bare.context = DecisionContext::Text(numbers);
+        check_size(&model, &model.caps(), &bare, None)
+            .await
+            .expect("usable numbers pass the check");
+
+        // A dense numeric hand-off cut to fit beside its question passes.
+        let questions = request("x", None).questions;
+        let dense = "- worker [completed]: mean glucose 104.2 mg/dL (SD 3.1), n=1204, \
+                     /data/run_20261105_0913/result.csv\n"
+            .repeat(80);
+        let fitted = fit_text_to_window(&dense, 2_048, &questions);
+        assert!(fitted.len() < dense.len() && dense.starts_with(&fitted));
+        let fitted_request = DecisionRequest {
+            questions: questions.clone(),
+            context: DecisionContext::Text(fitted),
+        };
+        check_size(&model, &model.caps(), &fitted_request, None)
+            .await
+            .expect("a fitted state passes the check");
+        assert_eq!(fit_text_to_window("short", 2_048, &questions), "short");
+        // The budget the service gives for a named model is the same arithmetic.
+        let (svc, _) = service(
+            vec![DecisionModelEntry {
+                context_tokens: 2_048,
+                ..entry("tev", ProviderTier::Private, true)
+            }],
+            Duration::ZERO,
+        );
+        assert_eq!(
+            svc.state_budget_for(
+                None,
+                Some(&DecisionModelRef::new("test_decision", "tev")),
+                &questions
+            )
+            .await,
+            Some(state_budget_tokens(2_048, &questions))
+        );
     }
 
     #[tokio::test]

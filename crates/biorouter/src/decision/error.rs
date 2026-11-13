@@ -25,15 +25,20 @@ pub enum DecisionError {
     /// A privacy or Crew rule refused the model before anything was sent (403).
     #[error("{0}")]
     Refused(String),
-    /// The state does not fit the model's window (413). Names the chunk so the
-    /// caller can split it.
+    /// The text does not fit the model's window (413). Names the chunk so the
+    /// caller can split it. `tokens` is the size check's estimate (or the
+    /// server's own count, for a server's refusal) and `usable` is how much text
+    /// the model takes beside the questions, so the two numbers always read as
+    /// "this much, more than that much" even when the estimate is below the window.
     #[error(
-        "{chunk} is about {tokens} tokens, which does not fit {model}'s {limit}-token window \
-         (with room kept for the questions). Split it into smaller pieces and ask again."
+        "{chunk} is about {tokens} tokens, more than the about {usable} tokens of text {model} \
+         takes beside these questions (its window is {limit} tokens). Split it into smaller \
+         pieces and ask again."
     )]
     TooLarge {
         chunk: String,
         tokens: usize,
+        usable: usize,
         limit: usize,
         model: String,
     },

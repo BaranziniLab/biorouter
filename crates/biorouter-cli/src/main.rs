@@ -1,6 +1,7 @@
 use biorouter::agents::turn_abort::{exit as abort_exit, TurnFailed};
 use biorouter_cli::cli::{cli, read_command_line};
 use biorouter_cli::commands::needs_terminal::{self, NeedsTerminal};
+use biorouter_cli::commands::supervision_stop::{self, SupervisionStopped};
 use std::process::ExitCode;
 
 // Tuned jemalloc as the global allocator (default-on `jemalloc` feature). The
@@ -102,6 +103,13 @@ async fn async_main() -> ExitCode {
             if let Some(refusal) = e.downcast_ref::<NeedsTerminal>() {
                 eprintln!("{refusal}");
                 return ExitCode::from(needs_terminal::EXIT_CODE);
+            }
+            // A run its chat's supervision stopped (a monitor) or holds (a
+            // gate, a blocked phase) did not fail either: its one line says
+            // what stopped it and how to carry on, and it exits 3 (H-6).
+            if let Some(stopped) = e.downcast_ref::<SupervisionStopped>() {
+                eprintln!("{stopped}");
+                return ExitCode::from(supervision_stop::EXIT_CODE);
             }
             eprintln!("Error: {e:?}");
             // A turn that ran but did not complete its work gets its own exit

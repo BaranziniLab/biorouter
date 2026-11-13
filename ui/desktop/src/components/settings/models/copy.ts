@@ -404,4 +404,10 @@ export const switchModelCopy = {
   decisionPublic: 'Public',
   /** The model menu's line under a decision model, and the composer chip's menu line. */
   decisionModel: 'Decision model',
+  /**
+   * R1-9: the one line a decision provider gets under the provider field, where it
+   * runs ("Runs on this computer", "Runs on Baseten"; `decisionModelPlace`), in place of the
+   * affiliation sentence, which said the same of a local model in privacy terms.
+   */
+  decisionRunsOn: (place: string) => `Runs on ${place}`,
 } as const;

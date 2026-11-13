@@ -4741,7 +4741,7 @@ impl WorkspaceClient {
                 if !announcement_delivered(&result) {
                     return Ok(vec![Content::text(format!(
                         "The GUI did NOT close the tab for session {} ({}). The session \
-                         is untouched; do not tell the user the tab is gone.",
+                         is untouched and its tab is still open, so never say the tab is gone.",
                         session_id,
                         gui_detail(&result).unwrap_or("no reason given")
                     ))]);
@@ -6335,6 +6335,9 @@ impl WorkspaceClient {
             .phases
             .clone()
             .ok_or_else(|| "action \"plan\" needs `phases`: every phase, in order.".to_string())?;
+        let phases = self
+            .resolve_gate_model_names(caller, cap.enforced(), phases)
+            .await?;
         let title = params.title.clone();
         let goal = params.goal.clone();
         let fresh = params.fresh.unwrap_or(false);
@@ -6385,6 +6388,64 @@ impl WorkspaceClient {
             reply.push_str(&note);
         }
         Ok(reply)
+    }
+
+    /// G-8: a gate's `model` takes the names `decide` takes. A bare name or
+    /// alias (`tev1:0.8b`, `joey-1`) that names one model `decision_models`
+    /// lists for this chat is rewritten to its provider/model, so the stored
+    /// gate (and a revision repeating it) names the model exactly. A
+    /// provider/model is left as written for the plan's own checks.
+    async fn resolve_gate_model_names(
+        &self,
+        caller: &str,
+        enforced: bool,
+        mut phases: Vec<crate::agents::orchestration_plan::OrchestratePhaseInput>,
+    ) -> Result<Vec<crate::agents::orchestration_plan::OrchestratePhaseInput>, String> {
+        let bare = |phase: &crate::agents::orchestration_plan::OrchestratePhaseInput| {
+            phase
+                .gate
+                .as_ref()
+                .and_then(|gate| gate.model.as_deref())
+                .map(str::trim)
+                .filter(|model| {
+                    !model.is_empty() && crate::decision::DecisionModelRef::parse(model).is_none()
+                })
+                .map(str::to_string)
+        };
+        if !phases.iter().any(|phase| bare(phase).is_some()) {
+            return Ok(phases);
+        }
+        let session = crate::decision::DecisionSession::load(
+            self.context.session_manager.clone(),
+            caller,
+            enforced,
+        )
+        .await
+        .map_err(|e| {
+            format!(
+                "This chat could not be read, so the plan's gate models could not be resolved \
+                 ({e}). Nothing was changed."
+            )
+        })?;
+        for phase in &mut phases {
+            let Some(wanted) = bare(phase) else { continue };
+            let model = crate::agents::decisions_extension::resolve_model_name(
+                self.decision_service,
+                &session,
+                &wanted,
+            )
+            .await
+            .map_err(|why| {
+                format!(
+                    "Phase \"{}\"'s gate model: {why} Nothing was changed.",
+                    phase.phase.id.trim()
+                )
+            })?;
+            if let Some(gate) = &mut phase.gate {
+                gate.model = Some(model.label());
+            }
+        }
+        Ok(phases)
     }
 
     /// Whether this chat can run every gate and phase monitor a plan adds,
@@ -7361,13 +7422,13 @@ pub(crate) fn open_result_text(
             return format!(
                 "Session {session_id} already has a {noun} in the GUI, but the user has \
                  turned OFF automatic tab opening, so it was NOT brought to the front. \
-                 {handoff}. Do not tell the user you opened or switched to a {noun}."
+                 {handoff}. Never say you opened or switched to a {noun}."
             );
         }
         return format!(
             "Session {session_id} is ready, but the user has turned OFF automatic tab \
-             opening, so no {noun} was opened; {handoff}. Do not tell the user you \
-             opened a {noun}."
+             opening, so no {noun} was opened; {handoff}. Never say you opened a \
+             {noun}."
         );
     }
     // The separator belongs to the detail, not to the sentence: `place_in_gui`
@@ -16684,7 +16745,7 @@ pub(crate) mod tests {
         // …and in the SAME call the model was told the truth, not "opened".
         let text = text_of(&r);
         assert!(
-            text.contains("no tab was opened") && text.contains("Do not tell the user"),
+            text.contains("no tab was opened") && text.contains("Never say you opened"),
             "{text}"
         );
         assert!(
@@ -17350,7 +17411,7 @@ pub(crate) mod tests {
             "announce-only must not reuse the phrase the model will repeat: {announced}"
         );
         assert!(
-            announced.contains("no tab was opened") && announced.contains("Do not tell the user"),
+            announced.contains("no tab was opened") && announced.contains("Never say you opened"),
             "the model must be told, in words, not to claim a tab: {announced}"
         );
         assert!(
@@ -17496,7 +17557,7 @@ pub(crate) mod tests {
             "announce-only must deny the move it actually suppressed: {hushed}"
         );
         assert!(
-            hushed.contains("Do not tell the user you opened or switched"),
+            hushed.contains("Never say you opened or switched"),
             "{hushed}"
         );
         assert!(!hushed.contains("s-x opened"), "{hushed}");
@@ -17649,6 +17710,45 @@ pub(crate) mod tests {
         assert_eq!(recorder.sessions_started().len(), 1);
 
         crate::workspace_services::clear_test_override();
+    }
+
+    /// D-14 / E-1 (live QA 2026-11-10): the same "Do not tell the user ..."
+    /// shape that made the spawn result trip the prompt-injection guard was in
+    /// `workspace_open`'s announce-only answers. Every arm of the model-facing
+    /// sentence must pass the real guard clean.
+    #[test]
+    fn open_result_text_does_not_trip_the_prompt_injection_guard() {
+        use crate::guardrails::tool_output::scan_injection;
+        for placement in ["tab", "window"] {
+            for focus in [false, true] {
+                for announce_only in [false, true] {
+                    for outcome in [
+                        TabOutcome::Opened,
+                        TabOutcome::AlreadyOpen,
+                        TabOutcome::Focused,
+                    ] {
+                        for gui in [
+                            json!({ "ok": true }),
+                            json!({ "ok": false, "detail": "no window" }),
+                        ] {
+                            let text = open_result_text(
+                                "20261110_2",
+                                placement,
+                                focus,
+                                announce_only,
+                                outcome,
+                                &gui,
+                            );
+                            assert!(
+                                scan_injection(&text).is_empty(),
+                                "{:?}: {text}",
+                                scan_injection(&text)
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -18310,6 +18410,52 @@ pub(crate) mod tests {
             ),
             p,
         )
+    }
+
+    /// G-8: a gate's model takes the bare name decide takes, stored as the
+    /// provider/model it names; a name no listed model answers to is refused
+    /// with the names this chat may use.
+    #[tokio::test]
+    async fn a_gate_model_may_be_named_by_its_bare_name() {
+        use crate::agents::decisions_extension::test_support::{entry, model};
+        let named = model(
+            entry(
+                "tev1:0.8b",
+                crate::privacy::ProviderTier::Private,
+                true,
+                crate::decision::DecisionAdapter::SystemOne,
+            ),
+            0.9,
+        );
+        let (c, parent) = gated_client(vec![named]).await;
+        let mut args = gated_plan_args();
+        args["phases"][1]["gate"]["model"] = json!("tev1:0.8b");
+        let declared = orchestrate(&c, &parent, args.clone()).await;
+        assert_eq!(declared.is_error, Some(false), "{}", result_text(&declared));
+        let stored =
+            crate::agents::orchestration_plan::load_plan(&c.context.session_manager, &parent)
+                .await
+                .unwrap()
+                .unwrap();
+        assert_eq!(
+            stored.phases[1].gate.as_ref().unwrap().model,
+            Some(crate::decision::DecisionModelRef::new(
+                "test_decision",
+                "tev1:0.8b"
+            ))
+        );
+        // Repeating the plan with the bare name is the same gate, not a change.
+        let repeated = orchestrate(&c, &parent, args.clone()).await;
+        assert_eq!(repeated.is_error, Some(false), "{}", result_text(&repeated));
+
+        let (c, parent) = gated_client(vec![local_model(0.9)]).await;
+        let mut args = gated_plan_args();
+        args["phases"][1]["gate"]["model"] = json!("nosuch:1b");
+        let refused = orchestrate(&c, &parent, args).await;
+        let text = result_text(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(text.contains("Phase \"build\"'s gate model:"), "{text}");
+        assert!(text.contains("test_decision/tev1"), "{text}");
     }
 
     /// The whole loop the owner asked for: a gate that fails hands the work

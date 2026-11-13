@@ -247,6 +247,33 @@ describe('decision models in the model picker', () => {
     expect(mocks.install).not.toHaveBeenCalled();
   });
 
+  // R1-9: Ollama's row said "On this machine" and a sentence about the least
+  // restricted affiliation; Baseten's said nothing. One plain line each now.
+  it('says where each decision provider runs, in one plain line', async () => {
+    mocks.getProviders.mockResolvedValue([
+      ROWS[0],
+      {
+        ...provider('ollama_decision', 'Ollama decision models', 'private', ['tev1:0.8b']),
+        affiliation: { kind: 'local', institutions: [] },
+      },
+      ROWS[2],
+    ]);
+    render(<SwitchModelModal sessionId="s1" onClose={vi.fn()} setView={vi.fn()} />);
+    await openProviderMenu();
+    fireEvent.click(await screen.findByRole('option', { name: /Ollama decision models/ }));
+    expect(await screen.findByTestId('switch-model-decision-place')).toHaveTextContent(
+      'Runs on this computer.'
+    );
+    expect(screen.queryByTestId('switch-model-affiliation')).toBeNull();
+    expect(screen.queryByText(/least restricted affiliation/)).toBeNull();
+
+    await openProviderMenuAgain();
+    fireEvent.click(await screen.findByRole('option', { name: /Baseten decision models/ }));
+    await screen.findByText('decision-models/joey-1');
+    expect(screen.getByTestId('switch-model-decision-place')).toHaveTextContent('Runs on Baseten.');
+    expect(screen.queryByTestId('switch-model-affiliation')).toBeNull();
+  });
+
   it('keeps a public decision model out of a private chat, before it is chosen', async () => {
     render(
       <SwitchModelModal sessionId="s1" privacyTier="private" onClose={vi.fn()} setView={vi.fn()} />

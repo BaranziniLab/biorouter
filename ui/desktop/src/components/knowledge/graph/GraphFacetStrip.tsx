@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { ChevronDown, Search, X } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
+import { FacetChip } from '../../ui/facet-chip';
 import { Input } from '../../ui/input';
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList } from '../../ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
@@ -283,9 +284,8 @@ function LegendPopover({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button
-          type="button"
-          className="br-facet br-facet-legend biorouter-focus-surface ml-auto inline-flex h-control-md flex-none items-center gap-2 rounded-element px-2.5 text-label transition-[color,background-color,border-color]"
+        <FacetChip
+          className="br-facet-legend ml-auto"
           aria-expanded={open}
           data-testid="knowledge-graph-legend-trigger"
         >
@@ -294,7 +294,7 @@ function LegendPopover({
             aria-hidden="true"
             className={`h-icon-row w-icon-row shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
           />
-        </button>
+        </FacetChip>
       </PopoverTrigger>
       <PopoverContent align="end" className="w-72 p-0">
         <GraphLegend
@@ -330,10 +330,9 @@ function StatusFacet({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className={`br-facet biorouter-focus-surface inline-flex h-control-md flex-none items-center gap-2 rounded-element px-2.5 text-label transition-[color,background-color,border-color] ${extraClass}`}
-          data-engaged={facets.statuses.size > 0 ? 'true' : 'false'}
+        <FacetChip
+          className={extraClass}
+          engaged={facets.statuses.size > 0}
           data-testid={testId ?? 'knowledge-graph-facet-status'}
         >
           Status
@@ -343,7 +342,7 @@ function StatusFacet({
             </span>
           )}
           <ChevronDown aria-hidden="true" className="h-icon-row w-icon-row shrink-0" />
-        </button>
+        </FacetChip>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="start">
         {STATUSES.map((st) => (
@@ -388,10 +387,9 @@ function CollapsedFacets({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button
-          type="button"
-          className={`br-facet biorouter-focus-surface inline-flex h-control-md flex-none items-center gap-2 rounded-element px-2.5 text-label transition-[color,background-color,border-color] ${className}`}
-          data-engaged={count > 0 ? 'true' : 'false'}
+        <FacetChip
+          className={className}
+          engaged={count > 0}
           aria-expanded={open}
           data-testid={`knowledge-graph-facet-${label.toLowerCase()}-collapsed`}
         >
@@ -405,7 +403,7 @@ function CollapsedFacets({
             aria-hidden="true"
             className={`h-icon-row w-icon-row shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
           />
-        </button>
+        </FacetChip>
       </PopoverTrigger>
       <PopoverContent align="start" className="flex w-56 flex-col items-stretch gap-1 p-2">
         {children}
@@ -537,10 +535,9 @@ function FacetCombobox({
             An earlier revision made these pills (`--radius-full`) and a later
             one made them 4px; both introduced a shape the app uses nowhere
             else. `.br-facet` in main.css carries the resting/engaged pair. */}
-        <button
-          type="button"
-          className={`br-facet biorouter-focus-surface inline-flex h-control-md flex-none items-center gap-2 rounded-element px-2.5 text-label transition-[color,background-color,border-color] ${extraClass}`}
-          data-engaged={selected.size > 0 ? 'true' : 'false'}
+        <FacetChip
+          className={extraClass}
+          engaged={selected.size > 0}
           aria-expanded={open}
           data-testid={testId ?? `knowledge-graph-facet-${label.toLowerCase()}`}
         >
@@ -554,7 +551,7 @@ function FacetCombobox({
             aria-hidden="true"
             className={`h-icon-row w-icon-row shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
           />
-        </button>
+        </FacetChip>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-64 p-0">
         <Command

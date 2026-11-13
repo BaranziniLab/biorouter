@@ -383,6 +383,22 @@ impl App {
         false
     }
 
+    /// Whether the whole input is already, letter for letter, the slash
+    /// command the popup has highlighted (`/compact` typed out). Enter then
+    /// runs it, as it would with no popup open, instead of accepting the
+    /// entry and asking for a second Enter.
+    pub fn completion_is_typed_command(&self) -> bool {
+        let Some(c) = self.completion.as_ref() else {
+            return false;
+        };
+        c.matches
+            .get(c.selected)
+            .and_then(|&i| self.catalog.get(i))
+            .is_some_and(|item| {
+                item.kind == CompletionKind::Command && item.label == self.input.trim()
+            })
+    }
+
     pub fn dismiss_completion(&mut self) {
         self.completion = None;
         self.completion_dismissed = true;

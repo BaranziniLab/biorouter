@@ -852,3 +852,56 @@ async fn renaming_a_chat_in_the_terminal_moves_it_to_the_top_of_session_list() {
         "a rename is activity (R-30): the renamed chat heads the list"
     );
 }
+
+/// H-3 and H-9, from the binary: `run --workflow <file> --explain` refuses a
+/// workflow `run` would refuse (exit 1, the refusal on stderr, no Supervision
+/// section), and for a valid one says what each monitor does and when the
+/// models are checked.
+#[test]
+fn explain_refuses_what_run_refuses_and_says_what_a_monitor_does() {
+    let sandbox = Sandbox::new();
+    let valid = "title: Cohort screen\ndescription: Screen notes\nprompt: Screen them.\n\
+         decision_settings:\n  monitors:\n    - id: off-task\n      name: Off task\n      \
+         question:\n        instructions: Has the agent stopped screening?\n        \
+         kind: {binary: {}}\n      threshold: 0.8\n      action: stop\n\
+         orchestration_plan:\n  title: Screen and verify\n  phases:\n    - {id: screen, title: \
+         Screen, kind: research}\n    - id: verify\n      title: Verify\n      gate:\n        \
+         questions: {counted: Does it give the cohort size?}\n        threshold: 0.8\n";
+    let good = sandbox.home.join("good.yaml");
+    std::fs::write(&good, valid).unwrap();
+    let out = sandbox.run(
+        &["run", "--workflow", good.to_str().unwrap(), "--explain"],
+        "",
+    );
+    let stdout = text(&out.stdout);
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert!(
+        stdout.contains(
+            "Monitor 'Off task': after each iteration, asks the chat's default decision \
+             model \"Has the agent stopped screening?\"; when P(yes) ≥ 0.80, it stops the turn"
+        ),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("Phase plan \"Screen and verify\": 2 phases: screen, verify"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("Each decision model is checked when the run starts"),
+        "{stdout}"
+    );
+
+    let bad = sandbox.home.join("bad.yaml");
+    std::fs::write(&bad, valid.replace("threshold: 0.8\n", "threshold: 1.7\n")).unwrap();
+    let out = sandbox.run(
+        &["run", "--workflow", bad.to_str().unwrap(), "--explain"],
+        "",
+    );
+    let stderr = text(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("This workflow would not start: "),
+        "{stderr}"
+    );
+    assert!(!text(&out.stdout).contains("Supervision"), "{stderr}");
+}

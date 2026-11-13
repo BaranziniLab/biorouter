@@ -24,7 +24,7 @@ use biorouter::decision::log::{
     DecisionAggregate, DecisionPage, DecisionQuery, DecisionRecord, DecisionTurnMarkerItem,
     DecisionTurnSummary, SessionDecisionSummary, MAX_PAGE,
 };
-use biorouter::decision::{DecisionOrigin, DecisionOutcome};
+use biorouter::decision::{DecisionOrigin, DecisionOutcome, Question};
 use biorouter::privacy::visibility::may_read;
 use biorouter::privacy::ProviderTier;
 use biorouter::session::SessionManager;
@@ -121,8 +121,14 @@ pub struct DecisionFilters {
     /// Only calls that failed with an error or were refused.
     #[arg(long)]
     pub errors: bool,
-    /// Calls per page (at most 200).
-    #[arg(short, long, value_name = "N", default_value_t = DEFAULT_LIMIT)]
+    /// Calls per page, 1 to 200 (default 20).
+    #[arg(
+        short,
+        long,
+        value_name = "N",
+        default_value_t = DEFAULT_LIMIT,
+        value_parser = clap::value_parser!(u32).range(1..=i64::from(MAX_PAGE))
+    )]
     pub limit: u32,
     /// Continue after a previous page: the cursor its last line printed.
     #[arg(long, value_name = "CURSOR")]
@@ -224,7 +230,22 @@ fn calls_word(origin: DecisionOrigin, count: u64) -> String {
     }
 }
 
-/// `["18 checks", "18 failed", "2 errors"]`, leaving out what is zero.
+/// What a call that met its threshold, and one that did not, is called, by
+/// origin. A person reads a monitor check as "fired" or "quiet", never
+/// "passed" or "failed": testers read "17 failed" as 17 errors. A gate really
+/// passes, so it keeps "passed" and says "not passed". Everything else met
+/// its threshold or not. The records, the wire and `--json` keep
+/// `passed`/`failed`.
+pub fn result_words(origin: DecisionOrigin) -> (&'static str, &'static str) {
+    match origin {
+        DecisionOrigin::Monitor => ("fired", "quiet"),
+        DecisionOrigin::Gate => ("passed", "not passed"),
+        _ => ("passed the threshold", "did not"),
+    }
+}
+
+/// `["18 checks", "18 quiet", "2 errors"]`, leaving out what is zero, in the
+/// words of [`result_words`].
 pub fn count_parts(
     origin: DecisionOrigin,
     count: u64,
@@ -232,12 +253,13 @@ pub fn count_parts(
     failed: u64,
     errors: u64,
 ) -> Vec<String> {
+    let (met, missed) = result_words(origin);
     let mut parts = vec![calls_word(origin, count)];
     if passed > 0 {
-        parts.push(format!("{passed} passed"));
+        parts.push(format!("{passed} {met}"));
     }
     if failed > 0 {
-        parts.push(format!("{failed} failed"));
+        parts.push(format!("{failed} {missed}"));
     }
     if errors > 0 {
         parts.push(plural(errors, "error", "errors"));
@@ -245,7 +267,7 @@ pub fn count_parts(
     parts
 }
 
-/// `18 checks · 18 failed · 2 errors`, leaving out what is zero.
+/// `18 checks · 18 quiet · 2 errors`, leaving out what is zero.
 pub fn counts_text(
     origin: DecisionOrigin,
     count: u64,
@@ -267,9 +289,21 @@ fn origin_title(origin: DecisionOrigin) -> &'static str {
     }
 }
 
-/// The text of one origin's marker line: `Monitor Form reached: 18 checks this
-/// turn · 18 failed · last P 0.31`. A monitor that fired gets ` · fired` after
-/// it, drawn apart.
+/// `last P 0.31`, or `last P(yes) 0.74` for a gate, whose questions are
+/// always yes/no and whose threshold is always on yes. A monitor's or a
+/// decide call's threshold may be on any answer, and a summary does not say
+/// which, so its probability is shown as a notice shows it: the watched
+/// answer's, beside no answer.
+fn last_probability(origin: DecisionOrigin, p: f64) -> String {
+    match origin {
+        DecisionOrigin::Gate => format!("last P(yes) {}", format_p(p)),
+        _ => format!("last P {}", format_p(p)),
+    }
+}
+
+/// The text of one origin's marker line: `Monitor 'Form reached': 18 checks this
+/// turn · 18 quiet · last P 0.31`. Whether a monitor acted is in its counts
+/// ("fired"), so the line says it once.
 pub fn marker_text(item: &DecisionTurnMarkerItem) -> String {
     let mut parts = count_parts(
         item.origin,
@@ -284,21 +318,112 @@ pub fn marker_text(item: &DecisionTurnMarkerItem) -> String {
     let title = origin_title(item.origin);
     let label = clip(&item.label, 40);
     // The decide tool's label is usually its own name: say it once.
+    // R3-F6: a monitor's or a gate's name in single quotes, as its notice
+    // and the run's stop line give it.
     let named = if label.is_empty() || label.eq_ignore_ascii_case(title) {
         title.to_string()
+    } else if matches!(item.origin, DecisionOrigin::Monitor | DecisionOrigin::Gate) {
+        format!("{title} '{label}'")
     } else {
         format!("{title} {label}")
     };
     let mut text = format!("{named}: {}", parts.join(" · "));
     if let Some(p) = item.last_pass_probability {
-        text.push_str(&format!(" · last P {}", format_p(p)));
+        text.push_str(&format!(" · {}", last_probability(item.origin, p)));
     }
     text
 }
 
+/// The questions a record asked, keyed by name, parsed back from its JSON.
+pub fn record_questions(record: &DecisionRecord) -> Vec<(String, Question)> {
+    record
+        .questions
+        .as_object()
+        .map(|map| {
+            map.iter()
+                .filter_map(|(name, value)| {
+                    serde_json::from_value::<Question>(value.clone())
+                        .ok()
+                        .map(|q| (name.clone(), q))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// What a person reads for one question of a call: a monitor's name when
+/// one request asked several monitors at once (the log keeps their ids,
+/// joined with `+`, and their names, joined with ` + `, in the same order),
+/// else the question's own name.
+pub fn question_display_name(record: &DecisionRecord, question: &str) -> String {
+    if record.origin == DecisionOrigin::Monitor {
+        if let (Some(ids), Some(label)) = (&record.origin_id, &record.label) {
+            let ids: Vec<&str> = ids.split('+').collect();
+            let names: Vec<&str> = label.split(" + ").collect();
+            if ids.len() == names.len() {
+                if let Some(at) = ids.iter().position(|id| *id == question) {
+                    return names[at].to_string();
+                }
+            }
+        }
+    }
+    question.to_string()
+}
+
+/// A call's answers and the probability shown beside them. One question:
+/// its answer and that answer's own probability (`no`, `P 0.71`), never the
+/// probability of another answer beside it. Several: each answer by name,
+/// and the lowest pass probability named by its outcome (`P(yes) 0.55`).
+pub fn answers_and_probability(record: &DecisionRecord) -> (String, Option<(String, f64)>) {
+    if let [decision] = record.decisions.as_slice() {
+        return (
+            super::decide::answer_label(decision),
+            Some(("P".to_string(), super::decide::answer_probability(decision))),
+        );
+    }
+    let answers = record
+        .decisions
+        .iter()
+        .map(|d| {
+            format!(
+                "{} {}",
+                question_display_name(record, &d.question),
+                super::decide::answer_label(d)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let questions = record_questions(record);
+    let lowest = record
+        .decisions
+        .iter()
+        .filter_map(|d| d.pass_probability.map(|p| (d, p)))
+        .min_by(|a, b| a.1.total_cmp(&b.1));
+    let probability = lowest.map(|(decision, p)| {
+        let named = questions
+            .iter()
+            .find(|(name, _)| *name == decision.question)
+            .and_then(|(_, q)| {
+                q.threshold
+                    .as_ref()
+                    .map(|t| super::decide::threshold_terms(t, q).0)
+            })
+            .unwrap_or_else(|| "P".to_string());
+        (named, p)
+    });
+    (answers, probability)
+}
+
 /// One aggregate as a line: source, label, counts, the last answer and its
-/// probability with a short bar, and the model.
-pub fn aggregate_line(aggregate: &DecisionAggregate, label_w: usize) -> String {
+/// probability with a short bar, and the model. `last` is the aggregate's
+/// newest call when it was read: it names the probability beside the
+/// answer properly. Without it the summary's probability is the watched
+/// answer's, which may not be the answer shown, so it is not set beside it.
+pub fn aggregate_line(
+    aggregate: &DecisionAggregate,
+    label_w: usize,
+    last: Option<&DecisionRecord>,
+) -> String {
     let mut line = format!(
         "  {:<7}  {:<label_w$}  {}",
         origin_word(aggregate.origin),
@@ -311,15 +436,37 @@ pub fn aggregate_line(aggregate: &DecisionAggregate, label_w: usize) -> String {
             aggregate.errors
         ),
     );
-    if let Some(answer) = &aggregate.last_answer {
-        line.push_str(&format!(" · last {}", clip(answer, 20)));
-    }
-    if let Some(p) = aggregate.last_pass_probability {
-        line.push_str(&format!(
-            " P {} {}",
-            format_p(p),
-            probability_bar(p, SHORT_BAR)
-        ));
+    match last.filter(|record| !record.decisions.is_empty()) {
+        Some(record) => {
+            let (answers, probability) = answers_and_probability(record);
+            line.push_str(&format!(" · last {}", clip(&answers, 40)));
+            if let Some((named, p)) = probability {
+                line.push_str(&format!(
+                    " · {named} {} {}",
+                    format_p(p),
+                    probability_bar(p, SHORT_BAR)
+                ));
+            }
+        }
+        None => {
+            if let Some(answer) = &aggregate.last_answer {
+                line.push_str(&format!(" · last {}", clip(answer, 20)));
+            }
+            if let Some(p) = aggregate.last_pass_probability {
+                let named = if aggregate.origin == DecisionOrigin::Gate {
+                    "P(yes)"
+                } else if aggregate.last_answer.is_some() {
+                    "threshold P"
+                } else {
+                    "last P"
+                };
+                line.push_str(&format!(
+                    " · {named} {} {}",
+                    format_p(p),
+                    probability_bar(p, SHORT_BAR)
+                ));
+            }
+        }
     }
     if let Some(model) = &aggregate.model {
         line.push_str(&format!(" · {}", short_model(model)));
@@ -343,7 +490,7 @@ pub fn turn_line(turn: &DecisionTurnSummary, label_w: usize) -> String {
         ),
     );
     if let Some(p) = turn.last_pass_probability {
-        line.push_str(&format!(" · last P {}", format_p(p)));
+        line.push_str(&format!(" · {}", last_probability(turn.origin, p)));
     }
     line.push_str(&format!(
         " · {} to {}",
@@ -373,8 +520,8 @@ fn when(at: DateTime<Utc>) -> String {
         .to_string()
 }
 
-/// The probability a list row shows: the lowest pass probability when a
-/// question had a threshold, else the first answer's own probability.
+/// The lowest pass probability when a question had a threshold, else the
+/// first answer's own probability: what `--min-p` and `--max-p` filter on.
 pub fn record_probability(record: &DecisionRecord) -> Option<f64> {
     let pass = record
         .decisions
@@ -391,14 +538,18 @@ pub fn record_probability(record: &DecisionRecord) -> Option<f64> {
     })
 }
 
-/// `passed`, `failed`, `decided`, `error`, `refused`.
-pub fn outcome_word(outcome: DecisionOutcome) -> &'static str {
-    match outcome {
-        DecisionOutcome::Passed => "passed",
-        DecisionOutcome::Failed => "failed",
-        DecisionOutcome::Decided => "decided",
-        DecisionOutcome::Error => "error",
-        DecisionOutcome::Refused => "refused",
+/// A call's outcome as a person reads it: a monitor's check `fired` or was
+/// `quiet`, a gate's `passed` or `not passed`, any other call `passed` or
+/// `not passed` its threshold; `decided`, `error` and `refused` as they are.
+pub fn outcome_word(origin: DecisionOrigin, outcome: DecisionOutcome) -> &'static str {
+    match (origin, outcome) {
+        (DecisionOrigin::Monitor, DecisionOutcome::Passed) => "fired",
+        (DecisionOrigin::Monitor, DecisionOutcome::Failed) => "quiet",
+        (_, DecisionOutcome::Passed) => "passed",
+        (_, DecisionOutcome::Failed) => "not passed",
+        (_, DecisionOutcome::Decided) => "decided",
+        (_, DecisionOutcome::Error) => "error",
+        (_, DecisionOutcome::Refused) => "refused",
     }
 }
 
@@ -423,31 +574,23 @@ pub fn record_line(record: &DecisionRecord) -> String {
     if let Some(error) = &record.error {
         return format!(
             "{head}  {}: {}",
-            outcome_word(record.outcome),
-            clip(error, 120)
+            outcome_word(record.origin, record.outcome),
+            clip(&super::decide::terminal_advice(error), 120)
         );
     }
-    let answers = record
-        .decisions
-        .iter()
-        .map(|d| {
-            if record.decisions.len() > 1 {
-                format!("{} {}", d.question, super::decide::answer_label(d))
-            } else {
-                super::decide::answer_label(d)
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
+    let (answers, probability) = answers_and_probability(record);
     let mut line = format!("{head}  {}", clip(&answers, 48));
-    if let Some(p) = record_probability(record) {
+    if let Some((named, p)) = probability {
         line.push_str(&format!(
-            "  P {} {}",
+            "  {named} {} {}",
             format_p(p),
             probability_bar(p, SHORT_BAR)
         ));
     }
-    line.push_str(&format!("  {}", outcome_word(record.outcome)));
+    line.push_str(&format!(
+        "  {}",
+        outcome_word(record.origin, record.outcome)
+    ));
     if record.calibrated == Some(false) {
         line.push_str(" (uncalibrated)");
     }
@@ -466,6 +609,7 @@ pub fn render_text(
     summary: &SessionDecisionSummary,
     page: &DecisionPage,
     filters: &DecisionFilters,
+    last: &[DecisionRecord],
 ) -> Vec<String> {
     if summary.total == 0 {
         return vec![format!(
@@ -495,7 +639,7 @@ pub fn render_text(
             summary
                 .aggregates
                 .iter()
-                .map(|aggregate| aggregate_line(aggregate, label_w)),
+                .map(|aggregate| aggregate_line(aggregate, label_w, last_call(last, aggregate))),
         );
     }
     if !summary.recent_turns.is_empty() {
@@ -524,6 +668,46 @@ pub fn render_text(
         out.push(format!(
             "More: biorouter session decisions {session_id} --before {cursor}"
         ));
+    }
+    out
+}
+
+/// The newest call of `aggregate` among `last` ([`last_calls_query`]).
+pub fn last_call<'a>(
+    last: &'a [DecisionRecord],
+    aggregate: &DecisionAggregate,
+) -> Option<&'a DecisionRecord> {
+    last.iter()
+        .find(|r| r.origin == aggregate.origin && r.origin_id == aggregate.origin_id)
+}
+
+/// At most this many aggregates have their newest call read, one small read
+/// each; the rest name their probability without an answer beside it.
+pub const LAST_CALLS_READ: usize = 40;
+
+/// The query for one aggregate's newest call.
+pub fn last_calls_query(aggregate: &DecisionAggregate) -> DecisionQuery {
+    DecisionQuery {
+        origin: Some(aggregate.origin),
+        origin_id: aggregate.origin_id.clone(),
+        limit: Some(1),
+        ..Default::default()
+    }
+}
+
+/// Each aggregate's newest call, read from the local session store.
+pub async fn last_calls_from_store(
+    manager: &SessionManager,
+    session_id: &str,
+    summary: &SessionDecisionSummary,
+) -> Vec<DecisionRecord> {
+    let mut out = Vec::new();
+    for aggregate in summary.aggregates.iter().take(LAST_CALLS_READ) {
+        if let Ok(page) =
+            biorouter::decision::log::list(manager, session_id, &last_calls_query(aggregate)).await
+        {
+            out.extend(page.records.into_iter().take(1));
+        }
     }
     out
 }
@@ -594,6 +778,28 @@ async fn from_daemon(
     )
     .await?;
     Ok((summary, page))
+}
+
+/// Each aggregate's newest call, read from the daemon. A read that fails
+/// leaves that aggregate without one; the summary still prints.
+async fn last_calls_from_daemon(
+    session_id: &str,
+    summary: &SessionDecisionSummary,
+    auth: &DaemonAuth,
+) -> Vec<DecisionRecord> {
+    let mut out = Vec::new();
+    for aggregate in summary.aggregates.iter().take(LAST_CALLS_READ) {
+        let path = format!(
+            "/sessions/{session_id}/decisions{}",
+            query_string(&last_calls_query(aggregate))
+        );
+        if let Ok(page) =
+            get_from_daemon::<DecisionPage>(session_id, &path, auth, "a page of decisions").await
+        {
+            out.extend(page.records.into_iter().take(1));
+        }
+    }
+    out
 }
 
 /// The local path's reach rule, the one the route applies: a private chat is
@@ -671,28 +877,40 @@ pub async fn handle_session_decisions(
     user_action_key_stdin: bool,
 ) -> Result<()> {
     let query = filters.query();
-    let (summary, page) = match reach(user_action_key_stdin).await? {
-        Reach::Daemon(auth) => from_daemon(session_id, &query, &auth).await?,
+    let (summary, page, last) = match reach(user_action_key_stdin).await? {
+        Reach::Daemon(auth) => {
+            let (summary, page) = from_daemon(session_id, &query, &auth).await?;
+            let last = if json {
+                Vec::new()
+            } else {
+                last_calls_from_daemon(session_id, &summary, &auth).await
+            };
+            (summary, page, last)
+        }
         Reach::Local(why) => {
             eprintln!("note: read from the local session store ({why}).");
             let manager = SessionManager::instance();
             let enforced = biorouter::privacy::privacy_tiers_enabled();
             let capability = crate::session::privacy::caller_capability().await;
-            from_store(&manager, session_id, &query, capability, enforced).await?
+            let (summary, page) =
+                from_store(&manager, session_id, &query, capability, enforced).await?;
+            let last = if json {
+                Vec::new()
+            } else {
+                last_calls_from_store(&manager, session_id, &summary).await
+            };
+            (summary, page, last)
         }
     };
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "summary": summary,
-                "page": page,
-            }))?
-        );
+        super::print_line(serde_json::to_string_pretty(&serde_json::json!({
+            "summary": summary,
+            "page": page,
+        }))?);
         return Ok(());
     }
-    for line in render_text(session_id, &summary, &page, &filters) {
-        println!("{line}");
+    for line in render_text(session_id, &summary, &page, &filters, &last) {
+        super::print_line(line);
     }
     Ok(())
 }
@@ -774,7 +992,7 @@ pub(crate) mod tests {
 
         let mut agg = aggregate(DecisionOrigin::Monitor, "Form reached", 3);
         agg.model = Some(slug);
-        let line = aggregate_line(&agg, 12);
+        let line = aggregate_line(&agg, 12, None);
         assert!(line.ends_with(" · joey-1"), "{line}");
     }
 
@@ -852,7 +1070,7 @@ pub(crate) mod tests {
             next_cursor: Some("cur-1".into()),
             total: 618,
         };
-        let lines = render_text("s1", &summary, &page, &DecisionFilters::default());
+        let lines = render_text("s1", &summary, &page, &DecisionFilters::default(), &[]);
         assert_eq!(lines[0], "Decisions in session s1: 618 calls");
         let by_source = lines.iter().position(|l| l == "By source:").unwrap();
         let turns = lines.iter().position(|l| l == "Recent turns:").unwrap();
@@ -863,14 +1081,20 @@ pub(crate) mod tests {
         assert!(by_source < turns && turns < calls);
         let monitor = &lines[by_source + 1];
         assert!(monitor.contains("monitor  Form reached"), "{monitor}");
+        // R1: a monitor's checks are quiet or fired, never "failed". R2: with
+        // no call read, the summary's probability is the watched answer's,
+        // which may not be "no", so it is not set beside the answer as its.
         assert!(
-            monitor.contains("18 checks · 18 failed · last no P 0.31"),
+            monitor.contains("18 checks · 18 quiet · last no · threshold P 0.31"),
             "{monitor}"
         );
         assert!(monitor.ends_with("tev1:0.8b"), "{monitor}");
         let tool = &lines[by_source + 2];
         assert!(
-            tool.contains("600 calls · 41 passed · 557 failed · 2 errors · last yes P 0.93"),
+            tool.contains(
+                "600 calls · 41 passed the threshold · 557 did not · 2 errors · last yes · \
+                 threshold P 0.93"
+            ),
             "{tool}"
         );
         assert!(
@@ -878,13 +1102,33 @@ pub(crate) mod tests {
             "{}",
             lines[turns + 1]
         );
+        // R2: a row's P is its answer's own: P(no) 0.69, not P(yes) 0.31.
         assert!(
-            lines[calls + 1].contains("Form reached  no  P 0.31"),
+            lines[calls + 1].contains("Form reached  no  P 0.69"),
             "{}",
             lines[calls + 1]
         );
-        assert!(lines[calls + 1].contains("failed  tev1:0.8b  22 ms"));
+        assert!(lines[calls + 1].contains("quiet  tev1:0.8b  22 ms"));
         assert!(lines[calls + 2].contains("yes  P 0.90"));
+        assert!(lines[calls + 2].contains("fired"));
+        assert!(!lines.join("\n").contains("failed"), "{lines:#?}");
+
+        // With each aggregate's newest call read, its line puts that
+        // answer's own probability beside it.
+        let mut newest = record("d2", 0.31);
+        newest.origin_id = summary.aggregates[0].origin_id.clone();
+        let lines = render_text(
+            "s1",
+            &summary,
+            &page,
+            &DecisionFilters::default(),
+            &[newest],
+        );
+        let monitor = &lines[by_source + 1];
+        assert!(
+            monitor.contains("18 checks · 18 quiet · last no · P 0.69"),
+            "{monitor}"
+        );
         assert_eq!(
             lines.last().unwrap(),
             "More: biorouter session decisions s1 --before cur-1"
@@ -931,7 +1175,7 @@ pub(crate) mod tests {
             next_cursor: None,
             total: 2,
         };
-        let lines = render_text("s1", &summary, &page, &DecisionFilters::default());
+        let lines = render_text("s1", &summary, &page, &DecisionFilters::default(), &[]);
         for line in &lines {
             assert!(!line.chars().any(char::is_control), "{line:?}");
         }
@@ -944,6 +1188,7 @@ pub(crate) mod tests {
                 origin_id: Some("build".into()),
                 label: "\x1b[2JBuild\x07".into(),
                 count: 1,
+                calls: 1,
                 passed: 1,
                 failed: 0,
                 errors: 0,
@@ -979,7 +1224,7 @@ pub(crate) mod tests {
             total: 0,
         };
         assert_eq!(
-            render_text("s9", &empty, &page, &DecisionFilters::default()),
+            render_text("s9", &empty, &page, &DecisionFilters::default(), &[]),
             vec!["Session s9 has made no decision-model calls.".to_string()]
         );
     }
@@ -994,10 +1239,78 @@ pub(crate) mod tests {
         assert_eq!(record_probability(&two), Some(0.4));
         let line = record_line(&two);
         assert!(line.contains("has_ms yes, edss_stated no"), "{line}");
+        assert!(line.contains("  P 0.40"), "the lowest pass P: {line}");
 
         let mut plain = record("d5", 0.7);
         plain.decisions[0].pass_probability = None;
         assert_eq!(record_probability(&plain), Some(0.7), "the answer's own p");
+    }
+
+    /// One request that asked two monitors names each answer by its
+    /// monitor's name, never its id, and names the probability's outcome.
+    #[test]
+    fn a_call_that_asked_several_monitors_names_them() {
+        use biorouter::decision::{DecisionKind, Threshold};
+        let mut both = record("d6", 0.55);
+        both.origin_id = Some("said-words+stopper".into());
+        both.label = Some("Shell used + Stop after shell".into());
+        both.decisions[0].question = "said-words".into();
+        let mut second = yes_no(0.74);
+        second.question = "stopper".into();
+        second.pass_probability = Some(0.74);
+        both.decisions.push(second);
+        let question = |text: &str| Question {
+            instructions: text.into(),
+            kind: DecisionKind::Binary {},
+            threshold: Some(Threshold::Yes(0.5)),
+        };
+        both.questions = serde_json::json!({
+            "said-words": question("Has the agent run a shell command?"),
+            "stopper": question("Has it run two?"),
+        });
+        let line = record_line(&both);
+        assert!(
+            line.contains("Shell used yes, Stop after shell yes  P(yes) 0.55"),
+            "{line}"
+        );
+        assert!(!line.contains("said-words"), "{line}");
+        assert_eq!(question_display_name(&both, "stopper"), "Stop after shell");
+        assert_eq!(question_display_name(&both, "other"), "other");
+    }
+
+    /// R1 word by word: monitors fire or stay quiet, gates pass or not, every
+    /// other call passes its threshold or not; nothing a person reads says
+    /// "failed".
+    #[test]
+    fn outcomes_read_in_each_sources_words() {
+        use DecisionOutcome::*;
+        assert_eq!(outcome_word(DecisionOrigin::Monitor, Passed), "fired");
+        assert_eq!(outcome_word(DecisionOrigin::Monitor, Failed), "quiet");
+        assert_eq!(outcome_word(DecisionOrigin::Gate, Failed), "not passed");
+        assert_eq!(outcome_word(DecisionOrigin::Tool, Failed), "not passed");
+        assert_eq!(outcome_word(DecisionOrigin::Tool, Error), "error");
+        assert_eq!(
+            counts_text(DecisionOrigin::Monitor, 17, 0, 17, 0),
+            "17 checks · 17 quiet"
+        );
+        assert_eq!(
+            counts_text(DecisionOrigin::Gate, 2, 1, 1, 0),
+            "2 checks · 1 passed · 1 not passed"
+        );
+        let mut refused = record("d7", 0.5);
+        refused.decisions.clear();
+        refused.outcome = Refused;
+        refused.error = Some(
+            "This chat is private, so this decision cannot run on `joey-1`, which is a public \
+             model. Name a private decision model (decision_models lists them), or start this \
+             work in a public chat."
+                .into(),
+        );
+        let line = record_line(&refused);
+        assert!(
+            !line.contains("decision_models"),
+            "R4: no agent tool: {line}"
+        );
     }
 
     /// A private chat in a throwaway store, raised the way a turn on a private
@@ -1116,7 +1429,7 @@ pub(crate) mod tests {
         assert_eq!(summary.total, 3);
         assert_eq!(page.total, 3);
         assert_eq!(page.records.len(), 3);
-        let text = render_text(&chat.id, &summary, &page, &filters).join("\n");
+        let text = render_text(&chat.id, &summary, &page, &filters, &[]).join("\n");
         assert!(text.contains("Decisions in session"), "{text}");
         assert!(text.contains("monitor  Form reached"), "{text}");
         assert!(text.contains("2 checks"), "{text}");

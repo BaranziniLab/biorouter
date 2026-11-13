@@ -17488,9 +17488,16 @@
           "errors"
         ],
         "properties": {
+          "calls": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Calls that made them: a `decide` call is one however many chunks and\nmodels it asked (its batch), a monitor's or a gate's check one per row.\nOne item holds every `decide` call of the turn, so this, not the\nnumber of items, is how many calls there were (R3-F3: three calls of\n200 chunks read as \"1 decide call\"). 0 from a writer that predates it.",
+            "minimum": 0
+          },
           "count": {
             "type": "integer",
             "format": "int64",
+            "description": "Decisions (rows): one per chunk, per model in a vote.",
             "minimum": 0
           },
           "errors": {
@@ -29891,6 +29898,11 @@
               },
               "onceDescendants": {
                 "type": "boolean"
+              },
+              "requestedBy": {
+                "type": "string",
+                "description": "Who asks, on the copy of the card shown in the conversation that\ndelegated the work: the subagent's role, else its chat's name. Absent\non the card's own home, where the asker is that chat's own agent.",
+                "nullable": true
               }
             }
           },

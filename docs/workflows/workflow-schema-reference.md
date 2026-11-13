@@ -183,8 +183,8 @@ The `extensions` field allows you to specify which Model Context Protocol (MCP) 
 #### Extension types
 
 - **`stdio`**: Standard I/O client with command and arguments
-- **`builtin`**: Built-in extension that is part of the bundled Biorouter MCP server
-- **`platform`**: Platform extensions that run in the agent process
+- **`builtin`**: Built-in extension that is part of the bundled Biorouter MCP server. Its `name` must be one of `agent_drafter`, `autovisualiser`, `computercontroller`, `developer`, `knowledge`, `memory` or `webdocuments`, exactly. Any other name is refused when the workflow is validated, imported or run, with the known names: "The workflow names a built-in extension `nosuch` that Biorouter does not have. Built-in extensions: agent_drafter, autovisualiser, computercontroller, developer, knowledge, memory, webdocuments." Before, such an entry was accepted and then skipped at run time, which left an unexplained "failed to load" notice in every chat the workflow ran in
+- **`platform`**: Platform extensions that run in the agent process, such as `workspace`, `todo` and `decisions`. One written as `type: builtin` is refused with how to write it: "`workspace` is a platform capability: write it as `type: platform`, `name: workspace`."
 - **`streamable_http`**: Streamable HTTP client with URI endpoint
 - **`frontend`**: Frontend-provided tools called through the frontend
 - **`inline_python`**: Inline Python code executed using uvx. Requires `code` field; optional `dependencies` for packages.
@@ -651,7 +651,7 @@ The record the Monitors dialog, `biorouter session monitors` and `PUT /sessions/
 | `defaultModel` | Object | `{provider, model}`, the chat's default decision model. Left out, the chat uses the configured one, else the first one it may use |
 | `monitors` | Array | At most 8 monitors, each the stored monitor record: `id`, `name`, `question` (`instructions`, `kind`), and optional `model`, `timing` (`post_iteration` or `turn_end`), `window` (`entries`, `maxChars`, `toolCalls`), `threshold`, `direction` (`at_or_above` or `below`), `option`, `consecutive`, `rearmBelow`, `rearmAbove`, `action` (`notify`, `stop` or `steer`), `onError` (`notify` or `pause`), `maxEvalsPerTurn`, `enabled` and `applyToSubagents` |
 
-A question's kind is written `kind: {binary: {}}` (or `kind: !binary {}`), `{choice: {options: {...}}}` or `{score: {levels: [...]}}`. A workflow's monitors are always the person's, so `setBy`, `setBySession` and `inheritedFrom`, which record who set a monitor in a running chat, are refused. `applyToSubagents: true` is allowed: the monitor is copied onto every subagent the chat starts.
+A question's kind is written `kind: {binary: {}}`; Biorouter reads the older `kind: !binary {}` tag too but never writes it, and `biorouter run --render-workflow` writes through the same writer as a saved workflow. The kind can also be `{choice: {options: {...}}}` or `{score: {levels: [...]}}`. A workflow's monitors are always the person's, so `setBy`, `setBySession` and `inheritedFrom`, which record who set a monitor in a running chat, are refused. `applyToSubagents: true` is allowed: the monitor is copied onto every subagent the chat starts.
 
 #### `orchestration_plan`
 
@@ -732,9 +732,9 @@ This example names no decision model, so the monitor and the gate use the chat's
 
 The CLI prints the same sentence, removes the chat it made (never one it resumed) and exits 1. A scheduled run records it as the schedule's last error and leaves no chat. A slash command for a workflow that declares either block is refused before anything is sent, because it runs in an existing chat: "/screen declares monitors or a phased plan, which apply only when the workflow starts its own chat. Start it from Workflows in the app or with `biorouter run --workflow /path/to/screen.yaml`; nothing was sent." A sub-workflow is different: its `decision_settings` monitors are put on the subagent spawned from it ([Subworkflows](subworkflows.md#monitors-on-a-subworkflows-subagent)), and a sub-workflow that declares an `orchestration_plan` cannot be spawned.
 
-**Making a workflow from a chat.** "Create workflow from this chat" carries the chat's default decision model and the person's monitors (a copy of a parent chat's monitor becomes the workflow's own, and a monitor an agent set is left out), and the plan's skeleton: its phases, kinds, goals and `depends_on`, each gate's questions, threshold, attempts and model, and each phase's monitors. It fills each block only when the generated workflow has none, and leaves a block out when nothing is left to put in it.
+**Making a workflow from a chat.** "Create workflow from this chat" carries the chat's default decision model and the person's monitors (a copy of a parent chat's monitor becomes the workflow's own, and a monitor an agent set is left out), and the plan's skeleton: its phases, kinds, goals and `depends_on`, each gate's questions, threshold, attempts and model, and each phase's monitors. It fills each block only when the generated workflow has none, and leaves a block out when nothing is left to put in it. The desktop's Make workflow dialog keeps both blocks the daemon returns, shows them read only as the workflow editor does, and saves them into the file. The draft's own `{{ key }}` placeholders reach the file as written: the generator's prompt used to render its own placeholder examples away, which left drafts with empty placeholders.
 
-**Seeing them before a run.** `biorouter run --workflow <file> --explain` prints a "Supervision:" section with the default model, one line per monitor, the plan and each gate. In the app, the warning shown before a workflow starts has a Supervision panel with the same, and the workflow editor shows it read only, with "Monitors and phase gates are edited in the workflow file; saving here keeps them." ([A workflow's supervision](../desktop-ui/decision-models.md#a-workflows-supervision)).
+**Seeing them before a run.** `biorouter run --workflow <file> --explain` first runs the checks `run` makes and refuses what `run` would refuse, then prints a "Supervision:" section with the default model, one line per monitor (when it is checked, the model by its alias, what it does), the plan and each gate. Whether each model is installed and allowed is checked when the run starts. A gate's `model` in a workflow file is written `provider/model`: the bare name an agent's gate may use (`tev1:0.8b`) is refused here, with an example of the spelling it needs. In the app, the warning shown before a workflow starts has a Supervision panel with the same, and the workflow editor shows it read only, with "Monitors and phase gates are edited in the workflow file; saving here keeps them." ([A workflow's supervision](../desktop-ui/decision-models.md#a-workflows-supervision)).
 
 ## Desktop metadata fields
 
@@ -889,6 +889,7 @@ Validation rules from `crates/biorouter/src/workflow/validate_workflow.rs` ([sou
 - `validate_prompt_or_instructions` - At least one of `instructions` or `prompt` must be present
 - `validate_json_schema` - JSON response schema must be valid if `response.json_schema` is specified
 - `supervision::validate` - `decision_settings` and `orchestration_plan` must be valid as a chat would take them, use no parameters, and no top-level key may belong inside them (see [Supervision](#supervision-decision_settings-and-orchestration_plan))
+- `validate_builtin_extensions` - Every `type: builtin` extension must name a built-in Biorouter ships (see [Extension types](#extension-types))
 
 ### Parameter validation
 

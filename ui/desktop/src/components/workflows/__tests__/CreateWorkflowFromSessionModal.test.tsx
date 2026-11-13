@@ -9,9 +9,10 @@ import {
   afterEach,
   type MockInstance,
 } from 'vitest';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import CreateWorkflowFromSessionModal from '../CreateWorkflowFromSessionModal';
+import { SUPERVISION_KEPT } from '../CreateEditWorkflowModal';
 import { workflowFormCopy } from '../copy';
 import { createWorkflow, getActive, listBases, skillCatalogHandler } from '../../../api/sdk.gen';
 import type { CreateWorkflowResponse, WorkflowKnowledgeBases } from '../../../api/types.gen';
@@ -461,6 +462,97 @@ describe('CreateWorkflowFromSessionModal', () => {
         }),
         null
       );
+    });
+  });
+
+  /**
+   * H-4: `/workflows/create` returns the chat's monitors and phase plan. The
+   * modal dropped both, so a workflow made here lost the supervision the CLI's
+   * `biorouter workflow create` kept. It now shows them read-only, as the
+   * workflow editor does, and saves them as captured.
+   */
+  describe('Supervision captured from the chat', () => {
+    const decisionSettings = {
+      defaultModel: null,
+      monitors: [
+        {
+          id: 'reached-ten',
+          name: 'reached-ten',
+          question: {
+            instructions: 'Has the agent already echoed 10 or a larger number?',
+            kind: { binary: {} },
+          },
+          threshold: 0.7,
+          action: 'stop',
+          onError: 'pause',
+        },
+      ],
+    };
+    const orchestrationPlan = {
+      title: 'Echo plan',
+      phases: [
+        {
+          id: 'count',
+          title: 'Count',
+          gate: { questions: { done: 'Did the agent reach 30?' }, threshold: 0.9 },
+        },
+      ],
+    };
+
+    beforeEach(() => {
+      mockCreateWorkflow.mockResolvedValue({
+        data: {
+          workflow: {
+            title: 'Supervised',
+            description: 'Counts to thirty',
+            instructions: 'Echo the numbers',
+            decision_settings: decisionSettings,
+            orchestration_plan: orchestrationPlan,
+          },
+        } as unknown as CreateWorkflowResponse,
+        error: undefined,
+        request: new globalThis.Request('http://localhost/test'),
+        response: new globalThis.Response(),
+      } as never);
+    });
+
+    it('shows the monitors and phase gates read-only under the form', async () => {
+      render(<CreateWorkflowFromSessionModal {...defaultProps} />);
+      const summary = await screen.findByTestId('workflow-supervision', undefined, {
+        timeout: 2000,
+      });
+      expect(
+        within(summary).getByTestId('workflow-supervision-monitor-reached-ten')
+      ).toBeInTheDocument();
+      expect(within(summary).getByTestId('workflow-supervision-gate-count')).toBeInTheDocument();
+      expect(within(summary).getByTestId('workflow-supervision-kept')).toHaveTextContent(
+        SUPERVISION_KEPT
+      );
+    });
+
+    it('saves decision_settings and orchestration_plan as captured', async () => {
+      const user = userEvent.setup();
+      render(<CreateWorkflowFromSessionModal {...defaultProps} />);
+      const saved = await saveTheWorkflow(user);
+      expect(saved?.decision_settings).toEqual(decisionSettings);
+      expect(saved?.orchestration_plan).toEqual(orchestrationPlan);
+    });
+
+    it('shows no Supervision summary and saves neither block when the chat had none', async () => {
+      mockCreateWorkflow.mockResolvedValue({
+        data: {
+          workflow: { title: 'Plain', description: 'No supervision', instructions: 'Do it' },
+        } as unknown as CreateWorkflowResponse,
+        error: undefined,
+        request: new globalThis.Request('http://localhost/test'),
+        response: new globalThis.Response(),
+      } as never);
+      const user = userEvent.setup();
+      render(<CreateWorkflowFromSessionModal {...defaultProps} />);
+      const saved = await saveTheWorkflow(user);
+      expect(screen.queryByTestId('workflow-supervision')).toBeNull();
+      expect(saved).not.toHaveProperty('decision_settings');
+      expect(saved).not.toHaveProperty('orchestration_plan');
     });
   });
 

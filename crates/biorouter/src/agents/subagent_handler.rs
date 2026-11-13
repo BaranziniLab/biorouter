@@ -3655,6 +3655,7 @@ mod tests {
                     origin_id: Some(label.into()),
                     label: label.into(),
                     count: 2,
+                    calls: 2,
                     passed: 0,
                     failed: 0,
                     errors: 0,
@@ -3686,7 +3687,7 @@ mod tests {
         ];
         assert_eq!(
             decision_marker_text(busy.iter(), &earlier_turns).as_deref(),
-            Some("Decision models: monitor 'New check' checked 2 times")
+            Some("Decision models: monitor 'New check' checked 2 times, quiet")
         );
     }
 }

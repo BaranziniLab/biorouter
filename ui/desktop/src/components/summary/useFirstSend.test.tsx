@@ -1,4 +1,4 @@
-import { act, render, renderHook } from '@testing-library/react';
+import { act, fireEvent, render, renderHook } from '@testing-library/react';
 import { useLayoutEffect, useRef, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Message } from '../../api';
@@ -60,6 +60,13 @@ function toolCallsValue(container: HTMLElement): string {
     (dt) => dt.textContent === summaryCopy.toolCalls
   );
   return label?.nextElementSibling?.textContent ?? '';
+}
+
+function openDetails(container: HTMLElement) {
+  const trigger = [...container.querySelectorAll('button')].find(
+    (button) => button.textContent === summaryCopy.details
+  );
+  if (trigger) fireEvent.click(trigger);
 }
 
 interface HarnessApi {
@@ -230,6 +237,9 @@ async function playFirstSend(legacy: boolean, placeholderFromStore = false) {
       startedAt={startedAt}
     />
   );
+  // The statistics sit behind the summary's Details (F-1): open it once, as a
+  // person reading the figures would, before anything is sent.
+  openDetails(view.container);
   const before = log.length;
   startedAt.current = Date.now();
   await act(async () => {
@@ -327,13 +337,22 @@ describe('a new chat’s first send (V2-R8-2)', () => {
         '[data-testid="transcript"] [data-testid="message-container"]'
       )!;
     // React's generated ids differ between the two mounts and mean nothing on screen.
-    const markup = () => row().outerHTML.replace(/ id="_r_\w+_"/g, '');
+    // The edit pencil is the one difference by design (E-12): the first-send row
+    // has no chat to edit in yet, so it draws none; the stored row does.
+    const editButton = () => row().querySelector('button[aria-label^="Edit message:"]');
+    const markup = () => {
+      const clone = row().cloneNode(true) as HTMLElement;
+      clone.querySelector('button[aria-label^="Edit message:"]')?.remove();
+      return clone.outerHTML.replace(/ id="_r_\w+_"/g, '');
+    };
     const provisional = markup();
     expect(row()).toHaveAttribute('data-role', 'user');
+    expect(editButton()).toBeNull();
     await playFrames(1200);
     // The store's row: the same markup (the list keys rows by id, not into the
     // DOM), and no entrance, since its list mounted with it.
     expect(row().textContent).toContain(SEND);
+    expect(editButton()).not.toBeNull();
     expect(markup()).toBe(provisional);
     expect(row()).not.toHaveClass('br-enter');
     expect(view.container.querySelectorAll('[data-testid="message-container"]')).toHaveLength(1);

@@ -87,7 +87,12 @@ async fn refused_workflow_start(
     session_id: &str,
     resumed: bool,
 ) -> Option<String> {
-    let text = seed_refusal_text(error)?;
+    // A model is named as the terminal names it everywhere, by its alias
+    // and where it runs, never by a Baseten slug, and the advice names the
+    // command a person runs rather than the agent's tool.
+    let text = crate::commands::decide::terminal_advice(
+        &crate::commands::decide::person_model_names_in_sentence(&seed_refusal_text(error)?),
+    );
     if !resumed {
         if let Err(e) = session_manager.delete_session(session_id).await {
             tracing::warn!(
@@ -308,8 +313,18 @@ async fn offer_extension_debugging_help(
 
     // Process the debugging request
     println!("{}", style("Analyzing the extension failure...").yellow());
-    match debug_session.headless(debug_prompt).await {
-        Ok(_) => {
+    let result = debug_session.headless(debug_prompt).await;
+    match crate::commands::supervision_stop::ran_to_an_end(result) {
+        Ok(Some(_)) => {
+            // Its supervision ended the chat early; that is not a failure.
+            // (The run's own sentence names exit status 3, which this is not.)
+            println!(
+                "{}",
+                style("The debugging chat was stopped early by its supervision. Check the suggestions above.")
+                    .yellow()
+            );
+        }
+        Ok(None) => {
             println!(
                 "{}",
                 style("Debugging chat completed. Check the suggestions above.").green()

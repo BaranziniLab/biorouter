@@ -35,14 +35,13 @@ Subagents used to be opaque: you saw a spinner, then a summary. Now every subage
 
 ### Subagents run in the background
 
-A subagent runs in the background and **opens no tab** unless someone asks for one. The chat that started it lists it in its **chat summary**, the side panel to the right of the conversation (or the popover from the summary button in the chat header when the window is too narrow for the panel). Each row shows:
+A subagent runs in the background and **opens no tab** unless someone asks for one. The chat that started it lists it in its **chat summary**, the side panel to the right of the conversation (or the popover from the summary button in the chat header when the window is too narrow for the panel). Each row shows only what you need to spot first:
 
-- **the subagent's name and role**: the first line of its task, and the short role label the parent gave it, if any;
-- **its status**: queued, running, cancelling, completed, blocked, incomplete, failed, or interrupted (it was running when the app or daemon stopped);
-- **its model**, and how long it has run or ran;
-- **"quiet"** when a running subagent has recorded no activity for a while. This is a hint that it may be waiting on something slow, not a verdict that it has stopped.
+- **its status**, as a shape: waiting to start, running, stopping, completed, needs an answer (blocked), stopped (it ended before it finished; `incomplete` in records and the CLI), failed, or interrupted (it was running when the app or daemon stopped);
+- **its role**, the short label the parent gave it, or its name (the first line of its task) when it has none;
+- **one line of what it is doing**: "Working…" while it runs, its result line once it ended, or **"Quiet for 4m"** when a running subagent has recorded no activity for a while. Quiet is a hint that it may be waiting on something slow, not a verdict that it has stopped.
 
-Hover or focus a row to see its setup: the extensions, skills and knowledge bases it was given. Click a row to open that subagent as a tab.
+Everything else is in the row's **peek**. Hover over a row and the peek appears beside it: the task, the result and how long it ran, and under Details the model, the extensions, skills and knowledge bases it was given (by name) and what it used. Click the row and the peek stays open, and the row looks pressed, so you can use **Open in a tab**, which opens that subagent as a tab. A click on the row no longer opens the tab by itself. This is the app's one rule for the pointer: hover peeks, click pins.
 
 Three things open a tab when the subagent starts, instead of leaving it in the background:
 
@@ -56,21 +55,21 @@ A background subagent still carries its `subagent` badge, so when you open it fr
 
 ### The subagent tab
 
-When a subagent's tab opens (from the side panel, from History, or at spawn when a tab was asked for), it opens **in the background** (it never steals the composer you are typing into), carries a `subagent` badge and, at the top of its transcript, one line that shows:
+When a subagent's tab opens (from the side panel, from History, or at spawn when a tab was asked for), it opens **in the background** (it never steals the composer you are typing into) and carries a `subagent` badge. The tab is titled by the subagent's role, with "{role}: {task}" as its tooltip; a subagent with no role is titled by its task. At the top of its transcript, one line shows:
 
-- **Subagent of**: a link back to the chat that delegated the work;
-- **the child's grants**: how many extensions and knowledge bases it was given; hover or focus a count for the names;
-- **Context**: the exact instructions and system prompt the child was started with, expandable;
+- **Subagent of** and the parent chat's name: a link back to the chat that delegated the work. The parent's id is not shown; the tab's context menu has **Copy chat ID**;
+- **What it can use**: an InfoTip naming the extensions and knowledge bases it was given, at most three of each, then "and N more";
+- **Instructions**: the exact instructions and system prompt the child was started with, closed by default, in the app's ordinary text. This is their one place: the transcript no longer repeats them as its first message, although the saved chat and its exports keep it;
 - **Stop**: the kill switch.
 
-Below that line is the child's live transcript, streaming its tool calls as they happen.
+Below that line is the child's live transcript, streaming its tool calls as they happen. A tab that cannot send (in a browser, for instance) offers no edit pencil on your messages, because an edit there could not be saved; Copy stays.
 
 ### Watch, steer, stop
 
 Three things you can do from that tab:
 
 - **Watch.** Read the transcript as it streams. You are not interrupting anything.
-- **Steer.** Type into the tab's ordinary composer. While the child's turn is running your message is injected as a mid-turn correction ("stop at step 3 and summarise"); between turns it starts a new turn or leaves a note. Either way it is labelled in the transcript as a **direct user message**, permanently.
+- **Steer.** Type into the tab's ordinary composer. While the child's turn is running, the composer works as in any running chat: Enter queues your message for when the turn ends, and Cmd+Enter (Ctrl+Enter on Windows and Linux), or **Add now** on a queued message, injects it into the running turn as a mid-turn correction ("stop at step 3 and summarise"). Between turns Enter starts a new turn. Either way it is labelled in the transcript as a **direct user message**, permanently.
 - **Stop.** The line's Stop control cancels the child's turn. The parent's tool call then resolves promptly, carrying whatever the child had produced — it is not left hanging. What it resolves *as* depends on how far the child got: a child stopped mid-tool-call, with no text to show for it, comes back `incomplete`; a child that had already written a summary returns that summary and can still be labelled `completed`, because the envelope is classified from the transcript rather than from the fact of the cancellation. Do not read `completed` as proof the child finished on its own.
 
 > **Watch is the only one of the three in a browser.** On a page served by `biorouter serve` the tab has no composer and no Stop: steering and stopping a subagent need proof that a person acted, which only the desktop application holds. The tab says so in place of both controls rather than refusing on click — see [Browser access](../deployment/browser-access.md#what-a-browser-can-and-cannot-do).
@@ -102,6 +101,8 @@ Stopping a chat stops its subagents. A plain Stop in the chat that started them 
 - "Stopped because monitor 'Form reached' stopped the chat that started this subagent."
 - "Stopped because monitor 'Form reached', set by the person to watch every subagent of that chat, stopped subagent 'Fetch the data'."
 
+A sentence names a subagent by its role when it has one ('data loader'), as the side panel does, and by its task only when it has no role.
+
 Stop-and-Send in the parent (sending a correction while its turn runs) leaves the subagents running, because the next turn keeps supervising them, and so does cancelling a tool approval. After a monitor's stop, the parent's turn waits up to 30 seconds (`BIOROUTER_MONITOR_STOP_SETTLE_SECS`) for the subagents to stop, so it can collect what each had done, and names any that had not stopped by then. See [A stop stops the chat's subagents](decision-models.md#a-stop-stops-the-chats-subagents).
 
 ### When the child needs your permission
@@ -117,6 +118,10 @@ Two things it is not:
 
 If nobody answers, nothing is quietly allowed: the call is refused, the child is told the approval expired, and it carries on without it.
 
+**Folder access works the same way.** When a subagent's file operation needs a folder outside its working folder, its folder card is shown in its own tab and in the chat you are watching, as one decision. Until 2026-11-10 that card waited only in the child's own session, so a background subagent's request sat unseen until it expired. A denial ends the child's call with "Folder authorization required for <folder>. … Access was not approved." and an unanswered card with "… The request expired before anyone answered it, so access was not given."
+
+A **direct** subagent may also use the folders you allowed with **Allow for this session** in the chat that started it, when both are at the same privacy tier. They are the same grants, so revoking one in the parent ends it for the subagent too. A grandchild does not inherit them, a grant you give in a subagent's own card stays on that subagent, and an "Allow once" never carries over. The inherited folders are not listed in the subagent's own working-folder card. See [External folder access](../security/folder-access.md#subagents).
+
 ### The fan-out cap
 
 When subagents do open tabs at spawn (you asked, or the setting is on), at most **4** children *running at the same time* get a tab from one parent. Ask for ten subagents in parallel with the setting on and you get four tabs, not a tab storm; children five through ten run in the background, appear in the side panel and in History nested under their parent, and can be read with `workspace_read_conversation`. A spawn is **never refused** because of this cap, and the parent is told which children did not get a tab so it does not claim one exists. Raise or lower it with `BIOROUTER_WORKSPACE_MAX_VISIBLE_CHILD_TABS`.
@@ -128,13 +133,13 @@ It is a cap on the burst, not a running total of open tabs. Each slot is release
 When you ask the agent to organise a larger piece of work into stages (plan, research, implementation, verification, testing and so on), it can declare a phase plan with the `workspace_orchestrate` tool and start each subagent inside a phase. Two spawn parameters carry this:
 
 - **`phase`** names the phase the subagent works in. A spawn into a phase the plan does not have, or one already completed or skipped, is refused before anything is created. Results handed off from earlier phases are added to the subagent's instructions, so a later phase starts from what an earlier one found.
-- **`role`** is a short label for what the subagent does ("reviewer", "data loader"), at most 40 characters, shown beside it in the side panel.
+- **`role`** is a short label for what the subagent does ("reviewer", "data loader"), at most 40 characters. It is the subagent's title in the side panel and on its tab.
 
 The side panel, `biorouter session subagents` and the terminal pane then show the plan with each phase's progress: how many of its subagents are done, running, quiet or failed. A phase may carry a decision gate, which holds every phase after it until a decision model is confident the phase met its goal, or until you pass or skip it; the agent cannot change, remove or skip a gate. A phase may also carry monitors that every subagent spawned into it starts with. See [Orchestration phases](orchestration-phases.md) for how phases are declared, gated, completed and handed off.
 
 ### Finding subagent runs later
 
-The side panel of the chat that started them is the quickest way back to a chat's subagents, and the only place that follows one live. History hides subagent runs by default, so your session list stays a list of *your* chats. Turn on **Show subagent runs** in History and each run appears nested under the chat that spawned it as a one-line row: its name, when it ran, the model it ran on, and how it ended (completed, blocked, failed or incomplete). A run that has not ended yet shows no status there. A chat with more than three runs shows the newest three and a **Show N more runs** row that opens the rest in place; while you search History, every matching run is shown. A run you have focused with the keyboard stays shown, in its place in the order, when newer activity pushes it out of the newest three, so the list never takes the focus away from under you.
+The side panel of the chat that started them is the quickest way back to a chat's subagents, and the only place that follows one live. History hides subagent runs by default, so your session list stays a list of *your* chats. Turn on **Show subagent runs** in History and each run appears nested under the chat that spawned it as a one-line row: its name, when it ran, the model it ran on, and how it ended, as a shape and a word: Completed (a check), Blocked (a question mark), Failed (a cross) or Stopped (a stop square, for a run that ended before it finished, `incomplete` in records). A stopped run never shows the running ring. Clicking a run row opens it. A run that has not ended yet shows no status there. A chat with more than three runs shows the newest three and a **Show N more runs** row that opens the rest in place; while you search History, every matching run is shown. A run you have focused with the keyboard stays shown, in its place in the order, when newer activity pushes it out of the newest three, so the list never takes the focus away from under you.
 
 A subagent's status survives a restart of the app or daemon: when a run ends, its final status (completed, blocked, incomplete or failed) and the first line of its result are stored with the subagent's own session. A subagent that was still running when its process went away reads as **interrupted**, never as running.
 

@@ -132,6 +132,9 @@ fn fmt_optional_tokens(tokens: Option<i64>) -> String {
 
 fn fmt_cost(cost: Option<f64>) -> String {
     match cost {
+        // Below what four places show, but billed: never "$0.0000", which
+        // reads as free (one decision request on Baseten costs about that).
+        Some(c) if c > 0.0 && c < 0.000_05 => "<$0.0001".to_string(),
         // Sub-cent but non-zero: show enough precision to not read as $0.00.
         Some(c) if c > 0.0 && c < 0.01 => format!("${c:.4}"),
         Some(c) => format!("${c:.2}"),
@@ -461,6 +464,9 @@ mod tests {
         assert_eq!(fmt_cost(Some(1234.5)), "$1234.50");
         // Sub-cent shows extra precision rather than $0.00.
         assert_eq!(fmt_cost(Some(0.0034)), "$0.0034");
+        // A billed fraction too small for four places is not "$0.0000".
+        assert_eq!(fmt_cost(Some(0.000_000_12)), "<$0.0001");
+        assert_eq!(fmt_cost(Some(0.0)), "$0.00");
     }
 
     #[test]

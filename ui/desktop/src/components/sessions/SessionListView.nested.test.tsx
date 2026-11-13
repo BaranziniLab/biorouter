@@ -22,6 +22,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import SessionListView from './SessionListView';
 import { clearSessionListCache, updateCachedSessionList } from '../../utils/sessionListCache';
 import type { Session } from '../../api';
+import { SUBAGENT_STATUS_GLYPHS } from '../subagent/subagentStatus';
 import {
   EXTENSIONS_STAT,
   RUN_STATUS_STAT,
@@ -241,6 +242,66 @@ describe('a run nested under its parent reads as subordinate', () => {
     for (const title of ['Run done', 'Run asked', 'Run broke']) {
       expect(rowOf(title)!.textContent, title).not.toContain(`${EXTENSIONS_STAT}:`);
     }
+    expect(rowOf('Cohort review')!.textContent).toContain(`${EXTENSIONS_STAT}:`);
+  });
+
+  /** C-1: a run that ended early reads "Stopped" by its own shape, never the running ring. */
+  it('draws each end with the shared status glyph, and a stopped run as Stopped', async () => {
+    await renderRuns([
+      parent,
+      run('done', 14, {
+        extension_data: { 'subagent_outcome.v1': { status: 'completed', ended_at: 'x' } },
+      }),
+      run('broke', 12, {
+        extension_data: { 'subagent_outcome.v1': { status: 'failed', ended_at: 'x' } },
+      }),
+      run('cut', 11, {
+        extension_data: { 'subagent_outcome.v1': { status: 'incomplete', ended_at: 'x' } },
+      }),
+    ]);
+    await screen.findByText('Run cut');
+    const glyphOf = (status: keyof typeof SUBAGENT_STATUS_GLYPHS) => {
+      const Icon = SUBAGENT_STATUS_GLYPHS[status];
+      const { container, unmount } = render(<Icon aria-hidden="true" />);
+      const html = container.querySelector('svg')!.innerHTML;
+      unmount();
+      return html;
+    };
+    for (const [title, status] of [
+      ['Run done', 'completed'],
+      ['Run broke', 'failed'],
+      ['Run cut', 'incomplete'],
+    ] as const) {
+      const svg = rowOf(title)!.querySelector('.br-history-run-status svg')!;
+      expect(svg.innerHTML, title).toBe(glyphOf(status));
+    }
+    const stopped = rowOf('Run cut')!.querySelector('.br-history-run-status')!;
+    expect(stopped.textContent).toContain(`${RUN_STATUS_STAT}: Stopped`);
+    expect(stopped.querySelector('svg')!.innerHTML).not.toBe(glyphOf('running'));
+  });
+
+  it('draws no extensions cell for a decision chat (B-3)', async () => {
+    const extensions = {
+      'enabled_extensions.v0': { extensions: [{ type: 'builtin', name: 'developer' }] },
+    };
+    mocks.listSessions.mockResolvedValue({
+      data: {
+        sessions: [
+          session('d1', 'Fever notes', {
+            provider_name: 'ollama_decision',
+            extension_data: extensions,
+          }),
+          session('c1', 'Cohort review', { provider_name: 'openai', extension_data: extensions }),
+        ],
+      },
+    });
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+    await screen.findByText('Fever notes');
+    expect(rowOf('Fever notes')!.textContent).not.toContain(`${EXTENSIONS_STAT}:`);
     expect(rowOf('Cohort review')!.textContent).toContain(`${EXTENSIONS_STAT}:`);
   });
 

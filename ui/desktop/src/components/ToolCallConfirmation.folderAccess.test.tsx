@@ -52,6 +52,7 @@ beforeEach(() => {
 describe('folder-scoped browser approval', () => {
   it('uses a transient scoped key and sends a session decision once', async () => {
     show();
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
     expect(screen.getByTestId('folder-access-preview')).toHaveTextContent('backend restarts');
     expect(screen.getByTestId('folder-access-preview')).not.toHaveTextContent('desktop app quits');
     const key = screen.getByLabelText('Folder approval key');

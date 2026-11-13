@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { ChatSummary, type ChatSummaryProps } from '../ChatSummary';
 import { parseSessionSubagents, type SessionSubagents } from '../../utils/sessionSubagents';
 import { wireRow, wireSubagents } from '../../utils/sessionSubagents.fixture';
@@ -37,6 +37,7 @@ const code = (path: string) =>
 describe('the Chat summary with subagents', () => {
   it('lists them between the to-do list and the statistics', () => {
     render(<ChatSummary {...props} subagents={subagents} />);
+    fireEvent.click(screen.getByRole('button', { name: summaryCopy.details }));
     const todo = screen.getByRole('region', { name: summaryCopy.todo });
     const agents = screen.getByRole('region', { name: summaryCopy.agents.subagents });
     const stats = screen.getByLabelText(summaryCopy.statsLabel);
@@ -88,9 +89,12 @@ describe('BaseChat: the subagents in the summary', () => {
   });
 
   it('hands the roster and the tab opener to both the rail and the popover', () => {
-    expect(base).toContain(
-      'subagents: { ...sessionSubagents, onOpen: openSubagent, onOpenGate: openPhaseGate },'
-    );
+    const props = base.match(/subagents: \{([\s\S]*?)\},/)?.[1] ?? '';
+    expect(props).toContain('...sessionSubagents,');
+    // The chat's id, so the section keeps its last roster across a remount (H-12).
+    expect(props).toContain('sessionId,');
+    expect(props).toContain('onOpen: openSubagent,');
+    expect(props).toContain('onOpenGate: openPhaseGate,');
     // One props object feeds both surfaces.
     expect(base).toContain('summary={summaryProps}');
     expect(base).toMatch(/<ChatSummaryRail[\s\S]*?\{\.\.\.summaryProps\}/);

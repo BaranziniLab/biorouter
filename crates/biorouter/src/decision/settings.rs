@@ -2578,6 +2578,23 @@ mod tests {
         );
     }
 
+    /// D-3 (live QA 2026-11-10): a person's monitor edit is activity, like a
+    /// composer tool toggle (ruling 16), so saving a chat's monitors moves its
+    /// `updated_at`. The settings routes and `biorouter session monitors` save
+    /// outside any `session::activity` scope, which is what makes it so; this
+    /// pins it.
+    #[tokio::test]
+    async fn saving_a_chats_monitors_is_activity() {
+        let (_dir, sm, chat) = store().await;
+        let before = sm.get_session(&chat, false).await.unwrap().updated_at;
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        save(&sm, &chat, of(vec![for_subagents("s1")]))
+            .await
+            .unwrap();
+        let after = sm.get_session(&chat, false).await.unwrap().updated_at;
+        assert!(after > before, "{before} -> {after}");
+    }
+
     /// R-30: a sync that changes nothing in a child does not write it, so the
     /// child's activity time stays where it was.
     #[tokio::test]

@@ -15,6 +15,12 @@ import {
 } from './toolCallCopy';
 import { userActionHeaders } from '../utils/userAction';
 import { isBrowserSurface } from '../utils/surface';
+import {
+  FOLDER_ACCESS_COPY,
+  folderShown,
+  requesterOnPreview,
+  useFolderRequester,
+} from './folderAccessCopy';
 
 /**
  * What this card says instead of offering three buttons that cannot work.
@@ -124,6 +130,10 @@ export default function ToolConfirmation({
     readConsent && typeof data.arguments?.workspace === 'string' && data.arguments.workspace
       ? data.arguments.workspace
       : null;
+  // Who asks: the daemon's name on the card (a subagent's card shown in the chat
+  // that started it), else the tab's own subagent, else this chat's agent.
+  const tabRequester = useFolderRequester();
+  const folderRequester = folderAccess ? (requesterOnPreview(preview) ?? tabRequester) : null;
   const browserFolderAccess = folderAccess && isBrowserSurface();
   const [folderApprovalKey, setFolderApprovalKey] = useState('');
 
@@ -316,7 +326,14 @@ export default function ToolConfirmation({
   // but the *banner* is not: one of them reads "install … from the trusted BAAM
   // registry" under a warning triangle. Closing that needs a field distinct from
   // `prompt`, which is a protocol change, so it is a known gap rather than a fix.
-  const securityFinding = typeof prompt === 'string' && prompt.trim().length > 0;
+  //
+  // A folder card's `prompt` is not a finding either: it is
+  // `FolderAccessRequest::prompt`, the terminal's wording of the same question,
+  // tool id and all ("… for developer__text_editor?"). The card asks it in its
+  // own line and keeps the terms under Details (R2-1), so drawing it as well
+  // asked the question twice, and kept the whole warning on the answered row
+  // (R2-3).
+  const securityFinding = !folderAccess && typeof prompt === 'string' && prompt.trim().length > 0;
 
   // The finding is a security fact, so it stays visible on every state of the
   // card: a warning line, not a tinted band (a band inside a card is a box in
@@ -414,8 +431,14 @@ export default function ToolConfirmation({
                 the answered row renders the SAME string in the body font. The
                 <span> keeps the name a distinct node, which is what lets a test
                 assert on the name alone rather than on the whole sentence. */}
-            {folderAccess ? (
-              'Allow access to this external folder?'
+            {preview?.kind === 'folderAccess' ? (
+              <span data-testid="folder-access-question">
+                {FOLDER_ACCESS_COPY.question({
+                  requester: folderRequester,
+                  access: preview.access,
+                  folder: folderShown(preview.folder, preview.files),
+                })}
+              </span>
             ) : (
               <>
                 {APPROVAL_COPY.question} <span>{friendlyToolName(toolName)}</span>?
@@ -474,7 +497,7 @@ export default function ToolConfirmation({
                 disabled={isSending || (browserFolderAccess && !folderApprovalKey)}
                 onClick={() => handleButtonClick(folderAccess ? ALLOW_SESSION : ALWAYS_ALLOW)}
               >
-                {folderAccess ? 'Allow for this session' : APPROVAL_COPY.alwaysAllow}
+                {folderAccess ? FOLDER_ACCESS_COPY.allowSession : APPROVAL_COPY.alwaysAllow}
               </Button>
             )}
             <Button
@@ -494,7 +517,7 @@ export default function ToolConfirmation({
                 disabled={isSending}
                 onClick={() => handleButtonClick(CANCEL)}
               >
-                Cancel operation
+                {FOLDER_ACCESS_COPY.cancel}
               </Button>
             )}
           </div>

@@ -31,6 +31,9 @@
 use std::collections::BTreeMap;
 use std::time::Instant;
 
+mod vote;
+pub use vote::{VoteChunk, VoteModel, VoteQuestion, VoteSummary};
+
 use anyhow::Result;
 use async_trait::async_trait;
 use indexmap::IndexMap;
@@ -45,13 +48,19 @@ use tokio_util::sync::CancellationToken;
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
 use crate::decision::model::DecisionModelEntry;
+use crate::decision::service::{usable_chunk, UsableChunk};
+use crate::decision::types::MAX_CHOICE_OPTIONS;
 use crate::decision::types::{validate_questions, DecisionKindTag};
 use crate::decision::{
     Answer, ChunkOutcome, Decision, DecisionAdapter, DecisionChunk, DecisionContext, DecisionKind,
     DecisionModelRef, DecisionOrigin, DecisionService, DecisionSession, Question, Threshold,
 };
 use crate::privacy::ProviderTier;
-use crate::providers::decision::catalog::decision_model_display_label;
+use crate::providers::decision::catalog::{
+    choice_option_limit, decision_model_display_label, decision_model_short_name,
+    OLLAMA_DECISION_PROVIDER,
+};
+use crate::providers::decision::system_one::OLLAMA_MAX_REQUEST_BYTES;
 
 pub static EXTENSION_NAME: &str = "decisions";
 const EXTENSION_TITLE: &str = "Decisions";
@@ -118,8 +127,9 @@ const DECIDE_DESCRIPTION: &str = concat!(
     "files or functions, document sections, table rows): it answers in tens of milliseconds ",
     "per piece, so do not read hundreds of pieces yourself or call it once per piece.\n",
     "- Split the input along natural boundaries (one note, one function or file, one ",
-    "section), each chunk under the model's window (decision_models reports it), each with ",
-    "an id you can find it by again.\n",
+    "section), each chunk within the size decision_models gives for the model (in tokens and ",
+    "in characters of prose or of numbers, which take far more tokens; it also says which ",
+    "model is used when `model` is left out), each with an id you can find it by again.\n",
     "- Put every question for a chunk in ONE call: the questions share the chunk, which is ",
     "read once. Up to 16 questions and 200 chunks per call.\n",
     "- type is yes_no (the default), choice (options: name to meaning) or score (1 to 10 ",
@@ -145,16 +155,17 @@ const DECIDE_DESCRIPTION: &str = concat!(
     "Privacy: a private chat can use only private decision models (on this computer or at ",
     "the user's institution); a public one is refused before anything is sent.\n",
     "The result summarises each question (passes, highest probability, passing ids, ids to ",
-    "review) under a batch id. Every call, with the text it read, is in the chat's decision ",
-    "history."
+    "review). Every call, with the text it read, is in the chat's decision history."
 );
 
 const DECISION_MODELS_DESCRIPTION: &str = concat!(
-    "List the decision models `decide` can use: each one's provider/model name, tier ",
+    "List the decision models `decide` can use: each one's name (the one `model` takes), tier ",
     "(private or public), whether it runs on this computer, how it produces probabilities, ",
-    "the question types it takes and its window in tokens. A model this chat may not use is ",
-    "listed with the reason: a private chat can use only private decision models. Call it ",
-    "before choosing a `model` for decide, or to size chunks to the model's window."
+    "the question types it takes, its window in tokens and how much text one chunk can carry ",
+    "on it (in characters of prose and of numbers), and which model decide uses here when ",
+    "`model` is left out. A model this chat may not use is listed with the reason: a private ",
+    "chat can use only private decision models. Call it before choosing a `model` for decide, ",
+    "and to size chunks."
 );
 
 const INSTRUCTIONS: &str = concat!(
@@ -179,11 +190,19 @@ struct DecideParams {
     /// function or file, one section.
     #[schemars(extend("minItems" = 1, "maxItems" = 200))]
     chunks: Vec<DecideChunk>,
-    /// Optional decision model as provider/model, one decision_models lists for
-    /// this chat. Leave it out for this chat's default decision model, else the
-    /// configured default, else the first model this chat may use.
+    /// Optional decision model as provider/model, or by its name or alias when
+    /// that names one model decision_models lists for this chat (`joey-1`).
+    /// Leave it out for this chat's default decision model, else the
+    /// configured default, else the first model this chat may use;
+    /// decision_models says which that is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+    /// Instead of model, 2 to 5 models named the same way, for a vote: each
+    /// chunk is asked of every one, and the result gives each model's answer
+    /// and the majority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(extend("minItems" = 2, "maxItems" = 5))]
+    models: Option<Vec<String>>,
 }
 
 /// One question as the model writes it.
@@ -199,7 +218,8 @@ struct DecideQuestion {
     #[serde(default, rename = "type", skip_serializing_if = "Option::is_none")]
     #[schemars(extend("enum" = ["yes_no", "choice", "score"]))]
     kind: Option<String>,
-    /// For choice: 2 to 26 options, name to what it means, for example
+    /// For choice: 2 to 26 options (some models take fewer: decision_models
+    /// says), name to what it means, for example
     /// {"rrms": "Relapsing-remitting", "none": "Not stated"}. Offer a "none"
     /// option when the text may not say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -508,6 +528,39 @@ pub struct QuestionSummary {
     pub review_ids: Vec<String>,
     /// How many more are to review than are listed.
     pub more_review: usize,
+    /// The answered chunks split into four groups that do not overlap and add
+    /// up to `decided`, for a question with a pass (a threshold, or a yes_no).
+    /// `None` for a choice or score with no threshold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groups: Option<AnswerGroups>,
+}
+
+/// G-3: a question's answered chunks in four groups that do not overlap, so
+/// their counts add up. "yes" is a pass (P at or above the threshold; P(yes) at
+/// least one half for a yes_no with no threshold), "no" is everything else; a
+/// yes is confident at `confident_from` and up, a no under `review_from`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnswerGroups {
+    pub yes_confident: usize,
+    pub yes_review: usize,
+    pub no_review: usize,
+    pub no_confident: usize,
+    /// Where a yes starts: the threshold, or one half for a yes_no with none.
+    pub pass_from: f64,
+    /// Where a yes becomes confident: the larger of the threshold and 0.8.
+    pub confident_from: f64,
+    /// Where a no stops being confident: 0.2.
+    pub review_from: f64,
+}
+
+/// Which of the four [`AnswerGroups`] one decision falls in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Group {
+    YesConfident,
+    YesReview,
+    NoReview,
+    NoConfident,
 }
 
 /// One distinct error in a batch and the chunks it hit.
@@ -591,10 +644,35 @@ fn review_probability(question: &Question, decision: &Decision) -> Option<f64> {
     }
 }
 
-/// Whether this decision is on the review list (see [`needs_review`]).
+/// Which group a decision falls in, for a question with a pass: its side from
+/// whether it passed (or, for a yes_no with no threshold, answered yes), and its
+/// confidence from the review rule's probability. `None` for a choice or score
+/// with no threshold.
+fn group_of(question: &Question, decision: &Decision) -> Option<Group> {
+    let p = review_probability(question, decision)?;
+    let yes = if question.threshold.is_some() {
+        decision.passed == Some(true)
+    } else {
+        matches!(decision.answer, Answer::Binary { value: true })
+    };
+    let ceiling = review_ceiling(threshold_p(question.threshold.as_ref()));
+    Some(match (yes, p) {
+        (true, p) if p >= ceiling => Group::YesConfident,
+        (true, _) => Group::YesReview,
+        (false, p) if p >= REVIEW_FLOOR => Group::NoReview,
+        (false, _) => Group::NoConfident,
+    })
+}
+
+/// Whether this decision is on the review list: a yes short of a confident
+/// one or a no that is not a clear no. With a threshold of at least
+/// [`REVIEW_FLOOR`] this is exactly [`needs_review`]; under it, a weak pass is
+/// listed too, so the review list is always the two "to review" groups.
 fn in_review(question: &Question, decision: &Decision) -> bool {
-    review_probability(question, decision)
-        .is_some_and(|p| needs_review(p, threshold_p(question.threshold.as_ref())))
+    matches!(
+        group_of(question, decision),
+        Some(Group::YesReview | Group::NoReview)
+    )
 }
 
 /// Ids listed per list for a call of `questions` questions, so a 16-question
@@ -669,6 +747,26 @@ fn question_summary(
         .fold(None, |acc: Option<f64>, p| {
             Some(acc.map_or(p, |a| a.max(p)))
         });
+    let groups = reviewed.then(|| {
+        let mut groups = AnswerGroups {
+            yes_confident: 0,
+            yes_review: 0,
+            no_review: 0,
+            no_confident: 0,
+            pass_from: threshold_p(question.threshold.as_ref()).unwrap_or(0.5),
+            confident_from: review_ceiling(threshold_p(question.threshold.as_ref())),
+            review_from: REVIEW_FLOOR,
+        };
+        for (_, decision) in &answered {
+            match group_of(question, decision) {
+                Some(Group::YesConfident) => groups.yes_confident += 1,
+                Some(Group::YesReview) => groups.yes_review += 1,
+                Some(Group::NoReview) => groups.no_review += 1,
+                Some(Group::NoConfident) | None => groups.no_confident += 1,
+            }
+        }
+        groups
+    });
     let passed = has_threshold.then_some(passing.len());
     let yes = binary.then(|| answered.iter().filter(|(_, d)| says_yes(d)).count());
     let review_count = reviewed.then_some(review.len());
@@ -689,32 +787,73 @@ fn question_summary(
         more_passing,
         review_ids,
         more_review,
+        groups,
     }
 }
 
-/// The batch's distinct errors, each with the chunks it hit (capped).
+/// What two errors share when they differ only in the chunk they name and
+/// its numbers (an over-size refusal names the chunk and its size): the
+/// message with the chunk's id and every run of digits taken out.
+fn error_shape(message: &str, chunk_id: &str) -> String {
+    let mut shape = String::with_capacity(message.len());
+    let mut in_digits = false;
+    for ch in message.replace(&format!("`{chunk_id}`"), "`…`").chars() {
+        if ch.is_ascii_digit() {
+            if !in_digits {
+                shape.push('#');
+            }
+            in_digits = true;
+        } else {
+            shape.push(ch);
+            in_digits = false;
+        }
+    }
+    shape
+}
+
+/// The batch's distinct errors, each with the chunks it hit (capped). Errors
+/// that differ only in the chunk they name and its numbers are one group,
+/// shown by its first message: 50 oversized chunks are one group of 50, not
+/// 50 groups of which five were listed. Past [`LISTED_ERRORS`] groups, the
+/// rest are one last group, so every failed chunk is counted.
 fn error_groups(outcomes: &[ChunkOutcome]) -> Vec<ErrorGroup> {
-    let mut groups: IndexMap<String, Vec<String>> = IndexMap::new();
+    let mut groups: IndexMap<String, (String, Vec<String>)> = IndexMap::new();
     for outcome in outcomes {
         if let Some(error) = &outcome.error {
             groups
-                .entry(error.clone())
-                .or_default()
+                .entry(error_shape(error, &outcome.chunk_id))
+                .or_insert_with(|| (error.clone(), Vec::new()))
+                .1
                 .push(outcome.chunk_id.clone());
         }
     }
-    groups
-        .into_iter()
+    let group = |message: String, ids: Vec<String>| {
+        let more = ids.len().saturating_sub(LISTED_ERROR_IDS);
+        ErrorGroup {
+            message,
+            chunk_ids: ids.into_iter().take(LISTED_ERROR_IDS).collect(),
+            more,
+        }
+    };
+    let mut groups = groups.into_values();
+    let mut listed: Vec<ErrorGroup> = groups
+        .by_ref()
         .take(LISTED_ERRORS)
-        .map(|(message, ids)| {
-            let more = ids.len().saturating_sub(LISTED_ERROR_IDS);
-            ErrorGroup {
-                message,
-                chunk_ids: ids.into_iter().take(LISTED_ERROR_IDS).collect(),
-                more,
-            }
-        })
-        .collect()
+        .map(|(message, ids)| group(message, ids))
+        .collect();
+    let rest: Vec<(String, Vec<String>)> = groups.collect();
+    if !rest.is_empty() {
+        let kinds = rest.len();
+        let ids = rest.into_iter().flat_map(|(_, ids)| ids).collect();
+        listed.push(group(
+            format!(
+                "{kinds} other error{}; the chat's decision history has each one.",
+                if kinds == 1 { "" } else { "s" }
+            ),
+            ids,
+        ));
+    }
+    listed
 }
 
 /// The aggregate of one batch. Pure, so the no-flood shape is testable.
@@ -807,18 +946,35 @@ fn question_paragraph(question: &QuestionSummary, chunks: usize) -> String {
         _ => String::new(),
     };
     let mut facts: Vec<String> = Vec::new();
-    if let Some(passed) = question.passed {
-        facts.push(format!("{passed} pass"));
-    }
-    if let Some(yes) = question.yes {
-        facts.push(format!("{yes} yes"));
-    }
-    if let Some(review) = question.review {
-        facts.push(format!(
-            "{review} to review (P from {REVIEW_FLOOR:.2} up to {:.2}: not a clear no, not a \
-             clear pass)",
-            review_ceiling(question.threshold)
+    if let Some(groups) = &question.groups {
+        // G-3: four groups that do not overlap, each with its bounds, so the
+        // counts add up to the chunks answered. A group whose range is empty
+        // under this threshold (a pass at 0.9 is always confident) is left out;
+        // its count is zero by construction.
+        let on = question.pass_on.as_deref().unwrap_or("yes");
+        let no_until = groups.pass_from.max(groups.review_from);
+        let mut parts = vec![format!(
+            "yes, confident {} (P({on}) {:.2} and up)",
+            groups.yes_confident, groups.confident_from
+        )];
+        if groups.pass_from < groups.confident_from {
+            parts.push(format!(
+                "yes, to review {} ({:.2} up to {:.2})",
+                groups.yes_review, groups.pass_from, groups.confident_from
+            ));
+        }
+        if groups.review_from < no_until {
+            parts.push(format!(
+                "no, to review {} ({:.2} up to {no_until:.2})",
+                groups.no_review, groups.review_from
+            ));
+        }
+        parts.push(format!(
+            "no, confident {} (under {:.2})",
+            groups.no_confident,
+            groups.review_from.min(groups.pass_from)
         ));
+        facts.push(parts.join("; "));
     }
     if let Some(counts) = &question.answer_counts {
         facts.push(
@@ -871,8 +1027,9 @@ pub fn render_summary(
     let model = match (&summary.model, summary.tier) {
         (Some(model), Some(tier)) => format!(
             " with {} ({}{})",
-            // A Baseten model by its alias, which `model` also takes.
-            decision_model_display_label(model),
+            // By its bare name, a Baseten model's alias, which `model` also
+            // takes, so the agent has no provider slug to repeat (R3-F8).
+            decision_model_short_name(model),
             tier_word(tier),
             match summary.calibrated {
                 Some(false) => ", uncalibrated",
@@ -883,7 +1040,7 @@ pub fn render_summary(
     };
     let plural = |n: usize| if n == 1 { "" } else { "s" };
     let mut text = format!(
-        "decide: {} chunk{} x {} question{}{model} in {:.1} s: {} decided, {} failed. Batch {}.",
+        "decide: {} chunk{} x {} question{}{model} in {:.1} s: {} decided, {} failed.",
         summary.chunks,
         plural(summary.chunks),
         questions.len(),
@@ -891,7 +1048,6 @@ pub fn render_summary(
         summary.elapsed_ms as f64 / 1000.0,
         summary.decided,
         summary.errors,
-        summary.batch_id,
     );
     for question in &summary.questions {
         text.push_str(&question_paragraph(question, summary.chunks));
@@ -918,13 +1074,15 @@ pub fn render_summary(
              probability fell outside the offered answers): treat them as rough.",
         );
     }
-    text.push_str(&format!(
-        "\nEvery call, with the exact text it read, is in this chat's decision history (batch \
-         {}). A chunk listed under review is unresolved, not a no: read it before you report \
-         it, or report it as unresolved. A decision model can also be confidently wrong, so \
-         check a few passes.",
-        summary.batch_id
-    ));
+    // R1-8: the batch id stays in the structured result, where the desktop
+    // links the call's history; no tool takes it, and a model that reads it
+    // repeats it to the person.
+    text.push_str(
+        "\nEvery call, with the exact text it read, is in this chat's decision history. A chunk \
+         listed under review is unresolved, not a no: read it before you report it, or report \
+         it as unresolved. A decision model can also be confidently wrong, so check a few \
+         passes.",
+    );
     text
 }
 
@@ -1004,40 +1162,14 @@ impl DecisionsClient {
             .map_err(|e| format!("This chat could not be read, so nothing was decided: {e}"))
     }
 
-    /// Resolve a `model` argument against what `decision_models` lists.
+    /// Resolve a `model` argument against what `decision_models` lists (see
+    /// [`resolve_model_name`]).
     async fn named_model(
         &self,
         session: &DecisionSession,
         wanted: &str,
     ) -> Result<DecisionModelRef, String> {
-        let Some(parsed) = DecisionModelRef::parse(wanted) else {
-            return Err(format!(
-                "`model` is provider/model, for example ollama_decision/tev1:0.8b, not \
-                 `{wanted}`. decision_models lists them."
-            ));
-        };
-        let listed = self.service.models_for(Some(session)).await;
-        let Some((entry, reason)) = listed.iter().find(|(entry, _)| entry.answers_to(&parsed))
-        else {
-            let names: Vec<String> = listed
-                .iter()
-                .filter(|(_, reason)| reason.is_none())
-                .map(|(entry, _)| decision_model_display_label(&entry.model_ref()))
-                .collect();
-            return Err(format!(
-                "`{wanted}` is not a decision model this computer offers. Models this chat may \
-                 use: {}.",
-                if names.is_empty() {
-                    "none".to_string()
-                } else {
-                    names.join(", ")
-                }
-            ));
-        };
-        if let Some(reason) = reason {
-            return Err(reason.clone());
-        }
-        Ok(entry.model_ref())
+        resolve_model_name(self.service, session, wanted).await
     }
 
     async fn handle_decide(
@@ -1051,6 +1183,7 @@ impl DecisionsClient {
             serde_json::from_value(serde_json::Value::Object(arguments.unwrap_or_default()))
                 .map_err(|e| format!("decide's arguments do not fit its schema: {e}"))?;
         let (questions, chunks) = build_batch(&params)?;
+        let wanted_models = vote_models(&params)?;
 
         let batch_id = uuid::Uuid::now_v7().to_string();
         let session = self
@@ -1059,6 +1192,11 @@ impl DecisionsClient {
             .with_origin(DecisionOrigin::Tool, Some(batch_id.clone()))
             .with_origin_label(Some(DECIDE_ORIGIN_LABEL.to_string()))
             .with_turn(crate::decision::turns::current_turn(session_id));
+        if let Some(wanted) = wanted_models {
+            return self
+                .handle_vote(&session, &wanted, &questions, chunks, &batch_id, cancel)
+                .await;
+        }
         let model = match params.model.as_deref().map(str::trim) {
             Some(wanted) if !wanted.is_empty() => Some(self.named_model(&session, wanted).await?),
             // The chat's own default, checked as a named model is, so a default
@@ -1091,15 +1229,28 @@ impl DecisionsClient {
         );
         let outcomes = tokio::select! {
             _ = cancel.cancelled() => {
-                return Err(format!(
+                return Err(
                     "The decide call was cancelled. Chunks already answered are in the \
-                     decision history (batch {batch_id})."
-                ));
+                     decision history."
+                        .to_string(),
+                );
             }
             result = run => result.map_err(|e| e.to_string())?,
         };
         let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-        let summary = summarize(&questions, &outcomes, &batch_id, elapsed_ms);
+        let mut summary = summarize(&questions, &outcomes, &batch_id, elapsed_ms);
+        if summary.model.is_none() {
+            // Nothing was decided, so no answer names the model: name the one
+            // the batch was sized for, as the service chose it.
+            if let Some(entry) = self
+                .service
+                .model_entry_for(Some(&session), model.as_ref())
+                .await
+            {
+                summary.model = Some(entry.model_ref());
+                summary.tier = Some(entry.tier);
+            }
+        }
         let text = render_summary(&summary, &questions, &outcomes);
         Ok(CallToolResult {
             content: vec![Content::text(text)],
@@ -1107,6 +1258,74 @@ impl DecisionsClient {
             // Nothing was decided: say so as an error, so neither the model nor
             // the tool card reads an all-failed batch as an answer.
             is_error: Some(summary.decided == 0),
+            meta: None,
+        })
+    }
+
+    /// G-1: every chunk asked of each of 2 to 5 models, one after another so a
+    /// local model is not asked to serve several at once. Each model's run is
+    /// an ordinary batch under this call's batch id, so the decision log has
+    /// one row per model per chunk.
+    async fn handle_vote(
+        &self,
+        session: &DecisionSession,
+        wanted: &[String],
+        questions: &IndexMap<String, Question>,
+        chunks: Vec<DecisionChunk>,
+        batch_id: &str,
+        cancel: &CancellationToken,
+    ) -> Result<CallToolResult, String> {
+        let mut models: Vec<DecisionModelRef> = Vec::with_capacity(wanted.len());
+        for name in wanted {
+            let model = self.named_model(session, name).await?;
+            if models.contains(&model) {
+                return Err(format!(
+                    "`models` names {} twice. Name each model once.",
+                    decision_model_display_label(&model)
+                ));
+            }
+            models.push(model);
+        }
+        let chunk_ids: Vec<String> = chunks.iter().map(|chunk| chunk.id.clone()).collect();
+        let started = Instant::now();
+        let mut runs = Vec::with_capacity(models.len());
+        for model in models {
+            let tier = self
+                .service
+                .model_entry_for(Some(session), Some(&model))
+                .await
+                .map(|entry| entry.tier);
+            let run = self.service.decide_batch(
+                Some(session),
+                Some(&model),
+                questions,
+                chunks.clone(),
+                batch_id,
+            );
+            let outcomes = tokio::select! {
+                _ = cancel.cancelled() => {
+                    return Err(
+                        "The decide call was cancelled. Chunks already answered are in the \
+                         decision history."
+                            .to_string(),
+                    );
+                }
+                result = run => result.map_err(|e| e.to_string()),
+            };
+            runs.push(vote::ModelRun {
+                model,
+                tier,
+                outcomes,
+            });
+        }
+        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+        let summary = vote::summarize_vote(questions, &chunk_ids, &runs, batch_id, elapsed_ms);
+        let text = vote::render_vote(&summary, questions, &chunk_ids, &runs);
+        let decided_any = summary.models.iter().any(|model| model.decided > 0);
+        Ok(CallToolResult {
+            content: vec![Content::text(text)],
+            structured_content: serde_json::to_value(&summary).ok(),
+            is_error: Some(!decided_any),
             meta: None,
         })
     }
@@ -1121,9 +1340,19 @@ impl DecisionsClient {
         // would refuse it with, a Crew grant included, so this tool,
         // `GET /decisions/models` and the Monitors dialog say the same thing.
         let listed = self.service.models_for(Some(&session)).await;
+        // The model a `decide` call that names none would use in this chat,
+        // by the service's own order, so the agent sizes chunks for it.
+        let default = self
+            .service
+            .model_entry_for(Some(&session), None)
+            .await
+            .map(|entry| entry.model_ref());
         let rows: Vec<ModelRow> = listed
             .into_iter()
-            .map(|(entry, reason)| ModelRow::from_entry(&entry, reason))
+            .map(|(entry, reason)| ModelRow {
+                default: default.as_ref() == Some(&entry.model_ref()),
+                ..ModelRow::from_entry(&entry, reason)
+            })
             .collect();
         let private_chat = enforced && session.classification.is_private();
         let text = render_models(&rows, private_chat);
@@ -1138,6 +1367,123 @@ impl DecisionsClient {
             is_error: Some(false),
             meta: None,
         })
+    }
+}
+
+/// Resolve a decision model's name against what `decision_models` lists for
+/// `session`: as provider/model, or by a model's bare name or alias
+/// (`joey-1`, `tev1:0.8b`) when that names exactly one listed model. A model
+/// this chat may not use is refused with its reason. `decide`'s `model` and
+/// `models`, and a phase gate's `model` (G-8), all resolve here, so a name
+/// that works in one works in the others.
+pub(crate) async fn resolve_model_name(
+    service: &DecisionService,
+    session: &DecisionSession,
+    wanted: &str,
+) -> Result<DecisionModelRef, String> {
+    let listed = service.models_for(Some(session)).await;
+    let found = match find_named(&listed, wanted) {
+        Ok(found) => found,
+        Err(spellings) => {
+            return Err(format!(
+                "`{wanted}` names more than one decision model: {}. Name one of them as \
+                 provider/model.",
+                spellings.join(", ")
+            ))
+        }
+    };
+    let Some((entry, reason)) = found else {
+        let names: Vec<String> = listed
+            .iter()
+            .filter(|(_, reason)| reason.is_none())
+            .map(|(entry, _)| decision_model_display_label(&entry.model_ref()))
+            .collect();
+        return Err(format!(
+            "`{wanted}` is not a decision model this computer offers. Models this chat may \
+             use: {}.",
+            if names.is_empty() {
+                "none".to_string()
+            } else {
+                names.join(", ")
+            }
+        ));
+    };
+    if let Some(reason) = reason {
+        return Err(reason.clone());
+    }
+    Ok(entry.model_ref())
+}
+
+/// The listed model `wanted` names, for a surface that resolves a name
+/// before it has a chat (`biorouter decide --model`, R3-F4): by
+/// provider/model first, else by a bare model id or alias that exactly one
+/// listed model answers to, the rule [`resolve_model_name`] applies for the
+/// agent's `decide` and a phase gate. `Ok(None)` when nothing listed answers
+/// to it; `Err` holds the provider/model spellings of every listed model a
+/// bare name matched, when it matched more than one. Whether the model may
+/// read a chat is left to the service, which refuses it with its reason.
+pub fn listed_model_named(
+    listed: &[(DecisionModelEntry, Option<String>)],
+    wanted: &str,
+) -> Result<Option<DecisionModelRef>, Vec<String>> {
+    find_named(listed, wanted).map(|hit| hit.map(|(entry, _)| entry.model_ref()))
+}
+
+/// `models`, when the call names them: 2 to 5, and never with `model`.
+fn vote_models(params: &DecideParams) -> Result<Option<Vec<String>>, String> {
+    let Some(models) = &params.models else {
+        return Ok(None);
+    };
+    if params
+        .model
+        .as_deref()
+        .is_some_and(|model| !model.trim().is_empty())
+    {
+        return Err(
+            "Name one model in `model`, or 2 to 5 in `models` for a vote, not both.".to_string(),
+        );
+    }
+    let models: Vec<String> = models
+        .iter()
+        .map(|model| model.trim().to_string())
+        .filter(|model| !model.is_empty())
+        .collect();
+    if !(vote::MIN_VOTE_MODELS..=vote::MAX_VOTE_MODELS).contains(&models.len()) {
+        return Err(format!(
+            "A vote takes {} to {} models in `models`, not {}. For one model use `model`.",
+            vote::MIN_VOTE_MODELS,
+            vote::MAX_VOTE_MODELS,
+            models.len()
+        ));
+    }
+    Ok(Some(models))
+}
+
+/// The listed model `wanted` names: by provider/model first, else by a bare
+/// model id or alias that exactly one listed model answers to. `Err` holds
+/// the provider/model spellings of every model a bare name matched, when it
+/// matched more than one.
+fn find_named<'a>(
+    listed: &'a [(DecisionModelEntry, Option<String>)],
+    wanted: &str,
+) -> Result<Option<&'a (DecisionModelEntry, Option<String>)>, Vec<String>> {
+    let wanted = wanted.trim();
+    if let Some(parsed) = DecisionModelRef::parse(wanted) {
+        if let Some(hit) = listed.iter().find(|(entry, _)| entry.answers_to(&parsed)) {
+            return Ok(Some(hit));
+        }
+    }
+    let bare: Vec<&(DecisionModelEntry, Option<String>)> = listed
+        .iter()
+        .filter(|(entry, _)| entry.model == wanted || entry.display_name == wanted)
+        .collect();
+    match bare.as_slice() {
+        [] => Ok(None),
+        [one] => Ok(Some(*one)),
+        many => Err(many
+            .iter()
+            .map(|(entry, _)| decision_model_display_label(&entry.model_ref()))
+            .collect()),
     }
 }
 
@@ -1161,12 +1507,25 @@ pub struct ModelRow {
     pub calibrated: Option<bool>,
     pub kinds: Vec<String>,
     pub context_tokens: usize,
+    /// How much text one chunk can carry on this model, by the size check's
+    /// own arithmetic: what to size chunks by, rather than the window.
+    pub usable: UsableChunk,
+    /// A body size the server refuses above (Ollama's System One: 64 KiB).
+    pub max_request_bytes: Option<usize>,
+    /// The most options a choice question may offer it.
+    pub max_choice_options: usize,
+    /// Whether `decide` uses this model in this chat when `model` is left out.
+    pub default: bool,
     pub available: bool,
     pub unavailable_reason: Option<String>,
 }
 
 impl ModelRow {
     fn from_entry(entry: &DecisionModelEntry, reason: Option<String>) -> Self {
+        // Only Ollama's System One limits the body (`system_one_caps`).
+        let max_request_bytes = (entry.provider == OLLAMA_DECISION_PROVIDER
+            && entry.adapter == DecisionAdapter::SystemOne)
+            .then_some(OLLAMA_MAX_REQUEST_BYTES);
         Self {
             name: entry.model_ref().label(),
             provider: entry.provider.clone(),
@@ -1186,9 +1545,31 @@ impl ModelRow {
                 .map(|k| kind_word(*k).to_string())
                 .collect(),
             context_tokens: entry.context_tokens,
+            usable: usable_chunk(entry.context_tokens, max_request_bytes),
+            max_request_bytes,
+            max_choice_options: choice_option_limit(&entry.model_ref()),
+            default: false,
             available: reason.is_none(),
             unavailable_reason: reason,
         }
+    }
+}
+
+/// How `decision_models` names a model (R3-F8): by its alias or bare name
+/// (`joey-1`, `tev1:0.8b`), which `decide`'s `model` takes, so the agent has
+/// no provider slug to repeat to the person. Only a name that more than one
+/// listed model answers to is given as provider/model, the spelling `model`
+/// then needs.
+fn listed_name(row: &ModelRow, rows: &[ModelRow]) -> String {
+    let short = &row.display_name;
+    let shared = rows
+        .iter()
+        .filter(|other| &other.display_name == short || &other.model == short)
+        .count();
+    if shared > 1 || short.trim().is_empty() {
+        row.name.clone()
+    } else {
+        short.clone()
     }
 }
 
@@ -1212,13 +1593,22 @@ pub fn render_models(rows: &[ModelRow], private_chat: bool) -> String {
     let (available, unavailable): (Vec<&ModelRow>, Vec<&ModelRow>) =
         rows.iter().partition(|row| row.available);
     for row in available.iter().chain(unavailable.iter()) {
-        let name = if row.display_name != row.model {
-            format!("{} ({})", row.name, row.display_name)
+        let name = listed_name(row, rows);
+        let options = if row.max_choice_options < MAX_CHOICE_OPTIONS
+            && row.kinds.iter().any(|kind| kind == "choice")
+        {
+            format!(" (a choice of at most {} options)", row.max_choice_options)
         } else {
-            row.name.clone()
+            String::new()
         };
+        let bytes = row
+            .max_request_bytes
+            .map(|bytes| format!(", and a request of at most {bytes} bytes"))
+            .unwrap_or_default();
         text.push_str(&format!(
-            "\n- {name}: {}{}, {}; takes {}; window about {} tokens.",
+            "\n- {name}: {}{}, {}; takes {}{options}; window {} tokens, of which a chunk can \
+             fill about {} (about {} characters of prose, or {} of numbers, tables, ids or code, \
+             less the questions' own length{bytes}).",
             tier_word(row.tier),
             if row.local {
                 ", runs on this computer"
@@ -1227,8 +1617,14 @@ pub fn render_models(rows: &[ModelRow], private_chat: bool) -> String {
             },
             adapter_words(row.adapter),
             row.kinds.join(", "),
-            row.context_tokens
+            row.context_tokens,
+            row.usable.tokens,
+            row.usable.prose_chars,
+            row.usable.number_chars,
         ));
+        if row.default {
+            text.push_str(" decide uses this model here when `model` is left out.");
+        }
         if let Some(reason) = &row.unavailable_reason {
             text.push_str(&format!(" Not available to this chat: {reason}"));
         }
@@ -1236,11 +1632,18 @@ pub fn render_models(rows: &[ModelRow], private_chat: bool) -> String {
     if available.is_empty() {
         text.push_str("\nNone of these may read this chat, so decide will be refused here.");
     } else {
-        text.push_str(
-            "\nName one in decide's `model` as provider/model, or leave `model` out for this \
-             chat's default decision model, else the configured default, else the first model \
-             this chat may use.",
-        );
+        let default = rows.iter().find(|row| row.default && row.available);
+        text.push_str(&match default {
+            Some(row) => format!(
+                "\nName one in decide's `model` as listed here; left out, decide uses {} here, \
+                 so size chunks for it.",
+                listed_name(row, rows)
+            ),
+            None => "\nName one in decide's `model` as listed here, or leave `model` out for this \
+                     chat's default decision model, else the configured default, else the first \
+                     model this chat may use."
+                .to_string(),
+        });
     }
     text
 }
@@ -1486,6 +1889,18 @@ pub(crate) mod test_support {
             DecisionService::new(Arc::new(FakeSource { models }))
                 .with_use_gate(Arc::new(Allow))
                 .with_default_model(default),
+        ))
+    }
+
+    /// [`service`] that hands every decision log entry to `sink`.
+    pub(crate) fn service_with_sink(
+        models: Vec<FakeModel>,
+        sink: Arc<dyn crate::decision::service::DecisionSink>,
+    ) -> &'static DecisionService {
+        Box::leak(Box::new(
+            DecisionService::new(Arc::new(FakeSource { models }))
+                .with_use_gate(Arc::new(Allow))
+                .with_sink(sink),
         ))
     }
 }
@@ -1801,10 +2216,7 @@ mod tests {
             error_groups: Vec::new(),
         };
         let text = render_summary(&summary, &IndexMap::new(), &[]);
-        assert!(
-            text.contains(" with baseten_decision/joey-1 (public)"),
-            "{text}"
-        );
+        assert!(text.contains(" with joey-1 (public)"), "{text}");
         assert!(!text.contains("decision-models/"), "{text}");
         let unknown = DecideSummary {
             model: Some(DecisionModelRef::new(
@@ -1815,7 +2227,7 @@ mod tests {
         };
         let text = render_summary(&unknown, &IndexMap::new(), &[]);
         assert!(
-            text.contains(" with baseten_decision/baseten-newer-4b-latest (public)"),
+            text.contains(" with baseten-newer-4b-latest (public)"),
             "an unknown slug loses only its prefix: {text}"
         );
         assert_eq!(summary.model.map(|m| m.model).as_deref(), Some(slug));
@@ -1864,20 +2276,19 @@ mod tests {
         assert!(!body.contains("Per chunk"), "{body}");
         assert!(body.contains("196 decided, 4 failed"), "{body}");
         assert!(body.contains("has_ms"), "{body}");
-        assert!(body.contains("196 pass"), "{body}");
-        assert!(body.contains("(and 156 more)"), "{body}");
         assert!(
-            body.contains("196 to review (P from 0.20 up to 0.80"),
-            "edss at 0.5 under a 0.8 threshold is to review: {body}"
-        );
-        assert!(
-            body.contains("0 to review (P from 0.20 up to 0.90"),
+            body.contains("yes, confident 196 (P(yes) 0.90 and up); no, to review 0"),
             "has_ms at 0.95 is a clear pass: {body}"
         );
+        assert!(body.contains("(and 156 more)"), "{body}");
+        assert!(
+            body.contains("no, to review 196 (0.20 up to 0.80)"),
+            "edss at 0.5 under a 0.8 threshold is to review: {body}"
+        );
         assert_eq!(
-            body.matches("to review").count(),
+            body.matches("no, confident").count(),
             2,
-            "a choice with no threshold has no review list: {body}"
+            "a choice with no threshold has no groups: {body}"
         );
         assert!(body.contains("rrms 196, spms 0, none 0"), "{body}");
         assert!(body.contains("decision history"), "{body}");
@@ -1890,7 +2301,12 @@ mod tests {
         let summary: DecideSummary =
             serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
         assert_eq!(summary.kind, "decide_batch");
-        assert!(body.contains(&summary.batch_id));
+        assert!(
+            !body.contains(&summary.batch_id)
+                && !body.contains("Batch")
+                && !body.contains("batch "),
+            "R1-8: the batch id stays out of the text the model reads: {body}"
+        );
         assert_eq!(summary.chunks, 200);
         assert_eq!(summary.errors, 4);
         assert_eq!(summary.error_groups.len(), 1);
@@ -2019,7 +2435,7 @@ mod tests {
         )
         .await;
         assert!(
-            body.contains("3 to review (P from 0.20 up to 0.90: not a clear no, not a clear pass)"),
+            body.contains("no, to review 3 (0.20 up to 0.90); no, confident 0 (under 0.20)"),
             "{body}"
         );
         assert!(body.contains("\n  review: a, b, c"), "{body}");
@@ -2046,7 +2462,8 @@ mod tests {
         )
         .await;
         assert!(!body.contains("\n  review:"), "{body}");
-        assert!(body.contains("0 to review"), "{body}");
+        assert!(body.contains("no, to review 0"), "{body}");
+        assert!(body.contains("no, confident 2 (under 0.20)"), "{body}");
         assert!(
             body.contains("- a: has_ms P(yes) 0.05 below threshold\n"),
             "{body}"
@@ -2078,7 +2495,7 @@ mod tests {
         )
         .await;
         assert!(body.contains("- a: has_ms P(yes) 0.45 review"), "{body}");
-        assert!(body.contains("(P from 0.20 up to 0.80"), "{body}");
+        assert!(body.contains("no, to review 1 (0.20 up to 0.50)"), "{body}");
         assert_eq!(summary.questions[0].review, Some(1));
 
         let (body, _) = decide_with(
@@ -2109,10 +2526,7 @@ mod tests {
         };
         let (body, summary) = decide_with(0.36, choice(Some(0.5)), &["a", "b"]).await;
         assert_eq!(summary.questions[0].review, Some(2), "{body}");
-        assert!(
-            body.contains("2 to review (P from 0.20 up to 0.80"),
-            "{body}"
-        );
+        assert!(body.contains("no, to review 2 (0.20 up to 0.50)"), "{body}");
         assert!(body.contains("\n  review: a, b"), "{body}");
         assert!(body.contains("(P 0.36) below threshold, review"), "{body}");
 
@@ -2281,16 +2695,92 @@ mod tests {
         assert_eq!(result.is_error, Some(true));
         let body = text(&result);
         assert!(body.contains("test_decision/tev1"), "{body}");
-        let unparsable = call(
+        let unknown_bare = call(
             &client,
             &session,
             "decide",
             json!({"questions": {"q": {"instructions": "yes?"}},
-                   "chunks": [{"id": "a", "text": "x"}], "model": "tev1"}),
+                   "chunks": [{"id": "a", "text": "x"}], "model": "gpt-giant"}),
             enforced(),
         )
         .await;
-        assert!(text(&unparsable).contains("provider/model"));
+        assert_eq!(unknown_bare.is_error, Some(true));
+        assert!(
+            text(&unknown_bare).contains("test_decision/tev1"),
+            "{}",
+            text(&unknown_bare)
+        );
+    }
+
+    /// B-2: a bare model name or alias names the one listed model it answers
+    /// to, so `joey-1` works as `baseten_decision/joey-1` does; a name two
+    /// listed models answer to is refused with both spellings.
+    #[tokio::test]
+    async fn a_bare_name_that_names_one_listed_model_is_that_model() {
+        let mut alias = entry(
+            "decision-models/test-joey-2b-latest",
+            ProviderTier::Private,
+            true,
+            DecisionAdapter::SystemOne,
+        );
+        alias.display_name = "joey-1".into();
+        let mut twin = entry(
+            "twin",
+            ProviderTier::Private,
+            true,
+            DecisionAdapter::SystemOne,
+        );
+        twin.provider = "other_decision".into();
+        let (client, session) = client_with(
+            vec![
+                model(alias, 0.9),
+                model(
+                    entry(
+                        "twin",
+                        ProviderTier::Private,
+                        true,
+                        DecisionAdapter::SystemOne,
+                    ),
+                    0.9,
+                ),
+                model(twin, 0.9),
+            ],
+            false,
+        )
+        .await;
+        let ask = |name: &str| {
+            json!({"questions": {"q": {"instructions": "yes?"}},
+                   "chunks": [{"id": "a", "text": "x"}], "model": name})
+        };
+        for name in ["joey-1", "decision-models/test-joey-2b-latest"] {
+            let result = call(&client, &session, "decide", ask(name), enforced()).await;
+            assert_eq!(result.is_error, Some(false), "{name}: {}", text(&result));
+            let summary: DecideSummary =
+                serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+            assert_eq!(
+                summary.model.unwrap().model,
+                "decision-models/test-joey-2b-latest"
+            );
+        }
+        let both = call(&client, &session, "decide", ask("twin"), enforced()).await;
+        assert_eq!(both.is_error, Some(true));
+        let body = text(&both);
+        assert!(
+            body.contains("names more than one decision model")
+                && body.contains("test_decision/twin")
+                && body.contains("other_decision/twin"),
+            "{body}"
+        );
+        // provider/model still picks one of the two.
+        let one = call(
+            &client,
+            &session,
+            "decide",
+            ask("other_decision/twin"),
+            enforced(),
+        )
+        .await;
+        assert_eq!(one.is_error, Some(false), "{}", text(&one));
     }
 
     #[tokio::test]
@@ -2323,8 +2813,10 @@ mod tests {
         assert_eq!(result.is_error, Some(false));
         let body = text(&result);
         assert!(body.starts_with("This chat is private"), "{body}");
-        let tev1 = body.find("test_decision/tev1").unwrap();
-        let cloud = body.find("test_decision/cloud").unwrap();
+        // R3-F8: a model is listed by the name `model` takes, no provider slug.
+        assert!(!body.contains("test_decision/"), "{body}");
+        let tev1 = body.find("\n- tev1: ").unwrap();
+        let cloud = body.find("\n- cloud: ").unwrap();
         assert!(tev1 < cloud, "usable models come first: {body}");
         assert!(body.contains("Not available to this chat"), "{body}");
         // The listing says what the desktop and the CLI say: calibrated is
@@ -2340,6 +2832,129 @@ mod tests {
         let tev1 = rows.iter().find(|r| r.model == "tev1").unwrap();
         assert!(tev1.available && tev1.local);
         assert_eq!(tev1.kinds, ["yes_no", "choice", "score"]);
+        // W1/W3: the size to chunk by, in tokens and characters, and which
+        // model a decide that names none uses in this chat.
+        let usable = crate::decision::service::usable_chunk(4_096, None);
+        assert_eq!(tev1.usable, usable);
+        assert_eq!(
+            usable.tokens,
+            ((4_096 - 128) as f64 / 1.15).floor() as usize
+        );
+        assert_eq!(usable.prose_chars, usable.tokens * 4);
+        assert_eq!(usable.number_chars, usable.tokens);
+        assert!(tev1.default && !cloud.default);
+        assert!(
+            body.contains(&format!(
+                "window 4096 tokens, of which a chunk can fill about {} (about {} characters of \
+                 prose, or {} of numbers",
+                usable.tokens, usable.prose_chars, usable.number_chars
+            )),
+            "{body}"
+        );
+        assert!(body.contains("left out, decide uses tev1 here"), "{body}");
+    }
+
+    /// R3-F8: a Baseten model is listed by its alias, never its slug, and a
+    /// bare name two providers share keeps provider/model, the spelling
+    /// `model` then needs.
+    #[test]
+    fn decision_models_lists_aliases_and_keeps_a_slug_only_when_it_is_needed() {
+        let joey = DecisionModelEntry {
+            provider: "baseten_decision".into(),
+            model: "decision-models/baseten-joey-2b-latest".into(),
+            display_name: "joey-1".into(),
+            ..entry("x", ProviderTier::Public, false, DecisionAdapter::SystemOne)
+        };
+        let local = entry(
+            "tev1:0.8b",
+            ProviderTier::Private,
+            true,
+            DecisionAdapter::SystemOne,
+        );
+        let twin = DecisionModelEntry {
+            provider: "other_decision".into(),
+            ..local.clone()
+        };
+        let rows = |entries: Vec<DecisionModelEntry>| -> Vec<ModelRow> {
+            entries
+                .iter()
+                .map(|entry| ModelRow::from_entry(entry, None))
+                .collect()
+        };
+        let text = render_models(&rows(vec![joey.clone(), local.clone()]), false);
+        assert!(text.contains("\n- joey-1: public"), "{text}");
+        assert!(text.contains("\n- tev1:0.8b: private"), "{text}");
+        assert!(!text.contains("decision-models/"), "{text}");
+        assert!(!text.contains("baseten_decision"), "{text}");
+        let text = render_models(&rows(vec![joey, local, twin]), false);
+        assert!(text.contains("\n- test_decision/tev1:0.8b: "), "{text}");
+        assert!(text.contains("\n- other_decision/tev1:0.8b: "), "{text}");
+        assert!(text.contains("\n- joey-1: "), "{text}");
+    }
+
+    /// W3: a batch in which every chunk was refused still names the model it
+    /// was sized for. F3: chunks refused for the same reason, each naming its
+    /// own size, are one error group that counts them all.
+    #[tokio::test]
+    async fn an_all_refused_batch_names_its_model_and_groups_its_refusals() {
+        let mut small = entry(
+            "tiny",
+            ProviderTier::Private,
+            true,
+            DecisionAdapter::SystemOne,
+        );
+        small.context_tokens = 512;
+        let (client, session) = client_with(vec![model(small, 0.9)], false).await;
+        let chunks: Vec<serde_json::Value> = (0..12)
+            .map(|i| json!({"id": format!("n{i}"), "text": "word ".repeat(600 + 40 * i)}))
+            .collect();
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"q": {"instructions": "yes?"}}, "chunks": chunks}),
+            enforced(),
+        )
+        .await;
+        assert_eq!(result.is_error, Some(true));
+        let summary: DecideSummary =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(summary.decided, 0);
+        assert_eq!(summary.model.as_ref().unwrap().model, "tiny");
+        assert_eq!(summary.error_groups.len(), 1, "{:?}", summary.error_groups);
+        let group = &summary.error_groups[0];
+        assert_eq!(group.chunk_ids.len() + group.more, 12);
+        let body = text(&result);
+        assert!(body.contains(" with tiny (private)"), "{body}");
+        assert!(body.contains("Failed (12 chunks)"), "{body}");
+    }
+
+    #[test]
+    fn errors_past_the_listed_kinds_are_counted_together() {
+        let outcomes: Vec<ChunkOutcome> = (0..8)
+            .map(|i| ChunkOutcome {
+                chunk_id: format!("c{i}"),
+                decisions: None,
+                error: Some(format!(
+                    "distinct failure kind {}",
+                    ["a", "b", "c", "d", "e", "f", "g", "h"][i]
+                )),
+                billed_usage: None,
+            })
+            .collect();
+        let groups = error_groups(&outcomes);
+        assert_eq!(groups.len(), LISTED_ERRORS + 1);
+        let last = groups.last().unwrap();
+        assert_eq!(last.chunk_ids, ["c5", "c6", "c7"]);
+        assert!(
+            last.message.starts_with("3 other errors"),
+            "{}",
+            last.message
+        );
+        assert_eq!(
+            error_shape("Chunk `n12` is about 2346 tokens", "n12"),
+            "Chunk `…` is about # tokens"
+        );
     }
 
     #[test]
@@ -2391,6 +3006,259 @@ mod tests {
         );
         assert!(text.ends_with(crate::decision::INSTALL_ADVICE), "{text}");
         assert!(text.contains("biorouter models decision pull"), "{text}");
+    }
+
+    /// G-3: the four groups do not overlap and add up to the chunks answered,
+    /// each says its bounds, and the review list is the two "to review" groups.
+    #[tokio::test]
+    async fn the_answer_groups_do_not_overlap_and_add_up() {
+        let local = model(
+            entry(
+                "tev1",
+                ProviderTier::Private,
+                true,
+                DecisionAdapter::SystemOne,
+            ),
+            0.5,
+        );
+        let (client, session) = client_with(vec![local], false).await;
+        let chunks: Vec<serde_json::Value> = [0.95, 0.6, 0.3, 0.1, 0.02]
+            .iter()
+            .enumerate()
+            .map(|(i, p)| json!({"id": format!("c{i}"), "text": format!("note [state-p={p}]")}))
+            .collect();
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"has_ms": {"instructions": "MS?", "threshold": 0.5}},
+                   "chunks": chunks}),
+            enforced(),
+        )
+        .await;
+        let body = text(&result);
+        let summary: DecideSummary =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        let groups = summary.questions[0].groups.unwrap();
+        assert_eq!(
+            (
+                groups.yes_confident,
+                groups.yes_review,
+                groups.no_review,
+                groups.no_confident
+            ),
+            (1, 1, 1, 2)
+        );
+        assert_eq!(
+            groups.yes_confident + groups.yes_review + groups.no_review + groups.no_confident,
+            summary.questions[0].decided
+        );
+        assert!(
+            body.contains(
+                "yes, confident 1 (P(yes) 0.80 and up); yes, to review 1 (0.50 up to 0.80); \
+                 no, to review 1 (0.20 up to 0.50); no, confident 2 (under 0.20)"
+            ),
+            "{body}"
+        );
+        assert_eq!(summary.questions[0].review_ids, ["c1", "c2"]);
+        assert_eq!(summary.questions[0].review, Some(2));
+
+        // Under a threshold below 0.2, a weak pass is a yes to review, not a
+        // confident one, and still adds up.
+        let chunks = json!([{"id": "weak", "text": "note [state-p=0.15]"},
+                            {"id": "none", "text": "note [state-p=0.05]"}]);
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"q": {"instructions": "MS?", "threshold": 0.1}},
+                   "chunks": chunks}),
+            enforced(),
+        )
+        .await;
+        let body = text(&result);
+        let summary: DecideSummary =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        let groups = summary.questions[0].groups.unwrap();
+        assert_eq!(
+            (
+                groups.yes_confident,
+                groups.yes_review,
+                groups.no_review,
+                groups.no_confident
+            ),
+            (0, 1, 0, 1),
+            "{body}"
+        );
+        assert!(
+            !body.contains("no, to review"),
+            "an empty range is left out: {body}"
+        );
+        assert!(body.contains("no, confident 1 (under 0.10)"), "{body}");
+    }
+
+    /// Each logged row's (model, chunk) and batch id.
+    #[derive(Default)]
+    struct Rows(
+        std::sync::Mutex<Vec<(String, String)>>,
+        std::sync::Mutex<Vec<String>>,
+    );
+
+    #[async_trait]
+    impl crate::decision::service::DecisionSink for Rows {
+        async fn record(
+            &self,
+            entry: crate::decision::service::DecisionLogEntry,
+        ) -> anyhow::Result<()> {
+            self.0.lock().unwrap().push((
+                entry.model.map(|m| m.model).unwrap_or_default(),
+                entry.chunk_id.unwrap_or_default(),
+            ));
+            self.1
+                .lock()
+                .unwrap()
+                .push(entry.batch_id.unwrap_or_default());
+            Ok(())
+        }
+    }
+
+    /// G-1: `models` asks every chunk of each model, logs one row per model per
+    /// chunk under one batch id, and gives each model's answer and the majority,
+    /// with a tie shown as a tie.
+    #[tokio::test]
+    async fn a_vote_asks_every_model_and_reports_the_majority() {
+        let named = |name: &str, p: f64| {
+            model(
+                entry(
+                    name,
+                    ProviderTier::Private,
+                    true,
+                    DecisionAdapter::SystemOne,
+                ),
+                p,
+            )
+        };
+        let (a, b, c) = (
+            named("alpha", 0.9),
+            named("beta:1b", 0.9),
+            named("gamma", 0.1),
+        );
+        let calls = [a.calls.clone(), b.calls.clone(), c.calls.clone()];
+        let rows = Arc::new(Rows::default());
+        let (client, session) = client_with(vec![], false).await;
+        let client =
+            client.with_service(test_support::service_with_sink(vec![a, b, c], rows.clone()));
+        let chunks = json!([{"id": "n1", "text": "note one"}, {"id": "n2", "text": "note two"},
+                            {"id": "n3", "text": "agreed [state-p=0.95]"}]);
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"has_ms": {"instructions": "MS?", "threshold": 0.5}},
+                   "chunks": chunks,
+                   "models": ["alpha", "beta:1b", "test_decision/gamma"]}),
+            enforced(),
+        )
+        .await;
+        let body = text(&result);
+        assert_eq!(result.is_error, Some(false), "{body}");
+        for calls in &calls {
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                3,
+                "every chunk of every model"
+            );
+        }
+        let summary: VoteSummary =
+            serde_json::from_value(result.structured_content.clone().unwrap()).unwrap();
+        assert_eq!(summary.kind, "decide_vote");
+        let question = &summary.questions[0];
+        assert_eq!(question.majority.get("yes"), Some(&3));
+        assert_eq!(question.ties, 0);
+        assert_eq!((question.agreed, question.compared), (1, 3));
+        assert_eq!(
+            question.per_model[2].get("no"),
+            Some(&2),
+            "gamma said no twice"
+        );
+        assert!(
+            body.contains("majority yes 3; tie 0; all models agreed on 1 of 3 chunks"),
+            "{body}"
+        );
+        assert!(
+            body.contains("- n1: has_ms yes (alpha yes, beta:1b yes, gamma no)"),
+            "{body}"
+        );
+        let mut logged = rows.0.lock().unwrap().clone();
+        logged.sort();
+        let mut expected: Vec<(String, String)> = ["alpha", "beta:1b", "gamma"]
+            .iter()
+            .flat_map(|m| ["n1", "n2", "n3"].map(|c| (m.to_string(), c.to_string())))
+            .collect();
+        expected.sort();
+        assert_eq!(logged, expected, "one row per model per chunk");
+        assert!(
+            rows.1
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|b| *b == summary.batch_id),
+            "every row under the call's one batch id"
+        );
+
+        // Two models that disagree tie.
+        let result = call(
+            &client,
+            &session,
+            "decide",
+            json!({"questions": {"has_ms": {"instructions": "MS?"}},
+                   "chunks": [{"id": "n1", "text": "note one"}],
+                   "models": ["alpha", "gamma"]}),
+            enforced(),
+        )
+        .await;
+        let body = text(&result);
+        assert!(body.contains("majority no answers; tie 1"), "{body}");
+        assert!(
+            body.contains("- n1: has_ms tie (yes 1, no 1) (alpha yes, gamma no)"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_vote_is_refused_when_it_names_too_few_models_the_same_twice_or_with_model() {
+        let named = |name: &str| {
+            model(
+                entry(
+                    name,
+                    ProviderTier::Private,
+                    true,
+                    DecisionAdapter::SystemOne,
+                ),
+                0.9,
+            )
+        };
+        let (client, session) = client_with(vec![named("alpha"), named("beta")], false).await;
+        let ask = |extra: serde_json::Value| {
+            let mut args = json!({"questions": {"q": {"instructions": "yes?"}},
+                                  "chunks": [{"id": "a", "text": "a note"}]});
+            for (key, value) in extra.as_object().unwrap() {
+                args[key] = value.clone();
+            }
+            args
+        };
+        for (extra, expected) in [
+            (json!({"models": ["alpha"]}), "2 to 5 models"),
+            (
+                json!({"models": ["alpha", "beta"], "model": "alpha"}),
+                "not both",
+            ),
+            (json!({"models": ["alpha", "test_decision/alpha"]}), "twice"),
+        ] {
+            let result = call(&client, &session, "decide", ask(extra), enforced()).await;
+            assert_eq!(result.is_error, Some(true));
+            assert!(text(&result).contains(expected), "{}", text(&result));
+        }
     }
 
     /// A `below` threshold is reported as its inner threshold's answer and

@@ -45,7 +45,8 @@ describe('the rail’s landmark', () => {
     const rail = screen.getByRole('complementary', { name: summaryCopy.title });
     expect(rail).toHaveAttribute('id', 'summary-rail');
     expect(rail).toHaveAttribute('data-preview-area', 'rail');
-    expect(rail).toContainElement(screen.getByText(summaryCopy.toolCalls));
+    // The statistics sit behind Details (F-1); its trigger is the summary's own.
+    expect(rail).toContainElement(screen.getByRole('button', { name: summaryCopy.details }));
   });
 });
 
@@ -78,7 +79,7 @@ describe('the card’s entrance', () => {
 
   it('ignores the animations of what is inside the card', () => {
     const { container } = render(<ChatSummaryRail {...base} still={false} />);
-    fire(screen.getByText(summaryCopy.toolCalls), 'animationend');
+    fire(screen.getByRole('button', { name: summaryCopy.details }), 'animationend');
     expect(card(container)).not.toHaveAttribute('data-entered');
   });
 });

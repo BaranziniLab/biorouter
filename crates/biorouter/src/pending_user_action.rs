@@ -453,7 +453,7 @@ struct Entry {
     /// and this list only widens *who may answer*, never who may raise.
     ///
     /// ⚠ Recording and publishing happen in one operation
-    /// ([`PendingUserAction::also_surface_in`]) because each half alone is a bug
+    /// ([`PendingUserAction::also_surface_in_for`]) because each half alone is a bug
     /// with its own symptom: a recorded surface the card was never published to
     /// is an approval nobody can see, and a published card that was never
     /// recorded is a card the user clicks and watches do nothing —
@@ -467,9 +467,23 @@ struct Entry {
     /// a decision still has to carry the request id, which only a rendered card
     /// supplies.
     escalated_to: Vec<String>,
+    /// The name the escalated copies give the asker (R2-1): the subagent's
+    /// role, else its chat's name. Only those copies carry it; the card's home
+    /// is the asker's own chat.
+    requested_by: Option<String>,
 }
 
 impl Entry {
+    /// The card as `session_id` shows it: an escalated copy names who asks.
+    fn card_for(&self, id: &str, session_id: &str) -> Message {
+        let requested_by = if self.session_id.as_deref() == Some(session_id) {
+            None
+        } else {
+            self.requested_by.as_deref()
+        };
+        request_message(id, &self.request, requested_by)
+    }
+
     /// May a decision posted from `session_id` release this call?
     ///
     /// The card's home, plus any session it was escalated into. Deliberately
@@ -677,11 +691,12 @@ impl PendingUserActions {
                     None
                 },
                 escalated_to: Vec::new(),
+                requested_by: None,
             },
         );
 
         crate::action_required_manager::ActionRequiredManager::global()
-            .publish(session_id, request_message(&id, &request));
+            .publish(session_id, request_message(&id, &request, None));
 
         PendingUserAction {
             id,
@@ -890,7 +905,7 @@ impl PendingUserActions {
         self.lock()
             .iter()
             .filter(|(_, entry)| entry.answerable_in(session_id))
-            .map(|(id, entry)| request_message(id, &entry.request))
+            .map(|(id, entry)| entry.card_for(id, session_id))
             .filter(is_ephemeral_card)
             .collect()
     }
@@ -961,13 +976,16 @@ impl PendingUserActions {
     /// or when `session_id` is the card's own home, so the caller can decline
     /// to publish a second copy rather than showing a chat the same card twice.
     /// Idempotent in the session: two calls add one surface.
-    fn record_escalation(&self, id: &str, session_id: &str) -> bool {
+    fn record_escalation(&self, id: &str, session_id: &str, requested_by: Option<&str>) -> bool {
         let mut entries = self.lock();
         let Some(entry) = entries.get_mut(id) else {
             return false;
         };
         if entry.session_id.as_deref() == Some(session_id) {
             return false;
+        }
+        if let Some(name) = requested_by.map(str::trim).filter(|name| !name.is_empty()) {
+            entry.requested_by = Some(name.to_string());
         }
         if !entry
             .escalated_to
@@ -1033,6 +1051,12 @@ impl PendingUserAction {
         &self.request
     }
 
+    /// Test shorthand for [`Self::also_surface_in_for`] with nobody named.
+    #[cfg(test)]
+    pub(crate) fn also_surface_in(&self, session_id: &str) -> bool {
+        self.also_surface_in_for(session_id, None)
+    }
+
     /// Show this same card in `session_id` as well, and accept the answer from
     /// there (D10).
     ///
@@ -1052,10 +1076,13 @@ impl PendingUserAction {
     /// click.
     ///
     /// Published with [`request_message`], the same function `park` published
-    /// the original with, so the two surfaces carry a byte-identical card — and
+    /// the original with, so the two surfaces carry the same card — and
     /// therefore the same request id, which is what makes them one decision
-    /// rather than two questions. `user_only`, so the watching agent never reads
-    /// a question it must not answer.
+    /// rather than two questions. The one difference is `requested_by` (R2-1):
+    /// a folder card's copy names the subagent that asks (its role, else its
+    /// chat's name), where the home copy is that chat's own agent asking.
+    /// `user_only`, so the watching agent never reads a question it must not
+    /// answer.
     ///
     /// `false` when nothing was registered (`park` declined because no person
     /// could be asked), when the call has already been answered, or when
@@ -1067,18 +1094,27 @@ impl PendingUserAction {
     /// that knows the tree — `approval_relay::surface_where_a_person_is_watching`,
     /// which is itself crate-private. A door outside this crate that needs the
     /// behaviour should go through that, not invent a second destination.
-    pub(crate) fn also_surface_in(&self, session_id: &str) -> bool {
+    pub(crate) fn also_surface_in_for(&self, session_id: &str, requested_by: Option<&str>) -> bool {
         if self.declined || self.rx.is_none() {
             return false;
         }
-        if !self.registry.record_escalation(&self.id, session_id) {
+        if !self
+            .registry
+            .record_escalation(&self.id, session_id, requested_by)
+        {
             return false;
         }
+        let Some(card) = self
+            .registry
+            .lock()
+            .get(&self.id)
+            .map(|entry| entry.card_for(&self.id, session_id))
+        else {
+            return false;
+        };
         crate::session_events::publish(
             session_id,
-            crate::session_events::SessionBusEvent::Agent(crate::agents::AgentEvent::Message(
-                request_message(&self.id, &self.request),
-            )),
+            crate::session_events::SessionBusEvent::Agent(crate::agents::AgentEvent::Message(card)),
         );
         true
     }
@@ -1265,7 +1301,7 @@ impl Drop for PendingUserAction {
 /// understands, so an approval raised from the bridge draws the *same* dialog as
 /// one raised by the agent's own loop rather than a second, subtly different
 /// one.
-fn request_message(id: &str, request: &UserActionRequest) -> Message {
+fn request_message(id: &str, request: &UserActionRequest, requested_by: Option<&str>) -> Message {
     let content = match request {
         UserActionRequest::FolderAccess(r) => MessageContent::action_required_with_context(
             id,
@@ -1281,6 +1317,7 @@ fn request_message(id: &str, request: &UserActionRequest) -> Message {
                 descendants: true,
                 once_descendants: r.once_descendants,
                 action_id: r.action_id.clone(),
+                requested_by: requested_by.map(str::to_string),
             }),
         ),
         UserActionRequest::ToolApproval(r) => MessageContent::action_required_with_context(
@@ -1637,7 +1674,7 @@ mod tests {
     /// the card itself must carry no field a value could sit in.
     #[test]
     fn a_secrets_card_carries_names_only() {
-        let card = request_message("req-1", &secrets());
+        let card = request_message("req-1", &secrets(), None);
         let json = serde_json::to_string(&card).expect("serialisable");
         assert!(
             json.contains("SPOKEAGENT_PASSCODE"),
@@ -1746,7 +1783,7 @@ mod tests {
     /// The card is the person's alone: the model never reads it, and it is never stored.
     #[test]
     fn a_crew_step_card_is_user_only_and_ephemeral() {
-        let card = request_message("req-1", &crew_sign_in());
+        let card = request_message("req-1", &crew_sign_in(), None);
         assert!(card.is_user_visible());
         assert!(!card.is_agent_visible());
         assert!(is_ephemeral_card(&card));
@@ -1790,15 +1827,17 @@ mod tests {
     fn only_decision_prompts_are_ephemeral() {
         assert!(is_ephemeral_card(&request_message(
             "1",
-            &approval("developer__shell")
+            &approval("developer__shell"),
+            None
         )));
-        assert!(is_ephemeral_card(&request_message("2", &secrets())));
+        assert!(is_ephemeral_card(&request_message("2", &secrets(), None)));
         assert!(!is_ephemeral_card(&request_message(
             "3",
             &UserActionRequest::Elicitation(ElicitationRequest {
                 message: "Which cohort?".to_string(),
                 requested_schema: serde_json::json!({}),
-            })
+            }),
+            None
         )));
         assert!(!is_ephemeral_card(&Message::assistant().with_text("hi")));
     }
@@ -1949,21 +1988,21 @@ mod tests {
     /// never reads it.
     #[test]
     fn a_changed_host_key_is_a_stored_notice_and_an_unknown_one_is_a_question() {
-        let notice = request_message("n-1", &host_key(true));
+        let notice = request_message("n-1", &host_key(true), None);
         assert!(!is_ephemeral_card(&notice));
         assert_eq!(ephemeral_card_id(&notice), None);
         assert!(notice.is_user_visible());
         assert!(!notice.is_agent_visible());
 
-        let question = request_message("q-1", &host_key(false));
+        let question = request_message("q-1", &host_key(false), None);
         assert!(is_ephemeral_card(&question));
         assert_eq!(ephemeral_card_id(&question), Some("q-1"));
         assert_eq!(
-            ephemeral_card_id(&request_message("a-1", &approval("developer__shell"))),
+            ephemeral_card_id(&request_message("a-1", &approval("developer__shell"), None)),
             Some("a-1")
         );
         assert_eq!(
-            ephemeral_card_id(&request_message("c-1", &secrets())),
+            ephemeral_card_id(&request_message("c-1", &secrets(), None)),
             Some("c-1")
         );
     }
@@ -2643,6 +2682,44 @@ mod decision_authority_tests {
             registry.pending_cards_for_session("parent").len(),
             1,
             "one ask, one card at that surface"
+        );
+        drop(parked);
+    }
+
+    /// R2-1 (live QA, 2026-11-10): a subagent's folder card shown in the parent
+    /// read "Allow this chat to read …?", as if the parent's own agent asked.
+    /// The escalated copy, live and replayed, names the subagent; the card's
+    /// home, where the asker is that chat's own agent, does not.
+    #[tokio::test]
+    async fn an_escalated_folder_card_names_the_subagent_that_asks() {
+        let registry = Arc::new(PendingUserActions::default());
+        let parked = registry.park(
+            Some("child"),
+            None,
+            UserActionRequest::FolderAccess(FolderAccessRequest {
+                action_id: "operation".into(),
+                tool_name: "developer__text_editor".into(),
+                folder: "/synthetic/notes".into(),
+                access: "read-only".into(),
+                once_descendants: false,
+                files: vec!["/synthetic/notes/a.txt".into()],
+            }),
+        );
+        assert!(parked.also_surface_in_for("parent", Some(" notes-reader ")));
+
+        let card_json = |session: &str| {
+            let cards = registry.pending_cards_for_session(session);
+            assert_eq!(cards.len(), 1, "one card at {session}");
+            serde_json::to_string(&cards[0]).expect("serialisable")
+        };
+        assert!(
+            card_json("parent").contains(r#""requestedBy":"notes-reader""#),
+            "the parent's copy names the subagent: {}",
+            card_json("parent")
+        );
+        assert!(
+            !card_json("child").contains("requestedBy"),
+            "the home copy is the asker's own chat and names nobody"
         );
         drop(parked);
     }

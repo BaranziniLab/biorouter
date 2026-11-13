@@ -13,7 +13,9 @@ use tokio::sync::Mutex;
 #[async_trait]
 impl BenchBaseSession for CliSession {
     async fn headless(&mut self, message: String) -> anyhow::Result<()> {
-        self.headless(message).await
+        // A turn its supervision stopped still ran; the eval judges what it
+        // produced rather than failing the run.
+        crate::commands::supervision_stop::ran_to_an_end(self.headless(message).await).map(|_| ())
     }
     fn message_history(&self) -> Conversation {
         self.message_history()

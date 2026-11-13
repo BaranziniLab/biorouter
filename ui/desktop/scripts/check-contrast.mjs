@@ -380,10 +380,18 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
   // the mark rides the composer's model chip today (`--background-default`),
   // and `--sidebar` is the stricter of the two in several scopes, so holding
   // both keeps the floor honest if the mark moves back onto a chat list.
+  //
+  // R1-10 (live QA, 2026-11-10): the padlock is ONE ink everywhere it stands
+  // beside a name, `PRIVATE_MARK_INK` in `PrivacyBadge.tsx` = `--text-muted`
+  // (the chip had drawn it in `--text-default`, the roster and the decision card
+  // in muted). So the mark's floors are asserted for that token, on the chip's
+  // ground, the sidebar and the pill's own fill. The pill's WORD keeps
+  // `--text-default`.
   assert(`${theme}: privacy Private label`, '--text-default', '--background-muted', 4.5, scope);
   assert(`${theme}: privacy Public label`, '--text-muted', '--background-muted', 4.5, scope);
-  assert(`${theme}: privacy mark on sidebar`, '--text-default', '--sidebar', 3.0, scope);
-  assert(`${theme}: privacy mark on chip`, '--text-default', '--background-default', 3.0, scope);
+  assert(`${theme}: privacy mark on sidebar`, '--text-muted', '--sidebar', 3.0, scope);
+  assert(`${theme}: privacy mark on chip`, '--text-muted', '--background-default', 3.0, scope);
+  assert(`${theme}: privacy mark on pill`, '--text-muted', '--background-muted', 3.0, scope);
 
   // `--background-medium`, which the guard has only ever looked at for the
   // focus ring. Issue #56 needs it because both privacy pills sit on rows that

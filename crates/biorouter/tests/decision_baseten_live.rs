@@ -247,7 +247,11 @@ async fn joey_answers_every_kind_with_a_whole_distribution() {
         .open(&joey)
         .await
         .expect("joey-1 opens");
-    assert_eq!(opened.caps().context_tokens, 16_384, "Baseten's window");
+    assert_eq!(
+        opened.caps().context_tokens,
+        BASETEN_DECISION_CONTEXT,
+        "Baseten's real prompt limit (16,000, measured 2026-11-10; the feed says 16,384)"
+    );
     assert_eq!(opened.tier(), ProviderTier::Public);
 
     let svc = service();
@@ -421,7 +425,11 @@ async fn the_published_feed_lists_the_three_decision_models() {
             .iter()
             .find(|e| e.model == known.slug)
             .unwrap_or_else(|| panic!("the feed lists {}", known.slug));
-        assert_eq!(entry.context_tokens, 16_384, "{}", known.slug);
+        assert_eq!(
+            entry.context_tokens, BASETEN_DECISION_CONTEXT,
+            "{}",
+            known.slug
+        );
         assert_eq!(entry.display_name, known.name);
     }
     // The chat picker still sees no decision model.

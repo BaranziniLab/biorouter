@@ -688,11 +688,18 @@ fn flatten_leaves(value: &Value, path: &str, out: &mut BTreeMap<String, Value>) 
 ///
 /// Leaves are compared per path: equal leaves score 1, two strings score their
 /// character-trigram Jaccard scaled by their length ratio, anything else scores
-/// 0. A path present on only one side scores 0. The result is the mean over the
-/// union of paths, so a single changed filename in a two-argument call drops the
-/// score to ~0.5 — well below any usable threshold — while a one-token tweak
-/// inside a long command stays high. That asymmetry is the point: it flags
-/// "same call, nudged" and ignores "different input, same shape".
+/// 0. A path present on only one side scores 0. The result is the LOWEST leaf
+/// score, so the calls are as similar as their least similar argument: a
+/// one-token tweak inside a long command stays high, while a single changed
+/// filename, page offset or model name (one replaced argument) drops it to that
+/// argument's score — well below any usable threshold — however many other
+/// arguments are identical. That asymmetry is the point: it flags "same call,
+/// nudged" and ignores "different input, same shape".
+///
+/// G-1: this used to be the mean over the union of paths, so one differing
+/// short argument among many identical ones (a `decide` vote asking the same
+/// 20 chunks of five models, one call per `model`) stayed above the threshold
+/// and was warned about as a loop. Calls whose arguments differ are not repeats.
 fn arg_similarity(a: &Value, b: &Value) -> f32 {
     if a == b {
         return 1.0;
@@ -707,15 +714,13 @@ fn arg_similarity(a: &Value, b: &Value) -> f32 {
         return 1.0;
     }
 
-    let total: f32 = paths
+    paths
         .iter()
         .map(|path| match (left.get(*path), right.get(*path)) {
             (Some(lhs), Some(rhs)) => leaf_similarity(lhs, rhs),
             _ => 0.0,
         })
-        .sum();
-
-    total / paths.len() as f32
+        .fold(1.0_f32, f32::min)
 }
 
 fn leaf_similarity(a: &Value, b: &Value) -> f32 {
@@ -1705,6 +1710,53 @@ mod tests {
             "similarity was {}",
             arg_similarity(&x.normalized, &y.normalized)
         );
+    }
+
+    /// G-1: the same chunks asked of a different decision model are a
+    /// different call, not a nudged repeat, however long the shared arguments.
+    #[test]
+    fn one_replaced_argument_among_many_identical_ones_is_not_a_near_duplicate() {
+        let chunks: Vec<Value> = (0..20)
+            .map(|i| serde_json::json!({"id": format!("n{i:03}"), "text": format!("synthetic note {i} with enough text to matter")}))
+            .collect();
+        let decide = |model: &str| {
+            call(
+                "decisions__decide",
+                serde_json::json!({
+                    "questions": {"has_ms": {"instructions": "Does the note state MS?"}},
+                    "chunks": chunks.clone(),
+                    "model": model,
+                })
+                .as_object()
+                .unwrap()
+                .clone()
+                .into(),
+            )
+        };
+        let (a, b) = (decide("joey-1"), decide("tev1:0.8b"));
+        assert!(
+            !a.near_matches(&b, DEFAULT_ARG_SIMILARITY_THRESHOLD),
+            "similarity was {}",
+            arg_similarity(&a.normalized, &b.normalized)
+        );
+        // A call that adds an argument is a different call too.
+        let plain = call(
+            "decisions__decide",
+            serde_json::json!({"chunks": chunks.clone(), "questions": {"q": {"instructions": "yes?"}}})
+                .as_object()
+                .unwrap()
+                .clone()
+                .into(),
+        );
+        let named = call(
+            "decisions__decide",
+            serde_json::json!({"chunks": chunks, "questions": {"q": {"instructions": "yes?"}}, "model": "joey-1"})
+                .as_object()
+                .unwrap()
+                .clone()
+                .into(),
+        );
+        assert!(!plain.near_matches(&named, DEFAULT_ARG_SIMILARITY_THRESHOLD));
     }
 
     #[test]

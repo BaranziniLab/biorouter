@@ -70,7 +70,7 @@ vi.mock('./MessageQueue', () => ({ default: () => null }));
 // these tests are about where the composer puts things, so it is a stub here.
 vi.mock('./decisions/DecisionComposer', () => ({
   DecisionComposer: () => <div data-testid="decision-composer-stub" />,
-  DECISION_CHAT_PLACEHOLDER: 'Text for the decision model',
+  DECISION_CHAT_PLACEHOLDER: 'Ask the decision model',
 }));
 vi.mock('./MentionPopover', () => {
   const MentionPopoverMock = React.forwardRef(() => null);
@@ -206,7 +206,24 @@ describe('the composer is one card and one footer line', () => {
   });
 });
 
-describe('a decision chat', () => {
+describe('a decision chat (B-3)', () => {
+  it('offers no + and no Tools: a decision model attaches nothing and calls no tools', () => {
+    renderComposer({ effectiveModel: { provider: 'ollama_decision', model: 'tev1:0.8b' } });
+    const controls = within(card()).getByTestId('chat-input-toolbar');
+    expect(within(controls).queryByTestId('composer-plus')).toBeNull();
+    expect(within(controls).queryByTestId('tools-chip-stub')).toBeNull();
+    // The model chip and Send stay.
+    expect(within(controls).getByTestId('model-chip-stub')).toBeInTheDocument();
+    expect(within(controls).getByRole('button', { name: COMPOSER_COPY.send.label })).toBeTruthy();
+  });
+
+  it('keeps both in an ordinary chat', () => {
+    renderComposer({ effectiveModel: { provider: 'versa_azure', model: 'gpt-5.6-sol' } });
+    const controls = within(card()).getByTestId('chat-input-toolbar');
+    expect(within(controls).getByTestId('composer-plus')).toBeInTheDocument();
+    expect(within(controls).getByTestId('tools-chip-stub')).toBeInTheDocument();
+  });
+
   // Owner decision, 2026-11-12: a decision chat shows the microphone. Dictation is
   // input, not a model feature, so it stays immediately left of Send there too.
   it('keeps the microphone beside Send', () => {

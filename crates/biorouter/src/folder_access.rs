@@ -59,6 +59,81 @@ pub struct FileAdmission {
     pub action_id: String,
 }
 
+/// A delegated chat's place in its tree, read only when an admission needs it.
+///
+/// Two things follow from it, and only for a chat that has a parent:
+///
+/// * **Where a person sees its card.** A folder card raised inside a subagent is
+///   parked on the subagent's own session, which nobody may be looking at (a
+///   background child has no tab at all). It is also shown in the conversation a
+///   person is watching, through
+///   [`crate::agents::approval_relay::surface_where_a_person_is_watching`], the
+///   one function that knows the tree. That widens who may see and click the
+///   card, never who may decide: a folder decision still needs a person's proof.
+/// * **Whose session grants it may use.** A direct subagent may use the
+///   "Allow for this session" grants a person gave in its parent, at the same
+///   privacy tier. Not a grandparent's (only the direct parent's own grants are
+///   read), not a sibling's (a child's own grants stay on the child), and not a
+///   chat that is merely agent-created (only [`SessionType::SubAgent`]).
+///   Every session grant comes from a person: [`FolderAccessManager::remember_session_grant`]
+///   is reached only after a proof-backed allow, because a folder card
+///   [`requires_user_proof`](crate::pending_user_action::UserActionRequest::requires_user_proof).
+///
+/// [`SessionType::SubAgent`]: crate::session::session_manager::SessionType::SubAgent
+pub(crate) struct DelegatedChat<'a> {
+    sessions: &'a crate::session::SessionManager,
+    session: crate::session::Session,
+    inherits_from: Option<String>,
+}
+
+impl<'a> DelegatedChat<'a> {
+    /// Show `pending` in the conversation a person is watching as well.
+    async fn surface_where_a_person_is_watching(
+        &self,
+        pending: &crate::pending_user_action::PendingUserAction,
+    ) {
+        if let Some(watching) = crate::agents::approval_relay::surface_where_a_person_is_watching(
+            self.sessions,
+            &self.session,
+            pending,
+        )
+        .await
+        {
+            tracing::debug!(
+                child_session_id = %self.session.id,
+                watching_session_id = %watching,
+                request_id = pending.id(),
+                "surfaced a delegated chat's folder card in the conversation that delegated the work"
+            );
+        }
+    }
+
+    /// `None` for a root conversation (it is already where the person is) and
+    /// for a row that cannot be read, which leaves the chat exactly as it was:
+    /// its own grants, its own card.
+    pub(crate) async fn load(
+        sessions: &'a crate::session::SessionManager,
+        session_id: &str,
+    ) -> Option<Self> {
+        let session = sessions.get_session(session_id, false).await.ok()?;
+        let parent_id = session.parent_session_id.clone()?;
+        let inherits_from =
+            if session.session_type == crate::session::session_manager::SessionType::SubAgent {
+                match sessions.get_session(&parent_id, false).await {
+                    Ok(parent) if parent.privacy_tier == session.privacy_tier => Some(parent_id),
+                    _ => None,
+                }
+            } else {
+                None
+            };
+        Some(Self {
+            sessions,
+            session,
+            inherits_from,
+        })
+    }
+}
+
 struct AdmissionContext<'a> {
     session: &'a str,
     action: &'a str,
@@ -67,6 +142,7 @@ struct AdmissionContext<'a> {
     cancel: &'a CancellationToken,
     permissions: &'a crate::permission::ToolPermissionStore,
     scoped_enabled: bool,
+    tree: Option<&'a DelegatedChat<'a>>,
 }
 
 type FileAliases = Vec<(PathBuf, PathBuf)>;
@@ -550,6 +626,53 @@ impl FolderAccessManager {
         Ok(roots)
     }
 
+    /// The chat's tree, read only when something may need it: a request the
+    /// chat's own grants do not cover, or an analysis that may reach further.
+    async fn tree_if_needed<'a>(
+        sessions: Option<&'a crate::session::SessionManager>,
+        session_id: &str,
+        roots: &[RootGrant],
+        plan: &biorouter_mcp::FileAccessPlan,
+        analysis_depth: Option<u32>,
+    ) -> Option<DelegatedChat<'a>> {
+        let needs_tree = analysis_depth.is_some()
+            || plan
+                .requests
+                .iter()
+                .any(|request| !Self::covered(roots, &request.path, request.access));
+        match sessions {
+            Some(sessions) if needs_tree => DelegatedChat::load(sessions, session_id).await,
+            _ => None,
+        }
+    }
+
+    /// The session grants a direct subagent may use from its parent (see
+    /// [`DelegatedChat`]): the parent's own remembered grants, owned by the same
+    /// desktop connection, never its working folder.
+    fn inherited_roots(&self, tree: Option<&DelegatedChat<'_>>) -> Vec<RootGrant> {
+        let Some(parent) = tree.and_then(|tree| tree.inherits_from.as_deref()) else {
+            return Vec::new();
+        };
+        self.sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(parent)
+            .map(|session| {
+                session
+                    .grants
+                    .iter()
+                    .filter(|grant| {
+                        crate::native_client::same_owner(
+                            grant.owner.as_ref(),
+                            crate::native_client::current().as_ref(),
+                        )
+                    })
+                    .map(|grant| grant.root.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
     fn covered(roots: &[RootGrant], path: &Path, access: AccessMode) -> bool {
         roots.iter().any(|root| {
             access_covers(root.access(), access) && path.starts_with(root.filesystem().root())
@@ -637,6 +760,7 @@ impl FolderAccessManager {
         requests: &[biorouter_mcp::FileAccessRequest],
         aliases: &[(PathBuf, PathBuf)],
         cancel: &CancellationToken,
+        tree: Option<&DelegatedChat<'_>>,
     ) -> anyhow::Result<Vec<RootGrant>> {
         let access = if requests
             .iter()
@@ -651,7 +775,8 @@ impl FolderAccessManager {
             () = cancel.cancelled() => return Err(authorization_required(folder, access, "The operation was cancelled.").into()),
             guard = lock.lock() => guard,
         };
-        let roots = self.roots(session_id, cwd)?;
+        let mut roots = self.roots(session_id, cwd)?;
+        roots.extend(self.inherited_roots(tree));
         if let Some(root) = roots.into_iter().find(|root| {
             requests.iter().all(|request| {
                 Self::covered(std::slice::from_ref(root), &request.path, request.access)
@@ -690,6 +815,11 @@ impl FolderAccessManager {
             None,
             UserActionRequest::FolderAccess(request),
         );
+        // H-1: before the wait, so a person already looking at that chat
+        // cannot answer a card that is not yet recorded as answerable there.
+        if let Some(tree) = tree {
+            tree.surface_where_a_person_is_watching(&pending).await;
+        }
         let outcome = wait_for_folder_approval(pending, owner.as_ref(), cancel).await;
         match outcome {
             UserActionOutcome::Approved {
@@ -707,22 +837,35 @@ impl FolderAccessManager {
             } => Ok(vec![self.remember_session_grant(
                 session_id, filesystem, access, owner,
             )?]),
-            outcome => {
-                self.sessions
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .entry(session_id.to_string())
-                    .or_default()
-                    .denied
-                    .insert(folder.to_path_buf());
-                let reason = if matches!(outcome, UserActionOutcome::Denied { .. }) {
-                    "Access was not approved."
-                } else {
-                    outcome.refusal_detail()
-                };
-                Err(authorization_required(folder, access, reason).into())
-            }
+            outcome => Err(self.refused(session_id, folder, access, &outcome)),
         }
+    }
+
+    /// A folder card that was not allowed: the folder is declined for the rest
+    /// of this turn, and the call ends with a sentence saying why.
+    fn refused(
+        &self,
+        session_id: &str,
+        folder: &Path,
+        access: AccessMode,
+        outcome: &UserActionOutcome,
+    ) -> anyhow::Error {
+        self.sessions
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(session_id.to_string())
+            .or_default()
+            .denied
+            .insert(folder.to_path_buf());
+        let reason = if matches!(outcome, UserActionOutcome::Denied { .. }) {
+            "Access was not approved.".to_string()
+        } else {
+            format!(
+                "The request {}, so access was not given.",
+                outcome.refusal_detail()
+            )
+        };
+        authorization_required(folder, access, &reason).into()
     }
 
     pub async fn admit(
@@ -733,7 +876,7 @@ impl FolderAccessManager {
         plan: &biorouter_mcp::FileAccessPlan,
         cancel: &CancellationToken,
     ) -> anyhow::Result<FileAdmission> {
-        self.admit_with_analysis(session_id, tool_name, cwd, plan, cancel, None)
+        self.admit_with_analysis(session_id, tool_name, cwd, plan, cancel, None, None)
             .await
     }
 
@@ -746,10 +889,47 @@ impl FolderAccessManager {
         cancel: &CancellationToken,
         max_depth: u32,
     ) -> anyhow::Result<FileAdmission> {
-        self.admit_with_analysis(session_id, tool_name, cwd, plan, cancel, Some(max_depth))
-            .await
+        self.admit_with_analysis(
+            session_id,
+            tool_name,
+            cwd,
+            plan,
+            cancel,
+            Some(max_depth),
+            None,
+        )
+        .await
     }
 
+    /// [`Self::admit`] (or [`Self::admit_analysis`] with `analysis_depth`) for a
+    /// chat that may sit inside a delegation tree: a card it raises is also shown
+    /// where a person is watching, and a direct subagent may use its parent's
+    /// session grants (see [`DelegatedChat`]). The tree is read from `sessions`
+    /// only when the request is not already covered.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn admit_in_tree(
+        &self,
+        session_id: &str,
+        tool_name: &str,
+        cwd: &Path,
+        plan: &biorouter_mcp::FileAccessPlan,
+        cancel: &CancellationToken,
+        analysis_depth: Option<u32>,
+        sessions: &crate::session::SessionManager,
+    ) -> anyhow::Result<FileAdmission> {
+        self.admit_with_analysis(
+            session_id,
+            tool_name,
+            cwd,
+            plan,
+            cancel,
+            analysis_depth,
+            Some(sessions),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn admit_with_analysis(
         &self,
         session_id: &str,
@@ -758,27 +938,37 @@ impl FolderAccessManager {
         plan: &biorouter_mcp::FileAccessPlan,
         cancel: &CancellationToken,
         analysis_depth: Option<u32>,
+        sessions: Option<&crate::session::SessionManager>,
     ) -> anyhow::Result<FileAdmission> {
         let action_id = Uuid::new_v4().to_string();
         let permissions = crate::permission::ToolPermissionStore::load()?;
-        let context = AdmissionContext {
+        let scoped_enabled = crate::config::Config::global()
+            .get_param::<bool>("PERMISSION_SCOPED_GRANTS")
+            .unwrap_or(true);
+        let (mut actual_plan, mut aliases) = resolved_plan(plan)?;
+        let unplaced = AdmissionContext {
             session: session_id,
             action: &action_id,
             tool: tool_name,
             cwd,
             cancel,
             permissions: &permissions,
-            scoped_enabled: crate::config::Config::global()
-                .get_param::<bool>("PERMISSION_SCOPED_GRANTS")
-                .unwrap_or(true),
+            scoped_enabled,
+            tree: None,
         };
-        let (mut actual_plan, mut aliases) = resolved_plan(plan)?;
-        validate_plan(plan, &context)?;
-        validate_plan(&actual_plan, &context)?;
+        validate_plan(plan, &unplaced)?;
+        validate_plan(&actual_plan, &unplaced)?;
         let mut roots = self.roots(session_id, cwd)?;
         if let Some(filesystem) = self.skill_read_root() {
             roots.push(RootGrant::new(filesystem, AccessMode::Read));
         }
+        let tree =
+            Self::tree_if_needed(sessions, session_id, &roots, &actual_plan, analysis_depth).await;
+        roots.extend(self.inherited_roots(tree.as_ref()));
+        let context = AdmissionContext {
+            tree: tree.as_ref(),
+            ..unplaced
+        };
         let mut missing: BTreeMap<PathBuf, Vec<biorouter_mcp::FileAccessRequest>> = BTreeMap::new();
         for request in &actual_plan.requests {
             if !Self::covered(&roots, &request.path, request.access) {
@@ -789,7 +979,15 @@ impl FolderAccessManager {
         for (folder, requests) in missing {
             roots.extend(
                 self.approve_folder(
-                    session_id, &action_id, tool_name, cwd, &folder, &requests, &aliases, cancel,
+                    session_id,
+                    &action_id,
+                    tool_name,
+                    cwd,
+                    &folder,
+                    &requests,
+                    &aliases,
+                    cancel,
+                    context.tree,
                 )
                 .await?,
             );
@@ -918,6 +1116,7 @@ impl FolderAccessManager {
                     std::slice::from_ref(&request),
                     aliases,
                     context.cancel,
+                    context.tree,
                 )
                 .await?,
             );
@@ -1235,6 +1434,7 @@ mod skill_authority_tests {
                 }],
                 &[],
                 &CancellationToken::new(),
+                None,
             ),
         )
         .await
@@ -1242,5 +1442,370 @@ mod skill_authority_tests {
         assert_authorization_required(result.err().unwrap());
         assert!(manager.list_session(&session).is_empty());
         assert!(!PendingUserActions::global().has_pending_in_session(&session));
+    }
+}
+
+/// H-1: a subagent's folder card reaches the conversation a person is watching,
+/// and a person's "Allow for this session" in a parent covers its direct
+/// subagents at the same tier, and nobody else.
+#[cfg(test)]
+mod delegation_tests {
+    use super::*;
+    use crate::conversation::message::{ActionRequiredData, MessageContent};
+    use crate::session::session_manager::SessionType;
+    use crate::session::SessionManager;
+
+    struct Tree {
+        _temp: tempfile::TempDir,
+        sessions: Arc<SessionManager>,
+        manager: Arc<FolderAccessManager>,
+        external: PathBuf,
+    }
+
+    impl Tree {
+        async fn new() -> Self {
+            let temp = tempfile::tempdir().unwrap();
+            let external = temp.path().join("notes");
+            std::fs::create_dir_all(&external).unwrap();
+            let external = external.canonicalize().unwrap();
+            std::fs::write(external.join("n001.txt"), "synthetic note").unwrap();
+            Self {
+                sessions: Arc::new(SessionManager::new(temp.path().join("state"))),
+                manager: Arc::new(FolderAccessManager::default()),
+                external,
+                _temp: temp,
+            }
+        }
+
+        /// A chat with its own pinned workspace, optionally delegated from `parent`.
+        async fn chat(
+            &self,
+            name: &str,
+            kind: SessionType,
+            parent: Option<&str>,
+        ) -> (String, PathBuf) {
+            let workspace = self._temp.path().join(format!("ws-{name}"));
+            std::fs::create_dir_all(&workspace).unwrap();
+            let workspace = workspace.canonicalize().unwrap();
+            let session = self
+                .sessions
+                .create_session(workspace.clone(), name.to_string(), kind)
+                .await
+                .unwrap();
+            if let Some(parent) = parent {
+                self.sessions
+                    .update(&session.id)
+                    .parent_session_id(Some(parent.to_string()))
+                    .apply()
+                    .await
+                    .unwrap();
+            }
+            self.manager.pin_workspace(&session.id, &workspace).unwrap();
+            (session.id, workspace)
+        }
+
+        fn read_plan(&self) -> biorouter_mcp::FileAccessPlan {
+            biorouter_mcp::FileAccessPlan {
+                requests: vec![biorouter_mcp::FileAccessRequest {
+                    path: self.external.join("n001.txt"),
+                    access: AccessMode::Read,
+                    recursive: false,
+                }],
+            }
+        }
+
+        fn start(
+            &self,
+            session: &str,
+            cwd: &Path,
+            cancel: CancellationToken,
+        ) -> tokio::task::JoinHandle<anyhow::Result<FileAdmission>> {
+            let (manager, sessions, session, cwd, plan) = (
+                self.manager.clone(),
+                self.sessions.clone(),
+                session.to_string(),
+                cwd.to_path_buf(),
+                self.read_plan(),
+            );
+            tokio::spawn(async move {
+                manager
+                    .admit_in_tree(
+                        &session,
+                        "developer__text_editor",
+                        &cwd,
+                        &plan,
+                        &cancel,
+                        None,
+                        &sessions,
+                    )
+                    .await
+            })
+        }
+
+        /// Admission where no person can be asked: covered or refused at once.
+        async fn admit_unattended(
+            &self,
+            session: &str,
+            cwd: &Path,
+        ) -> anyhow::Result<FileAdmission> {
+            crate::user_surface::without_human_surface(self.manager.admit_in_tree(
+                session,
+                "developer__text_editor",
+                cwd,
+                &self.read_plan(),
+                &CancellationToken::new(),
+                None,
+                &self.sessions,
+            ))
+            .await
+        }
+
+        async fn card_in(&self, session: &str) -> String {
+            tokio::time::timeout(Duration::from_secs(3), async {
+                loop {
+                    for message in PendingUserActions::global().pending_cards_for_session(session) {
+                        for content in message.content {
+                            if let MessageContent::ActionRequired(action) = content {
+                                if let ActionRequiredData::ToolConfirmation { id, .. } = action.data
+                                {
+                                    return id;
+                                }
+                            }
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("the folder card must be visible in this conversation")
+        }
+
+        fn answer(
+            &self,
+            surface: &str,
+            id: &str,
+            outcome: UserActionOutcome,
+        ) -> crate::pending_user_action::ResolveOutcome {
+            PendingUserActions::global().resolve_in_session(
+                surface,
+                id,
+                outcome,
+                crate::pending_user_action::DecisionAuthority::for_test_proven(),
+            )
+        }
+
+        /// The parent asks for the folder itself and the person answers
+        /// "Allow for this session" in the parent.
+        async fn person_allows_for_the_session(&self, parent: &str, cwd: &Path) {
+            let task = self.start(parent, cwd, CancellationToken::new());
+            let id = self.card_in(parent).await;
+            assert_eq!(
+                self.answer(
+                    parent,
+                    &id,
+                    UserActionOutcome::Approved {
+                        permission: Permission::AlwaysAllow
+                    }
+                ),
+                crate::pending_user_action::ResolveOutcome::Delivered
+            );
+            task.await.unwrap().unwrap();
+        }
+    }
+
+    fn refusal(error: anyhow::Error) -> String {
+        let data = error
+            .downcast_ref::<ErrorData>()
+            .expect("a folder refusal is structured");
+        assert_eq!(
+            data.data.as_ref().unwrap()["code"],
+            "authorization_required"
+        );
+        data.message.to_string()
+    }
+
+    #[tokio::test]
+    async fn a_subagents_folder_card_is_shown_and_answered_in_the_parent() {
+        let tree = Tree::new().await;
+        let (parent, _) = tree.chat("parent", SessionType::User, None).await;
+        let (child, child_ws) = tree
+            .chat("child", SessionType::SubAgent, Some(&parent))
+            .await;
+
+        let task = tree.start(&child, &child_ws, CancellationToken::new());
+        let id = tree.card_in(&parent).await;
+        assert_eq!(
+            tree.card_in(&child).await,
+            id,
+            "one card, two surfaces, one id"
+        );
+        // R2-1: the parent's copy says which subagent asks (no spawn role was
+        // recorded, so its chat's name); the child's own copy names nobody.
+        let requester = |session: &str| {
+            PendingUserActions::global()
+                .pending_cards_for_session(session)
+                .into_iter()
+                .flat_map(|message| message.content)
+                .find_map(|content| match content {
+                    MessageContent::ActionRequired(action) => match action.data {
+                        ActionRequiredData::ToolConfirmation {
+                            preview:
+                                Some(crate::conversation::tool_preview::ToolPreview::FolderAccess {
+                                    requested_by,
+                                    ..
+                                }),
+                            ..
+                        } => Some(requested_by),
+                        _ => None,
+                    },
+                    _ => None,
+                })
+                .expect("a folder card")
+        };
+        assert_eq!(requester(&parent).as_deref(), Some("child"));
+        assert_eq!(requester(&child), None);
+        assert_eq!(
+            tree.answer(
+                &parent,
+                &id,
+                UserActionOutcome::Approved {
+                    permission: Permission::AllowOnce
+                }
+            ),
+            crate::pending_user_action::ResolveOutcome::Delivered
+        );
+        task.await.unwrap().expect("approved from the parent");
+        assert!(!PendingUserActions::global().has_pending_in_session(&parent));
+    }
+
+    #[tokio::test]
+    async fn a_refusal_or_an_unanswered_card_ends_the_childs_call_with_a_sentence() {
+        let tree = Tree::new().await;
+        let (parent, _) = tree.chat("parent", SessionType::User, None).await;
+        let (child, child_ws) = tree
+            .chat("child", SessionType::SubAgent, Some(&parent))
+            .await;
+
+        let task = tree.start(&child, &child_ws, CancellationToken::new());
+        let id = tree.card_in(&parent).await;
+        tree.answer(
+            &parent,
+            &id,
+            UserActionOutcome::Denied {
+                permission: Permission::DenyOnce,
+            },
+        );
+        let denied = refusal(task.await.unwrap().err().unwrap());
+        assert!(denied.ends_with("Access was not approved."), "{denied}");
+
+        // A new turn may ask again; this time nobody answers before Stop.
+        tree.manager.begin_turn(&child);
+        let cancel = CancellationToken::new();
+        let task = tree.start(&child, &child_ws, cancel.clone());
+        tree.card_in(&parent).await;
+        cancel.cancel();
+        let unanswered = refusal(task.await.unwrap().err().unwrap());
+        assert!(
+            unanswered.ends_with(
+                "The request was cancelled before anyone answered it, so access was not given."
+            ),
+            "{unanswered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_parents_person_given_session_grant_covers_its_direct_subagent() {
+        let tree = Tree::new().await;
+        let (parent, parent_ws) = tree.chat("parent", SessionType::User, None).await;
+        let (child, child_ws) = tree
+            .chat("child", SessionType::SubAgent, Some(&parent))
+            .await;
+
+        // Without the parent's grant the child is not covered.
+        assert!(tree.admit_unattended(&child, &child_ws).await.is_err());
+
+        tree.person_allows_for_the_session(&parent, &parent_ws)
+            .await;
+        let admission = tree
+            .admit_unattended(&child, &child_ws)
+            .await
+            .expect("the parent's session grant covers its direct subagent");
+        let bound = biorouter_sandbox::bounded_fs::authorized_path(
+            admission.authority.token(),
+            &child,
+            &admission.action_id,
+            tree.external.join("n001.txt"),
+            AccessMode::Read,
+        )
+        .unwrap();
+        assert_eq!(bound.read_to_string().unwrap(), "synthetic note");
+        // It is the parent's grant, not a copy: revoking it in the parent ends it.
+        let grant = tree.manager.list_session(&parent).remove(0);
+        assert!(tree.manager.revoke(&parent, &grant.id));
+        assert!(tree.admit_unattended(&child, &child_ws).await.is_err());
+        assert!(tree.manager.list_session(&child).is_empty());
+    }
+
+    #[tokio::test]
+    async fn no_other_chat_inherits_a_session_grant() {
+        let tree = Tree::new().await;
+        let (parent, parent_ws) = tree.chat("parent", SessionType::User, None).await;
+        let (child, child_ws) = tree
+            .chat("child", SessionType::SubAgent, Some(&parent))
+            .await;
+        let (sibling, sibling_ws) = tree
+            .chat("sibling", SessionType::SubAgent, Some(&parent))
+            .await;
+        let (grandchild, grandchild_ws) = tree
+            .chat("grandchild", SessionType::SubAgent, Some(&sibling))
+            .await;
+        let (unrelated, unrelated_ws) = tree.chat("unrelated", SessionType::User, None).await;
+        let (spawned, spawned_ws) = tree.chat("spawned", SessionType::User, Some(&parent)).await;
+
+        // A grant the person gave in the CHILD stays on the child: its sibling
+        // and its parent do not get it.
+        tree.person_allows_for_the_session(&child, &child_ws).await;
+        assert!(tree.admit_unattended(&sibling, &sibling_ws).await.is_err());
+        assert!(tree.admit_unattended(&parent, &parent_ws).await.is_err());
+
+        // A grant in the PARENT reaches only its direct subagents.
+        tree.person_allows_for_the_session(&parent, &parent_ws)
+            .await;
+        assert!(tree.admit_unattended(&sibling, &sibling_ws).await.is_ok());
+        assert!(
+            tree.admit_unattended(&grandchild, &grandchild_ws)
+                .await
+                .is_err(),
+            "the grandparent's grant does not reach a grandchild, even through a subagent that may use it"
+        );
+        assert!(
+            tree.admit_unattended(&unrelated, &unrelated_ws)
+                .await
+                .is_err(),
+            "another chat does not inherit it"
+        );
+        assert!(
+            tree.admit_unattended(&spawned, &spawned_ws).await.is_err(),
+            "an agent-created chat that is not a subagent does not inherit it"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_subagent_at_another_tier_does_not_inherit_its_parents_grant() {
+        let tree = Tree::new().await;
+        let (parent, parent_ws) = tree.chat("parent", SessionType::User, None).await;
+        let (child, child_ws) = tree
+            .chat("child", SessionType::SubAgent, Some(&parent))
+            .await;
+        tree.person_allows_for_the_session(&parent, &parent_ws)
+            .await;
+        assert!(tree.admit_unattended(&child, &child_ws).await.is_ok());
+        tree.sessions
+            .update(&parent)
+            .raise_privacy(crate::privacy::SessionClassification::Private, "test")
+            .apply()
+            .await
+            .unwrap();
+        assert!(tree.admit_unattended(&child, &child_ws).await.is_err());
     }
 }

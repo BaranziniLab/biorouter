@@ -13,10 +13,10 @@
  * single calls are listed.
  */
 import {
-  formatProbability,
   probability,
   type Decision,
   type DecisionModelRef,
+  type DecisionTurnMarker,
   type DecisionTurnMarkerItem,
   type Question,
 } from '../../utils/sessionDecisions';
@@ -77,43 +77,186 @@ export function pluralize(n: number, one: string, many = `${one}s`): string {
   return `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
 }
 
-/** A source of decision calls, in the words a marker line uses. */
-export function originWord(origin: DecisionTurnMarkerItem['origin']): string {
-  switch (origin) {
-    case 'monitor':
-      return 'monitor';
-    case 'tool':
-      return 'decide';
-    case 'gate':
-      return 'gate';
-    case 'chat':
-      return 'decision chat';
-    case 'adhoc':
-      return 'ad hoc';
-  }
+/** `once`, `twice`, then `3 times`. */
+export function times(n: number): string {
+  if (n === 1) return 'once';
+  if (n === 2) return 'twice';
+  return `${n.toLocaleString('en-US')} times`;
+}
+
+/** `Shell seen`, `Shell seen and Needs a rest`, `A, B and C`: never names joined with `+`. */
+function joinNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? '';
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+/** The names one marker item stands for (the daemon joins a several-monitor call's with ` + `). */
+function itemNames(item: DecisionTurnMarkerItem): string[] {
+  return item.label
+    .split(' + ')
+    .map((name) => name.trim())
+    .filter(Boolean);
+}
+
+type MarkerKind = 'monitor' | 'tool' | 'gate' | 'chat' | 'adhoc';
+
+/** Ties keep this order: monitors, decide calls, gates, then the rest. */
+const KIND_ORDER: Record<MarkerKind, number> = { monitor: 0, tool: 1, gate: 2, chat: 3, adhoc: 4 };
+
+/**
+ * How serious what a part or line holds is, most serious first: errors, then a gate
+ * that did not pass, then a monitor that fired, then everything else.
+ */
+function rankOf(kind: MarkerKind, counts: { passed: number; failed: number; errors: number }) {
+  if (counts.errors > 0) return 0;
+  if (kind === 'gate' && counts.failed > 0) return 1;
+  if (kind === 'monitor' && counts.passed > 0) return 2;
+  return 3;
+}
+
+const withErrors = (text: string, errors: number) =>
+  errors > 0 ? `${text}, ${pluralize(errors, 'error')}` : text;
+
+/** A gate's outcome words: `passed`, `not passed`, `passed twice, 1 not passed`. */
+function gateOutcome(passed: number, failed: number, several: boolean): string | null {
+  if (!several) return passed > 0 ? 'passed' : failed > 0 ? 'not passed' : null;
+  const parts: string[] = [];
+  if (passed > 0) parts.push(`passed ${times(passed)}`);
+  if (failed > 0) parts.push(`${failed.toLocaleString('en-US')} not passed`);
+  return parts.length > 0 ? parts.join(', ') : null;
+}
+
+export interface MarkerPart {
+  kind: MarkerKind;
+  text: string;
+  /** 0 errors, 1 a gate not passed, 2 a monitor that fired, 3 the rest. */
+  rank: number;
 }
 
 /**
- * One origin's line in a turn marker: "monitor Form reached 18 checks, last P
- * 0.31", "decide 600 chunks, 41 passed, 2 errors", "gate Tests pass 2 checks, 1
- * passed". Counts only, never the calls themselves.
+ * The closed marker line's parts, one per kind of source, counts first and most
+ * important first (F-19): `Monitors checked 10 times, none fired`, `1 decide call read
+ * 30 chunks`, `Gate checked twice, not passed`, `Decision chat answered 3 times`,
+ * `3 ad hoc calls`, each ending `, 2 errors` when it had any. No probability: an
+ * item's last probability does not say which outcome it is (R2). A surface shows the
+ * first {@link MARKER_PARTS_SHOWN} and then `+N more`, so a not-passed gate or an
+ * error is never the part that drops.
  */
-export function markerItemText(item: DecisionTurnMarkerItem): string {
-  const name = item.label && item.origin !== 'tool' ? ` ${item.label}` : '';
-  const head = `${originWord(item.origin)}${name}`;
-  const parts = [
-    item.origin === 'tool' ? pluralize(item.count, 'chunk') : pluralize(item.count, 'check'),
-  ];
-  if (item.origin === 'monitor') {
-    if (item.lastPassProbability !== null) {
-      parts.push(`last P ${formatProbability(item.lastPassProbability)}`);
-    }
-  } else if (item.passed > 0 || item.failed > 0) {
-    parts.push(`${item.passed.toLocaleString('en-US')} passed`);
+export function markerParts(marker: DecisionTurnMarker): MarkerPart[] {
+  const groups = new Map<MarkerKind, DecisionTurnMarkerItem[]>();
+  for (const item of marker.items) {
+    const list = groups.get(item.origin) ?? [];
+    list.push(item);
+    groups.set(item.origin, list);
   }
-  if (item.errors > 0) parts.push(pluralize(item.errors, 'error'));
-  if (item.fired) parts.push('fired');
-  return `${head} ${parts.join(', ')}`;
+  const parts: MarkerPart[] = [];
+  for (const [kind, items] of groups) {
+    const sum = (key: 'count' | 'passed' | 'failed' | 'errors') =>
+      items.reduce((total, item) => total + item[key], 0);
+    const counts = { passed: sum('passed'), failed: sum('failed'), errors: sum('errors') };
+    const checks = sum('count');
+    let text: string;
+    switch (kind) {
+      case 'monitor': {
+        const monitors = items.reduce(
+          (total, item) => total + Math.max(1, itemNames(item).length),
+          0
+        );
+        if (monitors > 1) {
+          text = `Monitors checked ${times(checks)}, ${
+            counts.passed > 0 ? `fired ${times(counts.passed)}` : 'none fired'
+          }`;
+        } else {
+          text = `Monitor checked ${times(checks)}, ${
+            counts.passed > 0 ? `fired ${times(counts.passed)}` : 'quiet'
+          }`;
+        }
+        break;
+      }
+      case 'tool':
+        // R3-F3: an item is a question, not a call; the daemon says how many calls
+        // made it (an older daemon sent an item per call, so 1 each).
+        text = `${pluralize(
+          items.reduce((total, item) => total + (item.calls ?? 1), 0),
+          'decide call'
+        )} read ${pluralize(checks, 'chunk')}`;
+        break;
+      case 'gate': {
+        const several = items.length > 1;
+        const outcome = gateOutcome(counts.passed, counts.failed, several);
+        text = `${several ? 'Gates' : 'Gate'} checked ${times(checks)}${outcome ? `, ${outcome}` : ''}`;
+        break;
+      }
+      case 'chat':
+        text = `Decision chat answered ${times(checks)}`;
+        break;
+      case 'adhoc':
+        text = pluralize(checks, 'ad hoc call');
+        break;
+    }
+    parts.push({ kind, text: withErrors(text, counts.errors), rank: rankOf(kind, counts) });
+  }
+  return parts.sort((a, b) => a.rank - b.rank || KIND_ORDER[a.kind] - KIND_ORDER[b.kind]);
+}
+
+/** How many parts the closed line shows before `+N more`. */
+export const MARKER_PARTS_SHOWN = 2;
+
+/**
+ * One source's line in the open marker, by its display name: `Done with shell:
+ * checked 3 times, fired twice`, `Probe write test: checked twice, not passed`,
+ * `Decide call: 30 chunks`, `Decision chat: answered 3 times`, `Ad hoc calls: 3`.
+ */
+export function markerSourceLine(item: DecisionTurnMarkerItem): string {
+  const name = joinNames(itemNames(item));
+  let text: string;
+  switch (item.origin) {
+    case 'monitor':
+      text = `${name || 'Monitor'}: checked ${times(item.count)}, ${
+        item.passed > 0 ? `fired ${times(item.passed)}` : 'quiet'
+      }`;
+      break;
+    case 'gate': {
+      const outcome = gateOutcome(item.passed, item.failed, false);
+      text = `${name || 'Phase gate'}: checked ${times(item.count)}${outcome ? `, ${outcome}` : ''}`;
+      break;
+    }
+    case 'tool':
+      text = `Decide call: ${pluralize(item.count, 'chunk')}`;
+      break;
+    case 'chat':
+      text = `Decision chat: answered ${times(item.count)}`;
+      break;
+    case 'adhoc':
+      text = `Ad hoc calls: ${item.count.toLocaleString('en-US')}`;
+      break;
+  }
+  return withErrors(text, item.errors);
+}
+
+/** The marker's items in the closed line's importance order (ties keep their order). */
+export function markerItemsByImportance(marker: DecisionTurnMarker): DecisionTurnMarkerItem[] {
+  return marker.items
+    .map((item, index) => ({ item, index }))
+    .sort(
+      (a, b) =>
+        rankOf(a.item.origin, a.item) - rankOf(b.item.origin, b.item) ||
+        KIND_ORDER[a.item.origin] - KIND_ORDER[b.item.origin] ||
+        a.index - b.index
+    )
+    .map(({ item }) => item);
+}
+
+/**
+ * The marker's status, first that applies: a decision call failed, a phase gate did
+ * not pass, a monitor fired. `null` otherwise.
+ */
+export function markerStatus(marker: DecisionTurnMarker): 'error' | 'gate' | 'fired' | null {
+  if (marker.items.some((item) => item.errors > 0)) return 'error';
+  if (marker.items.some((item) => item.origin === 'gate' && item.failed > 0)) return 'gate';
+  if (marker.items.some((item) => item.fired || (item.origin === 'monitor' && item.passed > 0)))
+    return 'fired';
+  return null;
 }
 
 /**
@@ -178,6 +321,44 @@ export interface DecideQuestionSummary {
   maxP: number | null;
   /** choice and score: how many chunks gave each answer, in option order. */
   answerCounts: Array<{ answer: string; count: number }>;
+  /**
+   * G-3: the answered chunks in four groups that do not overlap and add up to
+   * `decided` (`AnswerGroups`), for a question with a pass. `null` from an older
+   * daemon, or for a choice or score with no threshold.
+   */
+  groups: DecideAnswerGroups | null;
+  /** A vote of several models (`decide` with `models`): the majority and the agreement. */
+  vote: DecideQuestionVote | null;
+}
+
+/** `AnswerGroups`: a yes is a pass, a no everything else; review is both middles. */
+export interface DecideAnswerGroups {
+  yesConfident: number;
+  yesReview: number;
+  noReview: number;
+  noConfident: number;
+}
+
+/** `VoteQuestion`, as far as a row draws it. */
+export interface DecideQuestionVote {
+  /** How many chunks have each answer as their majority, in the daemon's order. */
+  majority: Array<{ answer: string; count: number }>;
+  /** Chunks whose answers tied. */
+  ties: number;
+  /** Chunks at least two models answered. */
+  compared: number;
+  /** Of those, chunks every answering model gave the same answer. */
+  agreed: number;
+}
+
+/** One model of a vote (`VoteModel`). */
+export interface DecideVoteModel {
+  /** The name a person reads (an alias for a Baseten model). */
+  label: string;
+  decided: number;
+  errors: number;
+  /** Why this model answered nothing, when it did not. */
+  error: string | null;
 }
 
 /** One distinct error in a batch, and how many chunks it hit (never which ones here). */
@@ -201,6 +382,8 @@ export interface DecideBatchSummary {
   elapsedMs: number | null;
   questions: DecideQuestionSummary[];
   errorGroups: DecideErrorGroup[];
+  /** The models of a vote, in the order they were asked; `null` for one model's batch. */
+  voteModels: DecideVoteModel[] | null;
 }
 
 const optionalCount = (value: unknown): number | null => {
@@ -208,11 +391,43 @@ const optionalCount = (value: unknown): number | null => {
   return n !== null && n >= 0 ? Math.floor(n) : null;
 };
 
+/** An ordered `{answer: count}` object as a list, dropping what is not a count. */
+function countsOf(value: unknown): Array<{ answer: string; count: number }> {
+  const counts = record(value);
+  return counts
+    ? Object.entries(counts).flatMap(([answer, n]) => {
+        const parsed = optionalCount(n);
+        return parsed === null ? [] : [{ answer, count: parsed }];
+      })
+    : [];
+}
+
+function groupsOf(value: unknown): DecideAnswerGroups | null {
+  const groups = record(value);
+  if (!groups) return null;
+  const yesConfident = optionalCount(groups.yesConfident);
+  const yesReview = optionalCount(groups.yesReview);
+  const noReview = optionalCount(groups.noReview);
+  const noConfident = optionalCount(groups.noConfident);
+  return yesConfident === null || yesReview === null || noReview === null || noConfident === null
+    ? null
+    : { yesConfident, yesReview, noReview, noConfident };
+}
+
+function voteOf(question: Record<string, unknown>): DecideQuestionVote | null {
+  if (!record(question.majority)) return null;
+  return {
+    majority: countsOf(question.majority),
+    ties: count(question.ties),
+    compared: count(question.compared),
+    agreed: count(question.agreed),
+  };
+}
+
 function questionSummaryOf(value: unknown): DecideQuestionSummary | null {
   const question = record(value);
   const name = text(question?.name);
   if (!question || !name) return null;
-  const counts = record(question.answerCounts);
   return {
     name,
     kind: text(question.type) ?? 'yes_no',
@@ -222,13 +437,30 @@ function questionSummaryOf(value: unknown): DecideQuestionSummary | null {
     yes: optionalCount(question.yes),
     review: optionalCount(question.review),
     maxP: probability(question.maxP),
-    answerCounts: counts
-      ? Object.entries(counts).flatMap(([answer, n]) => {
-          const parsed = optionalCount(n);
-          return parsed === null ? [] : [{ answer, count: parsed }];
-        })
-      : [],
+    answerCounts: countsOf(question.answerCounts),
+    groups: groupsOf(question.groups),
+    vote: voteOf(question),
   };
+}
+
+function voteModelsOf(value: unknown): DecideVoteModel[] {
+  return Array.isArray(value)
+    ? value.flatMap((entry): DecideVoteModel[] => {
+        const model = record(entry);
+        if (!model) return [];
+        const ref = record(model.model);
+        const label = text(model.label) ?? text(ref?.model);
+        if (!label) return [];
+        return [
+          {
+            label,
+            decided: count(model.decided),
+            errors: count(model.errors),
+            error: text(model.error),
+          },
+        ];
+      })
+    : [];
 }
 
 function modelOf(value: unknown): DecideBatchSummary['model'] {
@@ -257,6 +489,8 @@ function batchSummaryOf(value: unknown): DecideBatchSummary | null {
         return [{ message, chunks: listed + count(group.more) }];
       })
     : [];
+  // G-1: a vote of several models (`VoteSummary`, kind `decide_vote`) has no one model.
+  const vote = summary.kind === 'decide_vote' || Array.isArray(summary.models);
   return {
     batchId,
     chunks: optionalCount(summary.chunks),
@@ -268,6 +502,7 @@ function batchSummaryOf(value: unknown): DecideBatchSummary | null {
     elapsedMs: optionalCount(summary.elapsedMs),
     questions,
     errorGroups,
+    voteModels: vote ? voteModelsOf(summary.models) : null,
   };
 }
 

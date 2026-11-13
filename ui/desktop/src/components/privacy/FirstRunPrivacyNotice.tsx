@@ -27,6 +27,9 @@ const PROVIDER_LABELS: Record<string, string> = {
   versa_bedrock: 'Versa (Bedrock)',
   llamacpp: 'Llama Server',
   ollama: 'Ollama',
+  // Decision models, named for where they run, never by their provider key (R3).
+  ollama_decision: 'Decision models on this computer',
+  baseten_decision: 'Decision models on Baseten',
   [UNKNOWN_PROVIDER]: 'Provider not recorded',
 };
 
@@ -216,9 +219,12 @@ export function FirstRunPrivacyNotice({
               data-testid="notice-headline"
               className="text-body text-text-default"
             >
-              <strong className="font-semibold">{resolved.privateVisible}</strong> of your{' '}
-              <strong className="font-semibold">{resolved.totalVisible}</strong> chats are now
-              marked private, because that is the model each of them was last using.
+              {/* The total is every chat in History, all time; Home's tile counts
+                  the chats active in its range. So the headline names its own
+                  scope rather than read as Home's number (E-10). */}
+              <strong className="font-semibold">{resolved.privateVisible}</strong> of the{' '}
+              <strong className="font-semibold">{resolved.totalVisible}</strong> chats in your
+              History are now marked private, because that is the model each of them was last using.
             </DialogDescription>
 
             {resolved.privateByProvider.length > 0 && (

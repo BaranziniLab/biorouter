@@ -4,6 +4,8 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event';
 import { SummaryHeaderButton, type SummaryHeaderButtonProps } from './SummaryHeaderButton';
 import { summaryCopy } from './copy';
+import { parseSessionSubagents, type SessionSubagents } from '../../utils/sessionSubagents';
+import { wireRow, wireSubagents } from '../../utils/sessionSubagents.fixture';
 
 /**
  * The Chat summary's header button, the half of rung 0 a person presses
@@ -99,7 +101,7 @@ describe('the summary button where the rail does not fit', () => {
     await user.click(button());
     const dialog = await screen.findByRole('dialog', { name: summaryCopy.title });
     expect(dialog).toHaveClass('br-summary-popover');
-    expect(within(dialog).getByText(summaryCopy.toolCalls)).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: summaryCopy.details })).toBeInTheDocument();
     expect(within(dialog).getByRole('button', { name: summaryCopy.diagnostics })).toBeVisible();
     expect(button()).toHaveAttribute('aria-expanded', 'true');
     expect(button()).toHaveAttribute('aria-controls', dialog.id);
@@ -262,5 +264,48 @@ describe('the pressed fill follows the person, not geometry', () => {
     expect(button()).toHaveAttribute('aria-expanded', 'false');
     rerender(<Harness mode="rail" railShown railRendered />);
     expect(button()).toHaveAttribute('data-still', '');
+  });
+});
+
+/**
+ * A subagent's peek inside the header popover (spec 12, F-3): the peek is a
+ * popover of its own, portalled, so a press inside it must not read as outside
+ * the summary, and Escape closes the peek first, then the summary.
+ */
+describe('a subagent peek inside the summary popover', () => {
+  it('keeps both open while the peek is used, and Escape closes the peek first', async () => {
+    const user = userEvent.setup();
+    const roster = parseSessionSubagents(
+      wireSubagents([wireRow({ sessionId: 'a', role: 'Reviewer' })])
+    ) as SessionSubagents;
+    render(
+      <Harness
+        initialOpen
+        summary={{
+          ...summary,
+          subagents: {
+            data: roster,
+            loading: false,
+            error: false,
+            refresh: vi.fn(),
+            onOpen: vi.fn(),
+          },
+        }}
+      />
+    );
+    const dialog = await screen.findByRole('dialog', { name: summaryCopy.title });
+    await user.click(within(dialog).getByTestId('subagent-row-a'));
+    const peek = await screen.findByTestId('subagent-card-a');
+    await user.click(within(peek).getByRole('button', { name: summaryCopy.agents.peek.details }));
+    expect(screen.getByRole('dialog', { name: summaryCopy.title })).toBeInTheDocument();
+    expect(screen.getByTestId('subagent-card-a')).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByTestId('subagent-card-a')).toBeNull());
+    expect(screen.getByRole('dialog', { name: summaryCopy.title })).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: summaryCopy.title })).toBeNull()
+    );
   });
 });

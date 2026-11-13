@@ -30,7 +30,7 @@ Create a workflow from the current session or from a template.
 ### In Desktop, from the current session
 
 1. While in the session you want to save as a workflow, open the **chat summary** (the ☰ button in the chat header, beside the terminal button) and click **Make workflow**.
-2. In the dialog that opens, review and edit the workflow fields as needed. Biorouter fills it in from the conversation, and captures the session's extensions, knowledge bases and model pin for you.
+2. In the dialog that opens, review and edit the workflow fields as needed. Biorouter fills it in from the conversation, and captures the session's extensions, knowledge bases and model pin for you. The chat's monitors and phase plan are kept too, shown read only, and saved with the workflow (see [Supervision](workflow-schema-reference.md#supervision-decision_settings-and-orchestration_plan)).
 3. When you're finished, you can:
    - Click `Create` to save the workflow to your Workflow Library
    - Click `Create and run` to save and immediately run the workflow in a new session

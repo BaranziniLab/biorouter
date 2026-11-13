@@ -455,7 +455,15 @@ async fn open_decisions(session_manager: &SessionManager, session_id: &str, app:
     match biorouter::decision::log::summary(session_manager, session_id).await {
         Ok(summary) => {
             app.completion = None;
-            app.decisions = Some(decisions::DecisionsOverlay::new(summary));
+            let last = crate::commands::session_decisions::last_calls_from_store(
+                session_manager,
+                session_id,
+                &summary,
+            )
+            .await;
+            let mut overlay = decisions::DecisionsOverlay::new(summary);
+            overlay.last = last;
+            app.decisions = Some(overlay);
         }
         Err(error) => app.push_error(&format!("Couldn't read this chat's decisions: {error}")),
     }
@@ -760,6 +768,9 @@ fn on_key(app: &mut App, key: KeyEvent) -> Option<String> {
                 app.completion_move(1);
                 return None;
             }
+            // A command typed out in full runs on this Enter (E-4); the
+            // popup closes and the Enter below submits it.
+            KeyCode::Enter if app.completion_is_typed_command() => app.completion = None,
             KeyCode::Tab | KeyCode::Enter => {
                 // Accept the highlighted entry rather than submitting the raw
                 // half-typed token (so arrow-key selection actually applies).
@@ -881,6 +892,7 @@ fn on_key_streaming(app: &mut App, key: KeyEvent) -> StreamAction {
                 app.completion_move(1);
                 return StreamAction::None;
             }
+            KeyCode::Enter if app.completion_is_typed_command() => app.completion = None,
             KeyCode::Tab | KeyCode::Enter => {
                 app.completion_accept();
                 app.refresh_completion();
@@ -2207,14 +2219,15 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let s = &app.status;
 
     // Line 1: the large-language model and the provider. A Baseten decision
-    // model reads by its alias (`joey-1`), as its cards and replies do.
+    // model reads by its alias (`joey-1`), as its cards and replies do, and a
+    // decision model by where it runs rather than its provider key.
     let line1 = Line::from(vec![
         Span::styled(
             crate::commands::decide::model_name(&s.provider, &s.model),
             Style::new().fg(ACCENT),
         ),
         sep(),
-        Span::styled(s.provider.clone(), dim),
+        Span::styled(status_provider_text(&s.provider, &s.model), dim),
     ]);
 
     // Line 2: skills · extensions · knowledge bases, with the context meter
@@ -2817,6 +2830,24 @@ fn count_non_capability_extensions() -> usize {
         .count()
 }
 
+/// What follows the model on the status line: a decision model's place
+/// (`this computer`, `Baseten`), never its provider key
+/// (`ollama_decision`), which is how a person reads every decision model;
+/// any other provider by its name, as `biorouter configure` names it.
+fn status_provider_text(provider: &str, model: &str) -> String {
+    crate::commands::decide::model_place(provider, model)
+        .map(str::to_string)
+        .unwrap_or_else(|| provider.to_string())
+}
+
+/// How many extensions the status line names for a chat whose agent loaded
+/// `loaded`: every one of them, the built-in ones included, as each
+/// subagent's row counts them. `None` before the agent has loaded any, when
+/// the configured count stands.
+fn loaded_extension_count(loaded: &[biorouter::agents::ExtensionConfig]) -> Option<usize> {
+    (!loaded.is_empty()).then_some(loaded.len())
+}
+
 /// Pluralize a noun for a count: "1 skill", "0 skills", "2 skills".
 fn pluralize(count: usize, singular: &str) -> String {
     if count == 1 {
@@ -3105,9 +3136,10 @@ fn help_into(app: &mut App) {
                 )
             }),
     );
+    let width = help_column_width(commands.iter().map(|(cmd, _)| cmd.as_str()));
     for (cmd, desc) in commands {
         app.push_line(Line::from(vec![
-            Span::styled(format!("  {:<14}", cmd), Style::new().fg(ACCENT)),
+            Span::styled(help_cell(&cmd, width), Style::new().fg(ACCENT)),
             Span::styled(desc.to_string(), Style::new().add_modifier(Modifier::DIM)),
         ]));
     }
@@ -3126,10 +3158,32 @@ fn help_into(app: &mut App) {
         ),
     ] {
         app.push_line(Line::from(vec![
-            Span::styled(format!("  {:<14}", k), Style::new().fg(ACCENT)),
+            Span::styled(help_cell(k, width), Style::new().fg(ACCENT)),
             Span::styled(d.to_string(), Style::new().add_modifier(Modifier::DIM)),
         ]));
     }
+}
+
+/// The widest `/help` name, so every description starts in one column; at
+/// most [`HELP_COLUMN_MAX`], past which a long name is followed by the gap
+/// alone. It was a fixed 14, and `/folder-access [revoke <id>]` ran into its
+/// description.
+fn help_column_width<'a>(names: impl Iterator<Item = &'a str>) -> usize {
+    names
+        .map(UnicodeWidthStr::width)
+        .max()
+        .unwrap_or(0)
+        .min(HELP_COLUMN_MAX)
+}
+
+/// The widest a `/help` name column grows.
+const HELP_COLUMN_MAX: usize = 30;
+
+/// A `/help` name, indented, padded to `width` display cells, then a gap of
+/// two that no name runs into.
+fn help_cell(name: &str, width: usize) -> String {
+    let pad = width.saturating_sub(UnicodeWidthStr::width(name));
+    format!("  {name}{}  ", " ".repeat(pad))
 }
 
 fn status_from_session(_session: &CliSession) -> StatusInfo {
@@ -3173,6 +3227,13 @@ fn shorten_home(p: &std::path::Path) -> String {
 /// Refresh the context-window meter (tokens used / model limit) from the live
 /// session. Best-effort: failures leave the meter hidden.
 async fn refresh_context(session: &CliSession, app: &mut App) {
+    // E-3: the extensions this chat has loaded, the count its subagents'
+    // rows give too ("14 ext"). The configured list leaves out what is built
+    // in, so it read "0 extensions" while fourteen were loaded.
+    let loaded = session.agent.get_extension_configs().await;
+    if let Some(count) = loaded_extension_count(&loaded) {
+        app.status.extensions = count;
+    }
     if let Ok(provider) = session.agent.provider().await {
         app.status.context_limit = gauge_limit(
             provider.get_name(),
@@ -3613,6 +3674,65 @@ mod tests {
             app.input,
             "'/Users/wgu/Desktop/first file.pdf' /Users/wgu/Desktop/second.txt"
         );
+    }
+
+    /// E-4: a slash command typed out in full runs on the first Enter; a
+    /// half-typed one is completed first, as before.
+    #[test]
+    fn a_typed_out_slash_command_runs_on_the_first_enter() {
+        use app::{CompletionItem, CompletionKind};
+        let catalog = || {
+            vec![CompletionItem {
+                label: "/compact".into(),
+                description: "compact".into(),
+                insert: "/compact ".into(),
+                filter: "compact".into(),
+                kind: CompletionKind::Command,
+            }]
+        };
+        let mut app = App::new(StatusInfo::default());
+        app.set_catalog(catalog());
+        for c in "/compact".chars() {
+            app.insert_char(c);
+        }
+        app.refresh_completion();
+        assert!(
+            app.completion_active(),
+            "the popup is open on the full name"
+        );
+        assert_eq!(
+            on_key(&mut app, press(KeyCode::Enter)),
+            Some("/compact".to_string())
+        );
+
+        let mut app = App::new(StatusInfo::default());
+        app.set_catalog(catalog());
+        for c in "/comp".chars() {
+            app.insert_char(c);
+        }
+        app.refresh_completion();
+        assert_eq!(on_key(&mut app, press(KeyCode::Enter)), None);
+        assert_eq!(
+            app.input, "/compact ",
+            "a half-typed name is completed first"
+        );
+    }
+
+    /// E-5: every `/help` description starts in one column, after a gap that
+    /// a long name never runs into.
+    #[test]
+    fn help_names_and_descriptions_never_run_together() {
+        let names = ["/help, /?", "/folder-access [revoke <id>]", "/exit"];
+        let width = help_column_width(names.iter().copied());
+        assert_eq!(width, "/folder-access [revoke <id>]".len());
+        let cells: Vec<String> = names.iter().map(|n| help_cell(n, width)).collect();
+        assert!(
+            cells.iter().all(|c| c.chars().count() == width + 4),
+            "{cells:?}"
+        );
+        assert!(cells[1].ends_with(">]  "), "{}", cells[1]);
+        let long = "/a-very-long-command-name [with <several> arguments]";
+        assert!(help_cell(long, HELP_COLUMN_MAX).ends_with("]  "));
     }
 
     #[test]
@@ -4941,7 +5061,11 @@ mod tests {
         );
         let mut app = App::new(status);
         let text = buffer_text(&mut app, 120, 24);
-        assert!(text.contains("joey-1  ·  baseten_decision"), "{text}");
+        assert!(
+            text.contains("joey-1  ·  Baseten"),
+            "R3: where it runs: {text}"
+        );
+        assert!(!text.contains("baseten_decision"), "{text}");
         assert!(!text.contains("baseten-joey"), "{text}");
     }
 
@@ -5005,6 +5129,7 @@ mod tests {
             origin_id: Some(label.to_lowercase()),
             label: label.to_string(),
             count,
+            calls: count,
             passed: 0,
             failed: count,
             errors: 0,
@@ -5029,6 +5154,45 @@ mod tests {
             .with_metadata(metadata)
     }
 
+    /// E-3: the status line counts every extension the chat loaded, the
+    /// built-in ones included, as its subagents' rows do; it read
+    /// "0 extensions" while fourteen were loaded.
+    /// R3: a decision chat's status line names where its model runs, never
+    /// the provider key.
+    #[test]
+    fn the_status_line_names_where_a_decision_model_runs() {
+        let joey = "decision-models/baseten-joey-2b-latest";
+        assert_eq!(status_provider_text("baseten_decision", joey), "Baseten");
+        assert_eq!(
+            status_provider_text("ollama_decision", "tev1:0.8b"),
+            crate::commands::decide::model_place("ollama_decision", "tev1:0.8b").unwrap()
+        );
+        assert_ne!(
+            status_provider_text("ollama_decision", "tev1:0.8b"),
+            "ollama_decision"
+        );
+        // A cloud tag is served by ollama.com, never "this computer".
+        assert_eq!(
+            status_provider_text("ollama_decision", "gpt-oss:120b-cloud"),
+            "Ollama cloud"
+        );
+        assert_eq!(
+            status_provider_text("versa_azure", "gpt-5.5"),
+            "versa_azure"
+        );
+    }
+
+    #[test]
+    fn the_status_line_counts_the_loaded_extensions() {
+        let developer = biorouter::agents::ExtensionConfig::default();
+        assert!(developer.is_capability(), "the default is built in");
+        assert_eq!(
+            loaded_extension_count(&[developer.clone(), developer]),
+            Some(2)
+        );
+        assert_eq!(loaded_extension_count(&[]), None);
+    }
+
     /// The owner rule: thousands of calls draw as ONE line per origin.
     #[test]
     fn a_turns_decision_marker_draws_one_line_per_origin() {
@@ -5043,9 +5207,13 @@ mod tests {
         let lines = buffer_lines(&mut app, 120, 30);
         let markers: Vec<&String> = lines.iter().filter(|l| l.contains('◇')).collect();
         assert_eq!(markers.len(), 2, "{lines:#?}");
-        assert!(markers[0].contains("Monitor Form reached: 1800 checks this turn · 1800 failed"));
-        assert!(markers[1].contains("Gate Implementation: 3 checks this turn"));
-        assert!(markers[1].contains("· fired"));
+        assert!(markers[0].contains("Monitor 'Form reached': 1800 checks this turn · 1800 quiet"));
+        assert!(
+            markers[1].contains("Gate 'Implementation': 3 checks this turn · 3 not passed"),
+            "a gate passes or does not, never \"failed\": {}",
+            markers[1]
+        );
+        assert!(markers[1].contains("last P(yes) 0.31"), "{}", markers[1]);
         let all = lines.join("\n");
         assert!(
             !all.contains("Monitors checked 18 times"),

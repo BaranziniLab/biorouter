@@ -511,14 +511,20 @@ export default function UserMessage({
       align="end"
       timestamp={hasBeenEdited ? transcriptCopy.message.edited(timestamp) : timestamp}
     >
-      <TranscriptIconButton
-        ref={editButtonRef}
-        onClick={handleEditClick}
-        label={transcriptCopy.message.editNamed(displayText)}
-        tip={transcriptCopy.message.edit}
-        aria-expanded={isEditing}
-        icon={<Pencil aria-hidden="true" />}
-      />
+      {/* Only where an edit can be saved (E-12): a read-only transcript (a
+          subagent's tab in a browser, a message whose delivery is still being
+          confirmed) passes no `onMessageUpdate`, and a pencil there opened an
+          editor whose Save did nothing. Copy stays everywhere. */}
+      {onMessageUpdate && (
+        <TranscriptIconButton
+          ref={editButtonRef}
+          onClick={handleEditClick}
+          label={transcriptCopy.message.editNamed(displayText)}
+          tip={transcriptCopy.message.edit}
+          aria-expanded={isEditing}
+          icon={<Pencil aria-hidden="true" />}
+        />
+      )}
       {/* Copy takes the whole thing, collapsed or not: the clamp is a view
           state, never a content state. Both payloads are already safe: the
           plain-text one is `displayText` itself, and the HTML one is cloned

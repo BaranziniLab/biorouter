@@ -4,7 +4,7 @@
  * the daemon's own sentence when Ollama is stopped, elsewhere, or the install
  * failed. Nothing is installed unless the person presses Install.
  */
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DecisionRequestError,
@@ -90,11 +90,10 @@ describe('DecisionModelInstall', () => {
     expect(await screen.findByTestId('decision-install-start')).toHaveTextContent(
       'Install tev1:0.8b'
     );
-    expect(
-      screen.getByText(
-        'tev1:0.8b is a small decision model (about 1.5 GB) that runs in Ollama on this computer.'
-      )
-    ).toBeInTheDocument();
+    // What the model is sits in the InfoTip after Install, with the download's size.
+    const about = screen.getByRole('button', { name: 'About tev1:0.8b' });
+    expect(about).toHaveAccessibleDescription('About 1.5 GB, runs in Ollama on this computer.');
+    expect(screen.queryByText(/is a small decision model/)).toBeNull();
     rerender(<DecisionModelInstall reason="crew" pollIntervalMs={5} />);
     expect(screen.getByTestId('decision-install-why')).toHaveTextContent(
       'This chat works under a Crew grant, so only a decision model on this computer may read it, and none is installed.'
@@ -105,6 +104,21 @@ describe('DecisionModelInstall', () => {
     );
   });
 
+  it('puts nothing beside the Install button but the InfoTip glyph, and keeps its name', async () => {
+    render(<DecisionModelInstall reason="private" pollIntervalMs={5} />);
+    const install = await screen.findByRole('button', { name: 'Install tev1:0.8b' });
+    const row = install.parentElement!;
+    expect(Array.from(row.children).map((child) => child.getAttribute('data-slot'))).toEqual([
+      'button',
+      'info-tip-trigger',
+      'info-tip-description',
+    ]);
+    // The hidden help carries the size, in the offer's own figure, said "About" once.
+    expect(within(row).getByText('About 1.5 GB, runs in Ollama on this computer.')).toHaveClass(
+      'sr-only'
+    );
+  });
+
   it('in a browser, names the computer Biorouter runs on, not this one', async () => {
     document.documentElement.dataset.biorouterSurface = 'headless';
     render(<DecisionModelInstall reason="private" pollIntervalMs={5} />);
@@ -112,8 +126,8 @@ describe('DecisionModelInstall', () => {
       'only a decision model on the computer Biorouter runs on may read it'
     );
     expect(
-      await screen.findByText(/runs in Ollama on the computer Biorouter runs on\.$/)
-    ).toBeInTheDocument();
+      await screen.findByRole('button', { name: 'About tev1:0.8b' })
+    ).toHaveAccessibleDescription(/runs in Ollama on the computer Biorouter runs on\.$/);
   });
 
   it('installs only when pressed: POSTs the default model, polls the progress, and says when it is done', async () => {
@@ -123,33 +137,40 @@ describe('DecisionModelInstall', () => {
     expect(mocks.start).not.toHaveBeenCalled();
 
     mocks.start.mockResolvedValue(status({ job: job('downloading') }));
-    mocks.fetch
-      .mockResolvedValueOnce(
-        read(
-          status({
-            job: job('downloading', { completedBytes: 412_000_000, totalBytes: 1_500_000_000 }),
-          })
-        )
-      )
-      .mockResolvedValueOnce(read(status({ job: job('verifying') })))
-      .mockResolvedValue(
-        read(
-          status({
-            job: job('installed'),
-            offers: status().offers.map((offer, i) => ({ ...offer, installed: i === 0 })),
-          })
-        )
-      );
+    // Each poll waits for the test to answer it, so a state the panel shows for
+    // one poll (5ms here) is still on screen when the test looks for it. With
+    // canned answers the "verifying" line could be replaced before
+    // `findByText` saw it on a slow runner.
+    const polls: Array<(value: ReturnType<typeof read>) => void> = [];
+    mocks.fetch.mockImplementation(
+      () => new Promise<ReturnType<typeof read>>((resolve) => polls.push(resolve))
+    );
+    const answerPoll = async (value: DecisionInstallStatus) => {
+      await waitFor(() => expect(polls.length).toBe(1));
+      await act(async () => polls.shift()!(read(value)));
+    };
     fireEvent.click(install);
     expect(mocks.start).toHaveBeenCalledWith('tev1:0.8b');
 
+    await answerPoll(
+      status({
+        job: job('downloading', { completedBytes: 412_000_000, totalBytes: 1_500_000_000 }),
+      })
+    );
     expect(await screen.findByText('Downloading tev1:0.8b… 412 MB of 1.5 GB')).toBeInTheDocument();
     const bar = screen.getByRole('progressbar');
     expect(bar).toHaveAttribute('aria-valuenow', '412000000');
     expect(bar).toHaveAttribute('aria-valuemax', '1500000000');
+    await answerPoll(status({ job: job('verifying') }));
     expect(
       await screen.findByText('Checking that Ollama answers decisions with it…')
     ).toBeInTheDocument();
+    await answerPoll(
+      status({
+        job: job('installed'),
+        offers: status().offers.map((offer, i) => ({ ...offer, installed: i === 0 })),
+      })
+    );
     expect(await screen.findByTestId('decision-install-done')).toHaveTextContent(
       'tev1:0.8b is installed.'
     );

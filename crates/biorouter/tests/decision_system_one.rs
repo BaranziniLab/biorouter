@@ -1239,3 +1239,197 @@ async fn an_answer_naming_an_outcome_the_question_lacks_is_refused() {
         );
     }
 }
+
+/// F5: a server's refusal of a prompt over its window, said its own way by
+/// each server, reaches the caller as the check's over-size error, named for
+/// the chunk, from the two numbers alone: the body is never echoed.
+#[tokio::test]
+async fn a_servers_over_window_refusal_reads_as_the_size_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({
+            "error": "prompt 0 has 2503 tokens; expected 1\u{2013}2048 (input is never \
+                      truncated) SYNTHETIC_SENSITIVE_STATE_SENTINEL"
+        })))
+        .mount(&server)
+        .await;
+    let model: Arc<dyn DecisionModel> = Arc::new(ollama(&server, "tev1:0.8b"));
+    let mut asked = questions();
+    asked.truncate(1);
+    let outcomes = service(model.clone())
+        .decide_many(
+            None,
+            Some(&DecisionModelRef::new("ollama_decision", "tev1:0.8b")),
+            &asked,
+            vec![biorouter::decision::DecisionChunk {
+                id: "note-0003".into(),
+                context: DecisionContext::Text(NOTE.into()),
+            }],
+        )
+        .await
+        .expect("a batch");
+    let error = outcomes[0].error.as_deref().expect("the chunk fails");
+    // The server's 2,503 prompt tokens, said in the unit decision_models uses
+    // (R3-F2): before the margin's factor and less the questions' share.
+    assert!(
+        error.starts_with("Chunk `note-0003` is about ")
+            && error
+                .contains("`tev1:0.8b` takes beside these questions (its window is 2048 tokens)"),
+        "{error}"
+    );
+    assert!(!error.contains("SENTINEL"), "{error}");
+
+    let single = service(model)
+        .decide(
+            None,
+            Some(&DecisionModelRef::new("ollama_decision", "tev1:0.8b")),
+            &one_question(NOTE),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&single, DecisionError::TooLarge { chunk, tokens, usable, limit: 2048, .. }
+            if chunk == "The text" && *tokens > *usable && *usable < 1_669),
+        "{single:?}"
+    );
+}
+
+/// Baseten's 422 for a prompt over its 16,000 (measured 2026-11-10) reads the
+/// same way.
+#[tokio::test]
+async fn basetens_over_window_refusal_reads_as_the_size_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(ResponseTemplate::new(422).set_body_json(json!({
+            "error": "OneJev prompt has 16094 tokens, exceeding max_len 16000; prompts are \
+                      never truncated",
+            "error_type": "Validation"
+        })))
+        .mount(&server)
+        .await;
+    let err = service(baseten(&server))
+        .decide(
+            None,
+            Some(&DecisionModelRef::new("baseten_decision", JOEY)),
+            &one_question(NOTE),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            err,
+            DecisionError::TooLarge {
+                tokens,
+                usable,
+                limit: 16000,
+                ..
+            } if tokens > usable && usable < 13_478
+        ),
+        "{err:?}"
+    );
+}
+
+/// W6: Ollama's 413 for a body over 64 KiB is said in bytes, never as a
+/// window.
+#[tokio::test]
+async fn an_ollama_body_over_its_limit_is_refused_in_bytes() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(
+            ResponseTemplate::new(413)
+                .set_body_json(json!({"error": "text and schema must not exceed 64 KiB"})),
+        )
+        .mount(&server)
+        .await;
+    let err = ollama(&server, "clef-flash:latest")
+        .decide(&one_question(NOTE))
+        .await
+        .unwrap_err();
+    let DecisionError::Invalid(text) = &err else {
+        panic!("a byte refusal, not {err:?}");
+    };
+    assert!(
+        text.contains("65536-byte request limit") && !text.contains("window"),
+        "{text}"
+    );
+}
+
+/// W6: the request limit is judged on the body as it is sent. A state of
+/// quotes and newlines doubles when escaped, so a count of its raw bytes let
+/// it through and the server refused it with 413; now nothing is sent.
+#[tokio::test]
+async fn an_escaped_body_over_the_limit_is_refused_before_sending() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/systemone"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let model: Arc<dyn DecisionModel> = Arc::new(ollama(&server, "clef-flash:latest"));
+    let state = format!("A patient note.{}", "\n".repeat(33_000));
+    let err = service(model)
+        .decide(
+            None,
+            Some(&DecisionModelRef::new(
+                "ollama_decision",
+                "clef-flash:latest",
+            )),
+            &one_question(&state),
+        )
+        .await
+        .unwrap_err();
+    let DecisionError::Invalid(text) = &err else {
+        panic!("a byte refusal, not {err:?}");
+    };
+    assert!(text.contains("over the 65536-byte request limit"), "{text}");
+}
+
+/// WIN-2: a decision model whose Modelfile states no `num_ctx` is held to the
+/// window its loaded copy was given (`/api/ps`), or, not loaded, to 8,192,
+/// never to its 262k trained window.
+#[tokio::test]
+#[serial_test::serial(ollama_discovery)]
+async fn a_model_that_states_no_window_takes_the_loaded_one_or_a_capped_default() {
+    forget_discovery();
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/tags"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [
+            {"name": "loaded:latest", "digest": "win2-a"},
+            {"name": "idle:latest", "digest": "win2-b"}
+        ]})))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/show"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "capabilities": ["decision"],
+            "model_info": {"general.architecture": "qwen35", "qwen35.context_length": 262144}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ps"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"models": [
+            {"name": "loaded:latest", "model": "loaded:latest", "context_length": 4096}
+        ]})))
+        .mount(&server)
+        .await;
+    let base = Url::parse(&server.uri()).unwrap();
+    let entries = discover_ollama(&base).await;
+    let window = |name: &str| {
+        entries
+            .iter()
+            .find(|e| e.model == name)
+            .map(|e| e.context_tokens)
+    };
+    assert_eq!(window("loaded:latest"), Some(4_096));
+    assert_eq!(window("idle:latest"), Some(8_192));
+    let facts = ollama_facts(&base, "loaded:latest").await.unwrap().unwrap();
+    assert_eq!(facts.context_tokens, 4_096);
+    forget_discovery();
+}

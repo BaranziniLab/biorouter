@@ -40,7 +40,7 @@ use biorouter::decision::{DecisionKind, DecisionModelRef, DecisionService, Quest
 use biorouter::session::{SessionManager, SessionType};
 
 use super::apps::configured_port;
-use super::decide::{clip, format_p, model_label, parse_choice, parse_probability, terminal_text};
+use super::decide::{clip, format_p, parse_choice, parse_probability, terminal_text};
 use super::session_decisions::{check_local_reach, daemon_error, parse_json, reach, Reach};
 use super::session_watch::{
     daemon_get_json, protected_write_with_key_if_wanted, refusal_sentence, DaemonAuth,
@@ -130,7 +130,7 @@ pub struct AddMonitor {
     pub ask: String,
     /// Fire when the probability of the wanted answer is at least this (above
     /// 0, at most 1), or falls below it with --below.
-    #[arg(long, value_parser = parse_probability)]
+    #[arg(long, value_name = "P", value_parser = super::decide::parse_positive_probability)]
     pub threshold: f64,
     /// Fire when the probability falls below --threshold instead of reaching it.
     #[arg(long)]
@@ -141,9 +141,9 @@ pub struct AddMonitor {
     /// When to ask: after every iteration of the agent loop, or once as a turn ends.
     #[arg(long, value_enum, default_value_t = TimingArg::PostIteration)]
     pub timing: TimingArg,
-    /// The decision model, `provider/model`. Without it the chat's default
-    /// decision model is used.
-    #[arg(long, value_name = "PROVIDER/MODEL")]
+    /// The decision model, by its name (tev1:0.8b, joey-1) or as
+    /// provider/model. Without it the chat's default decision model is used.
+    #[arg(long, value_name = "MODEL")]
     pub model: Option<String>,
     /// For a choice question: one option, `name` or `name=description`. Repeat it.
     #[arg(long = "choice", value_name = "NAME[=DESCRIPTION]", value_parser = parse_choice)]
@@ -155,7 +155,12 @@ pub struct AddMonitor {
     pub option: Option<String>,
     /// Checks in a row on the firing side of the threshold before it fires (1
     /// to 5).
-    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=5))]
+    #[arg(
+        long,
+        value_name = "N",
+        default_value_t = 1,
+        value_parser = clap::value_parser!(u32).range(1..=5)
+    )]
     pub consecutive: u32,
     /// After firing, re-arm only once the probability drops below this. For a
     /// stop monitor it also keeps the monitor from stopping later turns while
@@ -173,7 +178,12 @@ pub struct AddMonitor {
     #[arg(long = "on-error", value_enum, default_value_t = OnErrorArg::Notify)]
     pub on_error: OnErrorArg,
     /// At most this many checks per turn (1 to 200).
-    #[arg(long = "max-checks", default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..=200))]
+    #[arg(
+        long = "max-checks",
+        value_name = "N",
+        default_value_t = 50,
+        value_parser = clap::value_parser!(u32).range(1..=200)
+    )]
     pub max_checks: u32,
     /// An id for the monitor; made from the name when not given.
     #[arg(long)]
@@ -195,6 +205,9 @@ pub enum MonitorsCommand {
         /// Print JSON instead of text.
         #[arg(long)]
         json: bool,
+        /// Output format (text, json); --format json is the same as --json.
+        #[arg(short, long, value_enum, default_value_t = super::TextOrJson::Text)]
+        format: super::TextOrJson,
     },
     /// Add a monitor.
     Add(AddMonitor),
@@ -240,6 +253,9 @@ pub fn build_monitor(add: &AddMonitor, existing: &[MonitorCriterion]) -> Result<
             options: add.choices.iter().cloned().collect(),
         }
     };
+    if add.ask.trim().is_empty() {
+        bail!("{}", super::decide::EMPTY_ASK);
+    }
     let option = watched_option(&kind, add.option.as_deref())?;
     let question = Question {
         instructions: add.ask.trim().to_string(),
@@ -407,18 +423,29 @@ pub fn remove_monitor(settings: &mut DecisionSettings, wanted: &str) -> Result<M
     Ok(settings.monitors.remove(index))
 }
 
-fn timing_text(timing: MonitorTiming) -> &'static str {
+/// When a monitor is checked, as `list` and `run --explain` say it.
+pub(crate) fn timing_text(timing: MonitorTiming) -> &'static str {
     match timing {
         MonitorTiming::PostIteration => "after each iteration",
         MonitorTiming::TurnEnd => "as the turn ends",
     }
 }
 
-fn action_text(action: MonitorAction) -> &'static str {
+/// What a monitor does when it fires, as `list` and `run --explain` say it.
+pub(crate) fn action_text(action: MonitorAction) -> &'static str {
     match action {
         MonitorAction::Stop => "stops the turn",
         MonitorAction::Notify => "shows a notice",
         MonitorAction::Steer => "tells the model",
+    }
+}
+
+/// What a monitor does when its check errors, as `list` and `run --explain`
+/// say it.
+pub(crate) fn error_text(on_error: MonitorErrorPolicy) -> &'static str {
+    match on_error {
+        MonitorErrorPolicy::Notify => "an error shows a notice",
+        MonitorErrorPolicy::Pause => "an error pauses the turn",
     }
 }
 
@@ -524,16 +551,13 @@ pub fn render_monitors(session_id: &str, settings: &DecisionSettings) -> Vec<Str
             if let Some(rearm) = rearm_text(monitor) {
                 details.push(rearm);
             }
-            details.push(match monitor.on_error {
-                MonitorErrorPolicy::Notify => "an error shows a notice".to_string(),
-                MonitorErrorPolicy::Pause => "an error pauses the turn".to_string(),
-            });
+            details.push(error_text(monitor.on_error).to_string());
             details.push(format!(
                 "at most {} checks a turn",
                 monitor.max_evals_per_turn
             ));
             if let Some(model) = &monitor.model {
-                details.push(model_label(model));
+                details.push(super::decide::model_for_person(model));
             }
             if monitor.apply_to_subagents {
                 details.push("also watches the subagents this chat starts".to_string());
@@ -542,7 +566,10 @@ pub fn render_monitors(session_id: &str, settings: &DecisionSettings) -> Vec<Str
         }
     }
     match &settings.default_model {
-        Some(model) => out.push(format!("Default decision model: {}", model_label(model))),
+        Some(model) => out.push(format!(
+            "Default decision model: {}",
+            super::decide::model_for_person(model)
+        )),
         None => out.push(
             "Default decision model: chosen automatically (local first, within the chat's tier)"
                 .to_string(),
@@ -866,7 +893,8 @@ pub async fn handle_session_monitors(
         }
     };
     let edit = match command {
-        MonitorsCommand::List { json } => {
+        MonitorsCommand::List { json, format } => {
+            let json = json || format == super::TextOrJson::Json;
             let settings = match (&source, &local) {
                 (Reach::Daemon(auth), _) => daemon_load(session_id, auth).await?,
                 (_, Some(store)) => {
@@ -875,24 +903,29 @@ pub async fn handle_session_monitors(
                 _ => unreachable!("a local read always has its store"),
             };
             if json {
-                println!("{}", serde_json::to_string_pretty(&settings)?);
+                super::print_line(serde_json::to_string_pretty(&settings)?);
             } else {
                 for line in render_monitors(session_id, &settings) {
-                    println!("{line}");
+                    super::print_line(line);
                 }
             }
             return Ok(());
         }
-        MonitorsCommand::Add(add) => MonitorEdit::Add(add),
+        MonitorsCommand::Add(mut add) => {
+            // A bare model name is spelled out as `decide --model` takes it.
+            add.model = super::decide::spell_model_option(add.model).await?;
+            MonitorEdit::Add(add)
+        }
         MonitorsCommand::Remove { monitor } => MonitorEdit::Remove(monitor),
     };
     let message = match (source, local) {
-        (Reach::Daemon(auth), _) => edit_through_daemon(auth, session_id, edit).await?,
+        (Reach::Daemon(auth), _) => edit_through_daemon(auth, session_id, edit).await,
         (_, Some(store)) => {
-            edit_locally(biorouter::decision::global(), &store, session_id, edit).await?
+            edit_locally(biorouter::decision::global(), &store, session_id, edit).await
         }
         _ => unreachable!("a local write always has its store"),
-    };
+    }
+    .map_err(super::decide::advise)?;
     println!("{message}");
     Ok(())
 }
@@ -1002,7 +1035,10 @@ mod tests {
         );
         assert!(matches!(
             parse(&["list", "--json"]).unwrap(),
-            MonitorsCommand::List { json: true }
+            MonitorsCommand::List {
+                json: true,
+                format: super::super::TextOrJson::Text
+            }
         ));
     }
 
@@ -1218,16 +1254,20 @@ mod tests {
             lines[2],
             "     Has the agent reached the consent form page?"
         );
+        // R3: a model a person reads is its name and where it runs.
+        let local = format!(
+            "tev1:0.8b · {}",
+            super::super::decide::model_place("ollama_decision", "tev1:0.8b").unwrap()
+        );
         assert_eq!(
             lines[3],
-            "     P(yes) ≥ 0.85 · 2 in a row · stops the turn · after each iteration · re-arms \
-             below 0.70 · an error shows a notice · at most 50 checks a turn · \
-             ollama_decision/tev1:0.8b"
+            format!(
+                "     P(yes) ≥ 0.85 · 2 in a row · stops the turn · after each iteration · \
+                 re-arms below 0.70 · an error shows a notice · at most 50 checks a turn · \
+                 {local}"
+            )
         );
-        assert_eq!(
-            lines[4],
-            "Default decision model: ollama_decision/tev1:0.8b"
-        );
+        assert_eq!(lines[4], format!("Default decision model: {local}"));
 
         // A Baseten model configured by its slug is listed by its alias, as
         // every other terminal surface names it; the record keeps the slug.
@@ -1239,15 +1279,8 @@ mod tests {
         hosted.monitors[0].model = Some(slug.clone());
         hosted.default_model = Some(slug);
         let lines = render_monitors("s1", &hosted);
-        assert!(
-            lines[3].ends_with(" · baseten_decision/mammoth-1"),
-            "{}",
-            lines[3]
-        );
-        assert_eq!(
-            lines[4],
-            "Default decision model: baseten_decision/mammoth-1"
-        );
+        assert!(lines[3].ends_with(" · mammoth-1 · Baseten"), "{}", lines[3]);
+        assert_eq!(lines[4], "Default decision model: mammoth-1 · Baseten");
 
         let empty = render_monitors("s2", &DecisionSettings::default());
         assert_eq!(empty[0], "Session s2 has no monitors.");
@@ -1488,17 +1521,24 @@ mod tests {
             monitors: vec![below, held, notice],
         };
         let lines = render_monitors("s1", &settings);
+        let local = format!(
+            "tev1:0.8b · {}",
+            super::super::decide::model_place("ollama_decision", "tev1:0.8b").unwrap()
+        );
         assert_eq!(
             lines[3],
-            "     P(yes) < 0.30 · once · stops the turn · after each iteration · re-arms above \
-             0.50 · an error pauses the turn · at most 50 checks a turn · \
-             ollama_decision/tev1:0.8b"
+            format!(
+                "     P(yes) < 0.30 · once · stops the turn · after each iteration · re-arms \
+                 above 0.50 · an error pauses the turn · at most 50 checks a turn · {local}"
+            )
         );
         assert_eq!(
             lines[6],
-            "     P(yes) < 0.30 · once · stops the turn · after each iteration · stops again \
-             while it holds · an error pauses the turn · at most 50 checks a turn · \
-             ollama_decision/tev1:0.8b"
+            format!(
+                "     P(yes) < 0.30 · once · stops the turn · after each iteration · stops \
+                 again while it holds · an error pauses the turn · at most 50 checks a turn · \
+                 {local}"
+            )
         );
         // A notify monitor with no re-arm level re-arms at its threshold,
         // which goes without saying.

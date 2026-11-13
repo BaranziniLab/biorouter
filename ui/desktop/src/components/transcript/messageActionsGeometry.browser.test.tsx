@@ -125,7 +125,9 @@ describe('message actions in a real layout engine', () => {
   }, 120_000);
 
   async function open(): Promise<Page> {
-    const html = renderToStaticMarkup(<UserMessage message={message} />);
+    const html = renderToStaticMarkup(
+      <UserMessage message={message} onMessageUpdate={() => undefined} />
+    );
     const tab = await browser!.newPage({ viewport: { width: 1000, height: 400 } });
     await tab.setContent(
       `<!doctype html><html><head><style>${TOKENS}${TAILWIND_STANDINS}${css}</style></head>` +
@@ -253,6 +255,7 @@ describe('message actions between the rows of a transcript', () => {
   const user = (id: string, text: string, metadata: Partial<Message['metadata']> = {}) =>
     renderToStaticMarkup(
       <UserMessage
+        onMessageUpdate={() => undefined}
         message={{
           ...message,
           id,

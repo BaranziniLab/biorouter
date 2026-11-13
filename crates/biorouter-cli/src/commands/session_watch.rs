@@ -283,13 +283,15 @@ fn key_verdict(code: u16, body: &str) -> KeyVerdict {
 ///
 /// `ErrorResponse` answers `{"message": …}` and the reach gate answers plain
 /// text where a route hands its refusal back directly. Both are the daemon's
-/// own words and are shown as they are.
+/// own words and are shown as they are, except that a decision-model refusal
+/// written for the agent names the command a person runs, not the agent's
+/// tool (R4, [`super::decide::terminal_advice`]).
 pub(crate) fn refusal_sentence(body: &str) -> Option<String> {
     let text = json_object(body)
         .and_then(|value| value.get("message")?.as_str().map(str::to_string))
         .unwrap_or_else(|| body.to_string());
     let text = text.trim();
-    (!text.is_empty()).then(|| text.to_string())
+    (!text.is_empty()).then(|| super::decide::terminal_advice(text))
 }
 
 /// Make a request without the key and, only if the daemon refuses it for want
@@ -1454,9 +1456,90 @@ fn dechunk(mut rest: &[u8]) -> Vec<u8> {
     out
 }
 
+/// What `watch` without `--follow` is told about a chat with no turn running:
+/// it follows the running turn and exits when it ends, so with none it has
+/// nothing to wait for. It used to print `[snapshot] chat resynced` and wait
+/// until Ctrl-C.
+pub fn nothing_running_line(session_id: &str) -> String {
+    format!(
+        "nothing is running in session {session_id}, so there is no turn to watch. To wait for \
+         its next turn, add --follow."
+    )
+}
+
+/// Whether `watch` should open the stream, or say there is nothing to watch.
+/// Only a daemon's answer that this chat holds no turn stops it: `--follow`
+/// waits for turns to come, and a liveness read that failed is no answer, so
+/// the stream is opened as before.
+///
+/// ⚠ Absence from `GET /sessions/running` is an answer only about a chat this
+/// caller can see. That listing leaves out a private chat for a caller with
+/// no user-action proof, in the same body as "nothing running" so that the
+/// omission is not an oracle, and `watch` sends no proof. So the line is said
+/// only when `visible` (the chat's own `GET /sessions/{id}`, asked as the same
+/// caller, answered 200); otherwise the stream is opened and the daemon's
+/// reach gate answers for the chat, as it did before.
+pub fn idle_watch_refusal(
+    session_id: &str,
+    follow: bool,
+    running: &Result<std::collections::HashSet<String>>,
+    visible: bool,
+) -> Option<String> {
+    match running {
+        Ok(running) if !follow && visible && !running.contains(session_id) => {
+            Some(nothing_running_line(session_id))
+        }
+        _ => None,
+    }
+}
+
+/// Whether a running turn in `session_id` would be listed for this caller:
+/// the chat's metadata read with the same headers `GET /sessions/running` and
+/// the stream carry (no user-action proof), answered 200. Any refusal, a
+/// missing chat or a failed read is `false`, which opens the stream.
+async fn chat_visible_to_this_caller(session_id: &str, auth: &DaemonAuth) -> bool {
+    let path = format!(
+        "/sessions/{}?metadata_only=true",
+        urlencoding::encode(session_id)
+    );
+    let request = Zeroizing::new(format!(
+        "GET {path} HTTP/1.1\r\nHost: {DAEMON_HOST}\r\n{}\
+         Accept: application/json\r\nConnection: close\r\n\r\n",
+        auth.headers()
+    ));
+    let port = configured_port();
+    let read = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let mut stream =
+            biorouter::net::connect_non_inheritable(format!("{DAEMON_HOST}:{port}")).await?;
+        stream.write_all(request.as_bytes()).await?;
+        let mut raw = Vec::new();
+        stream.read_to_end(&mut raw).await?;
+        Ok::<Vec<u8>, std::io::Error>(raw)
+    })
+    .await;
+    match read {
+        Ok(Ok(raw)) => {
+            matches!(
+                parse_http_response(&raw, &format!("GET {path}")),
+                Ok((200, _))
+            )
+        }
+        _ => false,
+    }
+}
+
 /// `biorouter sessions watch <id>` — read-only observation of a live session.
 pub async fn handle_session_watch(session_id: &str, follow: bool) -> Result<()> {
     let auth = daemon_auth().await?;
+    if !follow {
+        let running = running_session_ids().await;
+        let absent = matches!(&running, Ok(ids) if !ids.contains(session_id));
+        let visible = absent && chat_visible_to_this_caller(session_id, &auth).await;
+        if let Some(line) = idle_watch_refusal(session_id, follow, &running, visible) {
+            eprintln!("{line}");
+            return Ok(());
+        }
+    }
     eprintln!("watching session {session_id} (ctrl-c to stop)");
     stream_frames(
         build_get_request(
@@ -2837,6 +2920,43 @@ where
 
 #[cfg(test)]
 mod tests {
+    /// D-5: `watch` on a chat with no turn running says so and exits rather
+    /// than waiting forever; `--follow` and an unknown liveness keep the
+    /// stream.
+    #[test]
+    fn watch_on_an_idle_chat_says_nothing_is_running() {
+        let idle: Result<std::collections::HashSet<String>> =
+            Ok(["other".to_string()].into_iter().collect());
+        let line = idle_watch_refusal("s1", false, &idle, true).expect("an idle chat");
+        assert_eq!(line, nothing_running_line("s1"));
+        assert!(line.contains("--follow"), "{line}");
+        assert_eq!(
+            idle_watch_refusal("s1", true, &idle, true),
+            None,
+            "--follow waits"
+        );
+        let busy: Result<std::collections::HashSet<String>> =
+            Ok(["s1".to_string()].into_iter().collect());
+        assert_eq!(idle_watch_refusal("s1", false, &busy, true), None);
+        let unknown: Result<std::collections::HashSet<String>> = Err(anyhow!("no daemon"));
+        assert_eq!(idle_watch_refusal("s1", false, &unknown, true), None);
+    }
+
+    /// D-5, privacy: a private chat that IS running a turn is left out of
+    /// `GET /sessions/running` for a caller with no proof, in the same body
+    /// as an idle chat. Its own read is refused to that caller, so `watch`
+    /// does not say "nothing is running"; it opens the stream and lets the
+    /// daemon's reach gate answer, as it did before.
+    #[test]
+    fn watch_never_calls_a_chat_it_cannot_see_idle() {
+        let filtered: Result<std::collections::HashSet<String>> =
+            Ok(std::collections::HashSet::new());
+        assert_eq!(
+            idle_watch_refusal("private-and-running", false, &filtered, false),
+            None
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -3329,6 +3449,18 @@ mod tests {
             refusal_sentence("{\"error\":\"x\"}"),
             Some("{\"error\":\"x\"}".to_string())
         );
+        // R4: a decision-model refusal the daemon wrote for the agent names
+        // the command a person runs.
+        let refused = refusal_sentence(
+            "Phase \"verify\"'s gate cannot be answered in this chat: Name a private decision \
+             model (decision_models lists them). Nothing was changed.",
+        )
+        .unwrap();
+        assert!(
+            refused.contains("(`biorouter models decision list` shows them)"),
+            "{refused}"
+        );
+        assert!(!refused.contains("decision_models"), "{refused}");
     }
 
     /// The person at the terminal, typing `key` — and counting how often they

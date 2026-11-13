@@ -1,7 +1,11 @@
 import * as React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { ExtensionsPanel, useExtensionPicker } from './BottomMenuExtensionSelection';
+import {
+  ExtensionsPanel,
+  extensionsEmptyText,
+  useExtensionPicker,
+} from './BottomMenuExtensionSelection';
 import { EXTENSIONS_COPY, TOOLS_COPY } from './copy';
 import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
 import { toastService } from '../../toasts';
@@ -21,6 +25,7 @@ function BottomMenuExtensionSelection({ sessionId }: { sessionId: string | null 
         type="button"
         aria-label={`Manage extensions (${picker.activeCount} added)`}
         data-answered={String(picker.answered)}
+        data-failed={String(!!picker.failed)}
         onClick={() => setOpen((current) => !current)}
       />
       {open && <ExtensionsPanel picker={picker} />}
@@ -345,6 +350,18 @@ describe('BottomMenuExtensionSelection', () => {
     await waitFor(() =>
       expect(screen.getByLabelText(/Manage extensions/)).toHaveAttribute('data-answered', 'true')
     );
+    quiet.mockRestore();
+  });
+
+  it('marks a failed read, and clears the mark once a read answers (A-6)', async () => {
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mocks.getSessionExtensions.mockRejectedValueOnce(new Error('offline') as never);
+    render(<BottomMenuExtensionSelection sessionId="session-1" />);
+    const chip = screen.getByLabelText(/Manage extensions/);
+    await waitFor(() => expect(chip).toHaveAttribute('data-failed', 'true'));
+    // Opening the list re-reads; this one answers.
+    toggleList();
+    await waitFor(() => expect(chip).toHaveAttribute('data-failed', 'false'));
     quiet.mockRestore();
   });
 
@@ -784,5 +801,37 @@ describe('BottomMenuExtensionSelection', () => {
       expect(order.indexOf('Playwright Agent')).toBeGreaterThanOrEqual(0);
       expect(order.indexOf('Playwright Agent')).toBeLessThan(order.indexOf('Playwrightaardvark'));
     });
+  });
+});
+
+/** A-6: an empty list says why it is empty, and only a real answer says "none". */
+describe('extensionsEmptyText', () => {
+  it('says the query matched nothing, whatever the read did', () => {
+    expect(extensionsEmptyText({ query: 'xyz', answered: false, failed: true })).toBe(
+      EXTENSIONS_COPY.noMatch
+    );
+  });
+  it('says it is loading before the chat has answered', () => {
+    expect(extensionsEmptyText({ query: '', answered: false })).toBe('Loading extensions…');
+  });
+  it('says the read failed rather than that there are none', () => {
+    expect(extensionsEmptyText({ query: '', answered: true, failed: true })).toBe(
+      "Couldn't load this chat's extensions."
+    );
+  });
+  it('says none were added only once the chat answered with none, and that built-ins stay on', () => {
+    expect(extensionsEmptyText({ query: '', answered: true, failed: false })).toBe(
+      'No extensions added to this chat. Built-in capabilities are always on; manage them in Settings.'
+    );
+  });
+  it('speaks of the next chat on Home, where the list is the next chat’s', () => {
+    expect(extensionsEmptyText({ query: '', answered: true, failed: false, isHubView: true })).toBe(
+      'No extensions added for the next chat. Built-in capabilities are always on; manage them in Settings.'
+    );
+  });
+  it('never calls an empty list unavailable', () => {
+    for (const text of [EXTENSIONS_COPY.empty, EXTENSIONS_COPY.emptyNextChat]) {
+      expect(text).not.toMatch(/available/i);
+    }
   });
 });

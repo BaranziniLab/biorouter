@@ -148,7 +148,11 @@ import {
 import { SubagentComposerSlot } from './subagent/SubagentComposerSlot';
 import { composerSlotMode, subagentComposerKind } from './subagent/subagentReadOnly';
 import { SubagentTabHeader } from './subagent/SubagentTabHeader';
+import { subagentTranscript } from './subagent/subagentTranscript';
+import { FolderRequesterContext } from './folderAccessCopy';
+import { subagentRoleOf } from './sessions/historyRow';
 import { extractKnowledgeBases, useSubagentSession } from './subagent/useSubagentSession';
+import { isDecisionProvider } from './decisions/decisionWire';
 import { useChatGroups } from '../contexts/ChatGroupsContext';
 
 // How long after the agent last worked a render failure is still treated as part
@@ -1707,7 +1711,7 @@ function BaseChatContent({
   // F1: the hold covers every path that sends without the composer, and each asks BEFORE it
   // changes anything — Edit in place used to truncate the stored chat, then be refused.
   const refuseWhileCrewHeld = useCrewResendHold(crewAccess);
-  const heldMessageUpdate = useCallback(
+  const heldMessageUpdateAlways = useCallback(
     (messageId: string, newContent: string, editType?: 'diverge' | 'edit') =>
       refuseWhileCrewHeld() ? false : onMessageUpdate(messageId, newContent, editType),
     [onMessageUpdate, refuseWhileCrewHeld]
@@ -1785,6 +1789,10 @@ function BaseChatContent({
   // slot's own decision, never off "this is a subagent's chat": the two differ
   // for exactly the window this fix is about.
   const subagentTabReadOnly = composerSlotMode(subagentChatKind) !== 'composer';
+  // E-12: a read-only subagent tab cannot save an edit, so it is offered none;
+  // `UserMessage` draws its pencil only with this callback. Still the held one
+  // everywhere else (F1, `crewResendHold.test.tsx`).
+  const heldMessageUpdate = subagentTabReadOnly ? undefined : heldMessageUpdateAlways;
 
   const canDivergeSession = useMemo(
     () => messages.some((message) => message.role === 'assistant'),
@@ -2572,6 +2580,28 @@ function BaseChatContent({
     }
   }, [previewMounted, columnGlide, transcriptFollow]);
 
+  /**
+   * Issue #56 / F2 — what THIS chat runs on, when the app-wide selection
+   * provably cannot. `restore_provider_from_session` binds the session row's own
+   * provider, so the composer's model chip and context gauge were naming a model
+   * that never served the turn and sizing the gauge to its window.
+   *
+   * Free: both facts already ride the `/agent/resume` payload the chat stream
+   * holds. See `privacy/usePinnedModel.ts` for the one rule, and for why the
+   * override is gated rather than unconditional.
+   *
+   * While the transcript loads, the same rule reads the chat's row instead
+   * (`loadingChatRow`): the chip named the model for NEW chats, padlock and
+   * all, on a public chat bound to another model for as long as the load took
+   * (vision V2-R5-6), and the ring measured against that model's window.
+   */
+  const { effectiveModel } = usePinnedModel(session ?? loadingChatRow, pinnedModel);
+
+  // A decision chat (B-3): its model reads the chat and answers, calls no tools
+  // and writes no files, so the summary offers neither those figures nor Make
+  // workflow nor Monitors. The same predicate the composer hides `+` with.
+  const decisionChat = isDecisionProvider(effectiveModel?.provider ?? session?.provider_name);
+
   // A figure the chat does not know yet is an empty value, never a stand-in the
   // load then replaces (`summaryFigures`: V2-R5-5, V2-R5-6, and a new chat's
   // first send, V2-R8-2). The to-do list counts as still loading too, so its
@@ -2588,7 +2618,12 @@ function BaseChatContent({
       codeDelta,
     }),
     todos: chatLoading ? { ...sessionTodos, loading: true } : sessionTodos,
-    subagents: { ...sessionSubagents, onOpen: openSubagent, onOpenGate: openPhaseGate },
+    subagents: {
+      ...sessionSubagents,
+      sessionId,
+      onOpen: openSubagent,
+      onOpenGate: openPhaseGate,
+    },
     decisions: {
       ...sessionDecisions,
       sessionId,
@@ -2598,6 +2633,7 @@ function BaseChatContent({
       fired: firedMonitors,
     },
     hasWorkflow: !!(workflow ?? loadingChatRow?.workflow),
+    decisionChat,
     onWorkflow: handleWorkflowReviewAction,
     onDiagnostics: handleDiagnosticsReviewAction,
   };
@@ -2664,23 +2700,6 @@ function BaseChatContent({
     </div>
   );
 
-  /**
-   * Issue #56 / F2 — what THIS chat runs on, when the app-wide selection
-   * provably cannot. `restore_provider_from_session` binds the session row's own
-   * provider, so the composer's model chip and context gauge were naming a model
-   * that never served the turn and sizing the gauge to its window.
-   *
-   * Free: both facts already ride the `/agent/resume` payload the chat stream
-   * holds. See `privacy/usePinnedModel.ts` for the one rule, and for why the
-   * override is gated rather than unconditional.
-   *
-   * While the transcript loads, the same rule reads the chat's row instead
-   * (`loadingChatRow`): the chip named the model for NEW chats, padlock and
-   * all, on a public chat bound to another model for as long as the load took
-   * (vision V2-R5-6), and the ring measured against that model's window.
-   */
-  const { effectiveModel } = usePinnedModel(session ?? loadingChatRow, pinnedModel);
-
   // The message list, held as ONE element across the commits that do not change
   // it (V2-17). No message component is memoised and the list re-renders every
   // row on each render it gets, so toggling the summary rail, opening or closing
@@ -2701,40 +2720,56 @@ function BaseChatContent({
     (artifact: Parameters<typeof handleOpenArtifact>[0]) => openArtifactRef.current(artifact),
     []
   );
+  // F-15: a subagent's spawn record is the header's "Instructions", its one
+  // place. Drawn again as the transcript's first bubble it repeated the whole
+  // record (1,774 words in QA). Only the view drops it: the saved chat and its
+  // exports keep it.
+  const isSubagentTab = subagentChatKind === 'subagent';
+  // R2-4: the synthetic "Begin." prompt goes too (`subagentTranscript`).
+  const transcriptMessages = useMemo(
+    () => (isSubagentTab ? subagentTranscript(messages) : messages),
+    [isSubagentTab, messages]
+  );
+  // R2-1: on a subagent's tab its folder cards say which subagent asks.
+  const folderRequester = isSubagentTab
+    ? (subagentRoleOf(session?.extension_data) ?? session?.name ?? null)
+    : null;
   const transcriptList = useMemo(
     () => (
-      <ProgressiveMessageList
-        messages={messages}
-        chat={{ sessionId }}
-        toolCallNotifications={toolCallNotifications}
-        isUserMessage={isUserRow}
-        isStreamingMessage={chatState !== ChatState.Idle}
-        chatState={chatState}
-        turnStartedAt={turnStartedAt}
-        lastMessageAt={lastMessageAt}
-        pendingSteer={pendingSteer}
-        steerRecoveries={steerRecoveries}
-        onSendAgain={subagentTabReadOnly ? undefined : handleSendAgain}
-        canStopTurn={!subagentTabReadOnly}
-        onRenderingComplete={handleRenderingComplete}
-        onMessageUpdate={heldMessageUpdate}
-        // Finding 5.1 (the PR author's own follow-up).
-        // `ElicitationRequest` resolves a waiting tool
-        // through the daemon's human-action endpoint,
-        // and it lives INSIDE the transcript, so removing
-        // the composer never reached it.
-        // `BioRouterMessage` renders the form only when it
-        // is handed a submit callback, so withholding the
-        // callback withholds the control rather than
-        // leaving a Submit that 403s.
-        submitElicitationResponse={subagentTabReadOnly ? undefined : submitElicitationResponse}
-        onOpenArtifact={openArtifactFromTranscript}
-        onRunInTerminal={handleRunInTerminal}
-        workingDir={sessionWorkingDir}
-      />
+      <FolderRequesterContext.Provider value={folderRequester}>
+        <ProgressiveMessageList
+          messages={transcriptMessages}
+          chat={{ sessionId }}
+          toolCallNotifications={toolCallNotifications}
+          isUserMessage={isUserRow}
+          isStreamingMessage={chatState !== ChatState.Idle}
+          chatState={chatState}
+          turnStartedAt={turnStartedAt}
+          lastMessageAt={lastMessageAt}
+          pendingSteer={pendingSteer}
+          steerRecoveries={steerRecoveries}
+          onSendAgain={subagentTabReadOnly ? undefined : handleSendAgain}
+          canStopTurn={!subagentTabReadOnly}
+          onRenderingComplete={handleRenderingComplete}
+          onMessageUpdate={heldMessageUpdate}
+          // Finding 5.1 (the PR author's own follow-up).
+          // `ElicitationRequest` resolves a waiting tool
+          // through the daemon's human-action endpoint,
+          // and it lives INSIDE the transcript, so removing
+          // the composer never reached it.
+          // `BioRouterMessage` renders the form only when it
+          // is handed a submit callback, so withholding the
+          // callback withholds the control rather than
+          // leaving a Submit that 403s.
+          submitElicitationResponse={subagentTabReadOnly ? undefined : submitElicitationResponse}
+          onOpenArtifact={openArtifactFromTranscript}
+          onRunInTerminal={handleRunInTerminal}
+          workingDir={sessionWorkingDir}
+        />
+      </FolderRequesterContext.Provider>
     ),
     [
-      messages,
+      transcriptMessages,
       sessionId,
       toolCallNotifications,
       chatState,
@@ -2750,6 +2785,7 @@ function BaseChatContent({
       openArtifactFromTranscript,
       handleRunInTerminal,
       sessionWorkingDir,
+      folderRequester,
     ]
   );
 

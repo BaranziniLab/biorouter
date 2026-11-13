@@ -9,7 +9,9 @@ use biorouter::config::Config;
 use biorouter::workflow::build_workflow::{
     apply_values_to_parameters, build_workflow_from_template, WorkflowError,
 };
-use biorouter::workflow::validate_workflow::parse_and_validate_parameters;
+use biorouter::workflow::validate_workflow::{
+    parse_and_validate_parameters, validate_workflow_template_from_content,
+};
 use biorouter::workflow::Workflow;
 
 fn create_user_prompt_callback() -> impl Fn(&str, &str) -> Result<String> {
@@ -24,6 +26,14 @@ pub fn load_workflow(workflow_name: &str, params: Vec<(String, String)>) -> Resu
     let workflow_file = load_workflow_file(workflow_name)?;
     let workflow_content = workflow_file.content;
     let workflow_dir = workflow_file.parent_dir;
+    // R3-F5: a workflow the checks refuse is refused in `--explain`'s words.
+    // Building it checks the same things, but reports them as "Template
+    // rendering failed", which a workflow with no template problem never had.
+    validate_workflow_template_from_content(
+        &workflow_content,
+        Some(workflow_dir.display().to_string()),
+    )
+    .map_err(|error| anyhow::anyhow!("{}", explain_refusal(&error.to_string())))?;
     match build_workflow_from_template(
         workflow_content,
         &workflow_dir,
@@ -120,7 +130,9 @@ pub fn collect_missing_secrets(requirements: &[SecretRequirement]) -> Result<()>
 
 pub fn render_workflow_as_yaml(workflow_name: &str, params: Vec<(String, String)>) -> Result<()> {
     let workflow = load_workflow(workflow_name, params)?;
-    match serde_yaml::to_string(&workflow) {
+    // The writer every saved workflow goes through, so a question's kind
+    // reads `{binary: {}}` here too, never a `!binary` tag (R2-8).
+    match workflow.to_yaml() {
         Ok(yaml_content) => {
             println!("{}", yaml_content);
             Ok(())
@@ -138,6 +150,12 @@ pub fn explain_workflow(workflow_name: &str, params: Vec<(String, String)>) -> R
     let workflow_file_content = &workflow_file.content;
     let workflow_template =
         parse_and_validate_parameters(workflow_file_content, Some(workflow_dir_str.clone()))?;
+    // H-3: the same checks `run` and the desktop's import make, so a
+    // workflow `--explain` describes is one that would start. Whether each
+    // decision model is there and allowed is only known when the run starts,
+    // which the Supervision section says.
+    validate_workflow_template_from_content(workflow_file_content, Some(workflow_dir_str.clone()))
+        .map_err(|error| anyhow::anyhow!("{}", explain_refusal(&error.to_string())))?;
     let workflow_parameters = workflow_template.parameters.clone();
 
     let (params_for_template, missing_params) = apply_values_to_parameters(
@@ -152,11 +170,101 @@ pub fn explain_workflow(workflow_name: &str, params: Vec<(String, String)>) -> R
     Ok(())
 }
 
+/// What `--explain` says of a workflow `run` would refuse: the refusal `run`
+/// gives, with its models named as the terminal names them and the advice a
+/// person follows.
+fn explain_refusal(refusal: &str) -> String {
+    format!(
+        "This workflow would not start: {}",
+        crate::commands::decide::terminal_advice(
+            &crate::commands::decide::person_model_names_in_sentence(refusal)
+        )
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use biorouter::workflow::{WorkflowParameterInputType, WorkflowParameterRequirement};
 
-    use crate::workflows::workflow::load_workflow;
+    use crate::workflows::workflow::{explain_workflow, load_workflow};
+
+    /// H-3: `--explain` refuses what `run` and the import refuse, in the
+    /// same words, instead of describing a workflow that would not start.
+    #[test]
+    fn explain_refuses_a_workflow_run_would_refuse() {
+        const VALID: &str = "title: Cohort screen\ndescription: Screen notes\nprompt: Screen \
+             them.\norchestration_plan:\n  title: Screen and verify\n  phases:\n    - {id: \
+             screen, title: Screen the notes, kind: research}\n    - id: verify\n      title: \
+             Verify\n      kind: verification\n      gate:\n        questions:\n          \
+             counted: Does the hand-off give the cohort size?\n        threshold: 0.8\n";
+        let dir = tempfile::tempdir().unwrap();
+        let explain = |name: &str, content: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, content).unwrap();
+            explain_workflow(path.to_str().unwrap(), Vec::new())
+        };
+        explain("valid.yaml", VALID).expect("a valid workflow is explained");
+        for (name, content, expected) in [
+            (
+                "threshold.yaml",
+                VALID.replace("threshold: 0.8", "threshold: 1.7"),
+                "gate threshold must be a probability from 0 to 1",
+            ),
+            (
+                "missing.yaml",
+                VALID.replace(
+                    "kind: verification",
+                    "kind: verification\n      depends_on: [nosuch]",
+                ),
+                "Phase \"verify\" depends on \"nosuch\"",
+            ),
+            (
+                "twice.yaml",
+                VALID.replace(
+                    "    - id: verify",
+                    "    - {id: screen, title: Again, kind: research}\n    - id: verify",
+                ),
+                "Phase id \"screen\" appears twice",
+            ),
+        ] {
+            let error = explain(name, &content)
+                .expect_err("run refuses it, so --explain does")
+                .to_string();
+            assert!(
+                error.starts_with("This workflow would not start: "),
+                "{name}: {error}"
+            );
+            assert!(error.contains(expected), "{name}: {error}");
+        }
+    }
+
+    /// R3-F5: `run` refuses what `--explain` refuses in the same words,
+    /// never as "Template rendering failed".
+    #[test]
+    fn run_refuses_a_workflow_in_explains_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("threshold.yaml");
+        std::fs::write(
+            &path,
+            "title: Cohort screen\ndescription: Screen notes\nprompt: Screen them.\n\
+             orchestration_plan:\n  title: Screen\n  phases:\n    - id: verify\n      \
+             title: Verify\n      kind: verification\n      gate:\n        questions:\n          \
+             counted: Does the hand-off give the cohort size?\n        threshold: 1.7\n",
+        )
+        .unwrap();
+        let error = load_workflow(path.to_str().unwrap(), Vec::new())
+            .expect_err("a threshold of 1.7 is refused")
+            .to_string();
+        let explained = explain_workflow(path.to_str().unwrap(), Vec::new())
+            .expect_err("--explain refuses it too")
+            .to_string();
+        assert!(!error.contains("Template rendering failed"), "{error}");
+        assert!(
+            error.starts_with("This workflow would not start: "),
+            "{error}"
+        );
+        assert_eq!(error, explained);
+    }
 
     mod load_workflow {
         use super::*;

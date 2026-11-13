@@ -106,4 +106,38 @@ describe("BaseChat — a subagent's composer in a browser", () => {
     expect(list, 'BaseChat no longer renders ProgressiveMessageList').not.toBeNull();
     expect(list![0]).toMatch(/canStopTurn=\{!subagentTabReadOnly\}/);
   });
+
+  it('offers no message edit in a read-only tab (E-12)', () => {
+    // `UserMessage` draws its pencil only when handed `onMessageUpdate`; a pencil
+    // in a tab that cannot save opened an editor whose Save did nothing.
+    const list = /<ProgressiveMessageList\b[\s\S]*?\/>/.exec(source);
+    expect(list, 'BaseChat no longer renders ProgressiveMessageList').not.toBeNull();
+    expect(list![0]).toMatch(/onMessageUpdate=\{heldMessageUpdate\}/);
+    expect(source).toMatch(
+      /const heldMessageUpdate = subagentTabReadOnly \? undefined : heldMessageUpdateAlways;/
+    );
+  });
+
+  it("draws a subagent's spawn record once, in the header, not again as a bubble (F-15)", () => {
+    const list = /<ProgressiveMessageList\b[\s\S]*?\/>/.exec(source);
+    expect(list![0]).toMatch(/messages=\{transcriptMessages\}/);
+    const filter = /const transcriptMessages = useMemo\(([\s\S]*?)\);/.exec(source);
+    expect(filter, 'BaseChat no longer filters the transcript it draws').not.toBeNull();
+    expect(filter![1]).toMatch(/isSubagentTab/);
+    // The spawn record and the synthetic "Begin." prompt (R2-4); the helper's own
+    // test (subagent/subagentTranscript.test.ts) pins what each drop is.
+    expect(filter![1]).toMatch(/subagentTranscript\(messages\)/);
+    expect(source).toMatch(/const isSubagentTab = subagentChatKind === 'subagent';/);
+  });
+});
+
+describe('BaseChat — a decision chat (B-3)', () => {
+  it("tells the summary it is a decision chat, by the composer's own predicate", () => {
+    expect(source).toMatch(
+      /const decisionChat = isDecisionProvider\(effectiveModel\?\.provider \?\? session\?\.provider_name\);/
+    );
+    const props = /const summaryProps = \{([\s\S]*?)\n {2}\};/.exec(source);
+    expect(props, 'BaseChat no longer builds summaryProps').not.toBeNull();
+    expect(props![1]).toMatch(/\bdecisionChat,/);
+  });
 });

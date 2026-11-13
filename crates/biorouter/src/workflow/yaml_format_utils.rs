@@ -179,6 +179,10 @@ orchestration_plan:
             "{yaml}"
         );
         assert_eq!(again.prompt, declared.prompt, "{yaml}");
+        // R2-8: a question's kind is written as the schema reference writes
+        // it, never as a YAML tag, and reads back the same.
+        assert!(!yaml.contains("!binary"), "no YAML tag: {yaml}");
+        assert!(yaml.contains("binary: {}"), "{yaml}");
     }
 
     #[test]
