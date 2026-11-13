@@ -196,6 +196,23 @@ interface ModelAndProviderContextType {
   getCurrentModelAndProviderForDisplay: () => Promise<{ model: string; provider: string }>;
   getCurrentModelDisplayName: () => Promise<string>;
   getCurrentProviderDisplayName: () => Promise<string>; // Gets provider display name from subtext
+  /**
+   * W2-5. The name Llama Server's catalog gives a local model, the one the model
+   * picker lists it under ("Qwen3.8 27B" for `qwen3.8-27b`), or `null` when the
+   * model is not a Llama Server catalog model, the catalog has not been read yet,
+   * or the catalog's name is the id itself. Synchronous: it answers from what
+   * {@link loadLocalModelNames} last read.
+   */
+  localModelDisplayName: (
+    provider: string | null | undefined,
+    model: string | null | undefined
+  ) => string | null;
+  /**
+   * Read Llama Server's catalog names once, for a surface about to name a local
+   * model the app-wide selection does not (a chat bound to one). The selection's
+   * own local model, and every warm-up, read it already.
+   */
+  loadLocalModelNames: () => Promise<void>;
   refreshCurrentModelAndProvider: () => Promise<void>;
   /**
    * F3. Re-read the app-wide selection from the daemon and state it, now.
@@ -225,6 +242,29 @@ type LlamaWarmupDialogState = {
 
 const LOCAL_PROVIDER = 'llamacpp';
 const WARMUP_POLL_INTERVAL_MS = 1500;
+
+/** Llama Server's catalog, as `name` → `display_name`. */
+type LocalModelNames = ReadonlyMap<string, string>;
+
+const localModelNamesOf = (catalog: readonly LlamaCppModel[] | undefined): LocalModelNames =>
+  new Map(
+    (catalog ?? [])
+      .filter((entry) => entry.name && entry.display_name)
+      .map((entry) => [entry.name, entry.display_name])
+  );
+
+/**
+ * W2-5. The local copy is already on this computer, so the warm-up only loads
+ * the model: the dialog then neither talks about a download nor lists the
+ * fallback and Ollama store details that only matter for one.
+ */
+const isDownloaded = (model: LlamaCppModel | undefined) => model?.download_status === 'downloaded';
+
+/** The warm-up dialog's sentence: a download is named only while one may still happen. */
+export const warmupDialogSubtitle = (modelName: string, downloaded: boolean): string =>
+  downloaded
+    ? `${modelName} runs on this computer. First use can take a while because the model may need to load and produce a test response.`
+    : `${modelName} runs on this computer. First use can take a while because the model may need to load, download, and produce a test response.`;
 
 const formatContext = (tokens: number | undefined) =>
   typeof tokens === 'number' && tokens > 0 ? tokens.toLocaleString() : 'unknown';
@@ -323,6 +363,61 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
   const { read, getProviders, refreshConfig } = useConfig();
 
   /**
+   * W2-5. Llama Server's catalog names, so the model chip says "Qwen3.8 27B"
+   * where the model picker listed it, not `qwen3.8-27b`. `null` is "not read
+   * yet". The catalog is fixed for a daemon's life, so it is read once and then
+   * refreshed by every status read the warm-up makes anyway; a failed read
+   * leaves it unread, and the next caller asks again.
+   */
+  const [localModelNames, setLocalModelNames] = useState<LocalModelNames | null>(null);
+  const localModelNamesRef = useRef<LocalModelNames | null>(null);
+  const localModelNamesLoad = useRef<Promise<LocalModelNames | null> | null>(null);
+
+  const rememberLocalModelNames = useCallback(
+    (catalog: readonly LlamaCppModel[] | undefined): LocalModelNames => {
+      const names = localModelNamesOf(catalog);
+      localModelNamesRef.current = names;
+      setLocalModelNames(names);
+      return names;
+    },
+    []
+  );
+
+  const readLocalModelNames = useCallback(async (): Promise<LocalModelNames | null> => {
+    if (localModelNamesRef.current) return localModelNamesRef.current;
+    // One read in flight, however many surfaces ask at mount.
+    if (!localModelNamesLoad.current) {
+      const load = (async () => {
+        try {
+          const status = await llamacppStatus({ throwOnError: true });
+          return rememberLocalModelNames(status.data.catalog);
+        } catch (error) {
+          console.warn('Failed to read the Llama Server catalog names:', error);
+          return null;
+        }
+      })();
+      localModelNamesLoad.current = load;
+      void load.finally(() => {
+        if (localModelNamesLoad.current === load) localModelNamesLoad.current = null;
+      });
+    }
+    return localModelNamesLoad.current;
+  }, [rememberLocalModelNames]);
+
+  const loadLocalModelNames = useCallback(async () => {
+    await readLocalModelNames();
+  }, [readLocalModelNames]);
+
+  const localModelDisplayName = useCallback(
+    (provider: string | null | undefined, model: string | null | undefined): string | null => {
+      if (provider !== LOCAL_PROVIDER || !model) return null;
+      const name = localModelNames?.get(model);
+      return name && name !== model ? name : null;
+    },
+    [localModelNames]
+  );
+
+  /**
    * F3 — the order in which statements of the app-wide selection may land.
    *
    * Three things now set `currentModel`/`currentProvider`: the mount read, a
@@ -380,24 +475,28 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
     [llamaWarmupDialog]
   );
 
-  const prepareLlamaModel = useCallback(async (model: Model): Promise<boolean> => {
-    const status = await llamacppStatus({ throwOnError: true });
-    const sidecar = status.data.sidecar;
-    if (sidecar.state === 'ready' && sidecar.model === model.name && sidecar.warmed) {
-      return true;
-    }
+  const prepareLlamaModel = useCallback(
+    async (model: Model): Promise<boolean> => {
+      const status = await llamacppStatus({ throwOnError: true });
+      rememberLocalModelNames(status.data.catalog);
+      const sidecar = status.data.sidecar;
+      if (sidecar.state === 'ready' && sidecar.model === model.name && sidecar.warmed) {
+        return true;
+      }
 
-    return new Promise<boolean>((resolve) => {
-      setLlamaWarmupDialog({
-        model,
-        entry: status.data.catalog.find((entry) => entry.name === model.name),
-        status: status.data,
-        isWarming: false,
-        detail: sidecar.detail || undefined,
-        resolve,
+      return new Promise<boolean>((resolve) => {
+        setLlamaWarmupDialog({
+          model,
+          entry: status.data.catalog.find((entry) => entry.name === model.name),
+          status: status.data,
+          isWarming: false,
+          detail: sidecar.detail || undefined,
+          resolve,
+        });
       });
-    });
-  }, []);
+    },
+    [rememberLocalModelNames]
+  );
 
   const handleWarmupConfirm = useCallback(async () => {
     const dialog = llamaWarmupDialog;
@@ -471,6 +570,14 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
       // when the user asked for it; with no chat, it is the only thing to move.
       const setsNewChatDefault = !sessionId || options?.alsoForNewChats === true;
       let phase = 'agent';
+      // W2-5. The name the warm-up dialog and the chip use. Asked when needed: the
+      // catalog is read by the warm-up below, before any toast names the model.
+      const modelLabel = () =>
+        model.alias ??
+        (providerName === LOCAL_PROVIDER
+          ? localModelNamesRef.current?.get(modelName)
+          : undefined) ??
+        modelName;
 
       try {
         if (providerName === LOCAL_PROVIDER) {
@@ -563,7 +670,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         if (!options?.quiet) {
           toastSuccess({
             title: CHANGE_MODEL_TOAST_TITLE,
-            msg: switchedModelMessage(model.alias ?? modelName, model.subtext ?? providerName, {
+            msg: switchedModelMessage(modelLabel(), model.subtext ?? providerName, {
               chat: !!sessionId,
               newChats: setsNewChatDefault,
             }),
@@ -604,7 +711,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         const barrier = privacyBarrierOf(error);
         if (barrier) {
           toastError({
-            title: `Can't switch this chat to ${model.alias ?? modelName}`,
+            title: `Can't switch this chat to ${modelLabel()}`,
             msg: privacyBarrierMessage(barrier),
             traceback: privacyBarrierMessage(barrier),
             scope: 'screen',
@@ -720,11 +827,22 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
       // "Cannot read properties of null (reading 'length')". It was unreachable
       // only because onboarding could not be skipped; the moment a user could
       // enter the app unconfigured, it was the first thing they saw.
-      return getModelDisplayName(currentModelName) ?? 'Select Model';
+      const shown = getModelDisplayName(currentModelName) ?? 'Select Model';
+      // W2-5. A predefined alias still wins. Otherwise a Llama Server model goes
+      // by its catalog name, the one the model picker lists it under: this said
+      // `qwen3.8-27b` beside a picker row reading "Qwen3.8 27B".
+      if (currentModelName && shown === currentModelName) {
+        const provider = await read('BIOROUTER_PROVIDER', false);
+        if (provider === LOCAL_PROVIDER) {
+          const local = (await readLocalModelNames())?.get(currentModelName);
+          if (local) return local;
+        }
+      }
+      return shown;
     } catch {
       return 'Select Model';
     }
-  }, [read]);
+  }, [read, readLocalModelNames]);
 
   const getCurrentProviderDisplayName = useCallback(async () => {
     try {
@@ -858,6 +976,12 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
     refreshCurrentModelAndProvider();
   }, [refreshCurrentModelAndProvider]);
 
+  // W2-5. A Llama Server selection is named by the catalog, so read it as soon
+  // as the selection is one. Nothing is read for any other provider.
+  useEffect(() => {
+    if (currentProvider === LOCAL_PROVIDER) void readLocalModelNames();
+  }, [currentProvider, readLocalModelNames]);
+
   const llamaWarnings = useMemo(() => {
     if (!llamaWarmupDialog) return [];
 
@@ -896,6 +1020,8 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
       getCurrentModelAndProviderForDisplay,
       getCurrentModelDisplayName,
       getCurrentProviderDisplayName,
+      localModelDisplayName,
+      loadLocalModelNames,
       refreshCurrentModelAndProvider,
       syncAppModelSelection,
     }),
@@ -911,6 +1037,8 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
       getCurrentModelAndProviderForDisplay,
       getCurrentModelDisplayName,
       getCurrentProviderDisplayName,
+      localModelDisplayName,
+      loadLocalModelNames,
       refreshCurrentModelAndProvider,
       syncAppModelSelection,
     ]
@@ -943,7 +1071,10 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         title="Warm up local model"
         subtitle={
           llamaWarmupDialog
-            ? `${llamaWarmupDialog.entry?.display_name ?? llamaWarmupDialog.model.name} runs on this computer. First use can take a while because the model may need to load, download, and produce a test response.`
+            ? warmupDialogSubtitle(
+                llamaWarmupDialog.entry?.display_name ?? llamaWarmupDialog.model.name,
+                isDownloaded(llamaWarmupDialog.entry)
+              )
             : undefined
         }
         bodyClassName="flex flex-col gap-3 py-3"
@@ -971,25 +1102,33 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
           <>
             <div className="biorouter-modal-panel min-w-0 rounded-element p-3">
               <div className="grid min-w-0 gap-1.5 text-supporting">
-                <WarmupDetailRow label="Download">
+                {/* W2-5. "Model size", not "Download": beside "Local copy: Downloaded"
+                    the old label read as a download about to happen. */}
+                <WarmupDetailRow label="Model size">
                   {llamaWarmupDialog.entry?.download_size ?? 'custom'}
                 </WarmupDetailRow>
                 <WarmupDetailRow label="Local copy">
                   {modelDownloadLabel(llamaWarmupDialog.entry)}
                 </WarmupDetailRow>
-                <WarmupDetailRow label="Llama Server fallback">
-                  {fallbackDownloadLabel(llamaWarmupDialog.entry)}
-                </WarmupDetailRow>
-                <WarmupDetailRow label="Ollama model">
-                  {llamaWarmupDialog.entry?.ollama_name ?? 'custom'}
-                </WarmupDetailRow>
-                <WarmupDetailRow label="Model store" mono>
-                  {llamaWarmupDialog.status.system.model_cache_dir}
-                </WarmupDetailRow>
-                {llamaWarmupDialog.entry?.model_path && (
-                  <WarmupDetailRow label="Model blob" mono>
-                    {llamaWarmupDialog.entry.model_path}
-                  </WarmupDetailRow>
+                {/* Where a download would come from and land. Once the copy is on this
+                    computer none of it applies, and Settings' local model list keeps it. */}
+                {!isDownloaded(llamaWarmupDialog.entry) && (
+                  <>
+                    <WarmupDetailRow label="Llama Server fallback">
+                      {fallbackDownloadLabel(llamaWarmupDialog.entry)}
+                    </WarmupDetailRow>
+                    <WarmupDetailRow label="Ollama model">
+                      {llamaWarmupDialog.entry?.ollama_name ?? 'custom'}
+                    </WarmupDetailRow>
+                    <WarmupDetailRow label="Model store" mono>
+                      {llamaWarmupDialog.status.system.model_cache_dir}
+                    </WarmupDetailRow>
+                    {llamaWarmupDialog.entry?.model_path && (
+                      <WarmupDetailRow label="Model blob" mono>
+                        {llamaWarmupDialog.entry.model_path}
+                      </WarmupDetailRow>
+                    )}
+                  </>
                 )}
                 {llamaWarmupDialog.entry?.suitability_message && (
                   <div className="pt-1 text-text-default break-words">

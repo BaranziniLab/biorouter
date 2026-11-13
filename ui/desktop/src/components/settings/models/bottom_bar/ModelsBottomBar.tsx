@@ -257,6 +257,8 @@ export default function ModelsBottomBar({
     getCurrentModelAndProviderForDisplay,
     getCurrentModelDisplayName,
     getCurrentProviderDisplayName,
+    localModelDisplayName,
+    loadLocalModelNames,
   } = useModelAndProvider();
   const { read, getProviders, providersList } = useConfig();
   /**
@@ -467,6 +469,25 @@ export default function ModelsBottomBar({
     chipPair.model ??
     (currentModel || providerDefaultModel || displayModelName);
   const fullModelLabel = chipPair.role ? `${displayModel} (${chipPair.role})` : displayModel;
+
+  /**
+   * W2-5. A Llama Server model goes by its catalog name, the one the model
+   * picker lists it under ("Qwen3.8 27B", not `qwen3.8-27b`), in the chip and
+   * the menu. The id stays in the tooltip and closes the accessible name. `null`
+   * for every other model, and until the catalog has been read. Called
+   * optionally, so a context that predates the two members still names the id.
+   */
+  const localModelName = localModelDisplayName?.(effectiveProvider, displayModel) ?? null;
+  const spokenModelLabel = localModelName
+    ? chipPair.role
+      ? `${localModelName} (${chipPair.role})`
+      : localModelName
+    : fullModelLabel;
+  // The selection's own local model is read by the model context; a chat bound
+  // to one while the selection is elsewhere asks for the catalog here.
+  useEffect(() => {
+    if (effectiveProvider === 'llamacpp') void loadLocalModelNames?.();
+  }, [effectiveProvider, loadLocalModelNames]);
 
   // Update display provider when current provider changes
   useEffect(() => {
@@ -700,11 +721,12 @@ export default function ModelsBottomBar({
     decisionChat && effectiveProvider && displayModel
       ? decisionModelLabel({ provider: effectiveProvider, model: displayModel })
       : null;
+  const chipModelName = localModelName ?? friendlyModelName(displayModel);
   const chipModelLabel = decisionAlias
     ? decisionAlias
     : chipPair.role
-      ? `${friendlyModelName(displayModel)} (${chipPair.role})`
-      : friendlyModelName(displayModel);
+      ? `${chipModelName} (${chipPair.role})`
+      : chipModelName;
   // A decision model has no reasoning effort to set: it answers in one step.
   const showEffort = !decisionChat && effort !== null && effort !== DEFAULT_REASONING_EFFORT;
   // The InfoTip's notes: where a choice here reaches, and the lead/worker pair.
@@ -736,7 +758,7 @@ export default function ModelsBottomBar({
     decisionChat && effectiveProvider && shownModelName
       ? (decisionModelLabel({ provider: effectiveProvider, model: shownModelName }) ??
         shownModelName)
-      : shownModelName;
+      : (localModelName ?? shownModelName);
   // DR-17 and §14.2, kept VISIBLE as one line (principle 2): the chat's tier,
   // then the standing disclosure the daemon serves for a non-private model.
   const showPrivacyBlock = Boolean(privacyLine || disclosureLine);
@@ -753,9 +775,11 @@ export default function ModelsBottomBar({
               // between the model's name and the model's affiliation, where the
               // only subject in reach was the model.
               aria-label={joinSentences([
-                `Current model: ${fullModelLabel}${modelClause ? ` (${modelClause})` : ''}`,
+                `Current model: ${spokenModelLabel}${modelClause ? ` (${modelClause})` : ''}`,
                 privacyLine,
                 !decisionChat && effort !== null && `Effort: ${REASONING_EFFORT_LABELS[effort]}`,
+                // W2-5. The id the visible name stands for, in the tooltip's words.
+                localModelName && MODEL_COPY.fullIdTooltip(displayModel),
               ])}
               data-testid="model-chip"
               data-kind="model"
