@@ -995,7 +995,7 @@ async fn drive_response(
                                 while stream.next().await.is_some() {}
                                 break;
                             }
-                            session
+                            let outcome = session
                                 .agent
                                 .handle_confirmation_for_session(
                                     session.session_id(),
@@ -1011,6 +1011,9 @@ async fn drive_response(
                                     biorouter::pending_user_action::DecisionAuthority::from_local_human_surface(),
                                 )
                                 .await;
+                            if let Some(note) = super::late_confirmation_note(&outcome) {
+                                app.push_note(note);
+                            }
                             app.thinking = Some(super::thinking::get_random_thinking_message().to_string());
                         } else if super::find_elicitation_request(&message).is_some() {
                             commit_stream_to_session(app, &mut session.messages);

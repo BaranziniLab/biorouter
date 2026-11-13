@@ -43,6 +43,30 @@ app's mode picker and `biorouter configure` both show; **CLI value** is what you
 > 'bash - rm, cp, mv' command. Read/write approval makes a best-effort attempt at classifying
 > read or write tools, and that classification is interpreted by your LLM provider.
 
+## When nobody answers a card
+
+A card does not wait forever. An external folder card closes after 5 minutes (300 s). A tool
+permission card closes after the `BIOROUTER_CONFIRMATION_TIMEOUT_SECS` window, an hour unless
+you set it. When the window closes, the call gives up, the tool is not run, and the model is
+told why.
+
+The card then turns into one quiet line, **Expired: ask again**, with its buttons gone. Every
+window, observer tab and `biorouter serve` browser showing the chat changes at once. A reload
+during the turn shows the expiry too, though not always the card: the agent's own permission
+card comes back as that same line, while a card a tool call raised (a folder request, say) is
+not shown again once it has ended, so only its expiry notice comes back, as one muted line. A
+click that lands just after the window closed gets the same line: nothing is approved. To go
+ahead, ask again in the chat.
+
+In a terminal, a `biorouter session` chat stops waiting at its prompt and prints the same
+sentence, and `biorouter session attach` stops holding your next line for the request and says
+so. Each prints one line for the expiry, as do `session watch` and `session send`. The
+interactive CLI and its full screen view print it when an answer arrives after the window
+closed.
+
+Neither the card nor its expiry is saved with the chat, so History, and a chat opened after its
+turn ended, show neither. The tool call's own row records that the prompt expired.
+
 ## What still asks, whatever your mode
 
 A small, fixed set of actions is put to you for approval even in Completely Autonomous. These

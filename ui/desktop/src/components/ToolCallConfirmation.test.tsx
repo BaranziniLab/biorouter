@@ -225,12 +225,49 @@ describe('ToolCallConfirmation (BR-63)', () => {
     );
   });
 
-  it('shows an expired request as unavailable rather than approved', async () => {
+  // A late click the daemon answers `unknown` found nothing waiting: the card's
+  // window closed. It says so as the one Expired state, never as "no longer
+  // available" (which made "Allow for this session" look broken), and it keeps
+  // saying so after a remount.
+  it('shows a request that expired under a late click as Expired, not approved', async () => {
     mocks.confirmToolAction.mockResolvedValueOnce({ data: { status: 'unknown' } });
-    renderCard();
+    const content = actionRequired({});
+    const card = () => (
+      <ToolConfirmation
+        sessionId="s1"
+        isCancelledMessage={false}
+        isClicked={false}
+        actionRequiredContent={content}
+      />
+    );
+    const first = render(card());
     fireEvent.click(screen.getByRole('button', { name: 'Allow once' }));
-    expect(await screen.findByText('Shell is no longer available')).toBeInTheDocument();
-    expect(screen.queryByText(/is allowed once/)).not.toBeInTheDocument();
+    expect(await screen.findByText('Expired: ask again')).toBeInTheDocument();
+    expect(screen.queryByText(/is allowed once|no longer available/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull();
+    first.unmount();
+    render(card());
+    expect(screen.getByText('Expired: ask again')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull();
+  });
+
+  it('shows no decision once the daemon reports the card expired', () => {
+    render(
+      <ToolConfirmation
+        sessionId="s1"
+        isCancelledMessage={false}
+        isClicked={false}
+        isExpired
+        actionRequiredContent={actionRequired({ prompt: 'Inspector finding' })}
+      />
+    );
+    expect(screen.getByText('Expired: ask again')).toBeInTheDocument();
+    for (const name of ['Allow once', 'Always allow', 'Deny', 'Change']) {
+      expect(screen.queryByRole('button', { name })).toBeNull();
+    }
+    // Calm: the finding's warning line goes with the decision it was for.
+    expect(screen.queryByTestId('tool-security-finding')).toBeNull();
+    expect(mocks.confirmToolAction).not.toHaveBeenCalled();
   });
 
   it('carries proof of the user click when it answers an authorization card', async () => {

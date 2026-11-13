@@ -39,6 +39,7 @@ import {
 } from './artifacts/artifactFileProvenance';
 import { DecisionCard } from './decisions/DecisionCard';
 import { messageDecisionId } from '../utils/sessionDecisions';
+import { approvalCardExpired } from '../utils/approvalExpiry';
 
 interface BioRouterMessageProps {
   sessionId: string;
@@ -166,6 +167,13 @@ export default function BioRouterMessage({
   const hasToolConfirmation = toolConfirmationContent !== undefined;
   const confirmationCancelled =
     hasToolConfirmation && messageTurnWasStopped(messages, messageIndex);
+  // The daemon stopped waiting for this card: a notice after it names it.
+  const confirmationId =
+    toolConfirmationContent && 'id' in toolConfirmationContent.data
+      ? toolConfirmationContent.data.id
+      : undefined;
+  const confirmationExpired =
+    confirmationId !== undefined && approvalCardExpired(messages, messageIndex, confirmationId);
   const hasElicitation = elicitationContent !== undefined;
 
   const toolResponsesMap = useMemo(() => {
@@ -375,6 +383,7 @@ export default function BioRouterMessage({
                 sessionId={sessionId}
                 isCancelledMessage={confirmationCancelled}
                 isClicked={false}
+                isExpired={confirmationExpired}
                 actionRequiredContent={toolConfirmationContent}
               />
             )}

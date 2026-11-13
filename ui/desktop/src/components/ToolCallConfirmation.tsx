@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import PermissionModal from './settings/permission/PermissionModal';
-import { Check, X, AlertTriangle } from './icons/app-icons';
+import { Check, Clock, X, AlertTriangle } from './icons/app-icons';
 import { confirmToolAction, ActionRequired } from '../api';
 import { Button } from './ui/button';
 import { ToolCallPreview, ToolRiskBadge } from './ToolCallPreview';
@@ -84,10 +84,20 @@ function friendlyToolName(toolName: string): string {
   return toolCallPhrase(toolName);
 }
 
+/** The status a card holds once its answer window closed unanswered. */
+const EXPIRED = 'expired';
+
 interface ToolConfirmationProps {
   sessionId: string;
   isCancelledMessage: boolean;
   isClicked: boolean;
+  /**
+   * The daemon reported that this card's answer window closed before anyone
+   * answered it (an inline notice carrying `expiredActionId`, live or in a
+   * replay). Nothing waits on the card any more, so it shows that instead of
+   * buttons.
+   */
+  isExpired?: boolean;
   actionRequiredContent: ActionRequired & { type: 'actionRequired' };
 }
 
@@ -95,6 +105,7 @@ export default function ToolConfirmation({
   sessionId,
   isCancelledMessage,
   isClicked,
+  isExpired = false,
   actionRequiredContent,
 }: ToolConfirmationProps) {
   const data = actionRequiredContent.data as ToolConfirmationData;
@@ -133,10 +144,14 @@ export default function ToolConfirmation({
     isBrowserSurface() && !folderAccess ? BROWSER_CANNOT_APPROVE : ''
   );
   const sendingRef = useRef(false);
+  // Expired by the daemon's notice, or learned from a late click that found
+  // nothing waiting (`status: unknown`, kept in the module map so a remount
+  // still knows).
+  const expired = !clicked && (isExpired || status === EXPIRED);
 
   useEffect(() => {
-    if (isCancelledMessage || isClicked || clicked) setFolderApprovalKey('');
-  }, [isCancelledMessage, isClicked, clicked]);
+    if (isCancelledMessage || isClicked || clicked || expired) setFolderApprovalKey('');
+  }, [isCancelledMessage, isClicked, clicked, expired]);
 
   // Sync internal state with stored state and props
   useEffect(() => {
@@ -165,7 +180,7 @@ export default function ToolConfirmation({
   }, [isClicked, clicked, status, toolName, toolConfirmationId]);
 
   const handleButtonClick = async (newStatus: string) => {
-    if (sendingRef.current || clicked || isClicked || isCancelledMessage) return;
+    if (sendingRef.current || clicked || isClicked || isCancelledMessage || expired) return;
     sendingRef.current = true;
     setIsSending(true);
     setConfirmationError('');
@@ -229,10 +244,21 @@ export default function ToolConfirmation({
         setConfirmationError(APPROVAL_COPY.confirmFailed);
         return;
       }
+      if (acknowledgedStatus === 'unknown') {
+        // Nothing waits on this card any more: its window closed between the
+        // notice and the click, or the notice never reached this view. The
+        // decision was dropped, so the card says what the notice would have.
+        setStatus(EXPIRED);
+        toolConfirmationState.set(toolConfirmationId, {
+          clicked: false,
+          status: EXPIRED,
+          actionDisplay: '',
+        });
+        return;
+      }
       const resolvedStatus = acknowledgedStatus === 'delivered' ? newStatus : acknowledgedStatus;
       if (acknowledgedStatus === 'already_resolved')
         newActionDisplay = APPROVAL_COPY.outcome.alreadyResolved;
-      if (acknowledgedStatus === 'unknown') newActionDisplay = APPROVAL_COPY.outcome.unknown;
       setClicked(true);
       setStatus(resolvedStatus);
       setActionDisplay(newActionDisplay);
@@ -309,6 +335,18 @@ export default function ToolConfirmation({
     </div>
   ) : null;
 
+  // Expired: the window closed before anyone answered, so the call gave up and
+  // the tool did not run. One calm row in the transcript's muted ink (Red is
+  // rare, design.md 9.14): not a failure, not a warning, and no control,
+  // because the way forward is to ask again in the chat.
+  if (expired && !isClicked) {
+    return (
+      <div className="biorouter-message-content text-body" data-testid="tool-approval-expired">
+        <TranscriptRow icon={Clock} label={APPROVAL_COPY.expired} />
+      </div>
+    );
+  }
+
   if (isCancelledMessage && !clicked && !isClicked) {
     return (
       <div className="biorouter-message-content text-body">
@@ -320,8 +358,7 @@ export default function ToolConfirmation({
   // Answered: the card has done its job, so it collapses to a transcript row
   // with the outcome and a way to change the standing permission.
   if (clicked) {
-    const declined =
-      status === DENY || status === CANCEL || status === 'unknown' || status === 'already_resolved';
+    const declined = status === DENY || status === CANCEL || status === 'already_resolved';
     return (
       <>
         <div className="biorouter-message-content text-body flex min-w-0 flex-col gap-1">
