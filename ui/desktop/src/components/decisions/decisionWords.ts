@@ -519,6 +519,12 @@ export function recordTitle(record: DecisionRecord): string {
 /**
  * The row's muted second line: the time; for a several-monitor call the time and
  * the names, `1:31:02 PM · Shell seen, Needs a rest`.
+ *
+ * It never names the model. The history appends that itself (`rowModel` in
+ * `DecisionHistory.tsx`), `1:31:02 PM · joey-1 · Baseten`, and only when the rows
+ * loaded so far came from more than one model (`listsSeveralModels`). Every row of
+ * a `decide` batch carries the time the batch's first row was stored, so a call's
+ * chunks all show one time here.
  */
 export function recordSubtitle(record: DecisionRecord, now = new Date()): string {
   const time = formatDecisionTime(record.createdAt, now);

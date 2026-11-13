@@ -1,10 +1,10 @@
 # Todo capability
 
 > **What this is.** User guide to the built-in Todo capability, which makes Biorouter break multi-step work into a tracked checklist and report progress as it goes.
-> **Status:** Current. The capability is enabled by default, so no manual setup is normally needed. The rules under [What Biorouter enforces](#what-biorouter-enforces) are enforced by the agent loop as of 2026-09-11; before that they were advice in the system prompt that nothing checked. The cheaper way the model reports progress, described under [How progress reaches the checklist](#how-progress-reaches-the-checklist), landed in 2026-11.
+> **Status:** Current. The capability is enabled by default, so no manual setup is normally needed. The rules under [What Biorouter enforces](#what-biorouter-enforces) are enforced by the agent loop as of 2026-09-11; before that they were advice in the system prompt that nothing checked. The cheaper way the model reports progress, described under [How progress reaches the checklist](#how-progress-reaches-the-checklist), landed in 2026-11. Since 2026-11-12 an item marked blocked no longer holds the turn.
 > **Audience:** end users.
 
-The Todo capability keeps Biorouter organized on long tasks. When your request has several steps, Biorouter writes a checklist before it starts, ticks items off as it works, and does not end the turn with items left open without naming them for you. The checklist appears in the chat summary's **To Do** section as soon as it exists, so you can see where Biorouter is rather than waiting for a single opaque answer.
+The Todo capability keeps Biorouter organized on long tasks. When your request has several steps, Biorouter writes a checklist before it starts, ticks items off as it works, and does not end the turn with items still to do without naming them for you. An item it marks blocked, because it is waiting on you or on something else outside its reach, does not hold the turn. The checklist appears in the chat summary's **To Do** section as soon as it exists, so you can see where Biorouter is rather than waiting for a single opaque answer.
 
 ## What Biorouter enforces
 
@@ -12,9 +12,17 @@ For a request with several steps, keeping the checklist is not left to the model
 
 1. **Plan first.** When your message reads as several steps and the chat's checklist is empty, Biorouter tells the model, for that turn, to write the checklist with `todo_write` before doing anything else.
 2. **One redirect.** If the model reaches for another tool anyway, Biorouter refuses that first call (or that first batch of parallel calls) and points it back at `todo_write`. The refused call never runs, and the model sees why. A batch that writes the checklist alongside its other calls is not refused, and neither is a call whose `todo` field adds the steps (see below). This happens **once per turn**: if the model repeats the call (for instance after explaining why a checklist is not worth keeping here), it runs.
-3. **No silent stop.** When a turn created or changed the checklist, Biorouter does not let it end while items are unfinished, unless the model's final message names each open item, by its `#N` id or by its text. Otherwise Biorouter sends the model back to finish, and shows you a notice saying which items are open. It does this at most five times per turn, and the count does not reset when the model runs tools. After the fifth time the turn ends anyway, with a notice that items were left open.
+3. **No silent stop.** When a turn created or changed the checklist, Biorouter does not let it end while items are pending or in progress, unless the model's final message names each of those items, by its `#N` id or by its text. Otherwise Biorouter sends the model back to finish, and shows you a notice saying which items are open. It does this at most five times per turn, and the count does not reset when the model runs tools. After the fifth time the turn ends anyway, with a notice that items were left open. An item marked blocked never holds the turn; see [Blocked items do not hold the turn](#blocked-items-do-not-hold-the-turn).
 
 The model is asked to say *why* an item is left open, but only the naming is checked. A mechanical check cannot tell a reason from a status recap; a named item is one you can see was not done, which is what the rule protects.
+
+### Blocked items do not hold the turn
+
+An item marked blocked (`[!]`) is one the model cannot finish until something outside its reach arrives, most often an answer from you, and the checklist already shows you that. So a blocked item never holds the turn, whether or not the final message names it, and a checklist whose only unfinished items are blocked lets the turn end at once.
+
+The system prompt asks the model to report such an item blocked, in the `todo` field of its next tool call or with `todo_update`, and to say in its final message what each blocked item is waiting for. Nothing checks that explanation, for the same reason only the naming is checked above. When the model is sent back for a pending or in-progress item, its feedback lists the blocked items too, so it sees the whole list, and it is told that an item waiting on something outside its reach can be marked blocked.
+
+Marking an item blocked is therefore also a way to end the turn without finishing it. The item stays in the **To Do** section marked blocked, so you can still see that it was not done.
 
 ### What counts as "several steps"
 
@@ -99,7 +107,9 @@ The `[~]` in-progress marker is what makes the checklist useful while a long tas
 
 `[!] blocked` is for work that cannot proceed until something outside Biorouter's
 control arrives, most often an answer from you. It is worth watching for: a
-blocked item is usually Biorouter telling you it is waiting on a decision.
+blocked item is usually Biorouter telling you it is waiting on a decision. A
+blocked item does not keep the turn going, so the turn can end while it is still
+open; see [Blocked items do not hold the turn](#blocked-items-do-not-hold-the-turn).
 
 ## When a task turns out to be bigger than it looked
 
