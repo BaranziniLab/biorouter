@@ -72,6 +72,9 @@ it('a programmatic replacement in the real composer posts no stale correction in
     write: false,
     platform: 'browser',
     format: 'iife',
+    // A stylesheet a component imports (a decision chat's question editor, for one)
+    // is irrelevant to what this test checks, and an IIFE bundle has no CSS output.
+    loader: { '.css': 'empty' },
     define: { 'process.env.NODE_ENV': '"test"' },
     plugins: [
       {
