@@ -2171,14 +2171,23 @@ mod tests {
                     let source = std::fs::read_to_string(&path).expect("readable");
                     // Rows become recognition entries only here too: `from_entry` takes
                     // a raw store row, so a caller elsewhere could rank or correct over
-                    // rows `bias_set` never filtered.
+                    // rows `bias_set` never filtered. Matched with the type's name, so a
+                    // helper of another type that shares the name (the decision log's
+                    // `StoredRow::from_entry`) is not a caller, plus a `Self::` call in the
+                    // file that defines the constructor.
                     let calls = [
-                        ("new_filtered(", "pub fn new_filtered("),
-                        ("from_entry(", "pub fn from_entry("),
+                        ("EligibleEntries::new_filtered(", "pub fn new_filtered("),
+                        ("RecognitionEntry::from_entry(", "pub fn from_entry("),
                     ]
                     .iter()
                     .map(|(call, definition)| {
-                        source.matches(call).count() - source.matches(definition).count()
+                        let own = if source.contains(definition) {
+                            let name = call.split("::").nth(1).unwrap_or(call);
+                            source.matches(&format!("Self::{name}")).count()
+                        } else {
+                            0
+                        };
+                        source.matches(call).count() + own
                     })
                     .sum::<usize>();
                     if calls > 0 {

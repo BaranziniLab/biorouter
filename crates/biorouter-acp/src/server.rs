@@ -1496,6 +1496,14 @@ pub async fn run_ws(builtins: Vec<String>, addr: String) -> Result<()> {
     }
 }
 
+/// Building an agent in a test takes this turn. `with_config` installs the process's
+/// decision log over the new agent's store and the log follows the newest store, so
+/// an agent built by one test while another counts its decision rows points the log at
+/// the wrong store. The decision log test holds the turn for its whole run; the agent
+/// helper in `tests` holds it while it builds.
+#[cfg(test)]
+static AGENT_STORE_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1845,6 +1853,8 @@ print(\"hello, world\")
             api_client,
             biorouter::model::ModelConfig::new("gpt-5-nano").unwrap(),
         ));
+        // Installing this agent re-points the process's decision log at its store.
+        let _turn = super::AGENT_STORE_TURN.lock().await;
         BioRouterAcpAgent::with_config(BioRouterAcpConfig {
             provider,
             builtins: vec!["dictionary".to_string()],
@@ -2032,6 +2042,7 @@ mod decision_log_tests {
     /// anything is sent, and the failure is still a row in the chat's log.
     #[test]
     fn a_decision_in_an_acp_session_is_logged_in_its_store() {
+        let _turn = super::AGENT_STORE_TURN.blocking_lock();
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_stack_size(16 * 1024 * 1024)
