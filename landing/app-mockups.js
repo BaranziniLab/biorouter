@@ -494,7 +494,7 @@
       prow('O', 'Ollama', 'Local open source models. Default qwen3.8:27b.', true) +
       '<div class="bw-grp"><i class="inst"></i>Institutional models</div>' +
       prow('V', 'Versa API Azure', 'UCSF ChatGPT via Azure OpenAI. Default gpt-5.6-sol-2026-07-09.', true) +
-      prow('V', 'Versa API Bedrock', 'UCSF Anthropic models via Amazon Bedrock. Default us.anthropic.claude-opus-4-8.', true) +
+      prow('V', 'Versa API Bedrock', 'UCSF Anthropic models via Amazon Bedrock. Default us.anthropic.claude-opus-5-5.', true) +
       '<div class="bw-grp"><i class="comm"></i>Commercial models</div>' +
       prow('A', 'Anthropic', 'Claude and other models from Anthropic.', true) +
       prow('O', 'OpenAI', 'OpenAI models with gpt-6-sol as the default, plus compatible endpoints.', true) +
