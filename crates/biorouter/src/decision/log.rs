@@ -104,6 +104,9 @@ pub const DEFAULT_PAGE: u32 = 50;
 pub struct DecisionRecord {
     pub id: String,
     pub session_id: Option<String>,
+    // When the row was stored; every row of a batch carries the time its
+    // first row was stored, so a `decide` call lists together. (A `//`
+    // comment: a doc comment would change the OpenAPI schema.)
     pub created_at: DateTime<Utc>,
     pub origin: DecisionOrigin,
     /// The monitor id, tool call id or phase id that asked.
@@ -286,6 +289,12 @@ pub fn install_global_sink(session_manager: Arc<SessionManager>) {
 /// `INSERT OR IGNORE`. `?2` is the session id, bound once and read twice:
 /// once as the column, once by the existence check, so a row is never stored
 /// for a chat that is gone (or not yet made).
+///
+/// `created_at` is `?3` (now) for a row with no batch. A batch's row takes
+/// the time the batch's first row was stored (`?8` is the batch id, read
+/// from `idx_decisions_batch`), so every chunk of a `decide` call, and every
+/// model of a vote, carries one time and lists together in chunk order
+/// ([`PAGE_ORDER`]) rather than in the order the chunks happened to finish.
 macro_rules! insert_decision_into {
     () => {
         "INTO decisions (\
@@ -294,7 +303,10 @@ macro_rules! insert_decision_into {
             questions_json, decisions_json, outcome, answer, pass_probability, \
             context_json, context_preview, context_bytes, context_truncated, error, \
             latency_ms, input_tokens, output_tokens, privacy_enforced) \
-         SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
+         SELECT ?1, ?2, \
+                COALESCE((SELECT MIN(b.created_at) FROM decisions b \
+                           WHERE b.session_id = ?2 AND b.batch_id = ?8), ?3), \
+                ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, \
                 ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30 \
           WHERE EXISTS (SELECT 1 FROM sessions WHERE id = ?2)"
     };
@@ -839,7 +851,19 @@ fn record_from_row(row: &SqliteRow) -> anyhow::Result<DecisionRecord> {
     })
 }
 
-/// A page cursor: the newest-first sort key of the last row a page returned.
+/// The order [`list`] pages in, newest first: by time, then a batch's rows
+/// together (every row of a batch carries one time, see
+/// `insert_decision_into!`), its chunks by position, a row that names no
+/// chunk (a stopped batch's) above them, and the id last, so the order is
+/// total. A vote's models answer the same chunk side by side.
+const PAGE_KEY: &str = "created_at, COALESCE(batch_id, ''), \
+     COALESCE(chunk_index, 4294967296), id";
+const PAGE_ORDER: &str = " ORDER BY created_at DESC, COALESCE(batch_id, '') DESC, \
+     COALESCE(chunk_index, 4294967296) DESC, id DESC";
+
+/// A page cursor: the time and id of the last row a page returned. The next
+/// page resumes after that row's whole [`PAGE_KEY`], read back from the row
+/// itself, so the cursor never has to spell a batch id.
 fn encode_cursor(record: &DecisionRecord) -> String {
     format!("{}:{}", record.created_at.timestamp_millis(), record.id)
 }
@@ -906,7 +930,8 @@ fn push_filters(builder: &mut QueryBuilder<'_, Sqlite>, session_id: &str, query:
     }
 }
 
-/// One page of a chat's decisions, newest first.
+/// One page of a chat's decisions, newest first, a batch's rows together in
+/// chunk order (`PAGE_ORDER`).
 ///
 /// A row's pass probability is [`lowest_pass_probability`] of its decisions, so
 /// `minP`/`maxP` drop rows that have none (an error, or a choice asked with no
@@ -930,17 +955,24 @@ pub async fn list(
     let mut paging = QueryBuilder::<Sqlite>::new(format!("SELECT {RECORD_COLUMNS} FROM decisions"));
     push_filters(&mut paging, session_id, query);
     if let Some((at, id)) = cursor {
+        // The time bound keeps the scan on `idx_decisions_session`; the row
+        // value decides ties. A cursor naming no row of this chat matches
+        // nothing, so it pages nothing rather than another chat's rows.
         paging
-            .push(" AND (created_at < ")
+            .push(" AND created_at <= ")
             .push_bind(at)
-            .push(" OR (created_at = ")
-            .push_bind(at)
-            .push(" AND id < ")
+            .push(format!(
+                " AND ({PAGE_KEY}) < (SELECT {PAGE_KEY} FROM decisions \
+                   WHERE session_id = "
+            ))
+            .push_bind(session_id.to_string())
+            .push(" AND id = ")
             .push_bind(id)
-            .push("))");
+            .push(")");
     }
     paging
-        .push(" ORDER BY created_at DESC, id DESC LIMIT ")
+        .push(PAGE_ORDER)
+        .push(" LIMIT ")
         .push_bind(i64::from(limit) + 1);
     let rows = paging.build().fetch_all(pool).await?;
 
@@ -1480,6 +1512,203 @@ mod tests {
         assert_eq!(seen, sorted, "pages are newest first by (created_at, id)");
         sorted.dedup();
         assert_eq!(sorted.len(), 7, "no row appears on two pages");
+    }
+
+    /// One chunk of a `decide` batch, as the service writes it.
+    fn chunk_entry(
+        session_id: &str,
+        batch: &'static str,
+        chunk: Option<u32>,
+        model: &str,
+    ) -> DecisionLogEntry {
+        let mut entry = log_entry(
+            Some(session_id),
+            Entry {
+                origin: DecisionOrigin::Tool,
+                origin_id: Some(batch),
+                label: Some("decide"),
+                batch: Some(batch),
+                outcome: DecisionOutcome::Decided,
+                threshold: None,
+                ..Entry::default()
+            },
+        );
+        entry.chunk_index = chunk.map(|i| i as usize);
+        entry.chunk_id = chunk.map(|i| format!("pt-{i:02}"));
+        entry.model = Some(DecisionModelRef::new("baseten_decision", model));
+        entry
+    }
+
+    /// Rows written a few milliseconds apart, so a per-insert clock would
+    /// order them by when they finished.
+    async fn later(sm: &Arc<SessionManager>, entry: DecisionLogEntry) {
+        tokio::time::sleep(std::time::Duration::from_millis(3)).await;
+        write(sm, entry).await;
+    }
+
+    fn rows(page: &DecisionPage) -> Vec<(Option<String>, Option<u32>, Option<String>)> {
+        page.records
+            .iter()
+            .map(|r| {
+                (
+                    r.batch_id.clone(),
+                    r.chunk_index,
+                    r.model.as_ref().map(|m| m.model.clone()),
+                )
+            })
+            .collect()
+    }
+
+    /// W2-6: a batch's chunks finish in any order, and the history lists them
+    /// together, at one time, in chunk order, never in the order they landed.
+    #[tokio::test]
+    async fn a_batch_lists_together_in_chunk_order_at_one_time() {
+        let (_dir, sm, id) = store().await;
+        write(&sm, log_entry(Some(&id), Entry::default())).await;
+        later(&sm, chunk_entry(&id, "b1", Some(1), "joey-1")).await;
+        later(&sm, chunk_entry(&id, "b1", Some(0), "joey-1")).await;
+        // A monitor checks while the batch runs.
+        later(&sm, log_entry(Some(&id), Entry::default())).await;
+        later(&sm, chunk_entry(&id, "b1", Some(2), "joey-1")).await;
+
+        let page = list(&sm, &id, &DecisionQuery::default()).await.unwrap();
+        let joey = Some("joey-1".to_string());
+        let b1 = Some("b1".to_string());
+        assert_eq!(
+            rows(&page),
+            vec![
+                (None, None, Some("tev1:0.8b".to_string())),
+                (b1.clone(), Some(2), joey.clone()),
+                (b1.clone(), Some(1), joey.clone()),
+                (b1.clone(), Some(0), joey.clone()),
+                (None, None, Some("tev1:0.8b".to_string())),
+            ],
+            "the monitor that checked after the batch began is above it, the batch is \
+             in chunk order, and the monitor before it is below"
+        );
+        let times: Vec<_> = page.records[1..4].iter().map(|r| r.created_at).collect();
+        assert!(
+            times.iter().all(|t| *t == times[0]),
+            "a batch's rows carry one time: {times:?}"
+        );
+        assert!(page.records[0].created_at > times[0]);
+        assert!(page.records[4].created_at < times[0]);
+    }
+
+    /// A vote's models answer the same chunk side by side, a stopped batch's
+    /// row (no chunk) heads its batch, two batches at one time never
+    /// interleave, and pages walk all of it once each.
+    #[tokio::test]
+    async fn pages_walk_batches_and_votes_without_repeats() {
+        let (_dir, sm, id) = store().await;
+        for chunk in [2, 0, 3, 1] {
+            later(&sm, chunk_entry(&id, "b1", Some(chunk), "joey-1")).await;
+        }
+        for chunk in [1, 3, 0, 2] {
+            later(&sm, chunk_entry(&id, "b1", Some(chunk), "kim-2")).await;
+        }
+        later(&sm, chunk_entry(&id, "b1", None, "kim-2")).await;
+        for chunk in [1, 0] {
+            later(&sm, chunk_entry(&id, "b2", Some(chunk), "joey-1")).await;
+        }
+        later(&sm, log_entry(Some(&id), Entry::default())).await;
+        // Two batches stored in the same millisecond.
+        let pool = sm.storage().pool().await.unwrap();
+        sqlx::query(
+            "UPDATE decisions SET created_at = \
+               (SELECT created_at FROM decisions WHERE batch_id = 'b1' LIMIT 1) \
+              WHERE batch_id = 'b2'",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let full = list(
+            &sm,
+            &id,
+            &DecisionQuery {
+                limit: Some(MAX_PAGE),
+                ..DecisionQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+        let joey = || Some("joey-1".to_string());
+        let kim = || Some("kim-2".to_string());
+        let b = |name: &str| Some(name.to_string());
+        assert_eq!(
+            rows(&full),
+            vec![
+                (None, None, Some("tev1:0.8b".to_string())),
+                (b("b2"), Some(1), joey()),
+                (b("b2"), Some(0), joey()),
+                (b("b1"), None, kim()),
+                (b("b1"), Some(3), kim()),
+                (b("b1"), Some(3), joey()),
+                (b("b1"), Some(2), kim()),
+                (b("b1"), Some(2), joey()),
+                (b("b1"), Some(1), kim()),
+                (b("b1"), Some(1), joey()),
+                (b("b1"), Some(0), kim()),
+                (b("b1"), Some(0), joey()),
+            ]
+        );
+
+        for limit in [1, 2, 3, 5] {
+            let mut walked = Vec::new();
+            let mut query = DecisionQuery {
+                limit: Some(limit),
+                ..DecisionQuery::default()
+            };
+            loop {
+                let page = list(&sm, &id, &query).await.unwrap();
+                assert_eq!(page.total, 12);
+                walked.extend(page.records.iter().map(|r| r.id.clone()));
+                match page.next_cursor {
+                    Some(cursor) => query.before = Some(cursor),
+                    None => break,
+                }
+            }
+            let expected: Vec<_> = full.records.iter().map(|r| r.id.clone()).collect();
+            assert_eq!(
+                walked, expected,
+                "pages of {limit} walk the same order once"
+            );
+        }
+    }
+
+    /// A cursor is resumed from the row it names, in this chat only: one that
+    /// names a row of another chat pages nothing of either.
+    #[tokio::test]
+    async fn a_cursor_resumes_only_from_a_row_of_this_chat() {
+        let (dir, sm, id) = store().await;
+        let other = sm
+            .create_session(dir.path().into(), "other".into(), SessionType::User)
+            .await
+            .unwrap()
+            .id;
+        for _ in 0..3 {
+            later(&sm, log_entry(Some(&id), Entry::default())).await;
+        }
+        later(&sm, log_entry(Some(&other), Entry::default())).await;
+        let theirs = list(&sm, &other, &DecisionQuery::default())
+            .await
+            .unwrap()
+            .records
+            .remove(0);
+
+        let page = list(
+            &sm,
+            &id,
+            &DecisionQuery {
+                before: Some(encode_cursor(&theirs)),
+                ..DecisionQuery::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(page.records.is_empty(), "{:?}", rows(&page));
+        assert_eq!(page.total, 3, "the total still counts this chat's rows");
     }
 
     #[tokio::test]

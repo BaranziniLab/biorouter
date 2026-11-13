@@ -3,6 +3,7 @@ import {
   useEffect,
   useId,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -30,6 +31,7 @@ import {
   answerKey,
   answerProbability,
   calibrationText,
+  decisionModelLabel,
   fetchDecisionDetail,
   fetchDecisionPage,
   fetchDecisionSummary,
@@ -55,6 +57,7 @@ import {
   RECORD_GLYPHS,
   RECORD_GLYPH_TONES,
   decisionModelDisplay,
+  decisionModelPlace,
   formatDecisionTime,
   namedProbability,
   outcomeFilterChoice,
@@ -166,7 +169,7 @@ export const DECISION_HISTORY_COPY = {
 
 const copy = DECISION_HISTORY_COPY;
 
-/** How often an open history checks for new calls (one small summary read). */
+/** How often an open history checks for new calls (one read of its first call). */
 export const FOLLOW_INTERVAL_MS = 4000;
 /** Within this many pixels of the top, new calls reload the list in place. */
 const FOLLOW_TOP_SLACK_PX = 24;
@@ -243,8 +246,42 @@ function kindWord(record: DecisionRecord): string {
   return copy.kind[record.origin];
 }
 
-/** A row's accessible name: verdict or answer, title, the named probability or the names, time. */
-function rowLabel(record: DecisionRecord): string {
+/** A place this long or shorter rides on a row; the `biorouter serve` phrase is left to Details. */
+const ROW_PLACE_MAX = 16;
+
+/**
+ * The model a row names (R3): its alias, with where it runs when that is a short word
+ * (`joey-1 · Baseten`, `tev1:0.8b · this computer`), or `null` without a model.
+ */
+export function rowModel(record: DecisionRecord): string | null {
+  const ref = record.model ?? record.decisions[0]?.model ?? null;
+  const alias = decisionModelLabel(ref);
+  if (!ref || !alias) return null;
+  const place = decisionModelPlace(ref.provider, { tier: record.tier });
+  return place && place.length <= ROW_PLACE_MAX ? `${alias} · ${place}` : alias;
+}
+
+/**
+ * Whether the rows came from more than one model (a vote, or monitors on different
+ * models). Only then does a row name its model: it is what tells a vote's answers
+ * apart, and a chat that asks one model keeps it under Details.
+ */
+export function listsSeveralModels(records: readonly DecisionRecord[]): boolean {
+  let first: string | null = null;
+  for (const record of records) {
+    const model = rowModel(record);
+    if (model === null) continue;
+    if (first === null) first = model;
+    else if (model !== first) return true;
+  }
+  return false;
+}
+
+/**
+ * A row's accessible name: verdict or answer, title, the named probability or the names,
+ * time, and the model when the list holds several.
+ */
+function rowLabel(record: DecisionRecord, showModel = false): string {
   const title = isSeveralMonitors(record)
     ? `${recordTitle(record)}: ${labelNames(record).join(', ')}`
     : recordTitle(record);
@@ -253,6 +290,7 @@ function rowLabel(record: DecisionRecord): string {
     title,
     rowProbability(record)?.text ?? null,
     formatDecisionTime(record.createdAt),
+    showModel ? rowModel(record) : null,
   ]
     .filter(Boolean)
     .join(', ');
@@ -304,6 +342,12 @@ export function visibleRange(
 // The list, loaded a page at a time
 // ---------------------------------------------------------------------------
 
+/** What the list's first page read: the follow tick compares a fresh read with it. */
+interface ListHead {
+  total: number;
+  newestId: string | null;
+}
+
 interface ListState {
   key: string;
   records: DecisionRecord[];
@@ -313,6 +357,8 @@ interface ListState {
   error: boolean;
   /** At least one page has answered for this filter. */
   loaded: boolean;
+  /** The first page's own total and newest call, kept while later pages load. */
+  head: ListHead | null;
 }
 
 function emptyList(key: string): ListState {
@@ -324,6 +370,7 @@ function emptyList(key: string): ListState {
     loading: true,
     error: false,
     loaded: false,
+    head: null,
   };
 }
 
@@ -367,6 +414,10 @@ function useDecisionPages(sessionId: string, filter: DecisionHistoryFilter, relo
             loading: false,
             error: false,
             loaded: true,
+            head:
+              cursor === null
+                ? { total: page.total, newestId: page.records[0]?.id ?? null }
+                : previous.head,
           };
         });
       } catch {
@@ -911,6 +962,7 @@ function DecisionRow({
   index,
   total,
   selected,
+  showModel,
   id,
   onSelect,
 }: {
@@ -918,10 +970,13 @@ function DecisionRow({
   index: number;
   total: number;
   selected: boolean;
+  /** Name the model on line 2: the list holds calls from more than one. */
+  showModel: boolean;
   id: string;
   onSelect: (id: string) => void;
 }) {
   const probability = rowProbability(record);
+  const model = showModel ? rowModel(record) : null;
   return (
     <div
       id={id}
@@ -929,7 +984,7 @@ function DecisionRow({
       aria-selected={selected}
       aria-posinset={index + 1}
       aria-setsize={total}
-      aria-label={rowLabel(record)}
+      aria-label={rowLabel(record, showModel)}
       className="br-dh-row"
       data-outcome={record.outcome}
       data-selected={selected ? '' : undefined}
@@ -947,7 +1002,9 @@ function DecisionRow({
           </span>
         </span>
         <span className="br-dh-row__line br-dh-row__meta">
-          <span className="br-dh-row__when">{recordSubtitle(record)}</span>
+          <span className="br-dh-row__when">
+            {model ? `${recordSubtitle(record)} · ${model}` : recordSubtitle(record)}
+          </span>
           {probability ? (
             <span className="br-dh-row__p">
               <ProbabilityBar p={probability.p} />
@@ -1379,9 +1436,13 @@ export interface DecisionHistoryProps {
  * One filter line (Source and Outcome up front; which-one, turn and the
  * probability range behind Filters), then a windowed list, newest first, that
  * asks for the next page as it nears the end, so a chat with thousands of calls
- * draws only the rows in view. Each row says Fired or Quiet for a monitor,
+ * draws only the rows in view. A `decide` call's rows stay together in chunk
+ * order, each showing the time its first row was stored (the daemon's
+ * `PAGE_ORDER` in `decision/log.rs`). Each row says Fired or Quiet for a monitor,
  * Passed or Not passed for a gate, and the answer for every other call, with the
- * probability named (R1, R2). Beside it (or under it, in a narrow panel) the
+ * probability named (R1, R2); its second line names the model only when the
+ * loaded rows came from more than one (`listsSeveralModels`, R3), and otherwise
+ * the model stays under Details. Beside it (or under it, in a narrow panel) the
  * selected call: the question in plain words, the answer and its own
  * probability, the threshold line, and everything else (bars, model, tier,
  * latency, tokens, certainty, what it saw, raw JSON) under Details (R7). Reads
@@ -1420,32 +1481,42 @@ export default function DecisionHistory({
   }, [sessionId, reload, filterKey]);
 
   // Follow a running chat: monitors and decide batches keep adding calls while the
-  // view is open. A cheap summary read every FOLLOW_INTERVAL_MS while the window is
-  // visible; new calls reload the list in place when it is at the top, and are
-  // offered as "Show N new" when the person has scrolled into older calls, so the
-  // rows under the reader never move.
-  const seenTotal = useRef<number | null>(null);
+  // view is open. Every FOLLOW_INTERVAL_MS while the window is visible, one small read
+  // of the list's own first call (limit 1, the same filter) is compared with what the
+  // list's first page read: a change reloads the list in place when it is at the top,
+  // and new calls are offered as "Show N new" when the person has scrolled into older
+  // ones, so the rows under the reader never move. The comparison is with the list's
+  // own read, never with a summary read beside it: a call that landed between those two
+  // reads was counted by the summary and missing from the list, and the view kept
+  // saying "2 calls" until Refresh (W3-7). It also counts only calls the filter shows.
   const [newCalls, setNewCalls] = useState(0);
   const atTopRef = useRef(true);
-  useEffect(() => {
-    if (summary) seenTotal.current = summary.total;
-  }, [summary]);
+  const listedRef = useRef<{ key: string; filter: DecisionHistoryFilter; head: ListHead } | null>(
+    null
+  );
+  listedRef.current =
+    state.loaded && state.head ? { key: state.key, filter, head: state.head } : null;
+  // A new filter or a reload starts counting again.
+  useEffect(() => setNewCalls(0), [state.key]);
   useEffect(() => {
     let controller: AbortController | null = null;
     const tick = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      const listed = listedRef.current;
+      if (!listed) return;
       controller?.abort();
       const current = new AbortController();
       controller = current;
-      fetchDecisionSummary(sessionId, current.signal)
-        .then(({ data }) => {
-          if (current.signal.aborted || !data || seenTotal.current === null) return;
-          const added = data.total - seenTotal.current;
-          if (added <= 0) return;
+      fetchDecisionPage(sessionId, listed.filter, { before: null, limit: 1 }, current.signal)
+        .then((page) => {
+          if (current.signal.aborted || listedRef.current?.key !== listed.key) return;
+          const added = page.total - listed.head.total;
+          const changed = added !== 0 || (page.records[0]?.id ?? null) !== listed.head.newestId;
+          if (!changed) return;
           if (atTopRef.current) {
             setNewCalls(0);
             setReload((value) => value + 1);
-          } else {
+          } else if (added > 0) {
             setNewCalls(added);
           }
         })
@@ -1584,6 +1655,7 @@ export default function DecisionHistory({
   };
 
   const total = Math.max(state.total, records.length);
+  const showModel = useMemo(() => listsSeveralModels(records), [records]);
   // The rows the narrow list hugs: those loaded, one more while a page waits, and one
   // for a state line ("Loading", "No decision calls match") when there are none.
   const listRows = records.length + (state.nextCursor ? 1 : 0);
@@ -1660,6 +1732,7 @@ export default function DecisionHistory({
                   total={total}
                   id={optionId(index)}
                   selected={index === selectedIndex}
+                  showModel={showModel}
                   onSelect={select}
                 />
               ))}
