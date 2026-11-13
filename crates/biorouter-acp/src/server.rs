@@ -826,6 +826,14 @@ impl BioRouterAcpAgent {
             .map_err(|e| {
                 sacp::Error::internal_error().data(format!("Failed to create session: {}", e))
             })?;
+        // An ACP client can deliver other people's words as user messages (DD-57), so
+        // **Find words in my recent chats** never reads this chat.
+        biorouter::dictation::suggestion_scan::mark_not_learnable(
+            &manager,
+            &biorouter_session.id,
+            biorouter::dictation::suggestion_scan::NotLearnableReason::Acp,
+        )
+        .await;
         self.update_session_with_provider(&biorouter_session)
             .await?;
 
@@ -919,10 +927,20 @@ impl BioRouterAcpAgent {
         // non-empty session keeps its own dir, logged at debug, and the load
         // succeeds.
         // R-30: applying the client's directory while loading is part of
-        // opening the chat, so it does not move the chat either.
-        match biorouter::session::activity::opening(
-            manager.try_update_working_dir_if_empty(&session_id, args.cwd.clone()),
-        )
+        // opening the chat, so it does not move the chat either; nor does the
+        // mark that keeps this chat out of **Find words in my recent chats**,
+        // since an ACP client can deliver other people's words (DD-57).
+        match biorouter::session::activity::opening(async {
+            biorouter::dictation::suggestion_scan::mark_not_learnable(
+                &manager,
+                &session_id,
+                biorouter::dictation::suggestion_scan::NotLearnableReason::Acp,
+            )
+            .await;
+            manager
+                .try_update_working_dir_if_empty(&session_id, args.cwd.clone())
+                .await
+        })
         .await
         {
             Ok(WorkingDirUpdate::Updated) => {}

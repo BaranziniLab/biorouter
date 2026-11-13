@@ -583,6 +583,7 @@ fn bare_row(written: String, tier: EntryTier) -> Entry {
         reason: None,
         suggested_in: None,
         seen: 1,
+        seen_in: Vec::new(),
         created_at: at,
         updated_at: at,
         provenance: None,

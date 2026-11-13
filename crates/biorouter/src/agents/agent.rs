@@ -6285,13 +6285,12 @@ impl Agent {
             return;
         };
         let sessions = self.config.session_manager.clone();
-        let extensions = self.extension_manager.clone();
         let session_id = session_id.to_owned();
+        // The person's own switch, `learn_from_chats`, admitted this observation; the
+        // agent's `dictionary` capability need not be on in the chat (owner, 2026-11-13:
+        // suggestions are a feature the person runs, not one of the agent's tools).
         tokio::spawn(async move {
             let _permit = permit;
-            if !extensions.is_extension_enabled("dictionary").await {
-                return;
-            }
             let policy = crate::managed::ManagedPolicy::load();
             if !policy.dictation().dictionary.is_allowed()
                 || !policy.dictation().dictionary_agent_writes.is_allowed()

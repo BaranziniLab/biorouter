@@ -2735,14 +2735,44 @@ export type DictionaryProvenance = {
 export type DictionaryProvenanceReason = 'publicized_by_user' | 'privatized_by_user';
 
 /**
+ * 200 from the scan routes: the daemon's one scan of the person's recent chats.
+ */
+export type DictionaryScan = {
+    /**
+     * Chats read so far.
+     */
+    chats_read: number;
+    /**
+     * Chats this scan reads: the person's own chats on public models changed in the last
+     * 30 days, at most 100.
+     */
+    chats_total: number;
+    state: DictionaryScanState;
+    /**
+     * While it runs, words found in enough chats to be suggested; once it ends, the
+     * suggestions it added for review.
+     */
+    words_found: number;
+};
+
+/**
+ * Where **Find words in my recent chats** stands.
+ */
+export type DictionaryScanState = 'idle' | 'running' | 'finished' | 'stopped' | 'failed';
+
+/**
  * 200 from `GET` and `POST /dictionary/settings`. `suggest_from_chats` joins it with the
  * `dictionary` capability (PR-23).
  */
 export type DictionarySettings = {
     agent_writes: DictionaryAgentWrites;
     authority: DictionaryAuthority;
+    /**
+     * **Suggest words from my messages**: the chat extractor, which the person turns on.
+     */
     learn_from_chats: boolean;
     suggest_from_chats: boolean;
+    suggestions: DictionarySuggestionMeasure;
 };
 
 /**
@@ -2750,6 +2780,11 @@ export type DictionarySettings = {
  */
 export type DictionarySettingsRequest = {
     agent_writes?: DictionaryAgentWrites | null;
+    /**
+     * The person's answer **Keep suggesting** to the offer to turn suggestions off, which
+     * quiets the offer for 20 more decisions. `false` and absent change nothing.
+     */
+    keep_suggesting?: boolean | null;
     learn_from_chats?: boolean | null;
 };
 
@@ -2757,6 +2792,32 @@ export type DictionarySettingsRequest = {
  * Which rows a listing holds.
  */
 export type DictionaryStatusFilter = 'active' | 'suggested' | 'all';
+
+/**
+ * The person's own measure of suggestions from chats (owner, 2026-11-13): counts from this
+ * computer's Dictionary store, never sent anywhere, and never a term.
+ */
+export type DictionarySuggestionMeasure = {
+    /**
+     * Offer, in one sentence, to turn suggestions off: they are on, most were dismissed,
+     * and the person has not chosen to keep them on within the last 20 decisions.
+     */
+    offer_turning_off: boolean;
+    /**
+     * The person's latest decisions on suggestions from chats, at most 50.
+     */
+    recent_decisions: number;
+    /**
+     * Of the person's latest decisions on suggestions from chats (at most 50), how many
+     * were **Keep**.
+     */
+    recent_kept: number;
+    /**
+     * The different chats a word must be found in before it is suggested: 2, or 3 or 4
+     * once 20 or more recent decisions show most suggestions were dismissed.
+     */
+    required_chats: number;
+};
 
 export type DictionaryTermKind = 'gene_symbol' | 'acronym' | 'name' | 'term';
 
@@ -13252,12 +13313,86 @@ export type DismissDictionarySuggestionsError = DismissDictionarySuggestionsErro
 
 export type DismissDictionarySuggestionsResponses = {
     /**
-     * How many suggestions were deleted, each with its tombstone; allowed under managed policy
+     * How many suggestions were deleted, each with its tombstone, so none is suggested again; each listed chat suggestion counts as a Dismiss in the person's own measure. Allowed under managed policy
      */
     200: DictionaryDismissed;
 };
 
 export type DismissDictionarySuggestionsResponse = DismissDictionarySuggestionsResponses[keyof DismissDictionarySuggestionsResponses];
+
+export type GetDictionarySuggestionScanData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/dictionary/suggestions/scan';
+};
+
+export type GetDictionarySuggestionScanResponses = {
+    /**
+     * The daemon's scan of the person's recent chats, as it stands
+     */
+    200: DictionaryScan;
+};
+
+export type GetDictionarySuggestionScanResponse = GetDictionarySuggestionScanResponses[keyof GetDictionarySuggestionScanResponses];
+
+export type StartDictionarySuggestionScanData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/dictionary/suggestions/scan';
+};
+
+export type StartDictionarySuggestionScanErrors = {
+    /**
+     * agent or policy (MSG-SCAN-POLICY)
+     */
+    403: DictionaryErrorBody;
+    /**
+     * suggestions_off (MSG-SCAN-OFF): suggestions are off
+     */
+    409: DictionaryErrorBody;
+    /**
+     * unreadable (MSG-SCAN-UNREADABLE)
+     */
+    503: DictionaryErrorBody;
+};
+
+export type StartDictionarySuggestionScanError = StartDictionarySuggestionScanErrors[keyof StartDictionarySuggestionScanErrors];
+
+export type StartDictionarySuggestionScanResponses = {
+    /**
+     * The scan started, or the one already running: it reads the person's own recent chats on public models, on this computer, and queues the words it finds as suggestions
+     */
+    200: DictionaryScan;
+};
+
+export type StartDictionarySuggestionScanResponse = StartDictionarySuggestionScanResponses[keyof StartDictionarySuggestionScanResponses];
+
+export type StopDictionarySuggestionScanData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/dictionary/suggestions/scan/stop';
+};
+
+export type StopDictionarySuggestionScanErrors = {
+    /**
+     * agent
+     */
+    403: DictionaryErrorBody;
+};
+
+export type StopDictionarySuggestionScanError = StopDictionarySuggestionScanErrors[keyof StopDictionarySuggestionScanErrors];
+
+export type StopDictionarySuggestionScanResponses = {
+    /**
+     * The scan stops after the chat it is reading, keeping the words found so far
+     */
+    200: DictionaryScan;
+};
+
+export type StopDictionarySuggestionScanResponse = StopDictionarySuggestionScanResponses[keyof StopDictionarySuggestionScanResponses];
 
 export type StartOpenrouterSetupData = {
     body?: never;

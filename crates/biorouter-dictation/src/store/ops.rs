@@ -10,6 +10,7 @@
 use chrono::{DateTime, Utc};
 
 use super::fold::fold_key;
+use super::learning::{chat_digest, MAX_REQUIRED_CHATS};
 use super::schema::{
     BiasPolicy, Entry, EntryId, EntrySource, EntryStatus, EntryTier, MatchPolicy, Misrecognition,
     RowAffiliation, StoreFile, TermKind, Tombstone,
@@ -200,8 +201,12 @@ impl StoreFile {
             .any(|stone| stone.tier == tier && stone.fold_key == fold)
     }
 
-    /// Count only the distinct sessions needed to make an auto suggestion reviewable.
-    /// Auto `seen` saturates at two; further sightings cannot change the decision.
+    /// Count a chat a chat extractor suggestion was found in. A word counts once per chat
+    /// (`seen_in` keeps a digest of each), and it is listed for review (`seen` 2) once it
+    /// has been found in as many different chats as the person's own decisions ask for
+    /// ([`super::ChatLearning::required_chats`]: two, or more when they dismiss most). A
+    /// listed suggestion, a row that is not a suggestion, and a tombstoned word are left
+    /// alone, so a dismissed word is never suggested again.
     pub fn observe_auto_suggestion(
         &mut self,
         written: &str,
@@ -228,6 +233,8 @@ impl StoreFile {
         {
             return Ok(());
         }
+        let required = self.chat_learning.required_chats() as usize;
+        let chat = chat_digest(session_id);
         if let Some(row) = self
             .entries
             .iter_mut()
@@ -236,12 +243,25 @@ impl StoreFile {
             if row.source != EntrySource::Auto
                 || row.status != EntryStatus::Suggested
                 || row.seen >= 2
-                || row.suggested_in.as_deref() == Some(session_id)
             {
                 return Ok(());
             }
-            row.seen = 2;
+            // A suggestion written before chats were counted names only its latest chat.
+            if row.seen_in.is_empty() {
+                if let Some(first) = row.suggested_in.as_deref() {
+                    row.seen_in.push(chat_digest(first));
+                }
+            }
+            if row.seen_in.contains(&chat) {
+                return Ok(());
+            }
+            if row.seen_in.len() < MAX_REQUIRED_CHATS as usize {
+                row.seen_in.push(chat);
+            }
             row.suggested_in = Some(session_id.to_owned());
+            if row.seen_in.len() >= required {
+                row.seen = 2;
+            }
             row.touch(at);
             return Ok(());
         }
@@ -250,8 +270,57 @@ impl StoreFile {
         term.status = EntryStatus::Suggested;
         term.suggested_in = Some(session_id.to_owned());
         term.affiliation = if tier.is_private() { affiliation } else { None };
-        let _ = self.add(term, Reach::All, at)?;
+        if let AddOutcome::Created { id, .. } = self.add(term, Reach::All, at)? {
+            if let Some(row) = self.entries.iter_mut().find(|row| row.id == id) {
+                row.seen_in = vec![chat];
+            }
+        }
         Ok(())
+    }
+
+    /// Whether a row is a chat extractor suggestion the person can see, so a decision on
+    /// it measures how well suggestions suit them.
+    fn listed_chat_suggestion(entry: &Entry) -> bool {
+        entry.source == EntrySource::Auto && entry.status == EntryStatus::Suggested && entry.seen >= 2
+    }
+
+    /// After the person's decisions lowered the chats a word needs, list the suggestions
+    /// that now have enough. Raising it never hides one already listed.
+    fn list_suggestions_that_now_qualify(&mut self, at: DateTime<Utc>) {
+        let required = self.chat_learning.required_chats() as usize;
+        for row in self.entries.iter_mut() {
+            if row.source == EntrySource::Auto
+                && row.status == EntryStatus::Suggested
+                && row.seen < 2
+                && row.seen_in.len() >= required
+            {
+                row.seen = 2;
+                row.touch(at);
+            }
+        }
+    }
+
+    /// Record one decision on a listed chat suggestion, and list what the new threshold
+    /// admits.
+    fn record_chat_decision(&mut self, kept: bool, at: DateTime<Utc>) {
+        self.chat_learning.record(kept);
+        self.list_suggestions_that_now_qualify(at);
+    }
+
+    /// Dismiss the suggestions a person chose from an earlier read: each still here and
+    /// still a suggestion is deleted with its tombstone, so it is not suggested again, and
+    /// each listed chat suggestion among them counts as a **Dismiss** in
+    /// [`super::ChatLearning`]. The rows dismissed.
+    pub fn dismiss_suggestions(&mut self, ids: &[EntryId], at: DateTime<Utc>) -> Vec<Entry> {
+        let removed = self.remove_confirmed(ids, |e| e.status == EntryStatus::Suggested, at);
+        let measured = removed
+            .iter()
+            .filter(|entry| Self::listed_chat_suggestion(entry))
+            .count();
+        for _ in 0..measured {
+            self.record_chat_decision(false, at);
+        }
+        removed
     }
 
     /// Add a term ("Uniqueness", "Caps per tier", "Who stamps the tier").
@@ -350,6 +419,7 @@ impl StoreFile {
             reason,
             suggested_in: term.suggested_in,
             seen: 1,
+            seen_in: Vec::new(),
             created_at: at,
             updated_at: at,
             provenance: None,
@@ -492,7 +562,8 @@ impl StoreFile {
     }
 
     /// Accept a suggestion (`active`, `reviewed`), or keep an agent row the person has
-    /// not reviewed. Accepting into a tier at its active cap is refused.
+    /// not reviewed. Accepting into a tier at its active cap is refused. Accepting a listed
+    /// chat suggestion counts as a **Keep** in [`super::ChatLearning`].
     pub fn accept(&mut self, id: &EntryId, at: DateTime<Utc>) -> Result<(), StoreError> {
         let index = self.index_of(id)?;
         let tier = self.entries[index].tier;
@@ -505,9 +576,14 @@ impl StoreFile {
         if entry.status == EntryStatus::Active && entry.reviewed {
             return Ok(());
         }
+        let measured = Self::listed_chat_suggestion(entry);
         entry.status = EntryStatus::Active;
         entry.reviewed = true;
+        entry.seen_in.clear();
         entry.touch(at);
+        if measured {
+            self.record_chat_decision(true, at);
+        }
         Ok(())
     }
 
@@ -882,6 +958,7 @@ mod tests {
                 reason: None,
                 suggested_in: None,
                 seen: 1,
+                seen_in: Vec::new(),
                 created_at: at(i as i64),
                 updated_at: at(i as i64),
                 provenance: None,
@@ -1326,5 +1403,136 @@ mod tests {
             .unwrap();
         assert_eq!(file.entries.len(), 2);
         assert!(file.entries.iter().all(|row| row.tier == EntryTier::Public));
+    }
+
+    /// Owner, 2026-11-13: a word counts once per chat, and the chats it needs before it
+    /// is listed follow the person's own decisions.
+    fn listed_after(file: &mut StoreFile, word: &str, chats: &[&str]) -> bool {
+        for (i, chat) in chats.iter().enumerate() {
+            file.observe_auto_suggestion(word, EntryTier::Public, chat, None, at(i as i64))
+                .unwrap();
+        }
+        file.entries
+            .iter()
+            .find(|row| row.written == word)
+            .is_some_and(|row| row.seen >= 2)
+    }
+
+    /// `kept` listed suggestions kept and `dismissed` dismissed, through the operations the
+    /// review surfaces call.
+    fn decide(file: &mut StoreFile, kept: usize, dismissed: usize) {
+        let first = file.chat_learning.decisions() as usize;
+        for i in 0..kept + dismissed {
+            let word = format!("DEC{}X", first + i);
+            assert!(listed_after(file, &word, &["one", "two", "three", "four"]));
+            let id = file.entries.iter().find(|r| r.written == word).unwrap().id.clone();
+            if i < kept {
+                file.accept(&id, at(100)).unwrap();
+            } else {
+                assert_eq!(file.dismiss_suggestions(&[id], at(100)).len(), 1);
+            }
+        }
+    }
+
+    #[test]
+    fn a_word_counts_once_per_chat_and_is_listed_at_two_chats() {
+        let mut file = StoreFile::default();
+        assert!(!listed_after(&mut file, "EPAS1", &["a", "a", "a"]));
+        let row = &file.entries[0];
+        assert_eq!((row.seen, row.seen_in.len()), (1, 1));
+        assert!(!row.seen_in.iter().any(|d| d == "a"), "a digest, not the chat id");
+        assert!(listed_after(&mut file, "EPAS1", &["b"]));
+        assert_eq!(file.entries[0].seen_in.len(), 2);
+        assert_eq!(file.entries[0].suggested_in.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn keep_and_dismiss_of_listed_chat_suggestions_are_counted() {
+        let mut file = StoreFile::default();
+        decide(&mut file, 2, 3);
+        assert_eq!(file.chat_learning.kept, 2);
+        assert_eq!(file.chat_learning.dismissed, 3);
+        assert_eq!(file.chat_learning.recent, vec![true, true, false, false, false]);
+        // Neither an unlisted suggestion, nor an agent's or a person's row, measures the
+        // chat extractor.
+        file.observe_auto_suggestion("HIDDEN1", EntryTier::Public, "x", None, at(1))
+            .unwrap();
+        let hidden = file.entries.iter().find(|r| r.written == "HIDDEN1").unwrap().id.clone();
+        assert_eq!(file.dismiss_suggestions(&[hidden], at(2)).len(), 1);
+        let agent = created(
+            file.add(by(EntrySource::Agent, "AGENT1", EntryTier::Public), Reach::All, at(3))
+                .unwrap(),
+        );
+        file.accept(&agent, at(4)).unwrap();
+        assert_eq!(file.chat_learning.decisions(), 5);
+    }
+
+    #[test]
+    fn a_dismissed_word_is_never_suggested_again() {
+        let mut file = StoreFile::default();
+        assert!(listed_after(&mut file, "EPAS1", &["a", "b"]));
+        let id = file.entries[0].id.clone();
+        file.dismiss_suggestions(&[id], at(5));
+        assert!(file.entries.is_empty());
+        assert!(!listed_after(&mut file, "EPAS1", &["c", "d", "e", "f"]));
+        assert!(file.entries.is_empty(), "the tombstone stops it");
+    }
+
+    #[test]
+    fn dismissing_only_takes_rows_that_are_still_suggestions() {
+        let mut file = StoreFile::default();
+        assert!(listed_after(&mut file, "EPAS1", &["a", "b"]));
+        let id = file.entries[0].id.clone();
+        file.accept(&id, at(5)).unwrap();
+        assert!(file.dismiss_suggestions(&[id], at(6)).is_empty());
+        assert_eq!(file.entries[0].status, EntryStatus::Active);
+        assert_eq!(file.chat_learning.recent, vec![true]);
+    }
+
+    #[test]
+    fn most_dismissed_means_a_word_needs_more_chats() {
+        let mut file = StoreFile::default();
+        decide(&mut file, 9, 11);
+        assert_eq!(file.chat_learning.required_chats(), 3);
+        assert!(!listed_after(&mut file, "EPAS1", &["a", "b"]));
+        assert!(listed_after(&mut file, "EPAS1", &["c"]));
+        decide(&mut file, 0, 20);
+        assert_eq!(file.chat_learning.required_chats(), 4, "9 kept of 40");
+        assert!(!listed_after(&mut file, "HIF2A", &["a", "b", "c"]));
+        assert!(listed_after(&mut file, "HIF2A", &["d"]));
+        assert_eq!(file.entries.iter().find(|r| r.written == "HIF2A").unwrap().seen_in.len(), 4);
+    }
+
+    #[test]
+    fn keeping_more_lowers_the_threshold_and_lists_what_now_qualifies() {
+        let mut file = StoreFile::default();
+        decide(&mut file, 9, 11);
+        assert!(!listed_after(&mut file, "EPAS1", &["a", "b"]));
+        decide(&mut file, 2, 0);
+        assert_eq!(file.chat_learning.required_chats(), 2);
+        let row = file.entries.iter().find(|r| r.written == "EPAS1").unwrap();
+        assert_eq!(row.seen, 2, "a suggestion already found in two chats is listed now");
+    }
+
+    #[test]
+    fn a_suggestion_from_before_chats_were_counted_counts_its_chat() {
+        let mut file = StoreFile::default();
+        file.observe_auto_suggestion("EPAS1", EntryTier::Public, "a", None, at(0))
+            .unwrap();
+        file.entries[0].seen_in.clear();
+        assert!(!listed_after(&mut file, "EPAS1", &["a"]), "its own chat again");
+        assert!(listed_after(&mut file, "EPAS1", &["b"]));
+    }
+
+    #[test]
+    fn a_store_whose_owner_decided_nothing_writes_no_learning_and_reads_it_back() {
+        let mut file = StoreFile::default();
+        let before = file.to_bytes();
+        assert!(!String::from_utf8_lossy(&before).contains("chat_learning"));
+        decide(&mut file, 1, 1);
+        let bytes = file.to_bytes();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(text.contains(r#""chat_learning": {"recent":[true,false],"kept":1,"dismissed":1}"#));
+        assert_eq!(StoreFile::parse(&bytes).unwrap(), file);
     }
 }

@@ -7580,11 +7580,109 @@
         },
         "responses": {
           "200": {
-            "description": "How many suggestions were deleted, each with its tombstone; allowed under managed policy",
+            "description": "How many suggestions were deleted, each with its tombstone, so none is suggested again; each listed chat suggestion counts as a Dismiss in the person's own measure. Allowed under managed policy",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/DictionaryDismissed"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "agent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dictionary/suggestions/scan": {
+      "get": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "get_dictionary_suggestion_scan",
+        "responses": {
+          "200": {
+            "description": "The daemon's scan of the person's recent chats, as it stands",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryScan"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "start_dictionary_suggestion_scan",
+        "responses": {
+          "200": {
+            "description": "The scan started, or the one already running: it reads the person's own recent chats on public models, on this computer, and queues the words it finds as suggestions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryScan"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "agent or policy (MSG-SCAN-POLICY)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "suggestions_off (MSG-SCAN-OFF): suggestions are off",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "unreadable (MSG-SCAN-UNREADABLE)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/dictionary/suggestions/scan/stop": {
+      "post": {
+        "tags": [
+          "super::routes::dictionary"
+        ],
+        "operationId": "stop_dictionary_suggestion_scan",
+        "responses": {
+          "200": {
+            "description": "The scan stops after the chat it is reading, keeping the words found so far",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DictionaryScan"
                 }
               }
             }
@@ -18196,6 +18294,50 @@
           "privatized_by_user"
         ]
       },
+      "DictionaryScan": {
+        "type": "object",
+        "description": "200 from the scan routes: the daemon's one scan of the person's recent chats.",
+        "required": [
+          "state",
+          "chats_read",
+          "chats_total",
+          "words_found"
+        ],
+        "properties": {
+          "chats_read": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Chats read so far.",
+            "minimum": 0
+          },
+          "chats_total": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Chats this scan reads: the person's own chats on public models changed in the last\n30 days, at most 100.",
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/DictionaryScanState"
+          },
+          "words_found": {
+            "type": "integer",
+            "format": "int32",
+            "description": "While it runs, words found in enough chats to be suggested; once it ends, the\nsuggestions it added for review.",
+            "minimum": 0
+          }
+        }
+      },
+      "DictionaryScanState": {
+        "type": "string",
+        "description": "Where **Find words in my recent chats** stands.",
+        "enum": [
+          "idle",
+          "running",
+          "finished",
+          "stopped",
+          "failed"
+        ]
+      },
       "DictionarySettings": {
         "type": "object",
         "description": "200 from `GET` and `POST /dictionary/settings`. `suggest_from_chats` joins it with the\n`dictionary` capability (PR-23).",
@@ -18203,7 +18345,8 @@
           "suggest_from_chats",
           "learn_from_chats",
           "agent_writes",
-          "authority"
+          "authority",
+          "suggestions"
         ],
         "properties": {
           "agent_writes": {
@@ -18213,10 +18356,14 @@
             "$ref": "#/components/schemas/DictionaryAuthority"
           },
           "learn_from_chats": {
-            "type": "boolean"
+            "type": "boolean",
+            "description": "**Suggest words from my messages**: the chat extractor, which the person turns on."
           },
           "suggest_from_chats": {
             "type": "boolean"
+          },
+          "suggestions": {
+            "$ref": "#/components/schemas/DictionarySuggestionMeasure"
           }
         }
       },
@@ -18230,6 +18377,11 @@
                 "$ref": "#/components/schemas/DictionaryAgentWrites"
               }
             ],
+            "nullable": true
+          },
+          "keep_suggesting": {
+            "type": "boolean",
+            "description": "The person's answer **Keep suggesting** to the offer to turn suggestions off, which\nquiets the offer for 20 more decisions. `false` and absent change nothing.",
             "nullable": true
           },
           "learn_from_chats": {
@@ -18246,6 +18398,40 @@
           "suggested",
           "all"
         ]
+      },
+      "DictionarySuggestionMeasure": {
+        "type": "object",
+        "description": "The person's own measure of suggestions from chats (owner, 2026-11-13): counts from this\ncomputer's Dictionary store, never sent anywhere, and never a term.",
+        "required": [
+          "recent_kept",
+          "recent_decisions",
+          "required_chats",
+          "offer_turning_off"
+        ],
+        "properties": {
+          "offer_turning_off": {
+            "type": "boolean",
+            "description": "Offer, in one sentence, to turn suggestions off: they are on, most were dismissed,\nand the person has not chosen to keep them on within the last 20 decisions."
+          },
+          "recent_decisions": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The person's latest decisions on suggestions from chats, at most 50.",
+            "minimum": 0
+          },
+          "recent_kept": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Of the person's latest decisions on suggestions from chats (at most 50), how many\nwere **Keep**.",
+            "minimum": 0
+          },
+          "required_chats": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The different chats a word must be found in before it is suggested: 2, or 3 or 4\nonce 20 or more recent decisions show most suggestions were dismissed.",
+            "minimum": 0
+          }
+        }
       },
       "DictionaryTermKind": {
         "type": "string",
