@@ -2350,8 +2350,9 @@ token borrowed for its hue.
   already opens with "Failed to". The ✕ is what makes a failure findable in a long group. The well's failure
   notice titles in ink.
 - **Permission risk.** `ToolRiskBadge` (`ToolCallPreview.tsx`): Read-only, Modifies data and Unverified are
-  neutral chips, Destructive is the `strong` neutral chip (the primary ink). The grade lives in the word. The
-  accent was tried first and dropped: Parchment's coral wash read as a pinkish red.
+  neutral chips, Destructive is the `strong` neutral chip (the primary ink) with the warning triangle, so it
+  reads apart by word, ink and shape. The accent was tried first and dropped: Parchment's coral wash read as a
+  pinkish red.
 - **Gauges.** A context or usage bar past its limit fills with the danger tone, the secondary ink: full, not
   alarmed. The label says what happens next.
 

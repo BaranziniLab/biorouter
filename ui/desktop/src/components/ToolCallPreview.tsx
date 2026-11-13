@@ -11,7 +11,7 @@
  */
 import { useId, useState } from 'react';
 import './tool-call.css';
-import { Code, FileText, Terminal } from './icons/app-icons';
+import { AlertTriangle, Code, FileText, Terminal } from './icons/app-icons';
 import type { ActionRequired, ToolPreview, ToolPreviewLine, ToolRisk } from '../api';
 import { Badge, type BadgeTone } from './ui/badge';
 import { InfoTip } from './ui/info-tip';
@@ -49,8 +49,14 @@ const RISK_TONES: Record<ToolRisk, BadgeTone> = {
 export function ToolRiskBadge({ risk }: { risk: ToolRisk }) {
   const known = risk in RISK_TONES;
   const grade: ToolRisk = known ? risk : 'unknown';
+  // The riskiest grade also carries the warning triangle, the app's one
+  // "look before you allow" glyph (the folder card's finding line wears it), so
+  // it reads apart from the other neutral chips by word, ink AND shape.
   return (
     <Badge data-testid="tool-risk-badge" tone={RISK_TONES[grade]}>
+      {grade === 'high' ? (
+        <AlertTriangle aria-hidden="true" className="size-3 shrink-0 text-text-warning" />
+      ) : null}
       {PREVIEW_COPY.risk[grade]}
     </Badge>
   );
