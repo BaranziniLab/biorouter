@@ -20,6 +20,9 @@
 //! square (■) for a language-model agent and a circle (●) for decision-model
 //! work, filled by status (hollow, a core, half full, solid, a cross, a bar) and
 //! coloured on top, and a line of them under the header or under each phase.
+//! Never red (owner direction, 2026-11-12: red is rare): a failure is a dim
+//! cross and the word "failed", and a run that needs a look is half full in the
+//! terminal's own ink, with its words.
 //!
 //! Sections, never frames (owner direction, 2026-11-12): the pane is labelled
 //! by headings and parted by dim rule lines, as the desktop rail is by small
@@ -29,7 +32,8 @@
 //! rule parts each phase from the one above. Past three subagents each group
 //! lists its first five rows (the ones that need a look first) and a dim "+N
 //! more", as the desktop's grid does, so every phase of a long plan stays on
-//! screen. Headings carry words, never a mark, so a `●` is always
+//! screen. Headings carry words, never a status mark, and a phase's gate is a
+//! flag (⚐, ⚑ once passed), as the desktop draws it, so a `●` is always
 //! decision-model work. The only line drawn round the pane is its left edge
 //! against the transcript.
 //!
@@ -864,15 +868,17 @@ impl MarkKind {
     }
 
     /// The ink on top of the shape: the desktop's tokens in the terminal's
-    /// palette. Running blue, waiting yellow, failed red, finished green, the
-    /// rest dim.
+    /// palette. Running blue, finished green, waiting (or stalled) the
+    /// terminal's own ink, failed dim like the rest. Never red or yellow (owner
+    /// direction, 2026-11-12): a failure is found by its cross and the word
+    /// "failed" on its row, a run that needs a look by its half fill and its
+    /// words.
     pub fn style(self) -> Style {
         match self {
-            Self::Queued | Self::Idle => DIM,
+            Self::Queued | Self::Idle | Self::Failed => DIM,
             Self::Running => Style::new().fg(Color::LightBlue),
-            Self::Waiting => Style::new().fg(Color::Yellow),
+            Self::Waiting => Style::new(),
             Self::Done => Style::new().fg(Color::Green),
-            Self::Failed => Style::new().fg(Color::Red),
         }
     }
 }
@@ -906,13 +912,33 @@ pub fn row_mark(row: &PaneRow) -> Span<'static> {
     Span::styled(kind.glyph(is_decision_work(row)), kind.style())
 }
 
-/// A gate's fill. Its mark is always a circle: a gate is decision-model work.
-fn gate_kind(gate: PaneGate) -> MarkKind {
-    match gate {
-        PaneGate::Waiting => MarkKind::Queued,
-        PaneGate::Passed | PaneGate::ByYou => MarkKind::Done,
-        PaneGate::NotPassed => MarkKind::Failed,
-        PaneGate::Blocked => MarkKind::Waiting,
+/// A phase gate's flag, as the desktop draws it at the end of its phase's
+/// line: an outline until the gate passes, then solid. A flag and never a
+/// circle, so a `●` in this pane only ever means decision-model work (owner
+/// direction, 2026-11-12: the gate's old circle read as one).
+pub const GATE_FLAG: &str = "⚐";
+/// A passed gate's flag (or one the person decided).
+pub const GATE_FLAG_PASSED: &str = "⚑";
+
+impl PaneGate {
+    /// The flag on the phase's heading.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Self::Passed | Self::ByYou => GATE_FLAG_PASSED,
+            Self::Waiting | Self::NotPassed | Self::Blocked => GATE_FLAG,
+        }
+    }
+
+    /// The flag's ink: the finished green once passed, the accent while it
+    /// needs the person (the one colour kept for what needs them), the
+    /// terminal's own ink when not passed, dim while not asked yet. Never red.
+    pub fn style(self) -> Style {
+        match self {
+            Self::Passed | Self::ByYou => MarkKind::Done.style(),
+            Self::Blocked => Style::new().fg(ACCENT),
+            Self::NotPassed => Style::new(),
+            Self::Waiting => DIM,
+        }
     }
 }
 
@@ -948,12 +974,15 @@ pub fn status_word(status: SubagentRunStatus) -> &'static str {
     }
 }
 
+/// A phase's heading reads solid at every status (owner direction,
+/// 2026-11-12, as the desktop's phase titles do): the phase in progress in the
+/// accent, a finished or blocked one in bold, one not started or skipped in
+/// the plain ink. Its words say where it stands, never a yellow or a dim.
 fn phase_style(status: PhaseStatus) -> Style {
     match status {
-        PhaseStatus::Pending | PhaseStatus::Skipped => DIM,
+        PhaseStatus::Pending | PhaseStatus::Skipped => Style::new(),
         PhaseStatus::InProgress => Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-        PhaseStatus::Completed => Style::new().add_modifier(Modifier::BOLD),
-        PhaseStatus::Blocked => Style::new().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+        PhaseStatus::Completed | PhaseStatus::Blocked => Style::new().add_modifier(Modifier::BOLD),
     }
 }
 
@@ -1089,15 +1118,14 @@ fn dense_tail(row: &PaneRow) -> String {
 
 /// A phase's heading: words, never a status mark, so a `●` in this pane is
 /// always decision-model work. Its label, its counts and where it stands, in
-/// the phase's style; then (E-7) its gate, led by the gate's circle in the
+/// the phase's style; then (E-7) its gate, led by the gate's flag in the
 /// gate's own ink, as the desktop draws it at the end of the phase's line.
 fn phase_head_spans(phase: &PanePhase, counts: &PhaseCounts) -> Vec<Span<'static>> {
     let style = phase_style(phase.status);
     let mut spans = vec![Span::styled(phase_head_counts(phase, counts), style)];
     if let Some(gate) = phase.gate {
-        let kind = gate_kind(gate);
         spans.push(Span::styled(" · ", style));
-        spans.push(Span::styled(kind.glyph(true), kind.style()));
+        spans.push(Span::styled(gate.glyph(), gate.style()));
         spans.push(Span::styled(format!(" {}", gate.words()), style));
     }
     spans
@@ -1958,9 +1986,10 @@ pub fn list_into(app: &mut App) {
         app.push_note("This chat has no subagents yet.");
         return;
     }
+    // "Agents", the desktop's word for the section (and this pane's heading).
     app.push_line(Line::from(vec![
         Span::styled(
-            "Subagents",
+            "Agents",
             Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
         ),
         Span::styled(format!("  {}", model.tally().text()), DIM),
@@ -2490,7 +2519,7 @@ mod tests {
         );
         assert_eq!(
             phase_head_text(&phases[1], &PhaseCounts::default()),
-            "Write · waits for Research's gate"
+            "Write · waits for the gate after Research"
         );
         let counts = PhaseCounts {
             total: 2,
@@ -2500,13 +2529,13 @@ mod tests {
         };
         assert_eq!(
             phase_head_text(&phases[1], &counts),
-            "Write 1/2 · 1 running · waits for Research's gate"
+            "Write 1/2 · 1 running · waits for the gate after Research"
         );
         let mut blocked = phases[1].clone();
         blocked.status = PhaseStatus::Blocked;
         assert_eq!(
             phase_head_text(&blocked, &PhaseCounts::default()),
-            "Write · blocked · waits for Research's gate"
+            "Write · blocked · waits for the gate after Research"
         );
     }
 
@@ -2570,12 +2599,15 @@ mod tests {
             done: 1,
             ..PhaseCounts::default()
         };
-        // The heading is words; the gate is decision-model work, so its circle
-        // leads its words, in the gate's own ink.
-        assert_eq!(phase_head_text(&build, &one), "Build 1/1 · ● gate passed");
+        // The heading is words; the gate's flag leads its words, in the gate's
+        // own ink, and never a circle: a `●` here only means decision-model work.
+        assert_eq!(phase_head_text(&build, &one), "Build 1/1 · ⚑ gate passed");
         let spans = phase_head_spans(&build, &one);
-        assert_eq!(spans[2].content, "●");
+        assert_eq!(spans[2].content, "⚑");
         assert_eq!(spans[2].style, MarkKind::Done.style());
+        for flag in [GATE_FLAG, GATE_FLAG_PASSED] {
+            assert_eq!(UnicodeWidthStr::width(flag), 1, "{flag} takes one cell");
+        }
 
         gate.last_passed = Some(false);
         gate.blocked = true;
@@ -2584,11 +2616,18 @@ mod tests {
         build.gate = Some(PaneGate::of(&gate));
         assert_eq!(
             phase_head_text(&build, &one),
-            "Build 1/1 · ◒ gate blocked · needs you"
+            "Build 1/1 · ⚐ gate blocked · needs you"
         );
+        // It needs the person: the accent, never a warning hue.
+        assert_eq!(
+            phase_head_spans(&build, &one)[2].style,
+            Style::new().fg(ACCENT)
+        );
+        assert_eq!(phase_style(PhaseStatus::Blocked).fg, None);
         gate.blocked = false;
         gate.needs_person = false;
         assert_eq!(PaneGate::of(&gate), PaneGate::NotPassed);
+        assert_eq!(PaneGate::NotPassed.glyph(), GATE_FLAG);
         gate.last_passed = None;
         assert_eq!(PaneGate::of(&gate), PaneGate::Waiting);
     }
@@ -2636,6 +2675,20 @@ mod tests {
         for glyph in &glyphs {
             assert_eq!(UnicodeWidthStr::width(*glyph), 1, "{glyph} takes one cell");
         }
+        // Never red or yellow (owner direction, 2026-11-12): a failure is a dim
+        // cross beside the word "failed", and a run that needs a look is half
+        // full in the terminal's own ink.
+        for kind in kinds {
+            assert!(
+                !matches!(
+                    kind.style().fg,
+                    Some(Color::Red | Color::LightRed | Color::Yellow | Color::LightYellow)
+                ),
+                "{kind:?}"
+            );
+        }
+        assert_eq!(MarkKind::Failed.style(), DIM);
+        assert_eq!(MarkKind::Waiting.style(), Style::new());
 
         // A quiet active child reads as stalled; a decision model is a circle.
         let mut quiet = row("q", "quiet", S::Running);
