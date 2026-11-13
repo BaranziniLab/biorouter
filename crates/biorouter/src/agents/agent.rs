@@ -13783,12 +13783,13 @@ impl Agent {
         // chat's reach as this turn starts, pinned once here so a later change of the
         // slot never restamps them. The slot is what the privacy gates read (DR-33
         // folds a chat's decision models into it); an effort rebuild of the model
-        // (`provider_with_effort`) is the same model without that fold, so it is only
-        // the fallback when nothing is bound.
+        // (`provider_with_effort`) is the same model without that fold, and is never read
+        // here: the slot is bound whenever a turn reaches this line (both reads above go
+        // through `self.provider()`, which errors on an empty slot).
         let origin_provider = self
             .bound_provider_unchecked()
             .await
-            .unwrap_or_else(|| Arc::clone(&reply_provider));
+            .ok_or_else(|| anyhow!("Provider not set"))?;
         self.pin_dictionary_turn_origin(
             &session_config.id,
             (origin_provider.tier(), origin_provider.affiliation()),
