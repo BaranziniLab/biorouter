@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ModelsBottomBar from './ModelsBottomBar';
 import { ModelAndProviderProvider } from '../../../ModelAndProviderContext';
@@ -142,6 +142,33 @@ describe('the model chip on a Llama Server model', () => {
     await waitFor(() => expect(block).toHaveTextContent('Qwen3.8 27B'));
     expect(block).not.toHaveTextContent('qwen3.8-27b');
     expect(line).toHaveTextContent('Llama Server');
+  });
+
+  // Live QA, 2026-11-12: at the menu's 288px the line read "Llama Server · Private …" and
+  // "On this mac…". jsdom lays nothing out, so what is pinned is the construction: nothing
+  // in the line cuts, it wraps anywhere, and who covers the model has its own line.
+  it('reads the provider line whole: it wraps, it never cuts', async () => {
+    mocks.getProviders.mockResolvedValue([
+      {
+        ...providerEntry('llamacpp', 'Llama Server', 'private', true),
+        affiliation: { kind: 'local', institutions: [] },
+      },
+      providerEntry('versa_azure', 'Versa API Azure', 'private'),
+    ]);
+    renderBar({});
+    const chip = await screen.findByTestId('model-chip');
+    await waitFor(() => expect(chip).toHaveTextContent('Qwen3.8 27B'));
+    fireEvent.pointerDown(chip, { button: 0, ctrlKey: false });
+    const line = await screen.findByTestId('model-provider-line');
+    await waitFor(() => expect(line).toHaveTextContent('Llama Server · Private model'));
+    expect(line.querySelector('.truncate')).toBeNull();
+    expect(line.className).toMatch(/\[overflow-wrap:anywhere\]/);
+    expect(line.className.split(/\s+/)).toContain('flex-col');
+    // Who covers the model is its own line, so a wrap never leaves a "·" at the start of one.
+    const affiliation = await within(line).findByTestId('model-affiliation-line');
+    expect(affiliation.lastElementChild?.textContent).toBe('On this machine');
+    expect(affiliation.querySelector('.truncate')).toBeNull();
+    expect(line.textContent).not.toMatch(/·\s*On this machine/);
   });
 
   it('names a chat bound to a local model while new chats start elsewhere', async () => {

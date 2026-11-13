@@ -10,7 +10,7 @@ import {
   type KeyboardEvent,
   type ReactNode,
 } from 'react';
-import { ChevronDown, RefreshCw, SlidersHorizontal, X } from '../icons/app-icons';
+import { AlertCircle, ChevronDown, RefreshCw, SlidersHorizontal, X } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { Disclosure } from '../ui/disclosure';
 import {
@@ -1270,8 +1270,11 @@ function DecisionDetailPane({
         {[kindWord(shown), formatDecisionTime(shown.createdAt)].filter(Boolean).join(' · ')}
       </p>
       {shown.error ? (
-        <p className="br-dh-detail__error" role="note">
-          {copy.error}: {shown.error}
+        <p className="br-dh-detail__error" role="note" data-testid="decision-detail-error">
+          <AlertCircle aria-hidden="true" />
+          <span>
+            {copy.error}: {shown.error}
+          </span>
         </p>
       ) : null}
       {!shown.privacyEnforced ? <p className="br-dh-detail__note">{copy.privacyOff}</p> : null}

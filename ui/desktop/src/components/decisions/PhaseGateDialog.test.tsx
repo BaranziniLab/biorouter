@@ -12,6 +12,15 @@ import {
   type PhaseGateDialogProps,
 } from './PhaseGateDialog';
 import { DECISION_MODEL_OPTION_COPY } from './decisionModelOption';
+import { renderToStaticMarkup } from 'react-dom/server';
+import { AlertCircle } from '../icons/app-icons';
+
+/** The failure glyph's drawing, to tell it from any other icon by shape. */
+function failureGlyph(): string {
+  const host = document.createElement('div');
+  host.innerHTML = renderToStaticMarkup(<AlertCircle />);
+  return host.querySelector('svg')?.innerHTML ?? '';
+}
 
 /*
  * The generated client functions are watched where they are called from, so a
@@ -333,9 +342,11 @@ describe('what the dialog says about a gate', () => {
     expect(screen.getByTestId('phase-gate-status')).toHaveTextContent('Blocked: needs you');
     // R2-7: one short line; the reason is the tip beside it.
     const note = screen.getByTestId('phase-gate-needs-person');
-    expect(note.querySelector('.br-gate-waiting')?.firstChild?.textContent).toBe(
+    expect(within(note).getByTestId('phase-gate-waiting-chip')).toHaveTextContent(
       PHASE_GATE_COPY.waitingForYou
     );
+    // Red is rare (design.md 9.13): a neutral chip asks, never a tinted warning banner.
+    expect(note.outerHTML).not.toMatch(/warning|danger/);
     expect(within(note).getByRole('button', { name: /Why it waits/ })).toHaveAccessibleDescription(
       PHASE_GATE_COPY.needsPerson
     );
@@ -517,6 +528,10 @@ describe('the person’s decisions', () => {
       'Only the person at the keyboard may pass, skip or retry a phase gate.'
     );
     expect(refusal).toHaveAttribute('role', 'alert');
+    // Ink, words and the failure glyph: no danger tone or wash (design.md 9.13).
+    expect(refusal).toHaveClass('br-monitors__error');
+    expect(refusal.outerHTML).not.toMatch(/danger|wash/);
+    expect(refusal.querySelector('svg')?.innerHTML).toBe(failureGlyph());
     expect(onChanged).not.toHaveBeenCalled();
     expect(screen.getByTestId('phase-gate-status')).toHaveTextContent('Not asked yet');
 

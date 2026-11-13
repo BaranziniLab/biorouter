@@ -308,7 +308,7 @@ describe('the warm-up dialog says only what is true of the local copy', () => {
     // What still decides whether to go ahead stays: the fit, the window and the memory.
     expect(within(dialog).getByText('Default context')).toBeInTheDocument();
     expect(within(dialog).getByText('Recommended GPU memory')).toBeInTheDocument();
-    expect(within(dialog).getByText(/recommends 64 GiB/)).toBeInTheDocument();
+    expect(within(dialog).getByText('Large for this computer')).toBeInTheDocument();
   });
 
   it('says "Downloaded in Ollama" for a copy in the Ollama store, and still drops the details', async () => {
@@ -422,5 +422,53 @@ describe('the warm-up dialog keeps its decline and its work-in-flight rules', ()
     });
     await waitFor(() => expect(screen.queryByText('Warm up local model')).not.toBeInTheDocument());
     expect(mocks.setConfigProvider).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The fit, in plain words. The dialog printed the daemon's sentence as it came:
+ * "Recommended for this machine: 128 GiB apple_unified meets the 48 GiB recommendation."
+ * (live QA, 2026-11-12), the memory kind's id and a unit the rest of the app does not
+ * use. It now says the verdict the Settings info dialog says, and the memory rows name
+ * the kind in words.
+ */
+describe('the warm-up dialog says the fit in plain words', () => {
+  const machine = (accelerator_memory_kind: string, os: string, gib: number | null = 128) => ({
+    data: {
+      ...statusResponse.data,
+      catalog: [
+        {
+          ...statusResponse.data.catalog[0],
+          min_gpu_memory_gib: 32,
+          recommended_gpu_memory_gib: 48,
+          suitable: true,
+          suitability_status: 'suitable',
+          suitability_message: `Recommended for this machine: ${gib} GiB ${accelerator_memory_kind} meets the 48 GiB recommendation.`,
+        },
+      ],
+      system: {
+        ...statusResponse.data.system,
+        os,
+        accelerator_memory_gib: gib,
+        accelerator_memory_kind,
+      },
+    },
+  });
+
+  it.each([
+    ['apple_unified', 'macos', '128 GB unified memory', 'Fits this Mac'],
+    ['vram', 'linux', '128 GB VRAM', 'Fits this computer'],
+    ['cpu_only', 'linux', '128 GB system RAM', 'Fits this computer'],
+  ])('%s reads as words, never as the id', async (kind, os, detected, verdict) => {
+    mocks.llamacppStatus.mockResolvedValue(machine(kind, os));
+    const dialog = await openTheSheet();
+    const row = (label: string) => within(dialog).getByText(label).nextElementSibling;
+    expect(row('Detected GPU memory')).toHaveTextContent(detected);
+    expect(row('Recommended GPU memory')).toHaveTextContent('48 GB');
+    expect(row('Recommendation')).toHaveTextContent(verdict);
+    // No machine id and no daemon sentence anywhere in the sheet.
+    expect(dialog).not.toHaveTextContent(kind);
+    expect(dialog).not.toHaveTextContent('GiB');
+    expect(dialog).not.toHaveTextContent('Recommended for this machine');
   });
 });

@@ -14,7 +14,7 @@ import { Select } from '../ui/Select';
 import { Slider } from '../ui/slider';
 import { Switch } from '../ui/switch';
 import { Textarea } from '../ui/textarea';
-import { Check, Plus, SlidersHorizontal, X } from '../icons/app-icons';
+import { AlertCircle, Check, Plus, SlidersHorizontal, X } from '../icons/app-icons';
 import {
   DEFAULT_MONITOR_WINDOW,
   DecisionRequestError,
@@ -1006,6 +1006,7 @@ function MonitorEditor({
             />
             {catalogProblem ? (
               <p className="br-monitors__error" role="alert" data-testid="monitor-models-error">
+                <AlertCircle aria-hidden="true" />
                 {catalogProblem.text}
                 {catalogProblem.retry ? (
                   <>
@@ -1090,6 +1091,7 @@ function MonitorEditor({
       </Disclosure>
       {refusal ? (
         <p className="br-monitors__error" role="alert" data-testid="monitor-save-error">
+          <AlertCircle aria-hidden="true" />
           {refusal}
         </p>
       ) : null}
@@ -2006,6 +2008,7 @@ export function MonitorsDialog({
           </p>
         ) : stored === 'error' ? (
           <p className="br-monitors__error" role="alert" data-testid="monitors-load-error">
+            <AlertCircle aria-hidden="true" />
             {copy.loadFailed}
           </p>
         ) : showEmpty ? (
@@ -2082,6 +2085,7 @@ export function MonitorsDialog({
         {asking && !asking.inEditor && !asking.atDefault ? askingNode : null}
         {generalError ? (
           <p className="br-monitors__error" role="alert" data-testid="monitors-save-error">
+            <AlertCircle aria-hidden="true" />
             {generalError}
           </p>
         ) : null}
@@ -2174,6 +2178,7 @@ function DefaultModelField({
       />
       {error ? (
         <p className="br-monitors__error" role="alert" data-testid="monitors-default-error">
+          <AlertCircle aria-hidden="true" />
           {error}
         </p>
       ) : null}
@@ -2267,6 +2272,7 @@ function MonitorRow({
             role="alert"
             data-testid="monitor-row-error"
           >
+            <AlertCircle aria-hidden="true" />
             {error}
           </p>
         ) : null}

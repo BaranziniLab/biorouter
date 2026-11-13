@@ -1,5 +1,6 @@
 import { useEffect, useId, useRef, useState, type ComponentProps, type ReactNode } from 'react';
 import { ModalShell } from '../ModalShell';
+import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/Checkbox';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
@@ -14,7 +15,7 @@ import { Slider } from '../ui/slider';
 import { useSurfaceTriggerHint } from '../ui/surfaceTriggerHint';
 import { Textarea } from '../ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
-import { MoreHorizontal, Plus, X } from '../icons/app-icons';
+import { AlertCircle, MoreHorizontal, Plus, X } from '../icons/app-icons';
 import {
   fetchDecisionCatalog,
   fetchDecisionSettings,
@@ -123,8 +124,12 @@ export const PHASE_GATE_COPY = {
   },
   chatDefault: "This chat's decision model, or its own model when it has none",
   uncalibrated: 'Accepts uncalibrated probabilities',
-  /** R2-7: the banner's one line; why it waits is in the tip beside it. */
-  waitingForYou: 'Waiting for you.',
+  /**
+   * R2-7: the one chip that says the phase needs the person; why it waits is in the
+   * tip beside it. A neutral chip, not a tinted banner: something that needs the
+   * person asks by its words, never by a status hue (red is rare, design.md 9.13).
+   */
+  waitingForYou: 'Waiting for you',
   waitingWhy: 'Why it waits',
   needsPerson:
     'Only you can move this phase on now: pass it, skip it, give its gate its attempts again, or change or remove the gate.',
@@ -656,13 +661,11 @@ function GateFacts({
         ) : null}
       </div>
       {needsNote ? (
-        // R2-7: one line up front; the full reason (and what each choice does) in a tip.
-        <Note tone="warning" role="status" testId="phase-gate-needs-person">
-          <span className="br-gate-waiting">
-            {copy.waitingForYou}
-            <InfoTip label={copy.waitingWhy} help={needsNote} />
-          </span>
-        </Note>
+        // R2-7: one chip up front; the full reason (and what each choice does) in a tip.
+        <p className="br-gate-waiting" role="status" data-testid="phase-gate-needs-person">
+          <Badge data-testid="phase-gate-waiting-chip">{copy.waitingForYou}</Badge>
+          <InfoTip label={copy.waitingWhy} help={needsNote} />
+        </p>
       ) : null}
       {standingNote ? (
         <Note role="status" testId="phase-gate-standing-note">
@@ -1255,9 +1258,12 @@ export function PhaseGateDialog({
         </Note>
       ) : null}
       {refusal ? (
-        <Note tone="danger" role="alert" testId="phase-gate-refusal">
+        // The Monitors dialog's refusal line: the failure glyph and the daemon's words in
+        // the primary ink, never a red box (red is rare, design.md 9.13).
+        <p className="br-monitors__error" role="alert" data-testid="phase-gate-refusal">
+          <AlertCircle aria-hidden="true" />
           {fieldWord ? `${fieldWord}: ${refusal}` : refusal}
-        </Note>
+        </p>
       ) : null}
       {phase && gate ? (
         <ConfirmationModal

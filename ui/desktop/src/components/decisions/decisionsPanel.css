@@ -118,11 +118,12 @@
   min-width: 0;
 }
 
+/* An invalid range: the fields keep the one red edge, the sentence is ink (9.13). */
 .br-dh-range__error {
   margin: 0;
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);
-  color: var(--text-danger);
+  color: var(--text-default);
 }
 
 /* A checkbox row (the gate editor's and the Monitors dialog's). */
@@ -471,11 +472,23 @@
   margin: 0;
 }
 
+/* A call that failed or was refused: the failure glyph and the words, in the
+   primary ink, never a status hue (red is rare, design.md 9.13). */
 .br-dh-detail__error {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);
-  color: var(--text-danger);
+  color: var(--text-default);
   overflow-wrap: anywhere;
+}
+
+.br-dh-detail__error > svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 1px;
 }
 
 /* Muted, not warning: an estimate is a property of the model, not a fault. */
@@ -791,6 +804,14 @@
   line-height: var(--text-secondary--line-height);
 }
 
+.br-decide-card__error > svg {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin-top: 3px;
+  color: var(--text-default);
+}
+
 .br-decide-card__error-count {
   color: var(--text-default);
 }
@@ -850,11 +871,13 @@
   color: var(--text-warning);
 }
 
-/* "Waiting for you." and its tip on one line (R2-7). */
+/* The "Waiting for you" chip and its tip on one line (R2-7): a neutral chip, never a
+   tinted banner (red is rare, design.md 9.13). */
 .br-gate-waiting {
   display: inline-flex;
   align-items: center;
   gap: 4px;
+  margin: 0;
 }
 
 .br-gate-note {
@@ -1022,11 +1045,23 @@
   text-align: end;
 }
 
+/* A field's problem, or a save or load that failed: the primary ink and the words,
+   and for a failure the failure glyph before them. Never a status hue: red is rare
+   (design.md 9.13), and an invalid field keeps its one red edge on the field. */
 .br-monitors__error {
   margin: 0;
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);
-  color: var(--text-danger);
+  color: var(--text-default);
+}
+
+/* Inline, so a line that ends in a Retry link keeps its one text run. */
+.br-monitors__error > svg {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-inline-end: 4px;
+  vertical-align: -2px;
 }
 
 .br-monitors__actions {
