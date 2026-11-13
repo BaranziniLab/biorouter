@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useId,
   useLayoutEffect,
@@ -399,6 +400,22 @@ interface RowControls {
   watchedBy: readonly string[];
 }
 
+/** The space between a peek and the summary card it hangs beside. */
+const PEEK_GAP_PX = 8;
+
+/**
+ * How far a peek stands off its trigger: to the summary card's own left edge,
+ * then `PEEK_GAP_PX` past it, so a card opened from a square in the middle of
+ * the grid hangs clear of the rail and never covers its rows' marks (review,
+ * 2026-11-12). Outside a summary card it is the gap alone.
+ */
+function peekSideOffset(trigger: Element | null): number {
+  const surface = trigger?.closest('.br-summary-card, .br-summary-popover');
+  if (!trigger || !surface) return PEEK_GAP_PX;
+  const inset = trigger.getBoundingClientRect().left - surface.getBoundingClientRect().left;
+  return Math.max(PEEK_GAP_PX, Math.round(inset) + PEEK_GAP_PX);
+}
+
 /**
  * One agent's card on the composer footer's own machinery (`useFooterCard`, R8,
  * D-43): a hover previews it after 300ms and the trigger stays at rest; a click,
@@ -420,6 +437,22 @@ function AgentCard({
   const cardId = useId();
   const title = subagentTitle(row);
 
+  // The trigger, to measure where the card's peek hangs (`peekSideOffset`) once
+  // it opens, before it is painted.
+  const triggerNode = useRef<HTMLElement | null>(null);
+  const { triggerRef } = card;
+  const ref = useCallback(
+    (node: HTMLElement | null) => {
+      triggerNode.current = node;
+      triggerRef(node);
+    },
+    [triggerRef]
+  );
+  const [sideOffset, setSideOffset] = useState(PEEK_GAP_PX);
+  useLayoutEffect(() => {
+    if (card.open) setSideOffset(peekSideOffset(triggerNode.current));
+  }, [card.open]);
+
   // A kept card's row stays drawn while it is kept, whatever a poll does to its rank.
   const { onKeptChange } = controls;
   const keptRef = useRef(false);
@@ -438,14 +471,14 @@ function AgentCard({
 
   return (
     <FooterCardRoot card={card}>
-      {trigger(footerCardTriggerProps(card, cardId))}
+      {trigger({ ...footerCardTriggerProps(card, cardId), ref })}
       {card.open ? (
         <PopoverContent
           id={cardId}
           ref={card.contentRef}
           side="left"
           align="start"
-          sideOffset={12}
+          sideOffset={sideOffset}
           collisionPadding={FOOTER_CARD_COLLISION_PADDING}
           aria-label={copy.peek.label(title)}
           data-testid={`subagent-card-${row.sessionId}`}
@@ -910,7 +943,10 @@ function GroupItem({
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
     >
-      <div className="br-agents__phase-line">
+      <div
+        className="br-agents__phase-line"
+        data-word-end={rowsTotal === 0 && !phase?.gate ? '' : undefined}
+      >
         {rowsTotal > 0 ? (
           <span data-row-item="" className="br-agents__phase-slot">
             <button
@@ -952,9 +988,11 @@ function GroupItem({
 }
 
 /**
- * The notation's key, at the foot of the roster: a square, "Language model", a
- * circle, "Decision model", solid and in the muted ink, as the terminal's pane
- * writes "■ language model  ● decision model". Drawn only while the roster mixes
+ * The notation's key, one muted line under the section's heading, before the
+ * grid it explains (review, 2026-11-12: at the roster's foot it read as part of
+ * the last phase): "Models:", a square, "language", a circle, "decision", solid
+ * and in the muted ink, as the terminal's pane writes "models: ■ language  ●
+ * decision" under its heading. Drawn only while the roster mixes
  * the two shapes, which is when a person needs it; a roster of one kind says
  * nothing. Hidden from assistive technology, since every square and row already
  * says "decision model" in its name.
@@ -964,13 +1002,14 @@ function ShapeKey({ rows }: { rows: readonly SubagentRow[] }) {
   if (shapes.size < 2) return null;
   return (
     <p className="br-agents__key" aria-hidden="true" data-testid="summary-agents-key">
+      <span>{copy.keyLabel}</span>
       <span className="br-agents__key-item">
         <AgentMark kind="done" shape="square" size={AGENT_MARK_PX.grid} />
-        {copy.languageModel}
+        {copy.keyLanguage}
       </span>
       <span className="br-agents__key-item">
         <AgentMark kind="done" shape="circle" size={AGENT_MARK_PX.grid} />
-        {copy.decisionModel}
+        {copy.keyDecision}
       </span>
     </p>
   );
@@ -995,15 +1034,15 @@ function ListCount({ rows }: { rows: readonly SubagentRow[] }) {
  * - With a phase plan, a Plan section: one collapsible group per phase in plan
  *   order (title, "done of total", the gate's circle), then "Other agents".
  * - Without one, an Agents section holding the whole roster as one group.
- * - In a chat of four agents or fewer every agent is a two-line row led by a 12px
+ * - In a chat of four agents or fewer every agent is a two-line row led by a 14px
  *   mark. With more, a group of more than four draws its grid of squares (10px,
  *   7px from 100 agents), then its first five rows (waiting for the person,
  *   failed, running, then the newest), then "Show N more".
  *
  * Nothing here is a box: the groups, grids and rows sit on the card's ground,
  * and a phase is parted from the one above by an inset hairline. While
- * decision-model subagents mix with language-model ones, a one-line key at the
- * foot says which shape is which.
+ * decision-model subagents mix with language-model ones, a one-line key under
+ * the section's heading says which shape is which.
  *
  * A square's or row's hover previews its card and a click keeps it (one open at a
  * time); the card holds "Open in a tab" and the setup. The roster is one tab stop;
@@ -1163,6 +1202,7 @@ export function SummarySubagents({
             onFocus={onFocus}
             onBlur={onBlur}
           >
+            <ShapeKey rows={allRows} />
             {lone ? (
               <GroupBody view={lone} size={view.size} controls={controls} onToggleAll={toggleAll} />
             ) : (
@@ -1179,7 +1219,6 @@ export function SummarySubagents({
                 ))}
               </ol>
             )}
-            <ShapeKey rows={allRows} />
           </div>
         ) : null}
         {error && <RefreshError refresh={refresh} />}

@@ -412,6 +412,25 @@ describe('the agent grid in the summary card, in a real layout engine', () => {
       };
     });
 
+  /**
+   * Until a peek is placed: Radix draws a popover it has not placed yet at `translate(0, -200%)`
+   * (left 0, above the page), and a box read then says nothing about where the card hangs. Under
+   * load the read landed there, and an assertion that the card ends left of the square passed
+   * against it whatever the placement. Then two frames, so a re-placement settles.
+   */
+  const placedPeek = async (tab: Page, testId: string) => {
+    await tab.waitForFunction((id) => {
+      const card = document.querySelector(`[data-testid="${id}"]`);
+      const wrapper = card?.closest<HTMLElement>('[data-radix-popper-content-wrapper]');
+      return (
+        !!wrapper && wrapper.style.transform !== '' && !wrapper.style.transform.includes('-200%')
+      );
+    }, testId);
+    await tab.evaluate(
+      () => new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(done)))
+    );
+  };
+
   const shot = async (tab: Page, name: string, clip?: Clip) => {
     if (!SHOTS) return;
     if (clip) {
@@ -424,15 +443,16 @@ describe('the agent grid in the summary card, in a real layout engine', () => {
     }
   };
 
-  it('lists one agent as a row led by a 12px square, with no grid', async (ctx) => {
+  it('lists one agent as a row led by a 14px square, with no grid', async (ctx) => {
     if (!browser) return ctx.skip();
     const tab = await mount({ scenario: 'count', agents: 1 });
     try {
       const measured = await measure(tab);
       expect(measured.cells).toEqual([]);
       expect(measured.rowMarks).toHaveLength(1);
-      expect(measured.rowMarks[0].width).toBe(12);
-      expect(measured.rowMarks[0].height).toBe(12);
+      // A few agents read larger than a grid's 10px squares: the to-do list's 14px glyph.
+      expect(measured.rowMarks[0].width).toBe(14);
+      expect(measured.rowMarks[0].height).toBe(14);
       // The comfortable row: an 18px name line over a 16px second line.
       expect(measured.rows[0].height).toBe(44);
     } finally {
@@ -497,6 +517,7 @@ describe('the agent grid in the summary card, in a real layout engine', () => {
       await cell.hover();
       const card = tab.locator('[data-testid="subagent-card-child-9"]');
       await card.waitFor();
+      await placedPeek(tab, 'subagent-card-child-9');
       const placed = await tab.evaluate(() => {
         const cardBox = document
           .querySelector('[data-testid="subagent-card-child-9"]')!
@@ -516,6 +537,9 @@ describe('the agent grid in the summary card, in a real layout engine', () => {
         };
       });
       expect(placed.right).toBeLessThanOrEqual(placed.squareLeft);
+      // It hangs clear of the rail, 8px off the card's own edge, so it never covers the rows'
+      // marks (review, 2026-11-12: from a square mid-grid it lay over the glyph column).
+      expect(Math.abs(placed.railLeft - 8 - placed.right)).toBeLessThanOrEqual(1);
       // A hover is a preview: the square stays at rest.
       expect(placed.pinned).toBe(null);
       // The card names the agent, its model and where it runs, its status and time, and Open.
@@ -650,9 +674,44 @@ describe('the agent grid in the summary card, in a real layout engine', () => {
         expect(phase.left).toBe(13);
         expect(phase.right).toBe(13);
       }
-      // A decision-model subagent is a circle among the squares, and the key says which is which.
+      // A decision-model subagent is a circle among the squares, and the key says which is which,
+      // on one line under the Plan heading and above the first phase it explains.
       const key = await tab.locator('[data-testid="summary-agents-key"]').textContent();
-      expect(key).toBe('Language modelDecision model');
+      expect(key).toBe('Models:languagedecision');
+      const placedKey = await tab.evaluate(() => {
+        const box = (selector: string) => document.querySelector(selector)!.getBoundingClientRect();
+        const key = box('[data-testid="summary-agents-key"]');
+        const heading = box('[data-testid="summary-plan-toggle"]');
+        const phase = box('.br-agents__phase');
+        const items = Array.from(document.querySelectorAll('.br-agents__key-item')).map(
+          (item) => item.getBoundingClientRect().top
+        );
+        return { key, heading, phase, lines: new Set(items).size };
+      });
+      expect(placedKey.key.top).toBeGreaterThanOrEqual(placedKey.heading.bottom - 1);
+      expect(placedKey.key.bottom).toBeLessThanOrEqual(placedKey.phase.top);
+      expect(placedKey.lines).toBe(1);
+      // A phase with no subagents and no gate ends its line with its status word on the rows'
+      // right edge, beside a title on one line (review, 2026-11-12: a reserved "Add gate" slot
+      // left "Pending" adrift mid-line and wrapped the title).
+      const pending = await tab.evaluate(() => {
+        const card = document.querySelector('.br-summary-card')!.getBoundingClientRect();
+        const line = document.querySelector('[data-phase-id="check"] .br-agents__phase-line')!;
+        const word = line.querySelector('.br-summary__count')!.getBoundingClientRect();
+        const title = line.querySelector('.br-agents__phase-title')!.getBoundingClientRect();
+        return {
+          edge: card.right - 13,
+          wordRight: word.right,
+          wordTop: word.top,
+          titleTop: title.top,
+          titleHeight: title.height,
+          text: line.querySelector('.br-summary__count')!.textContent,
+        };
+      });
+      expect(pending.text).toBe('Pending');
+      expect(Math.abs(pending.wordRight - pending.edge)).toBeLessThanOrEqual(1);
+      expect(Math.abs(pending.wordTop - pending.titleTop)).toBeLessThanOrEqual(2);
+      expect(pending.titleHeight).toBeLessThanOrEqual(18);
       expect(
         await tab.getAttribute(
           '[data-testid="subagent-cell-child-18"] .br-agent-mark',
@@ -688,6 +747,7 @@ describe('the agent grid in the summary card, in a real layout engine', () => {
         const cell = phases.locator('[data-testid="subagent-cell-child-9"]');
         await cell.hover();
         await phases.locator('[data-testid="subagent-card-child-9"]').waitFor();
+        await placedPeek(phases, 'subagent-card-child-9');
         const box = await phases.evaluate(() => {
           const card = document
             .querySelector('[data-testid="subagent-card-child-9"]')!

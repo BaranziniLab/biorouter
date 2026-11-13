@@ -449,7 +449,7 @@ describe('the subagents in the summary card, in a real layout engine', () => {
       expect(kept.pinned).toBe('true');
       // The kept row wears the strong fill; at rest it had none.
       expect(kept.fill).not.toBe(resting.fill);
-      // The peek hangs to the LEFT of the row, 12px off, from its top.
+      // The peek hangs to the LEFT of the row, clear of the card, from its top.
       expect(kept.peekRight!).toBeLessThanOrEqual(kept.rowLeft);
       expect(Math.abs(kept.peekTop! - kept.rowTop)).toBeLessThanOrEqual(1);
 

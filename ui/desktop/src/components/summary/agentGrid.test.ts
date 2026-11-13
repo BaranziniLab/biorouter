@@ -62,10 +62,10 @@ describe('the size scales with the count', () => {
     expect([100, 150, 1000].map(agentGridSize)).toEqual(['dense', 'dense', 'dense']);
   });
 
-  it('gets smaller as it grows: 12px marks in rows, 10px squares, 7px squares', () => {
-    expect(AGENT_MARK_PX).toEqual({ rows: 12, grid: 10, dense: 7 });
+  it('gets smaller as it grows: 14px marks in rows, 10px squares, 7px squares', () => {
+    expect(AGENT_MARK_PX).toEqual({ rows: 14, grid: 10, dense: 7 });
     // A row's own mark is the bigger one in a chat of rows, else the grid's square.
-    expect(agentRowMarkPx('rows')).toBe(12);
+    expect(agentRowMarkPx('rows')).toBe(14);
     expect(agentRowMarkPx('grid')).toBe(10);
     expect(agentRowMarkPx('dense')).toBe(10);
   });

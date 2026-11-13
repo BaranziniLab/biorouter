@@ -247,6 +247,33 @@
   margin-right: 0;
 }
 
+/* A PHASE WITH NO SUBAGENTS AND NO GATE ("Check the numbers", "Pending"): its
+   status word ends the line on the rows' right edge, where a row's run time
+   sits, and "Add gate" lies over the word rather than holding a slot of its
+   own. While the phase is hovered or the plus focused the plus shows and the
+   word steps back, as a sidebar row's time gives way to its menu. A reserved
+   slot left the word adrift mid-line and pushed the title onto two lines
+   (review, 2026-11-12). Only a static line does this: a phase with rows has a
+   toggle under the word, and a hidden plus there would take its clicks. */
+.br-agents__phase-line[data-word-end] {
+  position: relative;
+}
+
+.br-agents__phase-line[data-word-end] > .br-agents__phase-toggle {
+  width: calc(100% + 16px);
+  margin-right: -8px;
+}
+
+.br-agents__phase-line[data-word-end] > .br-agents__gate-slot {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
+.br-agents__phase-line[data-word-end]:has([data-add-gate][data-visible]) .br-summary__count {
+  visibility: hidden;
+}
+
 .br-agents__phase[data-status='completed'] .br-agents__phase-title,
 .br-agents__phase[data-status='skipped'] .br-agents__phase-title,
 .br-agents__phase[data-status='pending'] .br-agents__phase-title {
@@ -298,19 +325,22 @@
   line-height: var(--text-supporting--line-height);
 }
 
-/* THE KEY, at the foot of the roster only while decision-model subagents
-   (circles) mix with language-model ones (squares): "Language model" and
-   "Decision model", each after its solid shape, in muted 12px words on the
-   rows' mark column, wrapping to a second line in a narrow rail. A line of
-   words, never a box. Its shapes say kind, not status, so they wear the muted
-   ink rather than the finished sage (the selector outranks the grid's inks). */
+/* THE KEY, one muted line under the section's heading and before the grid it
+   explains, only while decision-model subagents (circles) mix with
+   language-model ones (squares): "Models:", then "language" and "decision",
+   each after its solid shape, in muted 12px words. At the roster's foot it read
+   as part of the last phase (review, 2026-11-12); "Language model" and
+   "Decision model" took two lines in the 228px card, and this takes one. A line
+   of words, never a box. Its shapes say kind, not status, so they wear the muted ink rather
+   than the finished sage (the selector outranks the grid's inks). */
 .br-agents__key {
   display: flex;
   min-width: 0;
-  margin: 8px 0 0;
-  padding: 4px 0 2px 2px;
+  margin: 0 0 6px;
+  padding: 0;
   flex-wrap: wrap;
-  gap: 2px 12px;
+  align-items: center;
+  gap: 2px 10px;
   font-size: var(--text-supporting);
   line-height: var(--text-supporting--line-height);
   color: var(--text-muted);
@@ -319,7 +349,7 @@
 .br-agents__key-item {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
 }
 
 .br-agents__key .br-agents__key-item > .br-agent-mark {

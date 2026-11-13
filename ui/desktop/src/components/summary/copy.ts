@@ -93,8 +93,14 @@ export const summaryCopy = {
     showMore: (count: number) => `Show ${count} more`,
     /** Said of a subagent whose own model is a decision model. */
     decisionModel: 'Decision model',
-    /** The key's other entry, beside "Decision model": what a square is. */
-    languageModel: 'Language model',
+    /**
+     * The key to the grid's two shapes, one line under the section's heading:
+     * "Models: ■ language ● decision". Short enough for one line in the rail at
+     * its narrowest, where "Language model" and "Decision model" took two.
+     */
+    keyLabel: 'Models:',
+    keyLanguage: 'language',
+    keyDecision: 'decision',
     /** Read after the phase count by assistive technology only: "1 of 4 phases complete". */
     phasesCountSuffix: ' phases complete',
     phaseListLabel: 'Phases of the plan',

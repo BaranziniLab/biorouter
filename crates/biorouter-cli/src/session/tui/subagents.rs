@@ -23,11 +23,15 @@
 //!
 //! Sections, never frames (owner direction, 2026-11-12): the pane is labelled
 //! by headings and parted by dim rule lines, as the desktop rail is by small
-//! headings and hairlines. A `PLAN` heading opens the phases, a dim `─` rule
-//! parts each phase from the one above, and a one-line key ("■ language model
-//! ● decision model") sits under the list while the two shapes mix. Headings
-//! carry words, never a mark, so a `●` is always decision-model work. The only
-//! line drawn round the pane is its left edge against the transcript.
+//! headings and hairlines. The pane opens on the rail's `AGENTS` heading and its
+//! counts, a one-line key ("models: ■ language  ● decision") follows it
+//! while the two shapes mix, a `PLAN` heading opens the phases, and a dim `─`
+//! rule parts each phase from the one above. Past three subagents each group
+//! lists its first five rows (the ones that need a look first) and a dim "+N
+//! more", as the desktop's grid does, so every phase of a long plan stays on
+//! screen. Headings carry words, never a mark, so a `●` is always
+//! decision-model work. The only line drawn round the pane is its left edge
+//! against the transcript.
 //!
 //! Keys: `Ctrl-B` shows or hides the pane; `Ctrl-O` moves focus into it (and
 //! back). With focus in the pane, ↑/↓ select, Enter opens the selected
@@ -72,6 +76,11 @@ pub const STRIP_MAX_ROWS: u16 = 6;
 /// Up to this many subagents, each row takes two lines: the label (the role,
 /// else the name), then the setup, which is left out when it says nothing.
 pub const TWO_LINE_MAX_ROWS: usize = 3;
+/// Past [`TWO_LINE_MAX_ROWS`], the side pane lists this many rows of each
+/// group under its marks and then a dim "+N more", as the desktop's grid
+/// lists five (`AGENT_HEAD_ROWS`), so every phase of a long plan stays on
+/// screen. The selected and the open row are drawn whatever their place.
+pub const GROUP_HEAD_ROWS: usize = 5;
 /// An active child with no recorded activity for this long reads as "quiet".
 /// A heuristic, so it is labelled "quiet", never "stalled". The plan's own
 /// threshold, so a row and its phase's "N quiet" count can never disagree.
@@ -114,6 +123,10 @@ pub struct PaneRow {
     pub message_count: i64,
     pub tool_call_count: i64,
     pub result_line: Option<String>,
+    /// When the child last did something, in milliseconds since the epoch: its
+    /// end, else its last update. Orders the finished rows of a long group
+    /// newest first, as the desktop's head list does (`lastActivity`).
+    pub last_activity_ms: Option<i64>,
 }
 
 impl PaneRow {
@@ -143,6 +156,7 @@ impl PaneRow {
             message_count: 0,
             tool_call_count: 0,
             result_line: None,
+            last_activity_ms: None,
         }
     }
 
@@ -166,6 +180,7 @@ impl PaneRow {
             message_count: row.message_count,
             tool_call_count: row.tool_call_count,
             result_line: row.result_line.clone(),
+            last_activity_ms: Some(row.ended_at.unwrap_or(row.updated_at).timestamp_millis()),
         }
     }
 
@@ -352,7 +367,41 @@ impl PaneModel {
     /// The rows, grouped the way the pane draws them: under the plan's phases
     /// when there is a plan; by state when there is no plan and more than
     /// [`TWO_LINE_MAX_ROWS`] rows; otherwise one group without a header.
+    ///
+    /// Past [`TWO_LINE_MAX_ROWS`] each group's rows are in head order
+    /// ([`head_rank`]), so the rows the pane lists first are the ones that need
+    /// a look; a few two-line rows keep spawn order.
     pub fn groups(&self) -> Vec<Group> {
+        let mut groups = self.groups_in_spawn_order();
+        if self.rows.len() > TWO_LINE_MAX_ROWS {
+            for group in &mut groups {
+                self.sort_head_first(&mut group.rows);
+            }
+        }
+        groups
+    }
+
+    /// `rows` (indices in spawn order) in head order: by [`head_rank`], and
+    /// within a rank the ones that need a look keep spawn order while the rest
+    /// go newest first. The desktop's `inHeadOrder`. A stable sort, so a re-read
+    /// that changes nothing moves nothing.
+    fn sort_head_first(&self, rows: &mut [usize]) {
+        rows.sort_by(|&a, &b| {
+            let (ra, rb) = (&self.rows[a], &self.rows[b]);
+            let (ka, kb) = (head_rank(ra), head_rank(rb));
+            ka.cmp(&kb).then_with(|| {
+                if ka == HEAD_RANK_REST {
+                    rb.last_activity_ms
+                        .unwrap_or(i64::MIN)
+                        .cmp(&ra.last_activity_ms.unwrap_or(i64::MIN))
+                } else {
+                    std::cmp::Ordering::Equal
+                }
+            })
+        });
+    }
+
+    fn groups_in_spawn_order(&self) -> Vec<Group> {
         if let Some(plan) = &self.plan {
             let mut placed = vec![false; self.rows.len()];
             let mut groups = Vec::new();
@@ -828,6 +877,21 @@ impl MarkKind {
     }
 }
 
+/// The rank of the rows that need no look (finished, queued, unknown).
+const HEAD_RANK_REST: u8 = 3;
+
+/// A row's place in a long group's list, lower first: one waiting for the
+/// person (or gone quiet), a failure, a running child, then the rest. The
+/// desktop's `headRank`.
+pub fn head_rank(row: &PaneRow) -> u8 {
+    match MarkKind::of(row) {
+        MarkKind::Waiting => 0,
+        MarkKind::Failed => 1,
+        MarkKind::Running => 2,
+        MarkKind::Queued | MarkKind::Done | MarkKind::Idle => HEAD_RANK_REST,
+    }
+}
+
 /// A subagent whose own model is a decision model is decision-model work: a
 /// circle.
 pub fn is_decision_work(row: &PaneRow) -> bool {
@@ -1169,9 +1233,9 @@ fn plan_heading(plan: &PanePlan, width: usize) -> Line<'static> {
     Line::from(Span::styled(super::clip_cells(&text, width), DIM))
 }
 
-/// The notation's key, under the list only while decision-model subagents (●)
-/// mix with language-model ones (■), as the desktop rail draws it at the foot
-/// of its roster. A roster of one kind needs none.
+/// The notation's key, under the pane's heading only while decision-model
+/// subagents (●) mix with language-model ones (■), as the desktop rail draws it
+/// under its section's heading. A roster of one kind needs none.
 pub fn key_line(model: &PaneModel, width: usize) -> Option<Line<'static>> {
     let decision = model
         .rows
@@ -1183,10 +1247,11 @@ pub fn key_line(model: &PaneModel, width: usize) -> Option<Line<'static>> {
     }
     Some(Line::from(clip_spans(
         vec![
+            Span::styled("models: ", DIM),
             Span::styled(MarkKind::Done.glyph(false), DIM),
-            Span::styled(" language model  ", DIM),
+            Span::styled(" language  ", DIM),
             Span::styled(MarkKind::Done.glyph(true), DIM),
-            Span::styled(" decision model", DIM),
+            Span::styled(" decision", DIM),
         ],
         width,
     )))
@@ -1307,12 +1372,21 @@ fn list_lines(
             out.push((LineKind::Head, head));
         }
         if !two_line && model.plan.is_some() && !group.rows.is_empty() {
-            let rows: Vec<&PaneRow> = group.rows.iter().map(|&i| &model.rows[i]).collect();
+            // The marks keep spawn order, so a mark never moves while the
+            // phase runs; the rows under them are in head order.
+            let mut spawned = group.rows.clone();
+            spawned.sort_unstable();
+            let rows: Vec<&PaneRow> = spawned.iter().map(|&i| &model.rows[i]).collect();
             for line in mark_lines(&rows, width, 2) {
                 out.push((LineKind::Head, line));
             }
         }
-        for &ri in &group.rows {
+        let (shown, hidden) = if two_line {
+            (group.rows.clone(), 0)
+        } else {
+            head_split(pane, &group.rows, open_child)
+        };
+        for &ri in &shown {
             let row = &model.rows[ri];
             let mut first = name_spans(pane, row, open_child);
             if two_line {
@@ -1329,8 +1403,41 @@ fn list_lines(
                 out.push((LineKind::Row(ri), Line::from(clip_spans(first, width))));
             }
         }
+        if hidden > 0 {
+            // On the rows' label edge, past the marker and the mark, as the
+            // desktop's "Show N more" sits on its rows' text edge.
+            out.push((
+                LineKind::Head,
+                Line::from(Span::styled(format!("    +{hidden} more"), DIM)),
+            ));
+        }
     }
     out
+}
+
+/// A long group's rows as the side pane lists them: the first
+/// [`GROUP_HEAD_ROWS`] in head order, plus the selected row (while the pane has
+/// focus) and the open child wherever they rank, so arrowing past the head
+/// draws the row the selection reached and a re-read never hides the row the
+/// person is on. Returns the rows to draw, in group order, and how many are
+/// left out. The desktop's `splitHead`.
+fn head_split(
+    pane: &SubagentPane,
+    rows: &[usize],
+    open_child: Option<&str>,
+) -> (Vec<usize>, usize) {
+    let kept = |ri: usize| {
+        let id = pane.model.rows[ri].session_id.as_str();
+        (pane.focused && pane.selected.as_deref() == Some(id)) || open_child == Some(id)
+    };
+    let shown: Vec<usize> = rows
+        .iter()
+        .enumerate()
+        .filter(|&(at, &ri)| at < GROUP_HEAD_ROWS || kept(ri))
+        .map(|(_, &ri)| ri)
+        .collect();
+    let hidden = rows.len() - shown.len();
+    (shown, hidden)
 }
 
 fn labelled(label: &str, value: String) -> Line<'static> {
@@ -1457,11 +1564,14 @@ fn details_one_line(row: &PaneRow) -> String {
     format!("    {} · ↵ open", parts.join(" · "))
 }
 
+/// The pane's heading: the desktop rail's section heading for the roster,
+/// "AGENTS" in dim caps beside its counts, as `PLAN` heads the phases. A
+/// section heading, never a title in the accent, so the pane reads in the
+/// rail's sections.
+const PANE_HEADING: &str = "AGENTS";
+
 fn header_line(pane: &SubagentPane, width: usize) -> Line<'static> {
-    let mut spans = vec![Span::styled(
-        "Subagents",
-        Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-    )];
+    let mut spans = vec![Span::styled(PANE_HEADING, DIM)];
     if !pane.model.rows.is_empty() {
         spans.push(Span::styled(
             format!("  {}", pane.model.tally().text()),
@@ -1480,15 +1590,12 @@ fn header_line(pane: &SubagentPane, width: usize) -> Line<'static> {
 /// The side pane's header: the counts beside the title when they fit, else
 /// on a line of their own (never cut, since they are the pane's summary).
 fn header_lines(pane: &SubagentPane, width: usize) -> Vec<Line<'static>> {
-    let title = Span::styled(
-        "Subagents",
-        Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-    );
+    let title = Span::styled(PANE_HEADING, DIM);
     if pane.model.rows.is_empty() {
         return vec![Line::from(title)];
     }
     let counts = pane.model.tally().text();
-    if UnicodeWidthStr::width("Subagents  ") + UnicodeWidthStr::width(counts.as_str()) <= width {
+    if UnicodeWidthStr::width(PANE_HEADING) + 2 + UnicodeWidthStr::width(counts.as_str()) <= width {
         vec![Line::from(vec![
             title,
             Span::styled(format!("  {counts}"), DIM),
@@ -1538,11 +1645,16 @@ pub fn draw_side(f: &mut Frame, pane: &mut SubagentPane, area: Rect, open_child:
     }
     let width = inner.width as usize;
 
+    // The heading, then the key to the notation (while the shapes mix), then
+    // the Plan section's heading: the key sits under the heading it explains,
+    // as the desktop's sits under its section's.
     let mut head = header_lines(pane, width);
+    if let Some(key) = key_line(&pane.model, width) {
+        head.push(key);
+    }
     if let Some(plan) = pane.model.plan.as_ref() {
         head.push(plan_heading(plan, width));
     }
-    let key = key_line(&pane.model, width);
     let details = if pane.focused {
         pane.selected_row()
             .map(|row| details_lines(&pane.model, row))
@@ -1564,14 +1676,10 @@ pub fn draw_side(f: &mut Frame, pane: &mut SubagentPane, area: Rect, open_child:
     let regions = Layout::vertical([
         Constraint::Length(head.len() as u16),
         Constraint::Min(1),
-        Constraint::Length(u16::from(key.is_some())),
         Constraint::Length(details_h),
     ])
     .split(inner);
     f.render_widget(Paragraph::new(head), regions[0]);
-    if let Some(key) = key {
-        f.render_widget(Paragraph::new(key), regions[2]);
-    }
 
     if pane.model.rows.is_empty() {
         f.render_widget(
@@ -1585,7 +1693,7 @@ pub fn draw_side(f: &mut Frame, pane: &mut SubagentPane, area: Rect, open_child:
     if details_h > 0 {
         let mut lines = vec![rule_line(width)];
         lines.extend(details);
-        f.render_widget(Paragraph::new(lines), regions[3]);
+        f.render_widget(Paragraph::new(lines), regions[2]);
     }
 }
 
@@ -1768,10 +1876,7 @@ pub fn draw_strip(f: &mut Frame, pane: &mut SubagentPane, area: Rect, open_child
         } else {
             out[0] = Line::from(clip_spans(
                 vec![
-                    Span::styled(
-                        "Subagents",
-                        Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled(PANE_HEADING, DIM),
                     Span::styled("  none in this chat yet · ^B hides this", DIM),
                 ],
                 width,
@@ -3006,10 +3111,96 @@ mod tests {
             );
             // The key: the two shapes mix in both rosters.
             assert!(
-                all.contains("■ language model  ● decision model"),
+                all.contains("models: ■ language  ● decision"),
                 "{name}:\n{all}"
             );
         }
+    }
+
+    /// Review finding (2026-11-12): the 150 listed all forty of its first
+    /// phase's rows, so the later phases scrolled off. Each phase now lists five
+    /// rows, the ones that need a look first, and a dim "+N more", so every
+    /// phase, its marks and the key fit a 40-line pane.
+    #[test]
+    fn a_long_phase_lists_five_rows_and_says_how_many_more() {
+        let frame = side_frame(one_fifty(), 50, 40);
+        let all = frame.join("\n");
+        for title in ["Audit the sources", "Verify each claim", "Write the report"] {
+            assert!(all.contains(title), "{title} is on screen:\n{all}");
+        }
+        assert!(
+            all.contains("models: ■ language  ● decision"),
+            "the key:\n{all}"
+        );
+        assert!(!all.contains("↑ "), "nothing scrolled off the top:\n{all}");
+        // The key sits under the heading it explains (and its counts), before
+        // the plan.
+        let heading = frame.iter().position(|l| l.contains("AGENTS")).expect(&all);
+        let plan_at = frame
+            .iter()
+            .position(|l| l.contains("PLAN 1/3"))
+            .expect(&all);
+        assert!(plan_at > heading + 1, "{all}");
+        assert!(frame[plan_at - 1].contains("models: ■ language"), "{all}");
+        // Each phase: its rows (a mark, then a label), at most five, then "+N more".
+        let mores: Vec<(usize, String)> = frame
+            .iter()
+            .enumerate()
+            .filter(|(_, l)| l.trim_start_matches('│').trim().starts_with('+'))
+            .map(|(i, l)| (i, l.trim_start_matches('│').trim().to_string()))
+            .collect();
+        assert_eq!(
+            mores.iter().map(|(_, l)| l.as_str()).collect::<Vec<_>>(),
+            vec!["+35 more", "+85 more", "+15 more"],
+            "{all}"
+        );
+        // Five rows over each: a row carries its run time after a " · ", which
+        // a line of marks never does.
+        for (at, _) in &mores {
+            for line in &frame[at - GROUP_HEAD_ROWS..*at] {
+                assert!(line.contains(" · "), "a row over line {at}: {line}\n{all}");
+            }
+            assert!(
+                !frame[at - GROUP_HEAD_ROWS - 1].contains(" · "),
+                "no sixth row over line {at}:\n{all}"
+            );
+        }
+        // The audit's two failures lead its rows: who needs a look comes first.
+        let audit = frame
+            .iter()
+            .position(|l| l.contains("Audit the sources"))
+            .unwrap();
+        let first_rows: Vec<&String> = frame[audit + 2..audit + 4].iter().collect();
+        for row in &first_rows {
+            assert!(row.contains("⊠"), "a failure leads:\n{all}");
+        }
+    }
+
+    /// Arrowing past a group's five rows draws the row the selection reached,
+    /// and the count of the rows left out drops by one.
+    #[test]
+    fn the_selection_is_drawn_past_a_groups_head() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut pane = SubagentPane::default();
+        pane.set_model(one_fifty());
+        pane.focus();
+        pane.select_edge(false);
+        for _ in 0..GROUP_HEAD_ROWS {
+            pane.move_selection(1);
+        }
+        let selected = pane.selected_row().unwrap().label().to_string();
+        let mut terminal = Terminal::new(TestBackend::new(50, 40)).unwrap();
+        terminal
+            .draw(|f| draw_side(f, &mut pane, f.area(), None))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let all: String = (0..40)
+            .map(|y| (0..50).map(|x| buffer[(x, y)].symbol()).collect::<String>() + "\n")
+            .collect();
+        assert!(all.contains("▸ "), "{all}");
+        assert!(all.contains(&selected), "{selected} is drawn:\n{all}");
+        assert!(all.contains("+34 more"), "{all}");
     }
 
     #[test]
@@ -3032,7 +3223,7 @@ mod tests {
         };
         let line = key_line(&both, 40).expect("a key");
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(text, "■ language model  ● decision model");
+        assert_eq!(text, "models: ■ language  ● decision");
     }
 
     /// With `BIOROUTER_TUI_FRAMES=<dir>`, saves the pane as a person sees it
