@@ -7,7 +7,8 @@ import { InfoTip } from '../../ui/info-tip';
 import { Note } from '../../ui/note';
 import { connectionServer, personFromProjection, usePeopleDirectory } from '../identity';
 import { useCrew, useCrewErrorSlot } from '../state/CrewControllerContext';
-import { joinCopy, notSetUpCopy, setupCopy } from './copy';
+import { notSetUpCopy, setupCopy } from './copy';
+import { FullAccessWarning } from './fields';
 import { useJoinContext } from './joinContext';
 import { firstName, isWorkspaceName, sshUsername } from './joinText';
 import { SetupCard, SetupScreen } from './parts';
@@ -121,11 +122,9 @@ export function NotSetUpPane() {
             </div>
             {requestedAccess === 'full' && job.phase !== 'idle' ? (
               // The one warning As me on the server has (OW-6), while the job Join asked for sets it,
-              // with the host's sentence when Join found this account hosts the workspace (W2).
-              <Note tone="warning" role="status" unclamped testId="crew-onboard-full-warning">
-                {joinCopy.fullWarning(username, server)}
-                {hostWorkspace ? ` ${joinCopy.fullWarningHost(hostWorkspace)}` : null}
-              </Note>
+              // with the host's sentence when Join found this account hosts the workspace (W2): its
+              // consent sentence in view, the rest behind Details (design.md 9.16).
+              <FullAccessWarning user={username} server={server} hostWorkspace={hostWorkspace} />
             ) : null}
             <SetupProgress
               job={job}

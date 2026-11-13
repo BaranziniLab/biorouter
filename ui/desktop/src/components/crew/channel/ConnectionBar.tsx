@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, type MouseEvent } from 'react';
 import { AlertTriangle, KeyRound, LoaderCircle, X } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
+import { InfoTip } from '../../ui/info-tip';
 import { Note } from '../../ui/note';
 import { cn } from '../../../utils';
+import { splitFirstSentence } from '../../../utils/proseFold';
 import { parseRefusal, refusalText, type RefusalViewer } from '../dialogs/refusals';
 import {
   CREW_DEVICE_KEY_MISSING,
@@ -405,6 +407,14 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
       : rejoinCode === CREW_DEVICE_NOT_RECOGNIZED
         ? rejoinCopy.notRecognized(workspace)
         : rejoinCopy.removedHere(workspace);
+  // Only the not-recognized refusal has a second sentence that says more than the button: the way
+  // back works only while the account is still a member. It stays one click away, word for word.
+  const rejoinHelp =
+    rejoinCode === CREW_DEVICE_NOT_RECOGNIZED && !rejoinHere?.error
+      ? rejoinCopy.notRecognizedHelp
+      : null;
+  // "This computer is back in …" in view, and that chats need access again one click away.
+  const rejoinDone = splitFirstSentence(rejoinCopy.done(workspace));
   // The rejoin note says what the refusal said, with its action: the same words are not repeated
   // as an error or an observation note.
   const errorSaidByRejoin =
@@ -569,7 +579,19 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
             </Button>
           }
         >
-          <p>{rejoinHere?.error ?? rejoinText}</p>
+          <p>
+            {rejoinHere?.error ?? rejoinText}
+            {rejoinHelp ? (
+              <>
+                {' '}
+                <InfoTip
+                  label={rejoinCopy.notRecognizedHelpLabel}
+                  help={rejoinHelp}
+                  data-testid="crew-rejoin-help"
+                />
+              </>
+            ) : null}
+          </p>
         </Note>
       )}
       {rejoinHere?.done && !showRejoin && (
@@ -578,6 +600,7 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
           role="status"
           icon={KeyRound}
           testId="crew-rejoined"
+          details={rejoinDone.rest}
           action={
             <Button
               type="button"
@@ -592,12 +615,12 @@ export function ConnectionBar({ className }: ConnectionBarProps) {
             </Button>
           }
         >
-          <p>
-            {rejoinCopy.done(workspace)}
-            {rejoinHere.done.evictedFingerprint
-              ? ` ${rejoinCopy.evicted(rejoinHere.done.evictedFingerprint)}`
-              : null}
-          </p>
+          {/* That chats need access again is behind Details; the computer the workspace removed
+              to make room is a second line, only when there was one (owner, 2026-11-13). */}
+          <p>{rejoinDone.first}</p>
+          {rejoinHere.done.evictedFingerprint ? (
+            <p>{rejoinCopy.evicted(rejoinHere.done.evictedFingerprint)}</p>
+          ) : null}
         </Note>
       )}
       {showObservationError && !observationSaidByRejoin && (

@@ -249,11 +249,16 @@ describe('InvitePeopleDialog', () => {
     expect(within(dialog).getByTestId('crew-invite-sets-up')).toHaveAccessibleDescription(
       inviteCopy.setsUp('Bob')
     );
-    expect(next).toHaveTextContent(
-      `${inviteCopy.nextStep('Bob')} This invitation ${expiresText(EXPIRES_AT)}.`
-    );
+    expect(next).toHaveTextContent(inviteCopy.nextStep('Bob'));
+    // The expiry is in view, on its own short line right after what to do next (design.md 9.16),
+    // not a second sentence in the same block.
+    const expiry = within(dialog).getByTestId('crew-invite-expires');
+    expect(expiry).toBeVisible();
+    expect(expiry).toHaveTextContent(`This invitation ${expiresText(EXPIRES_AT)}.`);
+    expect(next).not.toHaveTextContent(/This invitation/);
+    expect(next.compareDocumentPosition(expiry) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     // The broker's unit is seconds: read as milliseconds, a day from now would be January 1970.
-    expect(next.textContent).not.toMatch(/expired/);
+    expect(expiry.textContent).not.toMatch(/expired/);
   });
 
   it('says how an account gets in when only the saved connection says the server takes accounts', async () => {
@@ -261,17 +266,34 @@ describe('InvitePeopleDialog', () => {
     // code is sent there, so "sends you a code" would be stale (live L1).
     renderInvite(undefined, { connections: [{ ...connection, account_identity: true }] });
     await invite('bob');
+    // How Bob gets in, in view; an older Biorouter's code behind its info icon (design.md 9.16).
+    const next = await screen.findByTestId('crew-invite-next-step');
     expect(
-      await screen.findByText(inviteCopy.nextStepAccount('Bob'), { exact: false })
-    ).toBeInTheDocument();
+      within(next).getByText(
+        'Bob gets in by opening the workspace while signed in to the server as themselves.'
+      )
+    ).toBeVisible();
+    expect(
+      within(next).getByRole('button', { name: `About ${inviteCopy.nextStepAccountHelpLabel}` })
+    ).toHaveAccessibleDescription(
+      'If their Biorouter shows a code instead, choose Let in… next to their name in the sidebar.'
+    );
+    expect(next).toHaveTextContent(inviteCopy.nextStepAccount('Bob'));
     expect(screen.queryByText(inviteCopy.nextStep('Bob'), { exact: false })).toBeNull();
+    // One sentence in view in that block: the expiry is its own line under it, still in view.
+    expect(next).not.toHaveTextContent(/This invitation/);
+    expect(screen.getByTestId('crew-invite-expires')).toHaveTextContent(
+      `This invitation ${expiresText(EXPIRES_AT)}.`
+    );
   });
 
   it('says an invitation that has already run out is expired, not a time in the past', async () => {
     renderInvite(undefined, { expiresAt: Math.floor(Date.now() / 1000) - 60 });
     await invite('bob');
-    const next = await screen.findByText(inviteCopy.nextStep('Bob'), { exact: false });
-    expect(next).toHaveTextContent(`This invitation ${expiryCopy.expired}.`);
+    await screen.findByText(inviteCopy.nextStep('Bob'), { exact: false });
+    expect(screen.getByTestId('crew-invite-expires')).toHaveTextContent(
+      `This invitation ${expiryCopy.expired}.`
+    );
   });
 
   it('keeps what only IT can answer collapsed, in the joiner’s words (QA Q4-37)', async () => {
@@ -356,9 +378,19 @@ describe('InvitePeopleDialog', () => {
       'already_member: @bob is already a member. Choose Add device to add another computer for them.'
     );
     await invite('bob');
-    expect(
-      await screen.findByText(inviteCopy.refusal.alreadyMember('bob', 'lab'))
-    ).toBeInTheDocument();
+    // The reason in view, and what to do behind its info icon, which also describes the field
+    // word for word (design.md 9.16).
+    const note = await screen.findByTestId('crew-invite-already-member');
+    expect(within(note).getByText('@bob is already in lab.')).toBeVisible();
+    const why = within(note).getByRole('button', {
+      name: `About ${inviteCopy.refusal.alreadyMemberHelpLabel}`,
+    });
+    expect(why).toHaveAccessibleDescription(
+      'To add this computer of theirs, Add another computer for @bob is now on: choose Invite again.'
+    );
+    expect(screen.getByLabelText('Username')).toHaveAccessibleDescription(
+      `${inviteCopy.refusal.alreadyMember('bob', 'lab')} The name they sign in to hpc.example.edu with; yours is @alice.`
+    );
     // F3: the broker's "Choose Add device" is kept, and the switch it names is turned on.
     expect(inviteCopy.refusal.alreadyMember('bob', 'lab')).toBe(
       '@bob is already in lab. To add this computer of theirs, Add another computer for @bob is now on: choose Invite again.'

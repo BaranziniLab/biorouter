@@ -78,6 +78,14 @@ function renderPane(overrides: Partial<CrewController> = {}) {
   return renderWithCrew(<NotSetUpPane />, crew);
 }
 
+/** The full-access warning's folded paragraphs (design.md 9.16): opens its Details, reads them. */
+function fullWarningParagraphs(warning: HTMLElement): string[] {
+  const toggle = within(warning).getByRole('button', { name: 'Details' });
+  if (toggle.getAttribute('aria-expanded') !== 'true') fireEvent.click(toggle);
+  const details = within(warning).getByTestId('crew-onboard-full-warning-details');
+  return Array.from(details.querySelectorAll('p'), (p) => p.textContent ?? '');
+}
+
 beforeEach(() => {
   resetJoinContextForTests();
   resetMemberSetupRequestsForTests();
@@ -298,9 +306,12 @@ describe('NotSetUpPane', () => {
       workspace_name: 'lab',
       agent_access: 'full',
     });
-    expect(await screen.findByTestId('crew-onboard-full-warning')).toHaveTextContent(
-      joinCopy.fullWarning('bob', 'hpc.ucsf.edu')
-    );
+    const warning = await screen.findByTestId('crew-onboard-full-warning');
+    expect(warning).toHaveTextContent(joinCopy.fullWarning('bob', 'hpc.ucsf.edu'));
+    // The consent sentence in view; the rest of the warning folded until asked for (design.md
+    // 9.16), then every word of it.
+    expect(warning).not.toHaveTextContent(joinCopy.fullWarningDetails()[1]);
+    expect(fullWarningParagraphs(warning)).toEqual(joinCopy.fullWarningDetails());
     view.unmount();
     // The request was taken: the pane shown again waits for the person.
     renderPane();
@@ -316,9 +327,10 @@ describe('NotSetUpPane', () => {
     requestMemberSetup('conn-1', { agentAccess: 'full', hostWorkspace: 'lab' });
     const view = renderPane();
     const warning = await screen.findByTestId('crew-onboard-full-warning');
-    expect(warning).toHaveTextContent(
-      `${joinCopy.fullWarning('bob', 'hpc.ucsf.edu')} ${joinCopy.fullWarningHost('lab')}`
-    );
+    expect(warning).toHaveTextContent(joinCopy.fullWarning('bob', 'hpc.ucsf.edu'));
+    // The host's sentence ends the folded part of the warning.
+    expect(fullWarningParagraphs(warning)).toEqual(joinCopy.fullWarningDetails('lab'));
+    expect(fullWarningParagraphs(warning).slice(-1)).toEqual([joinCopy.fullWarningHost('lab')]);
     // Words only: the job is asked for exactly what Join chose, and nothing more.
     expect(mocks.startSetup).toHaveBeenCalledWith({
       target: { kind: 'connection', connection_id: 'conn-1' },
@@ -332,9 +344,9 @@ describe('NotSetUpPane', () => {
     requestMemberSetup('conn-1', { agentAccess: 'full' });
     renderPane();
     await waitFor(() => expect(mocks.startSetup).toHaveBeenCalledTimes(2));
-    expect(await screen.findByTestId('crew-onboard-full-warning')).not.toHaveTextContent(
-      /act as the host/
-    );
+    const memberWarning = await screen.findByTestId('crew-onboard-full-warning');
+    expect(fullWarningParagraphs(memberWarning).join(' ')).not.toMatch(/act as the host/);
+    expect(fullWarningParagraphs(memberWarning)).toEqual(joinCopy.fullWarningDetails());
   });
 
   it('keeps Off off: a Join that chose Off asks for no access, and shows no warning (C18)', async () => {

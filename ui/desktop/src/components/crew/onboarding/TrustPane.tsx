@@ -5,7 +5,12 @@ import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
 import { InfoTip } from '../../ui/info-tip';
 import { parseHostKeyLookup } from '../hostKeys/hostKeyLookup';
-import { TrustHostKey, useHostKeyFingerprint, type HostKeyTarget } from '../hostKeys/TrustHostKey';
+import {
+  HostKeyMessage,
+  TrustHostKey,
+  useHostKeyFingerprint,
+  type HostKeyTarget,
+} from '../hostKeys/TrustHostKey';
 import { trustHostKeyCopy } from '../hostKeys/trustHostKey.copy';
 import { connectionServer, personFromProjection, personLabel } from '../identity';
 import { serverLabel } from '../sidebar/sidebarView';
@@ -116,7 +121,7 @@ function UnknownHostKey() {
             {trustHostKeyCopy.reading}
           </p>
         ) : message ? (
-          <p className="text-supporting text-text-muted">{message}</p>
+          <HostKeyMessage message={message} />
         ) : null}
         {offered && target ? (
           <TrustHostKey

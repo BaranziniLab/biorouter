@@ -3,7 +3,7 @@ import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
 import { InfoTip } from '../../ui/info-tip';
 import { unknownKeyLookup } from '../hostKeys/hostKeyLookup';
-import { TrustHostKey, useHostKeyFingerprint } from '../hostKeys/TrustHostKey';
+import { HostKeyMessage, TrustHostKey, useHostKeyFingerprint } from '../hostKeys/TrustHostKey';
 import { trustHostKeyCopy } from '../hostKeys/trustHostKey.copy';
 import { sanitizeDisplayText } from '../identity';
 import { openCopy, setupCopy, trustCopy } from './copy';
@@ -169,7 +169,7 @@ export function SetupHostKeyHelp({
           {trustHostKeyCopy.reading}
         </p>
       ) : read.message ? (
-        <p className="text-supporting text-text-muted">{read.message}</p>
+        <HostKeyMessage message={read.message} />
       ) : null}
       {offered && target ? (
         <TrustHostKey

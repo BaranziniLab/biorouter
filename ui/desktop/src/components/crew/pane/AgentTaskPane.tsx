@@ -6,7 +6,7 @@ import { Button } from '../../ui/button';
 import { Checkbox } from '../../ui/Checkbox';
 import { Disclosure } from '../../ui/disclosure';
 import { InfoTip } from '../../ui/info-tip';
-import { Note } from '../../ui/note';
+import { Note, NOTE_DETAILS_LABEL } from '../../ui/note';
 import { cn } from '../../../utils';
 import type { CrewMessage, ObservedRun } from '../crewApi';
 import { channelName, channelNamesAcrossTeams, teamName } from '../identity';
@@ -27,7 +27,7 @@ import {
   modelDisplay,
   modelMismatch,
   modelRefusalText,
-  fullAccessWarning,
+  fullAccessFold,
   remoteAccessText,
   sameNamedFiles,
   sharedWhen,
@@ -432,8 +432,8 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
     otherChannels.length > 0 || contextChannels.length > 0 || Boolean(crew.connection?.remote_root);
   const folderText = remoteAccessText(crew.connection);
   // Full access, said before Start whatever Advanced shows: what running as the account means,
-  // and for the host what it adds (W1, W2).
-  const fullWarning = fullAccessWarning(crew.connection, workspace, dir.viewerIsHost);
+  // and for the host what it adds (W1, W2). One sentence in view, the rest behind Details.
+  const fullWarning = fullAccessFold(crew.connection, workspace, dir.viewerIsHost);
   const alsoReads = contextChannels
     .filter((id) => id !== channel.id)
     .map((id) => {
@@ -782,14 +782,28 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
             ? agentCopy.scopeWide(here, alsoReads.length + 1)
             : agentCopy.scope(here)}
         </p>
+        {/* The consent sentence in view, and Start's description; the rest of the warning, word
+            for word as the Join and Host dialogs fold it, behind Details (design.md 9.16). */}
         {fullWarning && (
-          <p
-            id={fullWarningId}
-            className="text-supporting text-text-muted"
-            data-testid="crew-agent-full-access"
-          >
-            {fullWarning}
-          </p>
+          <div className="flex flex-col gap-1">
+            <p
+              id={fullWarningId}
+              className="text-supporting text-text-muted"
+              data-testid="crew-agent-full-access"
+            >
+              {fullWarning.lead}
+            </p>
+            <Disclosure label={NOTE_DETAILS_LABEL}>
+              <div
+                className="flex flex-col gap-1 text-supporting text-text-muted"
+                data-testid="crew-agent-full-access-details"
+              >
+                {fullWarning.details.map((paragraph) => (
+                  <p key={paragraph}>{paragraph}</p>
+                ))}
+              </div>
+            </Disclosure>
+          </div>
         )}
         {/* Before Start, which it disables: the pane says what the daemon would refuse (T-47), for
             a model the institution has not approved and a public model alike (AG-F4). */}

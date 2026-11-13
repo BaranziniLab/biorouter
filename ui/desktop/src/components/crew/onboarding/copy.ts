@@ -25,6 +25,30 @@ export const FULL_ACCESS_IS_YOU =
 export const fullAccessHost = (workspace: string) =>
   `You host ${workspace} from this account, so your agent can also read the workspace’s own files on the server, including channels you’re not in. It can also act as the host of ${workspace}.`;
 
+/**
+ * The sentence of every full-access warning that stays in view (privacy constraints 4.1, design.md
+ * 9.16): who the agent runs as, where, and that it reaches everything the account can. It is the
+ * consent; the rest of the warning (`fullAccessDetails`) folds behind Details under it.
+ */
+export const fullAccessLead = (user: string, server: string) =>
+  `Your agent will run commands as ${user} on ${server}: it can read and change anything your account can.`;
+
+/** What else full access reaches and risks, first in the folded part of the warning. */
+export const FULL_ACCESS_REACH =
+  'It can also use the network and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust.';
+
+/**
+ * The folded part of every full-access warning, one paragraph each, in the order the warning has
+ * always said them: what else the agent reaches (`FULL_ACCESS_REACH`), that Crew takes it for the
+ * person (`FULL_ACCESS_IS_YOU`), and, for the account that hosts `hostWorkspace`, the workspace's
+ * own files (`fullAccessHost`).
+ */
+export function fullAccessDetails(hostWorkspace?: string | null): string[] {
+  return hostWorkspace
+    ? [FULL_ACCESS_REACH, FULL_ACCESS_IS_YOU, fullAccessHost(hostWorkspace)]
+    : [FULL_ACCESS_REACH, FULL_ACCESS_IS_YOU];
+}
+
 export const welcomeCopy = {
   title: 'Work together in Crew',
   body: 'Chat, share files and run agents with your lab.',
@@ -57,8 +81,10 @@ function othersConnected(count: number | null): string {
  */
 export const openCopy = {
   title: 'Open a workspace on a server',
-  intro:
-    'Sign in to a server as yourself to see the workspaces you host or belong to there. You need no invitation or code for those.',
+  /** The dialog's one line; that it needs no invitation is behind its info icon (design.md 9.16). */
+  intro: 'Sign in to a server as yourself to see the workspaces you host or belong to there.',
+  introMoreLabel: 'invitations',
+  introMore: 'You need no invitation or code for those.',
   login: 'Your server login',
   loginPlaceholder: 'you@server.example.edu',
   loginHelper: 'The account you sign in to the server with, as in ssh you@server.',
@@ -71,8 +97,10 @@ export const openCopy = {
   close: 'Close',
   /** The list, under the steps. `server` is the dialog's word for the server. */
   foundHeading: (server: string) => `Workspaces on ${server}`,
-  none: (server: string) =>
-    `There are no workspaces for you on ${server}. To join someone else’s, ask them to invite you.`,
+  /** An empty list says so; how to join another's workspace is behind its info icon. */
+  none: (server: string) => `There are no workspaces for you on ${server}.`,
+  noneMoreLabel: 'other workspaces',
+  noneMore: 'To join someone else’s, ask them to invite you.',
   /** AO-6's trust rule: every workspace offered names its host. */
   hostedBy: (workspace: string, host: string) => `${workspace}, hosted by @${host}`,
   hostedByYou: (workspace: string) => `${workspace}, hosted by you`,
@@ -123,14 +151,16 @@ export const openCopy = {
   /**
    * Why the last update left a workspace on its older Crew (AO-8's `outdated` reasons). For
    * `running_newer` and `custom_state_dir` Update Crew cannot help, so it is not offered again.
+   * `others_connected` is said beside Update Crew, whose own name and info icon say the way on
+   * (`restartsOnUpdate`), so it says only the reason (design.md 9.16).
    */
   leftRunning: {
     others_connected: (count: number | null) =>
       count === null
-        ? 'It wasn’t restarted, because other people may be connected. Choose Update Crew to restart it anyway.'
+        ? 'It wasn’t restarted, because other people may be connected.'
         : count === 1
-          ? 'It wasn’t restarted, because 1 other person is connected. Choose Update Crew to restart it anyway.'
-          : `It wasn’t restarted, because ${count} other people are connected. Choose Update Crew to restart it anyway.`,
+          ? 'It wasn’t restarted, because 1 other person is connected.'
+          : `It wasn’t restarted, because ${count} other people are connected.`,
     running_newer: (running: string | null) =>
       running
         ? `It runs Crew ${running}, newer than the Crew installed in your account, so it was left running.`
@@ -139,28 +169,33 @@ export const openCopy = {
       `It keeps its state outside ~/.local/share/biorouter-crew, so Crew can’t restart it. Restart it on ${server} yourself.`,
   },
   /**
-   * Under `outdated`, on every row Update Crew can still help that the last job was not asked to
-   * restart (a look, or Update Crew or Start for another row): what Update Crew would do, with the
-   * caution its question asks (`othersConnected`). `null` is a count the server did not give.
+   * Behind the info icon beside every row's Update Crew (design.md 9.16): what Update Crew would
+   * do, with the caution its question asks (`othersConnected`). `null` is a count the server did
+   * not give. The row itself says only its versions (`outdated`), and the question says the
+   * caution again when Update Crew is pressed.
    */
   restartsOnUpdate: (count: number | null) =>
     count === 0 ? 'Update Crew restarts it.' : `Update Crew restarts it. ${othersConnected(count)}`,
   /**
    * The Crew in your account is too old to list the workspaces (the job's `workspaces_unlisted`
-   * `too_old`, which the daemon decides), with the button that installs this computer's Crew there.
-   * That restarts no workspace, and lists the workspaces again.
+   * `too_old`, which the daemon decides), beside the button that installs this computer's Crew
+   * there, whose name is the way on. That restarts no workspace, and lists the workspaces again.
    */
   tooOld: (version: string | null, server: string) =>
-    `${version ? `Crew ${version}` : 'The Crew'} in your account on ${server} is too old to list workspaces. Choose Update Crew to update it.`,
+    `${version ? `Crew ${version}` : 'The Crew'} in your account on ${server} is too old to list workspaces.`,
   notInstalled: (server: string) =>
-    `Crew isn’t installed in your account on ${server}, so Biorouter can’t look for workspaces there. Choose Install Crew to install it.`,
+    `Crew isn’t installed in your account on ${server}, so Biorouter can’t look for workspaces there.`,
   install: 'Install Crew',
   /** A removed account cannot open it; AO-2's words. */
   removed: (workspace: string) =>
     `You were removed from ${workspace}. Ask a member to invite you again.`,
-  /** Two hosts have a workspace of one name: never pick between them by name (AO-6). */
-  sameName: (workspace: string) =>
-    `Two people host a workspace named ${workspace} here. Check the host before you open one.`,
+  /**
+   * Two hosts have a workspace of one name: never pick between them by name (AO-6). The fact stays
+   * in view; the advice is behind its info icon (design.md 9.16).
+   */
+  sameName: (workspace: string) => `Two people host a workspace named ${workspace} here.`,
+  sameNameMoreLabel: 'which one to open',
+  sameNameMore: 'Check the host before you open one.',
   notesTruncated: 'Some workspaces may not be listed: the server had more than Crew looks through.',
   /** What finished, from the job's outcome. */
   restarted: (workspace: string, version: string | null) =>
@@ -169,9 +204,10 @@ export const openCopy = {
     version ? `Started ${workspace} on Crew ${version}.` : `Started ${workspace}.`,
   restartFailed: (workspace: string, message: string) => `${workspace} didn’t restart: ${message}`,
   restartCommand: 'start command',
-  /** No invitation line came with it: nothing to open it from. */
-  cantOpen:
-    'Crew on the server didn’t say how to open this workspace. Update Crew there, then look again.',
+  /** No invitation line came with it: nothing to open it from. The way on is behind its icon. */
+  cantOpen: 'Crew on the server didn’t say how to open this workspace.',
+  cantOpenMoreLabel: (workspace: string) => `opening ${workspace}`,
+  cantOpenMore: 'Update Crew there, then look again.',
   /** The daemon predates the server target (AO-8). */
   outdatedDaemon:
     'Opening a workspace this way needs a newer Biorouter background service. Quit and reopen Biorouter.',
@@ -337,11 +373,14 @@ export const joinCopy = {
   fullFolderHelper: (server: string) =>
     `Optional. A folder on ${server}, starting with /, where your agent starts. Leave it empty and Biorouter creates one in ~/crew-work.`,
   /**
-   * The one warning for As me on the server (privacy constraints 4.1): what the agent can reach, and
-   * that what others write can try to steer it. Shown while the level is chosen; no typing.
+   * The one warning for As me on the server (privacy constraints 4.1), shown while the level is
+   * chosen; no typing. Its consent sentence stays in view (`fullAccessLead`); what else the agent
+   * reaches, that what others write can try to steer it, and that Crew takes it for the person
+   * fold behind Details under it (`fullWarningDetails`, design.md 9.16).
    */
-  fullWarning: (user: string | null, server: string) =>
-    `Your agent will run commands as ${user ?? 'you'} on ${server}: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust. ${FULL_ACCESS_IS_YOU}`,
+  fullWarning: (user: string | null, server: string) => fullAccessLead(user ?? 'you', server),
+  /** The warning's folded paragraphs, with the host's sentence when `hostWorkspace` is given. */
+  fullWarningDetails: fullAccessDetails,
   /** The host's extra sentence: their account also holds the workspace's own files. */
   fullWarningHost: fullAccessHost,
   /** Under Join (decision 5.7): pressing it also sets Crew up when the account lacks it. */
@@ -664,10 +703,12 @@ export const hostCopy = {
   createHeading: (workspace: string, server: string) => `${workspace} on ${server}`,
   /**
    * Account ownership: the host is the server account, not this computer, so any computer that
-   * signs in to the server as the host opens the workspace as its host.
+   * signs in to the server as the host opens the workspace as its host. The first sentence stays
+   * in view; what it means later is behind its info icon (design.md 9.16).
    */
-  createBody: (workspace: string) =>
-    `Creating ${workspace} makes your server account its host. Any computer that signs in as you can open it as host later.`,
+  createBody: (workspace: string) => `Creating ${workspace} makes your server account its host.`,
+  createBodyMoreLabel: 'the host account',
+  createBodyMore: 'Any computer that signs in as you can open it as host later.',
   /**
    * Under `createBody` when Name chose Private and an institution (G4): Create also writes that
    * institution as the workspace's own label with `policy.set`, as `biorouter crew host` does, so

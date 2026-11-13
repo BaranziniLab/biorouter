@@ -46,7 +46,13 @@ describe('the vault card', () => {
   it('opens the OS prompt through the main process with the action alone', async () => {
     const view = card();
     expectNoInput(view.container);
-    expect(screen.getByText(copy.unlockBody)).toBeInTheDocument();
+    // Where the passphrase goes is the line in view; what the vault is and what Unlock opens are
+    // the title's info tip, and only there (owner, 2026-11-13; design.md 9.16).
+    expect(screen.getByText(copy.passphraseGoes)).not.toHaveClass('sr-only');
+    expect(
+      screen.getByRole('button', { name: `About ${copy.aboutLabel}` })
+    ).toHaveAccessibleDescription(copy.unlockAbout);
+    expect(screen.getByText(copy.unlockAbout)).toHaveClass('sr-only');
     await userEvent.click(screen.getByRole('button', { name: copy.unlockButton }));
     expect(crewCredentials).toHaveBeenCalledTimes(1);
     expect(crewCredentials.mock.calls[0]).toEqual(['unlock']);
@@ -111,6 +117,10 @@ describe('the vault card', () => {
   it('sets up a vault through the same prompt', async () => {
     card(init);
     expect(screen.getByText(copy.initTitle)).toBeInTheDocument();
+    expect(screen.getByText(copy.passphraseGoes)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: `About ${copy.aboutLabel}` })
+    ).toHaveAccessibleDescription(copy.initAbout);
     await userEvent.click(screen.getByRole('button', { name: copy.initButton }));
     expect(crewCredentials.mock.calls).toEqual([['init']]);
     expect(await screen.findByText(copy.setUp)).toBeInTheDocument();
@@ -144,12 +154,31 @@ describe('the vault card', () => {
     expect(crewCredentials.mock.calls).toEqual([['unlock']]);
   });
 
-  it('says where to do it when this app cannot open the prompt', () => {
+  it('says where to do it when this app cannot open the prompt', async () => {
     delete (window as { electron?: unknown }).electron;
     const view = card();
-    expect(screen.getByText(copy.unlockFallback)).toBeInTheDocument();
-    expect(screen.queryByRole('button')).toBeNull();
+    // The warning stays in view; where to do it instead is folded under its disclosure.
+    expect(screen.getByText(copy.fallbackWarning)).toBeInTheDocument();
+    expect(screen.queryByText(copy.unlockHow)).toBeNull();
+    // Its one button opens that disclosure: nothing here can open a prompt or take a passphrase.
+    expect(screen.getAllByRole('button').map((button) => button.textContent)).toEqual([
+      copy.unlockHowLabel,
+    ]);
+    await userEvent.click(screen.getByRole('button', { name: copy.unlockHowLabel }));
+    expect(screen.getByText(copy.unlockHow)).toBeInTheDocument();
+    expect(copy.unlockHow).toBe(
+      'Open Crew and unlock it under Keys, or run biorouter crew credentials unlock in a terminal.'
+    );
+    expect(crewCredentials).not.toHaveBeenCalled();
     expectNoInput(view.container);
+  });
+
+  it('says where to set it up when this app cannot open the prompt', async () => {
+    delete (window as { electron?: unknown }).electron;
+    card(init);
+    expect(screen.getByText(copy.fallbackWarning)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: copy.initHowLabel }));
+    expect(screen.getByText(copy.initHow)).toBeInTheDocument();
   });
 });
 

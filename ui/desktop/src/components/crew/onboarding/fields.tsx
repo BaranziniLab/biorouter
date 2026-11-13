@@ -525,14 +525,48 @@ export function AgentAccessFields({
         </div>
       </Disclosure>
       {access === 'full' ? (
-        // Its whole text, always, folded row or not: it is the one warning the level has (OW-6),
-        // and As me on the server is the default, so a person who never opens the row reads it too.
-        <Note tone="warning" role="status" unclamped testId="crew-onboard-full-warning">
-          {joinCopy.fullWarning(user, serverName)}
-          {hostWorkspace ? ` ${joinCopy.fullWarningHost(hostWorkspace)}` : null}
-        </Note>
+        // Always, folded row or not: it is the one warning the level has (OW-6), and As me on the
+        // server is the default, so a person who never opens the row reads it too.
+        <FullAccessWarning user={user} server={serverName} hostWorkspace={hostWorkspace} />
       ) : null}
     </>
+  );
+}
+
+/**
+ * The one warning As me on the server has (OW-6, privacy constraints 4.1), wherever onboarding
+ * grants or offers it: the Join and Host dialogs and Not set up's member setup. Its consent
+ * sentence stays in view, never behind "Show more" (`unclamped`); what else the agent reaches, that
+ * others' words can try to steer it, that Crew takes it for the person, and for the host the
+ * workspace's own files, are one click away behind Details, word for word (design.md 9.16).
+ */
+export function FullAccessWarning({
+  user,
+  server,
+  hostWorkspace = null,
+}: {
+  /** The server account the agent would act as; `null` says "you". */
+  user: string | null;
+  server: string;
+  /** The workspace this account hosts, for the host's extra sentence. */
+  hostWorkspace?: string | null;
+}) {
+  return (
+    <Note
+      tone="warning"
+      role="status"
+      unclamped
+      testId="crew-onboard-full-warning"
+      details={
+        <div className="flex flex-col gap-1" data-testid="crew-onboard-full-warning-details">
+          {joinCopy.fullWarningDetails(hostWorkspace).map((paragraph) => (
+            <p key={paragraph}>{paragraph}</p>
+          ))}
+        </div>
+      }
+    >
+      {joinCopy.fullWarning(user, server)}
+    </Note>
   );
 }
 

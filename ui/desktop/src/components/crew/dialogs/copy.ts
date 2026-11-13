@@ -1,5 +1,5 @@
 import { addedViaCopy } from '../account/copy';
-import { FULL_ACCESS_IS_YOU, fullAccessHost } from '../onboarding/copy';
+import { fullAccessDetails, fullAccessHost, fullAccessLead } from '../onboarding/copy';
 import type { LocalPlatform } from './localPath';
 
 /**
@@ -117,10 +117,20 @@ export const connectionSettingsCopy = {
   fullFolderHelp: 'Commands start in this folder and can reach anything your account can.',
   /**
    * The one warning before full access (privacy-policy constraint 4.1): said in place, and Save is
-   * the person's consent. `user` is the account (`@crew_alice`), `server` the server's name.
+   * the person's consent. `user` is the account (`@crew_alice`), `server` the server's name. Its
+   * consent sentence stays in view (`fullWarningLead`); the rest is behind the warning's Details
+   * (`fullWarningDetails`), word for word, as the Join and Host dialogs fold it (owner,
+   * 2026-11-13). This is the whole warning without the host's sentence, read in order.
    */
-  fullWarning: (user: string, server: string) =>
-    `Your agent will run commands as ${user} on ${server || 'the server'}: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust. ${FULL_ACCESS_IS_YOU}`,
+  fullWarning: (user: string, server: string): string =>
+    [connectionSettingsCopy.fullWarningLead(user, server), ...fullAccessDetails()].join(' '),
+  /** The warning's sentence in view: what the agent will do, and as whom (`fullAccessLead`). */
+  fullWarningLead: (user: string, server: string) => fullAccessLead(user, server || 'the server'),
+  /**
+   * Behind the warning's Details, one paragraph each: what else full access reaches and risks,
+   * that Crew takes the agent for the person, and with `hostWorkspace` the host's sentence.
+   */
+  fullWarningDetails: fullAccessDetails,
   /**
    * The host's extra sentence: the workspace's own files live in this account. The Join and Host
    * dialogs say the same words (`fullAccessHost`).
@@ -377,11 +387,17 @@ export const inviteCopy = {
   /**
    * The same on a workspace that belongs to accounts (account ownership AO-2): the invitation
    * names the account, and signing in as it is the proof. Let in… stays for an older Biorouter's
-   * code.
+   * code. The dialog shows the first sentence and puts the second behind its info icon (owner,
+   * 2026-11-13).
    */
   nextStepAccount: (first: string) =>
     `${first} gets in by opening the workspace while signed in to the server as themselves. If their Biorouter shows a code instead, choose Let in… next to their name in the sidebar.`,
-  /** After `nextStep`: when the invitation runs out (QA Q4-36). `phrase` is `expiryPhrase`'s. */
+  /** The info icon after `nextStepAccount`'s first sentence: "About a code from an older Biorouter". */
+  nextStepAccountHelpLabel: 'a code from an older Biorouter',
+  /**
+   * Under `nextStep` or `nextStepAccount`, on its own line: when the invitation runs out (QA
+   * Q4-36). `phrase` is `expiryPhrase`'s.
+   */
   expires: (phrase: string) => `This invitation ${phrase}.`,
   done: 'Done',
   /** After an invitation, start again with an empty field (QA T-44). */
@@ -405,6 +421,11 @@ export const inviteCopy = {
      */
     alreadyMemberAccount: (username: string, workspace: string) =>
       `@${username} is already in ${workspace}. A new computer of theirs gets in when they open ${workspace} on it, signed in to the server as @${username}.`,
+    /**
+     * Both refusals of a member show their first sentence, the reason, and put the second behind
+     * an info icon with this name: "About adding a computer of theirs" (owner, 2026-11-13).
+     */
+    alreadyMemberHelpLabel: 'adding a computer of theirs',
     canonical: (canonical: string) =>
       `Invite @${canonical} instead: that’s the account’s exact name.`,
   },
@@ -842,12 +863,14 @@ export const confirmCopy = {
   },
   removePerson: {
     title: (person: string, workspace: string) => `Remove ${person} from ${workspace}?`,
+    /** The consequence at the decision (owner, 2026-11-13: one line up front). */
+    description: 'Removes all of their computers and agent access.',
     /**
-     * Account ownership (AO-2): a removed account cannot open the workspace again by signing in to
-     * the server; only a new invitation brings it back.
+     * Behind the dialog's Details. Account ownership (AO-2): a removed account cannot open the
+     * workspace again by signing in to the server; only a new invitation brings it back.
      */
-    description:
-      'Removes all of their computers and agent access. Their messages stay in history. Signing in to the server as them no longer opens the workspace: to let them back in, invite them again.',
+    details:
+      'Their messages stay in history. Signing in to the server as them no longer opens the workspace: to let them back in, invite them again.',
     confirm: (workspace: string) => `Remove from ${workspace}`,
     /** The case-sensitive check on top of the primitive's case-folded one. */
     mismatch: 'Type the exact username to remove access.',

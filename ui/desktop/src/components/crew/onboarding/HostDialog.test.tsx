@@ -961,12 +961,19 @@ describe('HostDialog', () => {
       fireEvent.click(row);
       // Three levels, the default with its one warning; the host's own account says more.
       expect(screen.getByRole('radio', { name: /^As me on the server/ })).toBeChecked();
-      expect(screen.getByTestId('crew-onboard-full-warning')).toHaveTextContent(
-        joinCopy.fullWarning('alice', 'hpc.ucsf.edu')
-      );
-      expect(screen.getByTestId('crew-onboard-full-warning')).toHaveTextContent(
-        joinCopy.fullWarningHost('lab-data')
-      );
+      const warning = screen.getByTestId('crew-onboard-full-warning');
+      expect(warning).toHaveTextContent(joinCopy.fullWarning('alice', 'hpc.ucsf.edu'));
+      // The consent sentence in view; the rest, the host's sentence last, behind Details
+      // (design.md 9.16).
+      expect(warning).not.toHaveTextContent(joinCopy.fullWarningHost('lab-data'));
+      fireEvent.click(within(warning).getByRole('button', { name: 'Details' }));
+      expect(
+        Array.from(
+          within(warning).getByTestId('crew-onboard-full-warning-details').querySelectorAll('p'),
+          (p) => p.textContent
+        )
+      ).toEqual(joinCopy.fullWarningDetails('lab-data'));
+      expect(warning).toHaveTextContent(joinCopy.fullWarningHost('lab-data'));
       fireEvent.click(screen.getByRole('radio', { name: /^In a folder/ }));
       expect(screen.queryByTestId('crew-onboard-full-warning')).toBeNull();
       // The work folder in plain words, not "an absolute path on the server" (Q3-49).
@@ -1726,6 +1733,21 @@ describe('HostDialog and account ownership (AO-9)', () => {
     renderHost();
     await throughStart();
     expect(screen.getByText(hostCopy.createBody('lab-data'))).toBeInTheDocument();
+    expect(hostCopy.createBody('lab-data')).toBe(
+      'Creating lab-data makes your server account its host.'
+    );
+    // What that lets another computer do later is behind the line's info icon, not a second
+    // sentence in view (design.md 9.16).
+    expect(screen.getByTestId('crew-host-create-body-more')).toHaveAccessibleName(
+      `About ${hostCopy.createBodyMoreLabel}`
+    );
+    expect(screen.getByTestId('crew-host-create-body-more')).toHaveAccessibleDescription(
+      'Any computer that signs in as you can open it as host later.'
+    );
+    expect(screen.getByText(hostCopy.createBodyMore)).toHaveAttribute(
+      'data-slot',
+      'info-tip-description'
+    );
     expect(document.body.textContent).not.toMatch(/first admin device/);
   });
 

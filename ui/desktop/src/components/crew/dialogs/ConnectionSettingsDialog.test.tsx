@@ -529,7 +529,24 @@ describe('ConnectionSettingsDialog', () => {
       fireEvent.click(level(connectionSettingsCopy.accessFull));
       expect(screen.getByLabelText('Remote work folder')).toHaveValue('/home/alice');
       const warning = screen.getByTestId('crew-full-access-warning');
-      expect(warning).toHaveTextContent(connectionSettingsCopy.fullWarning('@alice', SERVER));
+      // The consent sentence in view; the rest behind Details, word for word (design.md 9.16).
+      const lead =
+        'Your agent will run commands as @alice on hpc.example.edu: it can read and change anything your account can.';
+      expect(connectionSettingsCopy.fullWarningLead('@alice', SERVER)).toBe(lead);
+      expect(within(warning).getByText(lead)).toBeVisible();
+      expect(warning).not.toHaveTextContent(/use the network/);
+      expect(warning).not.toHaveTextContent(/with no agent mark/);
+      expect(warning).not.toHaveTextContent(/You host lab from this account/);
+      fireEvent.click(within(warning).getByRole('button', { name: 'Details' }));
+      const details = connectionSettingsCopy.fullWarningDetails('lab');
+      expect(details[0]).toBe(
+        'It can also use the network and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust.'
+      );
+      for (const paragraph of details) expect(within(warning).getByText(paragraph)).toBeVisible();
+      // The whole warning is the sentence in view and the folded ones, read in order.
+      expect(connectionSettingsCopy.fullWarning('@alice', SERVER)).toBe(
+        [lead, ...connectionSettingsCopy.fullWarningDetails()].join(' ')
+      );
       // The person hosts this workspace (the fixture's Alice): its files are in this account.
       expect(warning).toHaveTextContent(connectionSettingsCopy.fullWarningHost('lab'));
       // Under account ownership the agent is the person in Crew too, and on the host's account the

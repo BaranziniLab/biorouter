@@ -1688,8 +1688,16 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                       />
                     </div>
                   ) : null}
-                  <p className="text-body text-text-default">
-                    {hostCopy.createBody(workspaceLabel)}
+                  {/* What Create makes you, in view; what that lets a computer do later is behind
+                      its info icon, so this line, the fingerprint and the mark below don't stack
+                      into a block (design.md 9.16). */}
+                  <p className="text-body text-text-default" data-testid="crew-host-create-body">
+                    <span>{hostCopy.createBody(workspaceLabel)}</span>{' '}
+                    <InfoTip
+                      label={hostCopy.createBodyMoreLabel}
+                      help={hostCopy.createBodyMore}
+                      data-testid="crew-host-create-body-more"
+                    />
                   </p>
                   {/* Create also writes the label Name chose, which can't be undone: said here,
                       before the person commits, rather than asked again after (G4). */}

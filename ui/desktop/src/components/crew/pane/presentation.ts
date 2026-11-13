@@ -20,7 +20,13 @@ import {
   type KnownInstitution,
   type PeopleDirectory,
 } from '../identity';
-import { FULL_ACCESS_IS_YOU, fullAccessHost } from '../onboarding/copy';
+import {
+  FULL_ACCESS_IS_YOU,
+  fullAccessDetails,
+  fullAccessHost,
+  fullAccessLead,
+} from '../onboarding/copy';
+import { sshUsername } from '../onboarding/joinText';
 import { useCrew } from '../state/CrewControllerContext';
 import type { CrewController } from '../state/types';
 import { agentCopy } from './copy';
@@ -731,6 +737,29 @@ export function fullAccessWarning(
 ): string | null {
   if (!connection?.remote_root || connectionRemoteAccess(connection) !== 'full') return null;
   return hosts ? `${FULL_ACCESS_IS_YOU} ${fullAccessHost(workspace)}` : FULL_ACCESS_IS_YOU;
+}
+
+/**
+ * Full access in Ask my agent's footer, said before Start whatever Advanced shows (W1, W2), folded
+ * as design.md 9.16 asks: `lead` is the warning's consent sentence, in view and Start's
+ * description, in the words the Join and Host dialogs use (`fullAccessLead`); `details` are the
+ * rest of the warning, one paragraph each, behind Details under it (`fullAccessDetails`), with the
+ * host's sentence when the person's own view names them the host of `workspace`. The account is
+ * the bridge's own word, else the saved login's user, else "you"; the server is named as the
+ * sidebar names it. `null` for any other access.
+ */
+export function fullAccessFold(
+  connection: CrewConnection | null | undefined,
+  workspace: string,
+  hosts: boolean
+): { lead: string; details: string[] } | null {
+  if (!connection?.remote_root || connectionRemoteAccess(connection) !== 'full') return null;
+  const user = connection.server_access?.user ?? sshUsername(connection.ssh_target) ?? 'you';
+  const server = sanitizeDisplayText(connection.server_label) || connectionServer(connection);
+  return {
+    lead: fullAccessLead(sanitizeDisplayText(user) || 'you', server),
+    details: fullAccessDetails(hosts ? workspace : null),
+  };
 }
 
 /**

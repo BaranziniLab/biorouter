@@ -9,7 +9,8 @@ import {
 } from 'react';
 import { AlertCircle, AlertTriangle, CheckCircle2 } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
-import { Note } from '../../ui/note';
+import { Disclosure } from '../../ui/disclosure';
+import { NOTE_DETAILS_LABEL, Note } from '../../ui/note';
 import { cn } from '../../../utils';
 import { accessCopy } from './copy';
 import type { RevokeOutcome } from './useCrewGrants';
@@ -18,10 +19,16 @@ import type { RevokeOutcome } from './useCrewGrants';
  * The inline two-step confirmation (ui-redesign-spec, "Dialogs and confirmations": "Revoke chat
  * access — inline two-step"). No modal over the pane: the question replaces the control that asked
  * it, focus lands on the safe choice, and Escape keeps things as they were.
+ *
+ * `detail` is the one line of consequence under the question; anything more (the steps to take
+ * first, say) goes in `details`, behind a closed Details disclosure, as `Note` and
+ * `ConfirmationModal` fold it (design.md 9.16).
  */
 export function InlineConfirm({
   question,
   detail,
+  details,
+  detailsLabel = NOTE_DETAILS_LABEL,
   confirmLabel,
   cancelLabel,
   onConfirm,
@@ -31,6 +38,10 @@ export function InlineConfirm({
 }: {
   question: string;
   detail?: string;
+  /** More than the one line: folded behind a closed disclosure under `detail`. */
+  details?: ReactNode;
+  /** The disclosure's words, "Details" unless the detail has a better name. */
+  detailsLabel?: string;
   confirmLabel: string;
   cancelLabel: string;
   onConfirm(): void;
@@ -60,6 +71,15 @@ export function InlineConfirm({
         {question}
       </p>
       {detail ? <p className="text-supporting text-text-muted">{detail}</p> : null}
+      {details !== undefined && details !== null && details !== '' ? (
+        <Disclosure label={detailsLabel}>
+          {typeof details === 'string' ? (
+            <p className="text-supporting text-text-muted">{details}</p>
+          ) : (
+            details
+          )}
+        </Disclosure>
+      ) : null}
       <div className="flex flex-wrap items-center gap-2">
         <Button
           type="button"

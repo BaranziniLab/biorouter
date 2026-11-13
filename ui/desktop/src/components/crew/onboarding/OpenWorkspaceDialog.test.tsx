@@ -133,6 +133,19 @@ async function look(login = LOGIN) {
   return dialog;
 }
 
+/**
+ * What a row's Update Crew would do (`restartsOnUpdate`): behind the info icon beside it, and the
+ * button's own description, never a line under the row (design.md 9.16).
+ */
+function expectUpdateHelp(scope: HTMLElement, workspace: string, help: string) {
+  const label = openCopy.updateLabel(workspace);
+  expect(within(scope).getByRole('button', { name: label })).toHaveAccessibleDescription(help);
+  expect(within(scope).getByRole('button', { name: `About ${label}` })).toHaveAccessibleDescription(
+    help
+  );
+  expect(within(scope).queryByText(help, { selector: 'p' })).toBeNull();
+}
+
 beforeEach(() => {
   mocks.startSetup.mockReset();
   mocks.readSetup.mockReset();
@@ -401,7 +414,7 @@ describe('Open a workspace on a server', () => {
     expect(openCopy.outdated('1.94.1', '1.95.0')).toBe('Runs Crew 1.94.1, not 1.95.0.');
     // Nobody asked to restart busy-lab: the update was quiet-lab's. It says what Update Crew would
     // do, never that it wasn't restarted.
-    expect(within(found).getByText(openCopy.restartsOnUpdate(null))).toBeVisible();
+    expectUpdateHelp(found, 'busy-lab', openCopy.restartsOnUpdate(null));
     expect(within(found).queryByText(/wasn’t restarted/)).toBeNull();
     expect(
       within(found).getByRole('button', { name: openCopy.updateLabel('busy-lab') })
@@ -458,9 +471,15 @@ describe('Open a workspace on a server', () => {
       ).toBeVisible()
     );
     // other-lab was only looked at: what Update Crew would do, and no restart claimed.
-    expect(within(row('other-lab')).getByText(openCopy.restartsOnUpdate(3))).toBeVisible();
+    expectUpdateHelp(row('other-lab'), 'other-lab', openCopy.restartsOnUpdate(3));
     expect(within(row('other-lab')).queryByText(/wasn’t restarted/)).toBeNull();
-    expect(within(row('asked-lab')).queryByText(openCopy.restartsOnUpdate(2))).toBeNull();
+    // asked-lab says only its reason; the way on is Update Crew itself, with the same help
+    // behind its info icon as every row (the reason's old "Choose Update Crew…" sentence).
+    expect(
+      within(row('asked-lab')).queryByText(openCopy.restartsOnUpdate(2), { selector: 'p' })
+    ).toBeNull();
+    expectUpdateHelp(row('asked-lab'), 'asked-lab', openCopy.restartsOnUpdate(2));
+    expect(within(row('asked-lab')).queryByText(/Choose Update Crew/)).toBeNull();
   });
 
   it('starting one workspace leaves every other row reading as looked at', async () => {
@@ -505,7 +524,7 @@ describe('Open a workspace on a server', () => {
       await within(dialog).findByText(openCopy.started('stopped-lab', '1.95.0'))
     ).toBeVisible();
     const found = within(dialog).getByTestId('crew-open-found');
-    expect(within(found).getByText(openCopy.restartsOnUpdate(null))).toBeVisible();
+    expectUpdateHelp(found, 'busy-lab', openCopy.restartsOnUpdate(null));
     expect(within(found).queryByText(/wasn’t restarted/)).toBeNull();
   });
 
@@ -535,7 +554,7 @@ describe('Open a workspace on a server', () => {
     const dialog = await look();
     const found = await within(dialog).findByTestId('crew-open-found');
     expect(within(found).getByText(openCopy.outdated(null, '1.95.0'))).toBeVisible();
-    expect(within(found).getByText(openCopy.restartsOnUpdate(null))).toBeVisible();
+    expectUpdateHelp(found, 'old-lab', openCopy.restartsOnUpdate(null));
     expect(openCopy.restartsOnUpdate(null)).toBe(
       'Update Crew restarts it. Other people may be connected. Their running agent commands will stop.'
     );
@@ -587,14 +606,14 @@ describe('Open a workspace on a server', () => {
       ) as HTMLElement;
     // The Crew installed in the account, as the job read it.
     expect(within(row('quiet-lab')).getByText('Runs Crew 1.94.1, not 1.94.2.')).toBeVisible();
-    expect(within(row('quiet-lab')).getByText('Update Crew restarts it.')).toBeVisible();
+    expectUpdateHelp(row('quiet-lab'), 'quiet-lab', 'Update Crew restarts it.');
     // Not listed by the job: the Crew this computer carries, and the count the server gave.
     expect(within(row('behind-lab')).getByText('Runs Crew 1.94.0, not 1.95.0.')).toBeVisible();
-    expect(
-      within(row('behind-lab')).getByText(
-        'Update Crew restarts it. 1 other person is connected. Their running agent commands will stop.'
-      )
-    ).toBeVisible();
+    expectUpdateHelp(
+      row('behind-lab'),
+      'behind-lab',
+      'Update Crew restarts it. 1 other person is connected. Their running agent commands will stop.'
+    );
     expect(within(found).queryByText(/wasn’t restarted/)).toBeNull();
   });
 
@@ -608,14 +627,15 @@ describe('Open a workspace on a server', () => {
     expect(openCopy.othersConnected(null)).toBe(
       'Other people may be connected. Their running agent commands will stop.'
     );
+    // Only the reason: Update Crew beside it is the way on (design.md 9.16).
     expect(openCopy.leftRunning.others_connected(1)).toBe(
-      'It wasn’t restarted, because 1 other person is connected. Choose Update Crew to restart it anyway.'
+      'It wasn’t restarted, because 1 other person is connected.'
     );
     expect(openCopy.leftRunning.others_connected(2)).toBe(
-      'It wasn’t restarted, because 2 other people are connected. Choose Update Crew to restart it anyway.'
+      'It wasn’t restarted, because 2 other people are connected.'
     );
     expect(openCopy.leftRunning.others_connected(null)).toBe(
-      'It wasn’t restarted, because other people may be connected. Choose Update Crew to restart it anyway.'
+      'It wasn’t restarted, because other people may be connected.'
     );
     expect(openCopy.outdated('1.95.0', '1.95.0')).toBe(
       'Runs Crew 1.95.0, not the Crew installed in your account.'
@@ -675,6 +695,11 @@ describe('Open a workspace on a server', () => {
     const dialog = await look();
     const unlisted = await within(dialog).findByTestId('crew-open-unlisted');
     expect(unlisted).toHaveTextContent(openCopy.tooOld('1.93.0', 'leo.ucsf.edu'));
+    expect(openCopy.tooOld('1.93.0', 'leo.ucsf.edu')).toBe(
+      'Crew 1.93.0 in your account on leo.ucsf.edu is too old to list workspaces.'
+    );
+    // The button is the instruction; the note does not say it again (design.md 9.16).
+    expect(unlisted).not.toHaveTextContent(/Choose /);
     // The dialog's own way on, not the terminal command the daemon's sentence gives.
     expect(within(dialog).queryByText(/biorouter crew setup/)).toBeNull();
     // The listing failed: the steps end at Looking for workspaces, and never say Ready.
@@ -697,7 +722,7 @@ describe('Open a workspace on a server', () => {
     const found = await within(dialog).findByTestId('crew-open-found');
     expect(within(found).getByText(openCopy.hostedByYou('old-lab'))).toBeVisible();
     // Nothing was asked to restart, so the row says what Update Crew would do.
-    expect(within(found).getByText(openCopy.restartsOnUpdate(null))).toBeVisible();
+    expectUpdateHelp(found, 'old-lab', openCopy.restartsOnUpdate(null));
     expect(within(dialog).queryByTestId('crew-open-unlisted')).toBeNull();
     const after = within(dialog).getByRole('list', { name: setupCopy.stepsLabel });
     expect(within(after).getByText(setupCopy.stages.ready)).toBeVisible();
@@ -716,6 +741,8 @@ describe('Open a workspace on a server', () => {
     const dialog = await look();
     const unlisted = await within(dialog).findByTestId('crew-open-unlisted');
     expect(unlisted).toHaveTextContent(openCopy.notInstalled('leo.ucsf.edu'));
+    expect(openCopy.notInstalled('leo.ucsf.edu')).toBe(said);
+    expect(unlisted).not.toHaveTextContent(/Choose /);
     fireEvent.click(within(unlisted).getByRole('button', { name: openCopy.install }));
     await waitFor(() => expect(mocks.startSetup).toHaveBeenCalledTimes(2));
     expect(mocks.startSetup.mock.calls[1][0]).toEqual({
@@ -899,11 +926,71 @@ describe('Open a workspace on a server', () => {
       const found = await within(dialog).findByTestId('crew-open-found');
       expect(within(found).getAllByRole('listitem')).toHaveLength(2);
       expect(within(found).getByText(openCopy.hostedBy('baranzini-lab', 'alice'))).toBeVisible();
+      // One name, two hosts: the fact in view, the advice behind its info icon (design.md 9.16).
+      expect(
+        within(dialog).getByText(openCopy.sameName('baranzini-lab'), { selector: 'span' })
+      ).toBeVisible();
+      expect(
+        within(dialog).getByRole('button', { name: `About ${openCopy.sameNameMoreLabel}` })
+      ).toHaveAccessibleDescription(openCopy.sameNameMore);
+      // At rest the advice is only the info icon's hidden description, not a line of the note.
+      expect(within(dialog).getByText(openCopy.sameNameMore)).toHaveAttribute(
+        'data-slot',
+        'info-tip-description'
+      );
+      expect(openCopy.sameNameMore).toBe('Check the host before you open one.');
       const keyWarnings = errors.mock.calls.filter((call) => String(call[0]).includes('same key'));
       expect(keyWarnings).toEqual([]);
     } finally {
       errors.mockRestore();
     }
+  });
+
+  it('says one line where a person reads, with the rest behind its info icon (design.md 9.16)', async () => {
+    mocks.startSetup.mockResolvedValue(
+      finished([entry({ hostUsername: 'alice', hostUid: 1001, invitation: null })])
+    );
+    renderDialog();
+    const dialog = await screen.findByRole('dialog', { name: openCopy.title });
+    // The intro: one line, and that the workspaces need no invitation behind its icon.
+    const intro = within(dialog).getByTestId('crew-open-intro');
+    expect(within(intro).getByText(openCopy.intro)).toBeVisible();
+    expect(
+      within(intro).getByRole('button', { name: `About ${openCopy.introMoreLabel}` })
+    ).toHaveAccessibleDescription('You need no invitation or code for those.');
+    expect(within(dialog).getByText(openCopy.introMore)).toHaveAttribute(
+      'data-slot',
+      'info-tip-description'
+    );
+    // A row with nothing to open it from: why, in view; the way on behind its icon.
+    fireEvent.change(within(dialog).getByLabelText(openCopy.login), { target: { value: LOGIN } });
+    fireEvent.click(within(dialog).getByRole('button', { name: openCopy.look }));
+    const found = await within(dialog).findByTestId('crew-open-found');
+    expect(within(found).getByText(openCopy.cantOpen)).toBeVisible();
+    const name = 'baranzini-lab';
+    expect(
+      within(found).getByRole('button', { name: `About ${openCopy.cantOpenMoreLabel(name)}` })
+    ).toHaveAccessibleDescription('Update Crew there, then look again.');
+    expect(within(found).getByText(openCopy.cantOpenMore)).toHaveAttribute(
+      'data-slot',
+      'info-tip-description'
+    );
+  });
+
+  it('says an empty list in one line, and how to join another’s behind its info icon', async () => {
+    mocks.startSetup.mockResolvedValue(finished([]));
+    renderDialog();
+    const dialog = await look();
+    const none = await within(dialog).findByText(openCopy.none('leo.ucsf.edu'));
+    expect(none).toBeVisible();
+    expect(openCopy.none('leo.ucsf.edu')).toBe('There are no workspaces for you on leo.ucsf.edu.');
+    expect(
+      within(dialog).getByRole('button', { name: `About ${openCopy.noneMoreLabel}` })
+    ).toHaveAccessibleDescription('To join someone else’s, ask them to invite you.');
+    expect(within(dialog).getByText(openCopy.noneMore)).toHaveAttribute(
+      'data-slot',
+      'info-tip-description'
+    );
   });
 
   it('says "hosted by you" once, and shows the login as typed', async () => {

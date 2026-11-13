@@ -5,7 +5,7 @@ import { CrewHttpError } from '../crewApi';
 import { CREW_INVITATION_INVALID } from '../api/errors';
 import type { CrewInvitationPreview } from '../api/join';
 import { INSTITUTION_ID_PATTERN } from '../identity';
-import { fullAccessHost, joinCopy, setupCopy } from './copy';
+import { FULL_ACCESS_IS_YOU, fullAccessHost, joinCopy, setupCopy } from './copy';
 import { readJoinContext, resetJoinContextForTests } from './joinContext';
 import { resetMemberSetupRequestsForTests, takeMemberSetupRequest, type SetupRun } from './setup';
 import {
@@ -136,6 +136,14 @@ function refusal(message: string, code: string, connectionId: string) {
 
 async function paste(text = MESSAGE) {
   fireEvent.change(screen.getByLabelText(joinCopy.invitation), { target: { value: text } });
+}
+
+/** The full-access warning's folded paragraphs (design.md 9.16): opens its Details, reads them. */
+function fullWarningParagraphs(warning: HTMLElement): string[] {
+  const toggle = within(warning).getByRole('button', { name: 'Details' });
+  if (toggle.getAttribute('aria-expanded') !== 'true') fireEvent.click(toggle);
+  const details = within(warning).getByTestId('crew-onboard-full-warning-details');
+  return Array.from(details.querySelectorAll('p'), (p) => p.textContent ?? '');
 }
 
 /** The joiner's Change lives in Advanced (Q4-44): open it there. */
@@ -1375,9 +1383,11 @@ describe('JoinDialog sets Crew up in the account (OW-9)', () => {
     await screen.findByTestId('crew-join-summary');
     const row = screen.getByRole('button', { name: joinCopy.agentHeading('hpc.ucsf.edu') });
     expect(row).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByTestId('crew-onboard-full-warning')).toHaveTextContent(
-      joinCopy.fullWarning('bob', 'hpc.ucsf.edu')
-    );
+    const warning = screen.getByTestId('crew-onboard-full-warning');
+    expect(warning).toHaveTextContent(joinCopy.fullWarning('bob', 'hpc.ucsf.edu'));
+    // The consent sentence in view, the rest behind Details until asked for (design.md 9.16).
+    expect(warning).not.toHaveTextContent(FULL_ACCESS_IS_YOU);
+    expect(fullWarningParagraphs(warning)).toEqual(joinCopy.fullWarningDetails());
     // Off has no warning.
     fireEvent.click(row);
     fireEvent.click(screen.getByRole('radio', { name: /^Off/ }));
@@ -1390,9 +1400,9 @@ describe('JoinDialog sets Crew up in the account (OW-9)', () => {
     const first = renderDialog();
     await paste();
     await screen.findByTestId('crew-join-summary');
-    expect(screen.getByTestId('crew-onboard-full-warning')).not.toHaveTextContent(
-      /act as the host/
-    );
+    const bobWarning = screen.getByTestId('crew-onboard-full-warning');
+    expect(fullWarningParagraphs(bobWarning).join(' ')).not.toMatch(/act as the host/);
+    expect(bobWarning).not.toHaveTextContent(/act as the host/);
     first.unmount();
     // Alice adds another computer of her own: full access there reaches lab's own files.
     mocks.previewInvitation.mockResolvedValue({ ...PREVIEW, invitee_username: 'alice' });
@@ -1401,6 +1411,9 @@ describe('JoinDialog sets Crew up in the account (OW-9)', () => {
     await screen.findByTestId('crew-join-summary');
     const warning = screen.getByTestId('crew-onboard-full-warning');
     expect(warning).toHaveTextContent(joinCopy.fullWarning('alice', 'hpc.ucsf.edu'));
+    // The host's sentence is folded with the rest of the warning, last.
+    expect(warning).not.toHaveTextContent(fullAccessHost('lab'));
+    expect(fullWarningParagraphs(warning).slice(-1)).toEqual([fullAccessHost('lab')]);
     expect(warning).toHaveTextContent(fullAccessHost('lab'));
   });
 

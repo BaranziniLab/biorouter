@@ -1,9 +1,12 @@
 import { useEffect, useState } from 'react';
 import { crewHostKeysRead, crewHostKeysTrust } from '../../../api';
 import type { HostKeyRead, HostKeyTrusted } from '../../../api';
+import { foldForHelp } from '../../../utils/proseFold';
 import { isBrowserSurface } from '../../../utils/surface';
 import { userActionHeaders } from '../../../utils/userAction';
 import { Button } from '../../ui/button';
+import { Disclosure } from '../../ui/disclosure';
+import { InfoTip } from '../../ui/info-tip';
 import { sanitizeDisplayText } from '../identity/displayText';
 import type { HostKeyLookup } from './hostKeyLookup';
 import { trustHostKeyCopy } from './trustHostKey.copy';
@@ -33,6 +36,45 @@ function refusalOf(error: unknown): Refusal {
 function bodyOf(target: HostKeyTarget) {
   const login = sanitizeDisplayText(target.login);
   return { host: target.host, port: target.port, ...(login ? { login } : {}) };
+}
+
+/**
+ * Why a key could not be read or trusted, as one line (owner, 2026-11-13; design.md 9.16): the
+ * message's first sentence, the reason, stays in view, and what follows it (what to do about it,
+ * "Add the key in a terminal of your own.") waits behind the info icon beside it, or under
+ * Details when it is longer than a tip holds. It is cut at its first sentence whatever its
+ * length, because the reason is what a refusal must show; every word stays reachable, and the
+ * tip's text sits inside the line, so a `role="alert"` line still announces all of it. The
+ * message is fixed copy or the daemon's own sentence, already sanitized.
+ */
+export function HostKeyMessage({
+  message,
+  className = 'text-supporting text-text-muted',
+  role,
+}: {
+  message: string;
+  className?: string;
+  role?: 'alert';
+}) {
+  const { lead, tip, details } = foldForHelp(message, 0);
+  return (
+    <>
+      <p className={className} role={role}>
+        <span>{lead}</span>
+        {tip ? (
+          <>
+            {' '}
+            <InfoTip label={trustHostKeyCopy.nextLabel} help={tip} />
+          </>
+        ) : null}
+      </p>
+      {details ? (
+        <Disclosure label={trustHostKeyCopy.more}>
+          <p className={className}>{details}</p>
+        </Disclosure>
+      ) : null}
+    </>
+  );
 }
 
 /**
@@ -97,9 +139,11 @@ export function TrustHostKey({
         </p>
       ) : null}
       {state === 'refused' ? (
-        <p className="text-supporting text-text-default" role="alert">
-          {message}
-        </p>
+        <HostKeyMessage
+          message={message}
+          className="text-supporting text-text-default"
+          role="alert"
+        />
       ) : null}
       {state !== 'trusted' && !settled ? (
         <div className="crew-onboard-row">

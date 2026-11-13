@@ -810,9 +810,19 @@ function AgentAccessFields({
         </Field>
       ) : null}
       {level === 'full' ? (
-        <Note tone="warning" icon={AlertTriangle} testId="crew-full-access-warning">
-          <p>{copy.fullWarning(account ?? 'you', server)}</p>
-          {hostsHere ? <p className="mt-1">{copy.fullWarningHost(workspace)}</p> : null}
+        // The consent sentence in view; the rest of what full access allows, and the host's
+        // sentence, word for word behind Details (owner, 2026-11-13).
+        <Note
+          tone="warning"
+          icon={AlertTriangle}
+          testId="crew-full-access-warning"
+          details={copy.fullWarningDetails(hostsHere ? workspace : null).map((text, index) => (
+            <p key={index} className={index > 0 ? 'mt-1' : undefined}>
+              {text}
+            </p>
+          ))}
+        >
+          <p>{copy.fullWarningLead(account ?? 'you', server)}</p>
         </Note>
       ) : null}
     </div>

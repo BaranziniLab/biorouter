@@ -287,6 +287,7 @@ function RemovePerson({ principalId, onClose }: { principalId: string; onClose()
       open
       title={confirmCopy.removePerson.title(personLabel(person, 'authority', dir), workspace)}
       description={confirmCopy.removePerson.description}
+      details={confirmCopy.removePerson.details}
       phrase={username}
       fieldLabel={confirmCopy.typeToConfirm(username)}
       confirmLabel={confirmCopy.removePerson.confirm(workspace)}

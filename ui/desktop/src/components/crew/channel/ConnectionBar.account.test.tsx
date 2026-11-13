@@ -109,6 +109,16 @@ describe('Add this computer again (AO-9)', () => {
     });
     const note = await screen.findByTestId('crew-rejoin');
     expect(note).toHaveTextContent(rejoinCopy.notRecognized('lab'));
+    // One line in view: the daemon's first sentence.
+    expect(rejoinCopy.notRecognized('lab')).toBe('lab no longer recognizes this computer.');
+    // Its second sentence says more than the button (the way back works only while the account is
+    // still a member), so it is behind the info icon beside the line, word for word the daemon's,
+    // and not in view at rest (design.md 9.16).
+    const help = within(note).getByRole('button', { name: 'About adding this computer again' });
+    expect(help).toHaveAccessibleDescription(
+      'Choose Add this computer again while you are still a member.'
+    );
+    expect(within(note).getByText(rejoinCopy.notRecognizedHelp).closest('.sr-only')).not.toBeNull();
     fireEvent.click(within(note).getByRole('button', { name: rejoinCopy.action }));
     await waitFor(() => expect(calls('POST', '/connections/conn-1/rejoin')).toHaveLength(1));
     // Connected already: no second connect.
@@ -116,8 +126,18 @@ describe('Add this computer again (AO-9)', () => {
     await waitFor(() => expect(rendered.crew().refresh).toHaveBeenCalled());
     rendered.update({ refreshErrorCode: null });
     const done = await screen.findByTestId('crew-rejoined');
-    expect(done).toHaveTextContent(rejoinCopy.done('lab'));
-    expect(done).toHaveTextContent(rejoinCopy.evicted('AAAA BBBB CCCC DDDD'));
+    // Back in, and the computer removed to make room, in view; that chats need access again is
+    // behind Details, word for word the command line's (design.md 9.16).
+    expect(within(done).getByText('This computer is back in lab.')).toBeVisible();
+    expect(within(done).getByText(rejoinCopy.evicted('AAAA BBBB CCCC DDDD'))).toBeVisible();
+    expect(done).not.toHaveTextContent(/need access again/);
+    fireEvent.click(within(done).getByRole('button', { name: 'Details' }));
+    expect(
+      within(done).getByText('Chats that had Crew access through it need access again.')
+    ).toBeVisible();
+    expect(rejoinCopy.done('lab')).toBe(
+      'This computer is back in lab. Chats that had Crew access through it need access again.'
+    );
   });
 
   it('connects first when the connection is down, then adds this computer again', async () => {
@@ -127,6 +147,9 @@ describe('Add this computer again (AO-9)', () => {
     );
     const note = await screen.findByTestId('crew-rejoin');
     expect(note).toHaveTextContent(rejoinCopy.keyMissing('lab'));
+    expect(rejoinCopy.keyMissing('lab')).toBe('This computer no longer has its key for lab.');
+    // The daemon's second sentence here only names the button, so nothing is folded beside it.
+    expect(within(note).queryByTestId('crew-rejoin-help')).toBeNull();
     fireEvent.click(within(note).getByRole('button', { name: rejoinCopy.action }));
     await waitFor(() => expect(calls('POST', '/connections/conn-1/rejoin')).toHaveLength(1));
     expect(rendered.crew().connect).toHaveBeenCalledWith({ userInitiated: true });
@@ -138,6 +161,8 @@ describe('Add this computer again (AO-9)', () => {
     renderBar(fakeConnection());
     const note = await screen.findByTestId('crew-rejoin');
     expect(note).toHaveTextContent(rejoinCopy.removedHere('lab'));
+    expect(rejoinCopy.removedHere('lab')).toBe('You removed this computer from lab.');
+    expect(within(note).queryByTestId('crew-rejoin-help')).toBeNull();
     fireEvent.click(within(note).getByRole('button', { name: rejoinCopy.action }));
     await waitFor(() => expect(needsRejoin('conn-1')).toBe(false));
     await waitFor(() => expect(screen.queryByTestId('crew-rejoin')).toBeNull());
