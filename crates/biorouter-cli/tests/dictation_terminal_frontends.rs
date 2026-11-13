@@ -355,7 +355,12 @@ fn classic_pty_insert_edit_enter_teaches_exactly_one_correction_pair() {
             ("❯", b"\x14"),
             ("REC", b"\x14"),
             ("Epas one", b"\x01\x0bEPAS1\r"),
-            ("ok", b"/exit\r"),
+            // Wait for the next prompt's raw mode, not the reply: "ok" prints before the
+            // editor turns raw mode back on, and keys typed in between reach it through the
+            // terminal's cooked mode, which turns Enter into a newline the editor inserts
+            // instead of submitting (seen on a loaded CI runner). The editor writes
+            // bracketed paste on just after it enters raw mode, once per prompt.
+            ("\x1b[?2004h", b"/exit\r"),
         ],
     );
     assert!(
