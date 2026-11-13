@@ -418,6 +418,12 @@ mod tests {
             // URL, which `PUT /config/custom-providers/{id}` gates.
             ("anthropic.rs", "&config.api_key_env"),
             ("openai.rs", "&config.api_key_env"),
+            // The readiness check (the configured flag Settings shows, moved
+            // here from `routes/utils.rs`) asks only whether a key is saved and
+            // sends nothing: a custom provider's own key, and the
+            // `<provider>_configured` marker a zero-config provider sets.
+            ("readiness.rs", "&loaded_provider.config.api_key_env"),
+            ("readiness.rs", "&configured_marker"),
         ];
         let closure_arg = regex::Regex::new(r#"\bread_key\(\s*"([^"]+)"\s*\)"#).unwrap();
         let (aws_routing, aws_credentials) = stored_aws_keys();
@@ -468,7 +474,10 @@ mod tests {
                         .map(|caps| caps[1].to_string()),
                 );
             }
-            if !path.ends_with("aws_stored_settings.rs") {
+            // `readiness.rs` reads the stores whole only to ask whether a
+            // provider's required keys are saved there and not merely in the
+            // environment; it uses no value.
+            if !path.ends_with("aws_stored_settings.rs") && !path.ends_with("readiness.rs") {
                 assert!(
                     !bulk.is_match(&code),
                     "{path} reads every key a store holds, so this scan cannot see which it \
