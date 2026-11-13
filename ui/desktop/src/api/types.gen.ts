@@ -11325,7 +11325,7 @@ export type CrewStartRunData = {
 
 export type CrewStartRunErrors = {
     /**
-     * `crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a request the daemon refuses (no posting grant, an empty or too long task, too many channels, four tasks already active, a model Crew cannot isolate) or the workspace refused (with `broker_code`); `crew_mode_mismatch` (`actual_mode`, `expected_mode`); `crew_institution_mismatch` (`institution_refusal` for the model); `crew_public_model_refused` (a public model and Private, restricted or institution-owned context; `workspace`); `crew_channel_not_in_workspace` (`workspace`); `crew_credential_store_unavailable` or `crew_credential_store_refused`
+     * `crew_request_invalid` for a body that is not JSON; `crew_request_refused` for a request the daemon refuses (no posting grant, an empty or too long task, too many channels, four tasks already active) or the workspace refused (with `broker_code`); `crew_mode_mismatch` (`actual_mode`, `expected_mode`); `crew_institution_mismatch` (`institution_refusal` for the model); `crew_public_model_refused` (a public model and Private, restricted or institution-owned context; `workspace`); `crew_channel_not_in_workspace` (`workspace`); `crew_credential_store_unavailable` or `crew_credential_store_refused`
      */
     400: CrewError;
     /**

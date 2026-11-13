@@ -358,7 +358,7 @@ async fn the_bridge_plan_is_never_wider_than_the_chat_or_the_request() {
         let request = model("codex", row.request, true);
         let tools = agent.list_tools(&session.id, None).await;
         let plan = agent
-            .prepare_coding_agent_bridge_plan(&request, &tools)
+            .prepare_coding_agent_bridge_plan(&session.id, &request, &tools)
             .await
             .expect("a bridge-shaped request has a plan");
         assert_eq!(plan.capability.tier(), row.expect, "{}", row.what);
