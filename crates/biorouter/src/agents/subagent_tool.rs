@@ -2869,6 +2869,55 @@ fn cross_affiliation_drop_note(dropped: &[(String, String)]) -> Option<String> {
     ))
 }
 
+/// The words DR-19's refusal opens with
+/// ([`crate::privacy::PrivacyRefusal::PublicChildOfPrivateParent`]). A person's
+/// surface recognises that refusal by them, under the spawn tool's name.
+///
+/// Owner decision 4 (2026-11-12): when a private chat asks for a subagent on a
+/// public model and is refused, the PERSON is also told that the whole chat can
+/// be made public from History ([`MAKE_CHAT_PUBLIC_FROM_HISTORY`]). The agent
+/// is not, and the refusal it reads is unchanged: a model must never be handed
+/// a way to lower a chat.
+///
+/// So that line is never part of the tool result, and it cannot be. A refused
+/// spawn is an `Err(ErrorData)`, and no field of an `ErrorData` is person-only:
+/// its display (`<code>: <message>(<data>)`, data included) is the `error` text
+/// the stored message keeps, and what the coding-agent transcript writes for a
+/// failed call. An `Ok` result could carry a user-audience block, but every
+/// `Ok` result is framed as untrusted tool output before a model reads it
+/// (`guard_tool_result`), which would turn Biorouter's own refusal into data.
+/// Instead each person's surface adds the line itself: the desktop in
+/// `ui/desktop/src/components/subagent/spawnRefusalHint.ts`, which
+/// `subagent_tool_person_hint_tests.rs` pins to these two constants, and the
+/// terminal through [`person_only_spawn_refusal_hint`].
+pub const PUBLIC_CHILD_REFUSAL_OPENING: &str =
+    "This chat is private, so it cannot start a subagent on a public model";
+
+/// The person-only line under DR-19's refusal.
+///
+/// It names both steps because neither is enough alone: History removes the
+/// chat's private marker, which is what lets a public model be chosen for it,
+/// but the refusal is about the chat's model, and the next turn on a private
+/// model marks the chat private again.
+///
+/// ⚠ Never put it in a tool result, a prompt, a system notice the agent sees, or
+/// anything else a model reads. `the_model_never_reads_the_person_only_line`
+/// holds the refusal to that.
+pub const MAKE_CHAT_PUBLIC_FROM_HISTORY: &str =
+    "If the whole chat may be public, you can make it public from History, then switch it to a public model.";
+
+/// The line a person's surface adds under a failed spawn whose error reads
+/// `error_text`, or `None` when it is not DR-19's refusal.
+///
+/// It reads the text alone, so a caller that knows the tool's name should also
+/// check it is the spawn tool (`agent::is_spawn_tool_call`): any tool can print
+/// these words, and the line is only true under Biorouter's own refusal.
+pub fn person_only_spawn_refusal_hint(error_text: &str) -> Option<&'static str> {
+    error_text
+        .contains(PUBLIC_CHILD_REFUSAL_OPENING)
+        .then_some(MAKE_CHAT_PUBLIC_FROM_HISTORY)
+}
+
 async fn overridden_task_config(
     task_config: TaskConfig,
     params: &SubagentParams,
@@ -10383,3 +10432,8 @@ decision_settings:
 #[cfg(test)]
 #[path = "subagent_tool_decision_tests.rs"]
 mod decision_tier_spawn_tests;
+
+/// Owner decision 4: DR-19's person-only line, and that the model never reads it.
+#[cfg(test)]
+#[path = "subagent_tool_person_hint_tests.rs"]
+mod person_hint_tests;
