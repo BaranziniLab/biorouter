@@ -51,7 +51,9 @@ const RATE: PricingData = {
 describe('formatTooltipMoney', () => {
   it('keeps card costs compact', () => {
     expect(formatTooltipMoney(0)).toBe('$0.00');
-    expect(formatTooltipMoney(0.0000042)).toBe('<$0.01');
+    expect(formatTooltipMoney(0.0000042)).toBe('$0.000004');
+    // The chat's total and its one model's row read one figure (live test: "$0.01" beside "<$0.01").
+    expect(formatTooltipMoney(0.0085)).toBe('$0.0085');
     expect(formatTooltipMoney(12.345)).toBe('$12.35');
     expect(formatTooltipMoney(null)).toBe('Unavailable');
     expect(formatTooltipMoney(Number.NaN)).toBe('Unavailable');

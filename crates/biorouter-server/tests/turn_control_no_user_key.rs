@@ -581,8 +581,8 @@ async fn a_subagents_turn_is_still_refused_and_the_refusal_says_why() {
 
 /// Item B on this daemon: the browser's plain Stop on a chat stops the
 /// subagents that chat started, as it does on the desktop's. SD-11's admission
-/// argument covers it — whoever may stop this chat's turn here may already ask
-/// it, through `/reply`, to `workspace_close` its children — while a subagent's
+/// argument covers it (whoever may stop this chat's turn here may already ask
+/// it, through `/reply`, to `workspace_close` its children), while a subagent's
 /// own chat is still refused, by the subagent rule, before anything is stopped.
 #[tokio::test(flavor = "multi_thread")]
 #[serial]

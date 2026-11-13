@@ -318,3 +318,91 @@ export const COST_CARD_COPY = {
       tokens
     ),
 } as const;
+
+/**
+ * The cost card's Limit section (`UsageLimitSection` in CostTracker.tsx), the footer trigger's
+ * limit state, and the composer notice a paused chat shows (`ChatInput`). Amounts come in already
+ * formatted (`formatLimitUsd`, `formatLimitTokens` in components/usage/usageLimits.ts). Where the
+ * monthly and default limits are set is Settings > App > Usage (`settingsLimitsCopy`).
+ */
+export const USAGE_LIMIT_COPY = {
+  section: 'Limit',
+  checking: 'Checking the limit…',
+  loadFailed: 'The limit could not be loaded.',
+  noLimit: 'No limit',
+  /** Where the limit in force comes from, under its value. */
+  source: {
+    chat: 'Set for this chat',
+    default: 'Default from Settings',
+    unlimited: 'No limit for this chat',
+    none: 'No default limit is set',
+  },
+  used: (used: string, limit: string) => `${used} of ${limit} used`,
+  /** "12,000 of 100,000 tokens used": the counts come in as numbers. */
+  usedTokens: (used: number, limit: number) =>
+    `${Math.round(used).toLocaleString()} of ${Math.round(limit).toLocaleString()} tokens used`,
+  usedOnly: (used: string) => `${used} used`,
+  /**
+   * Who the used line counts. A chat's limit counts the chat and every subagent it started, while
+   * "Cost of this chat" above it counts the chat's own requests only, so the line says so.
+   */
+  chatUsed: (reading: string) => `This chat and its subagents: ${reading}`,
+  /** In a subagent's chat the line is the parent's, which counts the parent and its subagents. */
+  parentUsed: (reading: string) => `The chat that started this one, with its subagents: ${reading}`,
+  month: (reading: string) => `This month: ${reading}`,
+  pausedChat: 'This chat reached its limit. Raise or remove it to continue.',
+  pausedMonth: 'The monthly limit is reached. Raise it in Settings to continue.',
+  /** Paused because the next request is estimated to pass the limit, not because it is reached. */
+  pausedChatNext: "The next request would pass this chat's limit. Raise or remove it to continue.",
+  pausedMonthNext:
+    'The next request would pass the monthly limit. Raise it in Settings to continue.',
+  /** "Next request: about $0.0074, $0.0035 left." Amounts come in formatted. */
+  nextRequest: (estimate: string, left: string) => `Next request: about ${estimate}, ${left} left.`,
+  /** One request alone is estimated past the whole limit. */
+  nextRequestTooBig: (estimate: string) =>
+    `One request is estimated at ${estimate}, more than the whole limit.`,
+  warnChat: 'This chat is near its limit.',
+  warnMonth: 'Usage is near the monthly limit.',
+  chatDollarInert: 'Nothing this chat used has a price, so its dollar limit cannot stop it.',
+  monthDollarInert: 'Nothing this month has a price, so the monthly dollar limit cannot stop it.',
+  parentChat: 'This chat counts toward the limit of the chat that started it.',
+  browserNote: 'Limits can be changed in the Biorouter desktop app.',
+  noChatYet: 'A limit can be set once the chat has started. Until then the default applies.',
+  setLimit: 'Set limit…',
+  changeLimit: 'Change limit…',
+  noLimitForChat: 'No limit',
+  noLimitForChatName: 'No limit for this chat',
+  useDefault: 'Use default',
+  fieldLabel: 'Limit for this chat',
+  /** The field's accessible name, which says the unit the visible label leaves to the switch. */
+  fieldNameDollars: 'Limit for this chat, in dollars',
+  fieldNameTokens: 'Limit for this chat, in tokens',
+  unitLabel: 'Limit unit',
+  dollars: 'Dollars',
+  tokens: 'Tokens',
+  save: 'Save',
+  cancel: 'Cancel',
+  invalidUsd: 'Enter an amount above $0.',
+  invalidUsdPrecision: 'Use at most 4 decimal places, such as 0.0125.',
+  invalidTokens: 'Enter a number of tokens above 0, such as 500k.',
+  /** The dollar unit is chosen for a chat whose model has no price. */
+  unpricedDollar:
+    "This chat's model has no price, so a dollar limit cannot stop it. Set a token limit instead.",
+  saveFailed: 'The limit could not be saved. Try again.',
+  needUser: 'Biorouter could not confirm this change came from you. Try again.',
+  openSettings: 'Open usage settings',
+  /** The footer trigger's name when there is no cost figure to show. */
+  triggerLabel: 'Usage and limit',
+  /** Added to the trigger's name for a chat near or at a limit. */
+  triggerWarn: 'near its usage limit',
+  triggerPaused: 'paused by a usage limit',
+  /** The one-line composer notice while a limit holds the chat. */
+  noticeChat: 'This chat reached its usage limit.',
+  noticeMonth: 'The monthly usage limit is reached.',
+  noticeChatNext: "This chat's next request would pass its usage limit.",
+  noticeMonthNext: 'The next request would pass the monthly usage limit.',
+  noticeChatAction: 'Change limit',
+  noticeMonthAction: 'Open usage settings',
+  /** Send's tooltip while the chat is paused. */
+  sendPaused: 'Paused by a usage limit',
+} as const;

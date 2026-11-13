@@ -908,7 +908,8 @@ struct RunCompletion {
     error: Option<String>,
     failure_kind: Option<String>,
     /// Did the run end in a privacy refusal ([`ScheduledRunRefused`]) — refused
-    /// before it built anything?
+    /// before it built anything, or was it ended by a usage limit
+    /// ([`ScheduledRunLimited`])? Either gives a counted firing back.
     refused: bool,
     /// Take back the firing this run was counted as — see
     /// [`Self::for_a_counted_run`].
@@ -923,6 +924,8 @@ impl RunCompletion {
             failure_kind: result.as_ref().err().map(|error| {
                 if let Some(abort) = error.downcast_ref::<ScheduledTurnFailure>() {
                     abort.kind.clone()
+                } else if error.downcast_ref::<ScheduledRunLimited>().is_some() {
+                    "usage_limit".to_string()
                 } else if let Some(provider) =
                     error.downcast_ref::<crate::providers::errors::ProviderError>()
                 {
@@ -931,10 +934,10 @@ impl RunCompletion {
                     "unknown".to_string()
                 }
             }),
-            refused: result
-                .as_ref()
-                .err()
-                .is_some_and(|e| e.downcast_ref::<ScheduledRunRefused>().is_some()),
+            refused: result.as_ref().err().is_some_and(|e| {
+                e.downcast_ref::<ScheduledRunRefused>().is_some()
+                    || e.downcast_ref::<ScheduledRunLimited>().is_some()
+            }),
             uncount: false,
         }
     }
@@ -946,9 +949,10 @@ impl RunCompletion {
     /// A refused run did not run, so it gives its firing back. Independent QA,
     /// 2026-09-14: `loop-81832e88` went 0 → 1 → 2 on refusals alone, so a `/loop`
     /// refused a hundred times auto-stopped without ever having run. Only a
-    /// [`ScheduledRunRefused`] is given back: a run that failed after it started
-    /// — a provider that could not be built, a turn that errored — spent the
-    /// firing, as it always has.
+    /// [`ScheduledRunRefused`] or a [`ScheduledRunLimited`] is given back (a
+    /// usage limit is the person's pause, whenever in the run it lands): a run
+    /// that failed after it started — a provider that could not be built, a
+    /// turn that errored — spent the firing, as it always has.
     fn for_a_counted_run(mut self, counted: bool) -> Self {
         self.uncount = counted && self.refused;
         self
@@ -2770,6 +2774,17 @@ async fn discard_unstarted_run_session(session_manager: &SessionManager, session
     }
 }
 
+/// The refusal for a scheduled run at the monthly usage limit, `None` below it
+/// or with no monthly limit set.
+async fn monthly_usage_limit_refusal(
+    session_manager: &SessionManager,
+    limits: &crate::config::usage::UsageLimits,
+) -> Option<&'static str> {
+    crate::agents::usage_limit::reached_monthly_limit_with(session_manager, limits)
+        .await
+        .map(|_| crate::agents::usage_limit::SCHEDULED_RUN_MONTH_LIMIT)
+}
+
 #[allow(clippy::too_many_lines)]
 async fn execute_job(
     job: ScheduledJob,
@@ -2795,6 +2810,17 @@ async fn execute_job(
         .map_err(|error| error.context(crate::workflow::runtime::WORKFLOW_NOT_STARTED))?;
 
     let agent = Agent::new();
+
+    // At the monthly usage limit no run starts (a run is spend nobody is
+    // watching). Refused before anything exists, so the firing is given back.
+    if let Some(refusal) = monthly_usage_limit_refusal(
+        agent.config.session_manager.as_ref(),
+        &crate::config::usage::UsageLimits::load(),
+    )
+    .await
+    {
+        return Err(ScheduledRunRefused(refusal).into());
+    }
 
     // Issue #56 (§9.3 C2 / R5). The creating chat's model first, the global
     // default only as a fallback — see [`resolve_scheduled_provider`].
@@ -3042,7 +3068,12 @@ async fn execute_job(
     if let Some(error) = stream_error {
         return Err(error);
     }
-    finish_scheduled_run(session.id, run_token.is_cancelled(), &conversation)
+    finish_scheduled_run(
+        session.id,
+        run_token.is_cancelled(),
+        agent.usage_limit_interrupted_reply(),
+        &conversation,
+    )
 }
 
 /// Why a scheduled run stopped (issue #148B).
@@ -3066,15 +3097,26 @@ async fn execute_job(
 ///   advancing `last_run`. That cursor is `daily-meditation`'s Chat Recall
 ///   discovery position, so a run in which the one thing it wanted to do was
 ///   refused silently consumed a day of the user's chats.
+/// * **Usage limit.** The usage limit gate ends a turn on a durable stop
+///   notice and a normal end of stream, with no `TurnAborted`. A run that
+///   crossed the default per-chat limit, its own or the monthly one part-way
+///   through was recorded as a success and advanced `last_run`, the same
+///   skipped window as the two above. The agent says whether its gate cut
+///   the reply short (`Agent::usage_limit_interrupted_reply`), because the
+///   transcript cannot: a run that FINISHED at or near a limit stores the same
+///   stop notice at its end, for the next request it leaves no room for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScheduledRunEnd {
     Completed,
     Cancelled,
     Refused,
     ApprovalExpired,
+    UsageLimit,
 }
 
-/// Classify a finished run from the two signals available at the boundary.
+/// Classify a finished run from the signals available at the boundary: the
+/// cancel token, the transcript, and whether the usage limit gate cut the
+/// reply short (`limit_interrupted`).
 ///
 /// The refusal arm keys on [`crate::privacy::refusal::TURN_REFUSAL_MARKER`],
 /// which exists for exactly this: a substring two independent readers agree on.
@@ -3092,7 +3134,11 @@ enum ScheduledRunEnd {
 /// the refusal as the *whole* reply — one assistant message and nothing else —
 /// which no run that did work can look like, because a run that did work talks
 /// about what it did. Exactly one assistant message, and it carries the marker.
-fn classify_scheduled_run(cancelled: bool, conversation: &Conversation) -> ScheduledRunEnd {
+fn classify_scheduled_run(
+    cancelled: bool,
+    limit_interrupted: bool,
+    conversation: &Conversation,
+) -> ScheduledRunEnd {
     if cancelled {
         return ScheduledRunEnd::Cancelled;
     }
@@ -3112,8 +3158,38 @@ fn classify_scheduled_run(cancelled: bool, conversation: &Conversation) -> Sched
     if an_approval_expired(conversation) {
         return ScheduledRunEnd::ApprovalExpired;
     }
+    // ⚠ **The agent's word, not the transcript's.** The gate's stop notice
+    // and the notice a turn that FINISHED at or near a limit stores at its end
+    // (for the request it leaves no room for) are the same host notice, so a
+    // transcript cannot tell a run cut short from a run that did its work. Only
+    // the gate marks the reply interrupted (`ReplyLimitState::mark_interrupted`).
+    // Text cannot forge it either: neither the model, a workflow author nor a
+    // chat the run reads can set it.
+    if limit_interrupted {
+        return ScheduledRunEnd::UsageLimit;
+    }
     ScheduledRunEnd::Completed
 }
+
+/// A run the usage limit gate ended part-way: the error [`finish_scheduled_run`]
+/// returns for [`ScheduledRunEnd::UsageLimit`]. A type so the completion can
+/// give the firing back, as it does for a run refused at the monthly limit
+/// before it started ([`RunCompletion::for_a_counted_run`]): a limit is the
+/// person's pause, and a capped `/loop` must not run out on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScheduledRunLimited;
+
+impl std::fmt::Display for ScheduledRunLimited {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "a usage limit stopped this run before it finished, so the schedule's last-run \
+             cursor was not advanced. To let it finish, raise or lift the limit in \
+             Settings > App > Usage.",
+        )
+    }
+}
+
+impl std::error::Error for ScheduledRunLimited {}
 
 /// Did a tool in this run stop because its permission prompt expired unanswered?
 ///
@@ -3153,9 +3229,10 @@ fn an_approval_expired(conversation: &Conversation) -> bool {
 fn finish_scheduled_run(
     session_id: String,
     cancelled: bool,
+    limit_interrupted: bool,
     conversation: &Conversation,
 ) -> Result<String> {
-    match classify_scheduled_run(cancelled, conversation) {
+    match classify_scheduled_run(cancelled, limit_interrupted, conversation) {
         ScheduledRunEnd::Completed => Ok(session_id),
         ScheduledRunEnd::Cancelled => Err(anyhow!(
             "the run was stopped, so it {RUN_CANCELLED_MARKER} rather than finishing; \
@@ -3173,6 +3250,7 @@ fn finish_scheduled_run(
              schedule from a chat, or give the workflow a permission mode that does not \
              need approval."
         )),
+        ScheduledRunEnd::UsageLimit => Err(ScheduledRunLimited.into()),
     }
 }
 
@@ -4490,11 +4568,11 @@ mod tests {
     fn a_cancelled_run_is_not_a_success_and_does_not_move_the_cursor() {
         let empty = Conversation::default();
         assert_eq!(
-            classify_scheduled_run(true, &empty),
+            classify_scheduled_run(true, false, &empty),
             ScheduledRunEnd::Cancelled
         );
 
-        let error = finish_scheduled_run("session-1".to_string(), true, &empty)
+        let error = finish_scheduled_run("session-1".to_string(), true, false, &empty)
             .expect_err("a cancelled run must not report success");
         assert!(
             error.to_string().contains(RUN_CANCELLED_MARKER),
@@ -4557,15 +4635,15 @@ mod tests {
             crate::privacy::refusal::TURN_REFUSAL_MARKER
         )));
         assert_eq!(
-            classify_scheduled_run(false, &refused),
+            classify_scheduled_run(false, false, &refused),
             ScheduledRunEnd::Refused
         );
-        assert!(finish_scheduled_run("session-1".to_string(), false, &refused).is_err());
+        assert!(finish_scheduled_run("session-1".to_string(), false, false, &refused).is_err());
 
         let mut ordinary = Conversation::default();
         ordinary.push(Message::assistant().with_text("Meditation complete."));
         assert_eq!(
-            classify_scheduled_run(false, &ordinary),
+            classify_scheduled_run(false, false, &ordinary),
             ScheduledRunEnd::Completed
         );
 
@@ -4575,7 +4653,7 @@ mod tests {
         );
         quoted_by_the_prompt.push(Message::assistant().with_text("Meditation complete."));
         assert_eq!(
-            classify_scheduled_run(false, &quoted_by_the_prompt),
+            classify_scheduled_run(false, false, &quoted_by_the_prompt),
             ScheduledRunEnd::Completed,
             "only the assistant's own words are evidence of a refusal"
         );
@@ -4605,7 +4683,7 @@ mod tests {
             crate::privacy::refusal::TURN_REFUSAL_MARKER
         )));
         assert_eq!(
-            classify_scheduled_run(false, &summarised),
+            classify_scheduled_run(false, false, &summarised),
             ScheduledRunEnd::Completed,
             "a run that did work and happened to quote a past refusal is not itself a refusal"
         );
@@ -4613,7 +4691,7 @@ mod tests {
         // And the consequence the classifier exists to protect: the cursor moves.
         let finished_at = Utc::now();
         let mut job = dormant_job("daily-meditation", Path::new("/does/not/matter.yaml"));
-        let outcome = finish_scheduled_run("session-1".to_string(), false, &summarised);
+        let outcome = finish_scheduled_run("session-1".to_string(), false, false, &summarised);
         RunCompletion::from_result(&outcome, finished_at).apply(&mut job);
         assert_eq!(
             job.last_run,
@@ -4630,8 +4708,131 @@ mod tests {
             crate::privacy::refusal::TURN_REFUSAL_MARKER
         )));
         assert_eq!(
-            classify_scheduled_run(false, &only_the_refusal),
+            classify_scheduled_run(false, false, &only_the_refusal),
             ScheduledRunEnd::Refused
+        );
+    }
+
+    /// The transcript a run the usage limit gate stopped leaves behind: work,
+    /// then the gate's host notice and nothing after it. A run that finished
+    /// and then stored the same notice for the request it leaves no room for
+    /// can end the same way, which is why the agent's flag decides.
+    fn usage_limit_stop_transcript(prefix: &str) -> Conversation {
+        let mut conversation = Conversation::default();
+        conversation.push(Message::user().with_text("Meditate over the last week of chats."));
+        conversation.push(Message::assistant().with_text("Reading the week's sessions."));
+        conversation.push(
+            Message::assistant()
+                .with_system_notification(
+                    crate::conversation::message::SystemNotificationType::InlineMessage,
+                    format!("{prefix}5,000,000 tokens used, of its limit of 5,000,000 tokens."),
+                )
+                .user_only(),
+        );
+        conversation
+    }
+
+    #[test]
+    fn a_run_a_usage_limit_stopped_is_not_a_success_and_gives_its_firing_back() {
+        use crate::agents::usage_limit::{CHAT_LIMIT_REACHED_PREFIX, MONTH_LIMIT_REACHED_PREFIX};
+        for prefix in [CHAT_LIMIT_REACHED_PREFIX, MONTH_LIMIT_REACHED_PREFIX] {
+            let stopped = usage_limit_stop_transcript(prefix);
+            assert_eq!(
+                classify_scheduled_run(false, true, &stopped),
+                ScheduledRunEnd::UsageLimit
+            );
+            let cursor = chrono::DateTime::parse_from_rfc3339("2026-08-20T00:00:00Z")
+                .unwrap()
+                .with_timezone(&Utc);
+            let mut job = dormant_job("daily-meditation", Path::new("/does/not/matter.yaml"));
+            job.last_run = Some(cursor);
+            job.run_count = 3;
+            let outcome = finish_scheduled_run("session-1".to_string(), false, true, &stopped);
+            assert!(outcome
+                .as_ref()
+                .unwrap_err()
+                .downcast_ref::<ScheduledRunLimited>()
+                .is_some());
+            let completion = RunCompletion::from_result(&outcome, Utc::now());
+            assert_eq!(completion.failure_kind.as_deref(), Some("usage_limit"));
+            completion.for_a_counted_run(true).apply(&mut job);
+            assert_eq!(job.last_run, Some(cursor), "the cursor stays where it was");
+            assert!(
+                job.last_error.is_some(),
+                "the stop is shown on the schedule"
+            );
+            assert_eq!(job.run_count, 2, "a counted firing is given back");
+        }
+    }
+
+    /// A run that did its work and then reached a limit, or left too little
+    /// for one more request, ends on the same stop notice: the turn's end
+    /// stores it for the next request. Its work is done, so it is a success
+    /// and the cursor moves.
+    #[test]
+    fn a_run_that_finished_at_its_limit_is_a_success() {
+        use crate::agents::usage_limit::{CHAT_LIMIT_REACHED_PREFIX, MONTH_LIMIT_REACHED_PREFIX};
+        for prefix in [CHAT_LIMIT_REACHED_PREFIX, MONTH_LIMIT_REACHED_PREFIX] {
+            let mut finished = Conversation::default();
+            finished.push(Message::user().with_text("Meditate over the last week of chats."));
+            finished.push(Message::assistant().with_text("Meditation complete."));
+            finished.push(
+                Message::assistant()
+                    .with_system_notification(
+                        crate::conversation::message::SystemNotificationType::InlineMessage,
+                        format!("{prefix}the next request would pass the limit."),
+                    )
+                    .user_only(),
+            );
+            assert_eq!(
+                classify_scheduled_run(false, false, &finished),
+                ScheduledRunEnd::Completed
+            );
+            assert_eq!(
+                finish_scheduled_run("session-1".to_string(), false, false, &finished).unwrap(),
+                "session-1"
+            );
+        }
+    }
+
+    #[test]
+    fn a_run_that_reads_an_old_usage_limit_notice_still_counts_as_work_done() {
+        use crate::agents::usage_limit::CHAT_LIMIT_REACHED_PREFIX;
+        // Quoted by the prompt, by the model, or read back from another chat
+        // through a tool: text, not the gate's host notice.
+        let mut quoted = Conversation::default();
+        quoted.push(Message::user().with_text(format!("{CHAT_LIMIT_REACHED_PREFIX}example")));
+        quoted.push(Message::user().with_tool_response(
+            "req-1",
+            Ok(rmcp::model::CallToolResult {
+                content: vec![rmcp::model::Content::text(format!(
+                    "{CHAT_LIMIT_REACHED_PREFIX}10 used, of its limit of 10."
+                ))],
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            }),
+        ));
+        quoted.push(Message::assistant().with_text(format!(
+            "One chat said \"{CHAT_LIMIT_REACHED_PREFIX}…\". Noted."
+        )));
+        assert_eq!(
+            classify_scheduled_run(false, false, &quoted),
+            ScheduledRunEnd::Completed
+        );
+        // A different host notice is not a stop either.
+        let mut warned = Conversation::default();
+        warned.push(Message::assistant().with_system_notification(
+            crate::conversation::message::SystemNotificationType::InlineMessage,
+            format!(
+                "{}4 used, of 5 (80%).",
+                crate::agents::usage_limit::CHAT_LIMIT_WARNING_PREFIX
+            ),
+        ));
+        warned.push(Message::assistant().with_text("Meditation complete."));
+        assert_eq!(
+            classify_scheduled_run(false, false, &warned),
+            ScheduledRunEnd::Completed
         );
     }
 
@@ -4672,11 +4873,11 @@ mod tests {
     fn an_expired_approval_is_not_a_success_and_does_not_move_the_cursor() {
         let expired = expired_approval_transcript();
         assert_eq!(
-            classify_scheduled_run(false, &expired),
+            classify_scheduled_run(false, false, &expired),
             ScheduledRunEnd::ApprovalExpired,
             "an approval that expired unanswered is not work done"
         );
-        assert!(finish_scheduled_run("session-1".to_string(), false, &expired).is_err());
+        assert!(finish_scheduled_run("session-1".to_string(), false, false, &expired).is_err());
 
         // The consequence, which is the finding: the discovery cursor must stay
         // where it is, and the failure must be visible on the schedule.
@@ -4685,7 +4886,7 @@ mod tests {
             .with_timezone(&Utc);
         let mut job = dormant_job("daily-meditation", Path::new("/does/not/matter.yaml"));
         job.last_run = Some(cursor);
-        let outcome = finish_scheduled_run("session-1".to_string(), false, &expired);
+        let outcome = finish_scheduled_run("session-1".to_string(), false, false, &expired);
         RunCompletion::from_result(&outcome, Utc::now()).apply(&mut job);
         assert_eq!(
             job.last_run,
@@ -4715,7 +4916,7 @@ mod tests {
             crate::agents::agent::EXPIRED_RESPONSE
         )));
         assert_eq!(
-            classify_scheduled_run(false, &summarised),
+            classify_scheduled_run(false, false, &summarised),
             ScheduledRunEnd::Completed,
             "prose about an expiry is not an expiry; only a tool response is"
         );
@@ -4733,7 +4934,7 @@ mod tests {
         ));
         worked.push(Message::assistant().with_text("Done."));
         assert_eq!(
-            classify_scheduled_run(false, &worked),
+            classify_scheduled_run(false, false, &worked),
             ScheduledRunEnd::Completed
         );
     }
@@ -5456,10 +5657,21 @@ mod tests {
             .and_then(|rest| rest.split("\n/// Why a scheduled run stopped").next())
             .expect("execute_job production body");
 
-        assert!(
-            execute.contains("finish_scheduled_run(session.id, run_token.is_cancelled()"),
-            "the run's outcome must be classified from the cancel token and the transcript"
-        );
+        let finish = execute
+            .split("finish_scheduled_run(")
+            .nth(1)
+            .and_then(|rest| rest.split(';').next())
+            .expect("execute_job classifies the run's end");
+        for signal in [
+            "run_token.is_cancelled()",
+            "agent.usage_limit_interrupted_reply()",
+            "&conversation",
+        ] {
+            assert!(
+                finish.contains(signal),
+                "the run's outcome must be classified from {signal}: {finish}"
+            );
+        }
         assert!(
             !execute.contains("Ok(session.id)"),
             "a scheduled run must not return success straight from the session id"
@@ -6834,5 +7046,67 @@ mod armed_standing_tests {
             .for_a_counted_run(true)
             .apply(&mut never_counted);
         assert_eq!(never_counted.run_count, 0, "saturates rather than wrapping");
+    }
+}
+
+#[cfg(test)]
+mod usage_limit_tests {
+    use super::*;
+    use crate::config::usage::UsageLimits;
+    use crate::session::SideUsageEntry;
+
+    async fn manager_with_month_spend(temp: &tempfile::TempDir, tokens: i64) -> SessionManager {
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let chat = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "spend".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        sm.apply_side_usage_event(SideUsageEntry {
+            event_key: "test:1".to_string(),
+            session_id: chat.id,
+            provider: "openai".to_string(),
+            model_id: "gpt-test".to_string(),
+            input_tokens: Some(tokens),
+            output_tokens: Some(0),
+        })
+        .await
+        .unwrap();
+        sm
+    }
+
+    #[tokio::test]
+    async fn a_run_at_the_monthly_limit_is_refused_and_gives_its_firing_back() {
+        let temp = tempfile::tempdir().unwrap();
+        let sm = manager_with_month_spend(&temp, 1_000).await;
+        let at_limit = UsageLimits {
+            monthly_token_limit: Some(1_000),
+            ..UsageLimits::default()
+        };
+        let refusal = monthly_usage_limit_refusal(&sm, &at_limit).await;
+        assert_eq!(
+            refusal,
+            Some(crate::agents::usage_limit::SCHEDULED_RUN_MONTH_LIMIT)
+        );
+
+        let completion = RunCompletion::from_result(
+            &Err(ScheduledRunRefused(refusal.unwrap()).into()),
+            Utc::now(),
+        )
+        .for_a_counted_run(true);
+        assert!(completion.uncount, "a refused run gives its firing back");
+
+        let below = UsageLimits {
+            monthly_token_limit: Some(10_000),
+            ..UsageLimits::default()
+        };
+        assert_eq!(monthly_usage_limit_refusal(&sm, &below).await, None);
+        assert_eq!(
+            monthly_usage_limit_refusal(&sm, &UsageLimits::default()).await,
+            None
+        );
     }
 }

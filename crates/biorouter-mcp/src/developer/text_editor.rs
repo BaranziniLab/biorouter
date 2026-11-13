@@ -24,6 +24,12 @@ fn ensure_trailing_newline(content: &mut String, existing: Option<&str>) {
 
 // Constants
 pub const LINE_READ_LIMIT: usize = 2000;
+/// The most characters one `view` hands the model, with or without a
+/// `view_range` (about 10k tokens, the agent's default inline limit for a tool
+/// result). Lines alone did not bound a view: a file of a few very long lines
+/// (a saved JSON result, a CSV of free-text columns) came back whole, and
+/// every later request re-sent it.
+pub const VIEW_MAX_CHARS: usize = 40_000;
 pub const MAX_DIFF_SIZE: usize = 1024 * 1024; // 1MB max diff size
 pub const MAX_FILES_IN_DIFF: usize = 100; // Maximum files in a multi-file diff
 
@@ -445,11 +451,68 @@ pub fn model_file_view(
 
 pub fn recommend_read_range(path: &Path, total_lines: usize) -> Result<Vec<Content>, ErrorData> {
     Err(ErrorData::new(ErrorCode::INTERNAL_ERROR, format!(
-        "File '{}' is {} lines long, recommended to read in with view_range (or searching) to get bite size content. If you do wish to read all the file, please pass in view_range with [1, {}] to read it all at once",
+        "File '{}' is {} lines long, recommended to read in with view_range (or searching) to get bite size content. If you do wish to read all the file, please pass in view_range with [1, {}] to read it all at once (one view returns at most {} characters, so a larger file has to be read in parts)",
         path.display(),
         total_lines,
-        total_lines
+        total_lines,
+        VIEW_MAX_CHARS
     ), None))
+}
+
+/// Characters lines `start_idx..end_idx` occupy in the model's copy: each
+/// line plus its newline. Matches [`model_file_view`] to within the `\r` of a
+/// CRLF file, which only ever makes this count low by one per line.
+fn range_chars(lines: &[&str], start_idx: usize, end_idx: usize) -> usize {
+    lines[start_idx..end_idx]
+        .iter()
+        .map(|line| line.chars().count() + 1)
+        .sum()
+}
+
+/// The refusal for a view over [`VIEW_MAX_CHARS`]: how big the slice is, and
+/// a range starting at the same line that does fit, or, when the first line
+/// alone is over the limit, how to read part of a line.
+fn recommend_narrower_range(
+    path: &Path,
+    lines: &[&str],
+    start_idx: usize,
+    end_idx: usize,
+    chars: usize,
+) -> Result<Vec<Content>, ErrorData> {
+    let mut used = 0usize;
+    let mut fit_end = start_idx;
+    for line in &lines[start_idx..end_idx] {
+        let next = used + line.chars().count() + 1;
+        if next > VIEW_MAX_CHARS {
+            break;
+        }
+        used = next;
+        fit_end += 1;
+    }
+    let first = start_idx + 1;
+    let suggestion = if fit_end > start_idx {
+        format!(
+            "View a narrower range, for example view_range [{first}, {fit_end}], or search the \
+             file with rg for the part you need."
+        )
+    } else {
+        format!(
+            "Line {first} alone is {} characters, so no line range fits. Read part of it with the \
+             shell instead, for example `sed -n '{first}p' FILE | cut -c1-20000`, or search the \
+             file with rg for the part you need.",
+            lines[start_idx].chars().count()
+        )
+    };
+    Err(ErrorData::new(
+        ErrorCode::INVALID_PARAMS,
+        format!(
+            "Lines {first}-{end_idx} of '{}' are {chars} characters, over the {VIEW_MAX_CHARS}-character \
+             limit for one view. {suggestion} A view's text stays in the conversation and is \
+             re-sent with every later request.",
+            path.display()
+        ),
+        None,
+    ))
 }
 
 /// Lists the contents of a directory with a maximum number of items
@@ -577,6 +640,10 @@ pub(crate) async fn text_editor_view_bounded(
     }
 
     let (start_idx, end_idx) = calculate_view_range(view_range, total_lines)?;
+    let chars = range_chars(&lines, start_idx, end_idx);
+    if chars > VIEW_MAX_CHARS {
+        return recommend_narrower_range(path, &lines, start_idx, end_idx, chars);
+    }
     let formatted = format_file_content(path, &lines, start_idx, end_idx, view_range);
     drop(lines);
     let for_model = model_file_view(content, start_idx, end_idx, total_lines);

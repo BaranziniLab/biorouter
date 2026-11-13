@@ -1045,6 +1045,7 @@ pub mod status;
 pub mod tool_bridge;
 pub mod tunnel;
 pub mod usage;
+pub mod usage_limit;
 pub mod utils;
 pub mod web_ui;
 pub mod workflow;
@@ -1075,6 +1076,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(session_subagents::routes(state.clone()))
         .merge(decisions::routes(state.clone()))
         .merge(usage::routes(state.clone()))
+        .merge(usage_limit::routes(state.clone()))
         .merge(schedule::routes(state.clone()))
         .merge(setup::routes(state.clone()))
         .merge(coding_agents::routes(state.clone()))

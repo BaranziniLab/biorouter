@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import ToolCallWithResponse, { logToString, summarizeToolCall } from './ToolCallWithResponse';
+import ToolCallWithResponse, {
+  logToString,
+  summarizeTodoSidecar,
+  summarizeToolCall,
+  TODO_SIDECAR_NOT_APPLIED,
+} from './ToolCallWithResponse';
 import { toolRowLabel } from './toolCallCopy';
 import type {
   NotificationEvent,
@@ -250,6 +255,130 @@ describe('summarizeToolCall', () => {
         },
       })
     ).toBe('Renaming “Check database connectivity”');
+  });
+
+  it('takes the title from the person\'s copy of a terse result, never the model\'s "ok"', () => {
+    // The model reads `ok #2`; the person's block carries the task JSON.
+    const result = {
+      status: 'success',
+      value: {
+        content: [
+          { type: 'text', text: 'ok #2', annotations: { audience: ['assistant'] } },
+          {
+            type: 'text',
+            text: JSON.stringify({
+              message: 'Updated item #2',
+              task: { id: '2', text: 'Verify browser access', status: 'completed' },
+            }),
+            annotations: { audience: ['user'] },
+          },
+        ],
+      },
+    };
+    expect(
+      summarizeToolCall(
+        { name: 'todo__todo_update', arguments: { id: '#2', status: 'completed' } },
+        result
+      )
+    ).toBe('Completing “Verify browser access”');
+  });
+
+  it('counts a batch of updates, by their shared outcome when they have one', () => {
+    const update = (args: Record<string, unknown>) =>
+      summarizeToolCall({ name: 'todo__todo_update', arguments: args });
+    expect(
+      update({
+        updates: [
+          { id: 2, status: 'completed' },
+          { id: '3', status: 'completed' },
+          { id: '#4', status: 'completed' },
+        ],
+      })
+    ).toBe('Completing 3 tasks');
+    expect(
+      update({
+        updates: [
+          { id: 2, status: 'completed' },
+          { id: 3, status: 'blocked' },
+        ],
+      })
+    ).toBe('Updating 2 tasks');
+    expect(
+      update({
+        updates: [
+          { id: 5, status: 'blocked' },
+          { id: 6, status: 'blocked' },
+        ],
+      })
+    ).toBe('Blocking 2 tasks');
+    // The top-level item and a batch combine.
+    expect(
+      update({ id: '1', status: 'completed', updates: [{ id: 2, status: 'completed' }] })
+    ).toBe('Completing 2 tasks');
+    // A one-entry batch reads as that entry.
+    expect(update({ updates: [{ id: '7', status: 'completed' }] })).toBe('Completing task #7');
+  });
+
+  it("says what a real call's ride-along todo field did to the checklist", () => {
+    expect(summarizeTodoSidecar({ code: 'x', todo: { done: [2, 3], add: ['report'] } })).toBe(
+      'Completing 2 tasks, adding 1 task'
+    );
+    expect(summarizeTodoSidecar({ todo: '{"blocked":[4]}' })).toBe('Blocking 1 task');
+    expect(summarizeTodoSidecar({ todo: { done: 5, plan: 'p' } })).toBe(
+      'Completing 1 task, updating the plan'
+    );
+    for (const todo of [undefined, null, {}, 'not json', [1, 2], { done: [] }]) {
+      expect(summarizeTodoSidecar({ code: 'x', todo })).toBeNull();
+    }
+    expect(summarizeTodoSidecar(undefined)).toBeNull();
+  });
+
+  it('says what the todo field did only once the call succeeded, since a failed call applies none of it', () => {
+    const request: ToolRequestMessageContent = {
+      type: 'toolRequest',
+      id: 'sidecar-1',
+      toolCall: {
+        status: 'success',
+        value: {
+          name: 'developer__shell',
+          arguments: { command: 'make test', todo: { done: [1, 2] } },
+        },
+      },
+    };
+    const response = (isError: boolean): ToolResponseMessageContent => ({
+      type: 'toolResponse',
+      id: 'sidecar-1',
+      toolResult: {
+        status: 'success',
+        value: { content: [{ type: 'text', text: isError ? 'exit 2' : 'ok' }], isError },
+      },
+    });
+    const row = (toolResponse?: ToolResponseMessageContent, turnActive = false) =>
+      render(
+        <ToolCallWithResponse
+          isCancelledMessage={false}
+          toolRequest={request}
+          toolResponse={toolResponse}
+          turnActive={turnActive}
+          onOpenArtifact={noopOpenArtifact}
+        />
+      );
+
+    const succeeded = row(response(false));
+    expect(screen.getByText(/Completing 2 tasks/)).toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(TODO_SIDECAR_NOT_APPLIED))).not.toBeInTheDocument();
+    succeeded.unmount();
+
+    const failed = row(response(true));
+    expect(screen.getByText('Failed to run make test')).toBeInTheDocument();
+    expect(screen.queryByText(/Completing 2 tasks/)).not.toBeInTheDocument();
+    expect(screen.getByText(new RegExp(TODO_SIDECAR_NOT_APPLIED))).toBeInTheDocument();
+    failed.unmount();
+
+    // Still running: nothing has been applied yet, so the row claims nothing.
+    row(undefined, true);
+    expect(screen.queryByText(/Completing 2 tasks/)).not.toBeInTheDocument();
+    expect(screen.queryByText(new RegExp(TODO_SIDECAR_NOT_APPLIED))).not.toBeInTheDocument();
   });
 
   it('never cuts a to-do item or a query in its middle (V2-R3-2)', () => {
@@ -1624,6 +1753,59 @@ describe('ToolCallWithResponse nested todo metadata', () => {
       },
     ]);
     expect(screen.getByText(`Blocked “${auditTitle}”`)).toBeInTheDocument();
+  });
+
+  it('names every item a batched update changed', () => {
+    renderNestedCalls([
+      {
+        ...record,
+        args: JSON.stringify({
+          updates: [
+            { id: '#1', status: 'completed' },
+            { id: '2', status: 'completed' },
+          ],
+        }),
+        todo_task: undefined,
+        todo_tasks: [
+          { id: '1', title: 'Load the cohort' },
+          { id: '2', title: 'Fit the model' },
+        ],
+      },
+    ]);
+    expect(
+      screen.getByText('Completed 2 tasks: “Load the cohort”, “Fit the model”')
+    ).toBeInTheDocument();
+  });
+
+  it('drops a batched title for an item the call did not name', () => {
+    renderNestedCalls([
+      {
+        ...record,
+        args: JSON.stringify({
+          updates: [
+            { id: '1', status: 'completed' },
+            { id: '2', status: 'blocked' },
+          ],
+        }),
+        todo_task: undefined,
+        todo_tasks: [
+          { id: '1', title: 'Load the cohort' },
+          { id: '9', title: 'UNVERIFIED_TITLE' },
+        ],
+      },
+    ]);
+    expect(screen.getByText('Updated 2 tasks: “Load the cohort”')).toBeInTheDocument();
+    expect(screen.queryByText(/UNVERIFIED_TITLE/)).toBeNull();
+  });
+
+  it('titles a one-item batch from its single task record', () => {
+    renderNestedCalls([
+      {
+        ...record,
+        args: JSON.stringify({ updates: [{ id: '1', status: 'completed' }] }),
+      },
+    ]);
+    expect(screen.getByText('Completed “Verify actual nested task 🧬”')).toBeInTheDocument();
   });
 
   it('cuts an item past any row width once, at its end', () => {

@@ -42,6 +42,16 @@ Set these at the root level of `config.yaml`.
 | `BIOROUTER_ALLOWLIST` | URL for allowed extensions | Valid URL | None | No |
 | `BIOROUTER_WORKFLOW_GITHUB_REPO` | GitHub repository for workflows | Format: `"org/repo"` | None | No |
 | `BIOROUTER_AUTO_COMPACT_THRESHOLD` | Percentage threshold at which biorouter automatically summarizes your session | Float between 0.0 and 1.0 (disabled at 0.0) | 0.8 | No |
+| `BIOROUTER_AUTO_COMPACT_MAX_TOKENS` | Token count at which a session is summarized whatever the window size; the trigger is the lower of this and the threshold | Whole number of tokens; 0 removes the ceiling | 200000 | No |
+| `BIOROUTER_LARGE_RESPONSE_TOKENS` | Largest tool result kept in the chat. A larger result is saved to a file under `.biorouter/tool-output/` in the working directory and replaced by a preview and the file's path | Whole number of tokens | 10000 | No |
+| `BIOROUTER_LARGE_RESPONSE_PREVIEW_TOKENS` | How much of a saved tool result stays in the chat as a head and tail preview | Whole number of tokens, below the limit above | 2000 | No |
+| `BIOROUTER_STATUS_CHECK_MIN_INTERVAL_SECONDS` | Shortest time between two identical status checks of a job that is still running. A check made sooner is held until the interval has passed (at most 120 seconds, and Stop ends the hold), never refused; a longer interval the job itself asks for wins. See [Waiting on jobs](../agent-loop/waiting-on-jobs.md) | Whole seconds; 0 turns the hold off | 30 | No |
+| `BIOROUTER_TOOL_RESULT_ELISION` | Whether older, larger tool results are replaced in the model's copy of the chat by a short note naming the file that holds their full text. Your transcript keeps the full text either way | `true` or `false`; `false` sends every result in full again | true | No |
+| `BIOROUTER_TOOL_RESULT_ELISION_PROTECT_TOKENS` | How much of the newest tool output, in estimated tokens, is always sent in full | A whole number of tokens | 40000 | No |
+| `BIOROUTER_TOOL_RESULT_ELISION_MIN_PRUNABLE_TOKENS` | How much older tool output must be ready to replace before any is replaced. Replacing in rare batches keeps the provider's prompt cache | A whole number of tokens | 25000 | No |
+| `BIOROUTER_TOOL_RESULT_ELISION_MIN_CHARS` | Shortest tool result that may be replaced | A whole number of characters | 1500 | No |
+| `BIOROUTER_MONITOR_STOP_SETTLE_SECS` | How long a turn a [decision-model monitor](../agent-loop/decision-models.md#a-stop-stops-the-chats-subagents) stopped waits for the subagents that stop stopped, so their work can be collected | A whole number of seconds | 30 | No |
+| `usage` | The monthly and default per-chat [usage limits](../agent-loop/usage-limits.md), a section with `monthly_token_limit`, `monthly_dollar_limit`, `default_session_token_limit` and `default_session_dollar_limit` | Each a positive number; missing, 0 or negative is unlimited | Unlimited | No |
 | `otel_exporter_otlp_endpoint` | OpenTelemetry protocol (OTLP) endpoint URL for [observability](environment-variables.md#opentelemetry-protocol-otlp) | URL (e.g. `http://localhost:4318`) | None | No |
 | `otel_exporter_otlp_timeout` | Export timeout in milliseconds for [observability](environment-variables.md#opentelemetry-protocol-otlp) | Integer (ms) | 10000 | No |
 | `SECURITY_COMMAND_POLICY` | Governs the auditable command policy engine. `off` disables it, leaving only the always-on catastrophic-command denylist | `"enforce"`, `"off"` | `"enforce"` | No |
@@ -187,4 +197,6 @@ This shows all active settings and their current values.
 - [Managed policy](../security/managed-policy.md) — the admin-owned tier that overrides user and project config for permissions and hooks.
 - [Secret storage](../security/secret-storage.md) — how the keyring is used and what happens when it is disabled.
 - [Permission modes](../security/permission-modes.md) — what the `BIOROUTER_MODE` values actually allow the agent to do.
+- [Usage limits](../agent-loop/usage-limits.md): the `usage` section, what happens at a limit and who may change one.
+- [Long-running tasks](../agent-loop/long-running-tasks.md): the compaction ceiling and the tool-result size cap.
 - [Extensions, skills, and MCP agents](../extensions/extensions-and-skills-guide.md) — background on the extensions you declare under the `extensions` key.

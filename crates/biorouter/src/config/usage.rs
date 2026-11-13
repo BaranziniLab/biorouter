@@ -1,33 +1,234 @@
 use super::base::Config;
 use serde::{Deserialize, Serialize};
 
-/// Optional, display-only monthly usage budget read from the `usage` section of
-/// `config.yaml`. Both fields are independent and either may be unset; nothing
-/// here is enforced — it only drives the summary gauge and its percent-used
-/// figures.
+/// The config key the [`UsageLimits`] live under. Writing or deleting it over
+/// HTTP needs the user-action proof (`routes::config_management`), the same
+/// proof `PUT /usage/limits` asks for, so a model holding only the daemon
+/// secret cannot raise or lift a limit through the generic config routes.
+pub const USAGE_LIMITS_CONFIG_KEY: &str = "usage";
+
+/// Is `key` the usage-limits section? One predicate for every verb.
+pub fn is_usage_limits_key(key: &str) -> bool {
+    key == USAGE_LIMITS_CONFIG_KEY
+}
+
+/// The `usage` section of `config.yaml`: the monthly limits and the default
+/// per-chat limits. Every field is optional and independent.
+///
+/// The monthly limits are ENFORCED: once the month's billed tokens (or priced
+/// dollars) reach one, no chat makes another model request until the person
+/// raises or lifts it or the next LOCAL month begins. The default per-chat
+/// limits apply to every chat that has no limit of its own (a chat's own
+/// limit lives on its row, see `agents::usage_limit`). Enforcement is in the
+/// reply loop; see `docs/agent-loop/usage-limits.md`.
+///
+/// A missing, zero or negative value means unlimited, so a stray `0` never
+/// stops every chat.
 ///
 /// ```yaml
 /// usage:
 ///   monthly_token_limit: 66000000
 ///   monthly_dollar_limit: 250.0
+///   default_session_token_limit: 5000000
+///   default_session_dollar_limit: 20.0
 /// ```
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct UsageLimits {
-    /// Subsidized monthly token allowance (e.g. the UCSF Versa limit).
+    /// Billed tokens allowed per local calendar month, over every chat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub monthly_token_limit: Option<i64>,
-    /// Monthly dollar budget.
+    /// Priced dollars allowed per local calendar month, over every chat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub monthly_dollar_limit: Option<f64>,
+    /// Billed tokens allowed per chat, for chats without their own limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_session_token_limit: Option<i64>,
+    /// Priced dollars allowed per chat, for chats without their own limit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_session_dollar_limit: Option<f64>,
+}
+
+/// One field of a [`UsageLimitsUpdate`]: leave it as stored, clear it
+/// (unlimited), or set it.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub enum LimitChange<T> {
+    #[default]
+    Keep,
+    Clear,
+    Set(T),
+}
+
+/// A partial write of the `usage` section. Fields left at
+/// [`LimitChange::Keep`] are untouched, and so is every key of the section
+/// this struct does not name.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct UsageLimitsUpdate {
+    pub monthly_token_limit: LimitChange<i64>,
+    pub monthly_dollar_limit: LimitChange<f64>,
+    pub default_session_token_limit: LimitChange<i64>,
+    pub default_session_dollar_limit: LimitChange<f64>,
+}
+
+fn positive_tokens(value: Option<i64>) -> Option<u64> {
+    value.filter(|v| *v > 0).map(|v| v as u64)
+}
+
+fn positive_usd(value: Option<f64>) -> Option<f64> {
+    value.filter(|v| v.is_finite() && *v > 0.0)
+}
+
+/// A number as a hand-edited `config.yaml` may spell it: a YAML number, or a
+/// string holding one (`"250"`, `"$250"`, `"5_000_000"`). A comma is not
+/// accepted: `0,50` could be fifty cents or fifty dollars.
+fn number_of(value: &serde_json::Value) -> Option<f64> {
+    let number = match value {
+        serde_json::Value::Number(number) => number.as_f64(),
+        serde_json::Value::String(text) => {
+            let text = text.trim();
+            let text = text.strip_prefix('$').unwrap_or(text).replace('_', "");
+            text.trim().parse::<f64>().ok()
+        }
+        _ => None,
+    };
+    number.filter(|number| number.is_finite())
+}
+
+/// Warn once per process for each distinct unreadable value, so a check
+/// before every model request does not repeat it.
+fn warn_once(problem: String) {
+    static WARNED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let Ok(mut warned) = WARNED.lock() else {
+        return;
+    };
+    if !warned.contains(&problem) {
+        tracing::warn!("{problem}");
+        warned.push(problem);
+    }
 }
 
 impl UsageLimits {
-    /// Load the configured limits, defaulting to "no limits" when the section is
-    /// absent or malformed — a bad budget knob must never break a usage report.
+    /// Load the configured limits. An absent section is "no limits". A
+    /// malformed one is read key by key, so one unreadable value leaves that
+    /// limit unset (warned once, naming the key) and every other limit in
+    /// force; a whole section that is not a mapping is no limits, warned the
+    /// same way. A bad budget knob must never break a usage report, and must
+    /// never silently lift the limits beside it.
     pub fn load() -> Self {
-        Config::global()
-            .get_param::<UsageLimits>("usage")
-            .unwrap_or_default()
+        Self::load_from(Config::global())
+    }
+
+    /// [`Self::load`] against a given config.
+    pub fn load_from(config: &Config) -> Self {
+        match config.get_param::<serde_json::Value>(USAGE_LIMITS_CONFIG_KEY) {
+            Ok(section) => Self::from_section(&section),
+            Err(super::base::ConfigError::NotFound(_)) => Self::default(),
+            Err(e) => {
+                warn_once(format!(
+                    "the `{USAGE_LIMITS_CONFIG_KEY}` section of config.yaml could not be read, \
+                     so no usage limit from it is in force: {e}"
+                ));
+                Self::default()
+            }
+        }
+    }
+
+    /// The limits in a `usage:` section, each key read on its own: a token
+    /// limit written as a float (`6.6e7`) is rounded, a number in a string is
+    /// read, and anything else unreadable leaves that one limit unset.
+    pub fn from_section(section: &serde_json::Value) -> Self {
+        if section.is_null() {
+            return Self::default();
+        }
+        let Some(map) = section.as_object() else {
+            warn_once(format!(
+                "the `{USAGE_LIMITS_CONFIG_KEY}` section of config.yaml is not a mapping, \
+                 so no usage limit from it is in force"
+            ));
+            return Self::default();
+        };
+        let read = |key: &str| -> Option<f64> {
+            let value = map.get(key).filter(|value| !value.is_null())?;
+            let number = number_of(value);
+            if number.is_none() {
+                warn_once(format!(
+                    "`{USAGE_LIMITS_CONFIG_KEY}.{key}` in config.yaml is not a number ({value}), \
+                     so that limit is not in force"
+                ));
+            }
+            number
+        };
+        let tokens = |key: &str| {
+            read(key).map(|value| value.round().clamp(i64::MIN as f64, i64::MAX as f64) as i64)
+        };
+        Self {
+            monthly_token_limit: tokens("monthly_token_limit"),
+            monthly_dollar_limit: read("monthly_dollar_limit"),
+            default_session_token_limit: tokens("default_session_token_limit"),
+            default_session_dollar_limit: read("default_session_dollar_limit"),
+        }
+    }
+
+    /// The monthly token limit in force, `None` when unlimited.
+    pub fn monthly_tokens(&self) -> Option<u64> {
+        positive_tokens(self.monthly_token_limit)
+    }
+
+    /// The monthly dollar limit in force, `None` when unlimited.
+    pub fn monthly_usd(&self) -> Option<f64> {
+        positive_usd(self.monthly_dollar_limit)
+    }
+
+    /// The default per-chat token limit in force, `None` when unlimited.
+    pub fn default_session_tokens(&self) -> Option<u64> {
+        positive_tokens(self.default_session_token_limit)
+    }
+
+    /// The default per-chat dollar limit in force, `None` when unlimited.
+    pub fn default_session_usd(&self) -> Option<f64> {
+        positive_usd(self.default_session_dollar_limit)
+    }
+
+    /// Merge `update` into the `usage` section of `config` in one locked
+    /// read-modify-write, and return the limits as stored afterwards. Keys of
+    /// the section this type does not know are kept.
+    pub fn apply_update(
+        config: &Config,
+        update: &UsageLimitsUpdate,
+    ) -> Result<Self, super::base::ConfigError> {
+        config.update_param::<serde_yaml::Value, _, _>(USAGE_LIMITS_CONFIG_KEY, |section| {
+            if !section.is_mapping() {
+                *section = serde_yaml::Value::Mapping(serde_yaml::Mapping::new());
+            }
+            let map = section.as_mapping_mut().expect("just made a mapping");
+            apply_change(map, "monthly_token_limit", update.monthly_token_limit);
+            apply_change(map, "monthly_dollar_limit", update.monthly_dollar_limit);
+            apply_change(
+                map,
+                "default_session_token_limit",
+                update.default_session_token_limit,
+            );
+            apply_change(
+                map,
+                "default_session_dollar_limit",
+                update.default_session_dollar_limit,
+            );
+        })?;
+        Ok(Self::load_from(config))
+    }
+}
+
+fn apply_change<T: Serialize>(map: &mut serde_yaml::Mapping, key: &str, change: LimitChange<T>) {
+    let key = serde_yaml::Value::String(key.to_string());
+    match change {
+        LimitChange::Keep => {}
+        LimitChange::Clear => {
+            map.remove(&key);
+        }
+        LimitChange::Set(value) => {
+            if let Ok(value) = serde_yaml::to_value(value) {
+                map.insert(key, value);
+            }
+        }
     }
 }
 
@@ -63,6 +264,103 @@ mod tests {
         assert_eq!(empty, UsageLimits::default());
         assert_eq!(empty.monthly_token_limit, None);
         assert_eq!(empty.monthly_dollar_limit, None);
+    }
+
+    #[test]
+    fn parses_default_session_limits() {
+        let limits: UsageLimits = serde_yaml::from_str(
+            "default_session_token_limit: 5000\ndefault_session_dollar_limit: 2.5",
+        )
+        .unwrap();
+        assert_eq!(limits.default_session_tokens(), Some(5000));
+        assert_eq!(limits.default_session_usd(), Some(2.5));
+        assert_eq!(limits.monthly_tokens(), None);
+    }
+
+    #[test]
+    fn non_positive_values_mean_unlimited() {
+        let limits = UsageLimits {
+            monthly_token_limit: Some(0),
+            monthly_dollar_limit: Some(-1.0),
+            default_session_token_limit: Some(-5),
+            default_session_dollar_limit: Some(f64::NAN),
+        };
+        assert_eq!(limits.monthly_tokens(), None);
+        assert_eq!(limits.monthly_usd(), None);
+        assert_eq!(limits.default_session_tokens(), None);
+        assert_eq!(limits.default_session_usd(), None);
+    }
+
+    #[test]
+    fn an_update_merges_into_the_section_and_keeps_unknown_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            "usage:\n  monthly_token_limit: 100\n  monthly_dollar_limit: 5.0\n  note: kept\n",
+        )
+        .unwrap();
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+
+        let stored = UsageLimits::apply_update(
+            &config,
+            &UsageLimitsUpdate {
+                monthly_token_limit: LimitChange::Set(200),
+                monthly_dollar_limit: LimitChange::Clear,
+                default_session_token_limit: LimitChange::Set(50),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(stored.monthly_token_limit, Some(200));
+        assert_eq!(stored.monthly_dollar_limit, None);
+        assert_eq!(stored.default_session_token_limit, Some(50));
+        assert_eq!(stored.default_session_dollar_limit, None);
+
+        let text = std::fs::read_to_string(&config_path).unwrap();
+        assert!(text.contains("note: kept"), "unknown key dropped: {text}");
+    }
+
+    fn load_yaml(text: &str) -> UsageLimits {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(&config_path, text).unwrap();
+        let config =
+            Config::new_with_file_secrets(&config_path, dir.path().join("secrets.yaml")).unwrap();
+        UsageLimits::load_from(&config)
+    }
+
+    /// A hand-edited section is read key by key: a float token limit is
+    /// rounded and a number in a string is read, so neither lifts the limits
+    /// beside it, and a value that is no number leaves only its own limit
+    /// unset.
+    #[test]
+    fn a_malformed_section_keeps_every_limit_it_can_read() {
+        let limits =
+            load_yaml("usage:\n  monthly_token_limit: 6.6e7\n  monthly_dollar_limit: 250.0\n");
+        assert_eq!(limits.monthly_tokens(), Some(66_000_000));
+        assert_eq!(limits.monthly_usd(), Some(250.0));
+
+        let limits = load_yaml(
+            "usage:\n  monthly_token_limit: '5_000_000'\n  monthly_dollar_limit: '$250'\n  \
+             default_session_token_limit: lots\n  default_session_dollar_limit: 2.5\n",
+        );
+        assert_eq!(limits.monthly_tokens(), Some(5_000_000));
+        assert_eq!(limits.monthly_usd(), Some(250.0));
+        assert_eq!(limits.default_session_tokens(), None, "not a number");
+        assert_eq!(limits.default_session_usd(), Some(2.5));
+
+        // A comma could be a decimal or a thousands separator: not guessed.
+        let limits = load_yaml("usage:\n  monthly_dollar_limit: '0,50'\n");
+        assert_eq!(limits.monthly_usd(), None);
+
+        assert_eq!(load_yaml("usage: 5\n"), UsageLimits::default());
+        assert_eq!(load_yaml("other: 1\n"), UsageLimits::default());
+        assert_eq!(
+            load_yaml("usage:\n  monthly_token_limit: ~\n"),
+            UsageLimits::default()
+        );
     }
 
     #[test]

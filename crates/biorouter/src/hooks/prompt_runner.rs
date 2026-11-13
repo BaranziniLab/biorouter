@@ -40,10 +40,44 @@ fn parse_verdict(text: &str) -> Option<JudgeVerdict> {
     serde_json::from_str::<JudgeVerdict>(candidate).ok()
 }
 
+/// The chat a hook payload names (`HookInput::session_id`), if any.
+fn payload_session_id(payload_json: &str) -> Option<String> {
+    let payload: serde_json::Value = serde_json::from_str(payload_json).ok()?;
+    payload
+        .get("session_id")?
+        .as_str()
+        .filter(|id| !id.is_empty())
+        .map(str::to_string)
+}
+
 /// Run a prompt hook against the given provider. Uses the provider's fast
 /// model when one is configured. Failures are non-blocking (failure-open).
+///
+/// The judge's usage is charged to the chat the payload names, as a side call.
 pub async fn run_prompt_hook(
     provider: Arc<dyn Provider>,
+    event: HookEvent,
+    judge_prompt: &str,
+    payload_json: &str,
+    timeout: Duration,
+) -> HookOutcome {
+    let session_id = payload_session_id(payload_json);
+    run_prompt_hook_in_session(
+        provider,
+        session_id.as_deref(),
+        event,
+        judge_prompt,
+        payload_json,
+        timeout,
+    )
+    .await
+}
+
+/// [`run_prompt_hook`] charging the judge's usage to `session_id`. With `None`
+/// the chat comes from the side-usage scope or `session_context`.
+pub async fn run_prompt_hook_in_session(
+    provider: Arc<dyn Provider>,
+    session_id: Option<&str>,
     event: HookEvent,
     judge_prompt: &str,
     payload_json: &str,
@@ -59,7 +93,16 @@ pub async fn run_prompt_hook(
     .await;
 
     let response = match completion {
-        Ok(Ok((message, _usage))) => message.as_concat_text(),
+        Ok(Ok((message, usage))) => {
+            crate::session::session_manager::side_usage::record_side_call_usage(
+                session_id,
+                crate::session::session_manager::side_usage::SideCall::PromptHook,
+                provider.get_name(),
+                &usage,
+            )
+            .await;
+            message.as_concat_text()
+        }
         Ok(Err(e)) => {
             return HookOutcome {
                 error: Some(format!("prompt hook provider error: {e}")),
@@ -96,6 +139,17 @@ pub async fn run_prompt_hook(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_payload_names_the_chat_to_charge() {
+        assert_eq!(
+            payload_session_id(r#"{"session_id": "20261110_1", "x": 1}"#).as_deref(),
+            Some("20261110_1")
+        );
+        assert_eq!(payload_session_id(r#"{"transcript_tail": "..."}"#), None);
+        assert_eq!(payload_session_id(r#"{"session_id": ""}"#), None);
+        assert_eq!(payload_session_id("not json"), None);
+    }
 
     #[test]
     fn parses_plain_verdict() {

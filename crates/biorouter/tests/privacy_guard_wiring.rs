@@ -635,6 +635,16 @@ const REGISTRY: &[Guard] = &[
                        is a real change of the reach decision and not a rewording",
             },
             Site {
+                file: "crates/biorouter-server/src/routes/usage_limit.rs",
+                counts: c(1, 1, 0),
+                kind: SiteKind::Guard,
+                what: "`reach_chat`, the one helper both `GET /sessions/{id}/usage-limit` and `PUT \
+                       /sessions/{id}/usage-limit` call before reading or writing the named \
+                       chat's limit. The ref is the module qualifier on the same line as the \
+                       call. The PUT then also needs the user-action proof on a keyed daemon, so \
+                       a model cannot lift its own limit; that proof is not this gate",
+            },
+            Site {
                 file: SESSION_REACH,
                 counts: c(3, 0, 0),
                 kind: SiteKind::Guard,

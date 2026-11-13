@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use crate::config::Config;
 use crate::conversation::Conversation;
-use crate::hooks::prompt_runner::run_prompt_hook;
+use crate::hooks::prompt_runner::run_prompt_hook_in_session;
 use crate::hooks::{HookDecision, HookEvent, DEFAULT_PROMPT_TIMEOUT_SECS};
 
 use super::Agent;
@@ -89,7 +89,7 @@ impl SelfCritiqueConfig {
     }
 }
 
-/// The judge rule handed to [`run_prompt_hook`]. The shared judge harness wraps
+/// The judge rule handed to [`run_prompt_hook_in_session`]. The shared judge harness wraps
 /// this so `{"ok": true}` means "the answer is sound, let it stand" and
 /// `{"ok": false, "reason": "…"}` means "revise, here is the concrete problem".
 ///
@@ -154,9 +154,29 @@ impl Agent {
     ///
     /// Reuses the goal-judge primitive: the transcript-tail rendering from
     /// [`crate::agents::goal`] and the LLM-as-judge runner
-    /// [`run_prompt_hook`], exactly as the `/goal` Stop-hook evaluator does.
-    pub(crate) async fn run_self_critique(&self, conversation: &Conversation) -> Option<String> {
+    /// [`run_prompt_hook_in_session`], exactly as the `/goal` Stop-hook
+    /// evaluator does.
+    ///
+    /// The judge's model call is charged to `session_id` as a side call. The
+    /// critique payload carries no session id, so without it the spend could
+    /// not be attributed, and the cost card and the usage limits would miss it.
+    ///
+    /// It is a model request, so it is skipped while a usage limit holds the
+    /// chat's next request (`Agent::usage_limit_hold`): the turn finishes, and
+    /// its end stores the stop notice that says why.
+    pub(crate) async fn run_self_critique_in_session(
+        &self,
+        session_id: Option<&str>,
+        conversation: &Conversation,
+    ) -> Option<String> {
         let tail = crate::agents::goal::transcript_tail(conversation)?;
+
+        if let Some(session_id) = session_id {
+            if self.usage_limit_hold(session_id).await.is_some() {
+                tracing::debug!("self-critique skipped: a usage limit is reached");
+                return None;
+            }
+        }
 
         let provider = match self.provider().await {
             Ok(provider) => provider,
@@ -167,8 +187,9 @@ impl Agent {
         };
 
         let payload_json = serde_json::json!({ "transcript_tail": tail }).to_string();
-        let outcome = run_prompt_hook(
+        let outcome = run_prompt_hook_in_session(
             Arc::clone(&provider),
+            session_id,
             HookEvent::Stop,
             &critique_rule(),
             &payload_json,

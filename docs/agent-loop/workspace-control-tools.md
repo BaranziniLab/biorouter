@@ -10,9 +10,9 @@ Everything below is read off `crates/biorouter/src/agents/workspace_extension.rs
 
 ## Conventions that apply to every tool
 
-**The name the model sees is prefixed, and for every tool but `subagent` that is the only spelling that works.** Extension tools reach dispatch as `{extension}__{tool}`, so the model's tool list holds `workspace__workspace_list`, `workspace__workspace_read_conversation`, and so on — `subagent` included, as `workspace__subagent`.
+**The name the model sees is prefixed, and for every tool but `subagent` that is the only spelling that works.** Extension tools reach dispatch as `{extension}__{tool}`, so the model's tool list holds `workspace__workspace_list`, `workspace__workspace_read_conversation`, and so on, `subagent` included, as `workspace__subagent`.
 
-For the `workspace_*` tools the prefixed form is the **only dispatchable spelling**. `ExtensionManager::dispatch_tool_call` does repair a stripped prefix, but only for a hardcoded three: `execute_code`, `read_module`, `search_modules`, and only when a `code_execution` extension is loaded. Everything else keeps the name it arrived with, and the next step is fatal to a bare workspace name: `get_client_for_tool` matches a client by `prefixed_name.starts_with(key)`, so a bare `workspace_close` *does* find the `workspace` client, but dispatch then strips the client name and requires a `__` separator — `"workspace_close".strip_prefix("workspace")` yields `_close`, the `__` strip fails, and the call dies with `Invalid tool name format: 'workspace_close'`.
+For the `workspace_*` tools the prefixed form is the **only dispatchable spelling**. `ExtensionManager::dispatch_tool_call` does repair a stripped prefix, but only for a hardcoded three: `execute_code`, `read_module`, `search_modules`, and only when a `code_execution` extension is loaded. Everything else keeps the name it arrived with, and the next step is fatal to a bare workspace name: `get_client_for_tool` matches a client by `prefixed_name.starts_with(key)`, so a bare `workspace_close` *does* find the `workspace` client, but dispatch then strips the client name and requires a `__` separator: `"workspace_close".strip_prefix("workspace")` yields `_close`, the `__` strip fails, and the call dies with `Invalid tool name format: 'workspace_close'`.
 
 Only `subagent` tolerates both spellings, and not at dispatch: `is_spawn_tool_call` (`agent.rs`) matches `subagent` and `workspace__subagent` alike, and `Agent::dispatch_tool_call` intercepts either form before the extension manager ever sees it. The bare names that appear in `is_workspace_tool_refused_for` and `is_parking_workspace_tool` are defensive *classification* — they make the subagent refusal and the parking exemption hold whatever spelling arrives — not evidence of a second dispatch path.
 
@@ -182,7 +182,7 @@ A single text block whose first line is `Session {id} ({name}, {SessionType})`, 
 
 ### The `max_chars` cap is pagination, not the size mechanism
 
-When the projection exceeds `max_chars` it is cut and the reply appends `… [clipped at N chars — narrow with `last` or `from_msg_uid`, or raise `max_chars` (up to 200000)…]`. Retaining an oversized payload in full is handled *outside* this tool, on the ordinary tool-result path: above roughly 25k tokens BR-6's `large_response_handler` writes the whole body to a handle under `<working_dir>/.biorouter/tool-output/` and returns a preview naming it; below that, BR-7 externalizes a tool response over 64 KB into the session blob table. The tool's own cap sits on top of both.
+When the projection exceeds `max_chars` it is cut and the reply appends `… [clipped at N chars; narrow with `last` or `from_msg_uid`, or raise `max_chars` (up to 200000)…]`. Retaining an oversized payload in full is handled *outside* this tool, on the ordinary tool-result path: above roughly 10k tokens BR-6's `large_response_handler` writes the whole body to a handle under `<working_dir>/.biorouter/tool-output/` and returns a preview naming it; below that, BR-7 externalizes a tool response over 64 KB into the session blob table. The tool's own cap sits on top of both.
 
 ### When to reach for it
 

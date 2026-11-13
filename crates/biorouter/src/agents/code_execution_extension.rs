@@ -7,6 +7,8 @@ use crate::agents::platform_tools;
 use crate::agents::tool_errors::{
     classify_call_result, classify_error_data, ToolError, ToolErrorKind,
 };
+use crate::tool_monitor::job_status::{self, JobActivity};
+use crate::tool_monitor::poll_pacing::{self, PacingMode};
 use anyhow::Result;
 use async_trait::async_trait;
 use base64::Engine as _;
@@ -32,10 +34,23 @@ use std::any::Any;
 use std::collections::{BTreeMap, BTreeSet};
 use std::rc::Rc;
 use std::sync::{Arc, Once};
+use std::time::Duration;
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 
 pub static EXTENSION_NAME: &str = "code_execution";
+
+mod wait;
+mod watch;
+
+/// End every job watch of a chat (`code_execution__watch_job`) without
+/// resuming it, as when the chat is deleted. A watch also notices a deleted
+/// chat on its own before its next check; this makes it immediate.
+pub use watch::cancel_watches_for_session as cancel_job_watches_for_session;
+/// Retire a chat's job watches whose job a status read outside the watch saw
+/// end (`tool_monitor::poll_pacing::after_dispatch` calls it for every
+/// dispatched status result).
+pub use watch::retire_watches_seen_ending as retire_job_watches_seen_ending;
 
 const MAX_JS_SOURCE_BYTES: usize = 256 * 1024;
 const MAX_JS_RESULT_BYTES: usize = 4 * 1024 * 1024;
@@ -153,16 +168,30 @@ impl ScriptFailure {
     }
 }
 
-/// Whether a dispatched name reaches this extension's `execute_code`: the
+/// Whether a dispatched name reaches one of this extension's tools that make
+/// tool calls of their own, `execute_code`, `wait_for` and `watch_job`: the
 /// prefixed form, or the bare one `ExtensionManager::prefixed_tool_name`
 /// resolves, because models strip prefixes. The agent loop asks this to decide
-/// which of its calls need a judge for the calls they make (QA finding F7).
+/// which of its calls need a judge for the calls they make (QA finding F7), and
+/// the monitors to decide whose `biorouter/tool-calls` records they may read.
+/// `wait_for` and `watch_job` are here for the first reason: without the judge
+/// their first status check would run unjudged (and every later check repeats
+/// that admitted call).
 pub(crate) fn is_execute_code_call(name: &str) -> bool {
-    name == "execute_code"
-        || name
-            .strip_prefix(EXTENSION_NAME)
-            .and_then(|rest| rest.strip_prefix("__"))
-            == Some("execute_code")
+    let bare = name
+        .strip_prefix(EXTENSION_NAME)
+        .and_then(|rest| rest.strip_prefix("__"))
+        .unwrap_or(name);
+    matches!(bare, "execute_code" | "wait_for" | "watch_job")
+}
+
+/// What one dispatched sub-call's result says about a job, for `wait_for`,
+/// and whether the poll pacing held it.
+#[derive(Debug, Clone, Copy, Default)]
+struct StatusReading {
+    activity: JobActivity,
+    hint_secs: Option<u64>,
+    held_secs: Option<u64>,
 }
 
 /// QA finding F7: the agent's judge for one script's calls, and the grades of
@@ -1927,6 +1956,121 @@ fn create_tool_function(full_tool_name: String) -> NativeFunction {
     )
 }
 
+/// Send one request down the script's call channel and block until the tool
+/// handler answers it. What a catalogue binding, `sleep()` and `wait_for()`
+/// share.
+fn request_from_handler(name: &str, payload: String) -> Result<String, ScriptFailure> {
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    CALL_TX
+        .with(|call_tx| {
+            call_tx
+                .borrow()
+                .as_ref()
+                .and_then(|sender| sender.send((name.to_string(), payload, tx)).ok())
+        })
+        .ok_or_else(|| ScriptFailure::from("Channel unavailable".to_string()))?;
+    rx.blocking_recv()
+        .map_err(|e| ScriptFailure::from(e.to_string()))
+        .and_then(|r| r)
+}
+
+/// Register `sleep(seconds)`, `wait_for({...})` and `watch_job({...})`, which
+/// the tool handler serves (see `wait` and `watch`): a script waits on a job
+/// inside one model turn, or sets a watch and ends.
+fn register_wait_functions(ctx: &mut Context, tools: &[ToolInfo]) -> Result<(), String> {
+    let sleep = NativeFunction::from_copy_closure(|_this, args, ctx| {
+        let seconds = args
+            .first()
+            .cloned()
+            .unwrap_or(JsValue::undefined())
+            .to_number(ctx)?;
+        if !seconds.is_finite() || seconds < 0.0 {
+            return Err(JsNativeError::typ()
+                .with_message("sleep(seconds) takes a number of seconds, 0 or more")
+                .into());
+        }
+        if seconds > wait::MAX_SLEEP_SECS as f64 {
+            return Err(JsNativeError::range()
+                .with_message(format!(
+                    "sleep() waits at most {} s per call; call it in a loop for a longer wait \
+                     (a script may wait {} s in all), or use wait_for() or watch_job()",
+                    wait::MAX_SLEEP_SECS,
+                    wait::SCRIPT_WAIT_BUDGET_SECS
+                ))
+                .into());
+        }
+        request_from_handler(wait::SLEEP_REQUEST, seconds.to_string())
+            .map(|slept| JsValue::from(slept.parse::<f64>().unwrap_or(seconds)))
+            .map_err(|error| error.into_js_error(ctx))
+    });
+    ctx.register_global_callable(js_string!("sleep"), 1, sleep)
+        .map_err(|e| format!("Failed to register sleep: {e}"))?;
+
+    let importable: Vec<String> = tools.iter().map(|tool| tool.full_name.clone()).collect();
+    let wait_for = NativeFunction::from_copy_closure_with_captures(
+        |_this, args, importable: &Vec<String>, ctx| {
+            let spec = args
+                .first()
+                .cloned()
+                .unwrap_or(JsValue::undefined())
+                .to_json(ctx)
+                .map_err(|e| JsNativeError::error().with_message(e.to_string()))?
+                .unwrap_or(Value::Null);
+            let tool = spec.get("tool").and_then(Value::as_str).unwrap_or_default();
+            // The same reach a binding has: only a tool this script could import.
+            if !importable.iter().any(|name| name == tool) {
+                return Err(JsNativeError::error()
+                    .with_message(format!(
+                        "wait_for: `{tool}` is not a tool this script can call. Name a tool \
+                         from the importable modules by its full name, server__tool."
+                    ))
+                    .into());
+            }
+            let payload =
+                serialize_json_limited(&spec, MAX_JS_TOOL_ARGUMENT_BYTES, "wait_for spec", false)
+                    .map_err(|error| JsNativeError::error().with_message(error))?;
+            request_from_handler(wait::WAIT_REQUEST, payload)
+                .map(|report| parse_result_to_js(&report, ctx))
+                .map_err(|error| error.into_js_error(ctx))
+        },
+        importable,
+    );
+    ctx.register_global_callable(js_string!("wait_for"), 1, wait_for)
+        .map_err(|e| format!("Failed to register wait_for: {e}"))?;
+
+    let importable: Vec<String> = tools.iter().map(|tool| tool.full_name.clone()).collect();
+    let watch_job = NativeFunction::from_copy_closure_with_captures(
+        |_this, args, importable: &Vec<String>, ctx| {
+            let spec = args
+                .first()
+                .cloned()
+                .unwrap_or(JsValue::undefined())
+                .to_json(ctx)
+                .map_err(|e| JsNativeError::error().with_message(e.to_string()))?
+                .unwrap_or(Value::Null);
+            let tool = spec.get("tool").and_then(Value::as_str).unwrap_or_default();
+            if spec.get("cancel").is_none() && !importable.iter().any(|name| name == tool) {
+                return Err(JsNativeError::error()
+                    .with_message(format!(
+                        "watch_job: `{tool}` is not a tool this script can call. Name a tool \
+                         from the importable modules by its full name, server__tool."
+                    ))
+                    .into());
+            }
+            let payload =
+                serialize_json_limited(&spec, MAX_JS_TOOL_ARGUMENT_BYTES, "watch_job spec", false)
+                    .map_err(|error| JsNativeError::error().with_message(error))?;
+            request_from_handler(wait::WATCH_REQUEST, payload)
+                .map(|report| parse_result_to_js(&report, ctx))
+                .map_err(|error| error.into_js_error(ctx))
+        },
+        importable,
+    );
+    ctx.register_global_callable(js_string!("watch_job"), 1, watch_job)
+        .map_err(|e| format!("Failed to register watch_job: {e}"))?;
+    Ok(())
+}
+
 /// What a script that ran to its end handed back.
 #[derive(Debug)]
 struct ScriptOutput {
@@ -2127,6 +2271,7 @@ fn run_js_module_inner(code: &str, tools: &[ToolInfo]) -> Result<ScriptOutput, S
 
     ctx.register_global_callable(js_string!("record_result"), 1, record_result)
         .map_err(|e| format!("Failed to register record_result: {e}"))?;
+    register_wait_functions(&mut ctx, tools)?;
 
     let mut by_server: BTreeMap<&str, Vec<&ToolInfo>> = BTreeMap::new();
     for tool in tools {
@@ -2207,21 +2352,51 @@ struct TodoTaskRecord {
     title: String,
 }
 
-fn todo_task_from_result(
+/// The checklist items a `todo__todo_update` call changed, for the UI's
+/// executed-calls view: one record per id the call named, in the order it
+/// named them, each verified against the result the Todo extension returned.
+///
+/// The call names its ids at the top level (`id`), in `updates[].id`, or
+/// both, and the result carries them as `task` (one item) or `tasks` (a
+/// batch). Only User-audience or untagged JSON content is read: the Todo
+/// extension keeps that JSON for the person while the model reads a terse
+/// line, and an assistant-only block is never projected into the person's
+/// view. An id the result does not confirm, with a non-empty title, is left
+/// out rather than guessed.
+fn todo_tasks_from_result(
     tool_name: &str,
     arguments: &str,
     result: &CallToolResult,
-) -> Option<TodoTaskRecord> {
+) -> Vec<TodoTaskRecord> {
     if tool_name != "todo__todo_update" || result.is_error.unwrap_or(false) {
-        return None;
+        return Vec::new();
     }
-    let arguments: Value = serde_json::from_str(arguments).ok()?;
-    let requested_id = arguments.get("id")?.as_str()?;
-    let id = requested_id.strip_prefix('#').unwrap_or(requested_id);
-    if id.is_empty() || id.len() > MAX_TODO_TASK_ID_BYTES {
-        return None;
+    let Ok(arguments) = serde_json::from_str::<Value>(arguments) else {
+        return Vec::new();
+    };
+    let named = arguments.get("id").into_iter().chain(
+        arguments
+            .get("updates")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|update| update.get("id")),
+    );
+    let mut ids: Vec<String> = Vec::new();
+    // A string id only, as the request spelled it: the projection names what
+    // the call asked for, never a coerced guess at it.
+    for id in named.filter_map(Value::as_str) {
+        let id = id.strip_prefix('#').unwrap_or(id).to_string();
+        if id.is_empty() || id.len() > MAX_TODO_TASK_ID_BYTES || ids.contains(&id) {
+            continue;
+        }
+        ids.push(id);
+    }
+    if ids.is_empty() {
+        return Vec::new();
     }
     let mut remaining = MAX_TODO_TASK_INPUT_BYTES;
+    let mut confirmed: Vec<(String, String)> = Vec::new();
     for content in result.content.iter().filter(|content| {
         content
             .audience()
@@ -2230,33 +2405,47 @@ fn todo_task_from_result(
         let RawContent::Text(text) = &content.raw else {
             continue;
         };
-        remaining = remaining.checked_sub(text.text.len())?;
+        let Some(left) = remaining.checked_sub(text.text.len()) else {
+            return Vec::new();
+        };
+        remaining = left;
         let Ok(value) = serde_json::from_str::<Value>(&text.text) else {
             continue;
         };
-        let Some(task) = value.get("task").and_then(Value::as_object) else {
-            continue;
-        };
-        if task.get("id").and_then(Value::as_str) != Some(id) {
-            continue;
+        let tasks = value
+            .get("task")
+            .into_iter()
+            .chain(
+                value
+                    .get("tasks")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten(),
+            )
+            .filter_map(Value::as_object);
+        for task in tasks {
+            let (Some(id), Some(title)) = (
+                task.get("id").and_then(Value::as_str),
+                task.get("text").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            if !title.trim().is_empty() && !confirmed.iter().any(|(seen, _)| seen == id) {
+                confirmed.push((id.to_string(), title.to_string()));
+            }
         }
-        let Some(title) = task.get("text").and_then(Value::as_str) else {
-            continue;
-        };
-        if title.trim().is_empty() {
-            continue;
-        }
-        let title = if title.len() <= MAX_TODO_TASK_TITLE_BYTES {
-            title.to_string()
-        } else {
-            truncate_record_text(title, MAX_TODO_TASK_TITLE_BYTES - '…'.len_utf8())
-        };
-        return Some(TodoTaskRecord {
-            id: id.to_string(),
-            title,
-        });
     }
-    None
+    ids.into_iter()
+        .filter_map(|id| {
+            let (_, title) = confirmed.iter().find(|(seen, _)| *seen == id)?;
+            let title = if title.len() <= MAX_TODO_TASK_TITLE_BYTES {
+                title.clone()
+            } else {
+                truncate_record_text(title, MAX_TODO_TASK_TITLE_BYTES - '…'.len_utf8())
+            };
+            Some(TodoTaskRecord { id, title })
+        })
+        .collect()
 }
 
 /// Truncate `text` to at most `max_bytes` bytes on a char boundary, marking
@@ -2302,6 +2491,10 @@ struct ToolCallRecord {
     /// Presentation-only projection of a matching, user-visible Todo result.
     #[serde(skip_serializing_if = "Option::is_none")]
     todo_task: Option<TodoTaskRecord>,
+    /// The same projection for a batched `todo_update` that changed more than
+    /// one item (`updates`); `todo_task` is then absent.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    todo_tasks: Vec<TodoTaskRecord>,
     #[serde(skip_serializing_if = "Option::is_none")]
     operation: Option<OperationOutcome>,
 }
@@ -2316,6 +2509,7 @@ impl ToolCallRecord {
             failure: None,
             result_bytes: Some(result_bytes),
             todo_task: None,
+            todo_tasks: Vec::new(),
             operation: None,
         }
     }
@@ -2344,6 +2538,7 @@ impl ToolCallRecord {
             }),
             result_bytes: None,
             todo_task: None,
+            todo_tasks: Vec::new(),
             operation: None,
         }
     }
@@ -2388,6 +2583,10 @@ struct CollectedArtifacts {
     /// from their FULL arguments — a record's `args` is truncated and a record
     /// past the budget is dropped, so the records cannot be summed for this.
     code_delta: CodeDeltaTally,
+    /// Status checks the poll pacing held (`tool_monitor::poll_pacing`), and
+    /// for how many seconds in all. Reported once in the script's result.
+    held_checks: usize,
+    held_seconds: u64,
 }
 
 impl CollectedArtifacts {
@@ -2484,6 +2683,20 @@ impl CollectedArtifacts {
              in place, so the error above is not theirs: fix what failed and run only what \
              still needs to run, rather than redoing their work."
         ))
+    }
+
+    /// What the script's result says when the poll pacing held some of its
+    /// status checks (`tool_monitor::poll_pacing`), or `None`.
+    fn held_checks_note(&self) -> Option<String> {
+        (self.held_checks > 0).then(|| {
+            format!(
+                "Biorouter held {} repeated status check(s) in this script for {} s in all, \
+                 because the same check of a running job had run less than its interval \
+                 earlier. Every model turn re-reads the whole conversation: wait inside one \
+                 script with wait_for() or sleep() instead of checking again from a new turn.",
+                self.held_checks, self.held_seconds
+            )
+        })
     }
 
     /// A finished sub-call: its record, and, when it succeeded, the file edit
@@ -2815,6 +3028,11 @@ impl CodeExecutionClient {
                     4. Chain results: use output from one tool as input to the next.
 
                 Never call read_module for a tool whose complete signature was returned by search_modules.
+
+                Waiting on a long-running job: every model turn re-reads the whole conversation, so do not
+                return to the model just to check on it. Call wait_for once, or wait inside one script with
+                wait_for() or sleep() and a status call, and return only the final status. For a job that may
+                run longer than a few minutes, call watch_job and end your turn: the chat resumes by itself.
             "#}.to_string()),
         };
 
@@ -2935,27 +3153,7 @@ impl CodeExecutionClient {
         // agent-loop dispatch whose scope was lost (a defect, and every call the
         // script makes would go past the permission system), and the second
         // refuses the whole script rather than running it unjudged.
-        let judge = match crate::agents::script_call_gate::judge_for(session_id) {
-            crate::agents::script_call_gate::ScriptJudging::By(gate) => {
-                let risks = crate::permission::tool_risk::ToolRiskRegistry::new();
-                // Graded from the exact list the script's imports are built from,
-                // so every call it can make has its own tool's grade.
-                risks.refresh_from_tools(&catalogue);
-                Some(ScriptJudge { gate, risks })
-            }
-            crate::agents::script_call_gate::ScriptJudging::PersonDriven => None,
-            crate::agents::script_call_gate::ScriptJudging::JudgeLost => {
-                tracing::error!(
-                    counter.biorouter.script_call_judge_lost = 1,
-                    session = %session_id,
-                    "an execute_code call dispatched by the agent loop reached the handler with \
-                     no script-call judge installed; refusing the script rather than running its \
-                     tool calls unjudged (a task-local does not survive a tokio::spawn — see \
-                     agents::script_call_gate)"
-                );
-                return Err(crate::agents::script_call_gate::JUDGE_LOST_REFUSAL.to_string());
-            }
-        };
+        let judge = Self::script_judge(session_id, &catalogue)?;
         // …and whether a person can be asked at all. Also a task-local, also
         // lost across the spawn: without this a scheduled run's script would
         // park an ask nobody can answer until its time-to-live, where every other
@@ -2976,6 +3174,7 @@ impl CodeExecutionClient {
             self.context.extension_manager.clone(),
             Arc::clone(&collected_artifacts),
             cancellation_token.clone(),
+            Some(watch::host_for(session_id, &self.context.session_manager)),
         );
         let tool_handler = tokio::spawn(crate::native_client::carry(async move {
             if no_human_surface {
@@ -3001,7 +3200,11 @@ impl CodeExecutionClient {
 
         match js_result {
             Ok(output) => {
-                let text = script_result_text(&output, collected.completed_call_count());
+                let mut text = script_result_text(&output, collected.completed_call_count());
+                if let Some(note) = collected.held_checks_note() {
+                    text.push('\n');
+                    text.push_str(&note);
+                }
                 let mut contents = vec![Content::text(text)];
                 contents.append(&mut collected.content);
                 let mut result = CallToolResult::success(contents);
@@ -3380,6 +3583,26 @@ impl CodeExecutionClient {
         error: String,
         response_tx: tokio::sync::oneshot::Sender<Result<String, ScriptFailure>>,
     ) {
+        Self::record_refusal(
+            collected_artifacts,
+            tool_name,
+            arguments,
+            failure_kind,
+            user_note,
+        )
+        .await;
+        let _ = response_tx.send(Err(error.into()));
+    }
+
+    /// The executed-calls record of a refused sub-call (see
+    /// [`Self::refuse_sub_call`]).
+    async fn record_refusal(
+        collected_artifacts: &Arc<Mutex<CollectedArtifacts>>,
+        tool_name: &str,
+        arguments: &str,
+        failure_kind: &'static str,
+        user_note: Option<&str>,
+    ) {
         collected_artifacts
             .lock()
             .await
@@ -3389,7 +3612,6 @@ impl CodeExecutionClient {
                 user_note,
                 failure_kind,
             ));
-        let _ = response_tx.send(Err(error.into()));
     }
 
     /// QA finding F7: put one script call to the agent's judge, if there is one.
@@ -3444,6 +3666,9 @@ impl CodeExecutionClient {
     /// Returns the script-facing result separately from user-visible telemetry.
     /// Error text and the optional Todo title come only from User-audience or
     /// untagged content, never from the assistant-facing value sent to the script.
+    /// The tests' entry point; production goes through
+    /// [`Self::dispatch_and_record`].
+    #[cfg(test)]
     #[allow(clippy::too_many_arguments)]
     async fn dispatch_sub_call(
         session_id: &str,
@@ -3457,8 +3682,45 @@ impl CodeExecutionClient {
         Result<String, ScriptFailure>,
         &'static str,
         Option<String>,
-        Option<TodoTaskRecord>,
+        Vec<TodoTaskRecord>,
         Option<OperationOutcome>,
+    ) {
+        let (outcome, _reading) = Self::dispatch_sub_call_observed(
+            session_id,
+            cap,
+            tool_name,
+            arguments,
+            extension_manager,
+            collected_artifacts,
+            cancellation_token,
+            PacingMode::DelayQuietly,
+        )
+        .await;
+        outcome
+    }
+
+    /// [`Self::dispatch_sub_call`], plus what the result says about a job
+    /// (for `wait_for`) and whether the poll pacing held the call. `pacing`
+    /// is how a held call is reported (`tool_monitor::poll_pacing`).
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
+    async fn dispatch_sub_call_observed(
+        session_id: &str,
+        cap: crate::privacy::CallCapability,
+        tool_name: &str,
+        arguments: &str,
+        extension_manager: Option<&std::sync::Weak<crate::agents::ExtensionManager>>,
+        collected_artifacts: &Arc<Mutex<CollectedArtifacts>>,
+        cancellation_token: &CancellationToken,
+        pacing: PacingMode,
+    ) -> (
+        (
+            Result<String, ScriptFailure>,
+            &'static str,
+            Option<String>,
+            Vec<TodoTaskRecord>,
+            Option<OperationOutcome>,
+        ),
+        StatusReading,
     ) {
         // Issue #141, as DEFENCE IN DEPTH — not as the path the model takes.
         //
@@ -3478,20 +3740,26 @@ impl CodeExecutionClient {
         // depend on a live manager: the tool would not be there either way.
         if platform_tools::is_platform_tool_name(tool_name) {
             return (
-                Err(agent_loop_tool_refusal(tool_name).into()),
-                "agent_loop_tool",
-                None,
-                None,
-                None,
+                (
+                    Err(agent_loop_tool_refusal(tool_name).into()),
+                    "agent_loop_tool",
+                    None,
+                    Vec::new(),
+                    None,
+                ),
+                StatusReading::default(),
             );
         }
         let Some(manager) = extension_manager.and_then(std::sync::Weak::upgrade) else {
             return (
-                Err("Extension manager not available".to_string().into()),
-                "unavailable",
-                None,
-                None,
-                None,
+                (
+                    Err("Extension manager not available".to_string().into()),
+                    "unavailable",
+                    None,
+                    Vec::new(),
+                    None,
+                ),
+                StatusReading::default(),
             );
         };
         let tool_call = CallToolRequestParams {
@@ -3504,43 +3772,62 @@ impl CodeExecutionClient {
             .dispatch_tool_call(session_id, tool_call, cap, cancellation_token.clone())
             .await
         {
-            Ok(dispatch_result) => match dispatch_result.result.await {
+            // Awaited on this task, so the pacing mode scopes the dispatch's
+            // own future (a task-local does not cross a spawn).
+            Ok(dispatch_result) => match poll_pacing::with_mode(pacing, dispatch_result.result)
+                .await
+            {
                 Ok(result) => {
+                    let reading = StatusReading {
+                        activity: job_status::activity_of_result(tool_name, &result),
+                        hint_secs: job_status::poll_hint_seconds(&result),
+                        held_secs: poll_pacing::held_seconds_in(&result),
+                    };
                     let (value, kind, user) =
                         Self::completed_sub_call_outcome(tool_name, &result, collected_artifacts)
                             .await;
-                    let todo_task = value
-                        .as_ref()
-                        .ok()
-                        .and_then(|_| todo_task_from_result(tool_name, arguments, &result));
+                    let todo_tasks = if value.is_ok() {
+                        todo_tasks_from_result(tool_name, arguments, &result)
+                    } else {
+                        Vec::new()
+                    };
                     (
-                        value,
-                        kind,
-                        user,
-                        todo_task,
-                        OperationOutcome::from_call(&result),
+                        (
+                            value,
+                            kind,
+                            user,
+                            todo_tasks,
+                            OperationOutcome::from_call(&result),
+                        ),
+                        reading,
                     )
                 }
                 Err(e) => {
                     let provenance = ErrorProvenance::from(classify_error_data(&e));
                     (
-                        Err(ScriptFailure {
-                            message: format!("Tool error from {tool_name}: {}", e.message),
-                            provenance: Some(provenance),
-                        }),
-                        provenance.kind.as_str(),
-                        None,
-                        None,
-                        None,
+                        (
+                            Err(ScriptFailure {
+                                message: format!("Tool error from {tool_name}: {}", e.message),
+                                provenance: Some(provenance),
+                            }),
+                            provenance.kind.as_str(),
+                            None,
+                            Vec::new(),
+                            None,
+                        ),
+                        StatusReading::default(),
                     )
                 }
             },
             Err(e) => (
-                Err(format!("Dispatch error from {tool_name}: {e}").into()),
-                "dispatch_error",
-                None,
-                None,
-                None,
+                (
+                    Err(format!("Dispatch error from {tool_name}: {e}").into()),
+                    "dispatch_error",
+                    None,
+                    Vec::new(),
+                    None,
+                ),
+                StatusReading::default(),
             ),
         }
     }
@@ -3709,6 +3996,212 @@ impl CodeExecutionClient {
         }
     }
 
+    /// Dispatch one ADMITTED sub-call and record it: the size limit, the
+    /// attribution of its error to its tool, and its executed-calls record.
+    /// What a script's call and each `wait_for` check share after admission.
+    #[allow(clippy::too_many_arguments)]
+    async fn dispatch_and_record(
+        session_id: &str,
+        cap: crate::privacy::CallCapability,
+        tool_name: &str,
+        arguments: &str,
+        extension_manager: Option<&std::sync::Weak<crate::agents::ExtensionManager>>,
+        collected_artifacts: &Arc<Mutex<CollectedArtifacts>>,
+        cancellation_token: &CancellationToken,
+        pacing: PacingMode,
+    ) -> (Result<String, ScriptFailure>, StatusReading) {
+        let ((result, mut failure_kind, user_error, mut todo_tasks, operation), reading) =
+            Self::dispatch_sub_call_observed(
+                session_id,
+                cap,
+                tool_name,
+                arguments,
+                extension_manager,
+                collected_artifacts,
+                cancellation_token,
+                pacing,
+            )
+            .await;
+        let result = result.and_then(|value| {
+            if value.len() > MAX_JS_TOOL_RESULT_BYTES {
+                failure_kind = "result_too_large";
+                Err(format!("Tool result exceeds the {MAX_JS_TOOL_RESULT_BYTES} byte limit").into())
+            } else {
+                Ok(value)
+            }
+        });
+        // Centralized attribution: whichever path failed, the error the
+        // script (and therefore the step-level result) sees names the
+        // tool; see `attribute_sub_call_error`.
+        let result = result.map_err(|mut error| {
+            error.message = attribute_sub_call_error(tool_name, error.message);
+            error
+        });
+        // Per-call telemetry for the UI's executed-calls view (issue #28).
+        // The Err string is intentionally NOT recorded; see
+        // `ToolCallRecord::failed`.
+        {
+            let record = match &result {
+                Ok(value) => {
+                    let mut record = ToolCallRecord::ok(tool_name, arguments, value.len());
+                    if todo_tasks.len() == 1 {
+                        record.todo_task = todo_tasks.pop();
+                    } else {
+                        record.todo_tasks = todo_tasks;
+                    }
+                    record.operation = operation;
+                    record
+                }
+                Err(error) => ToolCallRecord::failed_with_provenance(
+                    tool_name,
+                    arguments,
+                    user_error.as_deref(),
+                    failure_kind,
+                    error.provenance,
+                ),
+            };
+            let mut collected = collected_artifacts.lock().await;
+            if let Some(held) = reading.held_secs {
+                collected.held_checks += 1;
+                collected.held_seconds = collected.held_seconds.saturating_add(held);
+            }
+            collected.record_call(record, tool_name, arguments);
+        }
+        (result, reading)
+    }
+
+    /// Serve a script's `sleep(seconds)`: wait without the model, within the
+    /// script's waiting budget, and end at once on Stop (`None`).
+    async fn serve_sleep(
+        payload: &str,
+        waited: &mut Duration,
+        cancellation_token: &CancellationToken,
+    ) -> Option<Result<String, ScriptFailure>> {
+        let unit = wait::wait_unit();
+        let seconds = payload.parse::<f64>().unwrap_or(0.0).max(0.0);
+        let budget = unit * u32::try_from(wait::SCRIPT_WAIT_BUDGET_SECS).unwrap_or(600);
+        let requested = unit.mul_f64(seconds);
+        if waited.saturating_add(requested) > budget {
+            return Some(Err(Self::wait_budget_spent(*waited, unit).into()));
+        }
+        tokio::select! {
+            biased;
+            () = cancellation_token.cancelled() => return None,
+            () = tokio::time::sleep(requested) => {}
+        }
+        *waited = waited.saturating_add(requested);
+        Some(Ok(seconds.to_string()))
+    }
+
+    fn wait_budget_spent(waited: Duration, unit: Duration) -> String {
+        format!(
+            "this script has already waited {} s, and a script may wait at most {} s in all \
+             (sleep() and wait_for() together). Record what you have with record_result and \
+             end the script, then wait again with code_execution__wait_for or a new script.",
+            waited.as_millis() / unit.as_millis().max(1),
+            wait::SCRIPT_WAIT_BUDGET_SECS
+        )
+    }
+
+    /// Serve a script's `wait_for({...})`: the same wait as the top-level tool,
+    /// its checks admitted like the script's other calls. `None` on Stop.
+    #[allow(clippy::too_many_arguments)]
+    async fn serve_wait_for(
+        session_id: &str,
+        cap: crate::privacy::CallCapability,
+        judge: Option<&ScriptJudge>,
+        payload: &str,
+        waited: &mut Duration,
+        extension_manager: Option<&std::sync::Weak<crate::agents::ExtensionManager>>,
+        collected_artifacts: &Arc<Mutex<CollectedArtifacts>>,
+        cancellation_token: &CancellationToken,
+    ) -> Option<Result<String, ScriptFailure>> {
+        let unit = wait::wait_unit();
+        let waited_secs =
+            u64::try_from(waited.as_millis() / unit.as_millis().max(1)).unwrap_or(u64::MAX);
+        let left = wait::SCRIPT_WAIT_BUDGET_SECS.saturating_sub(waited_secs);
+        if left < wait::MIN_INTERVAL_FLOOR_SECS {
+            return Some(Err(format!(
+                "wait_for: {}",
+                Self::wait_budget_spent(*waited, unit)
+            )
+            .into()));
+        }
+        let plan = match serde_json::from_str::<wait::WaitForParams>(payload)
+            .map_err(|error| format!("wait_for: invalid arguments: {error}"))
+            .and_then(|params| {
+                wait::WaitPlan::from_params(params, left.min(wait::MAX_TIMEOUT_SECS))
+            }) {
+            Ok(plan) => plan,
+            Err(error) => return Some(Err(error.into())),
+        };
+        let mut checker = ManagedCheck {
+            session_id,
+            cap,
+            judge,
+            extension_manager,
+            collected_artifacts,
+            cancellation_token,
+            tool: &plan.tool,
+            arguments: Value::Object(plan.arguments.clone()).to_string(),
+            admitted: None,
+        };
+        let started = tokio::time::Instant::now();
+        let report = wait::run_wait(&plan, &mut checker, unit, cancellation_token).await;
+        *waited = waited.saturating_add(started.elapsed());
+        if report.end == wait::WaitEnd::Cancelled {
+            return None;
+        }
+        let watching = watch::active_watch_for(session_id, &plan.tool, &plan.arguments);
+        Some(wait::report_json(&plan, &report, watching.as_deref()).map_err(ScriptFailure::from))
+    }
+
+    /// Serve one of the script's host functions (`sleep`, `wait_for`,
+    /// `watch_job`; see [`wait::is_host_request`]). `None` on Stop.
+    async fn serve_host_request(
+        name: &str,
+        arguments: &str,
+        parts: watch::WatchRequestParts<'_>,
+        waited: &mut Duration,
+        watch_host: Option<&Arc<dyn watch::WatchHost>>,
+    ) -> Option<Result<String, ScriptFailure>> {
+        // The script's `execute_code` call holds one of the eight dispatch
+        // permits the whole daemon shares. A timed wait does no work, so it
+        // hands the permit back for its length, as a parked approval does
+        // (`script_call_gate`): eight sleeping scripts must not stall every
+        // other tool call. `None` where the call holds none to hand back.
+        let permit = parts
+            .judge
+            .and_then(|judge| judge.gate.parked_permit_handle());
+        if name == wait::SLEEP_REQUEST {
+            let sleep = Self::serve_sleep(arguments, waited, parts.turn);
+            return match permit {
+                Some(permit) => permit.while_parked(sleep).await,
+                None => sleep.await,
+            };
+        }
+        if name == wait::WAIT_REQUEST {
+            let wait_for = Self::serve_wait_for(
+                parts.session_id,
+                parts.cap,
+                parts.judge,
+                arguments,
+                waited,
+                parts.extension_manager,
+                parts.collected,
+                parts.turn,
+            );
+            return match permit {
+                Some(permit) => permit.while_parked(wait_for).await,
+                None => wait_for.await,
+            };
+        }
+        let turn = parts.turn.clone();
+        let answer = watch::serve_script_watch(parts, watch_host, arguments).await;
+        (!turn.is_cancelled()).then_some(answer)
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn run_tool_handler(
         session_id: String,
         cap: crate::privacy::CallCapability,
@@ -3717,8 +4210,13 @@ impl CodeExecutionClient {
         extension_manager: Option<std::sync::Weak<crate::agents::ExtensionManager>>,
         collected_artifacts: Arc<Mutex<CollectedArtifacts>>,
         cancellation_token: CancellationToken,
+        // What a script's `watch_job()` resumes the chat through; `None`
+        // where there is no chat to resume (the handler's own tests).
+        watch_host: Option<Arc<dyn watch::WatchHost>>,
     ) {
         let mut tool_calls = 0;
+        // Time this script has spent in sleep() and wait_for().
+        let mut waited = Duration::ZERO;
         loop {
             // Issue #72: once the turn is cancelled, stop taking new work rather
             // than dispatching calls that would only be cancelled again — and,
@@ -3733,6 +4231,34 @@ impl CodeExecutionClient {
             let Some((tool_name, arguments, response_tx)) = next else {
                 break;
             };
+            // `sleep()`, `wait_for()` and `watch_job()`: served here, not
+            // dispatched. A Stop drops the response, which ends the script's
+            // wait at once.
+            if wait::is_host_request(&tool_name) {
+                let parts = watch::WatchRequestParts {
+                    session_id: &session_id,
+                    cap,
+                    judge: judge.as_ref(),
+                    extension_manager: extension_manager.as_ref(),
+                    collected: &collected_artifacts,
+                    turn: &cancellation_token,
+                };
+                let served = Self::serve_host_request(
+                    &tool_name,
+                    &arguments,
+                    parts,
+                    &mut waited,
+                    watch_host.as_ref(),
+                )
+                .await;
+                match served {
+                    Some(answer) => {
+                        let _ = response_tx.send(answer);
+                        continue;
+                    }
+                    None => break,
+                }
+            }
             tool_calls += 1;
             if tool_calls > MAX_JS_TOOL_CALLS {
                 Self::refuse_sub_call(
@@ -3772,8 +4298,17 @@ impl CodeExecutionClient {
                     continue;
                 }
             };
-            let (result, mut failure_kind, user_error, todo_task, operation) =
-                Self::dispatch_sub_call(
+            // A repeated status check of a running job is held before it
+            // runs (`tool_monitor::poll_pacing`). The hold does no work, so it
+            // hands back the script's dispatch permit, as `sleep()` does; this
+            // handler is spawned, so the handle is installed here rather than
+            // inherited from the `execute_code` body.
+            let permit = judge
+                .as_ref()
+                .and_then(|judge| judge.gate.parked_permit_handle());
+            let (result, _reading) = crate::agents::tool_dispatch_limits::with_parking_handle(
+                permit,
+                Self::dispatch_and_record(
                     &session_id,
                     cap,
                     &tool_name,
@@ -3781,52 +4316,176 @@ impl CodeExecutionClient {
                     extension_manager.as_ref(),
                     &collected_artifacts,
                     &cancellation_token,
-                )
-                .await;
-            let result = result.and_then(|value| {
-                if value.len() > MAX_JS_TOOL_RESULT_BYTES {
-                    failure_kind = "result_too_large";
-                    Err(
-                        format!("Tool result exceeds the {MAX_JS_TOOL_RESULT_BYTES} byte limit")
-                            .into(),
-                    )
-                } else {
-                    Ok(value)
-                }
-            });
-            // Centralized attribution: whichever path failed, the error the
-            // script (and therefore the step-level result) sees names the
-            // tool — see `attribute_sub_call_error`.
-            let result = result.map_err(|mut error| {
-                error.message = attribute_sub_call_error(&tool_name, error.message);
-                error
-            });
-            // Per-call telemetry for the UI's executed-calls view (issue #28).
-            // The Err string is intentionally NOT recorded — see
-            // `ToolCallRecord::failed`.
-            {
-                let record = match &result {
-                    Ok(value) => {
-                        let mut record = ToolCallRecord::ok(&tool_name, &arguments, value.len());
-                        record.todo_task = todo_task;
-                        record.operation = operation;
-                        record
-                    }
-                    Err(error) => ToolCallRecord::failed_with_provenance(
-                        &tool_name,
-                        &arguments,
-                        user_error.as_deref(),
-                        failure_kind,
-                        error.provenance,
-                    ),
-                };
-                collected_artifacts
-                    .lock()
-                    .await
-                    .record_call(record, &tool_name, &arguments);
-            }
+                    PacingMode::DelayQuietly,
+                ),
+            )
+            .await;
             let _ = response_tx.send(result);
         }
+    }
+
+    /// The judge for the calls an `execute_code` script or a `wait_for` makes,
+    /// asked once per tool call at the one place that can tell the three cases
+    /// apart. See `script_call_gate::judge_for`.
+    fn script_judge(
+        session_id: &str,
+        catalogue: &[McpTool],
+    ) -> Result<Option<ScriptJudge>, String> {
+        match crate::agents::script_call_gate::judge_for(session_id) {
+            crate::agents::script_call_gate::ScriptJudging::By(gate) => {
+                let risks = crate::permission::tool_risk::ToolRiskRegistry::new();
+                // Graded from the exact list the script's imports are built from,
+                // so every call it can make has its own tool's grade.
+                risks.refresh_from_tools(catalogue);
+                Ok(Some(ScriptJudge { gate, risks }))
+            }
+            crate::agents::script_call_gate::ScriptJudging::PersonDriven => Ok(None),
+            crate::agents::script_call_gate::ScriptJudging::JudgeLost => {
+                tracing::error!(
+                    counter.biorouter.script_call_judge_lost = 1,
+                    session = %session_id,
+                    "an execute_code call dispatched by the agent loop reached the handler with \
+                     no script-call judge installed; refusing the script rather than running its \
+                     tool calls unjudged (a task-local does not survive a tokio::spawn; see \
+                     agents::script_call_gate)"
+                );
+                Err(crate::agents::script_call_gate::JUDGE_LOST_REFUSAL.to_string())
+            }
+        }
+    }
+
+    /// `code_execution__wait_for`: call a status tool until the job stops,
+    /// with no model turn per check.
+    async fn handle_wait_for(
+        &self,
+        session_id: &str,
+        cap: crate::privacy::CallCapability,
+        arguments: Option<JsonObject>,
+        cancellation_token: CancellationToken,
+    ) -> Result<CallToolResult, String> {
+        let params: wait::WaitForParams =
+            serde_json::from_value(Value::Object(arguments.unwrap_or_default()))
+                .map_err(|error| format!("invalid wait_for arguments: {error}"))?;
+        let plan = wait::WaitPlan::from_params(params, wait::MAX_TIMEOUT_SECS)?;
+        // The reach a script has: a tool missing from the importable catalogue
+        // (Gate E, `kb_delete_base`, the spawn tool) is missing here too.
+        let catalogue = self.get_catalogue(Some(cap)).await;
+        if !catalogue.iter().any(|tool| tool.name.as_ref() == plan.tool) {
+            return Err(format!(
+                "wait_for: `{}` is not a tool this chat can call from code_execution. Name \
+                 the status tool by its full name, server__tool, as search_modules lists it.",
+                plan.tool
+            ));
+        }
+        // Read on this task: the wait below runs inline, never spawned, so the
+        // judge and the human-surface task-locals both reach every check.
+        let judge = Self::script_judge(session_id, &catalogue)?;
+        let collected_artifacts = Arc::new(Mutex::new(CollectedArtifacts::default()));
+        let manager = self.context.extension_manager.clone();
+        let mut checker = ManagedCheck {
+            session_id,
+            cap,
+            judge: judge.as_ref(),
+            extension_manager: manager.as_ref(),
+            collected_artifacts: &collected_artifacts,
+            cancellation_token: &cancellation_token,
+            tool: &plan.tool,
+            arguments: Value::Object(plan.arguments.clone()).to_string(),
+            admitted: None,
+        };
+        let report =
+            wait::run_wait(&plan, &mut checker, wait::wait_unit(), &cancellation_token).await;
+        let collected = collected_artifacts.lock().await;
+        let meta = Self::collected_meta(&collected);
+        // A wait that timed out on a call this chat already watches does not
+        // offer a watch again: the watch resumes the chat when the job ends.
+        let watching = watch::active_watch_for(session_id, &plan.tool, &plan.arguments);
+        let mut result = match wait::report_text(&plan, &report, watching.as_deref()) {
+            Ok(text) => CallToolResult::success(vec![Content::text(text)]),
+            Err(error) => CallToolResult::error(vec![Content::text(format!("Error: {error}"))]),
+        };
+        result.meta = meta;
+        Ok(result)
+    }
+}
+
+/// One `wait_for` check through the path a script's own call takes. The first
+/// check is admitted in full (boundary refusals, then the judge); later checks
+/// repeat the SAME admitted call, so they re-run the boundary refusals but not
+/// the judge, and a person is asked at most once per wait rather than once per
+/// check.
+struct ManagedCheck<'a> {
+    session_id: &'a str,
+    cap: crate::privacy::CallCapability,
+    judge: Option<&'a ScriptJudge>,
+    extension_manager: Option<&'a std::sync::Weak<crate::agents::ExtensionManager>>,
+    collected_artifacts: &'a Arc<Mutex<CollectedArtifacts>>,
+    cancellation_token: &'a CancellationToken,
+    tool: &'a str,
+    arguments: String,
+    admitted: Option<String>,
+}
+
+impl wait::StatusCheck for ManagedCheck<'_> {
+    fn check(&mut self) -> futures::future::BoxFuture<'_, wait::CheckReading> {
+        Box::pin(async move {
+            let admission = match &self.admitted {
+                None => CodeExecutionClient::admit_sub_call(
+                    self.session_id,
+                    self.cap,
+                    self.judge,
+                    self.tool,
+                    &self.arguments,
+                    self.cancellation_token,
+                )
+                .await
+                .inspect(|admitted| {
+                    self.admitted = Some(admitted.clone());
+                }),
+                Some(admitted) => CodeExecutionClient::boundary_check(
+                    self.cap,
+                    self.session_id,
+                    self.tool,
+                    admitted,
+                )
+                .await
+                .map(|()| admitted.clone()),
+            };
+            let arguments = match admission {
+                Ok(arguments) => arguments,
+                Err(refusal) => {
+                    CodeExecutionClient::record_refusal(
+                        self.collected_artifacts,
+                        self.tool,
+                        &self.arguments,
+                        refusal.kind,
+                        refusal.user_note,
+                    )
+                    .await;
+                    return wait::CheckReading {
+                        value: Err(refusal.error),
+                        activity: JobActivity::Unknown,
+                        hint_secs: None,
+                    };
+                }
+            };
+            let (value, reading) = CodeExecutionClient::dispatch_and_record(
+                self.session_id,
+                self.cap,
+                self.tool,
+                &arguments,
+                self.extension_manager,
+                self.collected_artifacts,
+                self.cancellation_token,
+                PacingMode::RecordOnly,
+            )
+            .await;
+            wait::CheckReading {
+                value: value.map_err(|error| error.message),
+                activity: reading.activity,
+                hint_secs: reading.hint_secs,
+            }
+        })
     }
 }
 
@@ -3886,6 +4545,52 @@ impl McpClientTrait for CodeExecutionClient {
                           objects. Inspect with record_result(value), or use JSON.stringify(value) when
                           string output is actually needed.
 
+                        WAITING ON A JOB (one model turn, not one per check):
+                        Every model turn re-reads the whole conversation, so never end a script and come back
+                        just to check whether a job has finished. Wait inside the SAME script, or with the
+                        top-level code_execution__wait_for tool, and return only the final status. For a job
+                        that may take longer than a few minutes, set a watch and end your turn: the chat
+                        resumes by itself when the job finishes, at no cost per check.
+                        ```javascript
+                        import { submit_job } from "module_name";
+                        const job = submit_job({ query: "..." });
+                        const w = watch_job({ tool: "module_name__job_status", arguments: { job_id: job.job_id },
+                                              note: "Summarise the export when it is done." });
+                        record_result(w);  // { state: "watching", watch_id } - then end your turn
+                        ```
+                        A background shell job answers with TEXT, not an object: shell({ command, background:
+                        true }) returns "Started background job job-1. ...". Take the id from that text and
+                        watch developer__shell_status with { job_id: "job-1" }.
+                        ```javascript
+                        import { submit_job, job_status } from "module_name";
+                        const job = submit_job({ query: "..." });
+                        const done = wait_for({ tool: "module_name__job_status", arguments: { job_id: job.job_id } });
+                        record_result({ state: done.state, status: done.last_result });
+                        ```
+                        Or loop with sleep() and a status call:
+                        ```javascript
+                        let status = job_status({ job_id: id });
+                        while (status.status === "running" || status.status === "queued") {
+                          sleep(30);
+                          status = job_status({ job_id: id });
+                        }
+                        record_result(status);
+                        ```
+                        - sleep(seconds) pauses the script and spends no tokens: at most 280 s per call, and
+                          a script may wait 600 s in all (sleep and wait_for together). Past that, record what
+                          you have and call code_execution__watch_job.
+                        - wait_for({ tool, arguments, until, timeout_seconds, min_interval_seconds }) works like
+                          code_execution__wait_for; `tool` is the full name, server__tool. It returns
+                          { state, checks, elapsed_seconds, last_result }, with state "finished", "changed",
+                          "matched", "not_a_job" or "timed_out".
+                        - watch_job({ tool, arguments, until, note, max_wait_minutes }) works like
+                          code_execution__watch_job. It returns { state: "watching", watch_id } (end the script
+                          and your turn), or { state: "finished" | "matched" | "not_a_job", last_result } when
+                          the first check already ended it.
+                        - Check no more often than the job asks (recommended_poll_seconds, retry_after), and
+                          not more often than every 30 s unless the job asks for less: Biorouter holds a repeated
+                          check of a running job until its interval has passed.
+
                         MODULES:
                         - Only the modules listed in "Modules:" above are importable: these and only these.
                         - There is NO Node.js or browser standard library here: no "fs", "path", "os",
@@ -3926,6 +4631,77 @@ impl McpClientTrait for CodeExecutionClient {
                     title: Some("Execute JavaScript".to_string()),
                     read_only_hint: Some(false),
                     destructive_hint: Some(true),
+                    idempotent_hint: Some(false),
+                    open_world_hint: Some(true),
+                }),
+                McpTool::new(
+                    "wait_for".to_string(),
+                    indoc! {r#"
+                        Wait for a job WITHOUT a model turn per check. Every model turn re-reads the whole
+                        conversation, so checking a job from the model every few seconds is the most expensive
+                        way to wait; a check made here costs nothing. After starting a job, call this once:
+                        Biorouter calls the status tool itself on an interval and returns ONE compact result
+                        when the job is no longer active, when the result changes, or when the timeout passes.
+                        Never return to the model just to check on a job. The turn stays open while it waits,
+                        so for a job that may take longer than a few minutes use code_execution__watch_job.
+
+                        ARGUMENTS:
+                        - tool: the status tool's full name, server__tool (e.g. "cdwagent__CDW-query_job_status").
+                        - arguments: the status tool's arguments (e.g. {"job_id": "..."}).
+                        - until (optional): omit to stop when the result no longer reads as an active job (a
+                          status, state or phase field such as queued, running or executing, or an
+                          io.biorouter/operation envelope); "changed" to stop when the result changes (timing
+                          fields such as elapsed_seconds are ignored); or {"pointer": "/status", "values":
+                          ["completed", "failed"]} to stop when the value at that JSON pointer is one of them.
+                        - timeout_seconds (optional): default 240, at most 600. On timeout the job is still
+                          running: call watch_job (or wait_for again) with the same arguments.
+                        - min_interval_seconds (optional): seconds between checks, default 30, at least 10. A
+                          longer recommended_poll_seconds, retry_after or poll_after in the result is honoured.
+
+                        Each check is permission-checked like any other call. Stop ends the wait at once. Inside
+                        an execute_code script the same wait is wait_for({...}), and sleep(seconds) pauses it.
+                    "#}
+                    .to_string(),
+                    schema::<wait::WaitForParams>(),
+                )
+                .annotate(ToolAnnotations {
+                    title: Some("Wait for a job".to_string()),
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(false),
+                    idempotent_hint: Some(false),
+                    open_world_hint: Some(true),
+                }),
+                McpTool::new(
+                    "watch_job".to_string(),
+                    indoc! {r#"
+                        Watch a long-running job and END YOUR TURN: Biorouter checks the job's status in the
+                        background with no model turns, and resumes THIS chat once when the job finishes,
+                        when its checks keep failing, or when the watch times out. Every model turn re-reads
+                        the whole conversation, so this is the cheapest way to wait on a job that takes
+                        minutes to hours.
+
+                        ARGUMENTS:
+                        - tool, arguments, until: as for code_execution__wait_for.
+                        - min_interval_seconds (optional): the first check comes after at least 30 s (or the
+                          job's own recommended interval, if longer); later checks slow down to every 5 min.
+                        - max_wait_minutes (optional): default 60, at most 240.
+                        - note (optional, at most 500 characters): what to do when resumed. It comes back
+                          with the job's last status.
+                        - cancel (optional): a watch id such as "watch-3", or "all", to cancel instead.
+
+                        It checks once now: a job that is already done is answered at once. Otherwise you get
+                        a watch id; end your turn and do not check the job yourself. A chat paused by a usage
+                        limit is not resumed (it gets a note), and a Biorouter restart drops the watch. Inside
+                        execute_code the same watch is watch_job({...}), so one script can submit a job and
+                        watch it.
+                    "#}
+                    .to_string(),
+                    schema::<watch::WatchJobParams>(),
+                )
+                .annotate(ToolAnnotations {
+                    title: Some("Watch a job".to_string()),
+                    read_only_hint: Some(false),
+                    destructive_hint: Some(false),
                     idempotent_hint: Some(false),
                     open_world_hint: Some(true),
                 }),
@@ -4002,6 +4778,32 @@ impl McpClientTrait for CodeExecutionClient {
         meta: McpMeta,
         cancellation_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
+        if name == "watch_job" {
+            return Ok(self
+                .handle_watch_job(
+                    &meta.session_id,
+                    meta.capability,
+                    arguments,
+                    cancellation_token,
+                )
+                .await
+                .unwrap_or_else(|error| {
+                    CallToolResult::error(vec![Content::text(format!("Error: {error}"))])
+                }));
+        }
+        if name == "wait_for" {
+            return Ok(self
+                .handle_wait_for(
+                    &meta.session_id,
+                    meta.capability,
+                    arguments,
+                    cancellation_token,
+                )
+                .await
+                .unwrap_or_else(|error| {
+                    CallToolResult::error(vec![Content::text(format!("Error: {error}"))])
+                }));
+        }
         if name == "execute_code" {
             return Ok(self
                 .handle_execute_code(
@@ -5035,6 +5837,7 @@ mod tests {
             None,
             Arc::clone(&collected),
             token.clone(),
+            None,
         ));
 
         token.cancel();
@@ -5057,6 +5860,7 @@ mod tests {
             None,
             Arc::clone(&collected),
             CancellationToken::new(),
+            None,
         ));
 
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -5471,6 +6275,7 @@ mod tests {
             Some(Arc::downgrade(&manager)),
             Arc::clone(&collected),
             CancellationToken::new(),
+            None,
         ));
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
         call_tx
@@ -5815,6 +6620,84 @@ record_result({ status: out.trim() });"#,
             assert!(script_result.is_ok(), "{script_result:?}");
             assert!(record.get("todo_task").is_none(), "{record}");
         }
+    }
+
+    /// A batched `todo_update` (`updates`) records every item it changed, in
+    /// the order the call named them, as `todo_tasks`; a batch of one is the
+    /// single-item `todo_task` it always was.
+    #[tokio::test]
+    async fn nested_todo_metadata_records_every_item_of_a_batched_update() {
+        let batch = Content::text(
+            serde_json::json!({
+                "message": "Updated 2 items: #2, #5",
+                "tasks": [
+                    {"id": "2", "text": "load the cohort", "status": "completed"},
+                    {"id": "5", "text": "plot it", "status": "in_progress"},
+                ],
+            })
+            .to_string(),
+        );
+        let (record, script_result) = recorded_todo_metadata_call(
+            "todo__todo_update",
+            serde_json::json!({"updates": [
+                {"id": "#2", "status": "completed"},
+                {"id": "5", "status": "in_progress"},
+                {"id": "9", "status": "completed"},
+            ]}),
+            CallToolResult::success(vec![batch]),
+        )
+        .await;
+        assert!(script_result.is_ok(), "{script_result:?}");
+        assert!(record.get("todo_task").is_none(), "{record}");
+        assert_eq!(
+            record["todo_tasks"],
+            serde_json::json!([
+                {"id": "2", "title": "load the cohort"},
+                {"id": "5", "title": "plot it"},
+            ]),
+            "an id the result does not confirm is left out: {record}"
+        );
+
+        let (record, _) = recorded_todo_metadata_call(
+            "todo__todo_update",
+            serde_json::json!({"updates": [{"id": "3", "status": "completed"}]}),
+            CallToolResult::success(vec![todo_metadata_content("3", "verify")]),
+        )
+        .await;
+        assert_eq!(record["todo_task"]["title"], "verify", "{record}");
+        assert!(record.get("todo_tasks").is_none(), "{record}");
+    }
+
+    /// The Todo extension answers the model with a terse line and keeps its
+    /// JSON for the person in a User-audience block: the projection reads that
+    /// block and never the model's.
+    #[tokio::test]
+    async fn nested_todo_metadata_reads_the_person_s_copy_of_a_terse_result() {
+        let (record, script_result) = recorded_todo_metadata_call(
+            "todo__todo_update",
+            serde_json::json!({"id": "4", "status": "completed"}),
+            CallToolResult::success(vec![
+                Content::text("ok #4").with_audience(vec![Role::Assistant]),
+                todo_metadata_content("4", "write the summary").with_audience(vec![Role::User]),
+            ]),
+        )
+        .await;
+        assert!(script_result.is_ok(), "{script_result:?}");
+        assert_eq!(record["todo_task"]["id"], "4", "{record}");
+        assert_eq!(
+            record["todo_task"]["title"], "write the summary",
+            "{record}"
+        );
+
+        let (record, _) = recorded_todo_metadata_call(
+            "todo__todo_update",
+            serde_json::json!({"id": "4", "status": "completed"}),
+            CallToolResult::success(vec![
+                todo_metadata_content("4", "MODEL_ONLY").with_audience(vec![Role::Assistant])
+            ]),
+        )
+        .await;
+        assert!(record.get("todo_task").is_none(), "{record}");
     }
 
     #[tokio::test]
@@ -7983,5 +8866,587 @@ mod gate_c_bridge_tests {
 
         assert_ne!(kind, "dispatch_error", "{result:?}");
         result.expect("a private model may call a private extension from a script");
+    }
+}
+
+/// `wait_for`, `sleep()` and the poll pacing, end to end through a real
+/// `ExtensionManager` and a status fixture. Times run on the 10 ms test unit
+/// (`wait::wait_unit`, `poll_pacing`).
+#[cfg(test)]
+mod wait_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A status tool that answers with `results` in order, then repeats the
+    /// last one.
+    struct StatusFixture {
+        results: std::sync::Mutex<VecDeque<CallToolResult>>,
+        last: std::sync::Mutex<Option<CallToolResult>>,
+        calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl McpClientTrait for StatusFixture {
+        async fn list_tools(
+            &self,
+            _next_cursor: Option<String>,
+            _cancel_token: CancellationToken,
+        ) -> Result<ListToolsResult, Error> {
+            Ok(ListToolsResult {
+                tools: vec![McpTool::new(
+                    "status".to_string(),
+                    "Synthetic job status".to_string(),
+                    Arc::new(
+                        serde_json::json!({"type": "object", "properties": {
+                            "job_id": {"type": "string"}
+                        }})
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    ),
+                )],
+                next_cursor: None,
+                meta: None,
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            _name: &str,
+            _arguments: Option<JsonObject>,
+            _meta: McpMeta,
+            _cancel_token: CancellationToken,
+        ) -> Result<CallToolResult, Error> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let next = self.results.lock().unwrap().pop_front();
+            let mut last = self.last.lock().unwrap();
+            if let Some(next) = next {
+                *last = Some(next);
+            }
+            Ok(last.clone().expect("the fixture has at least one result"))
+        }
+
+        fn get_info(&self) -> Option<&InitializeResult> {
+            None
+        }
+    }
+
+    fn job(status: &str) -> CallToolResult {
+        CallToolResult::success(vec![Content::text(
+            serde_json::json!({"job_id": "a", "status": status}).to_string(),
+        )])
+    }
+
+    struct Harness {
+        client: CodeExecutionClient,
+        manager: Arc<crate::agents::ExtensionManager>,
+        session_id: String,
+        calls: Arc<AtomicUsize>,
+        _dir: tempfile::TempDir,
+    }
+
+    async fn harness(results: Vec<CallToolResult>) -> Harness {
+        let dir = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            dir.path().to_path_buf(),
+        ));
+        let session = session_manager
+            .create_session(
+                dir.path().to_path_buf(),
+                "wait_for".into(),
+                crate::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let manager = Arc::new(crate::agents::ExtensionManager::new(
+            Arc::new(Mutex::new(None)),
+            Arc::clone(&session_manager),
+        ));
+        let calls = Arc::new(AtomicUsize::new(0));
+        manager
+            .add_client(
+                "fixture".to_string(),
+                crate::agents::extension::ExtensionConfig::Platform {
+                    name: "fixture".into(),
+                    description: "Job status fixture".into(),
+                    bundled: Some(true),
+                    available_tools: Vec::new(),
+                },
+                Arc::new(StatusFixture {
+                    results: std::sync::Mutex::new(results.into()),
+                    last: std::sync::Mutex::new(None),
+                    calls: Arc::clone(&calls),
+                }),
+                None,
+                None,
+            )
+            .await;
+        let client = CodeExecutionClient::new(PlatformExtensionContext {
+            extension_manager: Some(Arc::downgrade(&manager)),
+            session_manager,
+        })
+        .unwrap();
+        Harness {
+            client,
+            manager,
+            session_id: session.id,
+            calls,
+            _dir: dir,
+        }
+    }
+
+    fn object(value: Value) -> Option<JsonObject> {
+        value.as_object().cloned()
+    }
+
+    fn text_of(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter_map(|content| content.as_text().map(|text| text.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    async fn wait_for(harness: &Harness, arguments: Value) -> CallToolResult {
+        harness
+            .client
+            .handle_wait_for(
+                &harness.session_id,
+                crate::privacy::CallCapability::for_test_restricted(),
+                object(arguments),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap_or_else(|error| CallToolResult::error(vec![Content::text(error)]))
+    }
+
+    async fn execute(harness: &Harness, code: &str) -> CallToolResult {
+        harness
+            .client
+            .handle_execute_code(
+                &harness.session_id,
+                crate::privacy::CallCapability::for_test_restricted(),
+                object(serde_json::json!({ "code": code })),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn wait_for_checks_until_the_job_finishes_and_returns_once() {
+        let harness = harness(vec![job("queued"), job("running"), job("completed")]).await;
+        let result = wait_for(
+            &harness,
+            serde_json::json!({
+                "tool": "fixture__status",
+                "arguments": {"job_id": "j-finish"},
+                "min_interval_seconds": 10,
+            }),
+        )
+        .await;
+        let text = text_of(&result);
+        assert_ne!(result.is_error, Some(true), "{text}");
+        assert!(text.contains("no longer active (3 checks"), "{text}");
+        assert!(text.contains("\"completed\""), "{text}");
+        assert_eq!(harness.calls.load(Ordering::SeqCst), 3);
+        let records = result
+            .meta
+            .as_ref()
+            .and_then(|meta| meta.get(TOOL_CALLS_META_KEY))
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len);
+        assert_eq!(records, 3, "every check is in the executed-calls view");
+    }
+
+    #[tokio::test]
+    async fn wait_for_stops_on_a_changed_result() {
+        let harness = harness(vec![
+            CallToolResult::success(vec![Content::text(r#"{"rows":0,"elapsed_seconds":1}"#)]),
+            CallToolResult::success(vec![Content::text(r#"{"rows":0,"elapsed_seconds":9}"#)]),
+            CallToolResult::success(vec![Content::text(r#"{"rows":4,"elapsed_seconds":19}"#)]),
+        ])
+        .await;
+        let result = wait_for(
+            &harness,
+            serde_json::json!({"tool": "fixture__status", "until": "changed",
+                               "min_interval_seconds": 10}),
+        )
+        .await;
+        let text = text_of(&result);
+        assert!(text.contains("the result changed (3 checks"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn wait_for_times_out_and_says_to_call_again() {
+        let harness = harness(vec![job("running")]).await;
+        let result = wait_for(
+            &harness,
+            serde_json::json!({"tool": "fixture__status", "arguments": {"job_id": "j-timeout"},
+                               "timeout_seconds": 30, "min_interval_seconds": 10}),
+        )
+        .await;
+        let text = text_of(&result);
+        assert!(text.contains("timed out"), "{text}");
+        assert!(
+            text.contains("call code_execution__wait_for again")
+                || text.contains("Call code_execution__wait_for again"),
+            "{text}"
+        );
+        assert_eq!(
+            harness.calls.load(Ordering::SeqCst),
+            4,
+            "checks at 0, 10, 20 and 30"
+        );
+    }
+
+    #[tokio::test]
+    async fn wait_for_honours_a_longer_recommended_poll_interval() {
+        let slow = CallToolResult::success(vec![Content::text(
+            serde_json::json!({"job_id": "a", "phase": "executing",
+                               "recommended_poll_seconds": 25})
+            .to_string(),
+        )]);
+        let harness = harness(vec![slow]).await;
+        let result = wait_for(
+            &harness,
+            serde_json::json!({"tool": "fixture__status", "arguments": {"job_id": "j-hint"},
+                               "timeout_seconds": 60, "min_interval_seconds": 10}),
+        )
+        .await;
+        assert!(text_of(&result).contains("timed out"));
+        // 25 s apart, not 10: checks at 0, 25 and 50, and a last one at the
+        // 60 s deadline.
+        assert_eq!(harness.calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[tokio::test]
+    async fn stop_ends_a_wait_promptly() {
+        let harness = harness(vec![job("running")]).await;
+        let token = CancellationToken::new();
+        let stopper = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            stopper.cancel();
+        });
+        let started = std::time::Instant::now();
+        let result = harness
+            .client
+            .handle_wait_for(
+                &harness.session_id,
+                crate::privacy::CallCapability::for_test_restricted(),
+                object(serde_json::json!({"tool": "fixture__status",
+                                           "arguments": {"job_id": "j-stop"}})),
+                token,
+            )
+            .await
+            .unwrap();
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(result.is_error, Some(true));
+        assert!(text_of(&result).contains("cancelled"));
+    }
+
+    #[tokio::test]
+    async fn wait_for_reaches_only_the_importable_catalogue() {
+        let harness = harness(vec![job("running")]).await;
+        let result = wait_for(&harness, serde_json::json!({"tool": "other__status"})).await;
+        assert!(
+            text_of(&result).contains("is not a tool this chat can call"),
+            "{}",
+            text_of(&result)
+        );
+        assert_eq!(harness.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_script_waits_with_wait_for_inside_one_call() {
+        let harness = harness(vec![job("running"), job("completed")]).await;
+        let result = execute(
+            &harness,
+            r#"const done = wait_for({ tool: "fixture__status", arguments: { job_id: "j-script-wait" },
+                                      min_interval_seconds: 10 });
+               record_result({ state: done.state, checks: done.checks,
+                               status: done.last_result.status });"#,
+        )
+        .await;
+        let text = text_of(&result);
+        assert!(
+            text.contains(r#""state": "finished""#) && text.contains(r#""status": "completed""#),
+            "{text}"
+        );
+        assert!(text.contains(r#""checks": 2"#), "{text}");
+    }
+
+    #[tokio::test]
+    async fn a_scripts_wait_for_cannot_name_a_tool_it_could_not_import() {
+        let harness = harness(vec![job("running")]).await;
+        let result = execute(
+            &harness,
+            r#"record_result(wait_for({ tool: "developer__shell", arguments: {} }));"#,
+        )
+        .await;
+        assert!(
+            text_of(&result).contains("is not a tool this script can call"),
+            "{}",
+            text_of(&result)
+        );
+        assert_eq!(harness.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_script_polls_with_sleep_and_its_too_early_checks_are_held() {
+        let harness = harness(vec![job("running"), job("running"), job("completed")]).await;
+        let result = execute(
+            &harness,
+            r#"import { status } from "fixture";
+               let s = status({ job_id: "j-sleep" });
+               let n = 1;
+               while (s.status === "running") { sleep(10); s = status({ job_id: "j-sleep" }); n++; }
+               record_result({ n, status: s.status });"#,
+        )
+        .await;
+        let text = text_of(&result);
+        assert!(
+            text.contains(r#""n": 3"#) && text.contains("completed"),
+            "{text}"
+        );
+        // sleep(10) is shorter than the 30 s minimum, so both repeats were held.
+        assert!(text.contains("held 2 repeated status check(s)"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn sleep_is_capped_per_call() {
+        let harness = harness(vec![job("running")]).await;
+        let result = execute(&harness, "sleep(281); record_result(1);").await;
+        let text = text_of(&result);
+        assert!(text.contains("at most 280 s per call"), "{text}");
+        let result = execute(&harness, "record_result(sleep(1));").await;
+        assert!(
+            text_of(&result).contains("Result: 1"),
+            "{}",
+            text_of(&result)
+        );
+    }
+
+    #[tokio::test]
+    async fn sleep_is_capped_by_the_scripts_waiting_budget() {
+        let unit = wait::wait_unit();
+        let mut waited = unit * 590;
+        let refused =
+            CodeExecutionClient::serve_sleep("20", &mut waited, &CancellationToken::new())
+                .await
+                .unwrap()
+                .unwrap_err();
+        assert!(
+            refused.message.contains("at most 600 s in all"),
+            "{}",
+            refused.message
+        );
+        let slept = CodeExecutionClient::serve_sleep("5", &mut waited, &CancellationToken::new())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(slept, "5");
+        assert_eq!(waited, unit * 595);
+        let token = CancellationToken::new();
+        token.cancel();
+        assert!(
+            CodeExecutionClient::serve_sleep("1", &mut waited, &token)
+                .await
+                .is_none(),
+            "a stopped sleep answers nothing, which ends the script"
+        );
+    }
+
+    /// A script's `sleep()` holds no dispatch permit while it waits, and takes
+    /// it back before the script resumes.
+    #[tokio::test]
+    async fn a_scripts_sleep_hands_its_dispatch_permit_back() {
+        use crate::agents::script_call_gate::test_support::gate;
+
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let guard = crate::agents::tool_dispatch_limits::ToolDispatchGuard::for_test(Arc::clone(
+            &semaphore,
+        ))
+        .await;
+        assert_eq!(
+            semaphore.available_permits(),
+            0,
+            "the script holds the permit"
+        );
+
+        let dir = tempfile::TempDir::new().expect("a scratch directory");
+        let hooks = Arc::new(crate::hooks::HooksManager::new(Arc::new(
+            tokio::sync::Mutex::new(None),
+        )));
+        let (gate, _permissions) =
+            gate(dir.path(), crate::config::BioRouterMode::Auto, hooks, false).await;
+        gate.hold_dispatch_permit(Some(guard.parking_handle()));
+        let judge = ScriptJudge {
+            gate: Arc::new(gate),
+            risks: crate::permission::tool_risk::ToolRiskRegistry::new(),
+        };
+        let collected = Arc::new(Mutex::new(CollectedArtifacts::default()));
+        let token = CancellationToken::new();
+        let mut waited = Duration::ZERO;
+        let parts = watch::WatchRequestParts {
+            session_id: "sleep-permit",
+            cap: crate::privacy::CallCapability::for_test_restricted(),
+            judge: Some(&judge),
+            extension_manager: None,
+            collected: &collected,
+            turn: &token,
+        };
+        // 30 units: 300 ms under test.
+        let sleep = CodeExecutionClient::serve_host_request(
+            wait::SLEEP_REQUEST,
+            "30",
+            parts,
+            &mut waited,
+            None,
+        );
+        let watch = async {
+            for _ in 0..100 {
+                if semaphore.available_permits() == 1 {
+                    return true;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            false
+        };
+        let (slept, freed) = tokio::join!(sleep, watch);
+        assert!(freed, "a sleeping script must hold no dispatch permit");
+        assert_eq!(slept.unwrap().unwrap(), "30");
+        assert_eq!(
+            semaphore.available_permits(),
+            0,
+            "the permit is taken back before the script resumes"
+        );
+        drop(guard);
+        assert_eq!(semaphore.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_direct_repeat_is_held_and_noted_and_other_arguments_are_not() {
+        let harness = harness(vec![job("running")]).await;
+        let dispatch = |job_id: &'static str| {
+            let manager = Arc::clone(&harness.manager);
+            let session_id = harness.session_id.clone();
+            async move {
+                let started = std::time::Instant::now();
+                let call = CallToolRequestParams {
+                    task: None,
+                    name: "fixture__status".into(),
+                    arguments: object(serde_json::json!({ "job_id": job_id })),
+                    meta: None,
+                };
+                let result = manager
+                    .dispatch_tool_call(
+                        &session_id,
+                        call,
+                        crate::privacy::CallCapability::for_test_restricted(),
+                        CancellationToken::new(),
+                    )
+                    .await
+                    .unwrap()
+                    .result
+                    .await
+                    .unwrap();
+                (started.elapsed(), result)
+            }
+        };
+        let (_, first) = dispatch("j-direct").await;
+        assert_eq!(first.content.len(), 1);
+        // The first result was an identified running job: the same check right
+        // away waits out the 30 s (test unit: 300 ms) minimum.
+        let (held, second) = dispatch("j-direct").await;
+        assert!(held >= Duration::from_millis(250), "{held:?}");
+        let note = text_of(&second);
+        assert!(note.contains("held this status check"), "{note}");
+        let (other, third) = dispatch("j-direct-other").await;
+        assert!(other < Duration::from_millis(250), "{other:?}");
+        assert_eq!(third.content.len(), 1, "a different job is not held");
+    }
+
+    /// A script's status check that the pacing holds waits holding no
+    /// dispatch permit: the script's `execute_code` permit is handed back for
+    /// the hold, as its `sleep()` does, and taken back for the call itself.
+    #[tokio::test]
+    async fn a_scripts_held_status_check_hands_its_dispatch_permit_back() {
+        use crate::agents::script_call_gate::test_support::gate;
+
+        let harness = harness(vec![job("running")]).await;
+        let arguments = serde_json::json!({ "job_id": "j-held-script" });
+        // The same check ran just now: the next one waits out its interval.
+        crate::tool_monitor::poll_pacing::remember_for_test(
+            &harness.session_id,
+            "fixture__status",
+            arguments.as_object(),
+            Duration::from_millis(300),
+        );
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+        let guard = crate::agents::tool_dispatch_limits::ToolDispatchGuard::for_test(Arc::clone(
+            &semaphore,
+        ))
+        .await;
+        let dir = tempfile::TempDir::new().expect("a scratch directory");
+        let hooks = Arc::new(crate::hooks::HooksManager::new(Arc::new(
+            tokio::sync::Mutex::new(None),
+        )));
+        let (gate, _permissions) =
+            gate(dir.path(), crate::config::BioRouterMode::Auto, hooks, false).await;
+        gate.hold_dispatch_permit(Some(guard.parking_handle()));
+        let judge = ScriptJudge {
+            gate: Arc::new(gate),
+            risks: crate::permission::tool_risk::ToolRiskRegistry::new(),
+        };
+        let collected = Arc::new(Mutex::new(CollectedArtifacts::default()));
+        let (call_tx, call_rx) = mpsc::unbounded_channel();
+        let handler = tokio::spawn(CodeExecutionClient::run_tool_handler(
+            harness.session_id.clone(),
+            crate::privacy::CallCapability::for_test_restricted(),
+            Some(judge),
+            call_rx,
+            Some(Arc::downgrade(&harness.manager)),
+            Arc::clone(&collected),
+            CancellationToken::new(),
+            None,
+        ));
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        call_tx
+            .send((
+                "fixture__status".to_string(),
+                arguments.to_string(),
+                response_tx,
+            ))
+            .unwrap();
+        let mut freed = false;
+        for _ in 0..100 {
+            if semaphore.available_permits() == 1 {
+                freed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+        assert!(freed, "a held script call must hold no dispatch permit");
+        let answer = tokio::time::timeout(Duration::from_secs(5), response_rx)
+            .await
+            .expect("the held call completes")
+            .unwrap();
+        assert!(answer.is_ok(), "{:?}", answer.err().map(|e| e.message));
+        assert_eq!(
+            semaphore.available_permits(),
+            0,
+            "the permit is taken back before the call runs"
+        );
+        assert_eq!(collected.lock().await.held_checks, 1, "the call was held");
+        drop(call_tx);
+        tokio::time::timeout(Duration::from_secs(5), handler)
+            .await
+            .expect("the handler drains")
+            .unwrap();
+        drop(guard);
     }
 }

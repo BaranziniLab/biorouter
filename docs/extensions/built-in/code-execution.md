@@ -36,6 +36,8 @@ In Code Mode the model discovers which tools the enabled capabilities and loaded
 | `execute_code` | Run one JavaScript program that batches multiple MCP tool calls into a single execution. This is the capability's primary tool. |
 | `search_modules` | Find a tool when the model does not know which module provides it. The result contains ready-to-use imports and signatures. |
 | `read_module` | Read the tool definitions for a module the model already knows — `"serverName"` lists every tool with its signature, `"serverName/toolName"` gives full detail for one tool. |
+| `wait_for` | Wait for a long-running job without a model request per check: Biorouter calls the job's status tool itself and answers once, when the job is done or after at most 10 minutes. |
+| `watch_job` | Watch a long-running job and end the turn: Biorouter checks the job in the background and resumes the chat once when it finishes. For jobs that run for minutes to hours. |
 
 ## What Code Mode code looks like
 
@@ -74,6 +76,24 @@ The syntax rules are:
   {"tool": "developer/text_editor", "description": "write output.txt", "depends_on": [0, 1]}
 ]
 ```
+
+## Waiting on a job
+
+Every model request re-reads the whole conversation, so a model that checks a job by asking again every few seconds pays for the whole conversation each time. Code Execution gives it three ways to wait that cost nothing per check:
+
+- **`code_execution__wait_for`** calls the job's status tool on an interval and answers once, when the job is no longer active, when the result changes, or when its timeout (default 240 seconds, at most 600) passes.
+- **`code_execution__watch_job`** checks once, returns a watch id such as `watch-3`, and lets the model end its turn. Biorouter keeps checking in the background, starting every 30 seconds and slowing to every 5 minutes, for up to 60 minutes by default (240 at most), and then resumes the chat once with the job's last status and the model's own note. A chat paused by a usage limit gets a note instead of a turn. You can cancel a watch from the active work list, by pressing Stop during the turn that set it, or by asking the model; a watch is not kept across a restart of Biorouter.
+- **A background shell job** checked with the Developer capability's `shell_status` returns only what the job printed since the last call. `wait_for` and `watch_job` keep the output of every check they make (at most 8 KB, keeping the end) and hand it back with the last status, so nothing the job printed is lost between checks.
+- **Inside a script**, `wait_for({...})` does the same wait as the tool, `watch_job({...})` sets a watch and returns `{state: "watching", watch_id}` (the script then ends and so does the turn) or, for a job already done, its last status, and `sleep(seconds)` pauses the script (`sleep()` at most 280 seconds per call; `sleep()` and `wait_for()` together at most 600 seconds per script).
+
+```javascript
+import { submit_job } from "module_name";
+const job = submit_job({ query: "..." });
+const done = wait_for({ tool: "module_name__job_status", arguments: { job_id: job.job_id } });
+record_result({ state: done.state, status: done.last_result });
+```
+
+Every check is decided like any other call the script makes (see the next section); the first is judged in full and later ones repeat that admitted call. Biorouter also holds a repeated status check of a running job that comes sooner than 30 seconds, or than the job's own interval. Details: [Waiting on jobs](../../agent-loop/waiting-on-jobs.md).
 
 > **Warning.** `execute_code` is annotated as destructive and non-idempotent, and it can reach every effective tool exposed by enabled capabilities and loaded extensions — including `developer`'s `shell` and `text_editor`. Every one of those calls is still decided on its own, under its own name; see [Permissions: every call a script makes is decided on its own](#permissions-every-call-a-script-makes-is-decided-on-its-own).
 
@@ -147,6 +167,7 @@ The file has been saved to the root directory as `LOG.md`.
 
 ## Related documentation
 
+- [Waiting on jobs](../../agent-loop/waiting-on-jobs.md): `wait_for`, `watch_job`, `sleep()` and the pacing of repeated status checks.
 - [Developer capability](developer.md) — the `shell` and `text_editor` tools most Code Mode scripts import, and the access controls that constrain them.
 - [Todo capability](todo.md) — the checklist tools that stay directly callable in Code Mode, and the plan-first rules that use them.
 - [Extension Manager capability](extension-manager.md) — the other lever for keeping the active tool count and context usage down.

@@ -15,7 +15,7 @@ export interface ModelCostRow {
   cacheCreationTokens: number | null;
   totalTokens: number | null;
   turns: number;
-  /** Client-side cost from the pricing table, or null when pricing is unknown. */
+  /** The daemon-priced cost when the row has one, else the pricing table's; null when unknown. */
   totalCost: number | null;
   /** Historical usage or pricing cannot certify the known subtotal as exact. */
   costIsPartial: boolean;
@@ -83,7 +83,22 @@ export function buildLegacySessionCosts(rows: ModelCostRow[]): LegacySessionCost
 }
 
 /**
- * Price the real per-model rows the backend recorded. `pricingFor` returns the
+ * The cost the daemon priced for a row (`ModelUsageRow.cost` and `costIsPartial`), or `null`
+ * when the row carries none. The daemon prices each request on its own (the cache buckets at the
+ * cache rate, a request over a long-context threshold at the long-context rate), which a flat
+ * per-token price here cannot. Read through a narrow guard rather than the generated type, so a
+ * daemon that predates the fields, or a row it left unpriced, falls back to the client price.
+ */
+export function serverPricedCost(row: unknown): { cost: number; partial: boolean } | null {
+  if (!row || typeof row !== 'object') return null;
+  const { cost, costIsPartial } = row as { cost?: unknown; costIsPartial?: unknown };
+  if (typeof cost !== 'number' || !Number.isFinite(cost) || cost < 0) return null;
+  return { cost, partial: costIsPartial === true };
+}
+
+/**
+ * Price the real per-model rows the backend recorded: the daemon's own price where the row
+ * carries one (`serverPricedCost`), else the client price. `pricingFor` returns the
  * per-token input/output cost for a `(provider, model)` pair, or null when the
  * pricing table has no entry — that row's cost stays null (token-only), never
  * zero, so an unknown price is visibly distinct from a genuinely free model.
@@ -107,7 +122,11 @@ export async function buildModelCostRows(
       const exactTotal = billedTokens(row);
       let totalCost: number | null = null;
       let costIsPartial = false;
-      if (provider && model) {
+      const server = serverPricedCost(row);
+      if (server) {
+        totalCost = server.cost;
+        costIsPartial = server.partial;
+      } else if (provider && model) {
         const pricing = await pricingFor(provider, model);
         if (pricing) {
           const buckets = [

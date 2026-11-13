@@ -8,7 +8,7 @@ use crate::model::ModelConfig;
 use crate::privacy::SessionClassification;
 use crate::providers::base::{Provider, MSG_COUNT_FOR_SESSION_NAME_GENERATION};
 use crate::providers::pricing::{
-    cost_with_pricing, provider_model_pricing, resolved_provider_model_pricing,
+    cost_with_tier, long_context_tier, provider_model_pricing, resolved_provider_model_pricing,
     ProviderModelPricing, TurnCost,
 };
 use crate::session::chat_fts;
@@ -27,6 +27,59 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, OnceLock};
 use tracing::{debug, info, warn};
 use utoipa::ToSchema;
+
+/// One ledger row's prompt size (fresh input + cache read + cache write) in
+/// SQL, for columns prefixed `$p` (`"te."` or `""`).
+macro_rules! prompt_tokens_sql {
+    ($p:literal) => {
+        concat!(
+            "(COALESCE(",
+            $p,
+            "input_tokens, 0) + COALESCE(",
+            $p,
+            "cache_read_tokens, 0) + COALESCE(",
+            $p,
+            "cache_creation_tokens, 0))"
+        )
+    };
+}
+
+/// SQL twin of [`crate::providers::pricing::prompt_band`]: the largest
+/// long-context threshold a row's prompt is above, or 0. The literals must be
+/// `pricing::LONG_CONTEXT_THRESHOLDS`; `prompt_band_sql_matches_the_pricing_bands`
+/// evaluates this in SQLite against the Rust function.
+macro_rules! prompt_band_sql {
+    ($p:literal) => {
+        concat!(
+            "(CASE WHEN ",
+            prompt_tokens_sql!($p),
+            " > 272000 THEN 272000 WHEN ",
+            prompt_tokens_sql!($p),
+            " > 200000 THEN 200000 ELSE 0 END)"
+        )
+    };
+}
+
+/// 1 for a side call's ledger row ([`side_usage::SIDE_EVENT_KEY_PREFIX`]), else 0.
+/// A side call's tokens and dollars are billed usage, but it is not a turn.
+macro_rules! side_request_sql {
+    ($p:literal) => {
+        concat!("COALESCE(", $p, "event_key LIKE 'side:%', 0)")
+    };
+}
+
+pub mod side_usage;
+mod spend;
+pub use spend::{compaction_event_key, RequestUsage, SpendSnapshot, COMPACTION_EVENT_KEY_PREFIX};
+
+/// A chat's subagents by their parent, for the usage limits' spend read
+/// (`spend::CHAT_ROWS_FILTER`), which runs before every model request.
+///
+/// ⚠ **No numbered migration arm**, like `deleted_chat_usage`: it is additive,
+/// so `create_schema` creates it for a fresh database and
+/// `reconcile_loop_schema` for every existing one, on every open.
+const SESSIONS_PARENT_INDEX_DDL: &str =
+    "CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id)";
 
 pub const CURRENT_SCHEMA_VERSION: i32 = 21;
 
@@ -462,7 +515,15 @@ CREATE TABLE IF NOT EXISTS deleted_chat_usage (
 /// `turns` stands in for `COUNT(*)` and each `*_known` for `COUNT(column)`, so a
 /// total is complete only when every turn behind it reported that bucket — the
 /// rule the per-turn queries applied before the fold existed.
-const BILLABLE_USAGE: &str = "(
+///
+/// `prompt_band` is each turn's [`prompt_band_sql!`], so a priced grain is
+/// wholly below or above every long-context threshold. A deleted chat's rows
+/// carry no per-request size and read band 0, the base rate: deleting a chat
+/// can lower a long-context chat's priced total to its base-rate figure.
+/// `side_requests` marks side calls, which count in tokens and dollars but not
+/// in `turns` (a deleted chat's side calls were folded in as turns).
+const BILLABLE_USAGE: &str = concat!(
+    "(
     SELECT te.ts AS ts,
            date(te.ts, 'unixepoch', 'localtime') AS day,
            te.model_id AS model_id,
@@ -477,7 +538,13 @@ const BILLABLE_USAGE: &str = "(
            te.cache_read_tokens AS cache_read_tokens,
            te.cache_read_tokens IS NOT NULL AS cache_read_known,
            te.cache_creation_tokens AS cache_creation_tokens,
-           te.cache_creation_tokens IS NOT NULL AS cache_creation_known
+           te.cache_creation_tokens IS NOT NULL AS cache_creation_known,
+           ",
+    prompt_band_sql!("te."),
+    " AS prompt_band,
+           ",
+    side_request_sql!("te."),
+    " AS side_requests
       FROM token_events te
       JOIN sessions s ON s.id = te.session_id
      WHERE te.session_type IN ('user', 'scheduled', 'sub_agent')
@@ -491,9 +558,12 @@ const BILLABLE_USAGE: &str = "(
            d.output_tokens, d.output_known,
            d.billed_total_tokens, d.billed_known,
            d.cache_read_tokens, d.cache_read_known,
-           d.cache_creation_tokens, d.cache_creation_known
+           d.cache_creation_tokens, d.cache_creation_known,
+           0,
+           0
       FROM deleted_chat_usage d
-) u";
+) u"
+);
 
 /// The `(day, model, provider)` grain every priced usage total starts from,
 /// over [`BILLABLE_USAGE`]. `day` is the expression for the `day` column —
@@ -517,10 +587,42 @@ fn billable_usage_grain_sql(day: &str, filter: &str) -> String {
                 CAST(SUM(u.input_known) = SUM(u.turns) AS INTEGER) AS input_complete,
                 CAST(SUM(u.output_known) = SUM(u.turns) AS INTEGER) AS output_complete,
                 CAST(SUM(u.cache_read_known) = SUM(u.turns) AS INTEGER) AS cache_read_complete,
-                CAST(SUM(u.cache_creation_known) = SUM(u.turns) AS INTEGER) AS cache_creation_complete
+                CAST(SUM(u.cache_creation_known) = SUM(u.turns) AS INTEGER) AS cache_creation_complete,
+                u.prompt_band AS prompt_band,
+                SUM(u.side_requests) AS side_requests
            FROM {BILLABLE_USAGE}
           WHERE {filter}
-          GROUP BY 1, u.model_id, u.provider"
+          GROUP BY 1, u.model_id, u.provider, u.prompt_band"
+    )
+}
+
+/// The same grain straight from `token_events` (aliased `te`) for one chat's
+/// rows, which `filter` selects. `day` is always `''`.
+fn token_events_grain_sql(filter: &str) -> String {
+    format!(
+        "SELECT '' AS day,
+                te.model_id,
+                te.provider,
+                COALESCE(SUM(te.input_tokens), 0)  AS input_tokens,
+                COALESCE(SUM(te.output_tokens), 0) AS output_tokens,
+                CASE WHEN COUNT(te.billed_total_tokens) = COUNT(*)
+                     THEN SUM(te.billed_total_tokens) END AS total_tokens,
+                CASE WHEN COUNT(te.cache_read_tokens) = COUNT(*)
+                     THEN SUM(te.cache_read_tokens) END AS cache_read_tokens,
+                CASE WHEN COUNT(te.cache_creation_tokens) = COUNT(*)
+                     THEN SUM(te.cache_creation_tokens) END AS cache_creation_tokens,
+                COUNT(*) AS turns,
+                CAST(COUNT(te.input_tokens) = COUNT(*) AS INTEGER) AS input_complete,
+                CAST(COUNT(te.output_tokens) = COUNT(*) AS INTEGER) AS output_complete,
+                CAST(COUNT(te.cache_read_tokens) = COUNT(*) AS INTEGER) AS cache_read_complete,
+                CAST(COUNT(te.cache_creation_tokens) = COUNT(*) AS INTEGER) AS cache_creation_complete,
+                {band} AS prompt_band,
+                SUM({side}) AS side_requests
+           FROM token_events te
+          WHERE {filter}
+          GROUP BY te.model_id, te.provider, prompt_band",
+        band = prompt_band_sql!("te."),
+        side = side_request_sql!("te."),
     )
 }
 
@@ -980,8 +1082,25 @@ pub struct ModelUsageRow {
     pub cache_read_tokens: Option<i64>,
     /// Input tokens written to the prompt cache.
     pub cache_creation_tokens: Option<i64>,
-    /// Number of billed turns attributed to this group.
+    /// Number of billed turns attributed to this group. Side calls (a stall
+    /// check, a title) are billed in the tokens above but are not turns.
     pub turns: i64,
+    /// Dollar cost of the group, priced on the server per request: cache
+    /// buckets at the cache rate and each request over a long-context
+    /// threshold at the model's long-context rate. `None` when the group is
+    /// unpriced (or the rollup that built the row does not price).
+    #[sqlx(default)]
+    #[serde(default)]
+    pub cost: Option<f64>,
+    /// `true` when `cost` is a lower bound: part of the group is unpriced, its
+    /// counts are incomplete, or its cache tokens have no rate.
+    #[sqlx(default)]
+    #[serde(default)]
+    pub cost_is_partial: bool,
+    /// Requests in the group priced at the model's long-context rate.
+    #[sqlx(default)]
+    #[serde(default)]
+    pub long_context_turns: i64,
 }
 
 /// How `get_usage_report` buckets the per-turn ledger.
@@ -1131,6 +1250,12 @@ struct UsageGrainRow {
     output_complete: i64,
     cache_read_complete: i64,
     cache_creation_complete: i64,
+    /// [`crate::providers::pricing::prompt_band`] of every request in the row.
+    #[sqlx(default)]
+    prompt_band: i64,
+    /// Side calls among `turns` (billed, but not turns).
+    #[sqlx(default)]
+    side_requests: i64,
 }
 
 /// Cost of one finest-grain row, including its cache buckets, or `None` when its
@@ -1182,8 +1307,14 @@ fn price_grain(row: &UsageGrainRow, resolved: &ResolvedPricing) -> GrainPrice {
     let incomplete_cache = row.cache_read_complete == 0 || row.cache_creation_complete == 0;
     let incomplete = incomplete_input_output || incomplete_cache;
 
-    let cost = Some(cost_with_pricing(
+    // The row's band says whether every request in it was over the model's
+    // long-context threshold, so the tier is applied to the whole row or none.
+    let tier = long_context_tier(provider, model);
+    let long_context = tier.is_some_and(|tier| tier.applies_to_band(row.prompt_band));
+    let cost = Some(cost_with_tier(
         &pricing,
+        tier.as_ref(),
+        long_context,
         row.input_tokens,
         row.output_tokens,
         row.cache_read_tokens.unwrap_or(0),
@@ -1231,6 +1362,8 @@ struct BucketAcc {
     /// Decision-model requests, which `turns` leaves out.
     decision_requests: i64,
     decisions: DecisionAcc,
+    /// Requests priced at a long-context rate.
+    long_context_requests: i64,
 }
 
 /// The decision-model share of one [`BucketAcc`].
@@ -1323,13 +1456,18 @@ impl BucketAcc {
             self.decision_requests += row.turns;
             self.decisions.add(row, &price, unmetered);
         } else {
-            self.turns += row.turns;
+            // A side call (a stall check, a title) is billed but is not a turn.
+            self.turns += row.turns - row.side_requests;
         }
         match price.cost {
             Some(TurnCost {
                 cost,
                 cache_excluded,
+                long_context,
             }) => {
+                if long_context {
+                    self.long_context_requests += row.turns;
+                }
                 self.cost_sum += cost;
                 self.priced_any = true;
                 self.cache_excluded_any |= cache_excluded;
@@ -3421,6 +3559,25 @@ impl SessionManager {
             return Ok(());
         }
 
+        // A chat at a usage limit makes no model request, a title included:
+        // the same decision the reply loop's gate makes before each request
+        // (`agents::usage_limit::reached_limit`). Live, a chat paused by its
+        // monthly limit still billed a naming call after every message.
+        let provider = match provider {
+            Some(provider)
+                if crate::agents::usage_limit::reached_limit(self, id)
+                    .await
+                    .is_some() =>
+            {
+                tracing::debug!(
+                    session_id = id,
+                    "usage limit reached; naming the chat without a model"
+                );
+                None
+            }
+            provider => provider,
+        };
+
         // Without a model only the placeholder is replaced: a title an earlier
         // turn's model wrote is better than one cut from the first message.
         let Some(provider) = provider else {
@@ -3444,7 +3601,15 @@ impl SessionManager {
         // or a rate limit, is exactly when the next turn would otherwise
         // quietly replace a good generated title with that snippet. A name
         // changes only by a person's rename or a successful generation.
-        let generated = match provider.generate_session_name(&conversation).await {
+        // The naming call is billed: scope the chat so the provider's default
+        // `generate_session_name` records it as a side call.
+        let generated = match side_usage::with_side_usage_chat(
+            self,
+            id,
+            provider.generate_session_name(&conversation),
+        )
+        .await
+        {
             Ok(name) if !name.trim().is_empty() => Some(name),
             Ok(_) => {
                 warn!("Session name generation for {} returned an empty name", id);
@@ -4382,22 +4547,11 @@ impl SessionStorage {
             .open(path)?;
         biorouter_sandbox::protect_owner_private_handle(&directory)?;
         for name in [DB_NAME, "sessions.db-wal", "sessions.db-shm"] {
-            let file = match fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-                .open(path.join(name))
-            {
-                Ok(file) => file,
+            match biorouter_sandbox::protect_owner_private_sqlite_file(&path.join(name)) {
+                Ok(()) => {}
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
                 Err(error) => return Err(error),
-            };
-            if !file.metadata()?.is_file() {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "session database and sidecars must be regular files",
-                ));
             }
-            biorouter_sandbox::protect_owner_private_handle(&file)?;
         }
         Ok(())
     }
@@ -4654,6 +4808,7 @@ impl SessionStorage {
         sqlx::query("CREATE INDEX idx_sessions_type ON sessions(session_type)")
             .execute(pool)
             .await?;
+        sqlx::query(SESSIONS_PARENT_INDEX_DDL).execute(pool).await?;
         // BRSDK: stable external handle for durable, resumable app sessions
         // (e.g. "app:<app-id>:<client-id>"). Unique so a reconnecting client
         // resolves back to its existing session.
@@ -4874,6 +5029,7 @@ impl SessionStorage {
         // table records: a database a development build already stamped 21 (or
         // later) without this table would never re-enter that arm.
         Self::create_decisions_table(pool).await?;
+        sqlx::query(SESSIONS_PARENT_INDEX_DDL).execute(pool).await?;
         // Last: every table it sweeps exists by now.
         Self::retire_side_rows_of_deleted_chats(pool).await?;
         Ok(())
@@ -8951,6 +9107,18 @@ impl SessionStorage {
     /// every usage grain it lands in as missing cache accounting
     /// ([`billable_usage_grain_sql`] counts each `*_known` against `turns`).
     async fn apply_side_usage_event(&self, entry: SideUsageEntry) -> Result<bool> {
+        self.apply_side_usage_with_cache(entry, 0, 0).await
+    }
+
+    /// [`Self::apply_side_usage_event`] with the call's cache buckets, which a
+    /// chat-model side call ([`side_usage`]) can report. The billed total then
+    /// includes them, as `Usage::billed_total` does for a turn.
+    async fn apply_side_usage_with_cache(
+        &self,
+        entry: SideUsageEntry,
+        cache_read_tokens: i64,
+        cache_creation_tokens: i64,
+    ) -> Result<bool> {
         if entry.event_key.trim().is_empty() {
             anyhow::bail!("usage event key must not be empty");
         }
@@ -8959,7 +9127,15 @@ impl SessionStorage {
         let mut tx = pool.begin().await?;
         let model = Some(entry.model_id.as_str()).filter(|model| !model.is_empty());
         let provider = Some(entry.provider.as_str()).filter(|provider| !provider.is_empty());
-        let billed = entry.billed_total();
+        let cache_read_tokens = cache_read_tokens.max(0);
+        let cache_creation_tokens = cache_creation_tokens.max(0);
+        let billed = entry
+            .billed_total()
+            .map(|billed| billed + cache_read_tokens + cache_creation_tokens)
+            .or_else(|| {
+                (cache_read_tokens + cache_creation_tokens > 0)
+                    .then_some(cache_read_tokens + cache_creation_tokens)
+            });
         // `session_type` is read from the chat in the same statement, and the
         // `WHERE` makes a chat that is gone insert nothing.
         let inserted = sqlx::query(
@@ -8967,7 +9143,7 @@ impl SessionStorage {
             INSERT INTO token_events
                 (session_id, ts, input_tokens, output_tokens, total_tokens, billed_total_tokens, model_id, provider,
                  cache_read_tokens, cache_creation_tokens, event_key, session_type)
-            SELECT s.id, CAST(strftime('%s', 'now') AS INTEGER), ?, ?, ?, ?, ?, ?, 0, 0, ?, s.session_type
+            SELECT s.id, CAST(strftime('%s', 'now') AS INTEGER), ?, ?, ?, ?, ?, ?, ?, ?, ?, s.session_type
               FROM sessions s
              WHERE s.id = ?
             ON CONFLICT DO NOTHING
@@ -8979,6 +9155,8 @@ impl SessionStorage {
         .bind(billed)
         .bind(model)
         .bind(provider)
+        .bind(cache_read_tokens)
+        .bind(cache_creation_tokens)
         .bind(&entry.event_key)
         .bind(&entry.session_id)
         .execute(&mut *tx)
@@ -9034,7 +9212,7 @@ impl SessionStorage {
         if !exists {
             anyhow::bail!("session not found");
         }
-        let rows = sqlx::query_as::<_, ModelUsageRow>(
+        let mut rows = sqlx::query_as::<_, ModelUsageRow>(&format!(
             r#"
             SELECT model_id,
                    provider,
@@ -9046,16 +9224,40 @@ impl SessionStorage {
                         THEN SUM(cache_read_tokens) END AS cache_read_tokens,
                    CASE WHEN COUNT(cache_creation_tokens) = COUNT(*)
                         THEN SUM(cache_creation_tokens) END AS cache_creation_tokens,
-                   COUNT(*)                        AS turns
+                   COUNT(*) - SUM({side})          AS turns
             FROM token_events
             WHERE session_id = ?1
             GROUP BY model_id, provider
             ORDER BY total_tokens DESC
             "#,
-        )
+            side = side_request_sql!(""),
+        ))
         .bind(session_id)
         .fetch_all(pool)
         .await?;
+
+        // Price each group per prompt band, so a request over a long-context
+        // threshold is billed at its tier, exactly as the usage summary does.
+        let grain =
+            sqlx::query_as::<_, UsageGrainRow>(&token_events_grain_sql("te.session_id = ?1"))
+                .bind(session_id)
+                .fetch_all(pool)
+                .await?;
+        let pricing = resolve_grain_pricing(&grain).await;
+        let mut priced: HashMap<(Option<String>, Option<String>), BucketAcc> = HashMap::new();
+        for row in &grain {
+            priced
+                .entry((row.model_id.clone(), row.provider.clone()))
+                .or_default()
+                .add(row, &pricing);
+        }
+        for row in &mut rows {
+            if let Some(acc) = priced.get(&(row.model_id.clone(), row.provider.clone())) {
+                row.cost = acc.cost();
+                row.cost_is_partial = acc.unpriced_any || acc.cache_excluded_any;
+                row.long_context_turns = acc.long_context_requests;
+            }
+        }
         Ok(rows)
     }
 
@@ -9077,7 +9279,7 @@ impl SessionStorage {
                         THEN SUM(u.cache_read_tokens) END AS cache_read_tokens,
                    CASE WHEN SUM(u.cache_creation_known) = SUM(u.turns)
                         THEN SUM(u.cache_creation_tokens) END AS cache_creation_tokens,
-                   SUM(u.turns)                       AS turns
+                   SUM(u.turns) - SUM(u.side_requests) AS turns
             FROM {BILLABLE_USAGE}
             WHERE u.ts >= ?1 AND u.ts <= ?2
             GROUP BY u.model_id, u.provider
@@ -12998,6 +13200,8 @@ mod tests {
                 output_complete: 1,
                 cache_read_complete: 1,
                 cache_creation_complete: 1,
+                prompt_band: 0,
+                side_requests: 0,
             },
             // Day 10, unknown model → unpriced.
             UsageGrainRow {
@@ -13014,6 +13218,8 @@ mod tests {
                 output_complete: 1,
                 cache_read_complete: 1,
                 cache_creation_complete: 1,
+                prompt_band: 0,
+                side_requests: 0,
             },
             // Day 11, priced: 2M input + 1M output → 2.80 + 4.40 = $7.20.
             UsageGrainRow {
@@ -13030,6 +13236,8 @@ mod tests {
                 output_complete: 1,
                 cache_read_complete: 1,
                 cache_creation_complete: 1,
+                prompt_band: 0,
+                side_requests: 0,
             },
         ]
     }
@@ -13139,6 +13347,8 @@ mod tests {
             output_complete: 1,
             cache_read_complete: 1,
             cache_creation_complete: 1,
+            prompt_band: 0,
+            side_requests: 0,
         }
     }
 
@@ -13339,6 +13549,8 @@ mod tests {
             output_complete: 1,
             cache_read_complete: 1,
             cache_creation_complete: 1,
+            prompt_band: 0,
+            side_requests: 0,
         }];
         let totals = totals_from_grain(&grain);
         assert_eq!(totals.total_tokens, Some(150));
@@ -13362,6 +13574,8 @@ mod tests {
             output_complete: 0,
             cache_read_complete: 0,
             cache_creation_complete: 0,
+            prompt_band: 0,
+            side_requests: 0,
         }];
         let totals = totals_from_grain(&grain);
         assert_eq!(totals.cost, None, "an unknown cost must not render as $0");
@@ -13384,6 +13598,8 @@ mod tests {
             output_complete: 1,
             cache_read_complete: 0,
             cache_creation_complete: 0,
+            prompt_band: 0,
+            side_requests: 0,
         }];
         let totals = totals_from_grain(&grain);
         assert!(approx(totals.cost, 1.40));
@@ -13409,6 +13625,8 @@ mod tests {
             output_complete: 1,
             cache_read_complete: 0,
             cache_creation_complete: 0,
+            prompt_band: 0,
+            side_requests: 0,
         };
         let price = price_grain(&row, &ResolvedPricing::new());
         assert_eq!(price.cost, None);
@@ -13453,6 +13671,8 @@ mod tests {
             output_complete: 1,
             cache_read_complete: 1,
             cache_creation_complete: 1,
+            prompt_band: 0,
+            side_requests: 0,
         }];
         let rows = rollup_report_with_pricing(&grain, UsageGroup::Model, &resolved);
         assert!(approx(rows[0].cost, 6.0));
@@ -13493,6 +13713,8 @@ mod tests {
                 output_complete: 1,
                 cache_read_complete: 1,
                 cache_creation_complete: 1,
+                prompt_band: 0,
+                side_requests: 0,
             },
             UsageGrainRow {
                 day: "2026-07-12".into(),
@@ -13508,6 +13730,8 @@ mod tests {
                 output_complete: 1,
                 cache_read_complete: 1,
                 cache_creation_complete: 1,
+                prompt_band: 0,
+                side_requests: 0,
             },
         ];
         let day = &rollup_report(&grain, UsageGroup::Day)[0];
@@ -18385,6 +18609,12 @@ mod tests {
 
         let db = data_dir.join(SESSIONS_FOLDER).join(DB_NAME);
         let pool = raw_pool(&db).await;
+        // A build that predates #56 had no `parent_session_id`, so it had no
+        // index on it either; SQLite refuses to drop an indexed column.
+        sqlx::query("DROP INDEX IF EXISTS idx_sessions_parent")
+            .execute(&pool)
+            .await
+            .unwrap();
         for column in ["privacy_tier", "privacy_reason", "parent_session_id"] {
             if SessionStorage::table_has_column(&pool, "sessions", column)
                 .await
@@ -22810,6 +23040,147 @@ mod subagent_children_tests {
                 .session
                 .message_count,
             3
+        );
+    }
+}
+
+#[cfg(test)]
+mod naming_at_a_limit_tests {
+    use super::*;
+    use crate::model::ModelConfig;
+    use crate::providers::base::{ProviderMetadata, ProviderUsage};
+    use crate::providers::errors::ProviderError;
+    use rmcp::model::Tool;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// A namer that counts how often it is asked.
+    struct CountingNamer(Arc<AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl Provider for CountingNamer {
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            Err(ProviderError::ExecutionError("unused".to_string()))
+        }
+
+        async fn generate_session_name(
+            &self,
+            _messages: &Conversation,
+        ) -> Result<String, ProviderError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok("Generated title".to_string())
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new("mock-model").unwrap()
+        }
+
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata {
+                name: "mock".to_string(),
+                display_name: "Mock".to_string(),
+                description: "mock".to_string(),
+                default_model: "mock-model".to_string(),
+                known_models: vec![],
+                model_doc_link: String::new(),
+                config_keys: vec![],
+                allows_unlisted_models: false,
+                tier: Default::default(),
+                runs_locally: false,
+                institutions: Vec::new(),
+            }
+        }
+
+        fn get_name(&self) -> &str {
+            "mock"
+        }
+    }
+
+    /// A chat at its usage limit makes no model request, so it is not named by
+    /// one either: it gets the title cut from its first message. Below the
+    /// limit the namer runs as before.
+    #[tokio::test]
+    async fn a_chat_at_its_usage_limit_is_named_without_a_model() {
+        use crate::agents::usage_limit::{self, ChatLimitOverride};
+        let temp = tempfile::tempdir().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let asked = Arc::new(AtomicUsize::new(0));
+        let mut chats = Vec::new();
+        for (name, limit) in [("capped", 10_u64), ("open", 1_000_000)] {
+            let session = sm
+                .create_session(
+                    temp.path().to_path_buf(),
+                    crate::session::DEFAULT_SESSION_NAME.to_string(),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            sm.add_message(
+                &session.id,
+                &Message::user().with_text(format!("Explain the {name} chat in one line.")),
+            )
+            .await
+            .unwrap();
+            sm.add_message(&session.id, &Message::assistant().with_text("ok"))
+                .await
+                .unwrap();
+            usage_limit::set_for_session(
+                &sm,
+                &session.id,
+                Some(ChatLimitOverride::Limit {
+                    max_tokens: Some(limit),
+                    max_usd: None,
+                }),
+            )
+            .await
+            .unwrap();
+            sm.record_token_event(
+                &session.id,
+                Some(500),
+                Some(20),
+                520,
+                Some("mock-model"),
+                Some("mock"),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            chats.push((name, session.id));
+        }
+        let (_, capped) = &chats[0];
+        let (_, open) = &chats[1];
+        assert!(
+            usage_limit::reached_limit(&sm, capped).await.is_some(),
+            "the fixture really is at its limit"
+        );
+        assert!(usage_limit::reached_limit(&sm, open).await.is_none());
+
+        sm.maybe_update_name(capped, Arc::new(CountingNamer(asked.clone())))
+            .await
+            .unwrap();
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            0,
+            "no naming call at the limit"
+        );
+        assert_eq!(
+            sm.get_session(capped, false).await.unwrap().name,
+            "Explain the capped chat in one line."
+        );
+
+        sm.maybe_update_name(open, Arc::new(CountingNamer(asked.clone())))
+            .await
+            .unwrap();
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            sm.get_session(open, false).await.unwrap().name,
+            "Generated title"
         );
     }
 }

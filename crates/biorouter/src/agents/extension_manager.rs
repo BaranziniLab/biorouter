@@ -783,6 +783,43 @@ async fn call_admitted_tool(
     }
 }
 
+/// [`call_admitted_tool`] behind the status-check pacing
+/// (`tool_monitor::poll_pacing`): a repeated check of a job that is still
+/// running waits out the job's interval first, after every admission check and
+/// before the call, and its result says it was held. `call` is the chat's
+/// session id and the prefixed tool name the pacing keys on.
+async fn call_paced_tool(
+    call: (&str, &str),
+    client: &McpClientBox,
+    tool_name: &str,
+    arguments: Option<rmcp::model::JsonObject>,
+    meta: McpMeta,
+    cancellation_token: CancellationToken,
+    computer_permit: Option<crate::security::computer_use::ComputerUsePermit>,
+) -> Result<rmcp::model::CallToolResult, ErrorData> {
+    use crate::tool_monitor::poll_pacing;
+    let (session_id, prefixed_name) = call;
+    let paced = poll_pacing::before_dispatch(
+        session_id,
+        prefixed_name,
+        arguments.as_ref(),
+        &cancellation_token,
+    )
+    .await;
+    let _call_phase = crate::agents::phase_timing::Phase::start("mcp.call_tool");
+    let mut result = call_admitted_tool(
+        client,
+        tool_name,
+        arguments.clone(),
+        meta,
+        cancellation_token,
+        computer_permit,
+    )
+    .await?;
+    poll_pacing::after_dispatch(paced, prefixed_name, arguments.as_ref(), &mut result);
+    Ok(result)
+}
+
 fn seal_file_diagnostics(
     result: &mut rmcp::model::CallToolResult,
     trusted_owner: bool,
@@ -3390,7 +3427,14 @@ impl ExtensionManager {
 
     async fn prefixed_tool_name(&self, tool_name: &str) -> String {
         if !tool_name.contains("__")
-            && ["execute_code", "read_module", "search_modules"].contains(&tool_name)
+            && [
+                "execute_code",
+                "read_module",
+                "search_modules",
+                "wait_for",
+                "watch_job",
+            ]
+            .contains(&tool_name)
             && self.extensions.lock().await.contains_key("code_execution")
         {
             format!("code_execution__{tool_name}")
@@ -3525,10 +3569,11 @@ impl ExtensionManager {
             // `max(durations)`. `call_tool` takes `&self` and implementations
             // are internally synchronized, so the guard (and its
             // `mcp.client_lock_wait` span) is gone and calls now overlap.
-            let _call_phase = crate::agents::phase_timing::Phase::start("mcp.call_tool");
             // H1: credential material is withheld from what comes back, here,
-            // where every path to a model converges.
-            let mut result = call_admitted_tool(
+            // where every path to a model converges. A repeated check of a
+            // running job first waits out its interval (`call_paced_tool`).
+            let mut result = call_paced_tool(
+                (&session_id, &prefixed_name),
                 &client,
                 &tool_name,
                 arguments.clone(),
@@ -4068,14 +4113,38 @@ impl ExtensionManager {
     /// `cancel` is the turn's cancellation token, threaded down to the
     /// workspace map so a `Stop` is honoured while its directory walk is still
     /// outstanding. See `agents::workspace_summary`.
+    ///
+    /// The whole block, as one string: [`Self::collect_moim_sections_at`]
+    /// rendered by [`crate::agents::moim::render_full_block`]. The agent loop
+    /// asks for the sections instead, so a later note can carry only the parts
+    /// that changed (`agents::moim`).
     pub async fn collect_moim(
         &self,
         session_id: &str,
         working_dir: &std::path::Path,
         cancel: Option<&tokio_util::sync::CancellationToken>,
     ) -> Option<String> {
+        let sections = self
+            .collect_moim_sections_at(session_id, working_dir, cancel, chrono::Local::now())
+            .await?;
+        Some(crate::agents::moim::render_full_block(&sections))
+    }
+
+    /// The per-turn context as keyed parts, in the order a full block shows
+    /// them: the clock, the working directory (or a Crew chat's scope line),
+    /// the workspace map, then each platform extension's part. `now` is the
+    /// clock to state, so a test can let time pass.
+    pub async fn collect_moim_sections_at(
+        &self,
+        session_id: &str,
+        working_dir: &std::path::Path,
+        cancel: Option<&tokio_util::sync::CancellationToken>,
+        now: chrono::DateTime<chrono::Local>,
+    ) -> Option<Vec<crate::agents::moim::MoimSection>> {
+        use crate::agents::moim::{self, MoimSection};
         // Use minute-level granularity to prevent conversation changes every second
-        let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:00").to_string();
+        let timestamp = now.format("%Y-%m-%d %H:%M:00").to_string();
+        let clock = MoimSection::new(moim::CLOCK_KEY, format!("It is currently {timestamp}"));
         let crew = match crate::crew::manager() {
             Ok(crew) => crew,
             Err(error) => {
@@ -4090,15 +4159,15 @@ impl ExtensionManager {
             // None of their workspace context is part of its remote grant. Where its remote
             // paths lead depends on the grant's level (design OW-6).
             let scope = crew.moim_scope_line(session_id).await;
-            return Some(format!(
-                "{MOIM_OPEN_TAG}\nIt is currently {timestamp}\n{scope}\n{MOIM_CLOSE_TAG}"
-            ));
+            return Some(vec![clock, MoimSection::new(moim::SCOPE_KEY, scope)]);
         }
-        let mut content = format!(
-            "{MOIM_OPEN_TAG}\nIt is currently {}\nWorking directory: {}\n",
-            timestamp,
-            working_dir.display()
-        );
+        let mut sections = vec![
+            clock,
+            MoimSection::new(
+                moim::CWD_KEY,
+                format!("Working directory: {}", working_dir.display()),
+            ),
+        ];
 
         // BR-1: give the model a bounded, gitignore-aware map of the workspace so
         // it doesn't rediscover project structure from scratch every session. The
@@ -4106,16 +4175,13 @@ impl ExtensionManager {
         if let Some(map) =
             crate::agents::workspace_summary::workspace_summary(working_dir, cancel).await
         {
-            content.push('\n');
-            content.push_str(&map);
-            content.push('\n');
+            sections.push(MoimSection::new(moim::WORKSPACE_MAP_KEY, map));
         }
 
-        content.push_str(&self.platform_moim(session_id).await);
-        content.push('\n');
-        content.push_str(MOIM_CLOSE_TAG);
-
-        Some(content)
+        for (name, part) in self.platform_moim_parts(session_id).await {
+            sections.push(MoimSection::new(moim::extension_key(&name), part));
+        }
+        Some(sections)
     }
 
     /// Every platform extension's per-turn context, each part on its own line.
@@ -4127,7 +4193,19 @@ impl ExtensionManager {
     /// `workspace_extension::EXTENSION_NAME`: the map is keyed by
     /// `normalize(config.key())`, which lowercases, so `"workspace"` never
     /// equalled `"Workspace"` and the gate never applied.
+    #[cfg(test)]
     async fn platform_moim(&self, session_id: &str) -> String {
+        let mut content = String::new();
+        for (_, part) in self.platform_moim_parts(session_id).await {
+            content.push('\n');
+            content.push_str(&part);
+        }
+        content
+    }
+
+    /// [`Self::platform_moim`] as `(extension name, part)` pairs, in the
+    /// extension map's order.
+    async fn platform_moim_parts(&self, session_id: &str) -> Vec<(String, String)> {
         let platform_clients: Vec<(String, ExtensionConfig, McpClientBox)> = {
             let extensions = self.extensions.lock().await;
             extensions
@@ -4146,15 +4224,14 @@ impl ExtensionManager {
                 .collect()
         };
 
-        let mut content = String::new();
+        let mut parts = Vec::new();
         for (name, config, client) in platform_clients {
             if let Some(moim_content) = client.get_moim_for(session_id, &config).await {
                 tracing::debug!("MOIM content from {}: {} chars", name, moim_content.len());
-                content.push('\n');
-                content.push_str(&moim_content);
+                parts.push((name, moim_content));
             }
         }
-        content
+        parts
     }
 }
 

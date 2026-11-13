@@ -14,6 +14,11 @@ import {
   FooterCardValue,
 } from './bottom_menu/FooterCard';
 import { useFooterCard } from './bottom_menu/useFooterCard';
+import {
+  AUTO_COMPACT_MAX_TOKENS_KEY,
+  effectiveAutoCompactTrigger,
+  savedAutoCompactCeiling,
+} from '../utils/autoCompactTrigger';
 import './bottom_menu/pickers.css';
 
 interface ContextWindowGaugeProps {
@@ -27,6 +32,16 @@ const AUTO_COMPACT_THRESHOLD_KEY = 'BIOROUTER_AUTO_COMPACT_THRESHOLD';
 const AUTO_COMPACT_MIN_PCT = 20;
 const AUTO_COMPACT_MAX_PCT = 90;
 const AUTO_COMPACT_DEFAULT_PCT = 80;
+
+/**
+ * The note while the token ceiling, not the marker's share, is where Biorouter compacts (a window
+ * over 250k tokens by default). Local rather than in `CONTEXT_CARD_COPY` because only this card
+ * says it.
+ */
+export const CEILING_NOTE = (tokens: string, pct: number) =>
+  `Biorouter compacts this chat automatically at ${tokens} tokens used (${pct}%), the limit for any window. The marker sets a share of the window, which applies only below that.`;
+/** The ceiling tick's accessible description, read with the bar. */
+export const CEILING_TICK_LABEL = (tokens: string) => `Compacts at ${tokens} tokens`;
 
 function clampThresholdPct(v: number): number {
   if (!Number.isFinite(v)) return AUTO_COMPACT_DEFAULT_PCT;
@@ -95,6 +110,8 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
    * change the person makes, which always writes the marker's value).
    */
   const [savedOutsideMarker, setSavedOutsideMarker] = useState<'off' | number | null>(null);
+  /** The absolute token ceiling (`BIOROUTER_AUTO_COMPACT_MAX_TOKENS`), `null` for none. */
+  const [ceiling, setCeiling] = useState<number | null>(savedAutoCompactCeiling(undefined));
   const nothingToCompactId = useId();
   const barRef = useRef<HTMLDivElement | null>(null);
   const draggingRef = useRef(false);
@@ -126,6 +143,21 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
       })
       .catch(() => {
         /* fall back to default */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [readConfigValue]);
+
+  // The ceiling is read once, like the threshold; it is set in config, not here.
+  useEffect(() => {
+    let cancelled = false;
+    readConfigValue(AUTO_COMPACT_MAX_TOKENS_KEY, false)
+      .then((v) => {
+        if (!cancelled) setCeiling(savedAutoCompactCeiling(v));
+      })
+      .catch(() => {
+        /* the daemon's default stands */
       });
     return () => {
       cancelled = true;
@@ -264,14 +296,17 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
   const ratio = Math.min(1, current / total);
   const pct = Math.round(ratio * 100);
   const leftPct = Math.round(remainingShare(current, total) * 100);
-  const overThreshold = pct >= thresholdPct;
+  // What Biorouter will do, which the marker can only show between 20 and 90%:
+  // `null` when automatic compaction is off.
+  const compactsAt = savedOutsideMarker === 'off' ? null : (savedOutsideMarker ?? thresholdPct);
+  // Where it really fires: the lower of that share and the token ceiling.
+  const trigger = effectiveAutoCompactTrigger(compactsAt, total, ceiling);
+  const ceilingTick = trigger?.byCeiling ? trigger : null;
+  const overThreshold = ceilingTick ? ratio * 100 >= ceilingTick.pct : pct >= thresholdPct;
   // Three bands, not four: the old ladder spelled `warning` twice (`ratio <= 0.75`
   // and the fallback both resolved to it), so the 0.75 rung was a no-op.
   const barTone = overThreshold ? 'danger' : ratio <= 0.5 ? 'success' : 'warning';
   const empty = current === 0;
-  // What Biorouter will do, which the marker can only show between 20 and 90%:
-  // `null` when automatic compaction is off.
-  const compactsAt = savedOutsideMarker === 'off' ? null : (savedOutsideMarker ?? thresholdPct);
   return (
     <FooterCardSection label={CONTEXT_CARD_COPY.section}>
       {/* What is LEFT is the reading, because it is what the ring beside it
@@ -324,11 +359,36 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
         >
           <span aria-hidden="true" className="br-context-gauge__glyph" />
         </div>
+        {/* Where the token ceiling makes Biorouter compact, when that comes
+            before the marker's share. Not a control: the ceiling is set in
+            config. Drawn as a filled tick in the bar's own ink, so it reads as
+            the point the bar runs into rather than a second handle. */}
+        {ceilingTick && (
+          <span
+            role="img"
+            aria-label={CEILING_TICK_LABEL(fmt(ceilingTick.tokens))}
+            data-testid="context-gauge-ceiling"
+            className="br-context-gauge__ceiling"
+            style={{
+              position: 'absolute',
+              left: `${Math.max(0, Math.min(100, ceilingTick.pct))}%`,
+              bottom: 0,
+              width: 2,
+              height: 14,
+              transform: 'translateX(-50%)',
+              background: 'var(--text-default)',
+              borderRadius: 1,
+              pointerEvents: 'none',
+            }}
+          />
+        )}
       </div>
       <FooterCardNote>
         {compactsAt === null
           ? CONTEXT_CARD_COPY.autoCompactOff
-          : CONTEXT_CARD_COPY.autoCompactNote(compactsAt)}
+          : ceilingTick
+            ? CEILING_NOTE(fmt(ceilingTick.tokens), Math.max(1, Math.round(ceilingTick.pct)))
+            : CONTEXT_CARD_COPY.autoCompactNote(compactsAt)}
       </FooterCardNote>
       <FooterCardActions>
         <FooterCardAction

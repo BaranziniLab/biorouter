@@ -390,8 +390,9 @@ impl ScriptCallGate {
     }
 
     /// The handle, cloned out — never read across an `await`, because the lock is
-    /// a `std::sync::Mutex`.
-    fn parked_permit_handle(
+    /// a `std::sync::Mutex`. Also what a script's `sleep()` and `wait_for()`
+    /// hand the permit back through while they wait.
+    pub(crate) fn parked_permit_handle(
         &self,
     ) -> Option<crate::agents::tool_dispatch_limits::DispatchPermitHandle> {
         self.parking_permit

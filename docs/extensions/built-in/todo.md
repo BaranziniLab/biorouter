@@ -1,18 +1,18 @@
 # Todo capability
 
-> **What this is.** User guide to the built-in Todo capability, which makes BioRouter break multi-step work into a tracked checklist and report progress as it goes.
-> **Status:** Current. The capability is enabled by default, so no manual setup is normally needed. The rules under [What BioRouter enforces](#what-biorouter-enforces) are enforced by the agent loop as of 2026-09-11; before that they were advice in the system prompt that nothing checked.
+> **What this is.** User guide to the built-in Todo capability, which makes Biorouter break multi-step work into a tracked checklist and report progress as it goes.
+> **Status:** Current. The capability is enabled by default, so no manual setup is normally needed. The rules under [What Biorouter enforces](#what-biorouter-enforces) are enforced by the agent loop as of 2026-09-11; before that they were advice in the system prompt that nothing checked. The cheaper way the model reports progress, described under [How progress reaches the checklist](#how-progress-reaches-the-checklist), landed in 2026-11.
 > **Audience:** end users.
 
-The Todo capability keeps BioRouter organized on long tasks. When your request has several steps, BioRouter writes a checklist before it starts, ticks items off as it works, and does not end the turn with items left open without naming them for you. The checklist appears in the chat summary's **To Do** section as soon as it exists, so you can see where BioRouter is rather than waiting for a single opaque answer.
+The Todo capability keeps Biorouter organized on long tasks. When your request has several steps, Biorouter writes a checklist before it starts, ticks items off as it works, and does not end the turn with items left open without naming them for you. The checklist appears in the chat summary's **To Do** section as soon as it exists, so you can see where Biorouter is rather than waiting for a single opaque answer.
 
-## What BioRouter enforces
+## What Biorouter enforces
 
 For a request with several steps, keeping the checklist is not left to the model's judgement. Three rules apply, and each one is bounded so that a model with a good reason can still proceed:
 
-1. **Plan first.** When your message reads as several steps and the chat's checklist is empty, BioRouter tells the model, for that turn, to write the checklist with `todo_write` before doing anything else.
-2. **One redirect.** If the model reaches for another tool anyway, BioRouter refuses that first call (or that first batch of parallel calls) and points it back at `todo_write`. The refused call never runs, and the model sees why. A batch that writes the checklist alongside its other calls is not refused. This happens **once per turn**: if the model repeats the call — for instance after explaining why a checklist is not worth keeping here — it runs.
-3. **No silent stop.** When a turn created or changed the checklist, BioRouter does not let it end while items are unfinished, unless the model's final message names each open item, by its `#N` id or by its text. Otherwise BioRouter sends the model back to finish, and shows you a notice saying which items are open. It does this at most five times per turn, and the count does not reset when the model runs tools. After the fifth time the turn ends anyway, with a notice that items were left open.
+1. **Plan first.** When your message reads as several steps and the chat's checklist is empty, Biorouter tells the model, for that turn, to write the checklist with `todo_write` before doing anything else.
+2. **One redirect.** If the model reaches for another tool anyway, Biorouter refuses that first call (or that first batch of parallel calls) and points it back at `todo_write`. The refused call never runs, and the model sees why. A batch that writes the checklist alongside its other calls is not refused, and neither is a call whose `todo` field adds the steps (see below). This happens **once per turn**: if the model repeats the call (for instance after explaining why a checklist is not worth keeping here), it runs.
+3. **No silent stop.** When a turn created or changed the checklist, Biorouter does not let it end while items are unfinished, unless the model's final message names each open item, by its `#N` id or by its text. Otherwise Biorouter sends the model back to finish, and shows you a notice saying which items are open. It does this at most five times per turn, and the count does not reset when the model runs tools. After the fifth time the turn ends anyway, with a notice that items were left open.
 
 The model is asked to say *why* an item is left open, but only the naming is checked. A mechanical check cannot tell a reason from a status recap; a named item is one you can see was not done, which is what the rule protects.
 
@@ -29,12 +29,25 @@ The detection is deliberately conservative, and it reads English cues only. A qu
 - The Todo capability is disabled, or `todo_write` is not on the model's tool list for this chat.
 - Chat mode, where no tools run.
 - Subagents. A delegated task's turn ends with an observe-only `SubagentStop` rather than a blockable stop, and its instructions come from the parent model.
-- The Claude Code and Codex providers. Their tool calls reach BioRouter through the coding-agent bridge rather than BioRouter's own loop.
+- The Claude Code and Codex providers. Their tool calls reach Biorouter through the coding-agent bridge rather than Biorouter's own loop.
 - Slash commands.
 
 While a `/goal` is active, the goal's evaluator decides when a turn may end, so the "no silent stop" rule stands aside; the first two rules still apply.
 
 The system prompt describes these rules only in a chat where they are enforced.
+
+## How progress reaches the checklist
+
+Every model request re-sends the whole conversation, so a call made only to tick a box costs as much as a call that does real work. In one long chat measured in 2026-11, 239 of 575 requests were a checklist update made on its own, 38% of all the tokens the chat used. The capability is built so the same checklist costs far fewer requests:
+
+- **Progress rides on real work.** While the checklist tools are available, Biorouter adds an optional `todo` field to the tools the model does its work with (`execute_code`, `shell` and `text_editor`). The model reports progress there, for example `"todo": {"done": [2, 3]}`, in the same call that runs the next step. Biorouter takes the field off before the tool runs, so the tool never sees it, and applies it to the checklist only once the call has succeeded. A call that fails, or is refused before it runs, changes nothing on the checklist, and the model is told in that call's result that its update was not applied, so it can send it again with its next call. That holds for a failure reported as an error result and for one the tool raises as an error (as `text_editor` does): the sentence is added to the error message. (It used to be applied before the tool ran, so a script that ticked off its own steps and then failed left a checklist saying "done".) The keys are `done` and `blocked` (item ids), `start` (one id, to work out of order; `0`, `"0"` or an empty value means none and is ignored), `add` (new items, appended) and `plan` (replaces the plan). A stale id is skipped and the rest still applies; a malformed field changes nothing. A `todo_update` that names one item twice (at the top level and in `updates`) reports it once. Once the call has succeeded, its transcript row says what it did to the checklist, such as "Completing 2 tasks"; a failed call's row says "Checklist not updated".
+- **The prompt names the field only where it exists.** The system prompt tells the model to use the `todo` field only when this turn's tool list carries it. It does not on the Claude Code and Codex providers (their calls reach Biorouter through the coding-agent bridge, which never takes the field), with the checklist tools off, or with none of the three tools on the list. There the prompt says instead to send checklist updates in the same message as real work.
+- **The current item is worked out, not reported.** When no item is marked in progress, the first open item that is not blocked counts as in progress, in the model's copy of the checklist and in the **To Do** section alike. The model only reports what is done or blocked. An item marked in progress explicitly still wins, for work taken out of order.
+- **Short answers to the model.** A checklist tool answers the model with a few characters, such as `ok #3,#5`. The full wording, and the task details the transcript row takes its title from, go in a copy only you see. Errors are explained in full to both.
+- **A short copy in every request.** The checklist the model reads with each request lists open items in full, but older completed items as a single count (the last three stay, for orientation), and plan text past 1,200 characters is cut with a note saying so.
+- **Plans only for real multi-step work.** The model is told to skip the checklist for simple tasks, never to make a one-step list, to keep it to 3-7 short steps, to mark several items at once, and not to repeat the list in its reply.
+
+The five checklist tools below all still work, and the model uses them to seed or restructure a list, or when no other call is coming.
 
 > **Note.** This capability is **enabled by default**. Its internal registration still uses the legacy `PlatformExtensionDef` type; that storage name does not make it an installed extension. The configuration walkthrough below is only needed if you previously disabled it, or want to confirm its state.
 
@@ -65,11 +78,11 @@ These five tools stay directly callable when Code Execution mode is on. Most oth
 
 | Tool | Description |
 |------|-------------|
-| `todo_write` | Replace the entire checklist with a markdown checklist. Used to seed the initial list. It discards every existing item and renumbers the `#N` ids, so the tools below are what BioRouter uses to change a list that already exists. |
+| `todo_write` | Replace the entire checklist with a markdown checklist. Used to seed the initial list. It discards every existing item and renumbers the `#N` ids, so the tools below, and the `todo` field, are what Biorouter uses to change a list that already exists. |
 | `todo_expand` | Break one coarse item into the concrete steps it turned out to be, **in place**. The steps take that item's position, so the list still reads in the order the work happens, and no other item is renumbered. |
-| `todo_add` | Add pending items without rewriting the existing ones — appended by default, or inserted directly after a given `#N` id. Each new item gets a fresh id. |
-| `todo_update` | Update a single item by its `#N` id — change its status, its text, or both — without touching the rest of the list. |
-| `plan_write` | Set or update the living plan: a step-by-step plan kept current as work proceeds, re-injected into the model's context each turn alongside the checklist. An empty string clears it. |
+| `todo_add` | Add pending items without rewriting the existing ones: appended by default, or inserted directly after a given `#N` id. Each new item gets a fresh id. |
+| `todo_update` | Update items by their `#N` ids, one (`id` with `status`) or several at once (`updates`), all or nothing, without touching the rest of the list. Text is sent only to rename an item. |
+| `plan_write` | Set or update a short plan, shown to the model with the checklist in every request. An empty string clears it. |
 
 ## Checklist item states
 
@@ -82,16 +95,16 @@ Items carry one of four states, written in the familiar markdown checkbox syntax
 | `- [!] task` | blocked |
 | `- [x] task` | completed |
 
-The `[~]` in-progress marker is what makes the checklist useful while a long task is still running: it shows you which single item BioRouter is working on right now.
+The `[~]` in-progress marker is what makes the checklist useful while a long task is still running: it shows you which single item Biorouter is working on right now. Unless the model marked another item, it is the first open item that is not blocked.
 
-`[!] blocked` is for work that cannot proceed until something outside BioRouter's
-control arrives — most often an answer from you. It is worth watching for: a
-blocked item is usually BioRouter telling you it is waiting on a decision.
+`[!] blocked` is for work that cannot proceed until something outside Biorouter's
+control arrives, most often an answer from you. It is worth watching for: a
+blocked item is usually Biorouter telling you it is waiting on a decision.
 
 ## When a task turns out to be bigger than it looked
 
 Plans start coarse. An item like "do the actual work" often turns out to be ten
-steps once BioRouter gets to it, and where those steps land matters: appended to
+steps once Biorouter gets to it, and where those steps land matters: appended to
 the end, they would sit *after* "test and verify", and the checklist would stop
 describing the real order of the work.
 
@@ -111,21 +124,21 @@ nested under it:
 
 Nesting stops at one level, on purpose: the checklist is there to show progress,
 not to become a project taxonomy. Every id already on the list keeps the number
-it had, so anything BioRouter was tracking still points at the same task.
+it had, so anything Biorouter was tracking still points at the same task.
 
 ## Example usage
 
-In this example BioRouter fixes formatting inconsistencies across two documentation files, and uses the Todo capability to work through them systematically.
+In this example Biorouter fixes formatting inconsistencies across two documentation files, and uses the Todo capability to work through them systematically.
 
-> **Note.** This example is self-referential — it shows BioRouter editing BioRouter's own documentation, so its checklist items refer to an internal docs style guide ("reference pattern", "reference format") that you do not need to know. Read it for the *shape* of the checklist, not for its content. Note also that every item is already ticked `[x]`, because the transcript was captured after the task finished; during a real run you would see a mix of `[ ]`, `[~]` and `[x]`.
+> **Note.** This example is self-referential: it shows Biorouter editing Biorouter's own documentation, so its checklist items refer to an internal docs style guide ("reference pattern", "reference format") that you do not need to know. Read it for the *shape* of the checklist, not for its content. Note also that every item is already ticked `[x]`, because the transcript was captured after the task finished; during a real run you would see a mix of `[ ]`, `[~]` and `[x]`.
 
-### BioRouter prompt
+### Biorouter prompt
 
 ```text
 I need to update our documentation to fix formatting inconsistencies between two tutorial files. There are several sections that don't match the expected pattern. Can you help me systematically work through these issues and track our progress?
 ```
 
-### BioRouter output
+### Biorouter output
 
 ```md
 I'll help you fix the documentation inconsistencies systematically. Let me break this down into organized tasks and track our progress.
@@ -179,9 +192,10 @@ The documentation now follows a consistent pattern and provides a clear, organiz
 
 ## Related documentation
 
-- [Extensions and skills guide](../extensions-and-skills-guide.md) — how to enable, disable and configure extensions generally.
-- [Installation](../../getting-started/installation.md) — the list of capabilities enabled out of the box.
-- [Subagents](../../agent-loop/subagents.md) — the other mechanism for structuring long, multi-step work.
-- [Context engineering](../../agent-loop/context-engineering.md) — how the checklist and living plan are re-injected into the model's context each turn.
-- [Hooks reference](../../agent-loop/hooks/hooks-reference.md) — where the "no silent stop" check sits among the other checks that run when the agent tries to finish a turn.
-- [Code Execution capability](code-execution.md) — the mode that routes most tools through scripts, and the tools it leaves directly callable.
+- [Extensions and skills guide](../extensions-and-skills-guide.md): how to enable, disable and configure extensions generally.
+- [Installation](../../getting-started/installation.md): the list of capabilities enabled out of the box.
+- [Subagents](../../agent-loop/subagents.md): the other mechanism for structuring long, multi-step work.
+- [Context engineering](../../agent-loop/context-engineering.md): how the checklist and plan are re-injected into the model's context each turn.
+- [Waiting on jobs](../../agent-loop/waiting-on-jobs.md): the other half of the same token work, waiting on a long job without a model request per check.
+- [Hooks reference](../../agent-loop/hooks/hooks-reference.md): where the "no silent stop" check sits among the other checks that run when the agent tries to finish a turn.
+- [Code Execution capability](code-execution.md): the mode that routes most tools through scripts, and the tools it leaves directly callable.

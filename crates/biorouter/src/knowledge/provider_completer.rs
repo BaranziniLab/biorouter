@@ -173,11 +173,22 @@ impl Completer for ProviderCompleter {
         let provider_tools: Vec<Tool> = tools.to_vec();
 
         // 3. Call the real provider.
-        let (reply_msg, _usage) = self
+        let (reply_msg, usage) = self
             .provider
             .complete(system_prompt, &provider_messages, &provider_tools)
             .await
             .map_err(|e| anyhow::anyhow!("provider.complete failed: {e}"))?;
+        // Each macro iteration is billed. A run with no chat (the Knowledge
+        // view's ingest panel) has nobody to charge and is not recorded.
+        if let Some(session_id) = self.session_id.as_deref() {
+            crate::session::session_manager::side_usage::record_side_call_usage(
+                Some(session_id),
+                crate::session::session_manager::side_usage::SideCall::KnowledgeMacro,
+                self.provider.get_name(),
+                &usage,
+            )
+            .await;
+        }
 
         // 4. Extract assistant text and tool calls from the returned Message.
         let text = reply_msg.as_concat_text();
@@ -243,6 +254,15 @@ impl Completer for ProviderCompleter {
             .run(&self.provider, system_prompt, &provider_messages, tools)
             .await
             .map_err(|e| anyhow::anyhow!("provider.complete failed: {e}"))?;
+        if let Some(session_id) = self.session_id.as_deref() {
+            crate::session::session_manager::side_usage::record_side_call_usage(
+                Some(session_id),
+                crate::session::session_manager::side_usage::SideCall::KnowledgeMacro,
+                self.provider.get_name(),
+                &turn.usage,
+            )
+            .await;
+        }
 
         // A mirrored request is a RECORD. Handing it back in `tool_calls` would
         // make the loop dispatch it a second time, and a `kb_write_page` run

@@ -11,7 +11,9 @@ use serde::Serialize;
 use std::sync::Arc;
 use tracing::{debug, info, warn};
 
+pub mod elision;
 pub mod pins;
+pub mod prompt_fingerprint;
 
 pub use pins::{
     pin_is_eligible, select_pins, EvictedPin, PinEvictionReason, PinLimits, PinSelection,
@@ -19,6 +21,76 @@ pub use pins::{
 };
 
 pub const DEFAULT_COMPACTION_THRESHOLD: f64 = 0.8;
+
+/// Auto-compaction also fires once the context passes this many tokens,
+/// whatever the window. The trigger is `min(threshold x window, ceiling)`.
+///
+/// A fraction alone scales with the window: on a 1,050,000-token model 0.8
+/// meant 840k, so a long chat never compacted and every request re-sent
+/// hundreds of thousands of tokens (and, past 272k input tokens, paid the
+/// long-context price for the whole request on models that bill one). 200k
+/// leaves the fraction in charge on windows up to 250k and caps the rest.
+/// `BIOROUTER_AUTO_COMPACT_MAX_TOKENS` overrides it; `0` removes the ceiling.
+pub const DEFAULT_AUTO_COMPACT_MAX_TOKENS: usize = 200_000;
+
+/// Config key for [`DEFAULT_AUTO_COMPACT_MAX_TOKENS`].
+pub const AUTO_COMPACT_MAX_TOKENS_KEY: &str = "BIOROUTER_AUTO_COMPACT_MAX_TOKENS";
+
+/// The configured token ceiling for auto-compaction, `None` when it is off
+/// (`0`).
+pub fn auto_compact_max_tokens() -> Option<usize> {
+    let ceiling = Config::global()
+        .get_param::<usize>(AUTO_COMPACT_MAX_TOKENS_KEY)
+        .unwrap_or(DEFAULT_AUTO_COMPACT_MAX_TOKENS);
+    (ceiling > 0).then_some(ceiling)
+}
+
+/// The token count above which auto-compaction fires: `threshold x
+/// context_limit`, lowered to `ceiling` when one is set. `None` when the
+/// fraction disables auto-compaction (`<= 0` or `>= 1`); the ceiling never
+/// turns it back on.
+pub fn auto_compact_trigger_tokens(
+    context_limit: usize,
+    threshold: f64,
+    ceiling: Option<usize>,
+) -> Option<usize> {
+    if threshold <= 0.0 || threshold >= 1.0 {
+        return None;
+    }
+    let by_fraction = (context_limit as f64 * threshold) as usize;
+    Some(match ceiling {
+        Some(ceiling) => by_fraction.min(ceiling),
+        None => by_fraction,
+    })
+}
+
+/// The inline notice shown when auto-compaction starts, naming whichever bound
+/// fired: the share of the window, or the token ceiling.
+pub fn auto_compact_notice(context_limit: usize, threshold: f64, ceiling: Option<usize>) -> String {
+    let by_fraction = (context_limit as f64 * threshold) as usize;
+    match ceiling {
+        Some(ceiling) if ceiling < by_fraction => format!(
+            "Exceeded the auto-compact limit of {} tokens. Performing auto-compaction...",
+            group_thousands(ceiling)
+        ),
+        _ => format!(
+            "Exceeded auto-compact threshold of {}%. Performing auto-compaction...",
+            (threshold * 100.0) as u32
+        ),
+    }
+}
+
+fn group_thousands(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
 
 /// BR-14: a usable compaction summary must clear this many characters. Below it
 /// the "summary" is effectively empty (a refusal, a stray token, a blank
@@ -89,6 +161,108 @@ const MANUAL_COMPACT_CONTINUATION_TEXT: &str =
 Do not mention that you read a summary or that conversation summarization occurred.
 Just continue the conversation naturally based on the summarized context";
 
+/// How many saved tool results a summary names; the newest are kept.
+const MAX_SAVED_OUTPUTS_LISTED: usize = 60;
+/// How much of a call's arguments the summary repeats, so the model can tell
+/// which file is which once the calls themselves are summarized away.
+const SAVED_OUTPUT_ARGS_CHARS: usize = 160;
+
+/// The first line of the saved-output index a summary carries.
+pub const SAVED_OUTPUT_INDEX_HEADER: &str =
+    "Tool output from before this summary is saved in files. \
+     To see a result again, read or search its file (rg, or a line range) instead of running \
+     the tool again:";
+
+/// Name, at the end of a compaction's summary, the file holding each tool
+/// result the summary replaced (see
+/// [`elision::save_outputs_for_compaction`]). `original` is the conversation
+/// that was compacted. A result the compaction kept verbatim is not listed,
+/// and a compaction without a summary (or with nothing saved) is returned as
+/// it is. Deterministic, so the same compaction always says the same thing.
+pub fn with_saved_output_index(
+    compacted: Conversation,
+    original: &Conversation,
+    saved: &elision::SavedToolOutputs,
+) -> Conversation {
+    if saved.entries.is_empty() {
+        return compacted;
+    }
+    let still_visible: std::collections::HashSet<&str> = compacted
+        .messages()
+        .iter()
+        .filter(|m| m.is_agent_visible())
+        .flat_map(|m| m.content.iter())
+        .filter_map(|c| c.as_tool_response().map(|r| r.id.as_str()))
+        .collect();
+    let mut arguments: std::collections::HashMap<&str, String> = std::collections::HashMap::new();
+    let mut summarized: Vec<&str> = Vec::new();
+    for message in original.messages().iter().filter(|m| m.is_agent_visible()) {
+        for content in &message.content {
+            match content {
+                MessageContent::ToolRequest(request) => {
+                    if let Ok(call) = &request.tool_call {
+                        let args = call
+                            .arguments
+                            .as_ref()
+                            .map(|a| serde_json::Value::Object(a.clone()).to_string())
+                            .unwrap_or_default();
+                        arguments.insert(request.id.as_str(), args);
+                    }
+                }
+                MessageContent::ToolResponse(response) => {
+                    let id = response.id.as_str();
+                    if saved.entries.contains_key(id) && !still_visible.contains(id) {
+                        summarized.push(id);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    if summarized.is_empty() {
+        return compacted;
+    }
+    let continuation_texts = [
+        RECENT_WINDOW_CONTINUATION_TEXT,
+        CONVERSATION_CONTINUATION_TEXT,
+        TOOL_LOOP_CONTINUATION_TEXT,
+        MANUAL_COMPACT_CONTINUATION_TEXT,
+    ];
+    let mut messages = compacted.messages().clone();
+    let Some(summary_index) = messages.windows(2).position(|pair| {
+        pair[0].role == Role::User
+            && pair[0].is_agent_visible()
+            && !pair[0].is_user_visible()
+            && pair[1].role == Role::Assistant
+            && continuation_texts.contains(&pair[1].as_concat_text().as_str())
+    }) else {
+        return compacted;
+    };
+
+    let omitted = summarized.len().saturating_sub(MAX_SAVED_OUTPUTS_LISTED);
+    let mut index = String::from(SAVED_OUTPUT_INDEX_HEADER);
+    for id in &summarized[omitted..] {
+        let entry = &saved.entries[*id];
+        let args = arguments
+            .get(id)
+            .map(|args| truncate_middle_out(args, SAVED_OUTPUT_ARGS_CHARS))
+            .filter(|args| !args.is_empty() && args != "{}")
+            .map(|args| format!(" {args}"))
+            .unwrap_or_default();
+        index.push_str(&format!(
+            "\n- {}{args} ({} characters, {} lines): {}",
+            entry.tool, entry.chars, entry.lines, entry.path
+        ));
+    }
+    if omitted > 0 {
+        index.push_str(&format!(
+            "\n({omitted} older saved result(s) are not listed; they are in the same folder.)"
+        ));
+    }
+    messages[summary_index] = messages[summary_index].clone().with_text(index);
+    Conversation::new_unvalidated(messages)
+}
+
 #[derive(Serialize)]
 struct SummarizeContext {
     messages: String,
@@ -108,12 +282,12 @@ struct SummarizeContext {
 /// # Returns
 /// * A tuple containing:
 ///   - `Conversation`: The compacted messages
-///   - `ProviderUsage`: Provider usage from summarization
+///   - `CompactionUsage`: every summarization request it was billed for
 pub async fn compact_messages(
     provider: &dyn Provider,
     conversation: &Conversation,
     manual_compact: bool,
-) -> Result<(Conversation, ProviderUsage)> {
+) -> Result<(Conversation, CompactionUsage)> {
     let keep_last_turns = Config::global()
         .get_param::<usize>("BIOROUTER_COMPACT_KEEP_LAST_TURNS")
         .unwrap_or(DEFAULT_COMPACT_KEEP_LAST_TURNS);
@@ -166,7 +340,7 @@ pub async fn compact_messages_with_recovery(
     provider: &dyn Provider,
     conversation: &Conversation,
     recovery: OverflowRecovery,
-) -> Result<(Conversation, ProviderUsage)> {
+) -> Result<(Conversation, CompactionUsage)> {
     match recovery {
         OverflowRecovery::Compact => {
             let keep_last_turns = Config::global()
@@ -296,7 +470,7 @@ async fn compact_messages_with_window(
     conversation: &Conversation,
     manual_compact: bool,
     keep_last_turns: usize,
-) -> Result<(Conversation, ProviderUsage)> {
+) -> Result<(Conversation, CompactionUsage)> {
     info!("Performing message compaction");
 
     let messages = conversation.messages();
@@ -443,10 +617,7 @@ async fn compact_messages_with_window(
         final_messages.extend(pins.eviction_notices());
         return Ok((
             Conversation::new_unvalidated(final_messages),
-            ProviderUsage::new(
-                provider.get_model_config().model_name.clone(),
-                crate::providers::base::Usage::default(),
-            ),
+            CompactionUsage::default(),
         ));
     }
 
@@ -454,9 +625,17 @@ async fn compact_messages_with_window(
     // An honoured pin is skipped here: it already survives verbatim in place, so
     // re-appending a fresh copy would duplicate it (and the copy would carry no
     // marker, so the duplicate would then be summarized away next time).
+    //
+    // Only a message the person can see qualifies. A model-only user row (a
+    // post-edit diagnostics note, a hook's context, a loop-guard warning, a
+    // stall nudge) is stored right after the tool results it follows, so it is
+    // often the newest text-only user row when this runs between tool rounds.
+    // Preserving it would show that internal text in the transcript as if the
+    // person had typed it, and hide the person's real request in the summary.
     let (preserved_user_message, is_most_recent) = if !manual_compact {
         let found_msg = messages.iter().enumerate().rev().find(|(idx, msg)| {
             msg.is_agent_visible()
+                && msg.is_user_visible()
                 && matches!(msg.role, rmcp::model::Role::User)
                 && has_text_only(msg)
                 && !pins.is_honoured(*idx)
@@ -541,7 +720,12 @@ async fn compact_messages_with_window(
             // changes what the model is told: text another session's agent
             // injected would carry on as an ordinary, unattributed user
             // instruction the moment a context overflow happened to intervene.
-            let mut preserved = Message::user().with_text(&text);
+            // The copy also takes the source's visibility, so it can never be
+            // shown to an audience the original was hidden from.
+            let mut preserved = Message::user().with_text(&text).with_visibility(
+                user_msg.metadata.user_visible,
+                user_msg.metadata.agent_visible,
+            );
             preserved
                 .metadata
                 .provenance
@@ -672,6 +856,15 @@ fn fixed_request_bytes(system_prompt: &str, tools: &[Tool]) -> (usize, usize) {
         overhead += ESTIMATE_TOKENS_PER_MESSAGE;
     }
     (bytes, overhead)
+}
+
+/// [`estimate_request_tokens`] for callers outside this module: the usage
+/// limits size a chat's first request with it, and scale the previous
+/// request's billed prompt by how much it grows since
+/// (`agents::usage_limit::project_request`). It over-counts by design, so a
+/// ratio of two of them is what to trust, more than either alone.
+pub fn estimate_request_size(messages: &[Message], system_prompt: &str, tools: &[Tool]) -> usize {
+    estimate_request_tokens(messages, system_prompt, tools)
 }
 
 /// A byte-count-based token estimate for the whole request (system prompt +
@@ -808,6 +1001,37 @@ pub fn overflow_beyond_compaction(
     ))
 }
 
+/// The provider-reported token count for `session`, when it can be trusted.
+///
+/// The provider-reported figure is trusted only while it is at least the
+/// fewest tokens this request can possibly be. Ollama's `/v1` silently kept
+/// the first 4 and last ~2046 tokens of a 31k-token prompt and REPORTED
+/// `prompt_tokens: 2046`, so every later turn read "2% of the window" and
+/// never compacted while the model worked from the tail of its tool list. A
+/// compaction also stores only the summary's own size here, under a verbatim
+/// tail that can be far larger. Either way the stored number undercounts and
+/// an estimate is the honest answer (`None`).
+fn trusted_reported_tokens(
+    session: &crate::session::Session,
+    messages: &[Message],
+    cold_path_context: Option<(&str, &[Tool])>,
+) -> Option<usize> {
+    let reported = usize::try_from(session.total_tokens?).unwrap_or(0);
+    let (system_prompt, tools) = cold_path_context.unwrap_or_default();
+    let floor = request_token_floor(messages, system_prompt, tools);
+    if reported >= floor {
+        return Some(reported);
+    }
+    debug!(
+        reported,
+        floor,
+        "Compaction check: provider-reported usage is below what this request \
+         can possibly occupy (truncated by the server, or stored by a compaction); \
+         estimating instead"
+    );
+    None
+}
+
 /// Check if messages exceed the auto-compaction threshold
 ///
 /// `cold_path_context` supplies the system prompt and tool schemas for the
@@ -831,7 +1055,13 @@ pub async fn check_if_compaction_needed(
     session: &crate::session::Session,
     cold_path_context: Option<(&str, &[Tool])>,
 ) -> Result<bool> {
-    let messages = conversation.messages();
+    // Measure what the model is SENT: older tool results the chat has elided
+    // are stubs there (`elision`), and the provider-reported figure below
+    // counts the stubs. Judged against the full text instead, the floor check
+    // would distrust that figure and estimate a request the model never got,
+    // and compaction would fire long before the model's context was large.
+    let agent_view = elision::agent_view_for_session(conversation, session);
+    let messages = agent_view.as_ref().unwrap_or(conversation).messages();
     let config = Config::global();
     let threshold = threshold_override.unwrap_or_else(|| {
         config
@@ -843,41 +1073,16 @@ pub async fn check_if_compaction_needed(
 
     // Auto-compaction disabled: nothing below can change the answer, and the cold
     // path would otherwise pay for a full tokenization to reach the same `false`.
-    if threshold <= 0.0 || threshold >= 1.0 {
+    //
+    // Otherwise the trigger is the lower of the fraction of the window and the
+    // absolute ceiling, so a very large window still compacts at a sane size.
+    let Some(threshold_tokens) =
+        auto_compact_trigger_tokens(context_limit, threshold, auto_compact_max_tokens())
+    else {
         return Ok(false);
-    }
-    let threshold_tokens = (context_limit as f64 * threshold) as usize;
-
-    // The provider-reported figure is trusted only while it is at least the
-    // fewest tokens this request can possibly be. Ollama's `/v1` silently kept
-    // the first 4 and last ~2046 tokens of a 31k-token prompt and REPORTED
-    // `prompt_tokens: 2046`, so every later turn read "2% of the window" and
-    // never compacted while the model worked from the tail of its tool list. A
-    // compaction also stores only the summary's own size here, under a verbatim
-    // tail that can be far larger. Either way the stored number undercounts and
-    // the estimate below is the honest answer.
-    let reported = session
-        .total_tokens
-        .map(|tokens| usize::try_from(tokens).unwrap_or(0));
-    let trusted = match (reported, cold_path_context) {
-        (Some(reported), context) => {
-            let (system_prompt, tools) = context.unwrap_or_default();
-            let floor = request_token_floor(messages, system_prompt, tools);
-            if reported >= floor {
-                Some(reported)
-            } else {
-                debug!(
-                    reported,
-                    floor,
-                    "Compaction check: provider-reported usage is below what this request \
-                     can possibly occupy (truncated by the server, or stored by a compaction); \
-                     estimating instead"
-                );
-                None
-            }
-        }
-        (None, _) => None,
     };
+
+    let trusted = trusted_reported_tokens(session, messages, cold_path_context);
 
     // o200k under-counts non-OpenAI tokenizers, so inflate the raw estimate by a
     // small, conservative per-provider margin to keep the trigger calibrated
@@ -955,8 +1160,9 @@ pub async fn check_if_compaction_needed(
 
     let usage_ratio = current_tokens as f64 / context_limit as f64;
 
-    // Auto-compact-disabled thresholds already returned above.
-    let mut needs_compaction = usage_ratio > threshold;
+    // Auto-compact-disabled thresholds already returned above. Compared in
+    // tokens, so the ceiling counts as well as the fraction.
+    let mut needs_compaction = current_tokens > threshold_tokens;
 
     // Compaction shrinks the CONVERSATION; the system prompt and tool schemas
     // are rebuilt in full for every request. If they ALONE are over the
@@ -982,11 +1188,12 @@ pub async fn check_if_compaction_needed(
     }
 
     debug!(
-        "Compaction check: {} / {} tokens ({:.1}%), threshold: {:.1}%, needs compaction: {}, source: {}",
+        "Compaction check: {} / {} tokens ({:.1}%), threshold: {:.1}% capped at {} tokens, needs compaction: {}, source: {}",
         current_tokens,
         context_limit,
         usage_ratio * 100.0,
         threshold * 100.0,
+        threshold_tokens,
         needs_compaction,
         token_source
     );
@@ -1056,12 +1263,19 @@ pub fn eager_compaction_enabled() -> bool {
 /// alone fills: a 32k local window under the ~31k bootstrap reported ~96% after
 /// each turn, and each exchange was summarised away in the background, on the
 /// one-slot local server the next message then queued behind.
+///
+/// `can_read_saved_output` is whether the chat has a tool to read a file back
+/// with (the Developer extension is loaded). When it does, the larger tool
+/// results the summary replaces are saved under the session's working folder
+/// and the summary names their files, exactly as the turn-start, mid-turn and
+/// overflow compactions do (`Agent::with_saved_tool_outputs`).
 pub async fn run_eager_compaction(
     provider: Arc<dyn Provider>,
     session_manager: Arc<crate::session::SessionManager>,
     session_config: crate::agents::types::SessionConfig,
     threshold: f64,
     fixed_prompt: Option<(&str, &[Tool])>,
+    can_read_saved_output: bool,
     on_before_compact: impl FnOnce(),
 ) -> Result<EagerCompactionOutcome> {
     let (session, basis) = session_manager
@@ -1090,7 +1304,37 @@ pub async fn run_eager_compaction(
 
     on_before_compact();
     let (compacted, usage) =
-        compact_messages(provider.as_ref(), &stored_conversation, false).await?;
+        match compact_messages(provider.as_ref(), &stored_conversation, false).await {
+            Ok(done) => done,
+            Err(error) => {
+                // A failed compaction may still have been billed (a junk summary
+                // and a failed retry). Record it before reporting the failure.
+                if let Some(spent) = spent_usage_of(&error) {
+                    record_unapplied_compaction_usage(
+                        &session_manager,
+                        &session_config.id,
+                        provider.get_name(),
+                        spent,
+                    )
+                    .await;
+                }
+                return Err(error);
+            }
+        };
+
+    // Name the files holding the tool results the summary replaced. This is
+    // the compaction most chats get (it runs after every turn that ends over
+    // the trigger), and without the list a model asked to look at files ran
+    // the tools again after it, which is the loop the list exists to stop.
+    let saved = elision::save_outputs_for_compaction(
+        &session_manager,
+        &session_config.id,
+        &stored_conversation,
+        &session.working_dir,
+        can_read_saved_output,
+    )
+    .await;
+    let compacted = with_saved_output_index(compacted, &stored_conversation, &saved);
 
     // Swap under the store's own freshness guard: anything a concurrent turn
     // appended while we summarized is carried over instead of being clobbered,
@@ -1109,11 +1353,23 @@ pub async fn run_eager_compaction(
              was rewritten under it",
             session_config.id, outcome
         );
+        // The summary was billed even though it was thrown away. Count it as
+        // spend without moving the context gauge, since the history did not
+        // shrink.
+        record_unapplied_compaction_usage(
+            &session_manager,
+            &session_config.id,
+            provider.get_name(),
+            &usage,
+        )
+        .await;
         return Ok(EagerCompactionOutcome::Aborted);
     }
 
-    let usage_event_key = uuid::Uuid::new_v4().to_string();
-    crate::agents::reply_parts::apply_session_metrics(
+    // A compaction's own key, so its row is never the next request's basis
+    // (`spend::last_request_usage`).
+    let usage_event_key = crate::session::session_manager::compaction_event_key();
+    crate::agents::reply_parts::apply_compaction_metrics(
         &session_manager,
         &session_config,
         &usage,
@@ -1124,6 +1380,36 @@ pub async fn run_eager_compaction(
     .await?;
 
     Ok(EagerCompactionOutcome::Swapped)
+}
+
+/// Record what a compaction that did not land was billed: in the usage ledger
+/// and the chat's accumulated totals, never in the context gauge (the history
+/// did not change). Best effort, like the rest of background compaction's
+/// bookkeeping: a failed write is logged, not raised.
+pub(crate) async fn record_unapplied_compaction_usage(
+    session_manager: &crate::session::SessionManager,
+    session_id: &str,
+    provider_name: &str,
+    usage: &CompactionUsage,
+) {
+    // Through the side-call ledger (`side_usage`), like every other call a
+    // chat makes outside its turns: a `side:` key, so it is not counted as a
+    // turn, and its cached input priced as cached rather than left out. One
+    // row per request, so each is priced at its own prompt size.
+    use crate::session::session_manager::side_usage;
+    for request in usage.requests() {
+        if let Err(e) = side_usage::record_with(
+            session_manager,
+            session_id,
+            side_usage::SideCall::Compaction,
+            provider_name,
+            request,
+        )
+        .await
+        {
+            warn!("BR-12: could not record the usage of a compaction that did not land: {e}");
+        }
+    }
 }
 
 fn filter_tool_responses<'a>(messages: &[&'a Message], remove_percent: u32) -> Vec<&'a Message> {
@@ -1265,54 +1551,192 @@ async fn complete_summary(
     }
 }
 
+/// What a compaction was billed for: one entry per summarization request that
+/// came back, never a sum of them.
+///
+/// ⚠ **One request, one ledger row.** Long-context pricing bands each row by its
+/// own prompt size (`request_cost`, `prompt_band_sql!`), so a validated retry
+/// summed into one row read as ONE request of twice the size: two 200k-token
+/// summarization prompts on gpt-5.6-sol became one 400k prompt, billed at the
+/// over-272k rate neither request reached, and the cost card, the dollar limits
+/// and the BR-35 cap all overstated the spend. Callers record each entry on its
+/// own ([`record_unapplied_compaction_usage`],
+/// `reply_parts::apply_compaction_metrics`).
+///
+/// The request whose summary was KEPT is last, because it is the one whose
+/// output becomes the new context and so sets the context gauge.
+#[derive(Debug, Clone, Default)]
+pub struct CompactionUsage {
+    requests: Vec<ProviderUsage>,
+}
+
+impl CompactionUsage {
+    fn one(usage: ProviderUsage) -> Self {
+        Self {
+            requests: vec![usage],
+        }
+    }
+
+    /// `self`'s requests, then `later`'s.
+    fn then(mut self, later: CompactionUsage) -> Self {
+        self.requests.extend(later.requests);
+        self
+    }
+
+    /// Every billed request, in order, the kept summary's last.
+    pub fn requests(&self) -> &[ProviderUsage] {
+        &self.requests
+    }
+
+    pub fn into_requests(self) -> Vec<ProviderUsage> {
+        self.requests
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.requests.is_empty()
+    }
+
+    /// The token counts of every request added together, for display and
+    /// tests. Never price or record this as one request.
+    pub fn total(&self) -> Option<ProviderUsage> {
+        let (first, rest) = self.requests.split_first()?;
+        Some(
+            rest.iter()
+                .fold(first.clone(), |total, next| total.combine_with(next)),
+        )
+    }
+}
+
+/// A summarization that did not produce a summary, with what it still spent:
+/// a junk first summary is billed even when the retry then fails.
+struct SummaryFailure {
+    error: ProviderError,
+    spent: CompactionUsage,
+}
+
+/// Fill in token counts a provider did not report, so a billed call is never
+/// recorded as zero. Best effort: an estimate that fails keeps the raw usage.
+async fn ensure_summary_tokens(
+    usage: &mut ProviderUsage,
+    system_prompt: &str,
+    request: &[Message],
+    response: &Message,
+) {
+    if let Err(e) = usage
+        .ensure_tokens(system_prompt, request, response, &[])
+        .await
+    {
+        warn!("Compaction: could not estimate summary usage tokens: {e}");
+    }
+}
+
 /// BR-14: summarize with validation and a single retry. A junk/empty summary is
 /// re-requested once; if the retry is still not well-formed we keep whichever
 /// result is non-empty (a mediocre summary beats dead-ending the turn) and only
 /// error when both are truly empty. A provider error on the *first* call is
 /// propagated so [`do_compact`] can fall through to a smaller payload; a
 /// provider error on the *retry* falls back to the non-empty first result.
+///
+/// The usage returned, on success and on failure alike, lists every completion
+/// that came back, one entry each ([`CompactionUsage`]): the discarded first
+/// summary was billed too. The kept one is last.
 async fn summarize_with_validation(
     provider: &dyn Provider,
     use_fast_model: bool,
     system_prompt: &str,
     request: &[Message],
-) -> Result<(Message, ProviderUsage), ProviderError> {
-    let (response, usage) =
-        complete_summary(provider, use_fast_model, system_prompt, request).await?;
+) -> Result<(Message, CompactionUsage), SummaryFailure> {
+    let (response, mut usage) = complete_summary(provider, use_fast_model, system_prompt, request)
+        .await
+        .map_err(|error| SummaryFailure {
+            error,
+            spent: CompactionUsage::default(),
+        })?;
+    ensure_summary_tokens(&mut usage, system_prompt, request, &response).await;
     if summary_is_usable(&response) {
-        return Ok((response, usage));
+        return Ok((response, CompactionUsage::one(usage)));
     }
 
     warn!("Compaction summary failed validation (empty or missing sections); retrying once");
     match complete_summary(provider, use_fast_model, system_prompt, request).await {
-        Ok((retry_response, retry_usage)) if summary_is_usable(&retry_response) => {
-            Ok((retry_response, retry_usage))
-        }
-        Ok((retry_response, retry_usage)) => {
-            if !summary_text(&retry_response).trim().is_empty() {
-                Ok((retry_response, retry_usage))
-            } else if !summary_text(&response).trim().is_empty() {
-                Ok((response, usage))
-            } else {
-                Err(ProviderError::ExecutionError(
-                    "Compaction produced an empty summary even after one retry".to_string(),
+        Ok((retry_response, mut retry_usage)) => {
+            ensure_summary_tokens(&mut retry_usage, system_prompt, request, &retry_response).await;
+            if summary_is_usable(&retry_response)
+                || !summary_text(&retry_response).trim().is_empty()
+            {
+                Ok((
+                    retry_response,
+                    CompactionUsage::one(usage).then(CompactionUsage::one(retry_usage)),
                 ))
+            } else if !summary_text(&response).trim().is_empty() {
+                // The first summary is kept, so its request goes last.
+                Ok((
+                    response,
+                    CompactionUsage::one(retry_usage).then(CompactionUsage::one(usage)),
+                ))
+            } else {
+                Err(SummaryFailure {
+                    error: ProviderError::ExecutionError(
+                        "Compaction produced an empty summary even after one retry".to_string(),
+                    ),
+                    spent: CompactionUsage::one(usage).then(CompactionUsage::one(retry_usage)),
+                })
             }
         }
         Err(retry_err) => {
             if summary_text(&response).trim().is_empty() {
-                Err(retry_err)
+                Err(SummaryFailure {
+                    error: retry_err,
+                    spent: CompactionUsage::one(usage),
+                })
             } else {
-                Ok((response, usage))
+                Ok((response, CompactionUsage::one(usage)))
             }
         }
     }
 }
 
+/// A compaction that failed after spending provider calls. It travels inside
+/// the `anyhow::Error` compaction returns, so a caller can still record what
+/// was billed; [`spent_usage_of`] reads it back.
+#[derive(Debug)]
+pub struct CompactionFailed {
+    message: String,
+    /// Every completion this compaction got back before it gave up, one entry
+    /// per request.
+    pub spent: CompactionUsage,
+}
+
+impl std::fmt::Display for CompactionFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for CompactionFailed {}
+
+/// The usage a failed compaction still spent, when the error carries it.
+pub fn spent_usage_of(error: &anyhow::Error) -> Option<&CompactionUsage> {
+    error
+        .downcast_ref::<CompactionFailed>()
+        .map(|failed| &failed.spent)
+}
+
+/// Wrap a compaction error with what was spent before it, if anything was.
+fn failed_with_spent(error: anyhow::Error, spent: CompactionUsage) -> anyhow::Error {
+    if spent.is_empty() {
+        return error;
+    }
+    anyhow::Error::new(CompactionFailed {
+        message: error.to_string(),
+        spent,
+    })
+}
+
 async fn do_compact(
     provider: &dyn Provider,
     messages: &[Message],
-) -> Result<(Message, ProviderUsage), anyhow::Error> {
+) -> Result<(Message, CompactionUsage), anyhow::Error> {
     let agent_visible_messages: Vec<&Message> = messages
         .iter()
         .filter(|msg| msg.is_agent_visible())
@@ -1385,6 +1809,10 @@ async fn do_compact(
         },
     ];
 
+    // What earlier attempts were billed for. A context-length refusal bills
+    // nothing, but a validated retry inside an attempt does.
+    let mut spent = CompactionUsage::default();
+
     for (attempt, plan) in attempts.iter().enumerate() {
         let filtered_messages = filter_tool_responses(&agent_visible_messages, plan.remove_percent);
 
@@ -1408,7 +1836,10 @@ async fn do_compact(
             messages: messages_text,
         };
 
-        let system_prompt = render_global_file("summarize_oneshot.md", &context)?;
+        let system_prompt = match render_global_file("summarize_oneshot.md", &context) {
+            Ok(prompt) => prompt,
+            Err(e) => return Err(failed_with_spent(e.into(), spent)),
+        };
 
         let user_message = Message::user()
             .with_text("Please summarize the conversation history provided in the system prompt.");
@@ -1422,7 +1853,7 @@ async fn do_compact(
         )
         .await
         {
-            Ok((mut response, mut provider_usage)) => {
+            Ok((mut response, provider_usage)) => {
                 // BR-14: keep the summary as a User-role message. After compaction
                 // it is the *first* agent-visible message, and `fix_conversation`'s
                 // `fix_lead_trail` strips a leading *assistant* message — so
@@ -1432,30 +1863,33 @@ async fn do_compact(
                 // recovered context as user input, not an accidental mislabel.
                 response.role = Role::User;
 
-                provider_usage
-                    .ensure_tokens(&system_prompt, &summarization_request, &response, &[])
-                    .await
-                    .map_err(|e| anyhow::anyhow!("Failed to ensure usage tokens: {}", e))?;
-
-                return Ok((response, provider_usage));
+                // Token counts were filled in per completion inside
+                // `summarize_with_validation`; earlier attempts go first, so the
+                // kept summary's request stays last.
+                return Ok((response, spent.then(provider_usage)));
             }
-            Err(e) => {
-                if matches!(e, ProviderError::ContextLengthExceeded(_)) {
+            Err(SummaryFailure { error, spent: cost }) => {
+                spent = spent.then(cost);
+                if matches!(error, ProviderError::ContextLengthExceeded(_)) {
                     if attempt < attempts.len() - 1 {
                         continue;
                     } else {
-                        return Err(anyhow::anyhow!(
-                            "Failed to compact: context limit exceeded even after removing all tool responses and truncating the largest messages"
+                        return Err(failed_with_spent(
+                            anyhow::anyhow!(
+                                "Failed to compact: context limit exceeded even after removing all tool responses and truncating the largest messages"
+                            ),
+                            spent,
                         ));
                     }
                 }
-                return Err(e.into());
+                return Err(failed_with_spent(error.into(), spent));
             }
         }
     }
 
-    Err(anyhow::anyhow!(
-        "Unexpected: exhausted all attempts without returning"
+    Err(failed_with_spent(
+        anyhow::anyhow!("Unexpected: exhausted all attempts without returning"),
+        spent,
     ))
 }
 
@@ -1567,6 +2001,9 @@ mod tests {
         // retry can be exercised.
         first_call_response: Option<Message>,
         call_count: std::sync::atomic::AtomicUsize,
+        /// What each completion reports as its usage (default: nothing, which
+        /// `ensure_tokens` then estimates).
+        usage: Usage,
         /// The summarizer carries the history it is asked to condense in the
         /// SYSTEM prompt, so recording it is how a test can assert on what did
         /// (and did not) reach the summarizer.
@@ -1592,8 +2029,15 @@ mod tests {
                 max_input_chars: None,
                 first_call_response: None,
                 call_count: std::sync::atomic::AtomicUsize::new(0),
+                usage: Usage::default(),
                 last_system_prompt: std::sync::Mutex::new(String::new()),
             }
+        }
+
+        /// Report `usage` for every completion.
+        fn with_usage(mut self, usage: Usage) -> Self {
+            self.usage = usage;
+            self
         }
 
         /// The history the most recent summarization call was handed.
@@ -1692,7 +2136,7 @@ mod tests {
 
             Ok((
                 response,
-                ProviderUsage::new("mock-model".to_string(), Usage::default()),
+                ProviderUsage::new("mock-model".to_string(), self.usage),
             ))
         }
 
@@ -2528,6 +2972,81 @@ mod tests {
         );
     }
 
+    /// A model-only user row (here a post-edit diagnostics note, stored right
+    /// after the tool result it follows) is never the message a summarize-all
+    /// compaction preserves. Preserving it re-emitted the internal text as a
+    /// user-visible message, as if the person had typed it, and left the
+    /// person's real request only in the summary. Between tool rounds this
+    /// is the shape the newest rows usually have.
+    #[tokio::test]
+    async fn summarize_all_never_preserves_a_model_only_user_row() {
+        let provider = MockProvider::new(Message::assistant().with_text("<mock summary>"), 100_000);
+        let prompt = "Please fix the bug in parser.rs";
+        let diagnostics = "Diagnostics after the edit: 2 warnings in parser.rs";
+        let messages = vec![
+            Message::user().with_text(prompt),
+            Message::assistant().with_tool_request(
+                "call_1",
+                Ok(CallToolRequestParams {
+                    task: None,
+                    name: "developer__text_editor".into(),
+                    arguments: None,
+                    meta: None,
+                }),
+            ),
+            Message::user().with_tool_response(
+                "call_1",
+                Ok(rmcp::model::CallToolResult {
+                    content: vec![RawContent::text("edited").no_annotation()],
+                    structured_content: None,
+                    is_error: Some(false),
+                    meta: None,
+                }),
+            ),
+            Message::user()
+                .with_text(diagnostics)
+                .with_visibility(false, true),
+        ];
+        let conversation = Conversation::new_unvalidated(messages);
+
+        let (compacted, _) = compact_messages_with_recovery(
+            &provider,
+            &conversation,
+            OverflowRecovery::SummarizeAll,
+        )
+        .await
+        .unwrap();
+
+        for message in compacted.messages() {
+            if message.as_concat_text().contains(diagnostics) {
+                assert!(
+                    !message.is_user_visible(),
+                    "a model-only row must never become user-visible: {message:?}"
+                );
+            }
+        }
+        let preserved = compacted.messages().last().expect("the preserved prompt");
+        assert_eq!(preserved.as_concat_text(), prompt);
+        assert!(preserved.is_user_visible() && preserved.is_agent_visible());
+        assert!(
+            compacted
+                .messages()
+                .iter()
+                .any(|m| m.as_concat_text() == TOOL_LOOP_CONTINUATION_TEXT),
+            "the person's prompt is not the newest row, so the tool loop continues"
+        );
+        // The prompt appears once to the model: the original is hidden, the
+        // copy carries it.
+        assert_eq!(
+            compacted
+                .agent_visible_messages()
+                .iter()
+                .filter(|m| m.as_concat_text() == prompt)
+                .count(),
+            1
+        );
+    }
+
     /// BR-13: the last-resort drop-oldest stage produces a valid conversation
     /// (oldest turns dropped, remainder summarized) instead of dead-ending.
     #[tokio::test]
@@ -2620,6 +3139,142 @@ mod tests {
             2,
             "compaction should make exactly one retry on a garbage summary"
         );
+    }
+
+    /// Both completions of a validated retry were billed, so compaction reports
+    /// both, as two requests: one ledger row each, so each is priced at its own
+    /// prompt size rather than as one request of twice the size.
+    #[tokio::test]
+    async fn a_retried_summary_reports_the_usage_of_both_attempts() {
+        let good = Message::assistant().with_text(
+            "User Intent: continue the task.\nTechnical Concepts: rust, tokio.\n\
+             Files + Code: mod.rs.\nPending Tasks: finish BR-14.",
+        );
+        let provider = MockProvider::new(good, 100_000)
+            .with_first_response(Message::assistant().with_text("no"))
+            .with_usage(Usage::new(Some(1_000), Some(50), Some(1_050)));
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("q1"),
+            Message::assistant().with_text("a1"),
+        ]);
+        let (_, usage) = compact_messages_with_window(&provider, &conversation, false, 0)
+            .await
+            .unwrap();
+        assert_eq!(provider.calls(), 2);
+        assert_eq!(
+            usage.requests().len(),
+            2,
+            "two requests, never one summed row"
+        );
+        for request in usage.requests() {
+            assert_eq!(request.usage.input_tokens, Some(1_000));
+            assert_eq!(request.usage.output_tokens, Some(50));
+        }
+        let total = usage.total().unwrap();
+        assert_eq!(total.usage.input_tokens, Some(2_000));
+        assert_eq!(total.usage.output_tokens, Some(100));
+    }
+
+    /// A compaction that gives up after a billed attempt carries that usage in
+    /// its error, so a caller can still record it.
+    #[tokio::test]
+    async fn a_failed_compaction_carries_what_it_spent() {
+        // Both completions return an empty summary: billed twice, then refused.
+        let provider = MockProvider::new(Message::assistant().with_text("   "), 100_000)
+            .with_usage(Usage::new(Some(700), Some(3), Some(703)));
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("q1"),
+            Message::assistant().with_text("a1"),
+        ]);
+        let error = compact_messages_with_window(&provider, &conversation, false, 0)
+            .await
+            .expect_err("two empty summaries fail the compaction");
+        let spent = spent_usage_of(&error).expect("the error names what was spent");
+        assert_eq!(spent.requests().len(), 2);
+        let total = spent.total().unwrap();
+        assert_eq!(total.usage.input_tokens, Some(1_400));
+        assert_eq!(total.usage.output_tokens, Some(6));
+        assert!(error.to_string().contains("empty summary"), "{error}");
+    }
+
+    #[test]
+    fn the_compaction_trigger_is_the_lower_of_the_fraction_and_the_ceiling() {
+        assert_eq!(DEFAULT_AUTO_COMPACT_MAX_TOKENS, 200_000);
+        // A 1.05M window: 0.8 alone would wait for 840k tokens.
+        assert_eq!(
+            auto_compact_trigger_tokens(1_050_000, 0.8, Some(200_000)),
+            Some(200_000)
+        );
+        assert_eq!(
+            auto_compact_trigger_tokens(1_050_000, 0.8, None),
+            Some(840_000)
+        );
+        // A 128k window is untouched by the default ceiling.
+        assert_eq!(
+            auto_compact_trigger_tokens(128_000, 0.8, Some(200_000)),
+            Some(102_400)
+        );
+        // The ceiling never re-enables a disabled fraction.
+        assert_eq!(
+            auto_compact_trigger_tokens(1_050_000, 0.0, Some(200_000)),
+            None
+        );
+        assert_eq!(
+            auto_compact_trigger_tokens(1_050_000, 1.0, Some(200_000)),
+            None
+        );
+    }
+
+    #[test]
+    fn the_compaction_notice_names_the_bound_that_fired() {
+        assert_eq!(
+            auto_compact_notice(1_050_000, 0.8, Some(200_000)),
+            "Exceeded the auto-compact limit of 200,000 tokens. Performing auto-compaction..."
+        );
+        assert_eq!(
+            auto_compact_notice(128_000, 0.8, Some(200_000)),
+            "Exceeded auto-compact threshold of 80%. Performing auto-compaction..."
+        );
+        assert_eq!(
+            auto_compact_notice(1_050_000, 0.8, None),
+            "Exceeded auto-compact threshold of 80%. Performing auto-compaction..."
+        );
+        assert_eq!(group_thousands(1_234_567), "1,234,567");
+        assert_eq!(group_thousands(999), "999");
+    }
+
+    /// The check itself applies the ceiling: on a 1.05M window a 250k-token
+    /// chat compacts, a 150k one does not.
+    #[tokio::test]
+    async fn a_very_large_window_compacts_at_the_token_ceiling() {
+        let provider =
+            MockProvider::new(Message::assistant().with_text("<mock summary>"), 1_050_000);
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("analyse the cohort"),
+            Message::assistant().with_text("done"),
+        ]);
+        let session_at = |tokens: i32| crate::session::Session {
+            total_tokens: Some(tokens),
+            ..Default::default()
+        };
+        assert!(check_if_compaction_needed(
+            &provider,
+            &conversation,
+            Some(0.8),
+            &session_at(250_000),
+            None
+        )
+        .await
+        .unwrap());
+        assert!(!check_if_compaction_needed(
+            &provider,
+            &conversation,
+            Some(0.8),
+            &session_at(150_000),
+            None
+        )
+        .await
+        .unwrap());
     }
 
     /// BR-14: the summary lands as a `Role::User` message. This is load-bearing —
@@ -2731,6 +3386,7 @@ mod tests {
             eager_session_config(&id),
             0.8,
             None,
+            false,
             || before_compact.store(true, std::sync::atomic::Ordering::SeqCst),
         )
         .await
@@ -2756,6 +3412,100 @@ mod tests {
                 |c| matches!(c, MessageContent::Text(t) if t.text.contains("<mock summary>"))
             )),
             "the compacted history should carry the summary"
+        );
+    }
+
+    /// The end-of-turn compaction is billed under a compaction key, like every
+    /// other compaction, so its summarization request (the whole old history)
+    /// never becomes the basis of the next request's usage-limit projection.
+    /// Under a plain key a chat near its limit was paused on the old history's
+    /// size although the next prompt is only the summary.
+    #[tokio::test]
+    async fn eager_compaction_is_never_the_next_requests_basis() {
+        let mut messages = Vec::new();
+        for i in 0..6 {
+            messages.push(Message::user().with_text(format!("question {i}")));
+            messages.push(Message::assistant().with_text(format!("answer {i}")));
+        }
+        let (_temp, manager, id) = eager_test_session(messages, 90).await;
+        let provider: Arc<dyn Provider> = Arc::new(
+            MockProvider::new(Message::assistant().with_text("<mock summary>"), 100)
+                .with_usage(Usage::new(Some(1_000), Some(50), Some(1_050))),
+        );
+        let outcome = run_eager_compaction(
+            provider,
+            Arc::clone(&manager),
+            eager_session_config(&id),
+            0.8,
+            None,
+            false,
+            || {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, EagerCompactionOutcome::Swapped);
+        let spend = manager.spend_snapshot(&id, false).await.unwrap();
+        assert!(
+            spend.chat_tokens >= 1_050,
+            "the compaction is billed: {spend:?}"
+        );
+        assert_eq!(
+            manager.last_request_usage(&id).await.unwrap(),
+            None,
+            "a compaction row is never the basis"
+        );
+    }
+
+    /// A validated retry is two provider requests, so it is two ledger rows,
+    /// each priced at its own prompt size. Summed into one row it read as one
+    /// request of twice the size, and long-context pricing billed it at a rate
+    /// neither request reached.
+    #[tokio::test]
+    async fn a_retried_summary_is_recorded_as_one_ledger_row_per_request() {
+        let mut messages = Vec::new();
+        for i in 0..6 {
+            messages.push(Message::user().with_text(format!("question {i}")));
+            messages.push(Message::assistant().with_text(format!("answer {i}")));
+        }
+        let (_temp, manager, id) = eager_test_session(messages, 90).await;
+        let provider: Arc<dyn Provider> = Arc::new(
+            MockProvider::new(mock_summary(), 100)
+                .with_first_response(Message::assistant().with_text("no"))
+                .with_usage(Usage::new(Some(1_000), Some(50), Some(1_050))),
+        );
+        let outcome = run_eager_compaction(
+            provider,
+            Arc::clone(&manager),
+            eager_session_config(&id),
+            0.8,
+            None,
+            false,
+            || {},
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, EagerCompactionOutcome::Swapped);
+
+        let pool = manager.storage().pool().await.unwrap();
+        let rows: Vec<(Option<i64>, Option<i64>)> = sqlx::query_as(
+            "SELECT input_tokens, output_tokens FROM token_events WHERE session_id = ? \
+             ORDER BY rowid",
+        )
+        .bind(&id)
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![(Some(1_000), Some(50)), (Some(1_000), Some(50))],
+            "one row per request, never one row of 2,000 input tokens"
+        );
+        let session = manager.get_session(&id, false).await.unwrap();
+        assert_eq!(session.accumulated_input_tokens, Some(2_000));
+        assert_eq!(
+            session.total_tokens,
+            Some(50),
+            "the gauge is the kept summary's size, not the sum of both"
         );
     }
 
@@ -2860,6 +3610,7 @@ mod tests {
             eager_session_config(&id),
             0.8,
             None,
+            false,
             || {},
         )
         .await
@@ -2917,6 +3668,7 @@ mod tests {
             eager_session_config(&id),
             0.8,
             None,
+            false,
             || {},
         )
         .await
@@ -2930,6 +3682,16 @@ mod tests {
             0,
             "an aborted swap must not resurrect the truncated messages"
         );
+
+        // The thrown-away summary was billed: it is counted as spend, and the
+        // context gauge (which the history did not change) is left alone.
+        let session = manager.get_session(&id, false).await.unwrap();
+        assert!(
+            session.accumulated_input_tokens.unwrap_or(0) > 0,
+            "the aborted compaction's usage must be recorded: {:?}",
+            session.accumulated_input_tokens
+        );
+        assert_eq!(session.total_tokens, Some(90), "the gauge must not move");
     }
 
     /// A session comfortably under budget is left untouched — no summarization
@@ -2954,6 +3716,7 @@ mod tests {
             eager_session_config(&id),
             0.8,
             None,
+            false,
             || before_compact.store(true, std::sync::atomic::Ordering::SeqCst),
         )
         .await
@@ -3007,6 +3770,7 @@ mod tests {
             eager_session_config(&id),
             0.8,
             Some((system.as_str(), tools.as_slice())),
+            false,
             || before_compact.store(true, std::sync::atomic::Ordering::SeqCst),
         )
         .await
@@ -3032,6 +3796,7 @@ mod tests {
             eager_session_config(&id),
             0.8,
             None,
+            false,
             || {},
         )
         .await
@@ -3392,6 +4157,7 @@ mod pin_tests {
             eager_session_config(&id),
             0.8,
             None,
+            false,
             || {},
         )
         .await
@@ -3613,6 +4379,221 @@ mod pin_tests {
         assert!(
             !find(&compacted, &twin_body).is_agent_visible(),
             "an UNPINNED note is summarized away, which is why `note` pins"
+        );
+    }
+}
+
+#[cfg(test)]
+mod saved_output_tests {
+    use super::tests::MockProvider;
+    use super::*;
+    use crate::session::{SessionManager, SessionType};
+    use rmcp::model::{AnnotateAble, CallToolRequestParams, RawContent};
+
+    fn round(id: &str, file: &str, body: &str) -> Vec<Message> {
+        vec![
+            Message::assistant().with_tool_request(
+                id,
+                Ok(CallToolRequestParams {
+                    task: None,
+                    name: "developer__shell".into(),
+                    arguments: Some(
+                        serde_json::json!({ "command": format!("cat {file}") })
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    ),
+                    meta: None,
+                }),
+            ),
+            Message::user().with_tool_response(
+                id,
+                Ok(rmcp::model::CallToolResult {
+                    content: vec![RawContent::text(body).no_annotation()],
+                    structured_content: None,
+                    is_error: Some(false),
+                    meta: None,
+                }),
+            ),
+        ]
+    }
+
+    /// The summary of a compaction names the file holding each larger tool
+    /// result it replaced, with the call that produced it, so the model reads
+    /// the file instead of running the tool again; small results and results
+    /// the compaction kept verbatim are not listed.
+    #[tokio::test]
+    async fn a_summary_names_the_files_of_the_results_it_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let sm = SessionManager::new(dir.path().join("sessions"));
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let session = sm
+            .create_session(work.clone(), "c".into(), SessionType::User)
+            .await
+            .unwrap();
+
+        let wide_1 = format!("WIDE 1 HEADER\n{}", "w1 alpha beta\n".repeat(300));
+        let wide_2 = format!("WIDE 2 HEADER\n{}", "w2 gamma delta\n".repeat(300));
+        let mut messages = vec![Message::user().with_text("Show me wide_1 and wide_2.")];
+        messages.extend(round("call_1", "wide_1.txt", &wide_1));
+        messages.extend(round("call_small", "tiny.txt", "tiny"));
+        messages.extend(round("call_2", "wide_2.txt", &wide_2));
+        let original = Conversation::new_unvalidated(messages);
+
+        let provider = MockProvider::new(Message::assistant().with_text("<mock summary>"), 100_000);
+        let (compacted, _) =
+            compact_messages_with_recovery(&provider, &original, OverflowRecovery::SummarizeAll)
+                .await
+                .unwrap();
+
+        let saved =
+            elision::save_outputs_for_compaction(&sm, &session.id, &original, &work, true).await;
+        assert_eq!(saved.entries.len(), 2, "{saved:?}");
+        let indexed = with_saved_output_index(compacted.clone(), &original, &saved);
+
+        let summary = indexed
+            .messages()
+            .iter()
+            .find(|m| m.as_concat_text().contains("<mock summary>"))
+            .expect("the summary")
+            .as_concat_text();
+        assert!(summary.contains(SAVED_OUTPUT_INDEX_HEADER), "{summary}");
+        for (id, file, body) in [
+            ("call_1", "wide_1.txt", &wide_1),
+            ("call_2", "wide_2.txt", &wide_2),
+        ] {
+            let path = &saved.entries[id].path;
+            assert!(summary.contains(path.as_str()), "{summary}");
+            assert!(summary.contains(&format!("cat {file}")), "{summary}");
+            assert_eq!(&std::fs::read_to_string(path).unwrap(), body);
+            assert!(path.contains(".biorouter/tool-output"), "{path}");
+        }
+        assert!(!summary.contains("tiny.txt"), "{summary}");
+        // Only the summary changed.
+        assert_eq!(indexed.messages().len(), compacted.messages().len());
+
+        // Without a tool to read a file back, nothing is saved or listed.
+        let none =
+            elision::save_outputs_for_compaction(&sm, &session.id, &original, &work, false).await;
+        assert!(none.entries.is_empty());
+        assert_eq!(
+            with_saved_output_index(compacted.clone(), &original, &none),
+            compacted
+        );
+    }
+
+    /// The background compaction that runs after a turn ending over the
+    /// trigger saves the larger tool results and names their files in its
+    /// summary, like every other compaction. It used to swap in a summary
+    /// with no list, so the model ran the tools again on the next turn.
+    /// Without a tool to read a file back it saves and names nothing.
+    #[tokio::test]
+    async fn eager_compaction_names_the_files_of_the_results_it_replaced() {
+        for can_read in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let sm = Arc::new(SessionManager::new(dir.path().join("sessions")));
+            let work = dir.path().join("work");
+            std::fs::create_dir_all(&work).unwrap();
+            let session = sm
+                .create_session(work.clone(), "c".into(), SessionType::User)
+                .await
+                .unwrap();
+            let wide = format!("WIDE HEADER\n{}", "alpha beta\n".repeat(300));
+            let mut messages = vec![Message::user().with_text("Show me wide.txt.")];
+            messages.extend(round("call_1", "wide.txt", &wide));
+            for message in &messages {
+                sm.add_message(&session.id, message).await.unwrap();
+            }
+            // context_limit 100, total_tokens 90: over the 0.8 threshold.
+            sm.update(&session.id)
+                .total_tokens(Some(90))
+                .apply()
+                .await
+                .unwrap();
+            let provider: Arc<dyn Provider> = Arc::new(MockProvider::new(
+                Message::assistant().with_text("<mock summary>"),
+                100,
+            ));
+
+            let outcome = run_eager_compaction(
+                provider,
+                Arc::clone(&sm),
+                super::tests::eager_session_config(&session.id),
+                0.8,
+                None,
+                can_read,
+                || {},
+            )
+            .await
+            .unwrap();
+            assert_eq!(outcome, EagerCompactionOutcome::Swapped);
+
+            let stored = sm
+                .get_session(&session.id, true)
+                .await
+                .unwrap()
+                .conversation
+                .unwrap();
+            let summary = stored
+                .messages()
+                .iter()
+                .find(|m| m.as_concat_text().contains("<mock summary>"))
+                .expect("the summary")
+                .as_concat_text();
+            let handles = work.join(".biorouter/tool-output");
+            if can_read {
+                assert!(summary.contains(SAVED_OUTPUT_INDEX_HEADER), "{summary}");
+                assert!(summary.contains("cat wide.txt"), "{summary}");
+                let saved: Vec<_> = std::fs::read_dir(&handles)
+                    .unwrap()
+                    .map(|entry| entry.unwrap().path())
+                    .collect();
+                assert_eq!(saved.len(), 1, "{saved:?}");
+                assert!(
+                    summary.contains(&saved[0].display().to_string()),
+                    "{summary}"
+                );
+                assert_eq!(std::fs::read_to_string(&saved[0]).unwrap(), wide);
+            } else {
+                assert!(!summary.contains(SAVED_OUTPUT_INDEX_HEADER), "{summary}");
+                assert!(!handles.exists());
+            }
+        }
+    }
+
+    /// A result the compaction kept verbatim (the recent window) is still in
+    /// front of the model, so it is not listed.
+    #[test]
+    fn results_still_visible_are_not_listed() {
+        let body = "x".repeat(3_000);
+        let mut messages = vec![Message::user().with_text("go")];
+        messages.extend(round("call_1", "a.txt", &body));
+        let original = Conversation::new_unvalidated(messages.clone());
+        let mut saved = elision::SavedToolOutputs::default();
+        saved.entries.insert(
+            "call_1".into(),
+            elision::SavedToolOutput {
+                tool: "developer__shell".into(),
+                path: "/tmp/x.txt".into(),
+                chars: 3_000,
+                lines: 1,
+            },
+        );
+        // A "compaction" that kept everything visible, with a summary pair.
+        let mut compacted = vec![
+            Message::user()
+                .with_text("<summary>")
+                .with_metadata(MessageMetadata::agent_only()),
+            Message::assistant()
+                .with_text(RECENT_WINDOW_CONTINUATION_TEXT)
+                .with_metadata(MessageMetadata::agent_only()),
+        ];
+        compacted.extend(messages);
+        let compacted = Conversation::new_unvalidated(compacted);
+        assert_eq!(
+            with_saved_output_index(compacted.clone(), &original, &saved),
+            compacted
         );
     }
 }

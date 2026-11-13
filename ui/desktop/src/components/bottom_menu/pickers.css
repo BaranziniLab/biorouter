@@ -347,6 +347,20 @@ button.br-footline__item:active {
   background: var(--overlay-pressed);
 }
 
+/*
+ * The cost item's usage limit mark (`data-limit-state`, CostTracker.tsx): the warning ink at 80%
+ * of a limit and the danger ink while a limit holds the chat. The ink only, so the item keeps its
+ * box, its hover and its kept fill; after those rules so the tint holds under the pointer.
+ * Keyboard focus (below) still wins with the default ink.
+ */
+button.br-footline__item[data-limit-state='warn'] {
+  color: var(--text-warning);
+}
+
+button.br-footline__item[data-limit-state='paused'] {
+  color: var(--text-danger);
+}
+
 button.br-footline__item:disabled {
   cursor: progress;
   opacity: 0.5;
@@ -555,6 +569,33 @@ button.br-footline__item:focus-visible {
 
 .br-footer-card__section > .br-footer-card__actions {
   margin-top: 4px;
+}
+
+/* The cost card's Limit section (`UsageLimitSection.tsx`): its pieces sit in the section's own
+   4px column, so the wrapper that names it for tests takes no box of its own. */
+.br-footer-card__limit {
+  display: contents;
+}
+
+/* Setting this chat's limit: the label, then the amount and its unit on one line. */
+.br-footer-card__limit-form {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+  min-width: 0;
+}
+
+.br-footer-card__limit-fields {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.br-footer-card__limit-input {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 /* A card's button (`FooterCardAction`: Choose folder…, Revoke, Compact chat)

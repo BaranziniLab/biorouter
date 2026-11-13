@@ -150,6 +150,15 @@ These variables control how biorouter manages conversation sessions and context.
 | `BIOROUTER_RANDOM_THINKING_MESSAGES` | Controls whether to show amusing random messages during processing | `"true"`, `"false"` | `"true"` |
 | `BIOROUTER_CLI_SHOW_COST` | Toggles display of model cost estimates in CLI output | `"true"`, `"1"` (case insensitive) to enable | false |
 | `BIOROUTER_AUTO_COMPACT_THRESHOLD` | Percentage threshold at which biorouter automatically summarizes your session | Float between 0.0 and 1.0 (disabled at 0.0) | 0.8 |
+| `BIOROUTER_AUTO_COMPACT_MAX_TOKENS` | Token count at which a session is summarized whatever the window size. The trigger is the lower of this and the threshold above, so a model with a 1M-token window still compacts at a reasonable size | A whole number of tokens; `0` removes the ceiling | 200000 |
+| `BIOROUTER_LARGE_RESPONSE_TOKENS` | Largest tool result kept in the chat. A larger result is saved to a file under `.biorouter/tool-output/` in the working directory and replaced by a preview and the file's path | A whole number of tokens | 10000 |
+| `BIOROUTER_LARGE_RESPONSE_PREVIEW_TOKENS` | How much of a saved tool result stays in the chat as a head and tail preview | A whole number of tokens, below the limit above | 2000 |
+| `BIOROUTER_STATUS_CHECK_MIN_INTERVAL_SECONDS` | Shortest time between two identical status checks of a job that is still running. A check made sooner is held until the interval has passed (at most 120 seconds, and Stop ends the hold), never refused; a longer interval the job itself asks for wins. See [Waiting on jobs](../agent-loop/waiting-on-jobs.md) | A whole number of seconds; `0` turns the hold off | 30 |
+| `BIOROUTER_TOOL_RESULT_ELISION` | Whether older, larger tool results are replaced in the model's copy of the chat by a short note naming the file that holds their full text. Your transcript keeps the full text either way | `true` or `false`; `false` sends every result in full again | true |
+| `BIOROUTER_TOOL_RESULT_ELISION_PROTECT_TOKENS` | How much of the newest tool output, in estimated tokens, is always sent in full | A whole number of tokens | 40000 |
+| `BIOROUTER_TOOL_RESULT_ELISION_MIN_PRUNABLE_TOKENS` | How much older tool output must be ready to replace before any is replaced. Replacing in rare batches keeps the provider's prompt cache | A whole number of tokens | 25000 |
+| `BIOROUTER_TOOL_RESULT_ELISION_MIN_CHARS` | Shortest tool result that may be replaced | A whole number of characters | 1500 |
+| `BIOROUTER_MONITOR_STOP_SETTLE_SECS` | How long a turn a [decision-model monitor](../agent-loop/decision-models.md#a-stop-stops-the-chats-subagents) stopped waits for the subagents that stop stopped, so their work can be collected | A whole number of seconds | 30 |
 
 Ordinary chats have no turn or tool-call limit by default. Existing positive limits remain in effect until you change them; select **Unlimited** in Settings > Chat > Approvals or set the value to `0`. Stop, explicit reply budgets, and loop recovery remain active. See [Long-running tasks](../agent-loop/long-running-tasks.md).
 
@@ -391,3 +400,4 @@ Some user-facing variables are not listed above and are documented on their own 
 - [biorouter CLI command reference](../cli/command-reference.md) — the commands these variables modify, including themes and slash commands.
 - [Reaching Biorouter from a browser](../deployment/browser-access.md) — what `BIOROUTER_SERVE_UI` and `BIOROUTER_BROWSER_TOKEN` do in practice, and the command that sets them.
 - [Choosing a model provider](../getting-started/choosing-a-model-provider.md) — the provider names and model IDs the provider variables expect.
+- [Usage limits](../agent-loop/usage-limits.md): the monthly and default per-chat limits, which live in the `usage` section of `config.yaml` and have no environment variable.

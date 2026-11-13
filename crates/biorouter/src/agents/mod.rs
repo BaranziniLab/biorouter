@@ -16,6 +16,8 @@ pub(crate) mod dictionary_extension;
 // sub-calls' full arguments (their records are truncated).
 pub(crate) mod code_delta;
 pub(crate) mod code_execution_extension;
+/// End a chat's job watches at once (the delete route).
+pub use code_execution_extension::cancel_job_watches_for_session;
 // Decision models: the `decide` and `decision_models` tools (a default-on
 // platform extension the delegation gate does not count).
 pub mod decisions_extension;
@@ -33,7 +35,7 @@ pub mod final_output_tool;
 pub mod goal;
 pub mod knowledge_source_tool;
 pub mod knowledge_tool;
-mod large_response_handler;
+pub(crate) mod large_response_handler;
 pub mod loop_phase;
 pub mod mcp_client;
 pub mod mcp_pool;
@@ -117,6 +119,9 @@ pub mod tool_errors;
 pub mod turn_abort;
 pub mod turn_guard;
 pub mod types;
+// Per-chat, default per-chat and monthly usage limits, enforced before every
+// model request (`docs/agent-loop/usage-limits.md`).
+pub mod usage_limit;
 pub mod vault_refs;
 // The `platform__manage_workflow` handler: the model's hand on the user's saved
 // workflows. An Agent tool rather than an extension because `generate` needs the

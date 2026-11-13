@@ -16,32 +16,25 @@ use crate::{
 };
 use std::path::Path;
 
-/// How finely the system prompt states the clock.
+/// The clock the system prompt states: the local DATE, never the hour.
 ///
-/// Local (not UTC) either way, matching the MOIM `<info-msg>` clock so the
-/// model never sees two contradictory timezones. Computed fresh at each
-/// `build()` (not frozen at construction) so a long-lived agent's clock never
-/// goes stale. The per-request MOIM carries the minute-precise time, so the
-/// coarse clock here costs the model nothing it cannot read elsewhere.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PromptClock {
-    /// `2026-07-12 14:00`: byte-identical within the hour, so a hosted
-    /// provider's multi-session prompt cache still hits.
-    Hour,
-    /// `2026-07-12`, for a local engine (Llama Server, Ollama). The clock sits
-    /// near the TOP of the prompt (character ~605), so a change there throws
-    /// away everything after it in the server's prompt cache. Measured on
-    /// qwen3.8:27b (MLX, 2026-10-10): the first request after an hour boundary
-    /// reused 8,191 of 30,745 tokens and spent 107 s re-reading the rest — a
-    /// stall a hosted model never shows, once an hour, in every long chat.
-    Day,
-}
-
-fn render_prompt_clock(now: chrono::DateTime<chrono::Local>, clock: PromptClock) -> String {
-    match clock {
-        PromptClock::Hour => now.format("%Y-%m-%d %H:00").to_string(),
-        PromptClock::Day => now.format("%Y-%m-%d").to_string(),
-    }
+/// Local (not UTC), matching the MOIM `<info-msg>` clock so the model never
+/// sees two contradictory timezones. Computed fresh at each `build()` (not
+/// frozen at construction) so a long-lived agent's clock never goes stale. The
+/// per-request MOIM carries the minute-precise time, so the coarse clock here
+/// costs the model nothing it cannot read elsewhere.
+///
+/// It used to be the hour (`2026-07-12 14:00`) for every hosted provider and
+/// the day only for a local engine. Any change in the system text or the tools
+/// array throws away the provider's prompt cache from that byte on: measured
+/// on Versa (gpt-5.6, 2026-11), a request whose only change was the clock line
+/// going from 14:00 to 15:00 read 0 cached tokens where the one before read
+/// 26,694. The clock sits near the TOP of the prompt (character ~605), so once
+/// an hour every long chat re-paid its whole prefix at the fresh-input price;
+/// on a local engine the same change cost 107 s of prefill (qwen3.8:27b, MLX,
+/// 2026-10-10). The date changes once a day, which every chat can afford.
+fn render_prompt_clock(now: chrono::DateTime<chrono::Local>) -> String {
+    now.format("%Y-%m-%d").to_string()
 }
 
 /// Is inference for this provider a local engine, whose prompt cache a long
@@ -226,6 +219,11 @@ struct SystemPromptContext {
     /// The planning gate runs for this conversation (`agents::planning_gate`):
     /// the "Working on Tasks" section then states exactly what it enforces.
     checklist_enforcement: bool,
+    /// The workhorse tools carry the checklist `todo` field this turn
+    /// (`reply_parts::add_todo_sidecar`), so the prompt may tell the model to
+    /// use it. False on a coding-agent bridge surface and on a roster without
+    /// the checklist tools, where no tool offers the field.
+    todo_sidecar: bool,
 }
 
 pub struct SystemPromptBuilder<'a, M> {
@@ -237,24 +235,14 @@ pub struct SystemPromptBuilder<'a, M> {
     hints: Option<String>,
     code_execution_mode: bool,
     checklist_enforcement: bool,
+    todo_sidecar: bool,
     variant: PromptVariant,
-    local_engine: bool,
 }
 
 impl<'a> SystemPromptBuilder<'a, PromptManager> {
     /// BR-3: select the per-model prompt variant (default: strong-model base).
     pub fn with_prompt_variant(mut self, variant: PromptVariant) -> Self {
         self.variant = variant;
-        self
-    }
-
-    /// Whether the bound provider is a local engine ([`is_local_engine`]). The
-    /// clock is then rendered by the day, not the hour, so the engine's prompt
-    /// cache survives an hour boundary (see [`PromptClock::Day`]). Separate
-    /// from the variant on purpose: both shipped local models are large enough
-    /// for the `Default` variant, and they are the ones that pay the prefill.
-    pub fn with_local_engine(mut self, local_engine: bool) -> Self {
-        self.local_engine = local_engine;
         self
     }
 
@@ -285,6 +273,14 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
     /// clause this renders is a description of that gate.
     pub fn with_checklist_enforcement(mut self, enabled: bool) -> Self {
         self.checklist_enforcement = enabled;
+        self
+    }
+
+    /// Whether the checklist `todo` field is on this turn's tool schemas. Pass
+    /// what `reply_parts::add_todo_sidecar` returned, never a value of your
+    /// own: the prompt names the field only while a tool offers it.
+    pub fn with_todo_sidecar(mut self, offered: bool) -> Self {
+        self.todo_sidecar = offered;
         self
     }
 
@@ -335,27 +331,23 @@ impl<'a> SystemPromptBuilder<'a, PromptManager> {
             hints,
             code_execution_mode,
             checklist_enforcement,
+            todo_sidecar,
             variant,
-            local_engine,
         } = self;
         let (extensions_info, hints) =
             prepare_injected_context(extensions_info, frontend_instructions, hints);
         let config = Config::global();
         let biorouter_mode = config.get_biorouter_mode().unwrap_or(BioRouterMode::Auto);
-        let clock = if local_engine {
-            PromptClock::Day
-        } else {
-            PromptClock::Hour
-        };
         let mut context = build_system_prompt_context(
             manager,
             extensions_info,
             biorouter_mode,
             subagents_enabled,
             code_execution_mode,
-            render_prompt_clock(now, clock),
+            render_prompt_clock(now),
         );
         context.checklist_enforcement = checklist_enforcement;
+        context.todo_sidecar = todo_sidecar;
         let base_prompt = render_base_prompt(manager, variant, &context);
         append_system_prompt_extras(manager, base_prompt, hints, biorouter_mode)
     }
@@ -501,6 +493,7 @@ fn build_system_prompt_context(
         enable_subagents: subagents_enabled,
         code_execution_mode,
         checklist_enforcement: false,
+        todo_sidecar: false,
     }
 }
 
@@ -631,8 +624,8 @@ impl PromptManager {
             hints: None,
             code_execution_mode: false,
             checklist_enforcement: false,
+            todo_sidecar: false,
             variant: PromptVariant::Default,
-            local_engine: false,
         }
     }
 
@@ -874,61 +867,48 @@ mod tests {
         assert_snapshot!(system_prompt)
     }
 
-    /// The live (non-test) clock is computed at `build()` time, at Local hour
-    /// granularity — not frozen at construction, not UTC. Robust across an hour
-    /// tick by accepting either boundary.
+    /// The live (non-test) clock is computed at `build()` time, as the Local
+    /// date: not frozen at construction, not UTC, and never the hour. Robust
+    /// across midnight by accepting either day.
     #[test]
-    fn test_live_clock_is_fresh_local_hour() {
-        let before = chrono::Local::now().format("%Y-%m-%d %H:00").to_string();
+    fn test_live_clock_is_fresh_local_date() {
+        let before = chrono::Local::now().format("%Y-%m-%d").to_string();
         let prompt = PromptManager::new().builder().build();
-        let after = chrono::Local::now().format("%Y-%m-%d %H:00").to_string();
+        let after = chrono::Local::now().format("%Y-%m-%d").to_string();
 
         let expected_before = format!("The current date and time is {before}.");
         let expected_after = format!("The current date and time is {after}.");
         assert!(
             prompt.contains(&expected_before) || prompt.contains(&expected_after),
-            "system prompt must render the live Local hour clock (minutes pinned to :00)"
+            "system prompt must render the live Local date (no hour)"
         );
     }
 
-    /// A local engine's prompt must not change at an hour boundary: the clock
-    /// sits near the top of the prompt, so a change there costs the engine its
-    /// whole prompt cache (measured: 107 s of prefill on qwen3.8:27b). The
-    /// control half shows the same two builds DO differ for a hosted model, so
+    /// Every provider's prompt is byte-identical across an hour boundary: a
+    /// change anywhere in the system text throws the provider's prompt cache
+    /// away from that byte on, and the clock sits near the top (measured on
+    /// Versa, 2026-11: the 14:00 to 15:00 change alone took cached tokens from
+    /// 26,694 to 0). The control half shows the date itself still moves, so
     /// the first half cannot pass merely because no clock was rendered.
     #[test]
-    fn a_local_engine_prompt_is_byte_identical_across_an_hour_boundary() {
+    fn the_prompt_is_byte_identical_across_an_hour_boundary_for_every_provider() {
         use chrono::TimeZone;
-        let before = chrono::Local
-            .with_ymd_and_hms(2026, 7, 12, 10, 59, 0)
-            .single()
-            .expect("an unambiguous local time");
-        let after = chrono::Local
-            .with_ymd_and_hms(2026, 7, 12, 11, 1, 0)
-            .single()
-            .expect("an unambiguous local time");
-        let manager = PromptManager::new();
-        let build = |local_engine: bool, now| {
-            manager
-                .builder()
-                .with_local_engine(local_engine)
-                .build_at(now)
+        let at = |day, hour, minute| {
+            chrono::Local
+                .with_ymd_and_hms(2026, 7, day, hour, minute, 0)
+                .single()
+                .expect("an unambiguous local time")
         };
+        let manager = PromptManager::new();
+        let build = |now| manager.builder().build_at(now);
 
-        let local_before = build(true, before);
-        assert_eq!(local_before, build(true, after));
+        let before = build(at(12, 10, 59));
+        assert_eq!(before, build(at(12, 11, 1)));
         assert!(
-            local_before.contains("The current date and time is 2026-07-12."),
-            "a local engine still gets the date"
+            before.contains("The current date and time is 2026-07-12."),
+            "the prompt still gets the date"
         );
-
-        let hosted_before = build(false, before);
-        assert!(hosted_before.contains("The current date and time is 2026-07-12 10:00."));
-        assert_ne!(
-            hosted_before,
-            build(false, after),
-            "a hosted model keeps the hour clock"
-        );
+        assert_ne!(before, build(at(13, 10, 59)), "the date moves at midnight");
     }
 
     /// The engines whose prompt cache the day clock protects: the two local
@@ -1154,6 +1134,47 @@ mod tests {
         assert!(on.contains("names each unfinished item by its `#N` id"));
         // It extends the planning bullet rather than replacing it.
         assert!(on.contains("plan before acting"));
+    }
+
+    /// The prompt names the checklist `todo` field only while a tool schema
+    /// offers it (`reply_parts::add_todo_sidecar`). A coding-agent bridge
+    /// surface, or a roster without the checklist tools, has no such field,
+    /// and a prompt naming one sends updates nothing applies.
+    #[test]
+    fn the_todo_field_is_named_only_while_a_tool_offers_it() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        for enforcement in [false, true] {
+            let offered = manager
+                .builder()
+                .with_checklist_enforcement(enforcement)
+                .with_todo_sidecar(true)
+                .build();
+            assert!(
+                offered.contains("Put\n  them in the `todo` field of your next real tool call"),
+                "{offered}"
+            );
+            assert!(offered.contains(r#""todo": {"done": [2, 3]}"#));
+
+            let absent = manager
+                .builder()
+                .with_checklist_enforcement(enforcement)
+                .build();
+            assert!(!absent.contains("`todo` field"), "{absent}");
+            assert!(!absent.contains("`todo.add` field"), "{absent}");
+            assert!(
+                absent.contains("Checklist and plan updates are bookkeeping, not work."),
+                "{absent}"
+            );
+            assert!(absent.contains("in the same\n  message as real tool calls"));
+        }
+        let enforced_without_field = manager.builder().with_checklist_enforcement(true).build();
+        assert!(enforced_without_field.contains("report finished items with `todo__todo_update`"));
+        let enforced_with_field = manager
+            .builder()
+            .with_checklist_enforcement(true)
+            .with_todo_sidecar(true)
+            .build();
+        assert!(enforced_with_field.contains("or the steps\n    in the `todo.add` field"));
     }
 
     /// Contract test for the agentic-behavior clauses added to `system.md`.

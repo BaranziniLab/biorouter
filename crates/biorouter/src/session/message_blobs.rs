@@ -45,9 +45,11 @@ use std::collections::HashMap;
 use uuid::Uuid;
 
 /// Size, in bytes of UTF-8 text, above which one tool-response text item is
-/// moved to the blob table. Comfortably above anything the BR-6 handler lets
-/// through (~25k tokens), so in practice only payloads that bypassed it — or
-/// predate it — are externalized. Override with
+/// moved to the blob table. Well above anything the BR-6 handler lets through
+/// (~10k tokens, about 40 KB, since 2026-11; it was ~25k), so in practice only
+/// payloads that bypassed it (or predate it) are externalized. This is
+/// storage, not context: what the MODEL is sent of an older result is decided
+/// by `context_mgmt::elision`, which never touches the stored row. Override with
 /// `BIOROUTER_SESSION_BLOB_THRESHOLD_BYTES`; `0` disables externalization.
 pub const DEFAULT_BLOB_THRESHOLD_BYTES: usize = 64 * 1024;
 

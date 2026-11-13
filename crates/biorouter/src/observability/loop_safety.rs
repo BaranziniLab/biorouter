@@ -97,11 +97,15 @@ pub enum LoopSafetyKind {
     /// BR-48: the done-ness gate spent its attempt budget with checks still
     /// failing; the turn was allowed to finish anyway.
     DoneGateGiveUp,
+    /// A per-chat, default per-chat or monthly usage limit is at 80% or more.
+    UsageLimitWarn,
+    /// A usage limit is reached; the turn ended before the next model request.
+    UsageLimitStop,
 }
 
 /// Every kind, in declaration order. The counter table is indexed by position
 /// here, so a new variant must be appended to both.
-pub const ALL_KINDS: [LoopSafetyKind; 21] = [
+pub const ALL_KINDS: [LoopSafetyKind; 23] = [
     LoopSafetyKind::RepetitionWarn,
     LoopSafetyKind::RepetitionStop,
     LoopSafetyKind::FailureLoopNudge,
@@ -123,6 +127,8 @@ pub const ALL_KINDS: [LoopSafetyKind; 21] = [
     LoopSafetyKind::SelfCritiqueRevise,
     LoopSafetyKind::DoneGateBlock,
     LoopSafetyKind::DoneGateGiveUp,
+    LoopSafetyKind::UsageLimitWarn,
+    LoopSafetyKind::UsageLimitStop,
 ];
 
 impl LoopSafetyKind {
@@ -151,6 +157,8 @@ impl LoopSafetyKind {
             LoopSafetyKind::SelfCritiqueRevise => "self_critique_revise",
             LoopSafetyKind::DoneGateBlock => "done_gate_block",
             LoopSafetyKind::DoneGateGiveUp => "done_gate_give_up",
+            LoopSafetyKind::UsageLimitWarn => "usage_limit_warn",
+            LoopSafetyKind::UsageLimitStop => "usage_limit_stop",
         }
     }
 
@@ -163,6 +171,7 @@ impl LoopSafetyKind {
                 | LoopSafetyKind::ProviderErrorStop
                 | LoopSafetyKind::StallStop
                 | LoopSafetyKind::BudgetStop
+                | LoopSafetyKind::UsageLimitStop
                 | LoopSafetyKind::TurnLimitStop
                 | LoopSafetyKind::ToolCallLimitStop
                 | LoopSafetyKind::HookBlock
@@ -407,6 +416,8 @@ mod tests {
         assert!(!LoopSafetyKind::RepetitionWarn.is_stop());
         assert!(!LoopSafetyKind::StallNudge.is_stop());
         assert!(!LoopSafetyKind::BudgetWarn.is_stop());
+        assert!(LoopSafetyKind::UsageLimitStop.is_stop());
+        assert!(!LoopSafetyKind::UsageLimitWarn.is_stop());
         assert!(!LoopSafetyKind::HookAsk.is_stop());
     }
 

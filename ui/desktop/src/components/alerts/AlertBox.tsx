@@ -5,6 +5,11 @@ import { Alert, AlertType } from './types';
 import { NotificationSurface, type NotificationStatus } from './NotificationSurface';
 import { useConfig } from '../ConfigContext';
 import { toastError } from '../../toasts';
+import {
+  AUTO_COMPACT_MAX_TOKENS_KEY,
+  effectiveAutoCompactTrigger,
+  savedAutoCompactCeiling,
+} from '../../utils/autoCompactTrigger';
 
 interface AlertBoxProps {
   alert: Alert;
@@ -49,6 +54,8 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
   const [loadedThreshold, setLoadedThreshold] = useState<number>(0.8);
   const [thresholdValue, setThresholdValue] = useState(80);
   const [isSaving, setIsSaving] = useState(false);
+  /** The absolute token ceiling (`BIOROUTER_AUTO_COMPACT_MAX_TOKENS`), `null` for none. */
+  const [ceiling, setCeiling] = useState<number | null>(savedAutoCompactCeiling(undefined));
 
   useEffect(() => {
     const loadThreshold = async () => {
@@ -66,7 +73,31 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
     loadThreshold();
   }, [read]);
 
+  useEffect(() => {
+    let cancelled = false;
+    read(AUTO_COMPACT_MAX_TOKENS_KEY, false)
+      .then((v) => {
+        if (!cancelled) setCeiling(savedAutoCompactCeiling(v));
+      })
+      .catch(() => {
+        /* the daemon's default stands */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [read]);
+
   const currentThreshold = loadedThreshold;
+  // Where it really fires: the lower of the threshold's share and the token
+  // ceiling (a window over 250k tokens compacts at 200k by default).
+  const trigger = alert.progress
+    ? effectiveAutoCompactTrigger(
+        currentThreshold > 0 && currentThreshold < 1 ? currentThreshold * 100 : null,
+        alert.progress.total,
+        ceiling
+      )
+    : null;
+  const markerShare = trigger ? trigger.pct / 100 : currentThreshold;
 
   const handleSaveThreshold = async () => {
     if (isSaving) return; // Prevent double-clicks
@@ -212,7 +243,9 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
           ) : (
             <>
               <span className="text-supporting opacity-70">
-                Auto compact at {Math.round(currentThreshold * 100)}%
+                {trigger?.byCeiling
+                  ? `Auto compact at ${formatTokenCount(trigger.tokens)} tokens`
+                  : `Auto compact at ${Math.round(currentThreshold * 100)}%`}
               </span>
               <button
                 type="button"
@@ -233,11 +266,11 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
         <div className="flex justify-between w-full relative">
           {(() => {
             let closestDotIndex = -1;
-            if (currentThreshold !== undefined && currentThreshold > 0 && currentThreshold <= 1) {
+            if (markerShare !== undefined && markerShare > 0 && markerShare <= 1) {
               let minDistance = Infinity;
               for (let j = 0; j < 30; j++) {
                 const dotPos = j / 29;
-                const distance = Math.abs(dotPos - currentThreshold);
+                const distance = Math.abs(dotPos - markerShare);
                 if (distance < minDistance) {
                   minDistance = distance;
                   closestDotIndex = j;

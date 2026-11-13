@@ -117,6 +117,7 @@ import InAppTerminalDock from './InAppTerminalDock';
 import { ChatTurnError, hasVisibleTurnErrorMessage } from './conversation/ChatTurnError';
 import { ChatTurnStopped } from './conversation/ChatTurnStopped';
 import { transcriptEndsStopped } from './conversation/turnStoppedNotice';
+import { latestUsageLimitNoticeKey } from './conversation/usageLimitTranscript';
 import type { ArtifactRenderError } from './artifacts/ArtifactViewer';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import type { LiveBrowserShare } from './artifacts/WebPagePreview';
@@ -2060,6 +2061,8 @@ function BaseChatContent({
     sessionCosts,
     modelRows,
   });
+  // A stored usage limit notice that lands asks the composer to read the chat's limit again.
+  const usageLimitNoticeKey = useMemo(() => latestUsageLimitNoticeKey(messages), [messages]);
 
   // While a chat's transcript loads there is no `session`, and the chat looked
   // new: no rail, the empty composer's placeholder, the new-chat model on the
@@ -2900,6 +2903,7 @@ function BaseChatContent({
             workingDirLocked={workingDirLocked}
             sessionCosts={footerCost.sessionCosts}
             modelCostRows={footerCost.modelCostRows}
+            usageLimitNoticeKey={usageLimitNoticeKey}
             workflow={workflow}
             workflowAccepted={!hasNotAcceptedWorkflow}
             initialPrompt={initialPrompt}

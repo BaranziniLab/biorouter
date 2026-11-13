@@ -128,11 +128,24 @@ pub struct ToolDispatchGuard {
 }
 
 impl ToolDispatchGuard {
+    /// A guard holding one permit of `semaphore` and no path locks, for a test
+    /// in another module that needs an exact count instead of the process-wide
+    /// semaphore every test in the binary shares.
+    #[cfg(test)]
+    pub(crate) async fn for_test(semaphore: Arc<Semaphore>) -> Self {
+        Self {
+            permit: acquire_permit_cell(&semaphore).await,
+            semaphore,
+            _path_guards: Vec::new(),
+        }
+    }
+
     /// A handle for a tool that **parks on a person** to hand its concurrency
     /// permit back for the duration of the wait.
     ///
-    /// Only for genuine parking — an approval card, an elicitation — never around
-    /// work. The permit exists to bound work, and a tool waiting on a human is
+    /// Only for genuine parking (an approval card, an elicitation, a script's
+    /// timed `sleep()` or `wait_for()`), never around work. The permit exists
+    /// to bound work, and a tool waiting on a human is
     /// doing none; holding one there is what turns eight parked calls into a
     /// stalled daemon (`Semaphore::new(8)`, shared by every session in the
     /// process), which is the hazard `agent::is_parking_workspace_tool` was
@@ -182,6 +195,51 @@ impl DispatchPermitHandle {
         }
         outcome
     }
+}
+
+tokio::task_local! {
+    /// The permit handle of the dispatch whose body is running, so a wait deep
+    /// inside that body can hand the permit back ([`park`]).
+    static DISPATCH_PERMIT: DispatchPermitHandle;
+}
+
+/// Run a dispatch's `body` with its permit handle in reach of [`park`]. With
+/// `None` (an exempt dispatch, or one holding no permit) it just runs `body`.
+///
+/// The scope is a task-local, so it covers what `body` awaits on this task and
+/// nothing it spawns: a script's tool calls run on a spawned handler, which
+/// installs the script's own handle around each call.
+pub async fn with_parking_handle<F: std::future::Future>(
+    handle: Option<DispatchPermitHandle>,
+    body: F,
+) -> F::Output {
+    match handle {
+        Some(handle) => DISPATCH_PERMIT.scope(handle, body).await,
+        None => body.await,
+    }
+}
+
+/// Await `parked`, a wait that does no work, holding no dispatch permit: the
+/// permit of the dispatch it runs in ([`with_parking_handle`]) is handed back
+/// for the wait and queued for again after it. Outside such a dispatch it is a
+/// plain await.
+///
+/// For the status-check pacing hold (`tool_monitor::poll_pacing`): a repeated
+/// check of a running job sleeps up to two minutes inside the dispatch, and
+/// eight of them holding permits would stall every other tool call in the
+/// daemon.
+pub async fn park<F: std::future::Future>(parked: F) -> F::Output {
+    match DISPATCH_PERMIT.try_with(DispatchPermitHandle::clone) {
+        Ok(handle) => handle.while_parked(parked).await,
+        Err(_) => parked.await,
+    }
+}
+
+/// Whether the running dispatch body has a permit handle in reach of
+/// [`park`].
+#[cfg(test)]
+pub(crate) fn permit_in_reach() -> bool {
+    DISPATCH_PERMIT.try_with(|_| ()).is_ok()
 }
 
 /// Acquire the concurrency permit and any write-path locks for a tool call, in

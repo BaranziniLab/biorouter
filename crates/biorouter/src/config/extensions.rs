@@ -1345,3 +1345,23 @@ mod display_name_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod call_timeout_tests {
+    use super::DEFAULT_EXTENSION_TIMEOUT;
+    use biorouter_mcp::developer::rmcp_developer::{
+        SHELL_STATUS_ASSUMED_CALL_TIMEOUT_SECS, SHELL_STATUS_MAX_WAIT_SECS,
+    };
+
+    /// `shell_status` blocks inside one tool call, so its longest wait has to
+    /// end before the call timeout does. The developer crate cannot read this
+    /// constant, so it mirrors it; this test is what keeps the copy honest.
+    #[test]
+    fn shell_status_waits_end_before_the_extension_call_timeout() {
+        assert_eq!(
+            SHELL_STATUS_ASSUMED_CALL_TIMEOUT_SECS,
+            DEFAULT_EXTENSION_TIMEOUT
+        );
+        const { assert!(SHELL_STATUS_MAX_WAIT_SECS < DEFAULT_EXTENSION_TIMEOUT) };
+    }
+}

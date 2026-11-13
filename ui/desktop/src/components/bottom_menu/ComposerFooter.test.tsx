@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeAll, beforeEach, afterAll, describe, expect, it, vi } from 'vitest';
 import { ComposerFooter, type ComposerFooterProps } from './ComposerFooter';
-import { FOLDER_ACCESS_COPY, FOOTER_COPY } from './copy';
+import { FOLDER_ACCESS_COPY, FOOTER_COPY, USAGE_LIMIT_COPY } from './copy';
+import type { SessionUsageLimitController } from './useSessionUsageLimit';
 import { listFolderAccess, revokeFolderAccess } from '../../api';
 
 vi.mock('../ModelAndProviderContext', () => ({
@@ -220,6 +221,35 @@ describe('ComposerFooter (spec 3.7)', () => {
     await settle();
     expect(screen.queryByTestId('chat-cost')).toBeNull();
     expect(screen.queryByText('$0.00')).toBeNull();
+  });
+
+  it('keeps the cost item on the line at $0, as the gauge, when the chat has a limit to manage', async () => {
+    const usageLimit: SessionUsageLimitController = {
+      sessionId: 'chat-1',
+      state: null,
+      month: null,
+      loadFailed: false,
+      saving: false,
+      saveError: null,
+      reload: vi.fn(),
+      save: vi.fn(async () => false),
+      openCardRequest: 0,
+      requestOpenCard: vi.fn(),
+    };
+    const { rerender } = render(
+      <ComposerFooter
+        {...BASE}
+        modelCostRows={[{ ...BASE.modelCostRows![0], totalCost: 0 }]}
+        usageLimit={usageLimit}
+      />
+    );
+    await settle();
+    expect(screen.queryByTestId('chat-cost')).toBeNull();
+    expect(screen.getByTestId('chat-usage')).toHaveAccessibleName(USAGE_LIMIT_COPY.triggerLabel);
+    // Home has no chat, so no cost item, whatever it is handed.
+    rerender(<ComposerFooter {...BASE} sessionId={null} usageLimit={usageLimit} />);
+    await settle();
+    expect(screen.queryByTestId('chat-usage')).toBeNull();
   });
 
   it('has no monospace text anywhere on the line', async () => {

@@ -1,13 +1,16 @@
 use crate::agents::extension::PlatformExtensionContext;
 use crate::agents::mcp_client::{Error, McpClientTrait, McpMeta};
 use crate::session::extension_data;
-use crate::session::extension_data::{ExpandError, ExtensionState, TodoState, TodoStatus};
+use crate::session::extension_data::{
+    ExpandError, ExtensionState, TodoState, TodoStatus, MOIM_PLAN_CHARS,
+};
+use crate::session::SessionManager;
 use anyhow::Result;
 use async_trait::async_trait;
 use indoc::indoc;
 use rmcp::model::{
     CallToolResult, Content, Implementation, InitializeResult, JsonObject, ListToolsResult,
-    ProtocolVersion, ServerCapabilities, Tool, ToolAnnotations, ToolsCapability,
+    ProtocolVersion, Role, ServerCapabilities, Tool, ToolAnnotations, ToolsCapability,
 };
 use schemars::{schema_for, JsonSchema};
 use serde::{Deserialize, Serialize};
@@ -39,15 +42,367 @@ pub fn is_todo_tool_name(tool_name: &str) -> bool {
     TODO_TOOL_NAMES.contains(&tool_name)
 }
 
+// ---------------------------------------------------------------------------
+// The ride-along sidecar
+// ---------------------------------------------------------------------------
+
+/// The argument the host adds to a workhorse tool's schema so checklist
+/// progress rides on a call the model is making anyway.
+///
+/// Why it exists: the model emits one tool call per message. In the chat that
+/// motivated this, 239 of 575 requests (38% of all prompt tokens) were a todo
+/// call made on its own, each one re-sending a ~235k-token conversation to flip
+/// one checkbox. Prompt text asking for batching did not change that; a field
+/// on the next real call removes the request instead of asking the model to.
+pub const TODO_SIDECAR_FIELD: &str = "todo";
+
+/// The tools whose schema carries [`TODO_SIDECAR_FIELD`]: the ones a model
+/// actually does its work with. Exact model-facing names, for the same reason
+/// as [`TODO_TOOL_NAMES`]. Kept small on purpose: every listed schema grows by
+/// the field's description in every request, and a field on a tool the model
+/// rarely calls buys nothing.
+pub const TODO_SIDECAR_TOOLS: [&str; 3] = [
+    "code_execution__execute_code",
+    "developer__shell",
+    "developer__text_editor",
+];
+
+/// Does `tool_name`'s schema carry the sidecar? The host strips the field from
+/// such a call before dispatch ([`take_todo_sidecar`]) and applies it after
+/// ([`apply_todo_sidecar`]).
+pub fn tool_takes_todo_sidecar(tool_name: &str) -> bool {
+    TODO_SIDECAR_TOOLS.contains(&tool_name)
+}
+
+/// The JSON schema of [`TODO_SIDECAR_FIELD`], one line of description and
+/// five optional keys.
+pub fn todo_sidecar_schema() -> serde_json::Value {
+    let ids = serde_json::json!({
+        "type": "array",
+        "items": {"type": ["integer", "string"]}
+    });
+    serde_json::json!({
+        "type": "object",
+        "description": "Optional: checklist updates to apply with this call, e.g. \
+            {\"done\":[3,4],\"add\":[\"write the report\"]}. done/blocked: item ids; \
+            add: new items; plan: replaces the plan. Omit any key you have no value for. \
+            Applied only if this call succeeds. The next open item becomes current on its \
+            own. Prefer this to a separate todo call.",
+        "properties": {
+            "done": ids.clone(),
+            "blocked": ids,
+            "start": {
+                "type": ["integer", "string"],
+                "description": "One item to work on out of order; omit when none."
+            },
+            "add": {"type": "array", "items": {"type": "string"}},
+            "plan": {"type": "string"}
+        }
+    })
+}
+
+/// Remove a host-injected [`TODO_SIDECAR_FIELD`] from a tool call's arguments
+/// and return it, so the tool itself never sees an argument it did not
+/// declare. `None` when the field is absent or `null`.
+pub fn take_todo_sidecar(arguments: &mut Option<JsonObject>) -> Option<serde_json::Value> {
+    arguments
+        .as_mut()?
+        .remove(TODO_SIDECAR_FIELD)
+        .filter(|value| !value.is_null())
+}
+
+/// One parsed sidecar.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Sidecar {
+    done: Vec<String>,
+    blocked: Vec<String>,
+    start: Option<String>,
+    add: Vec<String>,
+    plan: Option<String>,
+}
+
+impl Sidecar {
+    fn is_empty(&self) -> bool {
+        self.done.is_empty()
+            && self.blocked.is_empty()
+            && self.start.is_none()
+            && self.add.is_empty()
+            && self.plan.is_none()
+    }
+}
+
+/// Read a sidecar, accepting what models send: the object, the object
+/// stringified, a lone id where a list is expected, and a few key aliases.
+/// An unknown key is refused rather than ignored, so a misspelling is logged
+/// instead of silently doing nothing.
+fn parse_sidecar(value: &serde_json::Value) -> Result<Sidecar, String> {
+    let parsed;
+    let value = match value {
+        serde_json::Value::String(raw) => {
+            parsed = serde_json::from_str::<serde_json::Value>(raw)
+                .map_err(|_| format!("todo must be an object; got {}", describe_json(value)))?;
+            &parsed
+        }
+        other => other,
+    };
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("todo must be an object; got {}", describe_json(value)))?;
+    let mut sidecar = Sidecar::default();
+    for (key, entry) in object {
+        if entry.is_null() {
+            continue;
+        }
+        match key.as_str() {
+            "done" | "completed" | "complete" => sidecar.done.extend(sidecar_ids(key, entry)?),
+            "blocked" => sidecar.blocked.extend(sidecar_ids(key, entry)?),
+            "start" | "current" | "in_progress" => {
+                let one = match entry {
+                    serde_json::Value::Array(list) if list.len() == 1 => &list[0],
+                    serde_json::Value::Array(list) if list.is_empty() => continue,
+                    one => one,
+                };
+                // Models fill an optional field they have no value for with a
+                // placeholder: 0, "0", "" (or null, skipped above). No item
+                // has id 0, so each means "none" and is taken silently.
+                if is_placeholder_id(one) {
+                    continue;
+                }
+                sidecar.start = Some(item_id_value(key, one)?);
+            }
+            "add" => {
+                let wrapped = Some(JsonObject::from_iter([(key.clone(), entry.clone())]));
+                let texts = match entry {
+                    serde_json::Value::String(text) => vec![text.trim().to_string()],
+                    _ => item_texts_arg(&wrapped, key)?,
+                };
+                sidecar
+                    .add
+                    .extend(texts.into_iter().filter(|text| !text.is_empty()));
+            }
+            "plan" => {
+                sidecar.plan = Some(
+                    entry
+                        .as_str()
+                        .ok_or_else(|| {
+                            format!("todo.plan must be a string; got {}", describe_json(entry))
+                        })?
+                        .to_string(),
+                )
+            }
+            other => {
+                return Err(format!(
+                    "todo has an unknown key `{other}` (use done, blocked, start, add, plan)"
+                ))
+            }
+        }
+    }
+    Ok(sidecar)
+}
+
+/// A `start` value that means "none": `0`, `"0"`, `"#0"` or an empty string.
+fn is_placeholder_id(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => true,
+        serde_json::Value::Number(number) => number.as_u64() == Some(0),
+        serde_json::Value::String(text) => {
+            matches!(text.trim().trim_start_matches('#').trim(), "" | "0")
+        }
+        _ => false,
+    }
+}
+
+/// A sidecar id list: an array of ids, or one id on its own.
+fn sidecar_ids(key: &str, value: &serde_json::Value) -> Result<Vec<String>, String> {
+    match value {
+        serde_json::Value::Array(list) => list
+            .iter()
+            .enumerate()
+            .map(|(index, id)| item_id_value(&format!("todo.{key}[{index}]"), id))
+            .collect(),
+        one => Ok(vec![item_id_value(&format!("todo.{key}"), one)?]),
+    }
+}
+
+/// Apply a sidecar taken with [`take_todo_sidecar`] to the chat's checklist.
+///
+/// Never fails the tool call it rode on: the caller logs an `Err` (and may
+/// show its sentence to the model). Valid parts are applied even when some
+/// are not, because the model gets no separate answer for a sidecar and would
+/// otherwise lose every change for one stale id; what was skipped is named in
+/// the error. A malformed sidecar (wrong shape, unknown key) changes nothing.
+/// A checklist this build cannot read is left untouched, as in every todo
+/// tool.
+pub async fn apply_todo_sidecar(
+    session_manager: &SessionManager,
+    session_id: &str,
+    sidecar: serde_json::Value,
+) -> anyhow::Result<()> {
+    let sidecar = parse_sidecar(&sidecar).map_err(|reason| anyhow::anyhow!(reason))?;
+    if sidecar.is_empty() {
+        return Ok(());
+    }
+    let max_items = TodoClient::max_items();
+    let plan_chars = sidecar.plan.as_deref().map(|plan| plan.chars().count());
+    let max_chars = TodoClient::max_chars();
+    if let Some(chars) = plan_chars.filter(|chars| max_chars > 0 && *chars > max_chars) {
+        anyhow::bail!("todo.plan too large: {chars} chars (max: {max_chars})");
+    }
+    let skipped = update_todo_state(session_manager, session_id, move |state| {
+        let mut skipped = Vec::new();
+        for (ids, status) in [
+            (&sidecar.done, TodoStatus::Completed),
+            (&sidecar.blocked, TodoStatus::Blocked),
+        ] {
+            for id in ids {
+                if !state.update_item(id, Some(status), None) {
+                    skipped.push(format!("#{id}"));
+                }
+            }
+        }
+        if let Some(id) = sidecar.start.as_deref() {
+            if !state.update_item(id, Some(TodoStatus::InProgress), None) {
+                skipped.push(format!("#{id}"));
+            }
+        }
+        if !sidecar.add.is_empty() {
+            let room = max_items.saturating_sub(state.items.len());
+            if max_items > 0 && sidecar.add.len() > room {
+                return Err(format!(
+                    "todo.add would make the checklist {} items (max: {max_items})",
+                    state.items.len() + sidecar.add.len()
+                ));
+            }
+            state.add_items(sidecar.add);
+        }
+        if let Some(plan) = sidecar.plan {
+            let trimmed = plan.trim();
+            state.plan = (!trimmed.is_empty()).then(|| trimmed.to_string());
+        }
+        Ok(skipped)
+    })
+    .await
+    .map_err(|reason| anyhow::anyhow!(reason))?;
+    if skipped.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "todo: no checklist item {}; the rest was applied",
+            skipped.join(", ")
+        )
+    }
+}
+
+/// Load the session's todo state (migrating any legacy blob), let `f` mutate
+/// it, then persist, in ONE `update_extension_data` transaction. Returns `f`'s
+/// value.
+///
+/// Only `todo.v1` changes and nothing another writer committed in the
+/// meantime is put back. A todo call shares a tool batch with every other
+/// tool, including a spawn recording its child into the chat's orchestration
+/// plan; the old `get_session` then whole-blob `update().extension_data()`
+/// pair erased such a write. The whole-object form rather than
+/// `update_extension_state`, because the read may migrate a legacy `todo.v0`
+/// blob, a second key.
+async fn update_todo_state<F, T>(
+    session_manager: &SessionManager,
+    session_id: &str,
+    f: F,
+) -> Result<T, String>
+where
+    F: FnOnce(&mut TodoState) -> Result<T, String> + Send,
+    T: Send,
+{
+    // A refusal (`f`'s, or an unreadable checklist) rolls the transaction back
+    // and is reported in its own words.
+    let mut refusal: Option<String> = None;
+    let written = session_manager
+        .update_extension_data(session_id, |data| {
+            // ⚠ Never `TodoState::load(..).unwrap_or_default()` here. `load`
+            // reports a blob this build cannot parse as `None`, and the write
+            // below replaces the WHOLE `todo.v1` key, so one `todo_add`
+            // against a checklist a newer build wrote would silently destroy
+            // it. Refuse instead: the blob stays exactly where it is.
+            let loaded = TodoState::try_load(data).map_err(|unreadable| {
+                format!(
+                    "This session's stored checklist (`{}`) was written by a newer build \
+                     of Biorouter and cannot be read here. Leaving it untouched rather \
+                     than overwriting it. Update Biorouter to change this checklist.",
+                    unreadable.key
+                )
+            });
+            let mut state = match loaded {
+                Ok(state) => state.unwrap_or_default(),
+                Err(sentence) => {
+                    refusal = Some(sentence);
+                    anyhow::bail!("todo state refused");
+                }
+            };
+            let value = match f(&mut state) {
+                Ok(value) => value,
+                Err(sentence) => {
+                    refusal = Some(sentence);
+                    anyhow::bail!("todo change refused");
+                }
+            };
+            if state.to_extension_data(data).is_err() {
+                refusal = Some("Failed to serialize TODO state".to_string());
+                anyhow::bail!("todo state did not serialize");
+            }
+            Ok(value)
+        })
+        .await;
+
+    match written {
+        Ok(Some(value)) => Ok(value),
+        Ok(None) => Err("Failed to read session metadata".to_string()),
+        Err(_) => Err(refusal.unwrap_or_else(|| "Failed to update session metadata".to_string())),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Results
+// ---------------------------------------------------------------------------
+
+/// A successful todo call's result: `model` for the model, `user` for the
+/// person.
+///
+/// The model gets a few characters (Codex answers "Plan updated", and `{}`
+/// inside a script): it just sent the change and the checklist reaches it in
+/// every request's MOIM block, so echoing either back is paid for again in
+/// every later request. The person's copy keeps the full wording and, for
+/// `todo_update`, the JSON the transcript card and Code Execution's
+/// `todo_task_from_result` read the item's title from. Provider formatters drop
+/// a `user`-only block before the request is built (`providers::formats::
+/// audience::is_for_model`), and a script receives only the model's copy.
+fn acknowledged(model: impl Into<String>, user: impl Into<String>) -> Vec<Content> {
+    vec![
+        Content::text(model.into()).with_audience(vec![Role::Assistant]),
+        Content::text(user.into()).with_audience(vec![Role::User]),
+    ]
+}
+
+/// `ok #3,#5`: the model's whole answer to a change of items.
+fn ok_ids(ids: &[String]) -> String {
+    if ids.is_empty() {
+        return "ok".to_string();
+    }
+    format!(
+        "ok {}",
+        ids.iter()
+            .map(|id| format!("#{id}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
+
 /// Default cap on the number of items a checklist may hold (per session).
 const DEFAULT_MAX_ITEMS: usize = 200;
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct TodoWriteParams {
-    /// The full checklist as markdown. One item per line, e.g.
-    /// `- [ ] task`, `- [~] in progress`, `- [!] blocked`, `- [x] done`.
-    /// Discards every existing item and renumbers the ids — use
-    /// `todo_expand`/`todo_add`/`todo_update` to change an existing list.
+    /// The full checklist as markdown, one `- [ ] step` per line (`- [x]` done,
+    /// `- [!]` blocked). Replaces every item and renumbers the ids.
     content: String,
 }
 
@@ -55,8 +410,7 @@ struct TodoWriteParams {
 struct TodoAddParams {
     /// New tasks. Each becomes a pending item with a fresh id.
     items: Vec<String>,
-    /// Insert directly after this item's `#N` id instead of at the end of the
-    /// list. Existing ids are never renumbered.
+    /// Insert directly after this item's `#N` id instead of at the end.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     after: Option<String>,
 }
@@ -67,28 +421,46 @@ struct TodoExpandParams {
     id: String,
     /// The concrete steps replacing it, in order. Each becomes a pending item.
     items: Vec<String>,
-    /// Keep the original item as a grouping row with the new steps nested under
-    /// it (the default). `false` removes it and the steps take its place.
+    /// Keep the original item as a grouping row with the steps nested under it
+    /// (the default). `false` removes it and the steps take its place.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     keep_parent: Option<bool>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct TodoUpdateParams {
-    /// The id (the `#N` shown in the checklist) of the item to update.
-    id: String,
-    /// New status: `pending`, `in_progress`, `blocked`, or `completed`.
+    /// One item's `#N` id. Omit it when you pass `updates`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    id: Option<String>,
+    /// `completed`, `blocked`, `pending`, or `in_progress` (only to work out of
+    /// order: the first open item is current on its own).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     status: Option<String>,
-    /// Optional replacement text for the item.
+    /// Only to rename the item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    /// Several items at once, all or nothing, e.g.
+    /// `[{"id": 2, "status": "completed"}, {"id": 3, "status": "completed"}]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    updates: Option<Vec<TodoItemUpdate>>,
+}
+
+/// One entry of `todo_update`'s `updates`.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+struct TodoItemUpdate {
+    /// The item's `#N` id.
+    id: String,
+    /// New status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    status: Option<String>,
+    /// Only to rename the item.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     text: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 struct PlanWriteParams {
-    /// The living plan: a maintained, step-by-step plan you keep updated as you
-    /// work. Pass an empty string to clear it.
+    /// A short plan: the approach in a few lines. Empty string clears it.
     plan: String,
 }
 
@@ -99,18 +471,16 @@ pub struct TodoClient {
     ///
     /// H6: until the client-wide `McpClientBox` mutex was removed, every
     /// `call_tool` on this extension was serialized for free, which is what made
-    /// `with_state` safe. It loads the session's `extension_data`, mutates it,
-    /// and writes the WHOLE blob back — with two `.await` points in between, so
-    /// two concurrent `todo_add`s could both read `{a}`, then write `{a,x}` and
-    /// `{a,y}`: a lost update. Now that tool calls on one extension overlap,
-    /// this extension carries its own lock instead. It is deliberately narrow —
-    /// it guards only the session-metadata round trip (sub-millisecond, local),
-    /// not the MCP dispatch path, so it costs nothing and cannot reintroduce H6.
+    /// `with_state` safe. Now that tool calls on one extension overlap, this
+    /// extension carries its own lock. It is deliberately narrow: it guards
+    /// only the session-metadata round trip (sub-millisecond, local), not the
+    /// MCP dispatch path, so it costs nothing and cannot reintroduce H6.
     ///
-    /// The round trip is now one `update_extension_data` transaction, which
-    /// also serializes it against every OTHER writer of the session's
-    /// `extension_data` (the lock only ever covered todo calls). The lock stays
-    /// so concurrent todo calls queue here rather than on SQLite's busy timeout.
+    /// The round trip is one `update_extension_data` transaction
+    /// ([`update_todo_state`]), which also serializes it against every OTHER
+    /// writer of the session's `extension_data`, a sidecar
+    /// ([`apply_todo_sidecar`]) included. The lock stays so concurrent todo
+    /// calls queue here rather than on SQLite's busy timeout.
     state_lock: tokio::sync::Mutex<()>,
 }
 
@@ -132,34 +502,28 @@ impl TodoClient {
             server_info: Implementation {
                 name: EXTENSION_NAME.to_string(),
                 title: Some("Todo".to_string()),
-                version: "1.1.0".to_string(),
+                version: "1.2.0".to_string(),
                 icons: None,
                 website_url: None,
             },
             instructions: Some(
                 indoc! {r#"
-                Your plan and todo checklist are automatically re-injected into
-                your context each turn, so you don't need to repeat them.
-
-                Structured, per-item workflow:
-                - Start: `plan_write` the approach, then `todo_write` the initial
-                  checklist (one `- [ ]` line per task).
-                - During: `todo_update` a single item's status as you go
-                  (`in_progress` when you pick it up, `completed` when done).
-                - When you reach a broad item that turns out to be several
-                  steps, `todo_expand` it into the concrete steps before you
-                  start it. Do not rewrite the list, and do not append the steps
-                  to the end — that puts them after work they come before.
-                - `todo_add` with `after` inserts mid-list; without it, appends.
-                - When an item is stuck on something outside your control, set
-                  its status to `blocked` rather than writing "BLOCKED" into its
-                  text.
-                - End: verify every item is `completed` (or explain why not).
-
-                Statuses: pending, in_progress, blocked, completed. Items are
-                addressed by the `#N` id shown next to each line, and those ids
-                are stable — only `todo_write` renumbers them, which is the
-                reason the incremental tools exist.
+                A checklist for multi-step work; the current list is shown to you
+                in every request.
+                - Skip it for simple tasks, and never make a one-step list. Use
+                  3-7 short steps (a few words each).
+                - Report progress in the `todo` field of your next real tool call,
+                  e.g. `"todo": {"done": [2, 3]}`, never in a message of its own.
+                  Where no tool offers that field, send `todo_update` in the same
+                  message as real work.
+                  Mark several items at once, only at milestones. The first open
+                  item is current on its own, so report only done and blocked.
+                - A broad item that turns out to be several steps: `todo_expand`
+                  it in place. `todo_add` (with `after`) inserts; `todo_write`
+                  only seeds or replaces the whole list and renumbers ids.
+                - Do not repeat the list in your reply; the person sees it.
+                - Before finishing, every item is done, or your reply names the
+                  open ones by `#N` and says why.
             "#}
                 .to_string(),
             ),
@@ -172,73 +536,14 @@ impl TodoClient {
         })
     }
 
-    /// Load the session's todo state (migrating any legacy blob), let `f`
-    /// mutate it, then persist. Returns `f`'s success message.
-    ///
-    /// The read and the write are ONE `update_extension_data` transaction, so
-    /// only `todo.v1` changes and nothing another writer committed in the
-    /// meantime is put back. A todo call shares a tool batch with every other
-    /// tool, including a spawn recording its child into the chat's
-    /// orchestration plan; the old `get_session` then whole-blob
-    /// `update().extension_data()` pair erased such a write. The whole-object
-    /// form rather than `update_extension_state`, because the read may migrate a
-    /// legacy `todo.v0` blob, a second key.
-    async fn with_state<F>(&self, session_id: &str, f: F) -> Result<String, String>
+    /// [`update_todo_state`] under this client's lock; see `state_lock`.
+    async fn with_state<F, T>(&self, session_id: &str, f: F) -> Result<T, String>
     where
-        F: FnOnce(&mut TodoState) -> Result<String, String> + Send,
+        F: FnOnce(&mut TodoState) -> Result<T, String> + Send,
+        T: Send,
     {
-        // Held across the whole read-modify-write; see `state_lock`.
         let _state_guard = self.state_lock.lock().await;
-
-        // A refusal (`f`'s, or an unreadable checklist) rolls the transaction
-        // back and is reported in its own words.
-        let mut refusal: Option<String> = None;
-        let written = self
-            .context
-            .session_manager
-            .update_extension_data(session_id, |data| {
-                // ⚠ Never `TodoState::load(..).unwrap_or_default()` here. `load`
-                // reports a blob this build cannot parse as `None`, and the write
-                // below replaces the WHOLE `todo.v1` key — so one `todo_add`
-                // against a checklist a newer build wrote would silently destroy
-                // it. Refuse instead: the blob stays exactly where it is.
-                let loaded = TodoState::try_load(data).map_err(|unreadable| {
-                    format!(
-                        "This session's stored checklist (`{}`) was written by a newer build \
-                         of Biorouter and cannot be read here. Leaving it untouched rather \
-                         than overwriting it — update Biorouter to change this checklist.",
-                        unreadable.key
-                    )
-                });
-                let mut state = match loaded {
-                    Ok(state) => state.unwrap_or_default(),
-                    Err(sentence) => {
-                        refusal = Some(sentence);
-                        anyhow::bail!("todo state refused");
-                    }
-                };
-                let message = match f(&mut state) {
-                    Ok(message) => message,
-                    Err(sentence) => {
-                        refusal = Some(sentence);
-                        anyhow::bail!("todo change refused");
-                    }
-                };
-                if state.to_extension_data(data).is_err() {
-                    refusal = Some("Failed to serialize TODO state".to_string());
-                    anyhow::bail!("todo state did not serialize");
-                }
-                Ok(message)
-            })
-            .await;
-
-        match written {
-            Ok(Some(message)) => Ok(message),
-            Ok(None) => Err("Failed to read session metadata".to_string()),
-            Err(_) => {
-                Err(refusal.unwrap_or_else(|| "Failed to update session metadata".to_string()))
-            }
-        }
+        update_todo_state(&self.context.session_manager, session_id, f).await
     }
 
     fn max_items() -> usize {
@@ -246,6 +551,13 @@ impl TodoClient {
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(DEFAULT_MAX_ITEMS)
+    }
+
+    fn max_chars() -> usize {
+        std::env::var("BIOROUTER_TODO_MAX_CHARS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(50_000)
     }
 
     async fn handle_write(
@@ -256,10 +568,7 @@ impl TodoClient {
         let content = string_arg(&arguments, "content")?;
 
         let char_count = content.chars().count();
-        let max_chars = std::env::var("BIOROUTER_TODO_MAX_CHARS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(50_000);
+        let max_chars = Self::max_chars();
         if max_chars > 0 && char_count > max_chars {
             return Err(format!(
                 "Todo list too large: {} chars (max: {})",
@@ -268,15 +577,15 @@ impl TodoClient {
         }
 
         let max_items = Self::max_items();
-        let message = self
+        let count = self
             .with_state(session_id, move |state| {
                 state.set_from_markdown(&content);
-                // A write that names no item is refused, and `with_state`
-                // persists nothing on an error, so the existing checklist
-                // survives. It used to succeed as "Todo list set: 0 item(s)",
-                // silently replacing the list with nothing (PR #393 F07
-                // rerun, ministral-3:8b: five such writes, then the
-                // repetition guard). Blank content still clears the list.
+                // A write that names no item is refused, and nothing is
+                // persisted on an error, so the existing checklist survives.
+                // It used to succeed as "Todo list set: 0 item(s)", silently
+                // replacing the list with nothing (PR #393 F07 rerun,
+                // ministral-3:8b: five such writes, then the repetition
+                // guard). Blank content still clears the list.
                 if state.items.is_empty() && !content.trim().is_empty() {
                     return Err(no_checklist_items_message(&content));
                 }
@@ -287,10 +596,13 @@ impl TodoClient {
                         max_items
                     ));
                 }
-                Ok(format!("Todo list set: {} item(s)", state.items.len()))
+                Ok(state.items.len())
             })
             .await?;
-        Ok(vec![Content::text(message)])
+        Ok(acknowledged(
+            format!("ok, {count} item(s)"),
+            format!("Todo list set: {count} item(s)"),
+        ))
     }
 
     async fn handle_add(
@@ -307,7 +619,11 @@ impl TodoClient {
             _ => None,
         };
         let max_items = Self::max_items();
-        let message = self
+        let placement = match after.as_deref() {
+            Some(anchor) => format!(" after #{anchor}"),
+            None => String::new(),
+        };
+        let ids = self
             .with_state(session_id, move |state| {
                 let ids = match after.as_deref() {
                     Some(anchor) => state
@@ -322,18 +638,17 @@ impl TodoClient {
                         max_items
                     ));
                 }
-                let placement = match after.as_deref() {
-                    Some(anchor) => format!(" after #{anchor}"),
-                    None => String::new(),
-                };
-                Ok(format!(
-                    "Added {} item(s){placement}: #{}",
-                    ids.len(),
-                    ids.join(", #")
-                ))
+                Ok(ids)
             })
             .await?;
-        Ok(vec![Content::text(message)])
+        Ok(acknowledged(
+            ok_ids(&ids),
+            format!(
+                "Added {} item(s){placement}: #{}",
+                ids.len(),
+                ids.join(", #")
+            ),
+        ))
     }
 
     async fn handle_expand(
@@ -356,7 +671,7 @@ impl TodoClient {
         };
 
         let max_items = Self::max_items();
-        let message = self
+        let (model, user) = self
             .with_state(session_id, move |state| {
                 let expanded = state
                     .expand_item(&id, items, keep_parent)
@@ -373,6 +688,7 @@ impl TodoClient {
                     expanded.ids.len(),
                     expanded.ids.join(", #")
                 );
+                let mut model = ok_ids(&expanded.ids);
                 if expanded.kept_parent {
                     message.push_str(&format!(" (nested under #{id})"));
                 } else if let Some(parent) = expanded.nested_under.as_deref() {
@@ -380,23 +696,30 @@ impl TodoClient {
                     // Explain the shape only when the caller asked for a level
                     // it cannot have; saying it after an explicit
                     // `keep_parent: false` would imply a constraint was applied
-                    // when the caller got exactly what it requested.
+                    // when the caller got exactly what it requested. The model
+                    // is told too: it asked for a shape it did not get.
                     if keep_parent {
                         message.push_str(" — the checklist nests one level only");
+                        model.push_str(&format!(
+                            " (siblings under #{parent}, #{id} removed: one level only)"
+                        ));
                     }
                     message.push(')');
                 } else {
                     message.push_str(&format!(" (#{id} removed)"));
                 }
-                Ok(serde_json::json!({
+                // Never the whole checklist: the model reads it in the next
+                // request's MOIM block anyway, and this result would be re-sent
+                // with every request after that.
+                let user = serde_json::json!({
                     "message": message,
                     "ids": expanded.ids,
-                    "checklist": state.render(),
                 })
-                .to_string())
+                .to_string();
+                Ok((model, user))
             })
             .await?;
-        Ok(vec![Content::text(message)])
+        Ok(acknowledged(model, user))
     }
 
     async fn handle_update(
@@ -405,37 +728,43 @@ impl TodoClient {
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
         let args = arguments.as_ref().ok_or("Missing arguments")?;
-        let id = item_id_arg(args, "id")?;
+        let updates = update_requests(args)?;
 
-        let status = match args.get("status").and_then(|v| v.as_str()) {
-            Some(raw) => Some(TodoStatus::parse(raw).ok_or_else(|| {
-                format!("Unknown status: {raw} (use pending/in_progress/blocked/completed)")
-            })?),
-            None => None,
-        };
-        let text = args
-            .get("text")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-
-        if status.is_none() && text.is_none() {
-            return Err("Provide a new status and/or text to update".to_string());
-        }
-
-        let message = self
+        let (ids, user) = self
             .with_state(session_id, move |state| {
-                if state.update_item(&id, status, text) {
-                    Ok(serde_json::json!({
-                        "message": format!("Updated item #{id}"),
-                        "task": state.items.iter().find(|item| item.id == id),
-                    })
-                    .to_string())
-                } else {
-                    Err(unknown_id_message(state, &id))
+                // Nothing is persisted when this returns an error, so an
+                // unknown id anywhere in the batch leaves every item as it was.
+                let mut ids: Vec<String> = Vec::with_capacity(updates.len());
+                for update in updates {
+                    if !state.update_item(&update.id, update.status, update.text) {
+                        return Err(unknown_id_message(state, &update.id));
+                    }
+                    // Each item once: a model that names one item both at the
+                    // top level and in `updates` changed one item, not two.
+                    if !ids.contains(&update.id) {
+                        ids.push(update.id);
+                    }
                 }
+                let user = if ids.len() == 1 {
+                    let id = &ids[0];
+                    serde_json::json!({
+                        "message": format!("Updated item #{id}"),
+                        "task": state.items.iter().find(|item| &item.id == id),
+                    })
+                } else {
+                    let tasks: Vec<_> = ids
+                        .iter()
+                        .filter_map(|id| state.items.iter().find(|item| &item.id == id))
+                        .collect();
+                    serde_json::json!({
+                        "message": format!("Updated {} items: #{}", ids.len(), ids.join(", #")),
+                        "tasks": tasks,
+                    })
+                };
+                Ok((ids, user.to_string()))
             })
             .await?;
-        Ok(vec![Content::text(message)])
+        Ok(acknowledged(ok_ids(&ids), user))
     }
 
     async fn handle_plan_write(
@@ -446,10 +775,7 @@ impl TodoClient {
         let plan = string_arg(&arguments, "plan")?;
 
         let char_count = plan.chars().count();
-        let max_chars = std::env::var("BIOROUTER_TODO_MAX_CHARS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(50_000);
+        let max_chars = Self::max_chars();
         if max_chars > 0 && char_count > max_chars {
             return Err(format!(
                 "Plan too large: {} chars (max: {})",
@@ -457,19 +783,29 @@ impl TodoClient {
             ));
         }
 
-        let message = self
+        let cleared = self
             .with_state(session_id, move |state| {
                 let trimmed = plan.trim();
                 if trimmed.is_empty() {
                     state.plan = None;
-                    Ok("Plan cleared".to_string())
+                    Ok(true)
                 } else {
                     state.plan = Some(trimmed.to_string());
-                    Ok("Plan updated".to_string())
+                    Ok(false)
                 }
             })
             .await?;
-        Ok(vec![Content::text(message)])
+        if cleared {
+            return Ok(acknowledged("ok", "Plan cleared"));
+        }
+        // The one thing worth telling the model: a plan longer than the MOIM
+        // block re-sends is cut there, so the rest is invisible to it later.
+        let model = if char_count > MOIM_PLAN_CHARS {
+            format!("ok (only the first {MOIM_PLAN_CHARS} of {char_count} characters are re-shown; shorten it)")
+        } else {
+            "ok".to_string()
+        };
+        Ok(acknowledged(model, "Plan updated"))
     }
 
     fn get_tools() -> Vec<Tool> {
@@ -477,76 +813,48 @@ impl TodoClient {
             tool_from_schema::<TodoWriteParams>(
                 "todo_write",
                 indoc! {r#"
-                    Replace the ENTIRE checklist. Seeding a new list is what this
-                    is for; changing an existing one is not.
-
-                    It discards every current item and renumbers the `#N` ids, so
-                    any id you were tracking shifts underneath you and a
-                    completed item survives only if you re-emit it here from
-                    memory. To change a list that already exists, use the
-                    incremental tools, which keep ids stable:
-                      - `todo_expand` — one coarse item becomes several concrete
-                        steps, in place, in the right position.
-                      - `todo_add` — append, or insert after a given item.
-                      - `todo_update` — flip one item's status or text.
-
-                    Format: one item per line — `- [ ] task`,
-                    `- [~] in progress`, `- [!] blocked`, `- [x] done`.
+                    Seed the checklist, or replace it whole (this renumbers every
+                    id). Only for multi-step work: 3-7 short steps, never one.
+                    To change an existing list use `todo_expand`, `todo_add` or
+                    the `todo` field of your next tool call (where offered).
                 "#},
                 true,
             ),
             tool_from_schema::<TodoExpandParams>(
                 "todo_expand",
                 indoc! {r#"
-                    Break one coarse checklist item into the concrete steps it
-                    turned out to be, replacing it IN PLACE.
-
-                    Reach for this the moment you realise an item is really
-                    several steps — before you start it. The steps take that
-                    item's position, so the list still reads in the order the
-                    work happens, and no surrounding id is renumbered. By
-                    default the original stays as a grouping row with the steps
-                    nested under it; pass `keep_parent: false` to have them
-                    replace it outright.
-
-                    Do NOT use `todo_add` for this — it appends, so the steps
-                    land after work they come before — and do NOT rewrite the
-                    list with `todo_write`.
+                    Replace one coarse item, in place, with the concrete steps it
+                    turned out to be (nested under it by default). Use it before
+                    starting that item, instead of appending or rewriting.
                 "#},
                 false,
             ),
             tool_from_schema::<TodoAddParams>(
                 "todo_add",
                 indoc! {r#"
-                    Add new pending items without rewriting the existing ones.
-                    Appends by default; pass `after` with an item's `#N` id to
-                    insert directly after it. Each new item gets a fresh id and
-                    no existing id changes.
-
-                    If the new items are the breakdown of an item already on the
-                    list, use `todo_expand` instead.
+                    Add pending items: at the end, or after item `after`. Ids
+                    never change. For the breakdown of an existing item use
+                    `todo_expand`.
                 "#},
                 false,
             ),
             tool_from_schema::<TodoUpdateParams>(
                 "todo_update",
                 indoc! {r#"
-                    Update a single checklist item by its `#N` id: change its
-                    status (pending/in_progress/blocked/completed) and/or its
-                    text, without touching the rest of the list.
-
-                    Use `blocked` when the item is stuck on something outside
-                    your control, rather than writing that into its text.
+                    Change items by `#N` id: `{id, status}`, or several at once
+                    with `updates`. Report only `completed` and `blocked`; the
+                    first open item is current on its own. Send `text` only to
+                    rename. Prefer the `todo` field of your next real tool call
+                    where a tool offers it, or send this in the same message as
+                    real work: every separate call re-sends the whole conversation.
                 "#},
                 false,
             ),
             tool_from_schema::<PlanWriteParams>(
                 "plan_write",
                 indoc! {r#"
-                    Set or update the living plan: a maintained, step-by-step
-                    plan you keep current as you work. Re-injected into your
-                    context each turn alongside the checklist. Empty string
-                    clears it.
+                    Set a short plan (a few lines), shown to you with the
+                    checklist in every request. Empty string clears it.
                 "#},
                 false,
             ),
@@ -639,6 +947,92 @@ fn item_id_arg(args: &JsonObject, key: &str) -> Result<String, String> {
         .get(key)
         .ok_or_else(|| format!("Missing required parameter: {key}"))?;
     item_id_value(key, value)
+}
+
+/// One parsed item change of a `todo_update` call.
+struct UpdateRequest {
+    id: String,
+    status: Option<TodoStatus>,
+    text: Option<String>,
+}
+
+/// Read one item change: an `id` plus a `status` and/or `text`. `label` names
+/// where it came from in an error (`updates[1]`, or nothing for the top level).
+fn update_request(object: &JsonObject, label: &str) -> Result<UpdateRequest, String> {
+    let id_key = if label.is_empty() {
+        "id".to_string()
+    } else {
+        format!("{label}.id")
+    };
+    let id = match object.get("id") {
+        Some(value) => item_id_value(&id_key, value)?,
+        None => return Err(format!("Missing required parameter: {id_key}")),
+    };
+    let status = match object.get("status").and_then(|v| v.as_str()) {
+        Some(raw) => Some(TodoStatus::parse(raw).ok_or_else(|| {
+            format!("Unknown status: {raw} (use pending/in_progress/blocked/completed)")
+        })?),
+        None => None,
+    };
+    let text = object
+        .get("text")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    if status.is_none() && text.is_none() {
+        return Err(if label.is_empty() {
+            "Provide a new status and/or text to update".to_string()
+        } else {
+            format!("{label} needs a new status and/or text")
+        });
+    }
+    Ok(UpdateRequest { id, status, text })
+}
+
+/// Every item change one `todo_update` call asks for, in order: the top-level
+/// `id` form first (the original single-item shape), then each `updates`
+/// entry.
+fn update_requests(args: &JsonObject) -> Result<Vec<UpdateRequest>, String> {
+    let mut requests = Vec::new();
+    let has_top_level = args.get("id").is_some_and(|v| !v.is_null());
+    if has_top_level {
+        requests.push(update_request(args, "")?);
+    }
+    match args.get("updates") {
+        None | Some(serde_json::Value::Null) => {}
+        Some(serde_json::Value::Array(entries)) => {
+            for (index, entry) in entries.iter().enumerate() {
+                let label = format!("updates[{index}]");
+                let object = entry.as_object().ok_or_else(|| {
+                    format!(
+                        "{label} must be an object like {{\"id\": \"3\", \"status\": \"completed\"}}; got {}",
+                        describe_json(entry)
+                    )
+                })?;
+                requests.push(update_request(object, &label)?);
+            }
+        }
+        Some(other) => {
+            return Err(format!(
+                "updates must be an array of {{id, status, text}} objects; got {}",
+                describe_json(other)
+            ))
+        }
+    }
+    if requests.is_empty() {
+        return Err(if has_top_level || args.contains_key("updates") {
+            "updates is empty; pass at least one {id, status, text} entry".to_string()
+        } else {
+            "Missing required parameter: id (or pass `updates` to change several items)".to_string()
+        });
+    }
+    let max_items = TodoClient::max_items();
+    if max_items > 0 && requests.len() > max_items {
+        return Err(format!(
+            "Too many updates in one call: {} (max: {max_items})",
+            requests.len()
+        ));
+    }
+    Ok(requests)
 }
 
 /// Read a boolean argument, tolerating the stringified form.
@@ -817,7 +1211,9 @@ impl McpClientTrait for TodoClient {
         if state.is_empty() {
             return None;
         }
-        Some(format!("Current tasks and notes:\n{}", state.render()))
+        // `render_for_model`, not `render`: open items in full, old completed
+        // ones as a count, the plan capped. This block is in every request.
+        Some(format!("Current tasks:\n{}", state.render_for_model()))
     }
 }
 
@@ -857,6 +1253,32 @@ mod tests {
         result
             .content
             .iter()
+            .filter_map(|content| content.as_text().map(|text| text.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// What the model reads: blocks with no audience or the assistant's.
+    fn model_text(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter(|content| crate::providers::formats::audience::is_for_model(content))
+            .filter_map(|content| content.as_text().map(|text| text.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// What the person's transcript reads: blocks with no audience or the user's.
+    fn user_text(result: &CallToolResult) -> String {
+        result
+            .content
+            .iter()
+            .filter(|content| {
+                content
+                    .audience()
+                    .is_none_or(|audience| audience.contains(&Role::User))
+            })
             .filter_map(|content| content.as_text().map(|text| text.text.clone()))
             .collect::<Vec<_>>()
             .join("\n")
@@ -1016,7 +1438,7 @@ mod tests {
 
         assert_eq!(updated.is_error, Some(false), "{}", text(&updated));
         assert!(text(&updated).contains("Updated item #1"));
-        let result: serde_json::Value = serde_json::from_str(&text(&updated)).unwrap();
+        let result: serde_json::Value = serde_json::from_str(&user_text(&updated)).unwrap();
         assert_eq!(result["task"]["id"], "1");
         assert_eq!(result["task"]["text"], "verify displayed id");
         assert_eq!(result["task"]["status"], "completed");
@@ -1085,7 +1507,7 @@ mod tests {
             checklist,
             vec![
                 "- [x] (#1) survey the inputs",
-                "- [ ] (#2) set up the workspace",
+                "- [~] (#2) set up the workspace",
                 "- [ ] (#3) do the actual work",
                 "  - [ ] (#5) write it",
                 "  - [ ] (#6) wire it up",
@@ -1102,7 +1524,7 @@ mod tests {
             serde_json::json!({"id": 4, "status": "in_progress"}),
         )
         .await;
-        let result: serde_json::Value = serde_json::from_str(&text(&updated)).unwrap();
+        let result: serde_json::Value = serde_json::from_str(&user_text(&updated)).unwrap();
         assert_eq!(result["task"]["text"], "test and verify");
     }
 
@@ -1162,7 +1584,7 @@ mod tests {
         // Nothing was lost to either refusal.
         let reinjected = client.get_moim(&id).await.unwrap();
         assert!(reinjected.contains("- [x] (#1) shipped"), "{reinjected}");
-        assert!(reinjected.contains("  - [ ] (#3) step one"), "{reinjected}");
+        assert!(reinjected.contains("  - [~] (#3) step one"), "{reinjected}");
     }
 
     /// PR #393 F07 rerun (ministral-3:8b, 2026-10-12): `-  [  ] Create…` and
@@ -1185,7 +1607,8 @@ mod tests {
         )
         .await;
         assert_eq!(loose.is_error, Some(false), "{}", text(&loose));
-        assert_eq!(text(&loose), "Todo list set: 3 item(s)");
+        assert_eq!(user_text(&loose), "Todo list set: 3 item(s)");
+        assert_eq!(model_text(&loose), "ok, 3 item(s)");
 
         let nothing = call(
             &client,
@@ -1205,7 +1628,7 @@ mod tests {
         );
         let reinjected = client.get_moim(&id).await.unwrap();
         assert!(
-            reinjected.contains("- [ ] (#1) Create factorial.py")
+            reinjected.contains("- [~] (#1) Create factorial.py")
                 && reinjected.contains("- [x] (#3) Plan"),
             "the refused write must leave the list: {reinjected}"
         );
@@ -1219,7 +1642,7 @@ mod tests {
         )
         .await;
         assert_eq!(cleared.is_error, Some(false), "{}", text(&cleared));
-        assert_eq!(text(&cleared), "Todo list set: 0 item(s)");
+        assert_eq!(user_text(&cleared), "Todo list set: 0 item(s)");
     }
 
     #[tokio::test]
@@ -1253,7 +1676,7 @@ mod tests {
             )
             .await;
             assert_eq!(result.is_error, Some(false), "{}", text(&result));
-            let parsed: serde_json::Value = serde_json::from_str(&text(&result)).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&user_text(&result)).unwrap();
             assert_eq!(parsed["task"]["id"], "3");
             assert_eq!(parsed["task"]["status"], status);
         }
@@ -1280,6 +1703,254 @@ mod tests {
         )
         .await;
         assert!(text(&unknown).contains("#1, #2, #3"), "{}", text(&unknown));
+    }
+
+    /// A model that names one item both at the top level and in `updates`
+    /// changed one item: the answer names it once (live: "ok #3,#3,#4,#5").
+    #[tokio::test]
+    async fn todo_update_names_each_item_once() {
+        let temp = tempfile::tempdir().unwrap();
+        let (client, id) = client_and_session(&temp, "todo dedupe").await;
+        call(
+            &client,
+            &id,
+            "todo_write",
+            serde_json::json!({"content": "- [ ] one\n- [ ] two\n- [ ] three\n- [ ] four"}),
+        )
+        .await;
+        let result = call(
+            &client,
+            &id,
+            "todo_update",
+            serde_json::json!({
+                "id": "3",
+                "status": "pending",
+                "updates": [
+                    {"id": "3", "status": "pending"},
+                    {"id": "4", "status": "pending"}
+                ]
+            }),
+        )
+        .await;
+        assert_eq!(model_text(&result), "ok #3,#4");
+        assert!(
+            text(&result).contains("Updated 2 items: #3, #4"),
+            "{}",
+            text(&result)
+        );
+
+        let single = call(
+            &client,
+            &id,
+            "todo_update",
+            serde_json::json!({"id": "2", "status": "completed",
+                "updates": [{"id": "2", "status": "completed"}]}),
+        )
+        .await;
+        assert_eq!(model_text(&single), "ok #2");
+        assert!(
+            text(&single).contains("Updated item #2"),
+            "{}",
+            text(&single)
+        );
+    }
+
+    /// Placeholders for "no current item" are taken as absent, silently.
+    #[test]
+    fn a_placeholder_start_is_no_start() {
+        for start in [
+            serde_json::json!(0),
+            serde_json::json!("0"),
+            serde_json::json!("#0"),
+            serde_json::json!(""),
+            serde_json::json!("  "),
+            serde_json::json!([]),
+            serde_json::Value::Null,
+        ] {
+            for key in ["start", "current", "in_progress"] {
+                let mut value = serde_json::json!({"done": [1]});
+                value[key] = start.clone();
+                let sidecar = parse_sidecar(&value).unwrap();
+                assert_eq!(sidecar.start, None, "{key}: {start}");
+                assert_eq!(sidecar.done, vec!["1".to_string()]);
+            }
+        }
+        assert_eq!(
+            parse_sidecar(&serde_json::json!({"start": 3}))
+                .unwrap()
+                .start,
+            Some("3".to_string())
+        );
+        assert_eq!(
+            parse_sidecar(&serde_json::json!({"start": ["#2"]}))
+                .unwrap()
+                .start
+                .as_deref()
+                .map(|id| id.trim_start_matches('#')),
+            Some("2")
+        );
+        let schema = todo_sidecar_schema();
+        assert!(
+            schema["properties"]["start"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("omit when none"),
+            "{schema}"
+        );
+    }
+
+    /// Finishing one item and starting the next used to take two calls, each
+    /// a full model request. `updates` does both in one, all or nothing.
+    #[tokio::test]
+    async fn todo_update_applies_several_updates_in_one_call() {
+        let temp = tempfile::tempdir().unwrap();
+        let (client, id) = client_and_session(&temp, "todo batch update").await;
+        call(
+            &client,
+            &id,
+            "todo_write",
+            serde_json::json!({"content": "- [ ] one\n- [ ] two\n- [ ] three"}),
+        )
+        .await;
+
+        let batch = call(
+            &client,
+            &id,
+            "todo_update",
+            serde_json::json!({"updates": [
+                {"id": "#1", "status": "completed"},
+                {"id": 2, "status": "in_progress", "text": "two, renamed"},
+            ]}),
+        )
+        .await;
+        assert_eq!(batch.is_error, Some(false), "{}", text(&batch));
+        let parsed: serde_json::Value = serde_json::from_str(&user_text(&batch)).unwrap();
+        assert_eq!(model_text(&batch), "ok #1,#2");
+        assert_eq!(parsed["message"], "Updated 2 items: #1, #2");
+        assert_eq!(parsed["tasks"][0]["status"], "completed");
+        assert_eq!(parsed["tasks"][1]["status"], "in_progress");
+        assert_eq!(parsed["tasks"][1]["text"], "two, renamed");
+
+        let checklist = client.get_moim(&id).await.unwrap();
+        assert!(checklist.contains("- [x] (#1) one"), "{checklist}");
+        assert!(checklist.contains("- [~] (#2) two, renamed"), "{checklist}");
+        assert!(checklist.contains("- [ ] (#3) three"), "{checklist}");
+
+        // The top-level form and `updates` combine, top level first.
+        let mixed = call(
+            &client,
+            &id,
+            "todo_update",
+            serde_json::json!({"id": "2", "status": "completed",
+                               "updates": [{"id": "3", "status": "in_progress"}]}),
+        )
+        .await;
+        assert_eq!(mixed.is_error, Some(false), "{}", text(&mixed));
+        assert!(text(&mixed).contains("#2, #3"), "{}", text(&mixed));
+
+        // A one-entry batch answers in the single-item shape that the code
+        // execution and transcript readers parse.
+        let one = call(
+            &client,
+            &id,
+            "todo_update",
+            serde_json::json!({"updates": [{"id": "3", "status": "completed"}]}),
+        )
+        .await;
+        let parsed: serde_json::Value = serde_json::from_str(&user_text(&one)).unwrap();
+        assert_eq!(parsed["message"], "Updated item #3");
+        assert_eq!(parsed["task"]["status"], "completed");
+    }
+
+    /// An unknown id anywhere in a batch changes nothing, and malformed
+    /// entries are named by index.
+    #[tokio::test]
+    async fn todo_update_batch_is_all_or_nothing_and_names_bad_entries() {
+        let temp = tempfile::tempdir().unwrap();
+        let (client, id) = client_and_session(&temp, "todo batch refusal").await;
+        call(
+            &client,
+            &id,
+            "todo_write",
+            serde_json::json!({"content": "- [ ] one\n- [ ] two"}),
+        )
+        .await;
+
+        let refused = call(
+            &client,
+            &id,
+            "todo_update",
+            serde_json::json!({"updates": [
+                {"id": "1", "status": "completed"},
+                {"id": "9", "status": "completed"},
+            ]}),
+        )
+        .await;
+        assert_eq!(refused.is_error, Some(true));
+        assert!(
+            text(&refused).contains("No todo item with id #9"),
+            "{}",
+            text(&refused)
+        );
+        let checklist = client.get_moim(&id).await.unwrap();
+        assert!(
+            checklist.contains("- [~] (#1) one"),
+            "a refused batch must not apply its first entry: {checklist}"
+        );
+
+        for (args, expected) in [
+            (serde_json::json!({"updates": []}), "updates is empty"),
+            (serde_json::json!({}), "or pass `updates`"),
+            (
+                serde_json::json!({"updates": [{"status": "completed"}]}),
+                "updates[0].id",
+            ),
+            (
+                serde_json::json!({"updates": [{"id": "1"}]}),
+                "updates[0] needs a new status and/or text",
+            ),
+            (
+                serde_json::json!({"updates": ["1"]}),
+                "updates[0] must be an object",
+            ),
+            (
+                serde_json::json!({"updates": "1"}),
+                "updates must be an array",
+            ),
+        ] {
+            let result = call(&client, &id, "todo_update", args.clone()).await;
+            assert_eq!(result.is_error, Some(true), "{args}");
+            assert!(
+                text(&result).contains(expected),
+                "{args}: {}",
+                text(&result)
+            );
+        }
+    }
+
+    /// The description is where the model learns to batch and to prefer the
+    /// sidecar, so it says so.
+    #[test]
+    fn todo_update_tells_the_model_to_batch_and_ride_along() {
+        let tools = TodoClient::get_tools();
+        let update = tools
+            .iter()
+            .find(|tool| tool.name == "todo_update")
+            .unwrap();
+        let description = update.description.as_deref().unwrap_or_default();
+        assert!(description.contains("`updates`"), "{description}");
+        assert!(description.contains("`todo` field"), "{description}");
+        assert!(
+            description.contains("only `completed` and `blocked`"),
+            "{description}"
+        );
+        let schema = serde_json::to_value(&*update.input_schema).unwrap();
+        assert!(schema["properties"]["updates"].is_object(), "{schema}");
+        let required = schema["required"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !required.iter().any(|value| value == "id"),
+            "id is optional now that `updates` exists: {schema}"
+        );
     }
 
     #[tokio::test]
@@ -1374,7 +2045,7 @@ mod tests {
         assert_eq!(
             checklist,
             vec![
-                "- [ ] (#1) one",
+                "- [~] (#1) one",
                 "- [!] (#4) one and a half",
                 "- [ ] (#2) two",
                 "- [ ] (#3) three",
@@ -1521,6 +2192,357 @@ mod tests {
                 checklist.contains(&format!("task {i}")),
                 "todo item {i} was lost: {checklist}"
             );
+        }
+    }
+
+    /// Every successful todo call answers the model in a few characters and
+    /// keeps the full wording, and `todo_update`'s task JSON, for the person.
+    #[tokio::test]
+    async fn every_todo_result_is_terse_for_the_model_and_whole_for_the_person() {
+        let temp = tempfile::tempdir().unwrap();
+        let (client, id) = client_and_session(&temp, "terse results").await;
+
+        let cases = [
+            (
+                "plan_write",
+                serde_json::json!({"plan": "Build, then verify"}),
+                "ok",
+                "Plan updated",
+            ),
+            (
+                "todo_write",
+                serde_json::json!({"content": "- [ ] build\n- [ ] verify"}),
+                "ok, 2 item(s)",
+                "Todo list set: 2 item(s)",
+            ),
+            (
+                "todo_add",
+                serde_json::json!({"items": ["report", "ship"]}),
+                "ok #3,#4",
+                "Added 2 item(s): #3, #4",
+            ),
+            (
+                "todo_expand",
+                serde_json::json!({"id": 2, "items": ["unit", "live"]}),
+                "ok #5,#6",
+                "Expanded #2",
+            ),
+            (
+                "todo_update",
+                serde_json::json!({"id": "1", "status": "completed"}),
+                "ok #1",
+                "\"task\"",
+            ),
+            (
+                "todo_update",
+                serde_json::json!({"updates": [{"id": 5, "status": "completed"},
+                                               {"id": 6, "status": "blocked"}]}),
+                "ok #5,#6",
+                "Updated 2 items: #5, #6",
+            ),
+        ];
+        for (tool, args, model, user) in cases {
+            let result = call(&client, &id, tool, args).await;
+            assert_eq!(result.is_error, Some(false), "{tool}: {}", text(&result));
+            assert_eq!(model_text(&result), model, "{tool}");
+            assert!(
+                user_text(&result).contains(user),
+                "{tool}: {}",
+                user_text(&result)
+            );
+            assert!(
+                !user_text(&result).starts_with("ok"),
+                "the person's copy is not the model's: {tool}"
+            );
+        }
+
+        // The expansion never echoes the checklist, to either reader.
+        let expanded = call(
+            &client,
+            &id,
+            "todo_expand",
+            serde_json::json!({"id": 4, "items": ["a", "b"], "keep_parent": false}),
+        )
+        .await;
+        assert!(
+            !text(&expanded).contains("checklist"),
+            "{}",
+            text(&expanded)
+        );
+        assert!(!text(&expanded).contains("build"), "{}", text(&expanded));
+
+        // A long plan is accepted, and the model is told it is cut in the MOIM.
+        let long = call(
+            &client,
+            &id,
+            "plan_write",
+            serde_json::json!({"plan": "x".repeat(MOIM_PLAN_CHARS + 1)}),
+        )
+        .await;
+        assert!(
+            model_text(&long).contains("shorten it"),
+            "{}",
+            model_text(&long)
+        );
+
+        // Errors stay explicit and unaddressed, so both readers see them.
+        let refused = call(
+            &client,
+            &id,
+            "todo_update",
+            serde_json::json!({"id": "99", "status": "completed"}),
+        )
+        .await;
+        assert_eq!(refused.is_error, Some(true));
+        assert!(model_text(&refused).contains("No todo item with id #99"));
+        assert_eq!(model_text(&refused), user_text(&refused));
+    }
+
+    /// The MOIM block is short for a long session: finished work collapses to a
+    /// count, the next open item reads as current, and no "re-injected" blurb.
+    #[tokio::test]
+    async fn the_moim_block_lists_open_work_and_counts_finished_work() {
+        let temp = tempfile::tempdir().unwrap();
+        let (client, id) = client_and_session(&temp, "compact moim").await;
+        let content = (1..=12)
+            .map(|n| format!("- [ ] step {n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        call(
+            &client,
+            &id,
+            "todo_write",
+            serde_json::json!({"content": content}),
+        )
+        .await;
+        let done: Vec<_> = (1..=9)
+            .map(|n| serde_json::json!({"id": n, "status": "completed"}))
+            .collect();
+        call(
+            &client,
+            &id,
+            "todo_update",
+            serde_json::json!({"updates": done}),
+        )
+        .await;
+
+        let moim = client.get_moim(&id).await.unwrap();
+        assert!(moim.contains("Checklist (9 of 12 done):"), "{moim}");
+        assert!(moim.contains("6 earlier item(s) completed"), "{moim}");
+        assert!(!moim.contains("(#1) step 1\n"), "{moim}");
+        assert!(moim.contains("- [x] (#9) step 9"), "{moim}");
+        assert!(moim.contains("- [~] (#10) step 10"), "{moim}");
+        assert!(moim.contains("- [ ] (#11) step 11"), "{moim}");
+        let instructions = client.get_info().unwrap().instructions.clone().unwrap();
+        assert!(!instructions.contains("re-injected"), "{instructions}");
+        assert!(instructions.contains("`todo` field"), "{instructions}");
+    }
+
+    #[test]
+    fn take_todo_sidecar_removes_only_the_host_field() {
+        let mut arguments = Some(
+            serde_json::json!({"code": "1+1", "todo": {"done": [3]}})
+                .as_object()
+                .cloned()
+                .unwrap(),
+        );
+        assert_eq!(
+            take_todo_sidecar(&mut arguments),
+            Some(serde_json::json!({"done": [3]}))
+        );
+        assert_eq!(
+            arguments,
+            serde_json::json!({"code": "1+1"}).as_object().cloned()
+        );
+        // Gone after the first take, and absent, null or no arguments read as none.
+        assert_eq!(take_todo_sidecar(&mut arguments), None);
+        let mut null = serde_json::json!({"todo": null}).as_object().cloned();
+        assert_eq!(take_todo_sidecar(&mut null), None);
+        assert_eq!(null, Some(JsonObject::new()));
+        assert_eq!(take_todo_sidecar(&mut None), None);
+    }
+
+    #[test]
+    fn the_sidecar_schema_is_small_and_names_its_keys() {
+        let schema = todo_sidecar_schema();
+        let description = schema["description"].as_str().unwrap();
+        assert!(
+            description.starts_with("Optional: checklist updates"),
+            "{description}"
+        );
+        for key in ["done", "blocked", "start", "add", "plan"] {
+            assert!(schema["properties"][key].is_object(), "{key}: {schema}");
+        }
+        assert!(schema.get("required").is_none(), "{schema}");
+        assert!(
+            schema.to_string().len() < 700,
+            "every listed tool carries this in every request: {}",
+            schema.to_string().len()
+        );
+        assert!(tool_takes_todo_sidecar("code_execution__execute_code"));
+        assert!(tool_takes_todo_sidecar("developer__shell"));
+        assert!(!tool_takes_todo_sidecar("todo__todo_update"));
+        assert!(!tool_takes_todo_sidecar("execute_code"));
+    }
+
+    #[tokio::test]
+    async fn a_sidecar_applies_done_blocked_add_and_plan_in_one_write() {
+        let temp = tempfile::tempdir().unwrap();
+        let (client, id) = client_and_session(&temp, "sidecar apply").await;
+        let manager = Arc::clone(&client.context.session_manager);
+        call(
+            &client,
+            &id,
+            "todo_write",
+            serde_json::json!({"content": "- [ ] one\n- [ ] two\n- [ ] three\n- [ ] four"}),
+        )
+        .await;
+
+        apply_todo_sidecar(
+            &manager,
+            &id,
+            serde_json::json!({"done": [1, "#2"], "blocked": "3", "add": ["five"],
+                               "plan": "short plan"}),
+        )
+        .await
+        .unwrap();
+        let moim = client.get_moim(&id).await.unwrap();
+        for expected in [
+            "short plan",
+            "- [x] (#1) one",
+            "- [x] (#2) two",
+            "- [!] (#3) three",
+            "- [~] (#4) four",
+            "- [ ] (#5) five",
+        ] {
+            assert!(moim.contains(expected), "{expected}: {moim}");
+        }
+
+        // A stringified object is read too, and `start` sets current explicitly.
+        apply_todo_sidecar(&manager, &id, serde_json::json!("{\"start\": 5}"))
+            .await
+            .unwrap();
+        let moim = client.get_moim(&id).await.unwrap();
+        assert!(moim.contains("- [~] (#5) five"), "{moim}");
+        assert!(moim.contains("- [ ] (#4) four"), "{moim}");
+
+        // An empty sidecar writes nothing and is not an error.
+        apply_todo_sidecar(&manager, &id, serde_json::json!({}))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_sidecar_with_a_stale_id_applies_the_rest_and_a_malformed_one_nothing() {
+        let temp = tempfile::tempdir().unwrap();
+        let (client, id) = client_and_session(&temp, "sidecar errors").await;
+        let manager = Arc::clone(&client.context.session_manager);
+        call(
+            &client,
+            &id,
+            "todo_write",
+            serde_json::json!({"content": "- [ ] one\n- [ ] two"}),
+        )
+        .await;
+
+        let stale = apply_todo_sidecar(&manager, &id, serde_json::json!({"done": [1, 99]}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            stale.contains("#99") && stale.contains("rest was applied"),
+            "{stale}"
+        );
+        assert!(client
+            .get_moim(&id)
+            .await
+            .unwrap()
+            .contains("- [x] (#1) one"));
+
+        for (bad, expected) in [
+            (serde_json::json!(["done", 2]), "todo must be an object"),
+            (serde_json::json!("not json"), "todo must be an object"),
+            (
+                serde_json::json!({"finished": [2]}),
+                "unknown key `finished`",
+            ),
+            (serde_json::json!({"done": [{"id": 2}]}), "todo.done[0]"),
+            (serde_json::json!({"add": [7]}), "add[0]"),
+            (serde_json::json!({"plan": 3}), "todo.plan must be a string"),
+        ] {
+            let error = apply_todo_sidecar(&manager, &id, bad.clone())
+                .await
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(expected), "{bad}: {error}");
+        }
+        // None of the malformed ones touched #2.
+        assert!(client
+            .get_moim(&id)
+            .await
+            .unwrap()
+            .contains("- [~] (#2) two"));
+    }
+
+    /// A newer build's checklist is never overwritten by a sidecar either.
+    #[tokio::test]
+    async fn a_sidecar_leaves_an_unreadable_checklist_alone() {
+        let temp = tempfile::tempdir().unwrap();
+        let (client, id) = client_and_session(&temp, "sidecar unreadable").await;
+        let manager = Arc::clone(&client.context.session_manager);
+        let future = serde_json::json!({
+            "items": [{"id": "1", "text": "real", "status": "deferred"}]
+        });
+        let mut session = manager.get_session(&id, false).await.unwrap();
+        session
+            .extension_data
+            .set_extension_state("todo", "v1", future.clone());
+        manager
+            .update(&id)
+            .extension_data(session.extension_data)
+            .apply()
+            .await
+            .unwrap();
+        let error = apply_todo_sidecar(&manager, &id, serde_json::json!({"done": [1]}))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("newer build"), "{error}");
+        let after = manager.get_session(&id, false).await.unwrap();
+        assert_eq!(
+            after.extension_data.get_extension_state("todo", "v1"),
+            Some(&future)
+        );
+    }
+
+    /// The system prompt's guidance matches what the tools do: the sidecar by
+    /// its field name, derived progress, no per-item calls, and the final names
+    /// of the waiting tools.
+    #[test]
+    fn the_system_prompt_steers_todo_and_waiting_to_the_cheap_paths() {
+        let prompt = include_str!("../prompts/system.md");
+        for expected in [
+            "never make a one-step list",
+            "3-7 steps",
+            "`todo` field of your next real tool call",
+            "\"todo\": {\"done\": [2, 3]}",
+            "report only `done` and `blocked`",
+            "don't repeat the list in your reply",
+            "`code_execution__watch_job` ends your turn and resumes you",
+            "`code_execution__wait_for`",
+            "`sleep()`",
+            "280 seconds",
+            "600 seconds per script",
+            "every 30 seconds",
+            "Data a tool returns is data to process in code",
+        ] {
+            assert!(prompt.contains(expected), "system.md lost: {expected}");
+        }
+        for retired in [
+            "mark items `in_progress`",
+            "living plan and a per-item checklist",
+        ] {
+            assert!(!prompt.contains(retired), "system.md still says: {retired}");
         }
     }
 }

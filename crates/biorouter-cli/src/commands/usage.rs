@@ -1,5 +1,7 @@
 //! `biorouter usage` — per-day / per-model token + cost usage reports and a
-//! month-to-date summary against the configured (display-only) monthly budget.
+//! month-to-date summary against the configured monthly limits. Those limits
+//! are enforced by the reply loop, not only shown here (see
+//! `docs/agent-loop/usage-limits.md`).
 //!
 //! Cost is computed through the same shared
 //! [`biorouter::providers::pricing::model_cost`] helper the server and GUI use,
@@ -484,6 +486,7 @@ mod tests {
         let limits = UsageLimits {
             monthly_token_limit: Some(66_000_000),
             monthly_dollar_limit: Some(250.0),
+            ..UsageLimits::default()
         };
         let text = format_usage_text(
             &rows,
@@ -556,6 +559,7 @@ mod tests {
         let limits = UsageLimits {
             monthly_token_limit: None,
             monthly_dollar_limit: Some(100.0),
+            ..UsageLimits::default()
         };
         let text = format_usage_text(&[], UsageGroup::Day, &summary(500, None), &limits, 0, 0);
         assert!(text.contains("cost unavailable"), "{text}");
@@ -575,6 +579,7 @@ mod tests {
         let limits = UsageLimits {
             monthly_token_limit: Some(66_000_000),
             monthly_dollar_limit: Some(250.0),
+            ..UsageLimits::default()
         };
         let json = usage_json(
             &rows,
@@ -597,6 +602,7 @@ mod tests {
         let limits = UsageLimits {
             monthly_token_limit: Some(1_000),
             monthly_dollar_limit: Some(100.0),
+            ..UsageLimits::default()
         };
         let json = usage_json(&[], UsageGroup::Day, &summary(500, None), &limits).unwrap();
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();

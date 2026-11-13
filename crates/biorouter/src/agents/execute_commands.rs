@@ -259,6 +259,16 @@ impl Agent {
             )));
         }
         let session_id = session_config.id.as_str();
+        // A compaction is a billed model request over the whole history, so a
+        // chat at a usage limit (or whose next request would pass one) is not
+        // compacted: the person gets the paused notice instead, and the reply
+        // stores it with their message.
+        if let Some(hit) = self.usage_limit_hold(session_id).await {
+            return Ok(Some(Message::assistant().with_system_notification(
+                SystemNotificationType::InlineMessage,
+                crate::agents::usage_limit::stop_notice(&hit),
+            )));
+        }
         let manager = self.config.session_manager.clone();
         let (session, basis) = manager.snapshot_for_rewrite(session_id).await?;
         let stored_conversation = session
@@ -274,7 +284,7 @@ impl Agent {
             None,
         );
 
-        let usage_event_key = uuid::Uuid::new_v4().to_string();
+        let usage_event_key = crate::session::session_manager::compaction_event_key();
         let (compacted_conversation, summarization_usage) = compact_messages(
             self.provider().await?.as_ref(),
             &conversation,
@@ -302,7 +312,7 @@ impl Agent {
             // The round-trip was spent, so bill it — but not as a compaction:
             // it did not replace the context. No PostCompact either, since
             // nothing was compacted.
-            self.update_session_metrics(
+            self.update_compaction_metrics(
                 session_config,
                 &summarization_usage,
                 false,
@@ -330,8 +340,13 @@ impl Agent {
         // Without this, session.total_tokens stays at the pre-compact value:
         // the UI gauge keeps reading the old number, and the next reply's
         // check_if_compaction_needed re-triggers a full LLM summarization.
-        self.update_session_metrics(session_config, &summarization_usage, true, &usage_event_key)
-            .await?;
+        self.update_compaction_metrics(
+            session_config,
+            &summarization_usage,
+            true,
+            &usage_event_key,
+        )
+        .await?;
 
         Ok(Some(Message::assistant().with_system_notification(
             SystemNotificationType::InlineMessage,

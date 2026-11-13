@@ -152,9 +152,9 @@ describe('ModelBreakdownTable', () => {
       '$1.23',
     ]);
 
-    // Sub-cent cost renders as the compact "<$0.01".
+    // A sub-cent cost keeps its digits, as the chat's total does (utils/formatUsd.ts).
     const claudeRow = screen.getByText('anthropic/claude-fable-5').closest('tr')!;
-    expect(within(claudeRow).getAllByRole('cell')[7].textContent).toBe('<$0.01');
+    expect(within(claudeRow).getAllByRole('cell')[7].textContent).toBe('$0.0004');
 
     // The bucket with no model: named in sentence case, null price explicitly unavailable.
     expect(screen.queryByText(UNKNOWN_MODEL_LABEL)).not.toBeInTheDocument();

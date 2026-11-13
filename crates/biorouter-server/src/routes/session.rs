@@ -753,7 +753,9 @@ async fn get_session_activity(
     Ok(Json(activity))
 }
 
-/// Per-model token breakdown for one session.
+/// Per-model token breakdown for one session. Each row carries its dollar
+/// cost priced on the server per request (cache rate and long-context tier
+/// included), so a client never prices the rollup flat itself.
 #[derive(Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionModelUsageResponse {
@@ -1066,6 +1068,8 @@ async fn delete_session(
     let released =
         biorouter::pending_user_action::PendingUserActions::global().cancel_session(&session_id);
     biorouter::folder_access::FolderAccessManager::global().end_session(&session_id);
+    // A job watch of a deleted chat must never check or resume anything.
+    biorouter::agents::cancel_job_watches_for_session(&session_id);
     if released > 0 {
         tracing::info!(
             session_id = %session_id,
@@ -2761,6 +2765,9 @@ pub(crate) mod diverge_tests {
                     cache_read_tokens: Some(800),
                     cache_creation_tokens: Some(0),
                     turns: 2,
+                    cost: Some(0.0125),
+                    cost_is_partial: false,
+                    long_context_turns: 1,
                 },
                 ModelUsageRow {
                     model_id: None,
@@ -2771,6 +2778,9 @@ pub(crate) mod diverge_tests {
                     cache_read_tokens: Some(0),
                     cache_creation_tokens: Some(0),
                     turns: 1,
+                    cost: None,
+                    cost_is_partial: true,
+                    long_context_turns: 0,
                 },
             ],
         };
@@ -2791,11 +2801,27 @@ pub(crate) mod diverge_tests {
             Some(800)
         );
 
+        // The server-priced cost travels with the row.
+        assert_eq!(gpt.get("cost").and_then(|v| v.as_f64()), Some(0.0125));
+        assert_eq!(
+            gpt.get("costIsPartial").and_then(|v| v.as_bool()),
+            Some(false)
+        );
+        assert_eq!(
+            gpt.get("longContextTurns").and_then(|v| v.as_i64()),
+            Some(1)
+        );
+
         // The unknown bucket serializes model/provider as JSON null.
         let unknown = &models[1];
         assert!(unknown.get("modelId").unwrap().is_null());
         assert!(unknown.get("provider").unwrap().is_null());
         assert_eq!(unknown.get("totalTokens").and_then(|v| v.as_i64()), Some(3));
+        assert!(unknown.get("cost").unwrap().is_null());
+        assert_eq!(
+            unknown.get("costIsPartial").and_then(|v| v.as_bool()),
+            Some(true)
+        );
     }
 
     /// The `/usage` route rejects an invalid session id before touching the DB,

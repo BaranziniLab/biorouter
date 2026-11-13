@@ -554,8 +554,9 @@ fn fingerprint(state: Option<&TodoState>) -> u64 {
 fn reminder_text(signal: MultiStep) -> String {
     format!(
         "Planning required: this request has {}, and your checklist is empty. Before you do \
-         anything else, call `{TODO_WRITE_TOOL_NAME}` with one `- [ ]` item per step. Until \
-         the checklist exists, the first other tool call you make this turn will be refused.",
+         anything else, call `{TODO_WRITE_TOOL_NAME}` with one `- [ ]` item per step, or put \
+         the steps in the `todo.add` field of your first tool call. Until the checklist exists, \
+         the first other tool call you make this turn will be refused.",
         signal.describe()
     )
 }
@@ -610,7 +611,9 @@ fn give_up_notice(open: usize) -> String {
 /// Which calls in one batch the redirect refuses: every call except the Todo
 /// tools and the workflow's structured-output tool — and none at all when the
 /// batch itself seeds the checklist, because the plan then lands in the same
-/// step as the work. A malformed call is left alone; it fails on its own.
+/// step as the work. A call whose ride-along `todo` field adds items seeds it
+/// too: that is the cheapest way to plan, one request for the plan and the
+/// first step. A malformed call is left alone; it fails on its own.
 fn redirect_targets(requests: &[ToolRequest]) -> Vec<String> {
     let calls: Vec<(&str, &str)> = requests
         .iter()
@@ -622,6 +625,7 @@ fn redirect_targets(requests: &[ToolRequest]) -> Vec<String> {
     if calls
         .iter()
         .any(|(_, name)| CHECKLIST_SEEDING_TOOLS.contains(name))
+        || requests.iter().any(seeds_by_todo_sidecar)
     {
         return Vec::new();
     }
@@ -630,6 +634,41 @@ fn redirect_targets(requests: &[ToolRequest]) -> Vec<String> {
         .filter(|(_, name)| !is_todo_tool_name(name) && *name != FINAL_OUTPUT_TOOL_NAME)
         .map(|(id, _)| id.to_string())
         .collect()
+}
+
+/// Does this call's ride-along `todo` field add items to the checklist?
+fn seeds_by_todo_sidecar(request: &ToolRequest) -> bool {
+    let Ok(call) = request.tool_call.as_ref() else {
+        return false;
+    };
+    if !crate::agents::todo_extension::tool_takes_todo_sidecar(call.name.as_ref()) {
+        return false;
+    }
+    let Some(sidecar) = call
+        .arguments
+        .as_ref()
+        .and_then(|args| args.get(crate::agents::todo_extension::TODO_SIDECAR_FIELD))
+    else {
+        return false;
+    };
+    // The model sometimes sends the object stringified; the sidecar reader
+    // accepts that, so this does too.
+    let parsed;
+    let sidecar = match sidecar {
+        serde_json::Value::String(raw) => match serde_json::from_str(raw) {
+            Ok(value) => {
+                parsed = value;
+                &parsed
+            }
+            Err(_) => return false,
+        },
+        other => other,
+    };
+    match sidecar.get("add") {
+        Some(serde_json::Value::Array(items)) => !items.is_empty(),
+        Some(serde_json::Value::String(item)) => !item.trim().is_empty(),
+        _ => false,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -654,10 +693,14 @@ struct ChecklistObjection {
 /// deterministic check cannot tell a reason from a status recap, and a named
 /// item is one the user can see was left open, which is the point.
 fn checklist_objection(state: &TodoState, final_text: &str) -> Option<ChecklistObjection> {
-    let open: Vec<&TodoItem> = state
+    // The status each item READS as, so the current item says "in progress"
+    // although it was never marked so (`TodoState::derived_active_index`).
+    let statuses = state.effective_statuses();
+    let open: Vec<(&TodoItem, TodoStatus)> = state
         .items
         .iter()
-        .filter(|item| item.status != TodoStatus::Completed)
+        .zip(statuses)
+        .filter(|(_, status)| *status != TodoStatus::Completed)
         .collect();
     if open.is_empty() {
         return None;
@@ -665,35 +708,29 @@ fn checklist_objection(state: &TodoState, final_text: &str) -> Option<ChecklistO
     let final_words = words(final_text);
     if open
         .iter()
-        .all(|item| names_item(final_text, &final_words, item))
+        .all(|(item, _)| names_item(final_text, &final_words, item))
     {
         return None;
     }
     let listed = open
         .iter()
-        .map(|item| {
-            format!(
-                "- #{} ({}) {}",
-                item.id,
-                status_label(item.status),
-                item.text
-            )
-        })
+        .map(|(item, status)| format!("- #{} ({}) {}", item.id, status_label(*status), item.text))
         .collect::<Vec<_>>()
         .join("\n");
     Some(ChecklistObjection {
         feedback: format!(
             "Before you finish: your checklist still has {} unfinished item(s):\n{listed}\n\
-             Finish them, marking each one completed with `todo__todo_update` as you go. If an \
-             item cannot or should not be done now, end your turn with a message that names \
-             each unfinished item by its #N id and says why it is not done.",
+             Finish the work, and report what is done in the `todo` field of your next tool \
+             call (or, if no call is left, one `todo__todo_update` with all of them in \
+             `updates`). If an item cannot or should not be done now, end your turn with a \
+             message that names each unfinished item by its #N id and says why it is not done.",
             open.len()
         ),
         notice: format!(
             "📋 The checklist still has {} unfinished item(s) ({}); asking the agent to finish \
              them or say why not.",
             open.len(),
-            id_list(open.iter().copied())
+            id_list(open.iter().map(|(item, _)| *item))
         ),
         open: open.len(),
     })
@@ -1150,6 +1187,60 @@ mod tests {
         assert!(redirect_targets(&[request("a", "todo__todo_update")]).is_empty());
     }
 
+    fn request_with(id: &str, name: &str, arguments: serde_json::Value) -> ToolRequest {
+        let mut request = request(id, name);
+        if let Ok(call) = request.tool_call.as_mut() {
+            call.arguments = arguments.as_object().cloned();
+        }
+        request
+    }
+
+    /// Items sent in the ride-along `todo.add` of the first real call seed the
+    /// checklist in that same request, so the gate lets the batch run; a
+    /// sidecar that only reports progress, or sits on a tool that has none,
+    /// does not.
+    #[test]
+    fn a_todo_sidecar_that_adds_items_seeds_the_list() {
+        for todo in [
+            serde_json::json!({"add": ["survey", "build", "verify"]}),
+            serde_json::json!("{\"add\": [\"survey\", \"build\"]}"),
+            serde_json::json!({"add": "survey"}),
+        ] {
+            let batch = [request_with(
+                "a",
+                "code_execution__execute_code",
+                serde_json::json!({"code": "1", "todo": todo.clone()}),
+            )];
+            assert!(redirect_targets(&batch).is_empty(), "{todo}");
+        }
+        for (name, todo) in [
+            (
+                "code_execution__execute_code",
+                serde_json::json!({"done": [1]}),
+            ),
+            (
+                "code_execution__execute_code",
+                serde_json::json!({"add": []}),
+            ),
+            (
+                "code_execution__execute_code",
+                serde_json::json!("not json"),
+            ),
+            ("fixture__step", serde_json::json!({"add": ["x"]})),
+        ] {
+            let batch = [request_with(
+                "a",
+                name,
+                serde_json::json!({"todo": todo.clone()}),
+            )];
+            assert_eq!(
+                redirect_targets(&batch),
+                vec!["a".to_string()],
+                "{name} {todo}"
+            );
+        }
+    }
+
     // -- turn state -------------------------------------------------------
 
     fn plan(signal: Option<MultiStep>, list_was_empty: bool) -> TurnPlan {
@@ -1230,7 +1321,13 @@ mod tests {
             .feedback
             .contains("#3 (in progress) count its bytes"));
         assert!(objection.feedback.contains("#4 (not started) delete it"));
+        assert!(objection.feedback.contains("`todo` field"));
         assert!(objection.feedback.contains("todo__todo_update"));
+        assert!(
+            !objection.feedback.contains("marking each one"),
+            "no per-item calls: {}",
+            objection.feedback
+        );
         assert!(objection.notice.contains("#3, #4"), "{}", objection.notice);
 
         // Naming only one of them is not enough.
@@ -1258,6 +1355,24 @@ mod tests {
         let objection = checklist_objection(&checklist("- [x] one\n- [!] ask the user"), "done")
             .expect("a blocked item is unfinished");
         assert!(objection.feedback.contains("#2 (blocked) ask the user"));
+    }
+
+    /// The current item is derived, never stored, and the objection reads it
+    /// the way the model and the person do.
+    #[test]
+    fn the_derived_current_item_reads_as_in_progress_in_the_objection() {
+        let state = checklist("- [x] one\n- [ ] two\n- [ ] three");
+        let objection = checklist_objection(&state, "done").expect("two are open");
+        assert!(
+            objection.feedback.contains("#2 (in progress) two"),
+            "{}",
+            objection.feedback
+        );
+        assert!(
+            objection.feedback.contains("#3 (not started) three"),
+            "{}",
+            objection.feedback
+        );
     }
 
     #[test]
@@ -1651,7 +1766,12 @@ mod agent_loop_tests {
             after_block.contains("your checklist still has 2 unfinished item(s)"),
             "{after_block}"
         );
-        assert!(after_block.contains("#1 (not started) make the dir"));
+        // #1 is the current item without ever being marked so (derived).
+        assert!(
+            after_block.contains("#1 (in progress) make the dir"),
+            "{after_block}"
+        );
+        assert!(after_block.contains("#2 (not started) write the file"));
         let shown_to_user = notices(&yielded);
         assert!(
             shown_to_user

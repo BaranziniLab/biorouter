@@ -5,7 +5,7 @@ use crate::config::ExtensionConfig;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use utoipa::ToSchema;
 
 /// Extension data containing all extension states
@@ -543,7 +543,129 @@ impl TodoState {
                 .is_empty()
     }
 
-    /// Compact, human-readable rendering for MOIM re-injection.
+    /// Index of the item the agent is working on when no item is EXPLICITLY
+    /// `in_progress`: the first `pending` item that is not a grouping row with
+    /// unfinished children. `None` when some item is already `in_progress`, or
+    /// when nothing is open.
+    ///
+    /// Derived rather than stored, so the model never spends a call (each one a
+    /// full re-read of the conversation) to say "starting #4". Measured on the
+    /// chat that motivated it: 89 of 207 `todo_update` calls did only that.
+    /// Finishing #3 is enough; #4 becomes the current item by position. An
+    /// explicit `in_progress` still wins, for work taken out of order, and a
+    /// `blocked` item is skipped because nobody is working on it.
+    pub fn derived_active_index(&self) -> Option<usize> {
+        if self
+            .items
+            .iter()
+            .any(|item| item.status == TodoStatus::InProgress)
+        {
+            return None;
+        }
+        self.items.iter().position(|item| {
+            item.status == TodoStatus::Pending
+                && !self.items.iter().any(|child| {
+                    child.parent.as_deref() == Some(item.id.as_str())
+                        && child.status != TodoStatus::Completed
+                })
+        })
+    }
+
+    /// Each item's status as the agent and the person should read it: the
+    /// stored status, except that the [derived current item](Self::derived_active_index)
+    /// reads `in_progress`.
+    pub fn effective_statuses(&self) -> Vec<TodoStatus> {
+        let active = self.derived_active_index();
+        self.items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                if Some(index) == active {
+                    TodoStatus::InProgress
+                } else {
+                    item.status
+                }
+            })
+            .collect()
+    }
+
+    /// The rendering the model reads in every request's MOIM block.
+    ///
+    /// Shorter than [`Self::render`] in the two places that grow with a long
+    /// session: completed items beyond the last [`MOIM_RECENT_COMPLETED`]
+    /// collapse into one count line (the most recent stay, for orientation),
+    /// and plan prose past [`MOIM_PLAN_CHARS`] is cut with a note saying how
+    /// long it really is. Open items are always listed in full, in order, with
+    /// the derived current item marked `[~]`. The block sits at the uncached
+    /// tail of every request, so the 118-item list of the motivating chat cost
+    /// about 10k characters per request, most of them finished work.
+    pub fn render_for_model(&self) -> String {
+        let mut out = String::new();
+        if let Some(plan) = self.plan.as_deref() {
+            let plan = plan.trim();
+            if !plan.is_empty() {
+                out.push_str("Plan:\n");
+                let total = plan.chars().count();
+                if total > MOIM_PLAN_CHARS {
+                    out.push_str(plan_excerpt(plan).trim_end());
+                    out.push_str(&format!(
+                        "\n… (plan cut at {MOIM_PLAN_CHARS} of {total} characters; keep it short)"
+                    ));
+                } else {
+                    out.push_str(plan);
+                }
+                out.push('\n');
+            }
+        }
+        if self.items.is_empty() {
+            return out;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        let statuses = self.effective_statuses();
+        let completed: Vec<usize> = statuses
+            .iter()
+            .enumerate()
+            .filter(|(_, status)| **status == TodoStatus::Completed)
+            .map(|(index, _)| index)
+            .collect();
+        let hidden: HashSet<usize> = completed
+            .iter()
+            .take(completed.len().saturating_sub(MOIM_RECENT_COMPLETED))
+            .copied()
+            .collect();
+        out.push_str(&format!(
+            "Checklist ({} of {} done):\n",
+            completed.len(),
+            self.items.len()
+        ));
+        if !hidden.is_empty() {
+            out.push_str(&format!(
+                "- [x] {} earlier item(s) completed (not shown)\n",
+                hidden.len()
+            ));
+        }
+        for (index, item) in self.items.iter().enumerate() {
+            if hidden.contains(&index) {
+                continue;
+            }
+            let indent = if item.parent.is_some() { "  " } else { "" };
+            out.push_str(&format!(
+                "{}- {} (#{}) {}\n",
+                indent,
+                statuses[index].marker(),
+                item.id,
+                item.text
+            ));
+        }
+        out
+    }
+
+    /// Full rendering of the stored state, every item, stored statuses. The
+    /// planning gate fingerprints a checklist with it, so it must change
+    /// whenever anything stored changes; the model reads
+    /// [`Self::render_for_model`] instead.
     pub fn render(&self) -> String {
         let mut out = String::new();
         if let Some(plan) = self.plan.as_deref() {
@@ -574,6 +696,21 @@ impl TodoState {
             }
         }
         out
+    }
+}
+
+/// Completed items [`TodoState::render_for_model`] keeps listed; older ones
+/// collapse into a count.
+pub const MOIM_RECENT_COMPLETED: usize = 3;
+
+/// Characters of plan prose [`TodoState::render_for_model`] re-sends.
+pub const MOIM_PLAN_CHARS: usize = 1_200;
+
+/// The first [`MOIM_PLAN_CHARS`] characters of `plan`, cut on a char boundary.
+fn plan_excerpt(plan: &str) -> &str {
+    match plan.char_indices().nth(MOIM_PLAN_CHARS) {
+        Some((at, _)) => plan.split_at(at).0,
+        None => plan,
     }
 }
 
@@ -645,6 +782,102 @@ impl EnabledExtensionsState {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn checklist(markdown: &str) -> TodoState {
+        let mut state = TodoState::new();
+        state.set_from_markdown(markdown);
+        state
+    }
+
+    #[test]
+    fn the_first_open_item_is_the_derived_current_one() {
+        let mut todo = checklist("- [x] a\n- [!] b\n- [ ] c\n- [ ] d");
+        assert_eq!(todo.derived_active_index(), Some(2));
+        assert_eq!(
+            todo.effective_statuses(),
+            vec![
+                TodoStatus::Completed,
+                TodoStatus::Blocked,
+                TodoStatus::InProgress,
+                TodoStatus::Pending
+            ]
+        );
+        // Finishing the current item moves the marker on by position.
+        todo.update_item("3", Some(TodoStatus::Completed), None);
+        assert_eq!(todo.derived_active_index(), Some(3));
+        // An explicit in_progress wins and nothing else is derived.
+        todo.update_item("1", Some(TodoStatus::Pending), None);
+        todo.update_item("4", Some(TodoStatus::InProgress), None);
+        assert_eq!(todo.derived_active_index(), None);
+        assert_eq!(todo.effective_statuses()[0], TodoStatus::Pending);
+        // Nothing open, nothing current; the stored state is never touched.
+        let done = checklist("- [x] a\n- [!] b");
+        assert_eq!(done.derived_active_index(), None);
+        assert_eq!(done.items[1].status, TodoStatus::Blocked);
+    }
+
+    #[test]
+    fn a_grouping_row_is_not_current_while_its_steps_are_open() {
+        let mut todo = checklist("- [ ] coarse\n- [ ] later");
+        todo.expand_item("1", vec!["step a".into(), "step b".into()], true)
+            .unwrap();
+        // #1 has open children, so its first open child is current.
+        assert_eq!(todo.items[todo.derived_active_index().unwrap()].id, "3");
+        todo.update_item("3", Some(TodoStatus::Completed), None);
+        todo.update_item("4", Some(TodoStatus::Completed), None);
+        // Every step done: the grouping row itself is what is left to close.
+        assert_eq!(todo.items[todo.derived_active_index().unwrap()].id, "1");
+    }
+
+    #[test]
+    fn the_model_rendering_collapses_old_completed_items_and_long_plans() {
+        let mut lines = Vec::new();
+        for n in 1..=10 {
+            lines.push(format!("- [x] done {n}"));
+        }
+        lines.push("- [ ] next".to_string());
+        lines.push("- [ ] after".to_string());
+        let mut todo = checklist(&lines.join("\n"));
+        let rendered = todo.render_for_model();
+        assert!(
+            rendered.contains("Checklist (10 of 12 done):"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("- [x] 7 earlier item(s) completed (not shown)"),
+            "{rendered}"
+        );
+        for hidden in 1..=7 {
+            assert!(
+                !rendered.contains(&format!("done {hidden}\n")),
+                "{rendered}"
+            );
+        }
+        for shown in ["(#8) done 8", "(#9) done 9", "(#10) done 10"] {
+            assert!(rendered.contains(shown), "{rendered}");
+        }
+        assert!(rendered.contains("- [~] (#11) next"), "{rendered}");
+        assert!(rendered.contains("- [ ] (#12) after"), "{rendered}");
+        // The full rendering keeps everything and the stored markers.
+        let full = todo.render();
+        assert!(full.contains("(#1) done 1") && full.contains("- [ ] (#11) next"));
+
+        todo.plan = Some("p".repeat(MOIM_PLAN_CHARS + 50));
+        let rendered = todo.render_for_model();
+        assert!(
+            rendered.contains(&format!(
+                "plan cut at {MOIM_PLAN_CHARS} of {} characters",
+                MOIM_PLAN_CHARS + 50
+            )),
+            "{rendered}"
+        );
+        assert!(!rendered.contains(&"p".repeat(MOIM_PLAN_CHARS + 1)));
+
+        // A short list is shown whole.
+        let short = checklist("- [x] a\n- [x] b\n- [ ] c").render_for_model();
+        assert!(!short.contains("not shown"), "{short}");
+        assert!(short.contains("- [x] (#1) a"), "{short}");
+    }
 
     #[test]
     fn test_extension_data_basic_operations() {

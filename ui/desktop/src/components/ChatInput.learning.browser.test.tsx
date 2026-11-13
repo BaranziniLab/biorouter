@@ -7,7 +7,7 @@ import { expect, it } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const stubs: Record<string, string> = {
-  api: `export const getSession = async () => ({ data: null }); export const startAgent = async () => { throw new Error('Unexpected chat creation'); }; export const postDictionaryObservations = async (options) => { window.observations.push(options); return {}; };`,
+  api: `export const getSession = async () => ({ data: null }); export const startAgent = async () => { throw new Error('Unexpected chat creation'); }; export const postDictionaryObservations = async (options) => { window.observations.push(options); return {}; }; export const getSessionUsageLimit = async () => ({ data: null }); export const getUsageSummary = async () => ({ data: null }); export const putSessionUsageLimit = async () => ({ data: null });`,
   ConfigContext: `export const useConfig = () => ({ getProviders: async () => [], read: async () => null });`,
   ModelAndProviderContext: `export const useModelAndProvider = () => ({ currentModel: 'model', currentProvider: 'openai', modelConfigStatus: 'ready', currentModelSupportsVision: false, getCurrentModelAndProvider: async () => ({ model: null, provider: null }) });`,
   useDiverge: `export const useDiverge = () => ({ diverge: () => {} });`,

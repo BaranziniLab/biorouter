@@ -430,7 +430,7 @@ DD-62. A click toggles. ⌘⇧D on macOS and Ctrl+Shift+D elsewhere, matched on 
 
 ### Submit gates
 
-`dictationPhase` from `onPhaseChange` joins both submit paths of `ChatInput.tsx` and the condition that disables **Send** [C]: Enter in `handleKeyDown` is handled by the gesture rules before the steer, queue and `performSubmit` calls; `onFormSubmit`, which **Send** reaches as a `type="submit"` button of the composer's form, refuses while arming, recording or transcribing; and `isSubmitButtonDisabled` also turns true then, so **Send** shows as disabled with the tooltip "Finish dictating first" (arming or recording) or "Transcribing…". Stop for a running turn stays available, and dictation is allowed while a turn runs; after the insert, Enter queues as usual.
+`dictationPhase` from `onPhaseChange` joins both submit paths of `ChatInput.tsx` and the condition that disables **Send** [C]: Enter in `handleKeyDown` is handled by the gesture rules before the steer, queue and `performSubmit` calls; `onFormSubmit`, which **Send** reaches as a `type="submit"` button of the composer's form, refuses while arming, recording or transcribing; and `isSubmitButtonDisabled` also turns true then, so **Send** shows as disabled with the tooltip "Finish dictating first" (arming or recording) or "Transcribing…". When a usage limit also holds the chat, that tooltip still wins while dictation holds the composer, and the usage limit notice above the text says why Send stays off afterwards; inserted text never sends itself, so a paused chat keeps it as a draft. Stop for a running turn stays available, and dictation is allowed while a turn runs; after the insert, Enter queues as usual.
 
 ### Ownership and lifecycle
 

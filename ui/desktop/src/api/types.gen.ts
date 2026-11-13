@@ -88,7 +88,8 @@ export type ActiveWorkItemDto = {
      */
     id: string;
     /**
-     * `background_job`, `subagent`, `detached_turn`, or `scheduled_run`.
+     * `background_job`, `subagent`, `foreground_command`, `detached_turn`,
+     * `job_watch`, or `scheduled_run`.
      */
     kind: string;
     /**
@@ -685,6 +686,15 @@ export type ChatRequest = {
     user_message: Message;
     workflow_name?: string | null;
     workflow_version?: string | null;
+};
+
+/**
+ * The chat's own override, when it has one.
+ */
+export type ChatUsageLimitOverride = {
+    maxTokens?: number | null;
+    maxUsd?: number | null;
+    mode: UsageLimitMode;
 };
 
 export type CheckModelBody = {
@@ -2845,6 +2855,15 @@ export type EditMessageResponse = {
 
 export type EditType = 'diverge' | 'edit';
 
+/**
+ * The per-chat limit in force for this chat.
+ */
+export type EffectiveChatLimit = {
+    maxTokens?: number | null;
+    maxUsd?: number | null;
+    source: UsageLimitSource;
+};
+
 export type ElicitationResponseRequest = {
     cancelled?: boolean;
     data?: unknown;
@@ -4703,7 +4722,23 @@ export type ModelUsageRow = {
      * contributing event predates cache accounting or did not report it.
      */
     cacheReadTokens?: number | null;
+    /**
+     * Dollar cost of the group, priced on the server per request: cache
+     * buckets at the cache rate and each request over a long-context
+     * threshold at the model's long-context rate. `None` when the group is
+     * unpriced (or the rollup that built the row does not price).
+     */
+    cost?: number | null;
+    /**
+     * `true` when `cost` is a lower bound: part of the group is unpriced, its
+     * counts are incomplete, or its cache tokens have no rate.
+     */
+    costIsPartial?: boolean;
     inputTokens: number;
+    /**
+     * Requests in the group priced at the model's long-context rate.
+     */
+    longContextTurns?: number;
     modelId?: string | null;
     outputTokens: number;
     provider?: string | null;
@@ -4713,7 +4748,8 @@ export type ModelUsageRow = {
      */
     totalTokens?: number | null;
     /**
-     * Number of billed turns attributed to this group.
+     * Number of billed turns attributed to this group. Side calls (a stall
+     * check, a title) are billed in the tokens above but are not turns.
      */
     turns: number;
 };
@@ -6731,7 +6767,9 @@ export type SessionMetaDelta = {
 };
 
 /**
- * Per-model token breakdown for one session.
+ * Per-model token breakdown for one session. Each row carries its dollar
+ * cost priced on the server per request (cache rate and long-context tier
+ * included), so a client never prices the rollup flat itself.
  */
 export type SessionModelUsageResponse = {
     /**
@@ -6825,6 +6863,45 @@ export type SessionSummary = {
 
 export type SessionType = 'user' | 'scheduled' | 'sub_agent' | 'hidden' | 'terminal';
 
+export type SessionUsageLimitResponse = {
+    /**
+     * The chat whose limit and spend this is: the chat itself, or a
+     * subagent's parent.
+     */
+    billingSessionId: string;
+    /**
+     * A per-chat dollar limit is set but nothing the chat used is priced, so
+     * it cannot fire.
+     */
+    chatDollarLimitInert: boolean;
+    chatOverride?: ChatUsageLimitOverride | null;
+    defaults: UsageLimitAmounts;
+    limit: EffectiveChatLimit;
+    /**
+     * A monthly dollar limit is set but nothing this month is priced, so it
+     * cannot fire.
+     */
+    monthDollarLimitInert: boolean;
+    monthly: UsageLimitAmounts;
+    nextRequest?: UsageLimitNextRequest | null;
+    /**
+     * A limit is reached: the chat makes no model request until it is raised
+     * or lifted (or, for the month, the next local month begins).
+     */
+    paused: boolean;
+    /**
+     * `paused` because the next request is estimated to pass the limit named
+     * by `reason`, not because it is reached.
+     */
+    pausedByEstimate: boolean;
+    reason?: UsageLimitReason | null;
+    used: UsageLimitUsed;
+    /**
+     * A limit is at 80% or more and none is reached.
+     */
+    warn: boolean;
+};
+
 export type SessionsQuery = {
     limit: number;
 };
@@ -6879,6 +6956,21 @@ export type SetKbTierBody = {
 export type SetProviderRequest = {
     model: string;
     provider: string;
+};
+
+/**
+ * Body of `PUT /sessions/{session_id}/usage-limit`.
+ */
+export type SetSessionUsageLimitRequest = {
+    /**
+     * With `limit`: billed tokens this chat may use, a whole number above 0.
+     */
+    maxTokens?: number | null;
+    /**
+     * With `limit`: priced dollars this chat may use, above 0.
+     */
+    maxUsd?: number | null;
+    mode: UsageLimitMode;
 };
 
 export type SetSlashCommandRequest = {
@@ -7841,6 +7933,29 @@ export type UpdateSessionUserWorkflowValuesResponse = {
     workflow: Workflow;
 };
 
+/**
+ * Body of `PUT /usage/limits`. A field left out keeps what is stored, `null`
+ * makes that limit unlimited, and a value above 0 sets it.
+ */
+export type UpdateUsageLimitsRequest = {
+    /**
+     * Priced dollars per chat, for chats without their own limit.
+     */
+    defaultSessionDollarLimit?: number | null;
+    /**
+     * Billed tokens per chat, for chats without their own limit.
+     */
+    defaultSessionTokenLimit?: number | null;
+    /**
+     * Priced dollars per local calendar month, over every chat.
+     */
+    monthlyDollarLimit?: number | null;
+    /**
+     * Billed tokens per local calendar month, over every chat.
+     */
+    monthlyTokenLimit?: number | null;
+};
+
 export type UpdateWorkingDirRequest = {
     session_id: string;
     working_dir: string;
@@ -7884,6 +7999,79 @@ export type UpsertPermissionsQuery = {
  * How `get_usage_report` buckets the per-turn ledger.
  */
 export type UsageGroup = 'day' | 'model' | 'day_model';
+
+/**
+ * A pair of limits; `null` is unlimited on that axis.
+ */
+export type UsageLimitAmounts = {
+    maxTokens?: number | null;
+    maxUsd?: number | null;
+};
+
+/**
+ * A write's mode: return to the default, lift every per-chat limit for this
+ * chat, or set this chat's own limit.
+ */
+export type UsageLimitMode = 'inherit' | 'unlimited' | 'limit';
+
+/**
+ * What the chat's next request is estimated to bill.
+ */
+export type UsageLimitNextRequest = {
+    tokens: number;
+    /**
+     * `null` when the chat's model has no price.
+     */
+    usd?: number | null;
+};
+
+/**
+ * Which limit is reached.
+ */
+export type UsageLimitReason = 'chat' | 'month';
+
+/**
+ * Where a chat's effective limit came from.
+ */
+export type UsageLimitSource = 'chat' | 'default' | 'none';
+
+/**
+ * What the chat (with its subagents) and the month have used.
+ */
+export type UsageLimitUsed = {
+    chatTokens: number;
+    /**
+     * `null` when no dollar limit is in force or nothing is priced.
+     */
+    chatUsd?: number | null;
+    chatUsdComplete: boolean;
+    /**
+     * The local month the month figures cover, `YYYY-MM`.
+     */
+    month: string;
+    /**
+     * Billed tokens this month over every chat. `null` when the request
+     * carried no proof of a person: the month is an aggregate over every
+     * chat, private ones included, and `GET /usage/summary` withholds it
+     * from such a caller for the same reason.
+     */
+    monthTokens?: number | null;
+    /**
+     * `null` when nothing this month is priced, or withheld as `month_tokens` is.
+     */
+    monthUsd?: number | null;
+    monthUsdComplete: boolean;
+};
+
+/**
+ * The configured limits, as stored after a write; `null` is unlimited.
+ */
+export type UsageLimitsResponse = {
+    defaultSessionDollarLimit?: number | null;
+    defaultSessionTokenLimit?: number | null;
+    monthlyDollarLimit?: number | null;
+    monthlyTokenLimit?: number | null;
+};
 
 export type UsageReportResponse = {
     /**
@@ -7994,6 +8182,14 @@ export type UsageSummary = {
 
 export type UsageSummaryResponse = UsageSummary & {
     /**
+     * Default per-chat dollar limit for chats without their own, or `null`.
+     */
+    defaultSessionDollarLimit?: number | null;
+    /**
+     * Default per-chat token limit for chats without their own, or `null`.
+     */
+    defaultSessionTokenLimit?: number | null;
+    /**
      * MTD cost as a percent of the dollar limit; `null` when no limit is set or
      * the MTD cost is unknown or only a lower bound.
      */
@@ -8003,9 +8199,30 @@ export type UsageSummaryResponse = UsageSummary & {
      */
     monthlyDollarLimit?: number | null;
     /**
+     * The monthly limit is at 80% or more and not reached.
+     */
+    monthlyNear: boolean;
+    /**
+     * The monthly limit is reached: every chat makes no model request until
+     * it is raised or lifted, or the next local month begins. The reply loop's
+     * own reading (`usage_limit::monthly_state_with`), so a new chat's
+     * composer and Settings agree with it.
+     */
+    monthlyReached: boolean;
+    /**
      * Configured monthly token allowance, or `null` when unset.
      */
     monthlyTokenLimit?: number | null;
+    /**
+     * What the monthly limit compares with: billed tokens this month, or
+     * `null` when no monthly limit is in force.
+     */
+    monthlyUsedTokens?: number | null;
+    /**
+     * Priced dollars this month as the monthly limit counts them; `null` when
+     * no monthly limit is in force or nothing is priced.
+     */
+    monthlyUsedUsd?: number | null;
     /**
      * MTD billed tokens as a percent of the token limit; `null` when no limit
      * is set or the historical billed total is incomplete.
@@ -9773,7 +9990,7 @@ export type RemoveConfigData = {
 
 export type RemoveConfigErrors = {
     /**
-     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > App > Privacy, never removed, and (issue #56, DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted
+     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > App > Privacy, never removed, and (issue #56, DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted, or the `usage` limits section was removed without proof the request came from the user
      */
     403: unknown;
     /**
@@ -9853,7 +10070,7 @@ export type UpsertConfigErrors = {
      */
     400: unknown;
     /**
-     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > App > Privacy, with its typed confirmation, or (issue #56, DR-27) relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system authentication that did not happen
+     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > App > Privacy, with its typed confirmation, or (issue #56, DR-27) relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system authentication that did not happen, or the `usage` limits section was written without proof the request came from the user
      */
     403: unknown;
     /**
@@ -15972,6 +16189,94 @@ export type GetSessionUsageResponses = {
 
 export type GetSessionUsageResponse = GetSessionUsageResponses[keyof GetSessionUsageResponses];
 
+export type GetSessionUsageLimitData = {
+    body?: never;
+    path: {
+        /**
+         * The chat whose usage limit to read
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/usage-limit';
+};
+
+export type GetSessionUsageLimitErrors = {
+    /**
+     * Invalid session id (body = plain text)
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Refused by a privacy boundary: the same refusal, word for word, that `GET /sessions/{session_id}` gives (body = plain text)
+     */
+    403: unknown;
+    /**
+     * Session not found (body = plain text)
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type GetSessionUsageLimitResponses = {
+    /**
+     * The chat's effective limit, its override, the defaults, the monthly limit, what was used and whether a limit is reached
+     */
+    200: SessionUsageLimitResponse;
+};
+
+export type GetSessionUsageLimitResponse = GetSessionUsageLimitResponses[keyof GetSessionUsageLimitResponses];
+
+export type PutSessionUsageLimitData = {
+    body: SetSessionUsageLimitRequest;
+    path: {
+        /**
+         * The chat whose usage limit to set
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/usage-limit';
+};
+
+export type PutSessionUsageLimitErrors = {
+    /**
+     * Invalid session id, a body that could not be read or is invalid, or a subagent's chat; the body is the sentence that says why (plain text)
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Refused: the chat is out of this caller's reach, or, on a daemon that holds a user-action key, the request carried no proof it came from the person at the keyboard, or, on a daemon that holds none, the chat is a subagent's (body = plain text)
+     */
+    403: unknown;
+    /**
+     * Session not found (body = plain text)
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type PutSessionUsageLimitResponses = {
+    /**
+     * The chat's usage limit as stored, in the shape `GET` answers
+     */
+    200: SessionUsageLimitResponse;
+};
+
+export type PutSessionUsageLimitResponse = PutSessionUsageLimitResponses[keyof PutSessionUsageLimitResponses];
+
 export type UpdateSessionUserWorkflowValuesData = {
     body: UpdateSessionUserWorkflowValuesRequest;
     path: {
@@ -16319,6 +16624,41 @@ export type StopTunnelResponses = {
      */
     200: unknown;
 };
+
+export type PutUsageLimitsData = {
+    body: UpdateUsageLimitsRequest;
+    path?: never;
+    query?: never;
+    url: '/usage/limits';
+};
+
+export type PutUsageLimitsErrors = {
+    /**
+     * A body that could not be read or a limit that is not above 0 (plain text)
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Human user-action proof required: a model may not raise or lift a limit
+     */
+    403: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type PutUsageLimitsResponses = {
+    /**
+     * The monthly and default per-chat limits as stored
+     */
+    200: UsageLimitsResponse;
+};
+
+export type PutUsageLimitsResponse = PutUsageLimitsResponses[keyof PutUsageLimitsResponses];
 
 export type GetUsageReportData = {
     body?: never;

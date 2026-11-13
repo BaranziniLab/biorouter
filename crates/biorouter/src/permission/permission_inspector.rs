@@ -5,7 +5,9 @@ use crate::config::{BioRouterMode, Config, PermissionManager};
 use crate::conversation::message::{Message, ToolRequest};
 use crate::managed::{ManagedPolicy, ManagedVerdict};
 use crate::permission::managed_inspector::{MANAGED_ASK_REASON, MANAGED_DENY_REASON};
-use crate::permission::permission_judge::{detect_read_only_requests, PermissionCheckResult};
+use crate::permission::permission_judge::{
+    detect_read_only_requests_in_session, PermissionCheckResult,
+};
 use crate::permission::permission_scope::CallFacts;
 use crate::permission::permission_store::ToolPermissionStore;
 use crate::permission::tool_risk::{SmartApproveConfig, ToolRisk, ToolRiskRegistry};
@@ -429,7 +431,10 @@ impl PermissionInspector {
 
     /// Ask which un-gradeable invocations are read-only. Results apply only to
     /// this inspection and never create remembered tool-wide permissions.
-    async fn judge_read_only(&self, candidates: &[&ToolRequest]) -> Vec<String> {
+    ///
+    /// The judge's model call is charged to `session_id` (the inspected chat)
+    /// as a side call, so the cost card and the usage limits count it.
+    async fn judge_read_only(&self, session_id: &str, candidates: &[&ToolRequest]) -> Vec<String> {
         if candidates.is_empty() {
             return vec![];
         }
@@ -445,7 +450,7 @@ impl PermissionInspector {
             return vec![];
         };
 
-        detect_read_only_requests(provider, candidates.to_vec()).await
+        detect_read_only_requests_in_session(provider, Some(session_id), candidates.to_vec()).await
     }
 
     /// The whole permission decision, with each tool's BR-18 risk grade read out
@@ -512,7 +517,7 @@ impl PermissionInspector {
 
         // Pass 2 — one LLM round-trip for whatever the annotations could not grade.
         if !judge_candidates.is_empty() {
-            let read_only = self.judge_read_only(&judge_candidates).await;
+            let read_only = self.judge_read_only(&session.id, &judge_candidates).await;
             for request in judge_candidates {
                 let (action, reason) = if read_only.contains(&request.id) {
                     (

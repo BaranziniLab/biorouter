@@ -94,6 +94,15 @@ function outstandingToolName(last: Message | undefined): string | undefined {
 }
 
 /**
+ * `code_execution__watch_job`: one quick check of a job, then a watch that
+ * resumes the chat when the job ends. It is not a long-running tool, so it
+ * does not read as one.
+ */
+function isWatchJobCall(name: string | undefined): boolean {
+  return name === 'code_execution__watch_job';
+}
+
+/**
  * Derives the trailing "still working" indicator from facts alone.
  *
  * This is a PURE function on purpose. `ProgressiveMessageList`'s render
@@ -190,7 +199,11 @@ export function deriveTrailingActivity({
         return {
           phase: 'running',
           label:
-            outstanding === 1 ? activityCopy.runningOne : activityCopy.runningMany(outstanding),
+            outstanding === 1
+              ? isWatchJobCall(outstandingToolName(last))
+                ? activityCopy.settingWatch
+                : activityCopy.runningOne
+              : activityCopy.runningMany(outstanding),
           since: undefined,
         };
       }
