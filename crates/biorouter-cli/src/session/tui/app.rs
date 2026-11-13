@@ -162,6 +162,11 @@ pub struct App {
     /// drawn so it renders as a card ([`App::push_message`]).
     pub decision_records:
         std::collections::HashMap<String, biorouter::decision::log::DecisionRecord>,
+    /// Spawn requests drawn whose result has not been drawn yet, by request id.
+    /// A tool response carries no tool name, so this is how a refused spawn is
+    /// told from any other failure (owner decision 4). Bounded as the
+    /// line-oriented renderer's list is.
+    pub pending_spawn_calls: Vec<String>,
 }
 
 impl App {
@@ -198,6 +203,7 @@ impl App {
             child: None,
             decisions: None,
             decision_records: std::collections::HashMap::new(),
+            pending_spawn_calls: Vec::new(),
         }
     }
 
@@ -465,6 +471,12 @@ impl App {
                 }
                 MessageContent::ToolRequest(req) => {
                     if let Ok(call) = &req.tool_call {
+                        if crate::session::output::is_spawn_tool_name(&call.name) {
+                            crate::session::output::remember_spawn_call(
+                                &mut self.pending_spawn_calls,
+                                &req.id,
+                            );
+                        }
                         self.push_tool_header(&call.name);
                         if let Some(args) = &call.arguments {
                             for (k, v) in args.iter() {
@@ -478,6 +490,13 @@ impl App {
                     }
                 }
                 MessageContent::ToolResponse(resp) => {
+                    let was_spawn_call = crate::session::output::forget_spawn_call(
+                        &mut self.pending_spawn_calls,
+                        &resp.id,
+                    );
+                    if let Err(error) = &resp.tool_result {
+                        self.push_spawn_refusal_hint(was_spawn_call, &error.to_string());
+                    }
                     if let Ok(result) = &resp.tool_result {
                         let start = self.scrollback.len();
                         let mut has_artifact = false;
@@ -539,6 +558,27 @@ impl App {
                 _ => {}
             }
         }
+    }
+
+    /// Owner decision 4: under a private chat's refused public subagent (DR-19)
+    /// the person reads the line the desktop card and the line-oriented
+    /// terminal add. This view draws no failed tool's text, so the refusal's
+    /// opening sentence goes first, to say what the line is about. Neither is
+    /// part of the tool result, so the model never reads them.
+    fn push_spawn_refusal_hint(&mut self, was_spawn_call: bool, error_text: &str) {
+        let Some(line) =
+            crate::session::output::spawn_refusal_person_line(was_spawn_call, error_text)
+        else {
+            return;
+        };
+        self.push_line(Line::from(Span::styled(
+            format!(
+                "    {}.",
+                biorouter::agents::subagent_tool::PUBLIC_CHILD_REFUSAL_OPENING
+            ),
+            DIM,
+        )));
+        self.push_note(&format!("    {line}"));
     }
 
     /// Collapse the previous tool result's preview into a one-line summary so the

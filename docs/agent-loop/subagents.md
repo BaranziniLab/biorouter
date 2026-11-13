@@ -494,6 +494,11 @@ Two consequences worth knowing before you write a prompt that delegates:
 If a spawn is refused, the fix is not to retry: switch the chat you are delegating *from*, or start
 a new chat on the model you want the work done on.
 
+When a private chat is refused a public subagent, the person sees one more line under the refusal,
+in the desktop card and in both terminal views (full-screen and line by line), and the agent never
+does: if the whole chat may be public, they can make it public from History and then switch it to a
+public model.
+
 Every *check* above is off when privacy tiers are off (Settings → Privacy): no spawn is refused for
 a tier reason and no extension is dropped for one. **The tier itself still propagates, though** — a
 child born to a private parent is still stamped private, permanently, because that stamp is column
