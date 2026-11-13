@@ -45,7 +45,6 @@ import { crossAffiliationOffer } from '../utils/crossAffiliation';
 import { personFacingToolError } from '../utils/repetitionStop';
 import { CrossAffiliationAcceptCard } from './privacy/CrossAffiliationAcceptCard';
 import { spawnRefusalHint } from './subagent/spawnRefusalHint';
-import { isBrowserSurface } from '../utils/surface';
 import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
 import { stripHiddenCharacters } from '../utils/untrustedText';
 import { TranscriptRow, TranscriptRowSection } from './TranscriptRow';
