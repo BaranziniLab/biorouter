@@ -9,8 +9,14 @@
  * (a 240px column, a 228px card), and measures the squares at 1, 8 and 150 agents, a hover on a
  * square, and the shapes the statuses draw.
  *
- * With `SUMMARY_GRID_SHOTS=<dir>` it also saves PNGs of the rail for review: three agents, twenty
- * agents across two phases with gates, 150 agents, a square's card, and the plan in dark mode.
+ * It also checks the owner's rule of 2026-11-12 in the real cascade: the sections are parted by
+ * one hairline across the card, a phase by an inset one, and nothing between a square and the card
+ * has a fill or a radius, so the grid sits on the card's own ground.
+ *
+ * With `SUMMARY_GRID_SHOTS=<dir>` it also saves PNGs of the rail for review, each in light and dark:
+ * three agents (`agents-3`), twenty agents across a plan with gates, a decision-model subagent and
+ * monitors (`phases-20`), 150 agents across three phases with decision-model subagents among them
+ * (`agents-150`), and a square's card (`peek`).
  */
 import { mkdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -82,6 +88,16 @@ function row(i, status, extra) {
 }
 
 const STATUS_CYCLE = ['completed', 'completed', 'running', 'completed', 'failed', 'completed', 'queued', 'blocked', 'completed', 'running'];
+/** A subagent whose own model is a decision model: decision-model work, drawn as a circle. */
+const JUDGE = { role: 'Dose check', providerName: 'ollama_decision', modelName: 'tev1:0.8b' };
+const counts = (list) => ({
+  total: list.length,
+  done: list.filter((r) => r.status === 'completed').length,
+  running: list.filter((r) => r.status === 'running' || r.status === 'queued').length,
+  blocked: list.filter((r) => r.status === 'blocked').length,
+  failed: list.filter((r) => r.status === 'failed').length,
+  quiet: list.filter((r) => r.quietSeconds > 180 && r.status === 'running').length,
+});
 let rows = [];
 let plan = null;
 if (params.scenario === 'three') {
@@ -94,7 +110,9 @@ if (params.scenario === 'three') {
   const audit = Array.from({ length: 8 }, (_, i) => row(i, i === 5 ? 'failed' : 'completed', { phaseId: 'audit' }));
   const draft = Array.from({ length: 12 }, (_, i) => {
     const status = ['running', 'running', 'completed', 'running', 'queued', 'completed', 'blocked', 'running', 'queued', 'completed', 'running', 'queued'][i];
-    return row(8 + i, status, { phaseId: 'draft', quietSeconds: i === 3 ? 600 : 3 });
+    // One of the drafters' checks runs on a decision model: a circle among the squares.
+    const judge = i === 10 ? JUDGE : {};
+    return row(8 + i, status, Object.assign({ phaseId: 'draft', quietSeconds: i === 3 ? 600 : 3 }, judge));
   });
   rows = [...audit, ...draft];
   plan = {
@@ -117,6 +135,42 @@ if (params.scenario === 'three') {
       { id: 'check', title: 'Check the numbers', kind: 'verification', status: 'pending', dependsOn: ['draft'],
         agentIds: [], counts: { total: 0, done: 0, running: 0, blocked: 0, failed: 0, quiet: 0 },
         gate: null, handoff: null, startedAt: null, finishedAt: null, heldBy: 'draft' },
+    ],
+  };
+} else if (params.scenario === 'plan150') {
+  // 150 agents in three phases: a finished audit with two failures, a verification in
+  // full swing (every status, one gone quiet), and a report waiting to start. Some of
+  // each phase's checks run on a decision model.
+  const audit = Array.from({ length: 40 }, (_, i) =>
+    row(i, i === 13 || i === 29 ? 'failed' : 'completed', Object.assign({ phaseId: 'audit' }, i % 8 === 3 ? JUDGE : {}))
+  );
+  const VERIFY = ['completed', 'running', 'completed', 'queued', 'completed', 'running', 'failed', 'completed', 'blocked', 'completed', 'running', 'queued'];
+  const verify = Array.from({ length: 90 }, (_, i) =>
+    row(40 + i, VERIFY[i % VERIFY.length], Object.assign(
+      { phaseId: 'verify', quietSeconds: i === 13 ? 900 : 3 },
+      i % 7 === 2 ? JUDGE : {}
+    ))
+  );
+  const report = Array.from({ length: 20 }, (_, i) => row(130 + i, 'queued', { phaseId: 'report' }));
+  rows = [...audit, ...verify, ...report];
+  plan = {
+    title: 'Review every trial of the drug',
+    goal: null,
+    revision: 5,
+    phases: [
+      { id: 'audit', title: 'Audit the sources', kind: 'auditing', status: 'completed', dependsOn: [],
+        agentIds: audit.map((r) => r.sessionId), counts: counts(audit),
+        gate: { threshold: 0.8, questionCount: 2, attempts: 1, maxAttempts: 3, lastPassed: true,
+          lastMinP: 0.93, questions: { cited: 'Is every source cited?' } },
+        handoff: null, startedAt: null, finishedAt: null, heldBy: null },
+      { id: 'verify', title: 'Verify each claim', kind: 'verification', status: 'in_progress', dependsOn: ['audit'],
+        agentIds: verify.map((r) => r.sessionId), counts: counts(verify),
+        gate: { threshold: 0.8, questionCount: 1, attempts: 0, maxAttempts: 3, lastPassed: null,
+          lastMinP: null, questions: { checked: 'Is every claim checked?' } },
+        handoff: null, startedAt: null, finishedAt: null, heldBy: null },
+      { id: 'report', title: 'Write the report', kind: 'synthesis', status: 'pending', dependsOn: ['verify'],
+        agentIds: report.map((r) => r.sessionId), counts: counts(report),
+        gate: null, handoff: null, startedAt: null, finishedAt: null, heldBy: 'verify' },
     ],
   };
 } else {
@@ -239,7 +293,7 @@ const launchChromium = async (): Promise<{ server: BrowserServer; browser: Brows
 };
 
 interface Params {
-  scenario: 'count' | 'three' | 'phases';
+  scenario: 'count' | 'three' | 'phases' | 'plan150';
   agents?: number;
   todos?: boolean;
   decisions?: boolean;
@@ -430,7 +484,6 @@ describe('the agent grid in the summary card, in a real layout engine', () => {
       expect(measured.rows).toHaveLength(5);
       expect(measured.bodyOverflow).toBeLessThanOrEqual(0);
       expect(measured.pageOverflow).toBeLessThanOrEqual(0);
-      await shot(tab, 'agents-150.png');
     } finally {
       await tab.close();
     }
@@ -460,12 +513,6 @@ describe('the agent grid in the summary card, in a real layout engine', () => {
             .querySelector('[data-testid="subagent-cell-child-9"]')!
             .getAttribute('data-pinned'),
           text: document.querySelector('[data-testid="subagent-card-child-9"]')!.textContent,
-          box: {
-            left: cardBox.left - 8,
-            top: Math.min(cardBox.top, rail.top) - 8,
-            width: rail.right - cardBox.left + 16,
-            height: Math.max(cardBox.bottom, square.bottom) - Math.min(cardBox.top, rail.top) + 16,
-          },
         };
       });
       expect(placed.right).toBeLessThanOrEqual(placed.squareLeft);
@@ -478,7 +525,6 @@ describe('the agent grid in the summary card, in a real layout engine', () => {
       expect(placed.text).toContain('Open in a tab');
       // The chat's monitor that watches its subagents is named on the card.
       expect(placed.text).toContain('Watched by Scope drift');
-      await shot(tab, 'square-card.png', placed.box);
       await cell.click();
       await tab.mouse.move(0, 0);
       expect(await cell.getAttribute('data-pinned')).toBe('true');
@@ -525,39 +571,157 @@ describe('the agent grid in the summary card, in a real layout engine', () => {
       );
       expect(decisions.length).toBeGreaterThan(0);
       expect(new Set(decisions)).toEqual(new Set(['circle']));
-      await shot(tab, 'phases-20.png');
     } finally {
       await tab.close();
     }
   });
 
-  it('saves the review screenshots', async (ctx) => {
-    if (!browser || !SHOTS) return ctx.skip();
-    const three = await mount({ scenario: 'three', todos: true, height: 760 });
+  /**
+   * The owner's rule (2026-11-12): sections, never boxes. Every section after the first draws
+   * one hairline across the card; a phase after the first draws one inset to the content; and
+   * every element between a square and the card is transparent and square-cornered, so the grid
+   * sits on the card's own ground. Only the peek floats on a surface of its own.
+   */
+  it('parts sections and phases by hairlines and draws the grid on the card’s own ground', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await mount({ scenario: 'phases', todos: true, decisions: true, height: 1000 });
     try {
-      await three.click('[data-testid="summary-details-toggle"]');
-      await three.mouse.move(0, 0);
-      await shot(three, 'agents-3.png');
+      const found = await tab.evaluate(() => {
+        const card = document.querySelector('.br-summary-card')!;
+        const cardBox = card.getBoundingClientRect();
+        const cardFill = getComputedStyle(card).backgroundColor;
+        const edge = (element: Element) => {
+          const style = getComputedStyle(element);
+          const box = element.getBoundingClientRect();
+          return {
+            width: style.borderTopWidth,
+            style: style.borderTopStyle,
+            left: box.left - cardBox.left,
+            right: cardBox.right - box.right,
+          };
+        };
+        const sections = Array.from(document.querySelectorAll('.br-summary__body > section')).map(
+          (section) => ({ label: section.getAttribute('aria-label'), ...edge(section) })
+        );
+        const phases = Array.from(document.querySelectorAll('.br-agents__phase')).map(edge);
+        // From each square up to the card: no fill, no radius, no line but the dividers.
+        const boxed: string[] = [];
+        for (const cell of Array.from(document.querySelectorAll('.br-agent-grid__cell'))) {
+          for (let node = cell.parentElement; node && node !== card; node = node.parentElement) {
+            const style = getComputedStyle(node);
+            const filled = style.backgroundColor !== 'rgba(0, 0, 0, 0)';
+            const rounded = style.borderTopLeftRadius !== '0px';
+            const outlined = ['Left', 'Right', 'Bottom'].some(
+              (side) => style.getPropertyValue(`border-${side.toLowerCase()}-width`) !== '0px'
+            );
+            if (filled || rounded || outlined) {
+              boxed.push(`${node.tagName}.${node.className}`);
+            }
+          }
+        }
+        // The gate's circle and its word rest on the card's ground too.
+        const gates = Array.from(document.querySelectorAll('.br-agents__gate')).map(
+          (gate) => getComputedStyle(gate).backgroundColor
+        );
+        return { cardFill, sections, phases, boxed: [...new Set(boxed)], gates };
+      });
+      expect(found.boxed).toEqual([]);
+      for (const ground of found.gates) expect(ground).toBe('rgba(0, 0, 0, 0)');
+      // To do, Plan, Decisions, This chat: the first draws no line, the rest one hairline each,
+      // across the card's whole width inside its 1px transparent border.
+      expect(found.sections.map((section) => section.label)).toEqual([
+        'To do',
+        'Plan: Survey every trial of the drug',
+        'Decisions',
+        'This chat',
+      ]);
+      expect(found.sections[0].width).toBe('0px');
+      for (const section of found.sections.slice(1)) {
+        expect(section.width).toBe('1px');
+        expect(section.style).toBe('solid');
+        expect(section.left).toBe(1);
+        expect(section.right).toBe(1);
+      }
+      // A phase's hairline is inset to the content (the body's 12px gutter), so it never reads
+      // as a section's.
+      expect(found.phases[0].width).toBe('0px');
+      for (const phase of found.phases.slice(1)) {
+        expect(phase.width).toBe('1px');
+        expect(phase.left).toBe(13);
+        expect(phase.right).toBe(13);
+      }
+      // A decision-model subagent is a circle among the squares, and the key says which is which.
+      const key = await tab.locator('[data-testid="summary-agents-key"]').textContent();
+      expect(key).toBe('Language modelDecision model');
+      expect(
+        await tab.getAttribute(
+          '[data-testid="subagent-cell-child-18"] .br-agent-mark',
+          'data-shape'
+        )
+      ).toBe('circle');
     } finally {
-      await three.close();
-    }
-    const dark = await mount({
-      scenario: 'phases',
-      todos: true,
-      decisions: true,
-      height: 1000,
-      dark: true,
-    });
-    try {
-      await shot(dark, 'phases-20-dark.png');
-    } finally {
-      await dark.close();
-    }
-    const many = await mount({ scenario: 'count', agents: 150, height: 900, dark: true });
-    try {
-      await shot(many, 'agents-150-dark.png');
-    } finally {
-      await many.close();
+      await tab.close();
     }
   });
+
+  it('saves the review screenshots, in light and dark', async (ctx) => {
+    if (!browser || !SHOTS) return ctx.skip();
+    for (const dark of [false, true]) {
+      const mode = dark ? 'dark' : 'light';
+      const three = await mount({ scenario: 'three', todos: true, height: 760, dark });
+      try {
+        await three.click('[data-testid="summary-details-toggle"]');
+        await three.mouse.move(0, 0);
+        await shot(three, `agents-3-${mode}.png`);
+      } finally {
+        await three.close();
+      }
+      const phases = await mount({
+        scenario: 'phases',
+        todos: true,
+        decisions: true,
+        height: 1100,
+        dark,
+      });
+      try {
+        await shot(phases, `phases-20-${mode}.png`);
+        const cell = phases.locator('[data-testid="subagent-cell-child-9"]');
+        await cell.hover();
+        await phases.locator('[data-testid="subagent-card-child-9"]').waitFor();
+        const box = await phases.evaluate(() => {
+          const card = document
+            .querySelector('[data-testid="subagent-card-child-9"]')!
+            .getBoundingClientRect();
+          const rail = document.querySelector('.br-summary-card')!.getBoundingClientRect();
+          const top = Math.min(card.top, rail.top) - 8;
+          return {
+            left: card.left - 8,
+            top,
+            width: rail.right - card.left + 16,
+            height: Math.max(card.bottom, rail.top + 520) - top + 8,
+          };
+        });
+        await shot(phases, `peek-${mode}.png`, box);
+      } finally {
+        await phases.close();
+      }
+      const many = await mount({
+        scenario: 'plan150',
+        todos: true,
+        decisions: true,
+        height: 1500,
+        dark,
+      });
+      try {
+        const fits = await many.evaluate(() => {
+          const body = document.querySelector<HTMLElement>('.br-summary__body')!;
+          return body.scrollHeight <= body.clientHeight;
+        });
+        expect(fits, 'the 150-agent card fits its screenshot').toBe(true);
+        await shot(many, `agents-150-${mode}.png`);
+      } finally {
+        await many.close();
+      }
+    }
+  }, 180_000);
 });

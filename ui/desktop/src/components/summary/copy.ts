@@ -36,6 +36,11 @@ export const summaryCopy = {
    * chat itself used, apart from its plan, its agents and its decisions.
    */
   details: 'This chat',
+  /**
+   * The same section in a subagent's own chat, so its figures read as the
+   * subagent's conversation and not the chat that started it.
+   */
+  subagentDetails: 'Subagent chat',
   /** The chat's model, by its short name. */
   model: 'Model',
   /** The chat's privacy tier, while tiers are on. */
@@ -88,6 +93,8 @@ export const summaryCopy = {
     showMore: (count: number) => `Show ${count} more`,
     /** Said of a subagent whose own model is a decision model. */
     decisionModel: 'Decision model',
+    /** The key's other entry, beside "Decision model": what a square is. */
+    languageModel: 'Language model',
     /** Read after the phase count by assistive technology only: "1 of 4 phases complete". */
     phasesCountSuffix: ' phases complete',
     phaseListLabel: 'Phases of the plan',

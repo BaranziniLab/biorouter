@@ -359,14 +359,16 @@ function cardContents(todos: number): string {
     '<div class="br-summary">' +
     '<div class="br-summary__body biorouter-focus-region" id="body" tabindex="0">' +
     (todos > 0
-      ? `<section><div class="br-summary__heading"><h3 class="br-summary__label">To do</h3><span class="br-summary__count">0 of ${todos}</span></div><ol class="br-summary__todos">${rows}</ol></section>`
+      ? `<section class="br-summary__section" id="todo"><div class="br-summary__heading"><h3 class="br-summary__label">To do</h3><span class="br-summary__count">0 of ${todos}</span></div><ol class="br-summary__todos">${rows}</ol></section>`
       : '') +
-    `<dl class="br-summary__stats"${todos > 0 ? ' data-after-todos=""' : ''}>` +
+    '<section class="br-summary__section br-summary__details" id="details">' +
+    '<div class="br-summary__heading"><h3 class="br-summary__label">This chat</h3></div>' +
+    '<dl class="br-summary__stats">' +
     stat('Tool calls', '6') +
     stat('Tokens', '211k') +
     stat('Artifacts', '1') +
     stat('Code', '+3 −1') +
-    '</dl></div>' +
+    '</dl></section></div>' +
     `<div class="br-summary__footer" id="footer">${action('Make workflow')}${action('Diagnostics')}</div>` +
     '</div>'
   );
@@ -439,26 +441,35 @@ describe('the rail’s card in a real layout engine', () => {
     expect(at.card.height).toBeLessThan(at.rail.height - 24);
   });
 
-  it('fills the card with no visible edge and no hairline inside it (R-27)', async () => {
+  it('fills the card with no visible edge, and parts its sections by one hairline across it (R-27)', async () => {
     if (!page) return;
     await layCard(3);
     const at = await page.evaluate(() => {
       const style = (id: string) => getComputedStyle(document.getElementById(id)!);
+      const card = document.getElementById('card')!.getBoundingClientRect();
+      const details = document.getElementById('details')!.getBoundingClientRect();
       const stats = getComputedStyle(document.querySelector('.br-summary__stats')!);
       return {
         background: style('card').backgroundColor,
         edge: `${style('card').borderTopWidth} ${style('card').borderTopColor}`,
         footerEdge: style('footer').borderTopWidth,
+        todoEdge: style('todo').borderTopWidth,
+        divider: `${style('details').borderTopWidth} ${style('details').borderTopStyle} ${style('details').borderTopColor}`,
+        dividerInset: [details.left - card.left, card.right - details.right],
         statsEdge: stats.borderTopWidth,
-        statsGap: stats.marginTop,
       };
     });
     expect(at.background).toBe('rgb(244, 244, 242)');
     // The 1px border is kept, transparent: forced colours draw it in the system ink.
     expect(at.edge).toBe('1px rgba(0, 0, 0, 0)');
     expect(at.footerEdge).toBe('0px');
+    // The first section draws no line; the next one a hairline across the card's whole width,
+    // inside its 1px transparent border. A structural line, never a box: the statistics under it
+    // draw none of their own.
+    expect(at.todoEdge).toBe('0px');
+    expect(at.divider).toBe('1px solid rgb(200, 200, 200)');
+    expect(at.dividerInset).toEqual([1, 1]);
     expect(at.statsEdge).toBe('0px');
-    expect(at.statsGap).toBe('12px');
   });
 
   it('fades a scroll edge only while it hides rows, following the body’s own scroll', async () => {

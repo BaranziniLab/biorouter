@@ -199,6 +199,57 @@ describe('up to four subagents: comfortable two-line rows', () => {
       'Completed, Dose check, tev1:0.8b · this computer, 1m, decision model'
     );
   });
+
+  it('adds the key only while squares and circles mix, and keeps it out of the spoken order', () => {
+    const judge = wireRow({
+      sessionId: 'd',
+      role: 'Dose check',
+      providerName: 'ollama_decision',
+      modelName: 'tev1:0.8b',
+      status: 'completed',
+      quietSeconds: null,
+    });
+    const reader = wireRow({ sessionId: 'a', role: 'Reader' });
+    // One kind of model: nothing to tell apart, so no key.
+    const { rerender } = draw(data([reader]));
+    expect(screen.queryByTestId('summary-agents-key')).toBeNull();
+    rerender(
+      <SummarySubagents
+        data={data([judge])}
+        loading={false}
+        error={false}
+        refresh={() => {}}
+        onOpen={() => {}}
+      />
+    );
+    expect(screen.queryByTestId('summary-agents-key')).toBeNull();
+    // Both: a square, "Language model", a circle, "Decision model", as the
+    // terminal's pane writes "■ language model  ● decision model".
+    rerender(
+      <SummarySubagents
+        data={data([reader, judge])}
+        loading={false}
+        error={false}
+        refresh={() => {}}
+        onOpen={() => {}}
+      />
+    );
+    const key = screen.getByTestId('summary-agents-key');
+    expect(key).toHaveTextContent(`${copy.languageModel}${copy.decisionModel}`);
+    expect(key).toHaveAttribute('aria-hidden', 'true');
+    expect(
+      [...key.querySelectorAll('.br-agent-mark')].map((mark) => [
+        mark.getAttribute('data-shape'),
+        mark.getAttribute('data-kind'),
+      ])
+    ).toEqual([
+      ['square', 'done'],
+      ['circle', 'done'],
+    ]);
+    // It is words, not a row: the roving order never stops on it.
+    expect(key.querySelector('[data-row]')).toBeNull();
+    expect(key.closest('.br-agents')).not.toBeNull();
+  });
 });
 
 describe('five or more: a grid of squares, then the first five rows', () => {
@@ -323,7 +374,7 @@ describe('with a phase plan', () => {
     wireRow({ sessionId: 'loose', status: 'running', name: 'A one-off check' }),
   ];
 
-  it('draws each phase as one band: its title, its count, and no bar', () => {
+  it('draws each phase as one chunk: its title, its count, and no bar', () => {
     draw(data(rows, plan));
     const section = screen.getByRole('region', { name: copy.planLabel('Survey the trials') });
     // The plan's title is the section's name, not a line of its own.

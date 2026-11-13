@@ -10,10 +10,14 @@
  * Two sizes only: 13/18 for rows and actions (`--text-secondary`), 12/16 for
  * labels and counts (`--text-supporting`). Rows are 28px.
  *
- * Fills before lines (owner message 13, R-27): the parts are told apart by
- * space, never by a hairline. The to-do list, the statistics and the footer
- * each sit 12px apart (22px between their text, against 10px between rows),
- * and the body's scroll edges fade instead of meeting a rule.
+ * Sections, not boxes (owner direction, 2026-11-12). Each part of the body is a
+ * section (To do, Plan or Agents, Decisions, This chat) that opens on its small
+ * muted heading, and every section after the first is parted from the one above
+ * by ONE hairline across the card. A divider between sections is a structural
+ * line, the kind design.md 9.11 ("Fills before lines") keeps; nothing inside
+ * the card has a fill or a box of its own, so no box ever sits in a box. The
+ * footer is parted by space, and the body's scroll edges fade instead of
+ * meeting a rule.
  */
 .br-summary {
   display: flex;
@@ -124,10 +128,16 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* THIS CHAT: the chat's own figures, a section like the others (F-1), closed by
-   default, 12px under whatever sits above it. */
-.br-summary__body > * + .br-summary__details {
-  margin-top: 12px;
+/* THE SECTION DIVIDER. A section after the first draws a hairline above its
+   heading, across the card's full width (it reaches into the body's 12px gutter
+   and gives the gutter back as padding, so nothing inside moves), with 8px of
+   space on either side: 14px from the line to the text above and below it. A
+   phase's divider inside Plan is inset to the content (summaryAgents.css), so
+   the two levels read apart. The one line this stylesheet draws. */
+.br-summary__body > * + .br-summary__section {
+  margin: 8px -12px 0;
+  padding: 8px 12px 0;
+  border-top: 1px solid var(--border-subtle);
 }
 
 /* The bar itself is the primitive's `size="thin"` (4px); only its gap and its
@@ -234,10 +244,6 @@
   margin: 0;
 }
 
-.br-summary__stats[data-after-todos] {
-  margin-top: 12px;
-}
-
 .br-summary__stat {
   display: flex;
   min-height: 28px;
@@ -265,7 +271,8 @@
 
 /* The footer never scrolls: two full-width ghost rows, 12px under the body's
    last row (its 8px padding and this 4px). The actions' leading glyphs, which
-   no statistic has, mark them as actions; no hairline. */
+   no statistic has, mark them as actions; space parts them from the body, not a
+   hairline. */
 .br-summary__footer {
   display: flex;
   flex: none;
