@@ -2112,7 +2112,9 @@ function BaseChatContent({
 
   // `tokenState` is what moves in a live chat: `session` is the row the chat was
   // opened with, so keyed on it alone the ledger, and the footer's cost and By
-  // model list, stayed as they were on open until a reload.
+  // model list, stayed as they were on open until a reload. `turnRunning` lets
+  // it read the ledger again after a turn ends, for side calls billed later (a
+  // background compaction), which move no counter.
   const {
     sessionCosts,
     modelRows,
@@ -2121,6 +2123,7 @@ function BaseChatContent({
   } = useCostTracking({
     session,
     liveTokens: tokenState,
+    turnRunning: isRunningState(chatState),
   });
   // The footer prices this chat's ledger, or its counters when the ledger has no
   // rows; never the counters while the ledger is still to answer, or the cost

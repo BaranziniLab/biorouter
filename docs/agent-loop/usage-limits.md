@@ -276,7 +276,9 @@ the turn, and the post-turn naming poll carries the chat's row counters into the
 The card's "Cost of this chat" is every request the chat made, its side calls (the title,
 stall checks, judges, hooks, sampling, knowledge macros) included, and it is read again each
 time the card opens, with the Limit section, so the two never count different requests; the
-limit line adds the chat's subagents. A composer with no chat yet reads the monthly state
+limit line adds the chat's subagents. The cost on the footer line is also read again a few times
+in the five minutes after each turn and when the window comes back, so a side call billed after
+the turn, such as a background compaction, shows without opening the card. A composer with no chat yet reads the monthly state
 from `GET /usage/summary` and holds Send while the monthly limit is reached. Under the
 monthly limit's row, Settings shows what the month used against it and whether it is near
 or reached.
