@@ -3019,6 +3019,40 @@ async fn running_workspaces_follow_the_installed_program() {
     );
 }
 
+/// Phase C T6: a host's job is about the one workspace it starts. With no restart choice it
+/// restarts no other workspace the account hosts, not even one nobody else is connected to
+/// (`setup` above restarts that one), and lists each with why, so the person can restart it
+/// on purpose. Named by ID, a workspace is restarted as asked.
+#[tokio::test]
+async fn a_host_job_restarts_no_workspace_it_was_not_asked_about() {
+    if !crate::test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let server = server().await;
+    serve_listing(&every_kind(), &restart_arm(&[W_LAB, W_BUSY]), None);
+    let prepared = server.manager.prepare_device().await.unwrap();
+    let host = || SetupRequest {
+        workspace_name: Some("fresh".into()),
+        ..pending(&prepared.preparation_id, SetupIntent::Host)
+    };
+    let done = ran(&server, host()).await;
+    assert_eq!(
+        stage(&done, SetupStageName::Restart).state,
+        SetupStageState::Done,
+        "{done:?}"
+    );
+    assert!(restarted_ids(&server).is_empty(), "{done:?}");
+    assert_eq!(
+        reasons(&done),
+        [
+            (W_LAB.to_owned(), SetupOutdatedReason::NotRunningInstalled),
+            (W_BUSY.to_owned(), SetupOutdatedReason::OthersConnected),
+            (W_NEWER.to_owned(), SetupOutdatedReason::RunningNewer),
+            (W_CUSTOM.to_owned(), SetupOutdatedReason::CustomStateDir),
+        ]
+    );
+}
+
 /// AO-8: a failed restart is recorded with the command that starts the workspace by hand and
 /// fails only the `restart` stage; a stopped workspace the account hosts starts by ID, and an
 /// ID the listing does not show as a stopped hosted workspace is not started.

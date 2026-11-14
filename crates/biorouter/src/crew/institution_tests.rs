@@ -303,6 +303,140 @@ fn legacy_unlabelled_private_admission_is_denied() {
         .contains("Confirm this workspace's institution"));
 }
 
+/// A workspace with no institution refuses an agent whose work there is protected, and the
+/// refusal names the reason that holds (Phase C T6 F1): a private model on a connection with a
+/// remote work folder was told about "unlabelled private workspaces" in a Public workspace,
+/// with no way out. Turning off the folder admits the same model; a public model never gets
+/// the folder, so it is admitted with one.
+#[test]
+fn a_workspace_with_no_institution_says_why_the_agent_is_refused() {
+    let versa = FixtureProvider {
+        tier: ProviderTier::Private,
+        affiliation: Some(ModelAffiliation::institution(InstitutionId::new("ucsf"))),
+    };
+    let public = FixtureProvider {
+        tier: ProviderTier::Public,
+        affiliation: None,
+    };
+    let admit = |provider: &FixtureProvider,
+                 connection_mode: ClusterMode,
+                 remote_root: Option<&str>,
+                 workspace_mode: ClusterMode,
+                 policy: RunPolicy,
+                 restricted_channel: bool| {
+        institution::admission(
+            connection(connection_mode, None, remote_root),
+            &ModelPrivacy::of(provider),
+            &provider.get_model_config().model_name,
+            &policy,
+            &snapshot(json!(null), workspace_mode, 3, json!([])),
+            restricted_channel,
+        )
+    };
+    let refused = |result: anyhow::Result<institution::Admission>| match result {
+        Ok(_) => {
+            panic!("an agent with protected work was admitted to a workspace with no institution")
+        }
+        Err(error) => error.to_string(),
+    };
+    let lead = "Confirm this workspace's institution before granting an agent: ";
+
+    // The T6 case: Public workspace, Public connection, a remote work folder, a private model.
+    let folder = refused(admit(
+        &versa,
+        ClusterMode::Public,
+        Some("/srv/work"),
+        ClusterMode::Public,
+        RunPolicy::default(),
+        false,
+    ));
+    assert!(folder.starts_with(lead), "{folder}");
+    assert!(folder.contains("remote work folder"), "{folder}");
+    assert!(
+        folder.contains("turn off the agent's server access"),
+        "{folder}"
+    );
+    assert!(!folder.contains("unlabelled private"), "{folder}");
+
+    // The same model with the folder turned off, and a public model with one, are admitted.
+    let off = admit(
+        &versa,
+        ClusterMode::Public,
+        None,
+        ClusterMode::Public,
+        RunPolicy::default(),
+        false,
+    )
+    .expect("a private model without the folder works in a Public workspace");
+    assert!(!off.protected_context);
+    let public_model = admit(
+        &public,
+        ClusterMode::Public,
+        Some("/srv/work"),
+        ClusterMode::Public,
+        RunPolicy::default(),
+        false,
+    )
+    .expect("a public model never gets the folder, so it is not protected");
+    assert!(!public_model.protected_context);
+
+    // Every other reason names itself, and only the folder offers turning access off.
+    let held = RunPolicy {
+        origin_restricted: true,
+        ..RunPolicy::default()
+    };
+    for (sentence, part) in [
+        (
+            refused(admit(
+                &versa,
+                ClusterMode::Private,
+                None,
+                ClusterMode::Public,
+                RunPolicy::default(),
+                false,
+            )),
+            "your connection is Private",
+        ),
+        (
+            refused(admit(
+                &versa,
+                ClusterMode::Public,
+                None,
+                ClusterMode::Public,
+                held,
+                false,
+            )),
+            "this chat already holds private content",
+        ),
+        (
+            refused(admit(
+                &versa,
+                ClusterMode::Public,
+                None,
+                ClusterMode::Public,
+                RunPolicy::default(),
+                true,
+            )),
+            "a channel the agent would read is Restricted",
+        ),
+        (
+            refused(admit(
+                &versa,
+                ClusterMode::Public,
+                Some("/srv/work"),
+                ClusterMode::Private,
+                RunPolicy::default(),
+                false,
+            )),
+            "is Private and has no institution",
+        ),
+    ] {
+        assert!(sentence.starts_with(lead), "{sentence}");
+        assert!(sentence.contains(part), "{sentence}");
+        assert!(!sentence.contains("server access"), "{sentence}");
+    }
+}
+
 #[test]
 fn admission_rejects_stale_epoch_and_connection_workspace_institution_mismatch() {
     let provider = FixtureProvider {

@@ -320,7 +320,7 @@ A workspace this computer cannot reach yet ends the summary with what to run, su
 
 ### Restart and start workspaces you host
 
-After it installs a newer Crew, `setup` restarts each workspace your account hosts that still runs the older program, when nobody else is connected to it, and says, for example, `Restarted lab: it ran Crew 1.94.1 and now runs Crew 1.94.2.` A Crew from before account ownership cannot say who is connected, so a workspace on it is restarted only when you ask. Members' computers reconnect by themselves. A restart ends what members had running there: agent commands that were not detached, file transfers and requests. The list of workspaces printed at the end shows each one as it is after the restart or start.
+After it installs a newer Crew, `setup` restarts each workspace your account hosts that still runs the older program, when nobody else is connected to it, and says, for example, `Restarted lab: it ran Crew 1.94.1 and now runs Crew 1.94.2.` `host` installs a newer Crew the same way, but restarts none of the other workspaces you host: each one still on the older Crew is listed with the command that restarts it. A Crew from before account ownership cannot say who is connected, so a workspace on it is restarted only when you ask. Members' computers reconnect by themselves. A restart ends what members had running there: agent commands that were not detached, file transfers and requests. The list of workspaces printed at the end shows each one as it is after the restart or start.
 
 | Option | Effect |
 |---|---|

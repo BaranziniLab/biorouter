@@ -16,7 +16,7 @@ Any other chat can also work in Crew for you: set Crew up on a server, sign in, 
 - Access lists show only your own chats and tasks, never other people's agents.
 - From a terminal, see [Run an agent task](command-line.md#run-an-agent-task) and [Give a chat access to Crew](command-line.md#give-a-chat-access-to-crew).
 
-Workspaces and connections start Private, so you usually need a model approved for your institution, or a local model such as Llama Server or Ollama. A public model, such as one used with your own OpenAI key, is refused. A Private workspace or connection, or a Restricted channel, needs the following. See [Privacy and security](privacy-and-security.md).
+Workspaces and connections start Private, so you usually need a model approved for your institution, or a local model such as Llama Server or Ollama. A public model, such as one used with your own OpenAI key, is refused. A Private workspace or connection, or a Restricted channel, needs the following. So does a private model in a Public workspace when your connection gives agents a remote work folder (the default after hosting or joining), or when the chat already holds private content. See [Privacy and security](privacy-and-security.md).
 
 1. The host has set the workspace's institution. See [Hosting a workspace](hosting-a-workspace.md).
 2. A Private connection has an institution, set in **Connection settings…**.
@@ -549,7 +549,7 @@ Most refusals say what to do. For these:
 | "Refresh the workspace to verify connection privacy" | Wait for "Connected" in the status row, or choose **Connect to {workspace}**. |
 | "Crew workspace policy changed", "couldn't confirm that channel" | The workspace changed since Crew last read it. In the app, choose the channel name at the top, then **Refresh channel**. From a terminal, run the command again. |
 | "That channel isn't in {workspace}." | The channel ID belongs to another workspace, or to no channel. From a terminal, use the channel's name, or an ID from `biorouter crew channels list --show-ids`. |
-| "Confirm this workspace's institution", "Set this private SSH connection's institution" | See [Before you start](#before-you-start). |
+| "Confirm this workspace's institution", "Set this private SSH connection's institution" | The sentence says why the agent's work needs an institution. The host can set the workspace's institution. When it names your remote work folder, you can instead turn off the agent's server access ([What your agent may do on the server](#what-your-agent-may-do-on-the-server)). See [Before you start](#before-you-start). |
 | "managed hooks", "managed policy could not be loaded" | Contact your administrator. |
 | "model is fixed by its Crew access", "already has Crew access to another channel", "saved on this computer", "another institution's context", "cannot be rebound to a public model" | Move the work to a new chat, as in [A chat's fixed channel and model](#a-chats-fixed-channel-and-model). |
 

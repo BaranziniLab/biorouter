@@ -3673,6 +3673,19 @@ impl Job {
         self.stop("crew_host_name_in_use", message, None)
     }
 
+    /// What this job does with the hosted workspaces it was not asked about by ID: the
+    /// request's `restart_workspaces` when it set one. Absent, a setup (an install job, or a
+    /// member's `setup` of a saved connection) restarts those nobody else is connected to. A
+    /// host's job is about the one workspace it starts, so it lists the others with the
+    /// command that restarts them and leaves them running (Phase C T6: `crew host` restarted
+    /// two running workspaces it was never asked about).
+    fn restart_unnamed(&self) -> Option<bool> {
+        self.restart_workspaces.or(match self.intent {
+            SetupIntent::Install | SetupIntent::Member => None,
+            SetupIntent::Check | SetupIntent::Host => Some(false),
+        })
+    }
+
     /// The hosted workspaces still running an older program than `installed` (design AO-8):
     /// each one not to be restarted, with why, and those to restart. `may_restart` is false
     /// for a job that never restarts. One others are connected to is restarted only with the
@@ -3683,6 +3696,7 @@ impl Job {
         may_restart: bool,
     ) -> (Vec<SetupOutdated>, Vec<SetupWorkspace>) {
         let (mut outdated, mut restart) = (Vec::new(), Vec::new());
+        let restart_unnamed = self.restart_unnamed();
         for workspace in self.progress().workspaces {
             if workspace.role != SetupWorkspaceRole::Host
                 || workspace.state != SetupWorkspaceState::Running
@@ -3694,14 +3708,14 @@ impl Job {
             let running = workspace.version.as_deref().and_then(version_of);
             // The person's consent for this one by ID, or for every one.
             let named = self.restart_workspace_ids.contains(&workspace.workspace_id);
-            let consented = named || self.restart_workspaces == Some(true);
+            let consented = named || restart_unnamed == Some(true);
             let reason = if workspace.state_dir.is_none() {
                 Some(SetupOutdatedReason::CustomStateDir)
             } else if running > version_of(installed) {
                 Some(SetupOutdatedReason::RunningNewer)
             } else if workspace.others_connected != Some(0) && !(may_restart && consented) {
                 Some(SetupOutdatedReason::OthersConnected)
-            } else if !may_restart || (self.restart_workspaces == Some(false) && !named) {
+            } else if !may_restart || (restart_unnamed == Some(false) && !named) {
                 Some(SetupOutdatedReason::NotRunningInstalled)
             } else {
                 None
