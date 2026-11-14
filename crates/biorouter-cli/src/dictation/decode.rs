@@ -256,9 +256,9 @@ impl Trim {
     }
 }
 
-/// The longest ALAC frame read, in samples per channel: the largest ffmpeg's decoder
-/// accepts (4,096 squared). Apple's encoder writes 4,096.
-const MAX_ALAC_FRAME_LENGTH: u32 = 4_096 * 4_096;
+/// The longest ALAC frame read, in samples per channel: 256 times the 4,096 Apple's
+/// encoder writes, so a frame of 8 channels reserves at most 32 MB.
+const MAX_ALAC_FRAME_LENGTH: u32 = 1 << 20;
 
 /// The most of an MP4 file's `moov` box this reads to find its trim: a voice memo's is
 /// about 160 KB for 13 minutes; past this the audio is decoded untrimmed.
@@ -506,7 +506,9 @@ fn box_at(source: &mut (impl Read + Seek), at: u64, to: u64) -> Option<([u8; 4],
         return None;
     }
     let kind = head.get(4..8)?.try_into().ok()?;
-    Some((kind, at + header, at.checked_add(size)?.min(to)))
+    let (body, end) = (at + header, at.checked_add(size)?.min(to));
+    // A header that runs past the box holding it is damage the walk cannot judge.
+    (body <= end).then_some((kind, body, end))
 }
 
 /// Whether the table whose body is `len` bytes at `body` holds the entries its count
@@ -1887,6 +1889,27 @@ mod tests {
             decode_reader(bytes.as_slice()).unwrap_err(),
             DecodeError::UnsupportedFormat { kind: None }
         );
+    }
+
+    /// A sample table whose 64 bit size header runs past the `stbl` holding it ends the
+    /// table walk rather than reading a body that starts after its box ends (an underflow
+    /// that a debug build panicked on, outside `decode`'s guard).
+    #[test]
+    fn a_table_header_past_its_box_ends_the_walk() {
+        // `stsc` says its size is in the next 8 bytes (size 1), but only 4 of them are
+        // inside `stbl`; the rest, and the `free` box after it, belong to `minf`.
+        let mut stsc = vec![0, 0, 0, 1];
+        stsc.extend_from_slice(b"stsc");
+        stsc.extend_from_slice(&[0, 0, 0, 0]);
+        let mut minf = mp4_box(b"stbl", &stsc);
+        minf.extend(mp4_box(b"free", &[0; 16]));
+        let moov = mp4_box(
+            b"moov",
+            &mp4_box(b"trak", &mp4_box(b"mdia", &mp4_box(b"minf", &minf))),
+        );
+        let mut file = mp4_box(b"ftyp", b"M4A \0\0\0\0");
+        file.extend(moov);
+        assert!(mp4_tables_fit(&mut std::io::Cursor::new(&file)));
     }
 
     /// The MPEG-2 ADTS header walk adds up its frames' audio and stops at 2 hours, so the
