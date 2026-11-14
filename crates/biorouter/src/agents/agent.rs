@@ -1593,6 +1593,17 @@ fn prepare_coding_agent_bridge_tool(tool: &Tool) -> Tool {
                     ),
                 );
             }
+            if let Some(Value::Object(add_extensions)) = properties.get_mut("add_extensions") {
+                add_extensions.insert(
+                    "description".to_string(),
+                    Value::String(
+                        "Optional, and only for an audited capability this chat currently has \
+                         (Knowledge, Skills, Extension Manager), for instance to keep one \
+                         alongside an `extensions` list. Any other name refuses the spawn."
+                            .to_string(),
+                    ),
+                );
+            }
         }
         bridged.input_schema = Arc::new(schema);
     } else if tool.name.as_ref() == "workspace__workspace_send_prompt" {
@@ -10804,11 +10815,8 @@ impl Agent {
             // on the very provider the child inherits, so the check and the child
             // cannot disagree.
             let inherited: SharedProvider = Arc::new(Mutex::new(Some(Arc::clone(&provider))));
-            if self
-                .sample_turn_call(&session.id, &inherited)
-                .await
-                .waits_for_next_turn()
-            {
+            let turn_call = self.sample_turn_call(&session.id, &inherited).await;
+            if turn_call.waits_for_next_turn() {
                 return (
                     request_id,
                     Err(ErrorData::new(
@@ -10819,11 +10827,16 @@ impl Agent {
                 );
             }
 
+            // The chat's live roster, so the child starts with the capabilities
+            // this chat has on and off right now (a per-chat switch included).
             let extensions = self.get_extension_configs().await;
-            // The child asks the decision models this agent asks.
+            // The child asks the decision models this agent asks, and a spawn's
+            // `add_extensions` is judged on the capability this call was admitted
+            // on, as `workspace_set_tools` judges its own adds.
             let task_config =
                 TaskConfig::new(provider, &session.id, &session.working_dir, extensions)
-                    .with_decision_service(self.decisions.service.custom());
+                    .with_decision_service(self.decisions.service.custom())
+                    .with_spawn_capability(Some(turn_call.admitted));
             let sub_workflows = self.sub_workflows.lock().await.clone();
 
             let arguments = tool_call

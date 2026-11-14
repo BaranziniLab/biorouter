@@ -1958,6 +1958,13 @@ and the capability itself by [`docs/extensions/built-in/workspace.md`](docs/exte
   saved setup across at the start of `biorouterd` and the CLI (lead becomes the chat model, worker
   becomes the default worker), and only a chat SAVED as a pair still restores as
   `LeadWorkerProvider`.
+- **What a subagent starts with** (owner, 2026-11-13): its chat's live roster
+  (`Agent::get_extension_configs`, so a per-chat capability switch carries over) and a copy of the
+  chat's `workspace_skills/v1`, stamped on the child's row at birth. The spawn's `add_extensions`,
+  `remove_extensions`, `add_skills` and `remove_skills` change that for one child
+  (`subagent_tool::resolve_child_extension_changes`, `resolve_child_skills`). An add the chat does
+  not hold takes the one agent enable gate, `extension_enable_refusal`, on the spawning call's
+  admitted capability, and every add still passes `judge_child`'s tier filter.
 - **GUI tab/pane layer:** `ui/desktop/src/components/chatGroups/`.
 
 **The delegation gate** (`Agent::subagents_enabled`, `agents/agent.rs`) has

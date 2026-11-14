@@ -1881,6 +1881,19 @@ const REGISTRY: &[Guard] = &[
                        {new:{extensions}}`. It renders the refusal as a `String` and decides \
                        nothing",
             },
+            Site {
+                file: "crates/biorouter/src/agents/subagent_tool.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`resolve_child_extension_changes`, the spawn tool's `add_extensions`: \
+                       giving a subagent an extension its chat does not hold is an enable, \
+                       judged on the capability the spawning call was admitted on. ONE call \
+                       inside a closure, asked by name before the lookup (the tier and \
+                       affiliation arms, so an installed private extension and an unknown \
+                       name answer a public chat alike), again with the entry (#42's pin), \
+                       and per entry to list what may be added. The child's own tier still \
+                       filters the result in `judge_child`",
+            },
         ],
     },
     Guard {

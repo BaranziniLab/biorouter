@@ -312,6 +312,7 @@ async fn the_childs_row_is_stamped_with_the_ceiling_and_folds_public() {
         },
         &privacy,
         None,
+        &SessionSkillOverride::default(),
     )
     .await
     .unwrap();
@@ -342,6 +343,7 @@ async fn the_childs_row_is_stamped_with_the_ceiling_and_folds_public() {
         },
         &privacy,
         None,
+        &SessionSkillOverride::default(),
     )
     .await
     .unwrap();
@@ -409,6 +411,7 @@ async fn a_public_copy_on_a_child_born_private_refuses_the_spawn() {
         },
         &ChildPrivacy::default(),
         Some(&copy),
+        &SessionSkillOverride::default(),
     )
     .await
     .expect_err("a stranded copy refuses the spawn");

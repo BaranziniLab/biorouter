@@ -129,7 +129,11 @@ impl SessionSkillOverride {
         self.add.is_empty() && self.remove.is_empty()
     }
 
-    fn merge(mut self, add_skills: &[String], remove_skills: &[String]) -> Self {
+    /// `add_skills` and `remove_skills` merged into this override, with
+    /// [`apply`]'s rule: a name in both ends up in `add` only. A spawn uses it
+    /// to start a subagent from its parent's override plus the spawn's own
+    /// changes (`subagent_tool::child_skill_override`).
+    pub(crate) fn merge(mut self, add_skills: &[String], remove_skills: &[String]) -> Self {
         for name in remove_skills {
             self.add.retain(|s| s != name);
             if !self.remove.iter().any(|s| s == name) {

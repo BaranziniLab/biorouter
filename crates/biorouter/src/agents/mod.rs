@@ -157,7 +157,7 @@ pub use skills_extension::{count_user_skills, reset_to_builtin_skills};
 pub use subagent_handle::{BackgroundSubagent, HandleSnapshot, HandleState};
 pub use subagent_result::{SubagentResult, SubagentStatus, SubagentTokens};
 pub use subagent_runtime_profile::persisted_subagent_extension_projection;
-pub use subagent_task_config::TaskConfig;
+pub use subagent_task_config::{ChildExtensionChanges, TaskConfig};
 pub use turn_abort::{exit, TurnAbortCode};
 pub use types::{FrontendTool, RetryConfig, SessionConfig, SuccessCheck};
 pub use vault_refs::VaultRefs;

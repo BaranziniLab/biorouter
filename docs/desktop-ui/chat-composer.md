@@ -23,7 +23,7 @@ Under the card, the footer line (`bottom_menu/ComposerFooter.tsx`): the working 
 
 ## The `+` popover
 
-`composer/ComposerPlusMenu.tsx` replaced two controls: the old `+` menu and the Tools chip. It opens one popover above the `+`, in the Tools popover's recipe (`.br-picker-popover`), with one list at a time and a segmented control on the bottom edge:
+`composer/ComposerPlusMenu.tsx` replaced two controls: the old `+` menu and the Tools chip. It opens one popover above the `+`, in the Tools popover's style (`.br-picker-popover`), with one list at a time and a segmented control on the bottom edge:
 
 - **Add**: Attach files, Mention (`@`), Commands (`/`) and, in an ordinary chat, Decision models and monitors. A click on `+` always opens here.
 - **Extensions**, **Skills**, **Knowledge**: the lists that used to be under the Tools chip, with their search field, scope line, bulk action and switches.
@@ -41,7 +41,9 @@ Both groups are collapsed by default (owner, 2026-11-13), so the lists show only
 
 Two capabilities have no per-chat switch, because the daemon would undo it: Workspace Control (in Completely Autonomous mode the agent re-adds a delegation copy every turn) and Crew (a `/crew` grant or a Crew task supplies its tools, and only Revoke ends that). A capability or Context with nothing to switch reads "Not available in this app".
 
-Per chat beats Settings in both directions: a chat can turn on a Context that Settings has off, and turn off one that Settings has on (`compose_state` in `crates/biorouter/src/agents/skill_catalog.rs`). On Home, where there is no chat yet, a capability switch shapes the next chat and a Context switch is the Settings switch itself. Built-ins never join Enable all or Disable all, and they are not counted in the `+`'s tooltip.
+Per chat beats Settings in both directions: a chat can turn on a Context that Settings has off, and turn off one that Settings has on (`compose_state` in `crates/biorouter/src/agents/skill_catalog.rs`).
+
+A subagent the chat starts inherits both: the chat's capabilities as they are, and a copy of its Context choices on the subagent's own chat, so the subagent's `+` popover shows them. The chat's agent can change either for one subagent; see [Subagents](../agent-loop/subagents.md#extension-control). On Home, where there is no chat yet, a capability switch shapes the next chat and a Context switch is the Settings switch itself. Built-ins never join Enable all or Disable all, and they are not counted in the `+`'s tooltip.
 
 ## Motion
 
@@ -60,3 +62,4 @@ All of it is transform and opacity on the motion tokens (`styles/motion.ts`), an
 - [Decision models](decision-models.md): what a decision chat's composer leaves out.
 - [Skill catalog](../extensions/skill-catalog.md): the one composition rule for skills and Contexts.
 - [Dictation surfaces](../dictation/surfaces.md): the microphone beside Send.
+- [Subagents](../agent-loop/subagents.md): what a subagent inherits from the chat's per-chat switches.
