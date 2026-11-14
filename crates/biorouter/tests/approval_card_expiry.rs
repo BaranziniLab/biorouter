@@ -12,6 +12,8 @@
 //! `BIOROUTER_CONFIRMATION_TIMEOUT_SECS`, a process-global variable: set once,
 //! before `main`, it shortens the window for this binary and nothing else.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 

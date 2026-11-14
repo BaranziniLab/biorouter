@@ -1,3 +1,5 @@
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::conversation::message::{MessageContent, ToolRequest};
 use biorouter::providers::base::ProviderStreamItem;
 use biorouter::providers::formats::openai::response_to_streaming_message;

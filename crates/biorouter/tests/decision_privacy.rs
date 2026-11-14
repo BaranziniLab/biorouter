@@ -8,6 +8,8 @@
 //! ([`biorouter::decision::service::CrewUseGate`]) against this binary's
 //! sandboxed, empty Crew registry.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::Arc;
 
 use async_trait::async_trait;

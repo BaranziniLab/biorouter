@@ -70,6 +70,14 @@ cd ui/desktop && npm run test-e2e               # Run Playwright E2E tests
   nothing about the rest of `tests/`; before 2026-11-13, one `test` job per OS ran everything in
   sequence and a pull request took 60 to 90 minutes.
 
+**Tests never touch the OS credential store**, and need no `BIOROUTER_DISABLE_KEYRING` for it.
+Every test binary that links `biorouter` swaps `keyring`'s default store for process memory before
+`main` (`biorouter::keep_this_test_binary_off_the_os_credential_store!()`, invoked by each crate's
+`src/test_sandbox.rs` and by every `tests/*.rs` of `biorouter` and `biorouter-acp`), because a
+re-signed test binary raised a Keychain password dialog on every run. A new `tests/*.rs` without
+it fails the census in `crates/biorouter/src/config/test_binary_credentials.rs`; see
+[`docs/security/secret-storage.md`](docs/security/secret-storage.md#tests-never-use-the-credential-store).
+
 ### Code Quality
 
 ```bash

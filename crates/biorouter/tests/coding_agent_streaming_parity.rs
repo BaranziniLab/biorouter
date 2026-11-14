@@ -20,6 +20,8 @@
 //! hand-written side is the specification; the recorded side is the thing under
 //! test.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::providers::base::Provider;
 use biorouter::providers::coding_agent::mirror::{self, Execution};

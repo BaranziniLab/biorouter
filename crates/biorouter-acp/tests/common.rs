@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use assert_json_diff::{assert_json_matches_no_panic, CompareMode, Config};
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,

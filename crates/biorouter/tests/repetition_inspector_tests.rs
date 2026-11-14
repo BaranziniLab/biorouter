@@ -1,3 +1,5 @@
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::config::BioRouterMode;
 use biorouter::conversation::message::{Message, ToolRequest};
 use biorouter::tool_inspection::{

@@ -24,6 +24,8 @@
 //!       otherwise). This holds both before and after the change; it is the
 //!       invariant the streaming reorder must not break.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 

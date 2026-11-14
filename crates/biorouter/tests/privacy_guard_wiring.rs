@@ -72,6 +72,8 @@
 //! [`privacy::visibility::appears_in_list`]: biorouter::privacy::visibility::appears_in_list
 //! [`REGISTRY_COVERS_EVERY_GUARD_MODULE`]: the_registry_covers_every_guard_module
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

@@ -26,6 +26,8 @@
 //! ([`biorouter::execution::runtime::build_agent_runtime`]), because a
 //! subagent's reply loop runs on a worker thread.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};

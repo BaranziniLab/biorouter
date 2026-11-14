@@ -24,6 +24,8 @@
 //! tool (`fetch`/`fetch`, `sequentialthinking`, …) that this same code path
 //! would have silently eaten.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::collections::BTreeMap;
 use std::sync::Arc;
 

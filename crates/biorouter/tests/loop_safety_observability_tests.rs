@@ -6,6 +6,8 @@
 //! which tool, how deep into the run, and did it stop the agent" — and with
 //! nothing else: no tool arguments, no reason prose.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::{Arc, Mutex};
 
 use biorouter::config::BioRouterMode;

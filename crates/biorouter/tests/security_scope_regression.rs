@@ -1,5 +1,7 @@
 //! Public permission-boundary replays for the defensive security audit.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::config::permission::PermissionLevel;
 use biorouter::config::PermissionManager;
 use biorouter::permission::{CallFacts, PermissionScope};

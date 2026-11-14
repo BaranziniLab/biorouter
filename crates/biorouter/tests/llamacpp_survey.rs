@@ -22,6 +22,8 @@
 //! for Qwen3.8 27B, ~18 GB for Gemma 4 31B) unless the file is already in the
 //! shared model store.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::time::{Duration, Instant};
 
 use biorouter::conversation::message::{Message, MessageContent};

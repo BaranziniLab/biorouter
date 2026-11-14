@@ -1,5 +1,7 @@
 #![cfg(unix)]
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

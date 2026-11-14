@@ -30,6 +30,8 @@
 //! `subagent_tool.rs`'s
 //! `a_child_is_never_born_below_the_classification_of_its_parent`.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

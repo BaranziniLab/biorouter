@@ -8,6 +8,8 @@
 //! turn injected it. The loop must instead stay alive for one more step, inject
 //! the steer as a user message, and let the model answer it in the same turn.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 

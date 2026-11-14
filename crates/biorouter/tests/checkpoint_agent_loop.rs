@@ -6,6 +6,8 @@
 //! serially because it toggles process-global env (`BIOROUTER_CHECKPOINTS`,
 //! `BIOROUTER_PATH_ROOT`) that the checkpoint config + data-dir resolution read.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;

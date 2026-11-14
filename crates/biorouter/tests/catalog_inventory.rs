@@ -21,6 +21,8 @@
 //! would make any test running beside it see a catalogue full of changes it did
 //! not make.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::OnceLock;
 
 use biorouter::agents::extension::{Envs, ExtensionConfig};

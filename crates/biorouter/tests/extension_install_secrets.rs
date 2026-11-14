@@ -10,6 +10,8 @@
 //! Runs in its own binary with `BIOROUTER_PATH_ROOT` pointed at a temp tree, so
 //! it reads and writes a sandbox rather than the developer's real config.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::collections::HashMap;
 use std::sync::OnceLock;
 

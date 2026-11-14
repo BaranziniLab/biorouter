@@ -18,6 +18,8 @@
 //! store, answer the card, and assert on the *tool response*: approving returns
 //! the memory, denying does not and says why.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 

@@ -19,6 +19,8 @@
 //! real gap between them. Asserting only "some text came back" would pass
 //! against the old blocking implementation and prove nothing.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::time::Instant;
 
 use biorouter::conversation::message::{Message, MessageContent};

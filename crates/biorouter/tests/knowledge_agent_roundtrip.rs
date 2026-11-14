@@ -1,6 +1,8 @@
 //! A credential-free BioOKF round trip through both the curation macros and an
 //! ordinary `Agent::reply` turn.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 

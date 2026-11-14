@@ -17,6 +17,8 @@
 //! `sessions.db`. It is set once, by the first test to run, and every test in
 //! this file goes through `fixture()` so none of them can forget.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::Arc;
 
 use async_trait::async_trait;

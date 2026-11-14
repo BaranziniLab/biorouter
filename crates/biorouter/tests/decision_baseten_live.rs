@@ -19,6 +19,8 @@
 //! keyring off), so the key comes from the environment and nothing reads
 //! `~/.config/biorouter` or the Keychain. Every note is synthetic.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::Arc;
 
 use async_trait::async_trait;

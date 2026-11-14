@@ -9,6 +9,8 @@
 //! `--lib` would race every other test in the crate. Both tests here hold one
 //! lock so they cannot see each other's flip.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::privacy::decision_axes::{
     self, BasisAuthor, PublicBasis, PUBLIC_BASIS_STATE, PUBLIC_BASIS_VERSION,
 };

@@ -17,6 +17,8 @@
 //! `BIOROUTER_PATH_ROOT` at a scratch directory when you do not want it to read
 //! your own `config.yaml`.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::model::ModelConfig;
 use biorouter::providers::base::Provider;

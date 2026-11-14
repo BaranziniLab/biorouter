@@ -18,6 +18,8 @@
 //!       turn does not loop for a tool result. This is the load-bearing
 //!       assertion that prevents executing a tool with truncated arguments.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 

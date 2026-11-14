@@ -27,6 +27,8 @@
 //!
 //! Run with `cargo test -p biorouter --test session_store_dispatch_boundary`.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::path::Path;
 use std::sync::Arc;
 

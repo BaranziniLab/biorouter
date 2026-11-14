@@ -68,9 +68,19 @@
 //! `Config::default()` reads `BIOROUTER_DISABLE_KEYRING` at that moment. That
 //! choice was already frozen by whichever of the 42 call sites ran first, so
 //! this makes an existing coin-flip deterministic rather than introducing one —
-//! and it constructs no keyring, it only records the service name, so nothing
-//! here touches the OS keychain. Every documented invocation of this suite sets
-//! `BIOROUTER_DISABLE_KEYRING=true`, including `rust.yml`.
+//! and it constructs no keyring, it only records the service name. The ctor
+//! sets the variable to `true` when the outer environment leaves it unset, so
+//! secrets live in this sandbox's `secrets.yaml`, as in every `rust.yml` test
+//! step, and a child this binary starts inherits it.
+//!
+//! ## …and no test binary here reaches the OS credential store
+//!
+//! This module invokes `biorouter::keep_this_test_binary_off_the_os_credential_store!`,
+//! so every test binary that declares it (the lib's and each `tests/*.rs`)
+//! builds every `keyring::Entry` on process memory, never the macOS Keychain,
+//! Windows Credential Manager or Secret Service. A test binary is re-signed on
+//! every build, so a Keychain read from one raised a password dialog on every
+//! run (2026-11-12). See `biorouter::config::test_binary_credentials`.
 
 /// This binary's sandbox root, recorded before any test could move it.
 ///
@@ -83,6 +93,9 @@
 /// answer that cannot move, and that is why it exists rather than the
 /// assertions re-deriving the root themselves.
 static SANDBOX_ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+// Every `keyring::Entry` this binary builds uses process memory (module docs).
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
 
 /// Run before `main`, because the placement is the whole point: a guard
 /// installed inside whichever test module "owns" the hazard fixes nothing
@@ -119,6 +132,11 @@ fn sandbox_config_root_for_this_test_binary() {
     // we minted is recorded as the value we just installed.
     if let Some(root) = std::env::var_os("BIOROUTER_PATH_ROOT") {
         record_sandbox_root(&root);
+    }
+    // After the root, so the `secrets.yaml` it selects is the sandbox's; before
+    // the `Config::global()` freeze below, which reads it (module docs).
+    if std::env::var_os("BIOROUTER_DISABLE_KEYRING").is_none() {
+        std::env::set_var("BIOROUTER_DISABLE_KEYRING", "true");
     }
     // Freeze both process-global cells at whatever root is now in force, before
     // any test can relocate the variable under a `TempDir` it later unlinks.

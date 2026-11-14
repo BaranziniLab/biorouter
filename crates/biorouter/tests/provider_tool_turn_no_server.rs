@@ -20,6 +20,8 @@
 //! narrates every call as prose, invents its own `<tool_response>OK` replies to
 //! continue against, and writes nothing, after a full run the user paid for.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::Arc;
 
 /// Sandbox this binary's config root before any test runs, for the reason

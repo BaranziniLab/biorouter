@@ -1,3 +1,5 @@
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::conversation::message::Message;
 use biorouter::model::ModelConfig;
 use biorouter::providers::api_client::{ApiClient, AuthMethod};

@@ -5,6 +5,8 @@
 //! provider priced as Claude, and the decision model a scripted
 //! [`DecisionModel`] behind the agent's own decision service.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;

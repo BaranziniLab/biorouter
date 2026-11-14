@@ -3,6 +3,8 @@
 //! loop; a counter-only unit test cannot catch a tool iteration resetting the
 //! budget or a hidden continuation leaking onto SSE as a Message frame.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};

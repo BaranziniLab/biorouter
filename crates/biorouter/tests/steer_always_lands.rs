@@ -7,6 +7,8 @@
 //! guess about scheduling. Every test was red against `origin/main` — most as a
 //! hang cut short by its bound, which is exactly the operator's symptom.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;

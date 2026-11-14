@@ -1,5 +1,7 @@
 //! Exercise the production consent scope without contacting a model or granting desktop access.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::agents::types::SharedProvider;
 use biorouter::privacy::ProviderTier;
 use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage};

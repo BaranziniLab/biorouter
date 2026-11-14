@@ -34,6 +34,8 @@
 //! each of its cases describes one base and the local base was already one;
 //! `biorouter_mcp::paths`'s own tests run the table against that base.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::config::paths::Paths;
 use serial_test::serial;
 use std::path::PathBuf;

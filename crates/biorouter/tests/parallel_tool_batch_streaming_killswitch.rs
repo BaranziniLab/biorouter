@@ -16,6 +16,8 @@
 //! Its own test binary: the variable is process-global and read per dispatch, so
 //! a sibling test in the same process would race it.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 mod parallel_batch_support;
 
 use parallel_batch_support::{agent_with_batch, drain, persisted_tool_blocks, tool_responses};

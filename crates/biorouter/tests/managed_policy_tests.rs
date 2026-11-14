@@ -3,6 +3,8 @@
 //! flowing through `ManagedPolicyInspector` + `PermissionInspector` and the
 //! escalation-only merge, proving the non-bypassable + baseline-allow semantics.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::Arc;
 
 use biorouter::config::permission::PermissionLevel;
