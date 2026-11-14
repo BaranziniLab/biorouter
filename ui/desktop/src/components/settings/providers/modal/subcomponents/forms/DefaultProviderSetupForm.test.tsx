@@ -9,8 +9,24 @@ import DefaultProviderSetupForm, {
 import CustomProviderForm from './CustomProviderForm';
 import { customProviderCopy, providerSetupCopy } from '../../../copy';
 import { BROWSER_SURFACE_MARKER } from '../../../../../../utils/surface';
+import {
+  loadProviderSetupAccess,
+  resetProviderSetupAccessForTests,
+} from '../../../../../../utils/providerSetupAccess';
 
-const mocks = vi.hoisted(() => ({ read: vi.fn() }));
+const mocks = vi.hoisted(() => ({ read: vi.fn(), getProviderSetupAccess: vi.fn() }));
+
+vi.mock('../../../../../../api', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getProviderSetupAccess: mocks.getProviderSetupAccess,
+}));
+
+/** SD-17: put this page in a browser the daemon admits to provider setup. */
+async function admittedBrowser() {
+  document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+  mocks.getProviderSetupAccess.mockResolvedValue({ data: { allowed: true } });
+  await loadProviderSetupAccess();
+}
 
 vi.mock('../../../../../ConfigContext', () => ({
   useConfig: () => ({ read: mocks.read }),
@@ -572,8 +588,10 @@ describe('DefaultProviderSetupForm in a browser', () => {
 
   afterEach(() => {
     delete document.documentElement.dataset.biorouterSurface;
+    resetProviderSetupAccessForTests();
   });
 
+  // A browser the daemon has not admitted to provider setup (or has not answered yet).
   it('shows the host and endpoint read-only, with the reason', async () => {
     document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
     const { container } = render(<Harness provider={openai} />);
@@ -590,6 +608,14 @@ describe('DefaultProviderSetupForm in a browser', () => {
   });
 
   it('leaves every field editable in the desktop app', async () => {
+    render(<Harness provider={openai} />);
+    expect(await screen.findByDisplayValue('https://api.openai.com')).toBeEnabled();
+    expect(screen.queryByTestId('host-managed-destination-note')).toBeNull();
+  });
+
+  // SD-17: the daemon takes destination keys from a page it admits, so the form is the desktop's.
+  it('leaves every field editable in a browser the daemon admits', async () => {
+    await admittedBrowser();
     render(<Harness provider={openai} />);
     expect(await screen.findByDisplayValue('https://api.openai.com')).toBeEnabled();
     expect(screen.queryByTestId('host-managed-destination-note')).toBeNull();
@@ -630,6 +656,7 @@ describe('CustomProviderForm in a browser', () => {
 
   afterEach(() => {
     delete document.documentElement.dataset.biorouterSurface;
+    resetProviderSetupAccessForTests();
   });
 
   function edit(onSubmit: () => void) {
@@ -668,6 +695,18 @@ describe('CustomProviderForm in a browser', () => {
     document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
     const onSubmit = vi.fn();
     edit(onSubmit);
+    fireEvent.click(screen.getByRole('button', { name: customProviderCopy.update }));
+    expect(onSubmit).toHaveBeenCalled();
+  });
+
+  it('moves the URL with the saved key in a browser the daemon admits', async () => {
+    await admittedBrowser();
+    const onSubmit = vi.fn();
+    const { container } = edit(onSubmit);
+    expect(screen.queryByTestId('host-managed-custom-url')).toBeNull();
+    fireEvent.change(container.querySelector('#api-url') as HTMLInputElement, {
+      target: { value: 'https://elsewhere.example/v1' },
+    });
     fireEvent.click(screen.getByRole('button', { name: customProviderCopy.update }));
     expect(onSubmit).toHaveBeenCalled();
   });

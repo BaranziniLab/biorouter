@@ -4,7 +4,7 @@ import { HostManagedModelPanel } from './HostManagedModelPanel';
 import {
   HOST_CONFIGURE_COMMAND,
   HOST_MANAGED_ONBOARDING_HELP,
-  HOST_MANAGED_ONBOARDING_STEP,
+  HOST_MANAGED_ONBOARDING_REASON,
   HOST_MANAGED_ONBOARDING_TITLE,
 } from './hostManagedModelCopy';
 
@@ -40,20 +40,31 @@ describe('HostManagedModelPanel', () => {
     expect(writeText).toHaveBeenCalledWith(HOST_CONFIGURE_COMMAND);
   });
 
-  // Owner, 2026-11-13: one step up front, the reason on hover. The step still says to reload
-  // the page, so the separate reload line it replaced says nothing new.
-  it('keeps the title and the step, and the reason behind the title’s info icon', () => {
+  it('keeps the title, one visible line and the command, with the rest in an InfoTip', () => {
     render(<HostManagedModelPanel />);
     const panel = screen.getByTestId('host-managed-model-panel');
     // The heading is named by the title alone: the info icon sits beside it, not inside.
     expect(within(panel).getByRole('heading', { level: 2 })).toHaveTextContent(
       new RegExp(`^${HOST_MANAGED_ONBOARDING_TITLE}$`)
     );
-    expect(within(panel).getByText(HOST_MANAGED_ONBOARDING_STEP)).toBeInTheDocument();
-    expect(HOST_MANAGED_ONBOARDING_STEP).toMatch(/then reload this page\.$/);
+    expect(within(panel).getByTestId('host-managed-model-reason')).toHaveTextContent(
+      HOST_MANAGED_ONBOARDING_REASON
+    );
+    // What to do and why the choice stays on the host: the title's info icon.
     const about = within(panel).getByRole('button', { name: 'About choosing a model on the host' });
     expect(about).toHaveAccessibleDescription(HOST_MANAGED_ONBOARDING_HELP);
     // The copy field and that info icon are the only controls the panel holds.
     expect(within(panel).getAllByRole('button')).toHaveLength(2);
+  });
+
+  // SD-18: the daemon knows why it refused this browser, so its sentence replaces the default.
+  it('shows the sentence the daemon gave in place of the default line', () => {
+    render(<HostManagedModelPanel reason="Only the person who started this server can choose." />);
+    const line = screen.getByTestId('host-managed-model-reason');
+    expect(line).toHaveTextContent('Only the person who started this server can choose.');
+    expect(line).not.toHaveTextContent(HOST_MANAGED_ONBOARDING_REASON);
+    expect(screen.getByTestId('host-managed-model-panel')).toHaveTextContent(
+      HOST_CONFIGURE_COMMAND
+    );
   });
 });

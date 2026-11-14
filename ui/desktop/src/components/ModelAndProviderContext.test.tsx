@@ -11,6 +11,7 @@ import {
   type ChangeModelOptions,
 } from './ModelAndProviderContext';
 import { subscribeSessionBindingChanges } from '../utils/sessionBindingSync';
+import { BROWSER_SURFACE_MARKER } from '../utils/surface';
 import type Model from './settings/models/modelInterface';
 
 const mocks = vi.hoisted(() => ({
@@ -789,6 +790,56 @@ describe('switchedModelMessage', () => {
     );
     expect(switchedModelMessage('Codex 6', 'Codex', { chat: false, newChats: true })).toBe(
       'New chats in every window now start on Codex 6 from Codex. Existing chats keep their own model.'
+    );
+  });
+});
+
+/**
+ * SD-17. In a browser served by `biorouter serve` an open chat keeps the model it started on:
+ * the daemon refuses `/agent/update_provider` there, because the page states the host default
+ * as `X-Caller-Provider` and a chat moved to another tier would leave its reach. So a switch
+ * that names a chat moves only the default for new chats, and says so, never the 409.
+ */
+describe('ModelAndProviderProvider in a browser', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    mocks.read.mockImplementation(async (key: string) => {
+      if (key === 'BIOROUTER_MODEL') return 'gpt-5.5';
+      if (key === 'BIOROUTER_PROVIDER') return 'versa_azure';
+      return null;
+    });
+    mocks.getProviders.mockResolvedValue([]);
+    mocks.setConfigProvider.mockResolvedValue(undefined);
+    mocks.updateAgentProvider.mockResolvedValue({ data: '' });
+    mocks.refreshConfig.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    delete document.documentElement.dataset.biorouterSurface;
+  });
+
+  it('never binds the chat, and moves the default for new chats instead', async () => {
+    render(
+      <ModelAndProviderProvider>
+        <SessionSwitchHarness />
+      </ModelAndProviderProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch this chat' }));
+
+    await waitFor(() => expect(screen.getByTestId('change-result')).toHaveTextContent('true'));
+    expect(mocks.updateAgentProvider).not.toHaveBeenCalled();
+    expect(mocks.setConfigProvider).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: { provider: 'anthropic', model: 'claude-opus-4' },
+        throwOnError: true,
+      })
+    );
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      expect.objectContaining({
+        msg: switchedModelMessage('Claude Opus', 'Anthropic', { chat: false, newChats: true }),
+      })
     );
   });
 });

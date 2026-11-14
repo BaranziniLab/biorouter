@@ -11,7 +11,7 @@ import { Note } from '../../../../../ui/note';
 import { InfoTip, useInfoTipId } from '../../../../../ui/info-tip';
 import { SecureStorageNotice } from '../SecureStorageNotice';
 import { UpdateCustomProviderRequest } from '../../../../../../api';
-import { isBrowserSurface } from '../../../../../../utils/surface';
+import { useProvidersAreHostManaged } from '../../../../../../utils/providerSetupAccess';
 import { HOST_MANAGED_CUSTOM_URL } from '../../../../../privacy/hostManagedModelCopy';
 import { machineStringProps } from '../../../../config/machineString';
 import { customProviderCopy } from '../../../copy';
@@ -82,11 +82,14 @@ export default function CustomProviderForm({
   /** An edit of a provider whose key is saved: a blank key keeps it. */
   const keepsSavedKey = initialData !== null && hasSavedKey;
   /**
-   * W2-PRV-2, round 4. In a browser served by `biorouter serve`, the daemon
-   * refuses to move a saved key to a new URL, since nothing there can confirm a
-   * person asked. Typing the key again replaces it, and that is allowed.
+   * W2-PRV-2, round 4. In a browser served by `biorouter serve` that the daemon
+   * has not admitted to provider setup (SD-17), the daemon refuses to move a
+   * saved key to a new URL, since nothing there can confirm a person asked.
+   * Typing the key again replaces it, and that is allowed. An admitted browser
+   * moves it as the desktop does.
    */
-  const urlNeedsTypedKey = keepsSavedKey && isBrowserSurface();
+  const hostManaged = useProvidersAreHostManaged();
+  const urlNeedsTypedKey = keepsSavedKey && hostManaged;
   // An edit starts from its definition in the first frame, not one effect later, so the submit
   // button below is drawn in its final colour at once (principle 9). The effect still follows a
   // definition that changes while the form is open.

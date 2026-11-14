@@ -18,7 +18,8 @@ import {
   providers,
   getProviderModels as apiGetProviderModels,
 } from '../api';
-import { userActionHeaders } from '../utils/userAction';
+import { forgetHostConfiguredProvider, userActionHeaders } from '../utils/userAction';
+import { isBrowserSurface } from '../utils/surface';
 import { newlyInstalledExtensions, subscribeToCatalog } from '../utils/catalogSubscription';
 import type { CatalogDelta } from '../api';
 import { toastService } from '../toasts';
@@ -227,6 +228,8 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
         // it could not tell the two apart.
         headers: await userActionHeaders(),
       });
+      // SD-17: a browser's `X-Caller-Provider` names the host default, which just moved.
+      if (key === 'BIOROUTER_PROVIDER' && isBrowserSurface()) forgetHostConfiguredProvider();
       await reloadConfigAfterWrite();
       // After the write resolved — a refused one threw above and moved nothing.
       if (APP_MODEL_SELECTION_KEYS.has(key)) announceAppModelSelection();
@@ -254,6 +257,7 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
         // form comes through here.
         headers: await userActionHeaders(),
       });
+      if (key === 'BIOROUTER_PROVIDER' && isBrowserSurface()) forgetHostConfiguredProvider();
       await reloadConfigAfterWrite();
       if (APP_MODEL_SELECTION_KEYS.has(key)) announceAppModelSelection();
     },
