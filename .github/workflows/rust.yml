@@ -658,9 +658,15 @@ jobs:
 
       # The served dictation step below drives Chromium and Firefox with fake audio, and
       # Firefox reads it through a PulseAudio server that step starts when none answers.
+      # `ubuntu-latest` is Ubuntu 26.04, which Playwright 1.58 refuses ("does not support
+      # chromium on ubuntu26.04-x64"), so both steps take the 24.04 builds and package
+      # list, every package of which 26.04 carries. Drop the override when Playwright
+      # names 26.04.
       - name: Install Playwright browsers and the audio server for served dictation
         if: matrix.shard == 3 && !cancelled()
         working-directory: ui/desktop
+        env:
+          PLAYWRIGHT_HOST_PLATFORM_OVERRIDE: ubuntu24.04-x64
         run: |
           set -euo pipefail
           sudo apt-get install --yes --no-install-recommends pulseaudio pulseaudio-utils
@@ -776,6 +782,7 @@ jobs:
         env:
           BIOROUTER_SERVE_BIN: ${{ github.workspace }}/target/debug/biorouter
           BIOROUTER_PW_CHANNEL: chromium
+          PLAYWRIGHT_HOST_PLATFORM_OVERRIDE: ubuntu24.04-x64
         run: |
           set -euo pipefail
           pulse_pid=
