@@ -917,6 +917,53 @@ impl BioRouterAcpAgent {
         Ok(())
     }
 
+    /// The setup writes `load_session` makes before it replays a chat, inside one
+    /// `session::activity::opening` scope.
+    ///
+    /// #44: an ACP `load_session` names the client's cwd, but a session's working
+    /// directory is fixed once the conversation has messages, and ACP clients call
+    /// `load_session` precisely to REOPEN an existing conversation — failing the load
+    /// over a cwd mismatch would break every resume. Decision: apply the cwd only while
+    /// the session is still empty (the same guarded update the HTTP route uses); a
+    /// non-empty session keeps its own dir, logged at debug, and the load succeeds.
+    /// R-30: applying the client's directory while loading is part of opening the chat,
+    /// so it does not move the chat either; nor does the mark that keeps this chat out of
+    /// **Find words in my recent chats**, since an ACP client can deliver other people's
+    /// words (DD-57).
+    async fn open_loaded_session(
+        manager: &biorouter::session::SessionManager,
+        session_id: &str,
+        cwd: &std::path::Path,
+    ) -> Result<(), sacp::Error> {
+        match biorouter::session::activity::opening(async {
+            biorouter::dictation::suggestion_scan::mark_not_learnable(
+                manager,
+                session_id,
+                biorouter::dictation::suggestion_scan::NotLearnableReason::Acp,
+            )
+            .await;
+            manager
+                .try_update_working_dir_if_empty(session_id, cwd.to_path_buf())
+                .await
+        })
+        .await
+        {
+            Ok(WorkingDirUpdate::Updated) => Ok(()),
+            Ok(WorkingDirUpdate::RefusedNotEmpty) => {
+                debug!(
+                    session_id = %session_id,
+                    requested_cwd = %cwd.display(),
+                    "load_session: working directory is fixed once the conversation has messages; keeping the session's own dir"
+                );
+                Ok(())
+            }
+            Ok(WorkingDirUpdate::SessionNotFound) => Err(sacp::Error::invalid_params()
+                .data(format!("Session {} disappeared during load", session_id))),
+            Err(e) => Err(sacp::Error::internal_error()
+                .data(format!("Failed to update session working directory: {}", e))),
+        }
+    }
+
     async fn on_load_session(
         &self,
         args: LoadSessionRequest,
@@ -939,48 +986,7 @@ impl BioRouterAcpAgent {
                 .data(format!("Session {} has no conversation data", session_id))
         })?;
 
-        // #44: an ACP `load_session` names the client's cwd, but a session's
-        // working directory is fixed once the conversation has messages, and
-        // ACP clients call `load_session` precisely to REOPEN an existing
-        // conversation — failing the load over a cwd mismatch would break
-        // every resume. Decision: apply the cwd only while the session is
-        // still empty (the same guarded update the HTTP route uses); a
-        // non-empty session keeps its own dir, logged at debug, and the load
-        // succeeds.
-        // R-30: applying the client's directory while loading is part of
-        // opening the chat, so it does not move the chat either; nor does the
-        // mark that keeps this chat out of **Find words in my recent chats**,
-        // since an ACP client can deliver other people's words (DD-57).
-        match biorouter::session::activity::opening(async {
-            biorouter::dictation::suggestion_scan::mark_not_learnable(
-                &manager,
-                &session_id,
-                biorouter::dictation::suggestion_scan::NotLearnableReason::Acp,
-            )
-            .await;
-            manager
-                .try_update_working_dir_if_empty(&session_id, args.cwd.clone())
-                .await
-        })
-        .await
-        {
-            Ok(WorkingDirUpdate::Updated) => {}
-            Ok(WorkingDirUpdate::RefusedNotEmpty) => {
-                debug!(
-                    session_id = %session_id,
-                    requested_cwd = %args.cwd.display(),
-                    "load_session: working directory is fixed once the conversation has messages; keeping the session's own dir"
-                );
-            }
-            Ok(WorkingDirUpdate::SessionNotFound) => {
-                return Err(sacp::Error::invalid_params()
-                    .data(format!("Session {} disappeared during load", session_id)));
-            }
-            Err(e) => {
-                return Err(sacp::Error::internal_error()
-                    .data(format!("Failed to update session working directory: {}", e)));
-            }
-        }
+        Self::open_loaded_session(&manager, &session_id, &args.cwd).await?;
 
         let mut session = BioRouterAcpSession {
             messages: conversation.clone(),

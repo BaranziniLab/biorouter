@@ -2699,6 +2699,33 @@ async fn create_subagent_session(
 /// classification at birth, before any row exists: a copy whose model is
 /// public would be stranded on a Private child, where every one of its checks
 /// is refused (design §3.4 item 1).
+/// What a child's row is born with in its extension data, written in the same
+/// statement as its parent link: its privacy ceiling (DR-33), and the skill and
+/// Context choices it starts with (its parent chat's, plus the spawn's own
+/// changes), so no reader ever sees the child on the machine-wide set first. An
+/// empty override IS the machine-wide set, so nothing is written for it.
+/// `true` when anything was stamped.
+fn stamp_child_birth_data(
+    data: &mut crate::session::ExtensionData,
+    ceiling: Option<&crate::privacy::decision_axes::PrivacyCeiling>,
+    skills: &SessionSkillOverride,
+) -> anyhow::Result<bool> {
+    let mut stamped = false;
+    if let Some(ceiling) = ceiling {
+        ceiling.stamp(data)?;
+        stamped = true;
+    }
+    if !skills.is_empty() {
+        data.set_extension_state(
+            session_skills::STATE_KEY,
+            session_skills::STATE_VERSION,
+            serde_json::to_value(skills)?,
+        );
+        stamped = true;
+    }
+    Ok(stamped)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn create_subagent_session_under(
     config: &AgentConfig,
@@ -2743,26 +2770,9 @@ async fn create_subagent_session_under(
         .map_err(|e| internal(&e))?;
 
     let mut update = config.session_manager.update(&session.id);
-    let mut stamped = false;
-    if let Some(ceiling) = ceiling {
-        ceiling
-            .stamp(&mut session.extension_data)
-            .map_err(|e| internal(&e))?;
-        stamped = true;
-    }
-    // The skill and Context choices it starts with (its parent chat's, plus
-    // the spawn's own changes), in the same statement, so no reader ever sees
-    // the child on the machine-wide set first. An empty override IS the
-    // machine-wide set, so nothing is written for it.
-    if !skills.is_empty() {
-        session.extension_data.set_extension_state(
-            session_skills::STATE_KEY,
-            session_skills::STATE_VERSION,
-            serde_json::to_value(skills).map_err(|e| internal(&e))?,
-        );
-        stamped = true;
-    }
-    if stamped {
+    if stamp_child_birth_data(&mut session.extension_data, ceiling, skills)
+        .map_err(|e| internal(&e))?
+    {
         update = update.extension_data(session.extension_data.clone());
     }
     update
