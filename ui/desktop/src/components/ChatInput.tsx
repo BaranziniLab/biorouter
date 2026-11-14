@@ -422,6 +422,8 @@ interface ChatInputProps {
   };
   /** Real per-model usage rows from the token ledger (Issue #1 breakdown). */
   modelCostRows?: ModelCostRow[];
+  /** Reads the chat's usage ledger again: the cost card calls it each time it opens. */
+  reloadCost?: () => void;
   workflow?: Workflow | null;
   workflowAccepted?: boolean;
   initialPrompt?: string;
@@ -499,6 +501,7 @@ export default function ChatInput({
   workingDirLocked,
   sessionCosts,
   modelCostRows,
+  reloadCost,
   workflowAccepted,
   initialPrompt,
   append: _append,
@@ -593,7 +596,8 @@ export default function ChatInput({
     wasLoadingForLimitRef.current = isLoading;
   }, [isLoading]);
   // Read again whenever the chat's recorded usage moves, not only when a turn ends: a title's
-  // side call lands after the turn, and the near-limit mark must not wait for the next one.
+  // side call lands after the turn (the store's post-turn naming poll carries it into the live
+  // counters), and the near-limit mark must not wait for the next one.
   const usageSignature =
     (accumulatedInputTokens ?? 0) +
     (accumulatedOutputTokens ?? 0) +
@@ -3646,6 +3650,7 @@ export default function ChatInput({
         outputTokens={accumulatedOutputTokens}
         sessionCosts={sessionCosts}
         modelCostRows={modelCostRows}
+        reloadCost={reloadCost}
         usageLimit={usageLimit}
         onOpenUsageSettings={openUsageSettings}
       />

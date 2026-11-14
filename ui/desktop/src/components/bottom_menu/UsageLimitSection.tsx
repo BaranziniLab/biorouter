@@ -47,9 +47,10 @@ export function limitSourceReading(state: SessionUsageLimitResponse): string {
 /**
  * "This chat and its subagents: $1.20 of $5.00 used · 12,000 of 500,000 tokens used", or what has
  * been used with no limit. The daemon counts a chat's limit over the chat and every subagent it
- * started, while the card's cost above counts the chat's own requests only, so the line names
- * what it counts: the two figures differ by the subagents' share. `ownChat` is false in a
- * subagent's chat, whose line is its parent's.
+ * started, while the card's cost above counts the chat's own requests only (side calls such as the
+ * title included; both are read again when the card opens), so the line names what it counts: the
+ * two figures differ by the subagents' share. `ownChat` is false in a subagent's chat, whose line
+ * is its parent's.
  */
 export function chatUsedReading(
   state: SessionUsageLimitResponse,

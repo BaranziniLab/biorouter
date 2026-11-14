@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { fetchModelPricing } from '../utils/pricing';
 import { getSessionUsage, ModelUsageRow, Session } from '../api';
 import { userActionHeaders } from '../utils/userAction';
@@ -203,9 +203,16 @@ const NO_ROWS: ModelCostRow[] = [];
  * the turn's end, each after the daemon wrote the turn's ledger row. They are
  * compared by value, so the per-token frames that copy them ask for nothing.
  * A read that a newer one has superseded never lands (`cancelled`).
+ *
+ * `reload` reads it again on demand. The cost card calls it each time it opens,
+ * beside its Limit section's own read, so the card's cost and its limit line
+ * count the same requests: a side call made after the turn's last frame (the
+ * chat's title, a knowledge macro) is in both, not in the limit alone.
  */
 export const useCostTracking = ({ session, liveTokens }: UseCostTrackingProps) => {
   const [ledger, setLedger] = useState<{ sessionId: string; rows: ModelCostRow[] } | null>(null);
+  const [reads, setReads] = useState(0);
+  const reload = useCallback(() => setReads((count) => count + 1), []);
 
   const sessionId = session?.id;
   // Some providers report only the split and others only the total. Observe all
@@ -255,6 +262,7 @@ export const useCostTracking = ({ session, liveTokens }: UseCostTrackingProps) =
     liveInput,
     liveOutput,
     liveTotal,
+    reads,
   ]);
 
   const ledgerIsThisChats = !!sessionId && ledger?.sessionId === sessionId;
@@ -269,5 +277,7 @@ export const useCostTracking = ({ session, liveTokens }: UseCostTrackingProps) =
     modelRows,
     /** No chat, or this chat's ledger has answered. */
     ledgerSettled: !sessionId || ledgerIsThisChats,
+    /** Reads this chat's ledger again (the cost card, on open). Stable. */
+    reload,
   };
 };

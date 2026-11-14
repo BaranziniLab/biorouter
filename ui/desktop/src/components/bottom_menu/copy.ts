@@ -356,7 +356,8 @@ export const USAGE_LIMIT_COPY = {
   usedOnly: (used: string) => `${used} used`,
   /**
    * Who the used line counts. A chat's limit counts the chat and every subagent it started, while
-   * "Cost of this chat" above it counts the chat's own requests only, so the line says so.
+   * "Cost of this chat" above it counts the chat's own requests only (its side calls, such as the
+   * title, included), so the line says so.
    */
   chatUsed: (reading: string) => `This chat and its subagents: ${reading}`,
   /** In a subagent's chat the line is the parent's, which counts the parent and its subagents. */

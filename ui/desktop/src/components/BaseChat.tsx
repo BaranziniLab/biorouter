@@ -2113,7 +2113,12 @@ function BaseChatContent({
   // `tokenState` is what moves in a live chat: `session` is the row the chat was
   // opened with, so keyed on it alone the ledger, and the footer's cost and By
   // model list, stayed as they were on open until a reload.
-  const { sessionCosts, modelRows, ledgerSettled } = useCostTracking({
+  const {
+    sessionCosts,
+    modelRows,
+    ledgerSettled,
+    reload: reloadCost,
+  } = useCostTracking({
     session,
     liveTokens: tokenState,
   });
@@ -3020,6 +3025,7 @@ function BaseChatContent({
             workingDirLocked={workingDirLocked}
             sessionCosts={footerCost.sessionCosts}
             modelCostRows={footerCost.modelCostRows}
+            reloadCost={reloadCost}
             usageLimitNoticeKey={usageLimitNoticeKey}
             workflow={workflow}
             workflowAccepted={!hasNotAcceptedWorkflow}

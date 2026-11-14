@@ -38,6 +38,42 @@ pub fn get_current_model() -> Option<String> {
 
 pub static MSG_COUNT_FOR_SESSION_NAME_GENERATION: usize = 3;
 
+/// The most of one user message a title prompt carries, in characters. The
+/// start of a message is what names a chat; a pasted paper or a log after it
+/// only made the naming call cost what the turn did (a 93K-token first message
+/// billed 92,745 input tokens to `side:session_name`, 2026-11-13).
+pub const SESSION_NAME_MESSAGE_CHARS: usize = 1_000;
+
+/// The most a title prompt carries from all of the first user messages
+/// together, in characters.
+pub const SESSION_NAME_CONTEXT_CHARS: usize = 3_000;
+
+/// The first [`MSG_COUNT_FOR_SESSION_NAME_GENERATION`] user messages as text,
+/// each cut to [`SESSION_NAME_MESSAGE_CHARS`] and all of them together to
+/// [`SESSION_NAME_CONTEXT_CHARS`], on character boundaries. What every title
+/// prompt is built from ([`Provider::get_initial_user_messages`]), so no
+/// provider's naming call can carry a whole message.
+pub fn session_name_context(messages: &Conversation) -> Vec<String> {
+    let mut budget = SESSION_NAME_CONTEXT_CHARS;
+    let mut context = Vec::new();
+    for message in messages
+        .iter()
+        .filter(|m| m.role == rmcp::model::Role::User)
+        .take(MSG_COUNT_FOR_SESSION_NAME_GENERATION)
+    {
+        if budget == 0 {
+            break;
+        }
+        let text = safe_truncate(
+            &message.as_concat_text(),
+            SESSION_NAME_MESSAGE_CHARS.min(budget),
+        );
+        budget = budget.saturating_sub(text.chars().count());
+        context.push(text);
+    }
+    context
+}
+
 /// Information about a model's capabilities
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, PartialEq)]
 pub struct ModelInfo {
@@ -1170,14 +1206,10 @@ pub trait Provider: Send + Sync {
         }
     }
 
-    /// Returns the first 3 user messages as strings for session naming
+    /// The first few user messages as strings for session naming, each and all
+    /// of them capped ([`session_name_context`]).
     fn get_initial_user_messages(&self, messages: &Conversation) -> Vec<String> {
-        messages
-            .iter()
-            .filter(|m| m.role == rmcp::model::Role::User)
-            .take(MSG_COUNT_FOR_SESSION_NAME_GENERATION)
-            .map(|m| m.as_concat_text())
-            .collect()
+        session_name_context(messages)
     }
 
     /// Generate a session name/description based on the conversation history
@@ -2106,6 +2138,130 @@ mod tests {
                 "image/jpg".to_string()
             ])
         );
+    }
+}
+
+#[cfg(test)]
+mod session_name_prompt_tests {
+    use super::*;
+    use async_trait::async_trait;
+
+    /// Roughly a 93K-token paste: what the versa-haiku lane sent as a first
+    /// message, which the title call then re-sent whole (2026-11-13).
+    fn huge(seed: &str) -> String {
+        format!("{seed} ").repeat(400_000 / (seed.len() + 1))
+    }
+
+    fn chat(user_texts: &[String]) -> Conversation {
+        let mut messages = Vec::new();
+        for text in user_texts {
+            messages.push(Message::user().with_text(text));
+            messages.push(Message::assistant().with_text("ok"));
+        }
+        Conversation::new_unvalidated(messages)
+    }
+
+    /// Records every prompt its naming call was sent.
+    struct Captures {
+        prompts: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl Provider for Captures {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::empty()
+        }
+        fn get_name(&self) -> &str {
+            "captures"
+        }
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("test-model")
+        }
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            system: &str,
+            messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            let sent: usize = messages.iter().map(|m| m.as_concat_text().len()).sum();
+            self.prompts.lock().unwrap().push(format!(
+                "{system}\n{}",
+                messages
+                    .iter()
+                    .map(|m| m.as_concat_text())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+            Ok((
+                Message::assistant().with_text("Penguin species overview"),
+                ProviderUsage::new(
+                    "test-model".into(),
+                    Usage::new(Some(sent as i32 / 4), Some(4), None),
+                ),
+            ))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_huge_first_message_makes_a_small_title_prompt() {
+        let first = huge("Antarctic penguin field notes");
+        assert!(first.len() > 350_000);
+        let provider = Captures {
+            prompts: std::sync::Mutex::new(Vec::new()),
+        };
+
+        let name = provider
+            .generate_session_name(&chat(std::slice::from_ref(&first)))
+            .await
+            .unwrap();
+
+        assert_eq!(name, "Penguin species overview");
+        let prompts = provider.prompts.lock().unwrap();
+        assert_eq!(prompts.len(), 1);
+        // The cap plus the instructions around it, never the message.
+        assert!(
+            prompts[0].chars().count() < SESSION_NAME_MESSAGE_CHARS + 600,
+            "a title prompt of {} characters",
+            prompts[0].chars().count()
+        );
+        // The start of the message is what names the chat, and it is kept.
+        let start: String = first.chars().take(SESSION_NAME_MESSAGE_CHARS - 3).collect();
+        assert!(prompts[0].contains(&start));
+    }
+
+    #[test]
+    fn each_message_and_all_of_them_are_capped() {
+        let context = session_name_context(&chat(&[huge("alpha"), huge("beta"), huge("gamma")]));
+
+        assert_eq!(context.len(), 3);
+        for text in &context {
+            assert!(text.chars().count() <= SESSION_NAME_MESSAGE_CHARS);
+        }
+        let total: usize = context.iter().map(|text| text.chars().count()).sum();
+        assert!(total <= SESSION_NAME_CONTEXT_CHARS, "{total} characters");
+        assert!(context[0].starts_with("alpha alpha"));
+        assert!(context[2].starts_with("gamma gamma"));
+    }
+
+    #[test]
+    fn a_short_message_reaches_the_prompt_unchanged() {
+        let context = session_name_context(&chat(&[
+            "tell me what the weather is in Berlin, Germany".to_string(),
+        ]));
+        assert_eq!(
+            context,
+            vec!["tell me what the weather is in Berlin, Germany".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_cut_lands_on_a_character_boundary() {
+        // Four bytes a character: a byte-indexed cut would split one and panic.
+        let context = session_name_context(&chat(&["🐧".repeat(5_000), "南極".repeat(5_000)]));
+        assert_eq!(context[0].chars().count(), SESSION_NAME_MESSAGE_CHARS);
+        assert!(context[0].starts_with("🐧🐧"));
+        assert!(context[1].starts_with("南極"));
     }
 }
 
