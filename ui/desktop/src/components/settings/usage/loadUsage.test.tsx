@@ -9,6 +9,8 @@ vi.mock('../../../api', () => ({
   getUsageReport: vi.fn(),
   getUsageSummary: vi.fn(),
 }));
+const surface = vi.hoisted(() => ({ browser: false }));
+vi.mock('../../../utils/surface', () => ({ isBrowserSurface: () => surface.browser }));
 
 const totals = {
   inputTokens: 0,
@@ -32,6 +34,7 @@ const summary = {
 };
 
 beforeEach(() => {
+  surface.browser = false;
   forgetUsageSnapshot();
   vi.mocked(getUsageSummary).mockReset();
   vi.mocked(getUsageReport).mockReset();
@@ -83,6 +86,15 @@ describe('warmUsageSnapshot (asked while Settings opens)', () => {
     warmUsageSnapshot();
     await Promise.resolve();
     expect(getUsageSummary).not.toHaveBeenCalled();
+  });
+
+  it('asks nothing on a biorouter serve browser, whose daemon refuses these reads (SD-8)', async () => {
+    surface.browser = true;
+    warmUsageSnapshot();
+    await new Promise((done) => setTimeout(done, 20));
+    expect(getUsageSummary).not.toHaveBeenCalled();
+    expect(getUsageReport).not.toHaveBeenCalled();
+    expect(readUsageSnapshot()).toBeNull();
   });
 
   it('is silent when the read fails: the tab reads again and says what it always said', async () => {

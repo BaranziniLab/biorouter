@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react';
 import type { UsageReportRow, UsageSummaryResponse } from '../../../api';
 import { Button } from '../../ui/button';
+import { InfoTip } from '../../ui/info-tip';
 import { Note } from '../../ui/note';
 import { SettingSection } from '../../ui/setting-row';
 import { Skeleton } from '../../ui/skeleton';
 import { settingsUsageCopy as copy } from '../../usage/copy';
 import { useCurrentModelPriced } from '../../usage/useCurrentModelPriced';
+import { isBrowserSurface } from '../../../utils/surface';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { loadUsage } from './loadUsage';
 import { UsagePanel } from './UsagePanel';
@@ -32,8 +34,43 @@ import { readUsageSnapshot } from './usageSnapshot';
  * and a line that appeared for 100 ms would move everything below it. The skeleton is only for
  * the first read in a process, and `warmUsageSnapshot` (asked while Settings opens) usually has
  * even that one waiting (vision V4-R7-3, principle 9).
+ *
+ * On a `biorouter serve` browser none of that runs: the section reads nothing and says where
+ * usage is instead ({@link UsageOnBrowser}, SD-8). The desktop app's section is unchanged.
  */
 export default function UsageSection({ showCosts = true }: { showCosts?: boolean }) {
+  return isBrowserSurface() ? (
+    <UsageOnBrowser showCosts={showCosts} />
+  ) : (
+    <UsageReport showCosts={showCosts} />
+  );
+}
+
+/**
+ * The section on a `biorouter serve` browser (SD-8). `GET /usage/summary` and `GET /usage/report`
+ * answer only a request that proves a person asked, because the month's totals and limits cover
+ * every chat, private and deleted ones included; a `serve` daemon holds no key to check that
+ * proof against, so it refuses them to everyone, the person at the browser included. The section
+ * says so in one line, with the reason in its InfoTip, and reads nothing: no request that can only
+ * be refused, and no Retry that would repeat it. The cost card says the same about a chat's own
+ * limit (`USAGE_LIMIT_COPY.browserNote`).
+ */
+function UsageOnBrowser({ showCosts }: { showCosts: boolean }) {
+  return (
+    <SettingSection
+      id={SETTINGS_SECTION_IDS.usage}
+      title={copy.sectionTitle}
+      help={showCosts ? copy.sectionHelp : copy.sectionHelpNoCost}
+    >
+      <Note tone="neutral" testId="usage-browser-note">
+        {copy.browserNote} <InfoTip label={copy.browserNoteLabel} help={copy.browserNoteWhy} />
+      </Note>
+    </SettingSection>
+  );
+}
+
+/** The section where the daemon can answer: the desktop app, whose daemon holds the key. */
+function UsageReport({ showCosts }: { showCosts: boolean }) {
   const [seed] = useState(readUsageSnapshot);
   const [summary, setSummary] = useState<UsageSummaryResponse | null>(seed?.summary ?? null);
   const [dayRows, setDayRows] = useState<UsageReportRow[]>(seed?.dayRows ?? []);

@@ -77,6 +77,17 @@ export const settingsUsageCopy = {
   dialogTitle: (monthLabel: string) => `Usage, ${monthLabel}`,
   loadError: 'Usage data could not be loaded. Check the backend connection and try again.',
   loadErrorStale: ' Showing the last loaded month-to-date report.',
+  /**
+   * A `biorouter serve` browser, in place of the report and its limits (SD-8): the daemon gives
+   * them only to a request that proves a person asked, which a browser never can, so the section
+   * says where they are before anything is read. The cost card's `browserNote` is its sibling.
+   */
+  browserNote: "This month's usage and limits are in the Biorouter desktop app.",
+  /** The InfoTip beside {@link settingsUsageCopy.browserNote}: why. Names no price. */
+  browserNoteWhy:
+    "This month's totals and limits cover every chat, so reading them needs proof that a person is asking, which a browser can't give.",
+  /** The InfoTip's name: "About usage in a browser". */
+  browserNoteLabel: 'usage in a browser',
   retry: 'Retry',
   refreshing: 'Refreshing usage…',
   tokens: 'Tokens',
