@@ -197,7 +197,7 @@ pub fn capability_config_moved_since_launch() -> Option<String> {
         .map(|(key, _)| (*key).to_string())
 }
 
-/// SD-17 (owner ruling, 2026-11-14): the person in the page a `biorouter serve`
+/// SD-18 (owner ruling, 2026-11-14): the person in the page a `biorouter serve`
 /// daemon served chose `value` for the pinned `key` there, and the provider
 /// route that wrote it has just written it. From now on SD-12's exemption
 /// follows that choice, exactly as it follows a value the operator wrote with

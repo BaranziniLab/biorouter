@@ -616,7 +616,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
     async (sessionId: string | null, model: Model, options?: ChangeModelOptions) => {
       const modelName = model.name;
       const providerName = model.provider;
-      // SD-17: in a browser served by `biorouter serve`, an open chat keeps the
+      // SD-18: in a browser served by `biorouter serve`, an open chat keeps the
       // model it started on. The daemon refuses `/agent/update_provider` there,
       // because the page states the host default as `X-Caller-Provider` and a
       // chat moved to another tier would leave its reach. So a browser never
@@ -712,7 +712,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
             headers: await userActionHeaders(),
             throwOnError: true,
           });
-          // SD-17: a browser's `X-Caller-Provider` names the host default, which
+          // SD-18: a browser's `X-Caller-Provider` names the host default, which
           // just moved; the next request reads it again. Only a browser caches it.
           if (isBrowserSurface()) forgetHostConfiguredProvider();
 

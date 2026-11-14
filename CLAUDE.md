@@ -2072,7 +2072,7 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
 [`serve-architecture.md`](docs/deployment/serve-architecture.md),
 [`browser-access.md`](docs/deployment/browser-access.md).
 
-- **The person in the served page sets up providers; a secret-only caller still cannot** (SD-17,
+- **The person in the served page sets up providers; a secret-only caller still cannot** (SD-18,
   owner ruling 2026-11-14, superseding SD-1 in part). `commands/serve.rs` still spawns the daemon
   with `Stdio::null()`, so no proof-of-user digest exists, but `auth::provider_choice_proof`
   admits a request carrying the served document's `HttpOnly` cookie AND browser Fetch Metadata

@@ -466,7 +466,7 @@ describe('providerConfigSubmitHandler in a browser', () => {
   });
 
   /**
-   * SD-17: a daemon that admits the served page takes destination keys from it and checks a
+   * SD-18: a daemon that admits the served page takes destination keys from it and checks a
    * moved host against the saved key, so that browser saves exactly as the desktop does.
    */
   it('saves every setting in a browser the daemon admits, checking a moved host first', async () => {

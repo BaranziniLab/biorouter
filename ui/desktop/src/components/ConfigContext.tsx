@@ -228,7 +228,7 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
         // it could not tell the two apart.
         headers: await userActionHeaders(),
       });
-      // SD-17: a browser's `X-Caller-Provider` names the host default, which just moved.
+      // SD-18: a browser's `X-Caller-Provider` names the host default, which just moved.
       if (key === 'BIOROUTER_PROVIDER' && isBrowserSurface()) forgetHostConfiguredProvider();
       await reloadConfigAfterWrite();
       // After the write resolved — a refused one threw above and moved nothing.

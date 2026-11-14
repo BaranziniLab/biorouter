@@ -62,7 +62,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
   const setView = useMemo(() => createNavigationHandler(navigate), [navigate]);
 
   /**
-   * SD-1, then SD-17: on a browser served by `biorouter serve`, does the host keep the provider
+   * SD-1, then SD-18: on a browser served by `biorouter serve`, does the host keep the provider
    * choice? `true` until the daemon has answered (fail closed), and the provider check below
    * waits for that answer before it decides anything, so the loader stands until it is in. A
    * browser the daemon admits gets the desktop's own page; one it refuses gets the panel.
@@ -75,7 +75,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
 
   /**
    * Setup is done: into the app, with no reload. A browser's `X-Caller-Provider` names the
-   * host default, which setup just wrote, so the cached one is dropped first (SD-17).
+   * host default, which setup just wrote, so the cached one is dropped first (SD-18).
    */
   const handleModelSelected = () => {
     if (isBrowserSurface()) forgetHostConfiguredProvider();
@@ -122,7 +122,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
 
   useEffect(() => {
     const checkProvider = async () => {
-      // SD-17. Asked beside the provider read, never after it: a browser's answer decides
+      // SD-18. Asked beside the provider read, never after it: a browser's answer decides
       // between the catalog and the host panel, and the app's own provider controls read it
       // too, so nothing renders until it is in. The desktop answers at once without a fetch,
       // and a failed read answers "managed on the host" (it never throws).
@@ -257,8 +257,8 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
 
   if (!hasProvider && showFirstTimeSetup) {
     /**
-     * SD-1's dead end, closed, and SD-17's opening. Every path in the catalog below writes
-     * `BIOROUTER_PROVIDER`. A browser the daemon admits to provider setup (SD-17) gets exactly
+     * SD-1's dead end, closed, and SD-18's opening. Every path in the catalog below writes
+     * `BIOROUTER_PROVIDER`. A browser the daemon admits to provider setup (SD-18) gets exactly
      * the desktop's page, and setup continues into the app as it does there. One it does not
      * admit would meet a 409 addressed to an AI agent on every path, which is the failure SD-1
      * rules out, so it gets the one instruction that works (run it on the host) and the
@@ -318,7 +318,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
                 {/* The skip is withheld only where the host owns the choice: a "continue
                     without a provider" that led to a chat which can never be configured from
                     this tab would be a second dead end dressed as an escape. The desktop, and a
-                    browser the daemon admits to setup (SD-17), can come back to Settings and
+                    browser the daemon admits to setup (SD-18), can come back to Settings and
                     choose later, so both keep it. Said once, in the band: the foot copy is
                     gone. */}
                 <div className="biorouter-page-header-actions">

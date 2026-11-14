@@ -31,7 +31,7 @@ export default function ModelSettingsButtons({ setView, modelValue }: ConfigureM
   const [isAddModelModalOpen, setIsAddModelModalOpen] = useState(false);
   const hasPredefinedModels = shouldShowPredefinedModels();
   // SD-1: the dialog this opens ends in `/config/set_provider`, which a
-  // browser-served daemon refuses unless it admitted this page (SD-17).
+  // browser-served daemon refuses unless it admitted this page (SD-18).
   // "Manage…" beside it stays live — storing an API key is not a capability
   // write, and the picker it eventually reaches carries the same explanation.
   const hostManaged = useProvidersAreHostManaged();

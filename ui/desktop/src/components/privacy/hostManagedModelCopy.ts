@@ -3,7 +3,7 @@
  *
  * `docs/deployment/serve-decisions.md` **SD-1** made that every browser: the daemon behind
  * `biorouter serve` held no proof-of-user mechanism (SD-7), and every write to a capability
- * config key was refused by issue #56's DR-16 guard. **SD-17** opened it: the daemon now admits
+ * config key was refused by issue #56's DR-16 guard. **SD-18** opened it: the daemon now admits
  * the served page itself to the provider routes, and says so through `GET /config/provider_setup`
  * (`utils/providerSetupAccess.ts`). So these sentences are for the browser the daemon has NOT
  * admitted (it refused, it is an older daemon, or it has not answered yet), and none of them may
@@ -83,7 +83,7 @@ export const HOST_KEY_STORAGE_NOTICE = `Keys are kept on the computer running ${
  * requests, and the key they carry: hosts, endpoints, regions, the AWS profile
  * and endpoint overrides, certificate paths, the coding-agent commands. The
  * daemon changes one only for a request that proves a person asked, which a
- * browser does only once the daemon admits its page (SD-17), so until then they
+ * browser does only once the daemon admits its page (SD-18), so until then they
  * belong to the host as the model does
  * (`../settings/destinationConfigKeys.ts` names them).
  */

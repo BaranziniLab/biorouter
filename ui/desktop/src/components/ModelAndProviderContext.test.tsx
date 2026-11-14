@@ -795,7 +795,7 @@ describe('switchedModelMessage', () => {
 });
 
 /**
- * SD-17. In a browser served by `biorouter serve` an open chat keeps the model it started on:
+ * SD-18. In a browser served by `biorouter serve` an open chat keeps the model it started on:
  * the daemon refuses `/agent/update_provider` there, because the page states the host default
  * as `X-Caller-Provider` and a chat moved to another tier would leave its reach. So a switch
  * that names a chat moves only the default for new chats, and says so, never the 409.

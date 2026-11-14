@@ -291,7 +291,7 @@ pub fn is_user_action(headers: &axum::http::HeaderMap) -> bool {
 struct ServedOperator {
     browser_token: String,
     /// Read at launch, and replaced only when the person in the served page
-    /// chooses another default provider there (SD-17,
+    /// chooses another default provider there (SD-18,
     /// [`adopt_served_operator_capability`]). Never re-read from `config.yaml`.
     capability: std::sync::RwLock<biorouter::privacy::ProviderTier>,
 }
@@ -312,7 +312,7 @@ pub fn install_served_operator(
     });
 }
 
-/// SD-17: the person in the served page chose a default provider there, so the
+/// SD-18: the person in the served page chose a default provider there, so the
 /// standing SD-10 gives that page follows the tier of their choice from now on,
 /// exactly as it would had the operator chosen it with `biorouter configure`
 /// before launch. Called only by the provider routes, after a write that
@@ -349,7 +349,7 @@ pub fn serves_a_tokened_interface() -> bool {
     SERVED_OPERATOR.get().is_some()
 }
 
-/// SD-17 (owner ruling, 2026-11-14): is this request the person in the page a
+/// SD-18 (owner ruling, 2026-11-14): is this request the person in the page a
 /// `biorouter serve` daemon served, acting through that page's own script?
 ///
 /// Three things, all of which a browser supplies and none of which a caller
@@ -400,7 +400,7 @@ pub fn sent_by_same_origin_page_script(headers: &axum::http::HeaderMap) -> bool 
         && value("sec-fetch-dest").as_deref() == Some("empty")
 }
 
-/// The proof the provider routes ask for (SD-17): [`user_action_proof`], plus
+/// The proof the provider routes ask for (SD-18): [`user_action_proof`], plus
 /// one more way to be `Proven` — on a daemon that holds no user-action key and
 /// whose launcher never meant to hand it one, the person in the served page
 /// ([`served_person_present`]).
@@ -1229,7 +1229,7 @@ pub async fn check_token(
 
 #[cfg(test)]
 mod tests {
-    /// SD-17: only a script request from a page on this same origin carries the
+    /// SD-18: only a script request from a page on this same origin carries the
     /// Fetch Metadata the served-person proof asks for. A navigation, a frame, a
     /// cross-site request and a client that sends none (curl, or any browser at a
     /// plain-HTTP network address) do not.
@@ -1349,7 +1349,7 @@ mod tests {
         // in a test.
         let agent_rs = include_str!("routes/agent.rs");
         let config_rs = include_str!("routes/config_management.rs");
-        // SD-17 (owner ruling, 2026-11-14): the provider routes ask
+        // SD-18 (owner ruling, 2026-11-14): the provider routes ask
         // `is_provider_choice_proven`, which is `user_action_proof` plus the
         // person in a keyless `biorouter serve` page. It is still the guard: a
         // caller holding only the secret is refused by it exactly as before.

@@ -7,11 +7,11 @@ import { firstRunCopy } from './onboarding/copy';
 import { HOST_KEY_STORAGE_NOTICE } from './privacy/hostManagedModelCopy';
 
 /**
- * SD-1's dead end, and SD-17's way out of it.
+ * SD-1's dead end, and SD-18's way out of it.
  *
  * A fresh browser user lands in onboarding, which is exactly where provider selection happens,
  * and every card there writes `BIOROUTER_PROVIDER`. A daemon that admits the served page to
- * provider setup (SD-17, `GET /config/provider_setup` says `allowed`) takes those writes, so the
+ * provider setup (SD-18, `GET /config/provider_setup` says `allowed`) takes those writes, so the
  * browser gets the desktop's own first-run page. One that does not would answer every card with
  * a 409 addressed to an AI agent, so that browser keeps the host panel: the daemon's reason and
  * the command to run on the host.
@@ -150,7 +150,7 @@ describe('ProviderGuard on a browser-served surface', () => {
     });
   });
 
-  describe('when the daemon allows provider setup (SD-17)', () => {
+  describe('when the daemon allows provider setup (SD-18)', () => {
     beforeEach(() => {
       mocks.getProviderSetupAccess.mockResolvedValue({ data: { allowed: true } });
     });

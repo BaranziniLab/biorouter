@@ -68,7 +68,7 @@ export const providerConfigSubmitHandler = async (
 ) => {
   const declared = provider.metadata.config_keys || [];
   // W2-PRV-2, round 4. In a browser served by `biorouter serve` that the daemon
-  // has not admitted to provider setup (SD-17), a setting that decides where
+  // has not admitted to provider setup (SD-18), a setting that decides where
   // this provider sends its requests and key belongs to the computer running
   // Biorouter: the daemon refuses to change one without a proof of a person.
   // The form shows such a field and does not let it be edited, so writing it
@@ -134,7 +134,7 @@ export const providerConfigSubmitHandler = async (
   // W2-PRV-2: checked BEFORE anything is saved, whenever the provider holds a
   // credential: a save that carries a new key, and (in the app) one that moves a
   // host or endpoint the saved key will be sent to. A browser served by
-  // `biorouter serve` that the daemon has not admitted (SD-17) cannot prove a
+  // `biorouter serve` that the daemon has not admitted (SD-18) cannot prove a
   // person, so there the daemon checks only with a key typed into the form, and
   // only a save carrying the key is checked. An admitted browser's live check
   // uses the saved key, as the desktop's does. Ollama's service was checked

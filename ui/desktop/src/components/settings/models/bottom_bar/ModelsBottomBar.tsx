@@ -338,14 +338,14 @@ export default function ModelsBottomBar({
    * `biorouter serve`?
    *
    * ⚠ **Fail closed.** On a browser surface this is `true` until the daemon has
-   * said this page may set up providers (SD-17, `utils/providerSetupAccess.ts`),
+   * said this page may set up providers (SD-18, `utils/providerSetupAccess.ts`),
    * so there is no render in which the menu item is offered and then refused.
    * The launch check has normally asked already; the hook re-renders the chip
    * if the answer lands after it mounted. The desktop answers `false` at once.
    */
   const hostManaged = useProvidersAreHostManaged();
   /**
-   * SD-17: in a browser, an open chat keeps the model it started on, and Switch
+   * SD-18: in a browser, an open chat keeps the model it started on, and Switch
    * models changes the default new chats start on. So the dialog opens on that
    * default, not on this chat's binding (D6's reason for the binding is a
    * switch that moves the chat, which a browser never makes).

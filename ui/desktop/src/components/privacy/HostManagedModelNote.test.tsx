@@ -47,7 +47,7 @@ describe('HostManagedModelNote', () => {
   });
 
   /**
-   * SD-17: a browser the daemon admits to provider setup uses the controls as the desktop does,
+   * SD-18: a browser the daemon admits to provider setup uses the controls as the desktop does,
    * so the note that says the host owns the choice goes, and comes into view the moment it is
    * known, without a remount.
    */

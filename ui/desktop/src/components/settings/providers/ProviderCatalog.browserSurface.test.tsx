@@ -135,7 +135,7 @@ describe('ProviderCatalog on a browser-served surface', () => {
   });
 
   /**
-   * SD-17: a daemon that admits the served page takes the whole catalog from it, so that
+   * SD-18: a daemon that admits the served page takes the whole catalog from it, so that
    * browser's page is the desktop's, with no note saying the host owns the choice.
    */
   it('adds nothing in a browser the daemon lets set up providers', async () => {

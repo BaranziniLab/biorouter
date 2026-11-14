@@ -23,7 +23,7 @@ import {
  * - `ConfigSettings` → `/config/upsert` on whichever key the row names, which
  *   is why that one is guarded per key rather than per page.
  *
- * SD-17: a daemon that admits the served page to provider setup takes all three,
+ * SD-18: a daemon that admits the served page to provider setup takes all three,
  * so in that browser every one of these works as on the desktop (last block).
  * The blocks before it are the browser the daemon has not admitted, which is
  * also every browser until the daemon has answered.
@@ -287,7 +287,7 @@ describe('Settings > Configuration editor', () => {
   });
 });
 
-describe('Settings > Models in a browser the daemon admits to provider setup (SD-17)', () => {
+describe('Settings > Models in a browser the daemon admits to provider setup (SD-18)', () => {
   beforeEach(async () => {
     browser();
     mocks.getProviderSetupAccess.mockResolvedValue({ data: { allowed: true } });

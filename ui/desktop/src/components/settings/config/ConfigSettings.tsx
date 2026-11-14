@@ -137,7 +137,7 @@ export default function ConfigSettings() {
    * Greying out the whole page would be wrong about the great majority of it,
    * so the question is asked per row. See `utils/surface.ts` for the first
    * list and the drift risk it carries. A browser the daemon admits to provider
-   * setup (SD-17) edits every row, as the desktop does.
+   * setup (SD-18) edits every row, as the desktop does.
    */
   const hostManaged = useProvidersAreHostManaged();
   const hostTopic = (key: string): HostManagedTopic | null => {

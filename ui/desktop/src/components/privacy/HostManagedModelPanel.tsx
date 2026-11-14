@@ -9,7 +9,7 @@ import {
 
 /**
  * The first-run panel a browser user sees in place of the provider cards when the host keeps
- * the choice (SD-1's dead-end case; see `hostManagedModelCopy.ts`). Since SD-17 that is only a
+ * the choice (SD-1's dead-end case; see `hostManagedModelCopy.ts`). Since SD-18 that is only a
  * browser the daemon did not admit to provider setup: one it admits gets the catalog itself.
  *
  * ⚠ **Unlike `HostManagedModelNote` this renders whatever the surface.** Its one

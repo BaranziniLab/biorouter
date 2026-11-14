@@ -572,7 +572,7 @@ fn dictation_readiness_with(
     }
 }
 
-/// What the banner says about choosing the model (SD-17): the person in the
+/// What the banner says about choosing the model (SD-18): the person in the
 /// page may choose it there, unless `--no-token` left the daemon unable to tell
 /// that page from any other local caller.
 fn model_line(browser_token: &BrowserToken) -> &'static str {
