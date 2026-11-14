@@ -282,6 +282,9 @@ export const localModelsCopy = {
  */
 export const speechModelsCopy = {
   section: 'Speech models',
+  /** The InfoTip of **Suggest words from my messages**, the Dictionary's chat extractor switch. */
+  learnFromChatsHelp:
+    'Find terms you type in chats on public models and suggest them for your dictionary.',
   install: 'Install',
   update: 'Update',
   use: 'Use',

@@ -39,6 +39,12 @@ beforeEach(() => {
       learn_from_chats: false,
       agent_writes: 'on_request',
       authority: { raise_settings: { allowed: false } },
+      suggestions: {
+        recent_kept: 0,
+        recent_decisions: 0,
+        required_chats: 2,
+        offer_turning_off: false,
+      },
     },
     response: { ok: true, status: 200 },
   });

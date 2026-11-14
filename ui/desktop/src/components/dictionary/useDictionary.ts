@@ -59,7 +59,7 @@ import type {
   DictionaryTier,
 } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
-import { dictationMessage } from '../dictation/copy';
+import { dictationMessage, fillMessage } from '../dictation/copy';
 import { remoteOldValues } from '../dictation/dictationStore';
 import { dictionaryMessage } from './copy';
 
@@ -307,6 +307,25 @@ export async function refreshDictionary(): Promise<void> {
   noteWaitingFromList(entries);
 }
 
+/** Settings-only reads issued; a read that lands after a newer one started is dropped. */
+let settingsGeneration = 0;
+
+/**
+ * Read the settings answer alone, for a surface that shows a setting but not the rows (the
+ * Speech models section in Settings). It publishes into the same snapshot the page reads, so the
+ * two views show one value. Dropped when a newer settings read, or a full read, started after it.
+ */
+export async function refreshDictionarySettings(): Promise<void> {
+  const issued = ++settingsGeneration;
+  const listingAtIssue = generation;
+  const read = await settle<DictionarySettings>(
+    getDictionarySettings({ headers: await userActionHeaders() }) as Promise<RawResult>
+  );
+  if (issued !== settingsGeneration || listingAtIssue !== generation || !read.ok) return;
+  if (JSON.stringify(read.data) === JSON.stringify(snapshot.settings)) return;
+  publish({ settings: read.data });
+}
+
 /** The settings answer, read once when nothing has read it yet (the context menu's door). */
 export async function loadDictionarySettings(): Promise<DictionarySettings | null> {
   if (snapshot.settings) return snapshot.settings;
@@ -455,6 +474,36 @@ export function setLearnFromChats(learn: boolean): Promise<Outcome<DictionarySet
   );
 }
 
+/**
+ * The person's answer **Keep suggesting** to the offer to turn suggestions off
+ * (`suggestions.offer_turning_off`), which quiets the offer for 20 more decisions.
+ */
+export function keepSuggesting(): Promise<Outcome<DictionarySettings>> {
+  return write((headers) => changeDictionarySettings({ body: { keep_suggesting: true }, headers }));
+}
+
+/**
+ * Whether **Suggest words from my messages** may be switched now, and why not. Turning it on is
+ * a raise (`authority.raise_settings`); turning it off always works. The reason is the daemon's
+ * (MSG-DICTIONARY-HOST-SETTINGS on a keyless `serve` daemon), its `<option>` filled for this
+ * switch, and shows only while the switch is off and cannot be turned on.
+ */
+export function learnFromChatsGate(settings: DictionarySettings | null): {
+  disabled: boolean;
+  reason: string | null;
+} {
+  const authority = settings?.authority ?? null;
+  if (!settings || !authority) return { disabled: true, reason: null };
+  if (settings.learn_from_chats || authority.raise_settings.allowed) {
+    return { disabled: false, reason: null };
+  }
+  const reason = authority.raise_settings.reason?.trim();
+  return {
+    disabled: true,
+    reason: reason ? fillMessage(reason, { option: '--learn-from-chats on' }) : null,
+  };
+}
+
 export function acceptTerms(ids: readonly string[]): Promise<Outcome<{ accepted: number }>> {
   return write((headers) => acceptDictionarySuggestions({ body: { ids: [...ids] }, headers }));
 }
@@ -583,6 +632,7 @@ export interface DictionaryHook extends DictionarySnapshot {
   setAgentWrites: typeof setAgentWrites;
   setSuggestFromChats: typeof setSuggestFromChats;
   setLearnFromChats: typeof setLearnFromChats;
+  keepSuggesting: typeof keepSuggesting;
   importPlan: typeof planImport;
   importApply: typeof applyImport;
   exportFile: typeof exportTerms;
@@ -609,10 +659,30 @@ export function useDictionary(): DictionaryHook {
     setAgentWrites,
     setSuggestFromChats,
     setLearnFromChats,
+    keepSuggesting,
     importPlan: planImport,
     importApply: applyImport,
     exportFile: exportTerms,
   };
+}
+
+function getDictionarySettingsSnapshot(): DictionarySettings | null {
+  return snapshot.settings;
+}
+
+/**
+ * The settings answer alone, from the page's own store: read on mount and live while mounted
+ * (window focus, visibility, every 60 s), and moved at once by a write from either surface.
+ * Reads only while `enabled`.
+ */
+export function useDictionarySettings(enabled: boolean): DictionarySettings | null {
+  const settings = useSyncExternalStore(subscribeDictionary, getDictionarySettingsSnapshot);
+  useEffect(() => {
+    if (!enabled) return;
+    void refreshDictionarySettings();
+    return installLiveRefresh(() => void refreshDictionarySettings());
+  }, [enabled]);
+  return enabled ? settings : null;
 }
 
 /**
@@ -639,6 +709,7 @@ export function resetDictionaryStoreForTests(): void {
   // New maps, so a read still in flight from before writes into the old ones.
   pageCache = new Map();
   generation += 1;
+  settingsGeneration += 1;
   rereading = Promise.resolve();
   waiting = 0;
   waitingAgentRows = 0;

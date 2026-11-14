@@ -19,19 +19,30 @@
 //! The decisions live in [`run`], which takes the terminal facts, the policy, the store,
 //! a [`Prompter`] and the output streams as arguments, so the tests below drive every
 //! interactive path without a terminal; [`handle`] gathers the real ones.
+//!
+//! Chat word suggestions (owner, 2026-11-13): `suggestions` lists what waits for review (a
+//! read); `suggestions keep`, `dismiss` and `scan` are writes. Every **Keep** or **Dismiss**
+//! of a chat suggestion, from `suggestions`, `accept`, `dismiss`, `review` or the TUI's
+//! review, is counted in the store's `chat_learning`, the person's own measure, which
+//! raises the chats a word needs once most are dismissed. `scan` waits on the session
+//! store, so [`handle`] runs it through [`run_scan`] rather than [`run`].
 
-use std::io::{self, Read, Write};
+use std::io::{self, IsTerminal, Read, Write};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use anyhow::Result;
+use biorouter::dictation::suggestion_scan::{self, ScanProgress, ScanRefusal, ScanState};
 use biorouter::managed::{ManagedPolicy, Rule};
 use biorouter::security::dictionary_store::{self, store};
+use chrono::{DateTime, Utc};
 use serde_json::{json, Map, Value};
 use store::transfer::{self, ImportFormat, RowOutcome};
 use store::{
     AddOutcome, AgentWrites, DictionaryStore, Entry, EntryEdit, EntryId, EntrySource, EntryStatus,
-    EntryTier, NewTerm, Reach, StoreError, StoreView, UsageScope, UserDictionaryTierChange,
-    ValidationCode,
+    EntryTier, NewTerm, Reach, StoreError, StoreFile, StoreView, UsageScope,
+    UserDictionaryTierChange, ValidationCode,
 };
 use unicode_width::UnicodeWidthStr;
 
@@ -145,6 +156,79 @@ fn msg_export_unwritable(path: &str, error: &io::Error) -> String {
     format!("{path} could not be written: {error}.")
 }
 
+/// What `suggestions` says at a terminal when nothing waits.
+pub const MSG_NO_SUGGESTIONS: &str = "No suggestions to review.";
+/// What `suggestions scan` says when it could not read the chats or write the dictionary.
+pub const MSG_SCAN_FAILED: &str = "Biorouter could not finish reading your chats.";
+/// What `suggestions scan` says after it added words.
+pub const MSG_SCAN_REVIEW: &str = "Review them with `biorouter dictionary suggestions`.";
+/// What `/dictionary scan` says after it added words, inside a chat.
+pub const MSG_SCAN_REVIEW_IN_SESSION: &str = "Review them with /dictionary review.";
+/// The TUI's first line for `/dictionary scan`, replaced by its progress as it reads.
+pub const MSG_SCAN_STARTED_IN_SESSION: &str =
+    "Looking for words in your recent chats. Esc stops it.";
+/// Below MSG-SCAN-OFF, which names the Dictionary page's switch: the same switch here.
+pub const MSG_SCAN_TURN_ON: &str =
+    "To turn it on here, run `biorouter dictionary settings --learn-from-chats on`.";
+/// A surface that cannot wait for a scan (a session's `run`) names the command that can.
+pub const MSG_SCAN_FROM_THE_COMMAND: &str =
+    "Run `biorouter dictionary suggestions scan` to find words in your recent chats.";
+
+/// The offer to turn suggestions off, once most were dismissed: `required` is the chats a
+/// word now needs, 3 or 4.
+pub fn msg_suggest_fewer(required: u32) -> String {
+    format!(
+        "You dismissed most suggestions, so Biorouter now suggests fewer: a word has to show up in {required} chats. Turn them off with `biorouter dictionary settings --learn-from-chats off`."
+    )
+}
+
+/// What `suggestions keep` and `dismiss` say of a word or id that names no waiting
+/// suggestion.
+fn msg_no_suggestion(named: &str) -> String {
+    format!("There is no suggestion {named} to review.")
+}
+
+/// "1 chat" or "<n> chats".
+fn n_chats(count: u32) -> String {
+    if count == 1 {
+        "1 chat".to_string()
+    } else {
+        format!("{count} chats")
+    }
+}
+
+/// The line a running scan draws on stderr.
+pub fn line_scan_progress(progress: &ScanProgress) -> String {
+    let chat = (progress.chats_read + 1).min(progress.chats_total);
+    let words = if progress.words_found == 1 {
+        "1 word".to_string()
+    } else {
+        format!("{} words", progress.words_found)
+    };
+    format!(
+        "Reading chat {chat} of {}, {words} found so far",
+        progress.chats_total
+    )
+}
+
+/// What a scan that finished or was stopped says on stdout.
+pub fn msg_scan_ended(progress: &ScanProgress) -> String {
+    let found = match progress.words_found {
+        0 => "No new words found.".to_string(),
+        1 => "1 new word to review.".to_string(),
+        n => format!("{n} new words to review."),
+    };
+    if progress.state == ScanState::Stopped {
+        format!(
+            "Stopped after {} of {}. {found}",
+            progress.chats_read,
+            n_chats(progress.chats_total)
+        )
+    } else {
+        format!("Read {}. {found}", n_chats(progress.chats_total))
+    }
+}
+
 /// A command the dictionary runs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
@@ -200,6 +284,21 @@ pub enum Action {
     Clear {
         suggested_only: bool,
     },
+    /// `suggestions`: the suggestions waiting for the person (`text` or `json`).
+    Suggestions {
+        format: ListFormat,
+    },
+    /// `suggestions keep`: each a written form or an id.
+    KeepSuggestions {
+        terms: Vec<String>,
+    },
+    /// `suggestions dismiss`: each a written form or an id.
+    DismissSuggestions {
+        terms: Vec<String>,
+    },
+    /// `suggestions scan`: read the person's recent chats once. Only [`handle`] runs it,
+    /// because it waits on the session store; [`run`] names the command instead.
+    ScanSuggestions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -239,13 +338,16 @@ enum Kind {
 impl Action {
     fn kind(&self) -> Kind {
         match self {
-            Self::List { .. } | Self::Export { .. } => Kind::Read,
+            Self::List { .. } | Self::Export { .. } | Self::Suggestions { .. } => Kind::Read,
             Self::Settings {
                 agent_writes: None,
                 learn_from_chats: None,
                 suggest_from_chats: None,
             } => Kind::Read,
-            Self::Remove { .. } | Self::Dismiss { .. } | Self::Clear { .. } => Kind::Delete,
+            Self::Remove { .. }
+            | Self::Dismiss { .. }
+            | Self::DismissSuggestions { .. }
+            | Self::Clear { .. } => Kind::Delete,
             Self::Import { .. } => Kind::Import,
             _ => Kind::Write,
         }
@@ -437,12 +539,17 @@ pub async fn handle(action: Action) -> Result<()> {
     };
     let store = dictionary_store::open_store();
     let (mut stdin, mut stdout, mut stderr) = (io::stdin(), io::stdout(), io::stderr());
-    let mut streams = Streams {
-        out: &mut stdout,
-        err: &mut stderr,
-        input: &mut stdin,
+    let outcome = if action == Action::ScanSuggestions {
+        scan_here(&facts, &store, &mut stdout, &mut stderr).await
+    } else {
+        let mut streams = Streams {
+            out: &mut stdout,
+            err: &mut stderr,
+            input: &mut stdin,
+        };
+        run(action, &facts, &store, &mut TerminalPrompter, &mut streams)
     };
-    match run(action, &facts, &store, &mut TerminalPrompter, &mut streams) {
+    match outcome {
         Ok(()) => Ok(()),
         Err(failure) if failure.exit == needs_terminal::EXIT_CODE => {
             Err(needs_terminal::require(false, &failure.message)
@@ -486,6 +593,16 @@ fn authorize(action: &Action, facts: &Facts) -> Outcome {
     Ok(())
 }
 
+/// The line every command starts with on stderr: the folder and the account it acts on.
+fn say_where(store: &DictionaryStore, facts: &Facts, err: &mut dyn Write) -> io::Result<()> {
+    writeln!(
+        err,
+        "Dictionary: {} (account {})",
+        store.dir().display(),
+        facts.account
+    )
+}
+
 /// Run one command.
 pub fn run(
     action: Action,
@@ -495,12 +612,7 @@ pub fn run(
     io: &mut Streams<'_>,
 ) -> Outcome {
     authorize(&action, facts)?;
-    writeln!(
-        io.err,
-        "Dictionary: {} (account {})",
-        store.dir().display(),
-        facts.account
-    )?;
+    say_where(store, facts, io.err)?;
     let reach = facts.reach();
     let outcome = match action {
         Action::List { format, status } => list(store, reach, format, status, io),
@@ -548,6 +660,10 @@ pub fn run(
             io,
         ),
         Action::Clear { suggested_only } => clear(store, prompt, suggested_only, io),
+        Action::Suggestions { format } => suggestions(store, reach, format, io),
+        Action::KeepSuggestions { terms } => decide_suggestions(store, &terms, true, io),
+        Action::DismissSuggestions { terms } => decide_suggestions(store, &terms, false, io),
+        Action::ScanSuggestions => Err(Failure::failed(MSG_SCAN_FROM_THE_COMMAND)),
     };
     match outcome {
         Err(failure) if failure.exit == 0 => {
@@ -922,6 +1038,24 @@ fn awaits_review(entry: &Entry) -> bool {
         || (entry.source == EntrySource::Agent && !entry.reviewed)
 }
 
+/// Dismiss the rows a review offered, from an earlier read. Each one still a suggestion
+/// goes through [`StoreFile::dismiss_suggestions`], so a dismissed chat suggestion counts
+/// as a **Dismiss** in the person's own measure; each one still an agent row the person
+/// has not kept is deleted with its tombstone. A row another surface accepted or kept
+/// meanwhile stays. How many went. The terminal's `review` and the TUI's review share it.
+pub(crate) fn dismiss_pending(file: &mut StoreFile, ids: &[EntryId], at: DateTime<Utc>) -> usize {
+    let suggestions = file.dismiss_suggestions(ids, at).len();
+    suggestions + file.remove_confirmed(ids, awaits_review, at).len()
+}
+
+/// The offer to turn suggestions off, when it applies: suggestions are on, most of the
+/// person's recent decisions were dismissals, and the person has not chosen to keep them
+/// on within the last 20 decisions (as the daemon's `offer_turning_off`).
+pub(crate) fn offer_turning_off(file: &StoreFile) -> Option<String> {
+    (file.settings.learn_from_chats && file.chat_learning.offers_turning_off())
+        .then(|| msg_suggest_fewer(file.chat_learning.required_chats()))
+}
+
 /// `review`: suggestions and the agent's unreviewed rows; the chosen ones are accepted
 /// or kept, then the person may dismiss the rest. The prompt can wait as long as the
 /// person takes, so a row another surface kept or accepted meanwhile is not dismissed.
@@ -956,20 +1090,24 @@ fn review(store: &DictionaryStore, prompt: &mut dyn Prompter, io: &mut Streams<'
         .partition(|(i, _)| chosen.contains(i));
     let dismiss = !rest.is_empty() && prompt.confirm("Dismiss the rest?")?;
     let rest: Vec<EntryId> = rest.iter().map(|(_, e)| e.id.clone()).collect();
-    let (kept, dismissed) = store.write(|file| {
+    let (kept, dismissed, offer) = store.write(|file| {
         let now = store::schema::now();
         let kept = keep
             .iter()
             .filter(|(_, e)| file.accept(&e.id, now).is_ok())
             .count();
         let dismissed = if dismiss {
-            file.remove_confirmed(&rest, awaits_review, now).len()
+            dismiss_pending(file, &rest, now)
         } else {
             0
         };
-        Ok((kept, dismissed))
+        let offer = offer_turning_off(file).filter(|_| kept + dismissed > 0);
+        Ok((kept, dismissed, offer))
     })?;
     writeln!(io.out, "Kept {kept}. Dismissed {dismissed}.")?;
+    if let Some(offer) = offer {
+        writeln!(io.out, "{offer}")?;
+    }
     Ok(())
 }
 
@@ -995,10 +1133,17 @@ fn accept_or_dismiss(
                 .find(&id)
                 .map(|e| e.written.clone())
                 .unwrap_or_default();
+            // A dismissed chat suggestion counts as a **Dismiss** in the person's own
+            // measure, as an accepted one counts as a **Keep** inside `accept`.
             let result = if accept {
                 file.accept(&id, now)
+            } else if file
+                .dismiss_suggestions(std::slice::from_ref(&id), now)
+                .is_empty()
+            {
+                Err(StoreError::NotFound)
             } else {
-                file.remove(&id, now).map(|_| ())
+                Ok(())
             };
             match result {
                 Ok(()) => done.push(written),
@@ -1260,6 +1405,12 @@ fn settings(
                 file.settings.agent_writes = mode;
             }
             if let Some(learn) = learn_from_chats {
+                // Turning suggestions on is the person choosing them, so the offer to turn
+                // them off waits for more decisions before it is made again, as the
+                // daemon's `POST /dictionary/settings` does.
+                if learn && !file.settings.learn_from_chats {
+                    file.chat_learning.choose_on();
+                }
                 file.settings.learn_from_chats = learn;
             }
             Ok(())
@@ -1269,7 +1420,8 @@ fn settings(
                 .map_err(|error| Failure::failed(error.to_string()))?;
         }
     }
-    let settings = store.view()?.settings().clone();
+    let view = store.view()?;
+    let settings = view.settings();
     writeln!(io.out, "agent_writes: {}", settings.agent_writes.as_str())?;
     writeln!(
         io.out,
@@ -1281,6 +1433,16 @@ fn settings(
         "learn_from_chats: {}",
         on_off(settings.learn_from_chats)
     )?;
+    let learning = &view.file().chat_learning;
+    if learning.decisions() > 0 {
+        writeln!(
+            io.out,
+            "suggestions: kept {} of {} recent; a word needs {} chats",
+            learning.recent_kept(),
+            learning.recent.len(),
+            learning.required_chats()
+        )?;
+    }
     Ok(())
 }
 
@@ -1327,6 +1489,389 @@ fn clear(
     })?;
     writeln!(io.out, "{}", msg_deleted(deleted))?;
     Ok(())
+}
+
+/// Where a row came from, as the Dictionary page labels it, in the lower case a line of
+/// text uses.
+fn source_label(source: EntrySource) -> &'static str {
+    match source {
+        EntrySource::User => "added by you",
+        EntrySource::Import => "imported",
+        EntrySource::Agent => "added by the agent",
+        EntrySource::Auto => "found in your chats",
+        EntrySource::Correction => "learned from your corrections",
+    }
+}
+
+/// One line of `suggestions`: the word, where it came from, "private" for a private row,
+/// the agent's reason, and the id `keep` and `dismiss` take.
+fn suggestion_line(entry: &Entry) -> String {
+    let mut line = format!("{} · {}", entry.written, source_label(entry.source));
+    if entry.tier.is_private() {
+        line.push_str(" · private");
+    }
+    if let Some(reason) = &entry.reason {
+        line.push_str(" · ");
+        line.push_str(reason);
+    }
+    line.push_str(" · ");
+    line.push_str(entry.id.as_str());
+    line
+}
+
+/// `suggestions`: the suggestions waiting for the person, the rows `list --status
+/// suggested` shows to this caller; then, while suggestions are held back because most
+/// were dismissed, the offer to turn them off. JSON carries the rows and the person's own
+/// measure, as the daemon's settings answer does.
+fn suggestions(
+    store: &DictionaryStore,
+    reach: Reach,
+    format: ListFormat,
+    io: &mut Streams<'_>,
+) -> Outcome {
+    let view = store.view()?;
+    let rows = listed(&view, reach, StatusFilter::Suggested);
+    let learning = &view.file().chat_learning;
+    let offer = offer_turning_off(view.file());
+    if format == ListFormat::Json {
+        let rows: Vec<Value> = rows.iter().map(|e| entry_view(e, &view, reach)).collect();
+        let answer = json!({
+            "suggestions": rows,
+            "required_chats": learning.required_chats(),
+            "recent_kept": learning.recent_kept(),
+            "recent_decisions": learning.recent.len(),
+            "offer_turning_off": offer.is_some(),
+        });
+        writeln!(
+            io.out,
+            "{}",
+            serde_json::to_string_pretty(&answer).unwrap_or_default()
+        )?;
+        return Ok(());
+    }
+    for row in &rows {
+        writeln!(io.out, "{}", suggestion_line(row))?;
+    }
+    if rows.is_empty() && reach == Reach::All {
+        writeln!(io.err, "{MSG_NO_SUGGESTIONS}")?;
+    }
+    if let Some(offer) = offer {
+        if !rows.is_empty() {
+            writeln!(io.out)?;
+        }
+        writeln!(io.out, "{offer}")?;
+    }
+    Ok(())
+}
+
+/// A suggestion waiting for the person, as a listing shows it: never an `auto` row seen
+/// once.
+fn waiting_suggestion(entry: &Entry) -> bool {
+    entry.status == EntryStatus::Suggested && !(entry.source == EntrySource::Auto && entry.seen < 2)
+}
+
+/// The waiting suggestions `named` names: the one with that id, else every one whose
+/// written form folds to the same key (a word suggested both public and private names
+/// both).
+fn suggestions_named(file: &StoreFile, named: &str) -> Vec<EntryId> {
+    if let Some(id) = EntryId::parse(named) {
+        if file.find(&id).is_some_and(waiting_suggestion) {
+            return vec![id];
+        }
+    }
+    let fold = store::fold_key(named);
+    file.entries
+        .iter()
+        .filter(|e| waiting_suggestion(e) && e.fold_key() == fold)
+        .map(|e| e.id.clone())
+        .collect()
+}
+
+/// What `suggestions keep` and `dismiss` did: the rows decided, the sentences for what
+/// they could not do, and the offer to turn suggestions off when it now applies.
+struct Decided {
+    rows: Vec<Entry>,
+    failures: Vec<String>,
+    offer: Option<String>,
+}
+
+/// Keep or dismiss the waiting suggestions `named` names, under the store's lock. Keeping
+/// goes through `accept` and dismissing through `dismiss_suggestions`, so each decision on
+/// a chat suggestion is counted in the person's own measure.
+fn decide_named(file: &mut StoreFile, named: &[String], keep: bool) -> Decided {
+    let now = store::schema::now();
+    let mut ids: Vec<EntryId> = Vec::new();
+    let mut failures = Vec::new();
+    for name in named {
+        let found = suggestions_named(file, name);
+        if found.is_empty() {
+            failures.push(msg_no_suggestion(name));
+        }
+        for id in found {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+    }
+    let rows = if keep {
+        let mut kept = Vec::new();
+        for id in &ids {
+            let Some(row) = file.find(id).cloned() else {
+                continue;
+            };
+            match file.accept(id, now) {
+                Ok(()) => kept.push(row),
+                Err(e) => failures.push(format!("{}: {e}", row.written)),
+            }
+        }
+        kept
+    } else {
+        file.dismiss_suggestions(&ids, now)
+    };
+    let offer = offer_turning_off(file).filter(|_| !rows.is_empty());
+    Decided {
+        rows,
+        failures,
+        offer,
+    }
+}
+
+/// `suggestions keep` and `suggestions dismiss`.
+fn decide_suggestions(
+    store: &DictionaryStore,
+    named: &[String],
+    keep: bool,
+    io: &mut Streams<'_>,
+) -> Outcome {
+    let decided = store.write(|file| Ok(decide_named(file, named, keep)))?;
+    let verb = if keep { "Kept" } else { "Dismissed" };
+    for row in &decided.rows {
+        let private = if row.tier.is_private() {
+            " (private)"
+        } else {
+            ""
+        };
+        writeln!(io.out, "{verb} {}{private}.", row.written)?;
+    }
+    if let Some(offer) = decided.offer {
+        writeln!(io.out, "{offer}")?;
+    }
+    if decided.failures.is_empty() {
+        Ok(())
+    } else {
+        Err(Failure::failed(decided.failures.join("\n")))
+    }
+}
+
+/// What runs a scan: [`suggestion_scan::scan`] over this account's session store, or a
+/// test's stand in.
+pub(crate) trait ChatScanner {
+    async fn scan(
+        &mut self,
+        stop: &AtomicBool,
+        report: &mut (dyn FnMut(&ScanProgress) + Send),
+    ) -> std::result::Result<ScanProgress, ScanRefusal>;
+}
+
+/// The person's own chats, in this account's session store.
+struct SessionScanner;
+
+impl ChatScanner for SessionScanner {
+    async fn scan(
+        &mut self,
+        stop: &AtomicBool,
+        report: &mut (dyn FnMut(&ScanProgress) + Send),
+    ) -> std::result::Result<ScanProgress, ScanRefusal> {
+        let sessions = biorouter::session::SessionManager::instance();
+        suggestion_scan::scan(&sessions, stop, report).await
+    }
+}
+
+/// Where a scan writes: its last sentences on `out`, its progress on `err`, in place when
+/// `err` is a terminal and otherwise as one line at the end.
+pub(crate) struct ScanStreams<'a> {
+    pub out: &'a mut dyn Write,
+    pub err: &'a mut (dyn Write + Send),
+    pub in_place: bool,
+}
+
+/// The progress line a running scan draws. It holds only the error stream, which the
+/// scan's report may carry across threads.
+struct ProgressLine<'a> {
+    err: &'a mut (dyn Write + Send),
+    in_place: bool,
+    last: Option<String>,
+}
+
+impl ProgressLine<'_> {
+    fn show(&mut self, progress: &ScanProgress) {
+        if progress.state != ScanState::Running || progress.chats_total == 0 {
+            return;
+        }
+        let line = line_scan_progress(progress);
+        if self.in_place {
+            // A progress line that cannot be drawn is not worth stopping the scan for.
+            let _ = write!(self.err, "\r\x1b[2K{line}");
+            let _ = self.err.flush();
+        }
+        self.last = Some(line);
+    }
+
+    /// Clear the line drawn in place, or write the last one.
+    fn finish(self) -> io::Result<()> {
+        match self.last {
+            Some(_) if self.in_place => {
+                write!(self.err, "\r\x1b[2K")?;
+                self.err.flush()
+            }
+            Some(line) => writeln!(self.err, "{line}"),
+            None => Ok(()),
+        }
+    }
+}
+
+/// A scan that did not start, or could not: its sentence, exit 1. Below MSG-SCAN-OFF, the
+/// command that turns suggestions on here.
+fn scan_refused(refusal: ScanRefusal) -> Failure {
+    let mut message = refusal.message().to_string();
+    if refusal == ScanRefusal::Off {
+        message.push('\n');
+        message.push_str(MSG_SCAN_TURN_ON);
+    }
+    Failure::failed(message)
+}
+
+/// Whether a scan may start, from the store this command was given: managed policy keeps
+/// the agent's automatic writes on, the store reads, and suggestions are on. The scan asks
+/// the same of the account's store again before it reads a chat.
+fn scan_admitted(facts: &Facts, store: &DictionaryStore) -> Outcome {
+    if facts.agent_writes.reason().is_some() {
+        return Err(scan_refused(ScanRefusal::Policy));
+    }
+    let view = store
+        .view()
+        .map_err(|_| scan_refused(ScanRefusal::Unreadable))?;
+    if !view.settings().learn_from_chats {
+        return Err(scan_refused(ScanRefusal::Off));
+    }
+    Ok(())
+}
+
+/// `suggestions scan`: a person's write, so it is refused in an agent's shell and without
+/// a terminal, as `accept` is. It reads the person's own chats on public models from the
+/// last 30 days (at most 100) and writes the words found in enough of them as suggestions.
+/// `stop` ends it after the chat it is reading, keeping what it found.
+pub(crate) async fn run_scan(
+    facts: &Facts,
+    store: &DictionaryStore,
+    scanner: &mut impl ChatScanner,
+    stop: &AtomicBool,
+    streams: &mut ScanStreams<'_>,
+) -> Outcome {
+    authorize(&Action::ScanSuggestions, facts)?;
+    say_where(store, facts, &mut *streams.err)?;
+    scan_admitted(facts, store)?;
+    let mut line = ProgressLine {
+        err: &mut *streams.err,
+        in_place: streams.in_place,
+        last: None,
+    };
+    let ended = scanner.scan(stop, &mut |p| line.show(p)).await;
+    line.finish()?;
+    let progress = ended.map_err(scan_refused)?;
+    if progress.state == ScanState::Failed {
+        return Err(Failure::failed(MSG_SCAN_FAILED));
+    }
+    writeln!(streams.out, "{}", msg_scan_ended(&progress))?;
+    if progress.words_found > 0 {
+        writeln!(streams.out, "{MSG_SCAN_REVIEW}")?;
+    }
+    Ok(())
+}
+
+/// `/dictionary scan` inside a chat, the TUI's and the classic one's: the same scan as
+/// `suggestions scan`, admitted by the same rules with the chat's facts (a person at this
+/// terminal, never an agent's shell). `stop` ends it after the chat it is reading, keeping
+/// what it found. The sentences to show when it ends, or the refusal's.
+pub(crate) async fn scan_in_session(
+    stop: &AtomicBool,
+    report: &mut (dyn FnMut(&ScanProgress) + Send),
+) -> std::result::Result<Vec<String>, String> {
+    let facts = session_facts();
+    let store = dictionary_store::open_store();
+    authorize(&Action::ScanSuggestions, &facts).map_err(|failure| failure.message)?;
+    scan_admitted(&facts, &store).map_err(|failure| failure.message)?;
+    let mut scanner = SessionScanner;
+    let progress = scanner
+        .scan(stop, report)
+        .await
+        .map_err(|refusal| scan_refused(refusal).message)?;
+    if progress.state == ScanState::Failed {
+        return Err(MSG_SCAN_FAILED.to_string());
+    }
+    let mut lines = vec![msg_scan_ended(&progress)];
+    if progress.words_found > 0 {
+        lines.push(MSG_SCAN_REVIEW_IN_SESSION.to_string());
+    }
+    Ok(lines)
+}
+
+/// `/dictionary scan` in the classic chat: the progress line on stderr as the command
+/// draws it, and Ctrl+C stops the scan after the chat it is reading; unlike the command,
+/// a second Ctrl+C never ends the chat.
+pub(crate) async fn scan_in_classic_session() {
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    let watcher = tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            flag.store(true, Ordering::Release);
+        }
+    });
+    let mut err = io::stderr();
+    let mut line = ProgressLine {
+        in_place: err.is_terminal(),
+        err: &mut err,
+        last: None,
+    };
+    let ended = scan_in_session(&stop, &mut |progress| line.show(progress)).await;
+    let _ = line.finish();
+    watcher.abort();
+    match ended {
+        Ok(lines) => {
+            for text in lines {
+                println!("{text}");
+            }
+        }
+        Err(reason) => eprintln!("{reason}"),
+    }
+}
+
+/// Set `stop` at the first Ctrl+C, so the scan stops after the chat it is reading and
+/// keeps what it found; a second Ctrl+C ends the process at once.
+async fn stop_on_ctrl_c(stop: Arc<AtomicBool>) {
+    if tokio::signal::ctrl_c().await.is_err() {
+        return;
+    }
+    stop.store(true, Ordering::Release);
+    if tokio::signal::ctrl_c().await.is_ok() {
+        std::process::exit(130);
+    }
+}
+
+/// `suggestions scan` from the real terminal and session store.
+async fn scan_here(
+    facts: &Facts,
+    store: &DictionaryStore,
+    out: &mut io::Stdout,
+    err: &mut io::Stderr,
+) -> Outcome {
+    let stop = Arc::new(AtomicBool::new(false));
+    let watcher = tokio::spawn(stop_on_ctrl_c(Arc::clone(&stop)));
+    let in_place = err.is_terminal();
+    let mut streams = ScanStreams { out, err, in_place };
+    let outcome = run_scan(facts, store, &mut SessionScanner, &stop, &mut streams).await;
+    watcher.abort();
+    outcome
 }
 
 #[cfg(test)]
@@ -1494,6 +2039,13 @@ mod tests {
             Action::Clear {
                 suggested_only: false,
             },
+            Action::KeepSuggestions {
+                terms: vec!["EPAS1".into()],
+            },
+            Action::DismissSuggestions {
+                terms: vec!["EPAS1".into()],
+            },
+            Action::ScanSuggestions,
         ]
     }
 
@@ -2904,5 +3456,727 @@ mod tests {
             typed < built,
             "the proof comes after the typed confirmation"
         );
+    }
+
+    // ── chat word suggestions the person measures (owner, 2026-11-13) ─────────────────
+
+    /// Each word as the chat extractor writes it after finding it in two chats, so it is
+    /// listed for review. The ids, in the order of `words`.
+    fn found_in_chats(store: &DictionaryStore, tier: EntryTier, words: &[&str]) -> Vec<EntryId> {
+        store
+            .write(|file| {
+                let now = store::schema::now();
+                for word in words {
+                    for chat in ["chat-a", "chat-b"] {
+                        file.observe_auto_suggestion(word, tier, chat, None, now)?;
+                    }
+                }
+                Ok(())
+            })
+            .unwrap();
+        let view = store.view().unwrap();
+        words
+            .iter()
+            .map(|word| {
+                let row = view
+                    .entries()
+                    .iter()
+                    .find(|e| e.written == *word && e.tier == tier)
+                    .unwrap();
+                assert_eq!(row.seen, 2, "{word} is listed");
+                row.id.clone()
+            })
+            .collect()
+    }
+
+    /// An agent's term waiting for review, with its reason.
+    fn agent_suggestion(store: &DictionaryStore, written: &str) {
+        store
+            .write(|file| {
+                file.add(
+                    NewTerm {
+                        source: EntrySource::Agent,
+                        status: EntryStatus::Suggested,
+                        reason: Some("named in the chat".into()),
+                        ..NewTerm::person(written, EntryTier::Public)
+                    },
+                    Reach::All,
+                    store::schema::now(),
+                )
+            })
+            .unwrap();
+    }
+
+    /// Suggestions on, and `dismissed` decisions that were all dismissals.
+    fn after_dismissals(store: &DictionaryStore, dismissed: usize) {
+        store
+            .write(|file| {
+                file.settings.learn_from_chats = true;
+                for _ in 0..dismissed {
+                    file.chat_learning.record(false);
+                }
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    fn learning(store: &DictionaryStore) -> store::ChatLearning {
+        store.view().unwrap().file().chat_learning.clone()
+    }
+
+    fn suggestions_as(store: &DictionaryStore, facts: &Facts, format: ListFormat) -> Run {
+        let run = go(store, facts, Action::Suggestions { format });
+        assert_eq!(run.result, Ok(()), "{}", run.err);
+        run
+    }
+
+    /// `suggestions` lists what `list --status suggested` lists, one line each with where
+    /// it came from: a private suggestion only at a terminal, and never an `auto` row
+    /// found in one chat. It needs no terminal.
+    #[test]
+    fn suggestions_list_what_the_caller_can_list_with_where_each_came_from() {
+        let (_root, store) = fresh();
+        let public = found_in_chats(&store, EntryTier::Public, &["HIF2A", "EPAS1"]);
+        let private = found_in_chats(&store, EntryTier::Private, &["PHD2"]);
+        agent_suggestion(&store, "SPOKE");
+        store
+            .write(|file| {
+                file.observe_auto_suggestion(
+                    "ONCE1",
+                    EntryTier::Public,
+                    "chat-a",
+                    None,
+                    store::schema::now(),
+                )
+            })
+            .unwrap();
+        let spoke = store
+            .view()
+            .unwrap()
+            .file()
+            .rows_written("SPOKE", Reach::All)[0]
+            .id
+            .clone();
+
+        let at_terminal = suggestions_as(&store, &terminal(), ListFormat::Text);
+        assert_eq!(
+            at_terminal.out,
+            format!(
+                "EPAS1 · found in your chats · {}\nHIF2A · found in your chats · {}\nPHD2 · found in your chats · private · {}\nSPOKE · added by the agent · named in the chat · {spoke}\n",
+                public[1], public[0], private[0]
+            )
+        );
+        for facts in [piped(), agent()] {
+            let run = suggestions_as(&store, &facts, ListFormat::Text);
+            assert_eq!(run.out.lines().count(), 3, "{}", run.out);
+            assert!(!run.out.contains("PHD2") && !run.err.contains("PHD2"));
+            assert!(!run.out.contains("ONCE1"));
+        }
+
+        let json: Value =
+            serde_json::from_str(&suggestions_as(&store, &piped(), ListFormat::Json).out).unwrap();
+        assert_eq!(json["suggestions"].as_array().unwrap().len(), 3);
+        assert_eq!(json["suggestions"][0]["written"], "EPAS1");
+        assert_eq!(json["suggestions"][0]["source"], "auto");
+        assert_eq!(
+            (
+                &json["required_chats"],
+                &json["recent_kept"],
+                &json["recent_decisions"],
+                &json["offer_turning_off"]
+            ),
+            (&json!(2), &json!(0), &json!(0), &json!(false))
+        );
+
+        let (_empty_root, empty) = fresh();
+        let nothing = suggestions_as(&empty, &terminal(), ListFormat::Text);
+        assert!(nothing.out.is_empty());
+        assert!(nothing.err.ends_with(&format!("{MSG_NO_SUGGESTIONS}\n")));
+        let piped_nothing = suggestions_as(&empty, &piped(), ListFormat::Text);
+        assert_eq!(piped_nothing.err.lines().count(), 1, "the folder line only");
+    }
+
+    /// Once most of 20 recent decisions were dismissals and suggestions are on, the
+    /// listing offers to turn them off, naming the chats a word now needs; with
+    /// suggestions off it does not.
+    #[test]
+    fn suggestions_offer_to_turn_off_once_most_were_dismissed() {
+        let (_root, store) = fresh();
+        let ids = found_in_chats(&store, EntryTier::Public, &["EPAS1"]);
+        after_dismissals(&store, 19);
+        let quiet = suggestions_as(&store, &terminal(), ListFormat::Text);
+        assert_eq!(quiet.out.lines().count(), 1, "19 decisions change nothing");
+
+        after_dismissals(&store, 1);
+        let offer = msg_suggest_fewer(4);
+        let text = suggestions_as(&store, &terminal(), ListFormat::Text);
+        assert_eq!(
+            text.out,
+            format!("EPAS1 · found in your chats · {}\n\n{offer}\n", ids[0])
+        );
+        let json: Value =
+            serde_json::from_str(&suggestions_as(&store, &piped(), ListFormat::Json).out).unwrap();
+        assert_eq!(
+            (
+                &json["required_chats"],
+                &json["recent_kept"],
+                &json["recent_decisions"],
+                &json["offer_turning_off"]
+            ),
+            (&json!(4), &json!(0), &json!(20), &json!(true))
+        );
+
+        store
+            .write(|file| {
+                file.settings.learn_from_chats = false;
+                Ok(())
+            })
+            .unwrap();
+        let off = suggestions_as(&store, &terminal(), ListFormat::Text);
+        assert!(!off.out.contains(&offer), "{}", off.out);
+    }
+
+    /// `suggestions keep` and `dismiss` take a written form, case folded, or an id; each
+    /// decision on a chat suggestion is counted, a dismissed word leaves its tombstone,
+    /// and a name that is no waiting suggestion is reported (exit 1) while the rest go.
+    #[test]
+    fn suggestions_keep_and_dismiss_by_word_or_id_and_count_each_decision() {
+        let (_root, store) = fresh();
+        let ids = found_in_chats(&store, EntryTier::Public, &["EPAS1", "HIF2A", "VHL"]);
+        agent_suggestion(&store, "SPOKE");
+
+        let kept = go(
+            &store,
+            &terminal(),
+            Action::KeepSuggestions {
+                terms: vec!["epas1".into()],
+            },
+        );
+        assert_eq!(kept.result, Ok(()));
+        assert_eq!(kept.out, "Kept EPAS1.\n");
+        assert_eq!(learning(&store).recent, vec![true]);
+
+        let dismissed = go(
+            &store,
+            &terminal(),
+            Action::DismissSuggestions {
+                terms: vec![ids[1].to_string(), "NOPE".into(), "EPAS1".into()],
+            },
+        );
+        assert_eq!(dismissed.out, "Dismissed HIF2A.\n");
+        assert_eq!(
+            dismissed.result,
+            Err(Failure::failed(
+                [msg_no_suggestion("NOPE"), msg_no_suggestion("EPAS1")].join("\n")
+            )),
+            "a kept word is no longer a suggestion"
+        );
+        let after = learning(&store);
+        assert_eq!((after.kept, after.dismissed), (1, 1));
+        assert_eq!(after.recent, vec![true, false]);
+
+        let agent_row = go(
+            &store,
+            &terminal(),
+            Action::DismissSuggestions {
+                terms: vec!["spoke".into()],
+            },
+        );
+        assert_eq!(agent_row.out, "Dismissed SPOKE.\n");
+        assert_eq!(
+            learning(&store).decisions(),
+            2,
+            "the agent's suggestion does not measure the chat extractor"
+        );
+
+        let view = store.view().unwrap();
+        let left: Vec<(&str, EntryStatus)> = view
+            .entries()
+            .iter()
+            .map(|e| (e.written.as_str(), e.status))
+            .collect();
+        assert_eq!(
+            left,
+            [
+                ("EPAS1", EntryStatus::Active),
+                ("VHL", EntryStatus::Suggested)
+            ]
+        );
+        assert!(view.file().tombstoned("hif2a", EntryTier::Public));
+        assert!(view.file().tombstoned("spoke", EntryTier::Public));
+    }
+
+    /// A word suggested both public and private (a private row from before the extractor
+    /// stopped writing them) is kept in both tiers, and the private one says so. Only the
+    /// public one is counted: the measure is answered to every caller, so it never counts
+    /// a private row. (The private twin is found first: the store does not suggest a
+    /// private twin of a word already listed in public.)
+    #[test]
+    fn keeping_a_word_suggested_in_both_tiers_keeps_both() {
+        let (_root, store) = fresh();
+        found_in_chats(&store, EntryTier::Private, &["EPAS1"]);
+        found_in_chats(&store, EntryTier::Public, &["EPAS1"]);
+        let kept = go(
+            &store,
+            &terminal(),
+            Action::KeepSuggestions {
+                terms: vec!["EPAS1".into()],
+            },
+        );
+        assert_eq!(kept.result, Ok(()));
+        assert_eq!(kept.out, "Kept EPAS1 (private).\nKept EPAS1.\n");
+        assert_eq!(learning(&store).recent, vec![true], "the public row alone");
+    }
+
+    /// The decision that tips the measure prints the offer after what it did.
+    #[test]
+    fn the_dismissal_that_tips_the_measure_offers_to_turn_suggestions_off() {
+        let (_root, store) = fresh();
+        let ids = found_in_chats(&store, EntryTier::Public, &["EPAS1"]);
+        after_dismissals(&store, 19);
+        let run = go(
+            &store,
+            &terminal(),
+            Action::DismissSuggestions {
+                terms: vec![ids[0].to_string()],
+            },
+        );
+        assert_eq!(run.result, Ok(()));
+        assert_eq!(
+            run.out,
+            format!("Dismissed EPAS1.\n{}\n", msg_suggest_fewer(4))
+        );
+    }
+
+    /// `dismiss ID` counts a dismissed chat suggestion as a **Dismiss**, as `accept`
+    /// counts a **Keep**.
+    #[test]
+    fn dismiss_by_id_counts_a_chat_suggestion_as_dismissed() {
+        let (_root, store) = fresh();
+        let ids = found_in_chats(&store, EntryTier::Public, &["EPAS1", "HIF2A"]);
+        let dismissed = go(
+            &store,
+            &terminal(),
+            Action::Dismiss {
+                ids: vec![ids[0].to_string()],
+            },
+        );
+        assert_eq!(dismissed.result, Ok(()));
+        assert_eq!(dismissed.out, "Dismissed EPAS1.\n");
+        let accepted = go(
+            &store,
+            &terminal(),
+            Action::Accept {
+                ids: vec![ids[1].to_string()],
+            },
+        );
+        assert_eq!(accepted.result, Ok(()));
+        let after = learning(&store);
+        assert_eq!(after.recent, vec![false, true]);
+        assert!(store
+            .view()
+            .unwrap()
+            .file()
+            .tombstoned("epas1", EntryTier::Public));
+    }
+
+    /// `review` counts each chat suggestion it keeps or dismisses, and "Dismiss the rest"
+    /// still deletes an agent row the person has not kept, uncounted.
+    #[test]
+    fn review_counts_each_decision_on_a_chat_suggestion() {
+        let (_root, store) = fresh();
+        found_in_chats(&store, EntryTier::Public, &["EPAS1", "HIF2A", "VHL"]);
+        store
+            .write(|file| {
+                file.add(
+                    NewTerm {
+                        source: EntrySource::Agent,
+                        ..NewTerm::person("SPOKE", EntryTier::Public)
+                    },
+                    Reach::All,
+                    store::schema::now(),
+                )
+            })
+            .unwrap();
+        let mut script = Script {
+            selections: VecDeque::from([vec![0]]),
+            confirms: VecDeque::from([true]),
+            ..Script::default()
+        };
+        let run = run_with(&store, &terminal(), &mut script, "", Action::Review);
+        assert_eq!(run.result, Ok(()));
+        assert_eq!(run.out, "Kept 1. Dismissed 3.\n");
+        assert_eq!(learning(&store).recent, vec![true, false, false]);
+        let view = store.view().unwrap();
+        assert_eq!(view.entries().len(), 1);
+        assert_eq!(view.entries()[0].written, "EPAS1");
+        assert!(view.file().tombstoned("spoke", EntryTier::Public));
+        assert!(view.file().tombstoned("vhl", EntryTier::Public));
+    }
+
+    /// A review that keeps or dismisses anything while most are dismissed offers to turn
+    /// suggestions off; one that decided nothing does not, though the offer applies.
+    #[test]
+    fn a_review_that_leaves_most_dismissed_offers_to_turn_suggestions_off() {
+        let (_root, store) = fresh();
+        found_in_chats(&store, EntryTier::Public, &["EPAS1", "HIF2A"]);
+        after_dismissals(&store, 20);
+        assert!(offer_turning_off(store.view().unwrap().file()).is_some());
+        let mut nothing = Script {
+            selections: VecDeque::from([vec![]]),
+            confirms: VecDeque::from([false]),
+            ..Script::default()
+        };
+        let idle = run_with(&store, &terminal(), &mut nothing, "", Action::Review);
+        assert_eq!(idle.out, "Kept 0. Dismissed 0.\n", "no decision, no offer");
+
+        let mut script = Script {
+            selections: VecDeque::from([vec![0]]),
+            confirms: VecDeque::from([true]),
+            ..Script::default()
+        };
+        let run = run_with(&store, &terminal(), &mut script, "", Action::Review);
+        assert_eq!(
+            run.out,
+            format!("Kept 1. Dismissed 1.\n{}\n", msg_suggest_fewer(4))
+        );
+    }
+
+    /// `settings` adds the person's measure only once there is a decision, so a store
+    /// whose owner never reviewed a chat suggestion prints its three settings alone.
+    #[test]
+    fn settings_show_the_measure_only_after_a_decision() {
+        let (_root, store) = fresh();
+        let show = Action::Settings {
+            agent_writes: None,
+            learn_from_chats: None,
+            suggest_from_chats: None,
+        };
+        let before = go(&store, &piped(), show.clone());
+        assert!(
+            before.out.ends_with("learn_from_chats: off\n"),
+            "{}",
+            before.out
+        );
+        assert!(!before.out.contains("suggestions:"));
+        let ids = found_in_chats(&store, EntryTier::Public, &["EPAS1", "HIF2A", "VHL"]);
+        go(
+            &store,
+            &terminal(),
+            Action::KeepSuggestions {
+                terms: vec![ids[0].to_string()],
+            },
+        );
+        go(
+            &store,
+            &terminal(),
+            Action::DismissSuggestions {
+                terms: vec![ids[1].to_string()],
+            },
+        );
+        let after = go(&store, &piped(), show);
+        assert!(
+            after.out.ends_with(
+                "learn_from_chats: off\nsuggestions: kept 1 of 2 recent; a word needs 2 chats\n"
+            ),
+            "{}",
+            after.out
+        );
+    }
+
+    /// Turning suggestions on is the person choosing them: the offer to turn them off
+    /// waits for 20 more decisions, as the daemon's route has it. Turning on what is
+    /// already on changes nothing.
+    #[test]
+    fn turning_suggestions_on_quiets_the_offer() {
+        let (_root, store) = fresh();
+        after_dismissals(&store, 20);
+        store
+            .write(|file| {
+                file.settings.learn_from_chats = false;
+                Ok(())
+            })
+            .unwrap();
+        assert!(learning(&store).offers_turning_off());
+        let on = || Action::Settings {
+            agent_writes: None,
+            learn_from_chats: Some(true),
+            suggest_from_chats: None,
+        };
+        let mut yes = Script {
+            confirms: VecDeque::from([true]),
+            ..Script::default()
+        };
+        let run = run_with(&store, &terminal(), &mut yes, "", on());
+        assert_eq!(run.result, Ok(()));
+        assert!(run.out.ends_with(
+            "learn_from_chats: on\nsuggestions: kept 0 of 20 recent; a word needs 4 chats\n"
+        ));
+        let after = learning(&store);
+        assert_eq!(after.chose_on_at, Some(20));
+        assert!(!after.offers_turning_off());
+        assert!(offer_turning_off(store.view().unwrap().file()).is_none());
+
+        store
+            .write(|file| {
+                file.chat_learning.chose_on_at = None;
+                Ok(())
+            })
+            .unwrap();
+        let mut silent = Script::default();
+        let again = run_with(&store, &terminal(), &mut silent, "", on());
+        assert_eq!(again.result, Ok(()));
+        assert!(silent.asked.is_empty(), "{:?}", silent.asked);
+        assert_eq!(learning(&store).chose_on_at, None, "already on");
+    }
+
+    /// A scan a test drives: the reports it makes, then how it ends.
+    struct Canned {
+        reports: Vec<ScanProgress>,
+        ended: std::result::Result<ScanProgress, ScanRefusal>,
+        called: bool,
+        stopped: bool,
+    }
+
+    impl Canned {
+        fn ending(state: ScanState, read: u32, total: u32, words: u32) -> Self {
+            Self {
+                reports: Vec::new(),
+                ended: Ok(progress(state, read, total, words)),
+                called: false,
+                stopped: false,
+            }
+        }
+    }
+
+    impl ChatScanner for Canned {
+        async fn scan(
+            &mut self,
+            stop: &AtomicBool,
+            report: &mut (dyn FnMut(&ScanProgress) + Send),
+        ) -> std::result::Result<ScanProgress, ScanRefusal> {
+            self.called = true;
+            self.stopped = stop.load(Ordering::Acquire);
+            for progress in &self.reports {
+                report(progress);
+            }
+            self.ended.clone()
+        }
+    }
+
+    fn progress(state: ScanState, read: u32, total: u32, words: u32) -> ScanProgress {
+        ScanProgress {
+            state,
+            chats_read: read,
+            chats_total: total,
+            words_found: words,
+        }
+    }
+
+    async fn scan_with(
+        store: &DictionaryStore,
+        facts: &Facts,
+        scanner: &mut Canned,
+        in_place: bool,
+    ) -> Run {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let stop = AtomicBool::new(false);
+        let result = run_scan(
+            facts,
+            store,
+            scanner,
+            &stop,
+            &mut ScanStreams {
+                out: &mut out,
+                err: &mut err,
+                in_place,
+            },
+        )
+        .await;
+        Run {
+            result,
+            out: String::from_utf8(out).unwrap(),
+            err: String::from_utf8(err).unwrap(),
+        }
+    }
+
+    fn suggestions_on(store: &DictionaryStore) {
+        after_dismissals(store, 0);
+    }
+
+    /// A scan is the person's: refused in an agent's shell and without a terminal before
+    /// it reads anything, and refused with the page's sentence (exit 1) while suggestions
+    /// are off, under managed policy, or with a store it cannot read.
+    #[tokio::test]
+    async fn a_scan_needs_the_person_and_suggestions_on() {
+        let (_root, store) = fresh();
+        for (facts, sentence) in [
+            (piped(), MSG_DICTIONARY_TTY),
+            (agent(), MSG_DICTIONARY_AGENT),
+        ] {
+            let mut scanner = Canned::ending(ScanState::Finished, 0, 0, 0);
+            let run = scan_with(&store, &facts, &mut scanner, false).await;
+            assert_eq!(run.result, Err(Failure::refused(sentence)));
+            assert!(run.err.is_empty() && !scanner.called);
+        }
+        let off = format!("{}\n{MSG_SCAN_TURN_ON}", suggestion_scan::MSG_SCAN_OFF);
+        let mut scanner = Canned::ending(ScanState::Finished, 0, 0, 0);
+        let run = scan_with(&store, &terminal(), &mut scanner, false).await;
+        assert_eq!(run.result, Err(Failure::failed(off)));
+        assert!(run.out.is_empty() && !scanner.called);
+
+        suggestions_on(&store);
+        let reason = "Your organization's policy keeps the agent out of the dictionary.";
+        let managed = Facts {
+            agent_writes: Rule::Forbidden(reason.into()),
+            ..terminal()
+        };
+        let run = scan_with(&store, &managed, &mut scanner, false).await;
+        assert_eq!(
+            run.result,
+            Err(Failure::failed(suggestion_scan::MSG_SCAN_POLICY))
+        );
+        std::fs::write(store.store_path(), b"{ not json").unwrap();
+        let run = scan_with(&store, &terminal(), &mut scanner, false).await;
+        assert_eq!(
+            run.result,
+            Err(Failure::failed(suggestion_scan::MSG_SCAN_UNREADABLE))
+        );
+        assert!(!scanner.called);
+    }
+
+    /// At a terminal the progress line is drawn in place and cleared at the end; on any
+    /// other stream it is one line at the end. The last sentences go to stdout.
+    #[tokio::test]
+    async fn a_scan_draws_its_progress_and_ends_with_the_pages_sentences() {
+        let (_root, store) = fresh();
+        suggestions_on(&store);
+        let reports = vec![
+            progress(ScanState::Running, 0, 0, 0),
+            progress(ScanState::Running, 0, 3, 0),
+            progress(ScanState::Running, 1, 3, 1),
+            progress(ScanState::Running, 3, 3, 2),
+            progress(ScanState::Finished, 3, 3, 2),
+        ];
+        let ended = "Read 3 chats. 2 new words to review.\nReview them with `biorouter dictionary suggestions`.\n";
+
+        let mut scanner = Canned {
+            reports: reports.clone(),
+            ..Canned::ending(ScanState::Finished, 3, 3, 2)
+        };
+        let drawn = scan_with(&store, &terminal(), &mut scanner, true).await;
+        assert_eq!(drawn.result, Ok(()));
+        assert!(scanner.called && !scanner.stopped);
+        assert_eq!(drawn.out, ended);
+        let progress_part = drawn.err.split_once('\n').unwrap().1;
+        assert_eq!(
+            progress_part,
+            "\r\x1b[2KReading chat 1 of 3, 0 words found so far\
+             \r\x1b[2KReading chat 2 of 3, 1 word found so far\
+             \r\x1b[2KReading chat 3 of 3, 2 words found so far\
+             \r\x1b[2K"
+        );
+
+        let mut scanner = Canned {
+            reports,
+            ..Canned::ending(ScanState::Finished, 3, 3, 2)
+        };
+        let lined = scan_with(&store, &terminal(), &mut scanner, false).await;
+        assert_eq!(lined.out, ended);
+        assert_eq!(
+            lined.err.split_once('\n').unwrap().1,
+            "Reading chat 3 of 3, 2 words found so far\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_scan_says_how_it_ended() {
+        let (_root, store) = fresh();
+        suggestions_on(&store);
+        let review = MSG_SCAN_REVIEW;
+        for (state, read, total, words, said) in [
+            (
+                ScanState::Finished,
+                0,
+                0,
+                0,
+                "Read 0 chats. No new words found.\n".to_string(),
+            ),
+            (
+                ScanState::Finished,
+                1,
+                1,
+                0,
+                "Read 1 chat. No new words found.\n".to_string(),
+            ),
+            (
+                ScanState::Finished,
+                40,
+                40,
+                1,
+                format!("Read 40 chats. 1 new word to review.\n{review}\n"),
+            ),
+            (
+                ScanState::Stopped,
+                12,
+                40,
+                3,
+                format!("Stopped after 12 of 40 chats. 3 new words to review.\n{review}\n"),
+            ),
+            (
+                ScanState::Stopped,
+                0,
+                1,
+                0,
+                "Stopped after 0 of 1 chat. No new words found.\n".to_string(),
+            ),
+        ] {
+            let mut scanner = Canned::ending(state, read, total, words);
+            let run = scan_with(&store, &terminal(), &mut scanner, false).await;
+            assert_eq!(run.result, Ok(()), "{state:?}");
+            assert_eq!(run.out, said);
+        }
+        let mut failed = Canned::ending(ScanState::Failed, 2, 40, 0);
+        let run = scan_with(&store, &terminal(), &mut failed, false).await;
+        assert_eq!(run.result, Err(Failure::failed(MSG_SCAN_FAILED)));
+        assert!(run.out.is_empty());
+        let mut refused = Canned {
+            ended: Err(ScanRefusal::Off),
+            ..Canned::ending(ScanState::Finished, 0, 0, 0)
+        };
+        let run = scan_with(&store, &terminal(), &mut refused, false).await;
+        assert_eq!(
+            run.result.unwrap_err().message.lines().next(),
+            Some(suggestion_scan::MSG_SCAN_OFF),
+            "suggestions turned off after the scan was asked for"
+        );
+    }
+
+    /// A session's synchronous `run` cannot wait for a scan, so it names the command.
+    #[test]
+    fn run_names_the_scan_command_instead_of_scanning() {
+        let (_root, store) = fresh();
+        let run = go(&store, &terminal(), Action::ScanSuggestions);
+        assert_eq!(run.result, Err(Failure::failed(MSG_SCAN_FROM_THE_COMMAND)));
+    }
+
+    /// The sentences the suggestion commands print, word for word.
+    #[test]
+    fn the_suggestion_sentences_read_as_written() {
+        let cases: Vec<(String, &str)> = vec![
+            (msg_suggest_fewer(3), "You dismissed most suggestions, so Biorouter now suggests fewer: a word has to show up in 3 chats. Turn them off with `biorouter dictionary settings --learn-from-chats off`."),
+            (MSG_NO_SUGGESTIONS.into(), "No suggestions to review."),
+            (msg_no_suggestion("EPAS1"), "There is no suggestion EPAS1 to review."),
+            (MSG_SCAN_FAILED.into(), "Biorouter could not finish reading your chats."),
+            (MSG_SCAN_REVIEW.into(), "Review them with `biorouter dictionary suggestions`."),
+            (MSG_SCAN_REVIEW_IN_SESSION.into(), "Review them with /dictionary review."),
+            (MSG_SCAN_STARTED_IN_SESSION.into(), "Looking for words in your recent chats. Esc stops it."),
+            (MSG_SCAN_TURN_ON.into(), "To turn it on here, run `biorouter dictionary settings --learn-from-chats on`."),
+            (MSG_SCAN_FROM_THE_COMMAND.into(), "Run `biorouter dictionary suggestions scan` to find words in your recent chats."),
+            (line_scan_progress(&progress(ScanState::Running, 11, 40, 3)), "Reading chat 12 of 40, 3 words found so far"),
+        ];
+        for (sentence, written) in cases {
+            assert_eq!(sentence, written);
+        }
     }
 }

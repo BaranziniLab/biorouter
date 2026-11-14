@@ -1600,7 +1600,7 @@ pub async fn accept_dictionary_suggestions(
     path = "/dictionary/suggestions/dismiss",
     request_body = DictionaryIdsRequest,
     responses(
-        (status = 200, description = "How many suggestions were deleted, each with its tombstone; allowed under managed policy", body = DictionaryDismissed),
+        (status = 200, description = "How many suggestions were deleted, each with its tombstone, so none is suggested again; each listed chat suggestion counts as a Dismiss in the person's own measure. Allowed under managed policy", body = DictionaryDismissed),
         (status = 403, description = "agent", body = DictionaryErrorBody),
     )
 )]
@@ -1612,13 +1612,7 @@ pub async fn dismiss_dictionary_suggestions(
     let dismissed = on_store(move |store| {
         store.write(|file| {
             let ids = request.listed_now(file);
-            Ok(file
-                .remove_confirmed(
-                    &ids,
-                    |e| e.status == EntryStatus::Suggested,
-                    store::schema::now(),
-                )
-                .len())
+            Ok(file.dismiss_suggestions(&ids, store::schema::now()).len())
         })
     })
     .await?;
@@ -1626,6 +1620,121 @@ pub async fn dismiss_dictionary_suggestions(
     Ok(Json(DictionaryDismissed {
         dismissed: dismissed as u64,
     }))
+}
+
+// ── finding words in recent chats ────────────────────────────────────────────────────
+
+/// Where **Find words in my recent chats** stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DictionaryScanState {
+    /// No scan has run since the daemon started.
+    Idle,
+    Running,
+    Finished,
+    /// The person stopped it; what it found until then was kept.
+    Stopped,
+    Failed,
+}
+
+/// 200 from the scan routes: the daemon's one scan of the person's recent chats.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DictionaryScan {
+    pub state: DictionaryScanState,
+    /// Chats read so far.
+    pub chats_read: u32,
+    /// Chats this scan reads: the person's own chats on public models changed in the last
+    /// 30 days, at most 100.
+    pub chats_total: u32,
+    /// While it runs, words found in enough chats to be suggested; once it ends, the
+    /// suggestions it added for review.
+    pub words_found: u32,
+}
+
+impl From<biorouter::dictation::suggestion_scan::ScanProgress> for DictionaryScan {
+    fn from(progress: biorouter::dictation::suggestion_scan::ScanProgress) -> Self {
+        use biorouter::dictation::suggestion_scan::ScanState;
+        Self {
+            state: match progress.state {
+                ScanState::Idle => DictionaryScanState::Idle,
+                ScanState::Running => DictionaryScanState::Running,
+                ScanState::Finished => DictionaryScanState::Finished,
+                ScanState::Stopped => DictionaryScanState::Stopped,
+                ScanState::Failed => DictionaryScanState::Failed,
+            },
+            chats_read: progress.chats_read,
+            chats_total: progress.chats_total,
+            words_found: progress.words_found,
+        }
+    }
+}
+
+impl From<biorouter::dictation::suggestion_scan::ScanRefusal> for DictionaryError {
+    fn from(refusal: biorouter::dictation::suggestion_scan::ScanRefusal) -> Self {
+        use biorouter::dictation::suggestion_scan::ScanRefusal;
+        let message = refusal.message();
+        match refusal {
+            ScanRefusal::Off => Self::new(StatusCode::CONFLICT, "suggestions_off", message),
+            ScanRefusal::Policy => Self::policy(message),
+            ScanRefusal::Unreadable => {
+                Self::new(StatusCode::SERVICE_UNAVAILABLE, "unreadable", message)
+            }
+        }
+    }
+}
+
+/// A scan is a write of suggestions: the caller's write, as accepting a suggestion asks.
+async fn admit_scan(headers: &HeaderMap) -> Answer<()> {
+    let caller = session_reach::http_caller(headers).await;
+    caller.authorizes_dictionary_write(&DictionaryWrite::Entries { private: false }, None)?;
+    policy_allows_writes()
+}
+
+#[utoipa::path(
+    get,
+    path = "/dictionary/suggestions/scan",
+    responses(
+        (status = 200, description = "The daemon's scan of the person's recent chats, as it stands", body = DictionaryScan),
+    )
+)]
+pub async fn get_dictionary_suggestion_scan() -> Json<DictionaryScan> {
+    Json(biorouter::dictation::suggestion_scan::status().into())
+}
+
+#[utoipa::path(
+    post,
+    path = "/dictionary/suggestions/scan",
+    responses(
+        (status = 200, description = "The scan started, or the one already running: it reads the person's own recent chats on public models, on this computer, and queues the words it finds as suggestions", body = DictionaryScan),
+        (status = 403, description = "agent or policy (MSG-SCAN-POLICY)", body = DictionaryErrorBody),
+        (status = 409, description = "suggestions_off (MSG-SCAN-OFF): suggestions are off", body = DictionaryErrorBody),
+        (status = 503, description = "unreadable (MSG-SCAN-UNREADABLE)", body = DictionaryErrorBody),
+    )
+)]
+pub async fn start_dictionary_suggestion_scan(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Answer<Json<DictionaryScan>> {
+    admit_scan(&headers).await?;
+    let progress =
+        biorouter::dictation::suggestion_scan::start(state, |state| state.session_manager())?;
+    Ok(Json(progress.into()))
+}
+
+#[utoipa::path(
+    post,
+    path = "/dictionary/suggestions/scan/stop",
+    responses(
+        (status = 200, description = "The scan stops after the chat it is reading, keeping the words found so far", body = DictionaryScan),
+        (status = 403, description = "agent", body = DictionaryErrorBody),
+    )
+)]
+pub async fn stop_dictionary_suggestion_scan(headers: HeaderMap) -> Answer<Json<DictionaryScan>> {
+    let caller = session_reach::http_caller(&headers).await;
+    caller.authorizes_dictionary_write(&DictionaryWrite::Entries { private: false }, None)?;
+    Ok(Json(
+        biorouter::dictation::suggestion_scan::request_stop().into(),
+    ))
 }
 
 // ── import and export ────────────────────────────────────────────────────────────────
@@ -2027,9 +2136,40 @@ pub struct DictionaryAuthority {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct DictionarySettings {
     pub suggest_from_chats: bool,
+    /// **Suggest words from my messages**: the chat extractor, which the person turns on.
     pub learn_from_chats: bool,
     pub agent_writes: DictionaryAgentWrites,
     pub authority: DictionaryAuthority,
+    /// How well suggestions from chats suit this person, by their own decisions.
+    pub suggestions: DictionarySuggestionMeasure,
+}
+
+/// The person's own measure of suggestions from chats (owner, 2026-11-13): counts from this
+/// computer's Dictionary store, never sent anywhere, and never a term.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct DictionarySuggestionMeasure {
+    /// Of the person's latest decisions on suggestions from chats (at most 50), how many
+    /// were **Keep**.
+    pub recent_kept: u32,
+    /// The person's latest decisions on suggestions from chats, at most 50.
+    pub recent_decisions: u32,
+    /// The different chats a word must be found in before it is suggested: 2, or 3 or 4
+    /// once 20 or more recent decisions show most suggestions were dismissed.
+    pub required_chats: u32,
+    /// Offer, in one sentence, to turn suggestions off: they are on, most were dismissed,
+    /// and the person has not chosen to keep them on within the last 20 decisions.
+    pub offer_turning_off: bool,
+}
+
+impl DictionarySuggestionMeasure {
+    fn of(settings: &StoreSettings, learning: &store::ChatLearning) -> Self {
+        Self {
+            recent_kept: learning.recent_kept() as u32,
+            recent_decisions: learning.recent.len() as u32,
+            required_chats: learning.required_chats(),
+            offer_turning_off: settings.learn_from_chats && learning.offers_turning_off(),
+        }
+    }
 }
 
 /// `POST /dictionary/settings`.
@@ -2039,6 +2179,10 @@ pub struct DictionarySettingsRequest {
     pub learn_from_chats: Option<bool>,
     #[serde(default)]
     pub agent_writes: Option<DictionaryAgentWrites>,
+    /// The person's answer **Keep suggesting** to the offer to turn suggestions off, which
+    /// quiets the offer for 20 more decisions. `false` and absent change nothing.
+    #[serde(default)]
+    pub keep_suggesting: Option<bool>,
 }
 
 fn authority_of(caller: &HttpCaller) -> DictionaryAuthority {
@@ -2084,6 +2228,7 @@ async fn settings_answer(caller: &HttpCaller) -> Answer<DictionarySettings> {
         learn_from_chats: settings.learn_from_chats,
         agent_writes: settings.agent_writes.into(),
         authority: authority_of(caller),
+        suggestions: DictionarySuggestionMeasure::of(settings, &view.file().chat_learning),
     })
 }
 
@@ -2162,6 +2307,7 @@ pub async fn change_dictionary_settings(
     let request: DictionarySettingsRequest = json_body(body, MAX_JSON_BYTES)?;
     let agent_writes = request.agent_writes.map(AgentWrites::from);
     let learn_from_chats = request.learn_from_chats;
+    let keep_suggesting = request.keep_suggesting == Some(true);
     // Asked of the cached view to refuse early, and again of the copy the write reads
     // under the store's lock: a setting the person lowered at the terminal in between is
     // judged as it now is, so a request naming the old value is a raise and is refused
@@ -2181,7 +2327,15 @@ pub async fn change_dictionary_settings(
                 file.settings.agent_writes = mode;
             }
             if let Some(learn) = learn_from_chats {
+                // Turning suggestions on is the person choosing them, so the offer to turn
+                // them off waits for more decisions before it is made again.
+                if learn && !file.settings.learn_from_chats {
+                    file.chat_learning.choose_on();
+                }
                 file.settings.learn_from_chats = learn;
+            }
+            if keep_suggesting {
+                file.chat_learning.choose_on();
             }
             Ok(Ok(()))
         })
@@ -2279,6 +2433,14 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route(
             "/dictionary/suggestions/dismiss",
             post(dismiss_dictionary_suggestions).layer(DefaultBodyLimit::max(MAX_IDS_BODY_BYTES)),
+        )
+        .route(
+            "/dictionary/suggestions/scan",
+            get(get_dictionary_suggestion_scan).post(start_dictionary_suggestion_scan),
+        )
+        .route(
+            "/dictionary/suggestions/scan/stop",
+            post(stop_dictionary_suggestion_scan),
         )
         .route(
             "/dictionary/import",
@@ -2472,7 +2634,8 @@ mod tests {
 
     /// PR-23, DD-56: `GET /dictionary/settings` carries the person's activation choice as
     /// `suggest_from_chats`, and `POST /dictionary/settings` takes only `learn_from_chats`
-    /// and `agent_writes`. The request does not refuse a field it does not know, so a body
+    /// and `agent_writes`, plus, since 2026-11-13, the person's `keep_suggesting` answer to
+    /// the offer to turn suggestions off. The request does not refuse a field it does not know, so a body
     /// that also names `suggest_from_chats` is accepted (200), and the activation stays as
     /// it was, in the answer, in the configuration and in its version marker: only
     /// `POST /dictionary/activation` changes it.
@@ -2484,7 +2647,8 @@ mod tests {
         crate::routes::session::diverge_tests::install_test_user_action_key();
         let state = AppState::new().await.unwrap();
 
-        // The request type names exactly the two store settings.
+        // The request type names exactly the two store settings and the person's answer to
+        // the offer to turn suggestions off; none of them is `suggest_from_chats`.
         let fields = serde_json::to_value(DictionarySettingsRequest::default()).unwrap();
         let fields: BTreeSet<&str> = fields
             .as_object()
@@ -2492,7 +2656,10 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect();
-        assert_eq!(fields, BTreeSet::from(["agent_writes", "learn_from_chats"]));
+        assert_eq!(
+            fields,
+            BTreeSet::from(["agent_writes", "keep_suggesting", "learn_from_chats"])
+        );
 
         let activation = suggest_from_chats();
         let marker = || {

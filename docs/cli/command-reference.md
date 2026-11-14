@@ -451,7 +451,23 @@ Show the dictionary's settings, or change them. Raising a setting asks for confi
 **Options:**
 
 - **`--agent-writes <MODE>`**: What the agent's terms do: wait for you (`suggest`), go in when you ask or agree (`on_request`, the default), or go in at once (`add`)
-- **`--learn-from-chats <ON|OFF>`**: Also find terms in the messages you write, automatically, on this computer
+- **`--learn-from-chats <ON|OFF>`**: Suggest words from the messages you type in chats on public models, on this computer; you keep or dismiss each one
+
+#### dictionary suggestions [list|keep|dismiss|scan]
+
+The words waiting for you to keep or dismiss: words found in your own messages (**Suggest words from my messages**, `settings --learn-from-chats on`) and the agent's suggested terms. Listing works without a terminal, which lists only public words; keeping, dismissing and finding words need you at an interactive terminal and are refused in an agent's shell.
+
+- **`suggestions`** or **`suggestions list`** (`ls`), with **`--format text|json`**: one line per word, with where it came from and its id. When you have dismissed most suggested words, it also says that Biorouter now waits for more chats before suggesting a word, and how to turn suggestions off.
+- **`suggestions keep TERM|ID…`** and **`suggestions dismiss TERM|ID…`**: name words by spelling or by id. A dismissed word is never suggested again. Each keep or dismiss of a word found in your messages counts toward how many chats a word needs (two, or more when you dismiss most); the counts stay in your dictionary on this computer.
+- **`suggestions scan`**: read your own chats on public models from the last 30 days, at most 100, once, and suggest the words that show up in two or more of them. It shows its progress and ends with what it found; Ctrl+C stops it after the chat it is reading and keeps what it found. It needs suggestions on.
+
+```bash
+biorouter dictionary settings --learn-from-chats on
+biorouter dictionary suggestions scan
+biorouter dictionary suggestions
+biorouter dictionary suggestions keep EPAS1 HIF2A
+biorouter dictionary suggestions dismiss getValue
+```
 
 #### dictionary clear [options]
 
@@ -2037,7 +2053,7 @@ At your own interactive terminal, press Ctrl+T or type `/dictate` to record into
 
 `BIOROUTER_CLI_DICTATION_KEY` changes the Ctrl key letter; an empty value turns off the chord while `/dictate` remains available. When it matches `BIOROUTER_CLI_NEWLINE_KEY`, the newline chord wins and the TUI reports the clash. In the TUI a letter the interface already binds (B, C, D or O) is not offered as the dictation key. `/dictate status` shows the terminal state, and `/dictate retry` retries a failed transcription while its recording remains in memory for up to five minutes. After three failures within ten seconds, dictation pauses for that chat.
 
-`/dictionary add <term>` adds a term from the current TUI or classic chat. A term added in a private chat stays private and carries that chat's institution scope. `/dictionary review` opens the suggested terms for local review. A correction to a dictated term before sending can teach the personal dictionary after the message is accepted.
+`/dictionary add <term>` adds a term from the current TUI or classic chat. A term added in a private chat stays private and carries that chat's institution scope. `/dictionary review` opens the suggested terms for local review. `/dictionary scan` looks for words in your recent chats on public models, as `biorouter dictionary suggestions scan` does; Esc (TUI) or Ctrl+C (classic chat) stops it and keeps what it found. A correction to a dictated term before sending can teach the personal dictionary after the message is accepted.
 
 ### Themes
 

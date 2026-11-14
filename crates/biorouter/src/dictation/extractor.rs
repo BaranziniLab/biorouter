@@ -258,11 +258,17 @@ fn proposals<'a>(words: impl Iterator<Item = &'a str>) -> Vec<String> {
 }
 
 /// Runs on a blocking worker. Caller must not await this on the reply path.
+///
+/// Nothing is learned from a chat whose tier is Private (owner, 2026-11-13): suggestions
+/// come only from chats on public models, judged by the chat's own tier (its stored tier
+/// and the tier of the model its turn used, which counts decision models, DR-33), because
+/// a private chat can hold patient data that no detector is sure to catch. This is the one
+/// place both the live hooks and **Find words in my recent chats** pass through.
 pub fn observe(
     store: &store::DictionaryStore,
     item: Observation<'_>,
 ) -> Result<(), store::StoreError> {
-    if !item.eligible {
+    if !item.eligible || item.tier.is_private() {
         return Ok(());
     }
     // Pure and bounded, so a message with nothing to propose never reads the store.
@@ -671,6 +677,7 @@ mod tests {
                         reason: None,
                         suggested_in: None,
                         seen: 1,
+                        seen_in: Vec::new(),
                         created_at: at,
                         updated_at: at,
                         provenance: None,

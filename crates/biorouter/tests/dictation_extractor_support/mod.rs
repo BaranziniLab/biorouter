@@ -147,6 +147,17 @@ impl Fixture {
     /// An agent with the Dictionary capability loaded, as new chats have it once the
     /// person ticked **Suggest dictionary words from my chats**. `dictionary` is a
     /// platform extension: a `Builtin` config naming it is refused as an unknown builtin.
+    /// An agent without the `dictionary` capability: the person's own switch is what
+    /// admits an observation (owner, 2026-11-13).
+    pub fn agent_without_the_capability(&self) -> Agent {
+        Agent::with_config(AgentConfig::new(
+            Arc::clone(&self.sessions),
+            Arc::new(PermissionManager::new(self.root.path().to_path_buf())),
+            None,
+            BioRouterMode::Auto,
+        ))
+    }
+
     pub async fn agent(&self) -> Agent {
         let agent = Agent::with_config(AgentConfig::new(
             Arc::clone(&self.sessions),

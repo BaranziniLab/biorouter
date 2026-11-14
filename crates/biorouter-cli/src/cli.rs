@@ -1589,7 +1589,8 @@ enum DictionaryCommand {
         )]
         agent_writes: Option<String>,
 
-        /// Also find terms in the messages you write, automatically, on this computer
+        /// Suggest words from the messages you type in chats on public models, on this
+        /// computer; you keep or dismiss each one
         #[arg(
             long = "learn-from-chats",
             value_name = "ON|OFF",
@@ -1610,6 +1611,83 @@ enum DictionaryCommand {
         #[arg(long)]
         suggested_only: bool,
     },
+
+    /// The words waiting for you to keep or dismiss: words found in your own messages and
+    /// the agent's suggested terms. Without a terminal only the public ones are listed
+    #[command(about = "List, keep, dismiss or find suggested words")]
+    Suggestions {
+        #[command(subcommand)]
+        command: Option<SuggestionsCommand>,
+
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: Option<String>,
+    },
+}
+
+/// `biorouter dictionary suggestions`. Keeping, dismissing and finding words need a person
+/// at an interactive terminal; listing does not.
+#[derive(Subcommand)]
+enum SuggestionsCommand {
+    /// The words waiting for you (what `suggestions` alone prints)
+    #[command(
+        about = "List the suggested words waiting for you",
+        visible_alias = "ls"
+    )]
+    List {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: Option<String>,
+    },
+
+    /// Keep suggested words, named by the word or by id
+    #[command(about = "Keep suggested words")]
+    Keep {
+        #[arg(value_name = "TERM|ID", required = true)]
+        terms: Vec<String>,
+    },
+
+    /// Dismiss suggested words, named by the word or by id; a dismissed word is never
+    /// suggested again
+    #[command(about = "Dismiss suggested words")]
+    Dismiss {
+        #[arg(value_name = "TERM|ID", required = true)]
+        terms: Vec<String>,
+    },
+
+    /// Read your own chats on public models from the last 30 days (at most 100) once, on
+    /// this computer, and suggest the words that show up in several of them. Ctrl+C stops
+    /// it after the chat it is reading and keeps what it found
+    #[command(about = "Find words in your recent chats")]
+    Scan {},
+}
+
+impl SuggestionsCommand {
+    fn into_action(
+        command: Option<Self>,
+        format: Option<String>,
+    ) -> crate::commands::dictionary::Action {
+        use crate::commands::dictionary::{Action, ListFormat};
+        let listed = |format: Option<String>| Action::Suggestions {
+            format: match format.as_deref() {
+                Some("json") => ListFormat::Json,
+                _ => ListFormat::Text,
+            },
+        };
+        match command {
+            None => listed(format),
+            Some(Self::List { format: inner }) => listed(inner.or(format)),
+            Some(Self::Keep { terms }) => Action::KeepSuggestions { terms },
+            Some(Self::Dismiss { terms }) => Action::DismissSuggestions { terms },
+            Some(Self::Scan {}) => Action::ScanSuggestions,
+        }
+    }
 }
 
 impl DictionaryCommand {
@@ -1682,6 +1760,9 @@ impl DictionaryCommand {
                 suggest_from_chats: suggest_from_chats.map(|value| value == "on"),
             },
             Self::Clear { suggested_only } => Action::Clear { suggested_only },
+            Self::Suggestions { command, format } => {
+                SuggestionsCommand::into_action(command, format)
+            }
         }
     }
 }

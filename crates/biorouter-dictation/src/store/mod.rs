@@ -27,6 +27,7 @@
 mod lock;
 
 pub mod fold;
+pub mod learning;
 pub mod observe;
 pub mod ops;
 pub mod schema;
@@ -44,6 +45,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, SystemTime};
 
 pub use fold::fold_key;
+pub use learning::ChatLearning;
 pub use observe::{Observation, ObservationKind, ObservationStamp, Observed};
 pub use ops::{AddOutcome, EntryEdit, NewTerm, Reach};
 pub use schema::{
@@ -1320,6 +1322,7 @@ mod tests {
                     reason: None,
                     suggested_in: None,
                     seen: 1,
+                    seen_in: Vec::new(),
                     created_at: at,
                     updated_at: at,
                     provenance: None,

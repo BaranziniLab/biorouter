@@ -8,7 +8,7 @@ import { DICTATION_MESSAGES } from '../dictation/copy';
 import { refreshDictationStatus, resetDictationStoreForTests } from '../dictation/dictationStore';
 import { fakeStatusApi, speechStatus } from '../dictation/dictationTestKit';
 import { DICTIONARY_LABELS, DICTIONARY_MESSAGES } from './copy';
-import { answer, entry, listing, settings } from './dictionaryTestKit';
+import { answer, entry, listing, scan, settings } from './dictionaryTestKit';
 import { groupEntries, lineTwo, privateLine, reviewRows, usesMeta } from './rows';
 
 const api = vi.hoisted(() => ({
@@ -26,6 +26,9 @@ const api = vi.hoisted(() => ({
   keepDictionaryEntries: vi.fn(),
   importDictionary: vi.fn(),
   exportDictionary: vi.fn(),
+  getDictionarySuggestionScan: vi.fn(),
+  startDictionarySuggestionScan: vi.fn(),
+  stopDictionarySuggestionScan: vi.fn(),
 }));
 vi.mock('../../api', () => api);
 vi.mock('../../utils/userAction', () => ({
@@ -39,11 +42,13 @@ vi.mock('../ui/scroll-area', () => ({
 
 import DictionaryView from './DictionaryView';
 import { resetDictionaryStoreForTests } from './useDictionary';
+import { resetSuggestionScanForTests } from './useSuggestionScan';
 
 let rows: DictionaryEntryView[] = [];
 
 beforeEach(() => {
   resetDictionaryStoreForTests();
+  resetSuggestionScanForTests();
   resetDictationStoreForTests(fakeStatusApi(() => speechStatus()).api);
   for (const fn of Object.values(api)) fn.mockReset();
   rows = [];
@@ -55,6 +60,7 @@ beforeEach(() => {
   api.dismissDictionarySuggestions.mockResolvedValue(answer(200, { dismissed: 1 }));
   api.keepDictionaryEntries.mockResolvedValue(answer(200, { kept: 1 }));
   api.deleteDictionaryEntries.mockResolvedValue(answer(200, { deleted: 1 }));
+  api.getDictionarySuggestionScan.mockResolvedValue(answer(200, scan()));
 });
 
 afterEach(() => {
@@ -245,11 +251,12 @@ describe('the page', () => {
     await userEvent.click(screen.getByRole('button', { name: DICTIONARY_LABELS.pageMenu }));
     expect(screen.getByTestId('dictionary-delete-all')).toHaveAttribute('data-disabled');
     await userEvent.keyboard('{Escape}');
+    // A suggestion's answers are on the row, not behind its menu: no Keep without write
+    // authority, and Dismiss shown but refused before the click.
     const suggested = screen.getByText('Maybe').closest('[data-dictionary-row]') as HTMLElement;
-    await userEvent.click(
-      within(suggested).getByRole('button', { name: DICTIONARY_LABELS.moreActions('Maybe') })
-    );
-    expect(screen.getByTestId('dictionary-row-dismiss')).toHaveAttribute('data-disabled');
+    expect(within(suggested).queryByTestId('dictionary-row-accept')).toBeNull();
+    expect(within(suggested).getByTestId('dictionary-row-dismiss')).toBeDisabled();
+    await userEvent.click(within(suggested).getByTestId('dictionary-row-dismiss'));
     expect(screen.getByTestId('dictionary-agent-writes')).toBeDisabled();
     expect(
       screen.getByRole('checkbox', { name: 'Suggest dictionary words from my chats' })
@@ -552,7 +559,7 @@ describe('no row moves under a hovering pointer', () => {
     expect(count()).toBe('4');
   });
 
-  it('keeps an accepted suggestion in place, saying so, until the pointer leaves', async () => {
+  it('keeps a kept suggestion in place, saying so, until the pointer leaves', async () => {
     const suggestion = entry({ written: 'EPAS1', status: 'suggested' });
     rows = [suggestion, entry({ written: 'Next one', status: 'suggested' })];
     renderPage();
@@ -563,7 +570,7 @@ describe('no row moves under a hovering pointer', () => {
       listing([{ ...suggestion, status: 'active', reviewed: true }, rows[1]])
     );
     const row = screen.getByText('EPAS1').closest('[data-dictionary-row]') as HTMLElement;
-    await userEvent.click(within(row).getByRole('button', { name: 'Accept EPAS1' }));
+    await userEvent.click(within(row).getByRole('button', { name: 'Keep EPAS1' }));
     await waitFor(() => expect(row).toHaveAttribute('data-settled', 'accepted'));
     expect(within(row).getByRole('status')).toHaveTextContent(DICTIONARY_LABELS.settled.accepted);
     expect(row.closest('[data-dictionary-section]')).toHaveAttribute(
@@ -576,6 +583,350 @@ describe('no row moves under a hovering pointer', () => {
       const moved = screen.getByText('EPAS1').closest('[data-dictionary-section]');
       expect(moved).toHaveAttribute('data-dictionary-section', 'user');
     });
+  });
+});
+
+describe('a waiting row’s answers', () => {
+  it('shows Keep and Dismiss on a suggestion at rest, outside the hover cluster, and sends each', async () => {
+    const epas = entry({ written: 'EPAS1', status: 'suggested', source: 'auto' });
+    const hif = entry({ written: 'HIF1A', status: 'suggested', source: 'auto' });
+    rows = [epas, hif];
+    renderPage();
+    const row = (await screen.findByText('EPAS1')).closest('[data-dictionary-row]') as HTMLElement;
+    const keep = within(row).getByRole('button', { name: 'Keep EPAS1' });
+    const dismiss = within(row).getByRole('button', { name: 'Dismiss EPAS1' });
+    expect(keep).toHaveTextContent(DICTIONARY_LABELS.keep);
+    expect(dismiss).toHaveTextContent(DICTIONARY_LABELS.dismiss);
+    // Always visible: not in the cluster that shows only on hover or focus.
+    expect(keep.closest('.br-row-actions')).toBeNull();
+    expect(dismiss.closest('.br-row-actions')).toBeNull();
+    expect(within(row).queryByText('Accept')).toBeNull();
+    await userEvent.click(keep);
+    await waitFor(() =>
+      expect(api.acceptDictionarySuggestions).toHaveBeenCalledWith(
+        expect.objectContaining({ body: { ids: [epas.id] }, headers: { 'X-User-Action': 'proof' } })
+      )
+    );
+    const other = screen.getByText('HIF1A').closest('[data-dictionary-row]') as HTMLElement;
+    await userEvent.click(within(other).getByRole('button', { name: 'Dismiss HIF1A' }));
+    await waitFor(() =>
+      expect(api.dismissDictionarySuggestions).toHaveBeenCalledWith(
+        expect.objectContaining({ body: { ids: [hif.id] }, headers: { 'X-User-Action': 'proof' } })
+      )
+    );
+  });
+
+  it('keeps Edit…, Copy term and the chat in the ⋯ menu, and no answer there', async () => {
+    rows = [entry({ written: 'EPAS1', status: 'suggested', source: 'auto', suggested_in: 's1' })];
+    renderPage();
+    const row = (await screen.findByText('EPAS1')).closest('[data-dictionary-row]') as HTMLElement;
+    await userEvent.click(
+      within(row).getByRole('button', { name: DICTIONARY_LABELS.moreActions('EPAS1') })
+    );
+    expect(screen.getByRole('menuitem', { name: DICTIONARY_LABELS.editMenu })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: DICTIONARY_LABELS.copyTerm })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: DICTIONARY_LABELS.openChat })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: DICTIONARY_LABELS.dismiss })).toBeNull();
+  });
+
+  it('shows the agent’s unreviewed row the same way: Keep and Remove at rest', async () => {
+    const agentRow = entry({ written: 'Agent new', source: 'agent', reviewed: false });
+    rows = [agentRow];
+    renderPage();
+    const row = (await screen.findByText('Agent new')).closest(
+      '[data-dictionary-row]'
+    ) as HTMLElement;
+    const keep = within(row).getByTestId('dictionary-row-keep');
+    expect(keep).toHaveAccessibleName('Keep Agent new');
+    expect(keep.closest('.br-row-actions')).toBeNull();
+    expect(within(row).getByTestId('dictionary-row-remove')).toHaveAccessibleName(
+      'Remove Agent new'
+    );
+    await userEvent.click(keep);
+    await waitFor(() =>
+      expect(api.keepDictionaryEntries).toHaveBeenCalledWith(
+        expect.objectContaining({ body: { ids: [agentRow.id] } })
+      )
+    );
+  });
+
+  it('says Kept in place for a suggestion kept under the pointer', async () => {
+    const suggestion = entry({ written: 'EPAS1', status: 'suggested' });
+    rows = [suggestion];
+    renderPage();
+    await screen.findByText('EPAS1');
+    fireEvent.pointerEnter(screen.getByTestId('dictionary-groups'));
+    const row = screen.getByText('EPAS1').closest('[data-dictionary-row]') as HTMLElement;
+    await userEvent.click(within(row).getByRole('button', { name: 'Keep EPAS1' }));
+    await waitFor(() => expect(within(row).getByRole('status')).toHaveTextContent('Kept'));
+    expect(within(row).queryByRole('button', { name: 'Keep EPAS1' })).toBeNull();
+  });
+
+  it('asks Keep selected and Dismiss selected in the review dialog, under the keep sentence', async () => {
+    rows = [entry({ written: 'EPAS1', status: 'suggested' })];
+    renderPage();
+    await userEvent.click(await screen.findByTestId('dictionary-review-all'));
+    const dialog = await screen.findByTestId('dictionary-review-dialog');
+    expect(within(dialog).getByTestId('dictionary-review-accept')).toHaveTextContent(
+      'Keep selected'
+    );
+    expect(within(dialog).getByTestId('dictionary-review-dismiss')).toHaveTextContent(
+      'Dismiss selected'
+    );
+    expect(
+      within(dialog).getByText(
+        'A kept word starts shaping dictation. A dismissed one is not suggested again.'
+      )
+    ).toBeInTheDocument();
+  });
+});
+
+describe('Find words in my recent chats', () => {
+  const on = (overrides: Parameters<typeof settings>[0] = {}) =>
+    api.getDictionarySettings.mockResolvedValue(
+      answer(200, settings({ learn_from_chats: true, ...overrides }))
+    );
+
+  it('is offered only while Suggest words from my messages is on', async () => {
+    renderPage();
+    await screen.findByTestId('dictionary-learn-from-chats');
+    expect(screen.queryByTestId('dictionary-scan-start')).toBeNull();
+    expect(api.getDictionarySuggestionScan).not.toHaveBeenCalled();
+  });
+
+  it('is offered, under the switch, once suggestions are on', async () => {
+    on();
+    renderPage();
+    const start = await screen.findByTestId('dictionary-scan-start');
+    expect(start).toHaveTextContent('Find words in my recent chats');
+    expect(start).toBeEnabled();
+    expect(
+      within(screen.getByTestId('dictionary-learn-from-chats-group')).getByTestId(
+        'dictionary-scan-start'
+      )
+    ).toBe(start);
+    // Read once on mount, so a scan another window started shows here.
+    await waitFor(() => expect(api.getDictionarySuggestionScan).toHaveBeenCalledTimes(1));
+    expect(api.getDictionarySuggestionScan).toHaveBeenCalledWith(
+      expect.objectContaining({ headers: { 'X-User-Action': 'proof' } })
+    );
+  });
+
+  it('is not offered to a caller that may not write', async () => {
+    on({
+      authority: {
+        ...settings().authority,
+        write: { allowed: false, reason: 'This host does not allow dictionary edits.' },
+      },
+    });
+    renderPage();
+    await screen.findByTestId('dictionary-learn-from-chats');
+    expect(screen.queryByTestId('dictionary-scan-start')).toBeNull();
+  });
+
+  it('shows its progress with Stop, then how it ended, and reads the listing again', async () => {
+    on();
+    api.startDictionarySuggestionScan.mockResolvedValue(
+      answer(200, scan({ state: 'running', chats_read: 0, chats_total: 3, words_found: 1 }))
+    );
+    renderPage();
+    const start = await screen.findByTestId('dictionary-scan-start');
+    await waitFor(() => expect(api.getDictionarySuggestionScan).toHaveBeenCalledTimes(1));
+    api.getDictionarySuggestionScan.mockImplementation(async () => {
+      // The scan queued a suggestion; only a listing read after it ends can show it.
+      rows = [entry({ written: 'HIF1A', status: 'suggested', source: 'auto' })];
+      return answer(
+        200,
+        scan({ state: 'finished', chats_read: 3, chats_total: 3, words_found: 2 })
+      );
+    });
+    fireEvent.click(start);
+    const status = screen.getByTestId('dictionary-scan-status');
+    await waitFor(() =>
+      expect(status).toHaveTextContent('Reading chat 1 of 3, 1 word found so far')
+    );
+    expect(status).toHaveAttribute('aria-live', 'polite');
+    expect(status).toHaveClass('text-text-muted');
+    expect(screen.queryByTestId('dictionary-scan-start')).toBeNull();
+    expect(screen.getByTestId('dictionary-scan-stop')).toHaveTextContent('Stop');
+    expect(screen.queryByText('HIF1A')).toBeNull();
+    expect(api.startDictionarySuggestionScan).toHaveBeenCalledWith(
+      expect.objectContaining({ headers: { 'X-User-Action': 'proof' } })
+    );
+    const listed = api.listDictionaryEntries.mock.calls.length;
+
+    await waitFor(
+      () =>
+        expect(screen.getByTestId('dictionary-scan-status')).toHaveTextContent(
+          'Read 3 chats. 2 new words to review.'
+        ),
+      { timeout: 3000 }
+    );
+    expect(await screen.findByText('HIF1A')).toBeInTheDocument();
+    expect(api.listDictionaryEntries.mock.calls.length).toBeGreaterThan(listed);
+    expect(screen.getByTestId('dictionary-scan-start')).toBeEnabled();
+  });
+
+  it('says so when a scan finds nothing', async () => {
+    on();
+    api.startDictionarySuggestionScan.mockResolvedValue(
+      answer(200, scan({ state: 'finished', chats_read: 1, chats_total: 1, words_found: 0 }))
+    );
+    renderPage();
+    fireEvent.click(await screen.findByTestId('dictionary-scan-start'));
+    await waitFor(() =>
+      expect(screen.getByTestId('dictionary-scan-status')).toHaveTextContent(
+        'Read 1 chat. No new words found.'
+      )
+    );
+  });
+
+  it('stops when asked and says where it stopped', async () => {
+    on();
+    const running = scan({ state: 'running', chats_read: 1, chats_total: 40, words_found: 1 });
+    api.startDictionarySuggestionScan.mockResolvedValue(answer(200, running));
+    api.stopDictionarySuggestionScan.mockResolvedValue(answer(200, running));
+    renderPage();
+    const start = await screen.findByTestId('dictionary-scan-start');
+    await waitFor(() => expect(api.getDictionarySuggestionScan).toHaveBeenCalledTimes(1));
+    api.getDictionarySuggestionScan.mockResolvedValue(
+      answer(200, scan({ state: 'stopped', chats_read: 12, chats_total: 40, words_found: 2 }))
+    );
+    fireEvent.click(start);
+    const stop = await screen.findByTestId('dictionary-scan-stop');
+    fireEvent.click(stop);
+    await waitFor(() =>
+      expect(api.stopDictionarySuggestionScan).toHaveBeenCalledWith(
+        expect.objectContaining({ headers: { 'X-User-Action': 'proof' } })
+      )
+    );
+    // It stops after the chat it is reading; Stop is not offered twice.
+    await waitFor(() => expect(screen.getByTestId('dictionary-scan-stop')).toBeDisabled());
+    await waitFor(
+      () =>
+        expect(screen.getByTestId('dictionary-scan-status')).toHaveTextContent(
+          'Stopped after 12 of 40 chats. 2 new words to review.'
+        ),
+      { timeout: 3000 }
+    );
+    expect(api.stopDictionarySuggestionScan).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the daemon’s sentence for a refused start, in muted ink', async () => {
+    on();
+    const message =
+      'Turn on Suggest words from my messages first, then find words in your recent chats.';
+    api.startDictionarySuggestionScan.mockResolvedValue(
+      answer(409, { code: 'suggestions_off', message })
+    );
+    renderPage();
+    fireEvent.click(await screen.findByTestId('dictionary-scan-start'));
+    await waitFor(() =>
+      expect(screen.getByTestId('dictionary-scan-status')).toHaveTextContent(message)
+    );
+    expect(screen.getByTestId('dictionary-scan-status')).toHaveClass('text-text-muted');
+    expect(screen.getByTestId('dictionary-scan-start')).toBeEnabled();
+  });
+
+  it('shows a scan another window started, and a failure in muted ink', async () => {
+    on();
+    api.getDictionarySuggestionScan.mockResolvedValueOnce(
+      answer(200, scan({ state: 'running', chats_read: 3, chats_total: 10, words_found: 0 }))
+    );
+    api.getDictionarySuggestionScan.mockResolvedValue(
+      answer(200, scan({ state: 'failed', chats_read: 5, chats_total: 10, words_found: 0 }))
+    );
+    renderPage();
+    await waitFor(() =>
+      expect(screen.getByTestId('dictionary-scan-status')).toHaveTextContent(
+        'Reading chat 4 of 10, 0 words found so far'
+      )
+    );
+    await waitFor(
+      () =>
+        expect(screen.getByTestId('dictionary-scan-status')).toHaveTextContent(
+          'Biorouter could not finish reading your chats.'
+        ),
+      { timeout: 3000 }
+    );
+    expect(screen.getByTestId('dictionary-scan-status')).toHaveClass('text-text-muted');
+  });
+});
+
+describe('the offer to turn suggestions off', () => {
+  const offer = () =>
+    api.getDictionarySettings.mockResolvedValue(
+      answer(
+        200,
+        settings({
+          learn_from_chats: true,
+          suggestions: {
+            recent_kept: 3,
+            recent_decisions: 20,
+            required_chats: 3,
+            offer_turning_off: true,
+          },
+        })
+      )
+    );
+
+  it('is not shown while the person keeps most suggestions', async () => {
+    api.getDictionarySettings.mockResolvedValue(answer(200, settings({ learn_from_chats: true })));
+    renderPage();
+    await screen.findByTestId('dictionary-learn-from-chats');
+    expect(screen.queryByTestId('dictionary-back-off')).toBeNull();
+  });
+
+  it('says so in one line with its actions, and how many chats a word needs in its InfoTip', async () => {
+    offer();
+    renderPage();
+    const note = await screen.findByTestId('dictionary-back-off');
+    expect(within(note).getByTestId('dictionary-back-off-line')).toHaveTextContent(
+      /^You dismissed most suggestions, so Biorouter now suggests fewer\.$/
+    );
+    const help = within(note).getByTestId('dictionary-back-off-help');
+    expect(help).toHaveAccessibleName('About fewer suggestions');
+    expect(note).toHaveTextContent('A word now has to show up in 3 chats before it is suggested.');
+    expect(within(note).getByRole('button', { name: 'Turn off suggestions' })).toBeInTheDocument();
+    expect(within(note).getByRole('button', { name: 'Keep suggesting' })).toBeInTheDocument();
+    expect(note).toHaveClass('bg-background-fill');
+    expect(note).not.toHaveClass('bg-wash-danger');
+    expect(note).not.toHaveClass('bg-wash-warning');
+  });
+
+  it('turns suggestions off', async () => {
+    offer();
+    renderPage();
+    const note = await screen.findByTestId('dictionary-back-off');
+    await userEvent.click(within(note).getByRole('button', { name: 'Turn off suggestions' }));
+    await waitFor(() =>
+      expect(api.changeDictionarySettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: { learn_from_chats: false },
+          headers: { 'X-User-Action': 'proof' },
+        })
+      )
+    );
+  });
+
+  it('keeps suggesting', async () => {
+    offer();
+    renderPage();
+    const note = await screen.findByTestId('dictionary-back-off');
+    const settingsReads = api.getDictionarySettings.mock.calls.length;
+    await userEvent.click(within(note).getByRole('button', { name: 'Keep suggesting' }));
+    await waitFor(() =>
+      expect(api.changeDictionarySettings).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: { keep_suggesting: true },
+          headers: { 'X-User-Action': 'proof' },
+        })
+      )
+    );
+    // The settings are read again, so the note follows the daemon's answer.
+    await waitFor(() =>
+      expect(api.getDictionarySettings.mock.calls.length).toBeGreaterThan(settingsReads)
+    );
   });
 });
 
@@ -692,8 +1043,12 @@ describe('agent dictionary settings', () => {
   it('offers the chat extractor switch off, says why, and turns it on through the settings', async () => {
     renderPage();
     const learn = await screen.findByRole('checkbox', {
-      name: DICTIONARY_LABELS.agentSettings.learnFromChats,
+      name: 'Suggest words from my messages',
     });
+    expect(DICTIONARY_LABELS.agentSettings.learnFromChats).toBe('Suggest words from my messages');
+    expect(DICTIONARY_MESSAGES['MSG-LEARN-FROM-CHATS-HELP']).toBe(
+      'Biorouter looks for terms such as EPAS1 or UCSF in the messages you type in chats on public models, on this computer, and suggests a word once it shows up in two chats. You keep or dismiss each one, and a dismissed word is not suggested again.'
+    );
     expect(learn).not.toBeChecked();
     expect(learn).toBeEnabled();
     expect(learn).toHaveAccessibleDescription(DICTIONARY_MESSAGES['MSG-LEARN-FROM-CHATS-HELP']);
@@ -727,6 +1082,35 @@ describe('agent dictionary settings', () => {
     expect(learn).toBeDisabled();
     fireEvent.click(learn);
     expect(api.changeDictionarySettings).not.toHaveBeenCalled();
+  });
+
+  it('says why the chat extractor switch cannot be turned on, before the click', async () => {
+    api.getDictionarySettings.mockResolvedValue(
+      answer(
+        200,
+        settings({
+          authority: {
+            ...settings().authority,
+            raise_settings: {
+              allowed: false,
+              reason:
+                'Do this on the server: `biorouter dictionary settings <option>` (as the service user).',
+            },
+          },
+        })
+      )
+    );
+    renderPage();
+    const learn = await screen.findByRole('checkbox', {
+      name: DICTIONARY_LABELS.agentSettings.learnFromChats,
+    });
+    const reason =
+      'Do this on the server: `biorouter dictionary settings --learn-from-chats on` (as the service user).';
+    expect(learn).toBeDisabled();
+    expect(screen.getByTestId('dictionary-learn-from-chats-reason')).toHaveTextContent(reason);
+    expect(learn).toHaveAccessibleDescription(
+      `${DICTIONARY_MESSAGES['MSG-LEARN-FROM-CHATS-HELP']} ${reason}`
+    );
   });
 
   it('lets a known no-raise caller turn the chat extractor off', async () => {

@@ -981,6 +981,10 @@ impl CliSession {
             InputResult::DictionaryAdd(term) => self.add_dictionary_term(&term).await,
             #[cfg(feature = "dictation")]
             InputResult::DictionaryReview => review_dictionary_in_session(),
+            #[cfg(feature = "dictation")]
+            InputResult::DictionaryScan => {
+                crate::commands::dictionary::scan_in_classic_session().await;
+            }
             InputResult::FolderAccess(args) => {
                 eprintln!("{}", self.folder_access_command(&args));
             }

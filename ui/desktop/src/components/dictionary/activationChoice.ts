@@ -116,8 +116,9 @@ export function useDictionaryActivationChoice(status: DictationStatus | null) {
   };
   const mode = settings?.agent_writes ?? 'on_request';
   const base = dictationMessage('MSG-SETUP-SUGGEST');
-  const withoutLast = base.slice(0, base.lastIndexOf(' A term can go into your dictionary'));
-  const help = `${settings?.learn_from_chats ? withoutLast : withoutLast.replace(' Biorouter also looks for terms in every message you write, on this computer.', '')} ${SETUP_SUGGEST_LAST_SENTENCE[mode]}`;
+  const first = base.slice(0, base.lastIndexOf(' A term can go into your dictionary'));
+  // Two sentences, the InfoTip's limit (owner rule, 2026-11-13: no walls of text).
+  const help = `${first} ${SETUP_SUGGEST_LAST_SENTENCE[mode]}`;
   return {
     checked,
     setChecked: changeChecked,

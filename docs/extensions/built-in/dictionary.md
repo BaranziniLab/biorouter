@@ -28,7 +28,7 @@ The agent cannot add aliases, activate a suggestion, change your words, import o
 
 An active unreviewed word shapes dictation. Its tool row has **Keep** and **Undo**, and the Dictionary page places it under **Added by the agent**. A suggested word has **Add to dictionary** on the tool row and appears under **Suggested**. **Review in Dictionary** opens the page. An agent word uses exact matching and carries no spoken forms or misrecognitions.
 
-The capability is separate from **Also find terms in my messages automatically**, which is controlled by the chat extractor.
+The capability is separate from **Suggest words from my messages**, the person's own switch for the chat extractor, which suggests terms the person types in chats on public models without any agent turn ([Measured by the person](../../dictation/dictionary.md#measured-by-the-person)).
 
 ## Example
 

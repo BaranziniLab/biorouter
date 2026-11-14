@@ -43,6 +43,9 @@ pub enum InputResult {
     DictionaryAdd(String),
     #[cfg(feature = "dictation")]
     DictionaryReview,
+    /// `/dictionary scan`: find words in the person's recent chats (owner, 2026-11-13).
+    #[cfg(feature = "dictation")]
+    DictionaryScan,
 }
 
 #[derive(Debug)]
@@ -314,6 +317,7 @@ fn dictation_slash_command(input: &str) -> Option<InputResult> {
                 .to_string(),
         )),
         "/dictionary review" => Some(InputResult::DictionaryReview),
+        "/dictionary scan" => Some(InputResult::DictionaryScan),
         _ => None,
     }
 }
@@ -389,6 +393,8 @@ const HELP_ROWS: &[(&str, &str)] = &[
     ("/dictionary add <term>", "Add a term from this chat"),
     #[cfg(feature = "dictation")]
     ("/dictionary review", "Review suggested dictionary terms"),
+    #[cfg(feature = "dictation")]
+    ("/dictionary scan", "Find words in your recent chats"),
     (
         "/folder-access [revoke <id>]",
         "List or revoke this chat's additional folder grants",
@@ -759,5 +765,9 @@ mod tests {
         assert!(
             matches!(handle_slash_command("/dictionary add EPAS1"), Some(InputResult::DictionaryAdd(term)) if term == "EPAS1")
         );
+        assert!(matches!(
+            handle_slash_command("/dictionary scan"),
+            Some(InputResult::DictionaryScan)
+        ));
     }
 }

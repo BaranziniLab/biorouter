@@ -20,6 +20,7 @@ pub mod extractor;
 pub mod file;
 pub mod paths;
 pub mod service;
+pub mod suggestion_scan;
 pub mod target;
 
 /// The catalog, the installer and the suitability rules, from the leaf crate, so a

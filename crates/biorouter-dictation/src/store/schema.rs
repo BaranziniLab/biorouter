@@ -11,6 +11,7 @@ use chrono::{DateTime, SubsecRound, Utc};
 use serde::{Deserialize, Serialize};
 
 use super::fold::fold_key;
+pub use super::learning::ChatLearning;
 
 /// `format` of `dictionary.json`.
 pub const STORE_FORMAT: &str = "biorouter.dictionary.store";
@@ -30,17 +31,13 @@ pub const LOCK_FILE: &str = ".lock";
 
 /// `settings.learn_from_chats` in a new store: off.
 ///
-/// The chat extractor (PR-24, DD-57) ships off, decided by the owner on 2026-11-10,
-/// because its precision gate M-21 has not run. The gate is an offline run over the
-/// person written messages of 200 of the owner's own sessions, leaving out every session
-/// that used a private model or holds patient data, with candidate tokens labelled by
-/// the owner (O-23). The session store records neither whose sessions are the owner's
-/// nor which hold patient data, so no test, build step or default can choose that set,
-/// and the labels can only come from the owner. Until a run reaches precision 0.8 or
-/// more at `seen ≥ 2`, the person turns learning on with **Also find terms in my
-/// messages automatically** on the Dictionary page or with
-/// `biorouter dictionary settings --learn-from-chats on`, and the page says why it
-/// starts off (MSG-LEARN-FROM-CHATS-HELP).
+/// Word suggestions from chats are a feature each person runs for themselves (owner,
+/// 2026-11-13, replacing the M-21 labelling gate of O-23 and O-44). It stays off until the
+/// person turns it on (O-44): with **Suggest words from my messages** on the Dictionary
+/// page or in Settings, or with `biorouter dictionary settings --learn-from-chats on`.
+/// Turning it on is a person's action, never an agent's. How well it picks words is then
+/// measured by that person's own **Keep** and **Dismiss**, kept in [`ChatLearning`] on this
+/// computer, and it suggests fewer words when most are dismissed.
 pub const LEARN_FROM_CHATS_DEFAULT: bool = false;
 
 /// The current time as the store writes it: whole seconds, so a timestamp reads
@@ -359,7 +356,17 @@ pub struct Entry {
     pub note: Option<String>,
     pub reason: Option<String>,
     pub suggested_in: Option<String>,
+    /// On an `auto` suggestion, 1 while it waits for more chats and 2 once it is listed for
+    /// review; 1 on every other row.
     pub seen: u32,
+    /// On an `auto` suggestion, a digest of each chat it was found in
+    /// ([`super::learning::chat_digest`]), oldest first, at most
+    /// [`super::learning::MAX_REQUIRED_CHATS`]. It is how a word counts once per chat, and
+    /// how many chats it needs before it is listed can rise when the person dismisses most
+    /// suggestions. Absent on every other row, and on a suggestion written before it
+    /// existed, so such a store's bytes are what an older build wrote.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub seen_in: Vec<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub provenance: Option<Provenance>,
@@ -464,6 +471,11 @@ pub struct StoreFile {
     /// had none, so such a store's bytes are what PR-13 wrote.
     #[serde(default)]
     pub sightings: Vec<Sighting>,
+    /// The person's own **Keep** and **Dismiss** on chat suggestions, which decide how
+    /// many chats a word needs before it is suggested. Absent until the first decision,
+    /// so a store whose owner never reviewed one is byte for byte what an older build wrote.
+    #[serde(default)]
+    pub chat_learning: ChatLearning,
 }
 
 impl Default for StoreFile {
@@ -476,6 +488,7 @@ impl Default for StoreFile {
             entries: Vec::new(),
             tombstones: Vec::new(),
             sightings: Vec::new(),
+            chat_learning: ChatLearning::default(),
         }
     }
 }
@@ -530,6 +543,12 @@ impl StoreFile {
             out.push_str(",\n  \"sightings\": ");
             list(&mut out, &self.sightings);
         }
+        if self.chat_learning != ChatLearning::default() {
+            out.push_str(",\n  \"chat_learning\": ");
+            out.push_str(
+                &serde_json::to_string(&self.chat_learning).expect("chat learning serializes"),
+            );
+        }
         out.push_str("\n}\n");
         out.into_bytes()
     }
@@ -563,6 +582,7 @@ mod tests {
             reason: None,
             suggested_in: None,
             seen: 1,
+            seen_in: Vec::new(),
             created_at: at,
             updated_at: "2026-11-04T17:02:11Z".parse().unwrap(),
             provenance: None,

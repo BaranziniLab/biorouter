@@ -1587,32 +1587,37 @@ async fn subagent_slash(session: &CliSession, app: &mut App, text: &str) {
     }
 }
 
+/// A row `/dictionary review` offers: a suggestion, or an agent row the person has not kept,
+/// and never a chat extractor suggestion still waiting for more chats (`seen` below 2), which
+/// no route, page or command lists either ("Auto rows with `seen` below 2 are never listed").
+#[cfg(feature = "dictation")]
+fn waiting_for_review(entry: &biorouter::security::dictionary_store::store::Entry) -> bool {
+    use biorouter::security::dictionary_store::store::{EntrySource, EntryStatus};
+    let pending = entry.status == EntryStatus::Suggested
+        || entry.source == EntrySource::Agent && !entry.reviewed;
+    pending && !(entry.source == EntrySource::Auto && entry.seen < 2)
+}
+
 /// Handle slash commands that the TUI services locally. Returns true if handled.
 /// (`/compact` is handled in `submit` since it drives a turn.)
 #[cfg(feature = "dictation")]
 async fn review_dictionary(app: &mut App, tui: &mut Tui, rx: &mut Events) -> Result<()> {
-    use crate::commands::dictionary::{authorize_session_action, Action};
-    use biorouter::security::dictionary_store::{
-        open_store,
-        store::{Entry, EntrySource, EntryStatus},
-    };
+    use crate::commands::dictionary::{authorize_session_action, dismiss_pending, Action};
+    use biorouter::security::dictionary_store::{open_store, store::Entry};
     authorize_session_action(&Action::Dismiss { ids: Vec::new() }).map_err(anyhow::Error::msg)?;
-    fn pending(entry: &Entry) -> bool {
-        entry.status == EntryStatus::Suggested
-            || entry.source == EntrySource::Agent && !entry.reviewed
-    }
     let store = open_store();
     let rows: Vec<Entry> = store
         .view()?
         .entries()
         .iter()
-        .filter(|entry| pending(entry))
+        .filter(|entry| waiting_for_review(entry))
         .cloned()
         .collect();
     if rows.is_empty() {
         app.push_note("Nothing to review.");
         return Ok(());
     }
+    let mut decided = false;
     for row in rows {
         app.modal = Some(PermissionModal {
             title: DICTIONARY_REVIEW_TITLE,
@@ -1663,6 +1668,7 @@ async fn review_dictionary(app: &mut App, tui: &mut Tui, rx: &mut Events) -> Res
                         biorouter::security::dictionary_store::store::schema::now(),
                     )
                 })?;
+                decided = true;
                 app.push_note("Kept.");
             }
             1 => {
@@ -1670,19 +1676,103 @@ async fn review_dictionary(app: &mut App, tui: &mut Tui, rx: &mut Events) -> Res
                     ids: vec![id.to_string()],
                 })
                 .map_err(anyhow::Error::msg)?;
-                store.write(|file| {
-                    Ok(file.remove_confirmed(
-                        &[id],
-                        pending,
-                        biorouter::security::dictionary_store::store::schema::now(),
-                    ))
-                })?;
+                // A dismissed chat suggestion counts as a Dismiss in the person's measure.
+                let now = biorouter::security::dictionary_store::store::schema::now();
+                store.write(|file| Ok(dismiss_pending(file, &[id], now)))?;
+                decided = true;
                 app.push_note("Dismissed.");
             }
             _ => break,
         }
     }
+    note_suggestion_offer(app, &store, decided);
     Ok(())
+}
+
+/// `/dictionary scan`: find words in the person's recent chats, as
+/// `biorouter dictionary suggestions scan` does. One note says it started and is replaced in
+/// place by its progress, so the scrollback gains no line per chat; Esc or Ctrl+C stops it
+/// after the chat it is reading, keeping what it found. A refusal (suggestions off, an
+/// agent's shell, managed policy) is a note, not an error: nothing failed.
+#[cfg(feature = "dictation")]
+async fn scan_dictionary(app: &mut App, tui: &mut Tui, rx: &mut Events) -> Result<()> {
+    use crate::commands::dictionary::{
+        line_scan_progress, scan_in_session, MSG_SCAN_STARTED_IN_SESSION,
+    };
+    use biorouter::dictation::suggestion_scan::{ScanProgress, ScanState};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex, PoisonError};
+
+    let stop = AtomicBool::new(false);
+    let latest: Arc<Mutex<Option<ScanProgress>>> = Arc::default();
+    let heard = Arc::clone(&latest);
+    let mut report = move |progress: &ScanProgress| {
+        *heard.lock().unwrap_or_else(PoisonError::into_inner) = Some(progress.clone());
+    };
+    app.push_note(MSG_SCAN_STARTED_IN_SESSION);
+    let line = app.scrollback.len() - 1;
+    let scan = scan_in_session(&stop, &mut report);
+    tokio::pin!(scan);
+    let ended = loop {
+        let progress = latest.lock().unwrap_or_else(PoisonError::into_inner).take();
+        if let Some(progress) = progress {
+            if progress.state == ScanState::Running && progress.chats_total > 0 {
+                app.scrollback[line] = Line::from(Span::styled(
+                    line_scan_progress(&progress),
+                    Style::new().fg(Color::Yellow),
+                ));
+            }
+        }
+        tui.draw(app)?;
+        tokio::select! {
+            ended = &mut scan => break ended,
+            event = rx.recv() => match event {
+                Some(Event::Key(key))
+                    if key.kind == KeyEventKind::Press
+                        && (key.code == KeyCode::Esc
+                            || key.code == KeyCode::Char('c')
+                                && key.modifiers.contains(KeyModifiers::CONTROL)) =>
+                {
+                    stop.store(true, Ordering::Release);
+                }
+                Some(_) => {}
+                None => {
+                    stop.store(true, Ordering::Release);
+                    break (&mut scan).await;
+                }
+            },
+            () = tokio::time::sleep(std::time::Duration::from_millis(200)) => {}
+        }
+    };
+    match ended {
+        Ok(lines) => {
+            for text in lines {
+                app.push_note(&text);
+            }
+        }
+        Err(reason) => app.push_note(&reason),
+    }
+    Ok(())
+}
+
+/// After a review that kept or dismissed anything, the offer to turn chat suggestions off
+/// when most were dismissed, as one note.
+#[cfg(feature = "dictation")]
+fn note_suggestion_offer(
+    app: &mut App,
+    store: &biorouter::security::dictionary_store::store::DictionaryStore,
+    decided: bool,
+) {
+    if !decided {
+        return;
+    }
+    let offer = store
+        .view()
+        .ok()
+        .and_then(|view| crate::commands::dictionary::offer_turning_off(view.file()));
+    if let Some(offer) = offer {
+        app.push_note(&offer);
+    }
 }
 
 /// The `/dictate` and `/dictionary` commands, checked before every other slash
@@ -1763,6 +1853,12 @@ async fn dictation_slash(
         }
         "/dictionary review" => {
             if let Err(reason) = review_dictionary(app, tui, rx).await {
+                app.push_error(&reason.to_string());
+            }
+            true
+        }
+        "/dictionary scan" => {
+            if let Err(reason) = scan_dictionary(app, tui, rx).await {
                 app.push_error(&reason.to_string());
             }
             true
@@ -2965,6 +3061,7 @@ async fn build_catalog(session: &CliSession) -> Vec<app::CompletionItem> {
         items.push(cmd("/dictate install", "Install a speech model"));
         items.push(cmd("/dictionary add", "Add a term from this chat"));
         items.push(cmd("/dictionary review", "Review suggested terms"));
+        items.push(cmd("/dictionary scan", "Find words in your recent chats"));
     }
     items.push(cmd(
         "/folder-access",
@@ -3131,6 +3228,10 @@ fn help_into(app: &mut App) {
             "add a term from this chat".into(),
         ),
         ("/dictionary review".into(), "review suggested terms".into()),
+        (
+            "/dictionary scan".into(),
+            "find words in your recent chats".into(),
+        ),
     ]);
     commands.extend(
         biorouter::agents::execute_commands::list_commands()
@@ -3366,6 +3467,77 @@ mod tests {
         assert_eq!(app.dictated_spans.len(), 1);
         app.set_input("older message".into());
         assert!(app.dictated_spans.is_empty());
+    }
+
+    /// `/dictionary review` never offers a chat extractor suggestion found in one chat only,
+    /// which the page and `biorouter dictionary suggestions` do not list either (the live
+    /// check of #491 found the review offering one).
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn the_review_offers_no_chat_suggestion_still_waiting_for_more_chats() {
+        use biorouter::security::dictionary_store::store::{
+            EntrySource, EntryTier, NewTerm, Reach, StoreFile,
+        };
+        let at = biorouter::security::dictionary_store::store::schema::now();
+        let mut file = StoreFile::default();
+        file.observe_auto_suggestion("ONCE5X", EntryTier::Public, "a", None, at)
+            .unwrap();
+        for chat in ["a", "b"] {
+            file.observe_auto_suggestion("TWICE5X", EntryTier::Public, chat, None, at)
+                .unwrap();
+        }
+        let mut agent = NewTerm::person("AGENT5X", EntryTier::Public);
+        agent.source = EntrySource::Agent;
+        file.add(agent, Reach::All, at).unwrap();
+        let offered: Vec<&str> = file
+            .entries
+            .iter()
+            .filter(|entry| super::waiting_for_review(entry))
+            .map(|entry| entry.written.as_str())
+            .collect();
+        assert_eq!(offered, ["TWICE5X", "AGENT5X"], "seen once is not offered");
+    }
+
+    /// After a dictionary review that kept or dismissed anything, the TUI notes the offer
+    /// to turn chat suggestions off when most were dismissed, the sentence `biorouter
+    /// dictionary suggestions` prints; not after a review that decided nothing, and not
+    /// while suggestions are off.
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn a_dictionary_review_that_decided_notes_the_offer_to_turn_suggestions_off() {
+        use biorouter::security::dictionary_store::store::DictionaryStore;
+        let root = tempfile::tempdir().unwrap();
+        let store = DictionaryStore::open(root.path().join("dictionary"));
+        store
+            .write(|file| {
+                file.settings.learn_from_chats = true;
+                for _ in 0..20 {
+                    file.chat_learning.record(false);
+                }
+                Ok(())
+            })
+            .unwrap();
+        let offer = crate::commands::dictionary::msg_suggest_fewer(4);
+        let noted = |decided: bool| {
+            let mut app = App::new(StatusInfo::default());
+            note_suggestion_offer(&mut app, &store, decided);
+            app.scrollback.iter().any(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+                    == offer
+            })
+        };
+        assert!(noted(true));
+        assert!(!noted(false));
+        store
+            .write(|file| {
+                file.settings.learn_from_chats = false;
+                Ok(())
+            })
+            .unwrap();
+        assert!(!noted(true), "suggestions are off");
     }
 
     #[cfg(feature = "dictation")]
