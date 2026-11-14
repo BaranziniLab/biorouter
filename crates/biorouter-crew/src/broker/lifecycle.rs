@@ -344,7 +344,9 @@ fn stop_and_wait(
             events: libc::POLLIN,
             revents: 0,
         };
-        let millis = left.as_millis().min(i32::MAX as u128) as i32;
+        // Rounded UP to a whole millisecond: truncating 1999.6 ms to 1999 let the wait end
+        // before the timeout it promises, which `stop_timeout` then reported as having passed.
+        let millis = left.as_nanos().div_ceil(1_000_000).min(i32::MAX as u128) as i32;
         let ready = unsafe { libc::poll(&mut poll, 1, millis) };
         if ready > 0 {
             ensure!(
@@ -359,6 +361,11 @@ fn stop_and_wait(
                 continue;
             }
             return Err(error).context("stop_failed: cannot wait for the broker to exit");
+        }
+        // poll's timeout is a lower bound in whole milliseconds; never say the broker outlived
+        // the timeout before it really has.
+        if Instant::now() < deadline {
+            continue;
         }
         bail!(
             "stop_timeout: The workspace's broker (process {pid}) was asked to stop and was still running after {} seconds, so the new program was not started. Try the restart again once it has stopped; biorouter-crew status --state-dir {} says whether it still runs.",
