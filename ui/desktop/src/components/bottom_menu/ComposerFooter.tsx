@@ -78,6 +78,8 @@ export interface ComposerFooterProps {
   tokenLimitModel?: string | null;
   /** Runs the manual compaction (`ChatInput` submits its compact trigger). */
   onCompact: () => void;
+  /** The tools this chat can call; the context card speaks up past the suggested limit. */
+  toolCount?: number | null;
   /** The chat's cost inputs, as `ChatInput` receives them from `BaseChat`. */
   inputTokens?: number;
   outputTokens?: number;
@@ -122,6 +124,7 @@ export function ComposerFooter({
   boundModel,
   tokenLimitModel,
   onCompact,
+  toolCount,
   inputTokens,
   outputTokens,
   sessionCosts,
@@ -162,6 +165,7 @@ export function ComposerFooter({
                 tokenLimitModel={tokenLimitModel}
                 showRemainingPercent
                 onCompact={onCompact}
+                toolCount={toolCount}
               />
             )}
             {inChat && COST_TRACKING_ENABLED && (
