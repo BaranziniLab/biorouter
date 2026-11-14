@@ -6,7 +6,7 @@
 
 Every row states what to do, what should happen, and what a failure looks like, because several of these fail by doing nothing visible, which reads as a pass. The **CI covers** column names the job or test that already holds a row's logic, so a reader knows the row checks the real device, account, browser or terminal, not the logic.
 
-Identifiers follow the [implementation plan](../dictation/implementation-plan.md): S1 to S20 are its surfaces, PR-01 to PR-33 its pull requests (PR-07 and PR-32 withdrawn), O-1 onward the owner's decisions, MSG-… the exact sentences in the [message catalog](../dictation/surfaces.md#message-catalog), and M-1 to M-22 the measurements of [testing and release](../dictation/testing-and-release.md#measurements) (M-9 and M-13 withdrawn).
+Identifiers follow the [implementation plan](../history/local-dictation-2026-11/implementation-plan.md): S1 to S20 are its surfaces, PR-01 to PR-33 its pull requests (PR-07 and PR-32 withdrawn), O-1 onward the owner's decisions, MSG-… the exact sentences in the [message catalog](../dictation/surfaces.md#message-catalog), and M-1 to M-22 the measurements of [testing and release](../dictation/testing-and-release.md#measurements) (M-9 and M-13 withdrawn).
 
 > **Warning.** Run this against an installed, signed build. A dev build uses a different configuration root, makes the launching terminal the process the macOS microphone prompt names, and is never notarized. A pass on a dev build is not a pass. Rows that say "dev app" are the only exception.
 
@@ -51,6 +51,34 @@ The commits of 2026-11-10 and their hosted runs, as GitHub recorded them; the re
 | `8955295b5` | the two test fixes, no other change | none of its own; no Rust file changed after `9a96e0132` | 42982772021 green on all eight jobs |
 
 So every code pull request on the branch has a fully green `rust.yml` run: PR-23, PR-30, PR-31 and PR-24 through 42949720898 at `491246227`, and PR-28 and PR-29 through 42975902058 at `9a96e0132`. Their `frontend.yml` run 42975905256 failed two tests that had not been updated for them: the second `windowDaemons.set` is PR-28's hidden capture and review windows, which reuse the daemon their owner window was attached with (`createAnywhereWindow` in `main.ts`), and the seventh switch is PR-29's **Server** section (`ExternalBackendSection.tsx`). `8955295b5` updates both tests and changes no product code; its `frontend.yml` run 42982772021 is green on all eight jobs.
+
+## CI at the merge
+
+Pull request #485 merged on 2026-11-14 through the batch pull request #501 (merge commit `4f86f4f1b`, batch head `071f5412a`). The batch ran under the job layout that pull request #498 introduced the day before: the old `test` matrix became `lib tests (ubuntu)`, three `integration (ubuntu, N/3)` shards, and `test (macos-latest)` and `test (windows-latest)`, which run a subset on a pull request and the full suite on `main`, nightly, on dispatch, with the `ci:full` label, or when `scripts/ci/choose-os-suite.sh` finds a change specific to the OS. The batch selected both full suites (14 changed files specific to macOS, 26 to Windows). Results read on 2026-11-14:
+
+| Workflow | Run on `071f5412a` | Result |
+|---|---|---|
+| `rust.yml` | 43543892891 | green: `guards`, `cross-check`, the socket gate, `lib tests (ubuntu)`, the three integration shards, `test (ubuntu-latest)`, `test (macos-latest)` and `test (windows-latest)`, both on the full suite; `cross-build-nightly` and `windows-native-dictation` skipped, as on every pull request |
+| `frontend.yml` | 43543892793 | green, `Dictation capture (Electron)` included |
+| `dictation-accuracy.yml` | 43543892953 | green, Tier 1 with `whisper-small.en-q8_0` |
+| Copilot native payloads | 43543892674 | green on all five platforms and the release gate |
+
+Where each dictation check runs since #498, with `cf8aff075`'s change that a push to `main` runs every integration shard's steps in one job, `integration (ubuntu, 1/1)`:
+
+| Check | Job | When |
+|---|---|---|
+| vendored whisper.cpp, fixture budget, build prerequisites | `guards` | every pull request and push |
+| engine build script, C and C++ in the cross images | `cross-check` | the Windows image on every pull request; both images on a push to `main` and on dispatch |
+| lib tests, the MSVC engine build (M-3) and the macOS self inspection | `lib tests (ubuntu)`; `test (macos-latest)` and `test (windows-latest)` on the full suite | every pull request on Ubuntu; the full macOS and Windows suites as above |
+| `dictation_engine_offline`, `dictation_worker_role`, `dictation_worker` | the offline step of the integration shards; on the full suites also `test (macos-latest)` (Metal) and `test (windows-latest)` (MSVC) | as above |
+| "Backends declare macOS 12.0" | `test (macos-latest)`, full suite | as above |
+| served dictation in Chromium and Firefox, the worklet build output | `integration (ubuntu, 3/3)` on a pull request; `integration (ubuntu, 1/1)`, which runs every shard's steps, on a push to `main`, nightly and dispatch | every pull request and push |
+| the self test on bullseye, old processors, Windows DLLs, capture absent from the daemon (P-10) | `cross-build-nightly` | nightly and dispatch |
+| the shipped mingw binaries on real Windows under a folder whose name is not ASCII (M-1) | `windows-native-dictation` | nightly and dispatch, after `cross-build-nightly` |
+| the worklet loaded from `app.asar` | `frontend.yml` `Dictation capture (Electron)` | every pull request and push |
+| Tier 1 accuracy | `dictation-accuracy.yml` | nightly, weekly for turbo, dispatch, and a pull request that touches the engine |
+
+The two steps that the batch's pull request run skipped by design (`cross-build-nightly`, `windows-native-dictation`) run on the next nightly or a dispatch of `rust.yml` on `main`; that run is the one to record here for them.
 
 ## Before you start
 
@@ -469,7 +497,7 @@ Dictation follows Biorouter's private and public rules. Like those rules everywh
 
 - [Testing and release](../dictation/testing-and-release.md): the tests per component, the CI jobs, the definition of every measurement and the announcement rule this checklist serves.
 - [Surfaces](../dictation/surfaces.md): the behaviour each row expects and the exact text of every MSG id.
-- [Implementation plan](../dictation/implementation-plan.md): the surfaces, the pull requests and the owner's decisions the rows follow.
+- [Implementation plan](../history/local-dictation-2026-11/implementation-plan.md): the surfaces, the pull requests and the owner's decisions the rows follow.
 - [Dictionary](../dictation/dictionary.md): the privacy invariants P-1 to P-16 behind the private term rows.
 - [Privacy and workspace test checklist](privacy-and-workspace-test-checklist.md): the checklist whose shape this one follows, for the privacy tiers dictation's rows rely on.
 - [CLI QA checklist](../cli/qa-checklist.md): the terminal checklist that points here for dictation.

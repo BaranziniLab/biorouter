@@ -1,7 +1,7 @@
 import { cn } from '../../utils';
 import { InfoTip } from '../ui/info-tip';
 import { Note } from '../ui/note';
-import { isBrowserSurface } from '../../utils/surface';
+import { useProvidersAreHostManaged } from '../../utils/providerSetupAccess';
 import {
   HOST_MANAGED_DESTINATION_HELP,
   HOST_MANAGED_DESTINATION_SHORT,
@@ -13,10 +13,11 @@ import {
  * The inline note that sits beside a provider/model control a browser session
  * cannot use (SD-1). See `hostManagedModelCopy.ts` for the ruling and the words.
  *
- * ⚠ **Renders nothing on the desktop**, so a call site can mount it
- * unconditionally. Every surface carrying it would otherwise repeat the same
- * `isBrowserSurface() && …` guard, and the one that forgot would ship a note
- * telling desktop users their model is fixed.
+ * ⚠ **Renders nothing on the desktop, nor in a browser the daemon lets set up
+ * providers (SD-18)**, so a call site can mount it unconditionally. Every surface
+ * carrying it would otherwise repeat the same `providersAreHostManaged() && …`
+ * guard, and the one that forgot would ship a note telling desktop users their
+ * model is fixed.
  *
  * ⚠ **`className` MERGES; it used to replace.** `className ?? '…'` meant every
  * call site had to restate the type, and five of the six then disagreed about
@@ -85,7 +86,8 @@ export function HostManagedModelNote({
   /** Overridden by `ConfigSettings`, which mounts one per frozen config key. */
   testId?: string;
 }) {
-  if (!isBrowserSurface()) return null;
+  const hostManaged = useProvidersAreHostManaged();
+  if (!hostManaged) return null;
 
   const copy = COPY[topic];
   const text = (

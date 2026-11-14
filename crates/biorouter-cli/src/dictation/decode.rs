@@ -203,7 +203,7 @@ pub fn decode_path(path: &Path) -> Result<Decoded, DecodeError> {
         return decode(Box::new(source), ext.as_deref(), kind, Trim::NONE);
     }
     let trim = if is_mp4(head) {
-        if !mp4_tables_fit(&mut file) {
+        if !mp4_boxes_fit(&mut file) {
             return Err(DecodeError::UnsupportedFormat { kind });
         }
         let trim = mp4_trim(&mut file).unwrap_or(Trim::NONE);
@@ -444,52 +444,227 @@ const COUNTED_TABLES: [(&[u8; 4], u64, u64); 5] = [
     (b"co64", 8, 8),
 ];
 
-/// Whether every sample table in an MP4 file's `moov` can hold the entries its count
-/// states. A count its own box cannot hold is damage, and the reader would reserve it
-/// whole: a damaged `stsc` count of 0xA5000001 asked for 44 GB, which macOS grants lazily
-/// and Linux refuses by aborting the process, where no `catch_unwind` reaches. Only box
-/// headers and counts are read. A file whose boxes cannot be walked is left for the reader
-/// to judge.
-fn mp4_tables_fit(source: &mut (impl Read + Seek)) -> bool {
+/// The sample entry types symphonia 0.5's MP4 reader reads as audio
+/// (`read_audio_sample_entry` in its `stsd.rs`), whose child boxes it then reads.
+const AUDIO_SAMPLE_ENTRIES: [&[u8; 4]; 16] = [
+    b"mp4a", b"alac", b"fLaC", b"Opus", b".mp3", b"lpcm", b"wave", b"alaw", b"ulaw", b"raw ",
+    b"sowt", b"twos", b"in24", b"in32", b"fl32", b"fl64",
+];
+
+/// The deepest the reader descends: `moov`, `trak`, `mdia`, `minf`, `stbl`, `stsd`, a
+/// sample entry, `wave`, then `esds`.
+const MAX_BOX_DEPTH: u8 = 12;
+
+/// Whether every box symphonia 0.5's MP4 reader will read from an MP4 file ends inside the
+/// box holding it, inside the file, and states counts and sizes its own bytes can hold.
+///
+/// The reader trusts what a box says about itself. It reserves every sample table from the
+/// count the table states, before reading one entry (a damaged `stsc` count of 0xA5000001
+/// asked for 44 GB), and it reads some boxes whole into a buffer of the length their header
+/// states: a handler's name (`hdlr`), the ALAC configuration (`alac`), a metadata item's
+/// value (`ilst`), and each packet, by the size `stsz` gives it. A 64 bit size can state
+/// exabytes. An allocation that fails ends the process on every OS, and one that succeeds
+/// lazily on macOS fails on Linux, where no `catch_unwind` reaches either.
+///
+/// So the walk follows the reader's own descent ([`children_at`]) through the top level
+/// `moov`, `meta` and `moof`, and refuses a box that runs past the box holding it or past
+/// the file, a header that does not fit in what is left of its parent, a table count its
+/// box cannot hold, and a sample larger than the file, whether `stsz` or a fragment
+/// ([`fragment_fits`]) sizes it. Only box headers, counts and sample sizes are read. A top
+/// level header the walk cannot read is refused too: the reader would add its size to its
+/// position unchecked.
+fn mp4_boxes_fit(source: &mut (impl Read + Seek)) -> bool {
     let Ok(len) = source.seek(SeekFrom::End(0)) else {
         return true;
     };
-    match find_box(source, 0, len, b"moov") {
-        Some((start, size)) => tables_fit_in(source, start, start.saturating_add(size).min(len), 0),
-        None => true,
-    }
-}
-
-/// [`mp4_tables_fit`] for the boxes between `from` and `to`, descending through
-/// `trak`, `mdia`, `minf` and `stbl` to the tables.
-fn tables_fit_in(source: &mut (impl Read + Seek), from: u64, to: u64, depth: u8) -> bool {
-    let mut at = from;
-    while at.saturating_add(8) <= to {
-        let Some((kind, body, end)) = box_at(source, at, to) else {
-            return true;
-        };
-        let container = [b"trak", b"mdia", b"minf", b"stbl"].contains(&&kind);
-        let fits = if container && depth < 4 {
-            tables_fit_in(source, body, end, depth + 1)
-        } else {
-            COUNTED_TABLES
-                .iter()
-                .find(|(table, ..)| **table == kind)
-                .is_none_or(|&(table, fixed, entry)| {
-                    table_fits(source, table, body, end - body, fixed, entry)
-                })
-        };
-        if !fits {
+    let mut at = 0u64;
+    while at.saturating_add(8) <= len {
+        // A header the walk cannot read, one smaller than itself, or a 64 bit size that
+        // wraps past the end of the address space: the reader adds that size to its
+        // position unchecked, and in a release build wraps and reads on unbounded.
+        let Some((kind, body, end)) = box_header(source, at, len) else {
             return false;
+        };
+        if kind == *b"moov" || kind == *b"meta" {
+            let first = body + if kind == *b"meta" { 4 } else { 0 };
+            if end > len || first > end || !boxes_fit_in(source, &kind, first, end, len, 0) {
+                return false;
+            }
+        }
+        // A fragment: its sample sizes and counts. One cut short at the end of a recording is
+        // left to the reader, which stops at the end of the file before it reads a packet.
+        if kind == *b"moof" && end <= len && !boxes_fit_in(source, &kind, body, end, len, 0) {
+            return false;
+        }
+        // Another top level box, an `mdat` above all, may run past the end of a recording
+        // cut short: the reader skips it, so the audio before the cut still decodes.
+        if end >= len {
+            break;
         }
         at = end;
     }
     true
 }
 
-/// The box whose header starts at `at`: its type, its body's offset, and its end, at most
-/// `to`.
-fn box_at(source: &mut (impl Read + Seek), at: u64, to: u64) -> Option<([u8; 4], u64, u64)> {
+/// [`mp4_boxes_fit`] for the children of `parent`, which lie between `from` and `to`, in a
+/// file of `file_len` bytes.
+fn boxes_fit_in(
+    source: &mut (impl Read + Seek),
+    parent: &[u8; 4],
+    from: u64,
+    to: u64,
+    file_len: u64,
+    depth: u8,
+) -> bool {
+    let mut at = from;
+    while at < to {
+        // Fewer bytes than a header: zeros end a QuickTime `udta` (its terminator); any
+        // other bytes would be read as a header that runs into the next box.
+        if to - at < 8 {
+            let mut rest = [0u8; 8];
+            let Some(rest) = rest.get_mut(..(to - at) as usize) else {
+                return false;
+            };
+            return source.seek(SeekFrom::Start(at)).is_ok()
+                && source.read_exact(rest).is_ok()
+                && rest.iter().all(|b| *b == 0);
+        }
+        let Some((kind, body, end)) = box_header(source, at, to) else {
+            return false;
+        };
+        if body > to || end > to {
+            return false;
+        }
+        if parent == b"stbl" && !table_fits(source, &kind, body, end - body, file_len) {
+            return false;
+        }
+        if !fragment_fits(source, parent, &kind, body, end - body, file_len) {
+            return false;
+        }
+        if let Some(offset) = children_at(parent, &kind, source, body) {
+            let Some(first) = body.checked_add(offset).filter(|first| *first <= end) else {
+                return false;
+            };
+            if depth >= MAX_BOX_DEPTH
+                || !boxes_fit_in(source, &kind, first, end, file_len, depth + 1)
+            {
+                return false;
+            }
+        }
+        at = end;
+    }
+    true
+}
+
+/// Where symphonia 0.5's MP4 reader reads the children of `kind` inside `parent`, as an
+/// offset into its body, or `None` for a box it reads as data or skips. `meta` carries a
+/// version and flags first, `stsd` those and its entry count, and an audio sample entry its
+/// fixed fields: 28 bytes, 44 in version 1, 64 in version 2 (any other version the reader
+/// refuses). A metadata item in `ilst` holds `data`, `mean` and `name` boxes.
+fn children_at(
+    parent: &[u8; 4],
+    kind: &[u8; 4],
+    source: &mut (impl Read + Seek),
+    body: u64,
+) -> Option<u64> {
+    match (parent, kind) {
+        (b"moov", b"trak" | b"mvex" | b"udta")
+        | (b"trak", b"edts" | b"mdia")
+        | (b"mdia", b"minf")
+        | (b"minf", b"stbl")
+        | (b"meta", b"ilst")
+        | (b"moof", b"traf")
+        | (b"ilst", _) => Some(0),
+        (b"udta", b"meta") => Some(4),
+        (b"stbl", b"stsd") => Some(8),
+        (b"stsd", entry) if AUDIO_SAMPLE_ENTRIES.contains(&entry) => {
+            let mut version = [0u8; 2];
+            source.seek(SeekFrom::Start(body.checked_add(8)?)).ok()?;
+            source.read_exact(&mut version).ok()?;
+            match u16::from_be_bytes(version) {
+                0 => Some(28),
+                1 => Some(44),
+                2 => Some(64),
+                _ => None,
+            }
+        }
+        (entry, b"wave") if AUDIO_SAMPLE_ENTRIES.contains(&entry) => Some(0),
+        _ => None,
+    }
+}
+
+/// Whether a fragmented file's sample sizes fit in a file of `file_len` bytes, and a run's
+/// count in its box: the reader reads each packet of a fragment into a buffer of the size
+/// `trun` gives it, or the default `tfhd` or `trex` sets, each up to 4 GiB. `trex` (in
+/// `mvex`) holds a default size after its version and flags, track and description index
+/// and duration. `tfhd` holds one after optional fields its flags name. `trun` names in its
+/// flags which fields each sample carries. Any other box, or a body too short to read, is
+/// left for the reader to judge.
+fn fragment_fits(
+    source: &mut (impl Read + Seek),
+    parent: &[u8; 4],
+    kind: &[u8; 4],
+    body: u64,
+    len: u64,
+    file_len: u64,
+) -> bool {
+    let mut read_u32 = |offset: u64| -> Option<u32> {
+        let mut word = [0u8; 4];
+        source
+            .seek(SeekFrom::Start(body.checked_add(offset)?))
+            .ok()?;
+        source.read_exact(&mut word).ok()?;
+        Some(u32::from_be_bytes(word))
+    };
+    let fits = |size: Option<u32>| size.is_none_or(|size| u64::from(size) <= file_len);
+    match (parent, kind) {
+        (b"mvex", b"trex") if len >= 20 => fits(read_u32(16)),
+        (b"traf", b"tfhd") => {
+            let Some(flags) = read_u32(0).map(|word| word & 0x00ff_ffff) else {
+                return true;
+            };
+            if flags & 0x10 == 0 {
+                return true;
+            }
+            // Track id, then the optional fields before the default size.
+            let at = 8 + [(0x01, 8), (0x02, 4), (0x08, 4)]
+                .iter()
+                .filter(|(flag, _)| flags & flag != 0)
+                .map(|(_, bytes)| bytes)
+                .sum::<u64>();
+            at + 4 > len || fits(read_u32(at))
+        }
+        (b"traf", b"trun") => {
+            let (Some(flags), Some(count)) = (read_u32(0), read_u32(4)) else {
+                return true;
+            };
+            let flags = flags & 0x00ff_ffff;
+            let first = 8 + [(0x001, 4), (0x004, 4)]
+                .iter()
+                .filter(|(flag, _)| flags & flag != 0)
+                .map(|(_, bytes)| bytes)
+                .sum::<u64>();
+            let fields = [0x100, 0x200, 0x400, 0x800];
+            let per_sample = 4 * fields.iter().filter(|flag| flags & *flag != 0).count() as u64;
+            if first > len || u64::from(count) * per_sample > len - first {
+                return false;
+            }
+            if flags & 0x200 == 0 {
+                return true;
+            }
+            // The size follows the duration when the run carries both.
+            let size_at = first + if flags & 0x100 != 0 { 4 } else { 0 };
+            (0..u64::from(count)).all(|n| fits(read_u32(size_at + n * per_sample)))
+        }
+        _ => true,
+    }
+}
+
+/// The box whose header starts at `at`, inside a parent that ends at `to`: its type, its
+/// body's offset, and its end as its header states it (`size` 0 runs to `to`), which may
+/// lie past `to`. `None` for a header that cannot be read or states a size smaller than
+/// itself.
+fn box_header(source: &mut (impl Read + Seek), at: u64, to: u64) -> Option<([u8; 4], u64, u64)> {
     source.seek(SeekFrom::Start(at)).ok()?;
     let mut head = [0u8; 16];
     source.read_exact(head.get_mut(..8)?).ok()?;
@@ -500,27 +675,31 @@ fn box_at(source: &mut (impl Read + Seek), at: u64, to: u64) -> Option<([u8; 4],
         size = u64::from_be_bytes(head.get(8..16)?.try_into().ok()?);
         header = 16;
     } else if size == 0 {
-        size = to - at;
+        size = to.checked_sub(at)?;
     }
     if size < header {
         return None;
     }
     let kind = head.get(4..8)?.try_into().ok()?;
-    let (body, end) = (at + header, at.checked_add(size)?.min(to));
-    // A header that runs past the box holding it is damage the walk cannot judge.
-    (body <= end).then_some((kind, body, end))
+    Some((kind, at + header, at.checked_add(size)?))
 }
 
-/// Whether the table whose body is `len` bytes at `body` holds the entries its count
-/// states. A body too short to read the count from is left for the reader to judge.
+/// Whether the table `kind`, whose body is `len` bytes at `body`, holds the entries its
+/// count states, and, for `stsz`, whether every sample it sizes fits in a file of `file_len`
+/// bytes: the reader reads each packet into a buffer of that size. A box that is not one of
+/// [`COUNTED_TABLES`], or a body too short to read the count from, is left for the reader to
+/// judge.
 fn table_fits(
     source: &mut (impl Read + Seek),
-    table: &[u8; 4],
+    kind: &[u8; 4],
     body: u64,
     len: u64,
-    fixed: u64,
-    entry: u64,
+    file_len: u64,
 ) -> bool {
+    let Some(&(table, fixed, entry)) = COUNTED_TABLES.iter().find(|(table, ..)| *table == kind)
+    else {
+        return true;
+    };
     let mut head = [0u8; 12];
     let Some(head) = head.get_mut(..fixed as usize) else {
         return true;
@@ -533,13 +712,40 @@ fn table_fits(
             .and_then(|b| b.try_into().ok())
             .map(u32::from_be_bytes)
     };
-    if table == b"stsz" && word(4) != Some(0) {
-        return true;
+    let constant = (table == b"stsz").then(|| word(4)).flatten();
+    if let Some(size) = constant.filter(|size| *size != 0) {
+        return u64::from(size) <= file_len;
     }
     let Some(count) = word(fixed as usize - 4) else {
         return true;
     };
-    u64::from(count) * entry <= len.saturating_sub(fixed)
+    if u64::from(count) * entry > len.saturating_sub(fixed) {
+        return false;
+    }
+    // Each sample's size, read in blocks: a long recording's table is a few megabytes.
+    if table == b"stsz" {
+        let mut left = u64::from(count);
+        let mut block = vec![0u8; 4 * 4_096];
+        while left > 0 {
+            let n = left.min(4_096) as usize;
+            let Some(bytes) = block.get_mut(..4 * n) else {
+                return true;
+            };
+            if source.read_exact(bytes).is_err() {
+                return true;
+            }
+            let too_big = bytes.chunks_exact(4).any(|b| {
+                b.try_into()
+                    .map(u32::from_be_bytes)
+                    .is_ok_and(|size| u64::from(size) > file_len)
+            });
+            if too_big {
+                return false;
+            }
+            left -= n as u64;
+        }
+    }
+    true
 }
 
 /// Whether `head` starts an ADTS frame whose header names MPEG-2 and carries no CRC
@@ -710,7 +916,7 @@ pub fn decode_reader(reader: impl Read) -> Result<Decoded, DecodeError> {
     }
     let mut source = std::io::Cursor::new(bytes);
     let trim = if is_mp4(source.get_ref()) {
-        if !mp4_tables_fit(&mut source) {
+        if !mp4_boxes_fit(&mut source) {
             return Err(DecodeError::UnsupportedFormat { kind: None });
         }
         mp4_trim(&mut source).unwrap_or(Trim::NONE)
@@ -1839,17 +2045,17 @@ mod tests {
         let stsc = find(b"stsc");
         let mut bytes = ALAC_M4A.to_vec();
         bytes[stsc + 8] ^= 0xA5;
-        assert!(!mp4_tables_fit(&mut std::io::Cursor::new(&bytes)));
+        assert!(!mp4_boxes_fit(&mut std::io::Cursor::new(&bytes)));
         assert_eq!(
             decode_reader(bytes.as_slice()).unwrap_err(),
             DecodeError::UnsupportedFormat { kind: None }
         );
-        assert!(mp4_tables_fit(&mut std::io::Cursor::new(ALAC_M4A)));
+        assert!(mp4_boxes_fit(&mut std::io::Cursor::new(ALAC_M4A)));
         // The panic itself, caught: an `stsc` entry whose first chunk is 0, from which
         // symphonia subtracts 1 unchecked. The hook is silent only while the decode runs.
         let mut bytes = ALAC_M4A.to_vec();
         bytes[stsc + 12..stsc + 16].fill(0);
-        assert!(mp4_tables_fit(&mut std::io::Cursor::new(&bytes)));
+        assert!(mp4_boxes_fit(&mut std::io::Cursor::new(&bytes)));
         assert_eq!(
             decode_reader(bytes.as_slice()).unwrap_err(),
             DecodeError::UnsupportedFormat { kind: None }
@@ -1891,9 +2097,172 @@ mod tests {
         );
     }
 
-    /// A sample table whose 64 bit size header runs past the `stbl` holding it ends the
-    /// table walk rather than reading a body that starts after its box ends (an underflow
-    /// that a debug build panicked on, outside `decode`'s guard).
+    /// A box with a 64 bit size, as `size` 1 then the size in the next 8 bytes.
+    fn mp4_box64(kind: &[u8; 4], declared: u64, body: &[u8]) -> Vec<u8> {
+        let mut out = 1u32.to_be_bytes().to_vec();
+        out.extend_from_slice(kind);
+        out.extend_from_slice(&declared.to_be_bytes());
+        out.extend_from_slice(body);
+        out
+    }
+
+    /// A crafted M4A whose `hdlr` says, in a 64 bit size, that it is 2^62 bytes long.
+    /// symphonia's MP4 reader reads a handler's name into a buffer of the length the box
+    /// states, before reading a byte of it, and an allocation that large fails: Rust then
+    /// aborts the process, on every OS, where no `catch_unwind` reaches.
+    fn crafted_hdlr_m4a() -> Vec<u8> {
+        let mut hdlr = vec![0; 8];
+        hdlr.extend_from_slice(b"soun");
+        hdlr.extend_from_slice(&[0; 12]);
+        hdlr.extend_from_slice(b"Sound\0");
+        let mdia = mp4_box(b"mdia", &mp4_box64(b"hdlr", 1 << 62, &hdlr));
+        let moov = mp4_box(b"moov", &mp4_box(b"trak", &mdia));
+        let mut file = mp4_box(b"ftyp", b"M4A \0\0\0\0");
+        file.extend(moov);
+        file
+    }
+
+    /// A box inside `moov` that says it is longer than the box holding it is refused before
+    /// symphonia reads it, from a file and from standard input.
+    #[test]
+    fn a_box_longer_than_its_parent_is_refused_before_it_is_read() {
+        let file = crafted_hdlr_m4a();
+        assert_eq!(
+            decode_reader(file.as_slice()).unwrap_err(),
+            DecodeError::UnsupportedFormat { kind: None }
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let path = write(dir.path(), "crafted.m4a", &file);
+        assert_eq!(
+            decode_path(&path).unwrap_err(),
+            DecodeError::UnsupportedFormat { kind: None }
+        );
+    }
+
+    /// The walk bounds what the reader reads inside a sample entry, inside `ilst` and in the
+    /// packets `stsz` sizes, on the real Apple Lossless file: each damage is refused, the
+    /// intact file passes, and so does QuickTime's zero terminator at the end of `udta`.
+    #[test]
+    fn the_box_walk_bounds_what_the_reader_reads() {
+        let fits = |bytes: &[u8]| mp4_boxes_fit(&mut std::io::Cursor::new(bytes));
+        let at = |kind: &[u8; 4], after: usize| {
+            after
+                + ALAC_M4A[after..]
+                    .windows(4)
+                    .position(|w| w == kind)
+                    .expect("a box of the fixture")
+        };
+        let with = |offset: usize, bytes: [u8; 4]| {
+            let mut file = ALAC_M4A.to_vec();
+            file[offset..offset + 4].copy_from_slice(&bytes);
+            file
+        };
+        assert!(fits(ALAC_M4A));
+        let refused = |file: &[u8], what: &str| {
+            assert!(!fits(file), "{what}");
+            assert_eq!(
+                decode_reader(file).unwrap_err(),
+                DecodeError::UnsupportedFormat { kind: None },
+                "{what}"
+            );
+        };
+        // The ALAC configuration box inside the `alac` sample entry, its size (4 bytes before
+        // its type) made longer than the entry: the reader reads it whole into a buffer.
+        let config = at(b"alac", at(b"alac", 0) + 4);
+        refused(&with(config - 4, 0x7fff_fff0_u32.to_be_bytes()), "alac");
+        // The value of the `----` item in `ilst` (Apple's iTunSMPB), its `data` box longer
+        // than the item.
+        let data = at(b"data", at(b"ilst", 0));
+        refused(&with(data - 4, 0x7fff_fff0_u32.to_be_bytes()), "ilst data");
+        // The first packet's size in `stsz` (after version and flags, the constant size and
+        // the count), larger than the whole file.
+        let stsz = at(b"stsz", 0);
+        refused(
+            &with(stsz + 16, 0x7fff_fff0_u32.to_be_bytes()),
+            "stsz entry",
+        );
+
+        // QuickTime ends `udta` with four zero bytes; other bytes there are a header that
+        // runs into the box after it.
+        let udta = |tail: [u8; 4]| {
+            let mut body = mp4_box(b"meta", &[0; 4]);
+            body.extend_from_slice(&tail);
+            let mut file = mp4_box(b"ftyp", b"M4A \0\0\0\0");
+            file.extend(mp4_box(b"moov", &mp4_box(b"udta", &body)));
+            file
+        };
+        assert!(fits(&udta([0; 4])));
+        assert!(!fits(&udta(*b"free")));
+    }
+
+    /// A top level box whose 64 bit size wraps past the end of the address space is refused:
+    /// the reader adds the size to its position unchecked, and a release build wraps and
+    /// reads `moov` with no bound (a debug build panics instead, which `decode` catches).
+    #[test]
+    fn a_top_level_size_that_wraps_is_refused() {
+        let mut file = mp4_box(b"ftyp", b"M4A \0\0\0\0");
+        file.extend(mp4_box64(b"moov", u64::MAX, &mp4_box(b"trak", &[])));
+        assert!(!mp4_boxes_fit(&mut std::io::Cursor::new(&file)));
+        assert_eq!(
+            decode_reader(file.as_slice()).unwrap_err(),
+            DecodeError::UnsupportedFormat { kind: None }
+        );
+    }
+
+    /// A fragmented file's packet sizes are bounded by the file, as `stsz`'s are: the default
+    /// size in `trex` and in `tfhd`, and each size in `trun`, whose count must also fit in its
+    /// box. Real sizes pass.
+    #[test]
+    fn fragment_sample_sizes_are_bounded_by_the_file() {
+        let fits = |boxes: &[Vec<u8>]| {
+            let mut file = mp4_box(b"ftyp", b"iso6\0\0\0\0");
+            for b in boxes {
+                file.extend_from_slice(b);
+            }
+            mp4_boxes_fit(&mut std::io::Cursor::new(&file))
+        };
+        let words =
+            |words: &[u32]| -> Vec<u8> { words.iter().flat_map(|w| w.to_be_bytes()).collect() };
+        let huge = 0xffff_fff0;
+        // `trex`: version and flags, track, description index, duration, then the size.
+        let trex = |size: u32| {
+            let mvex = mp4_box(
+                b"mvex",
+                &mp4_box(b"trex", &words(&[0, 1, 1, 1024, size, 0])),
+            );
+            mp4_box(b"moov", &mvex)
+        };
+        // Real sizes fit in the file, which here is a few dozen bytes.
+        assert!(fits(&[trex(16)]));
+        assert!(!fits(&[trex(huge)]));
+        // `tfhd` with the default size flag (0x10) after a base data offset (0x01).
+        let tfhd = |size: u32| {
+            let mut body = words(&[0x11, 1]);
+            body.extend_from_slice(&[0; 8]);
+            body.extend(words(&[size]));
+            mp4_box(b"moof", &mp4_box(b"traf", &mp4_box(b"tfhd", &body)))
+        };
+        assert!(fits(&[tfhd(16)]));
+        assert!(!fits(&[tfhd(huge)]));
+        // `trun` with a data offset (0x001), and durations (0x100) and sizes (0x200) per
+        // sample: the size is the second word of each sample.
+        let trun = |count: u32, samples: &[u32]| {
+            let mut body = words(&[0x301, count, 8]);
+            body.extend(words(samples));
+            mp4_box(b"moof", &mp4_box(b"traf", &mp4_box(b"trun", &body)))
+        };
+        assert!(fits(&[trun(2, &[1024, 12, 1024, 16])]));
+        assert!(!fits(&[trun(2, &[1024, 12, 1024, huge])]));
+        assert!(
+            !fits(&[trun(3, &[1024, 12, 1024, 16])]),
+            "a count the box cannot hold"
+        );
+    }
+
+    /// A sample table whose 64 bit size header runs past the `stbl` holding it is refused:
+    /// the reader would read the rest of that header from the box after `stbl` and trust the
+    /// size it found there. (Before the whole tree was bounded this ended the walk; reading
+    /// a body that starts after its box ends was an underflow a debug build panicked on.)
     #[test]
     fn a_table_header_past_its_box_ends_the_walk() {
         // `stsc` says its size is in the next 8 bytes (size 1), but only 4 of them are
@@ -1909,7 +2278,7 @@ mod tests {
         );
         let mut file = mp4_box(b"ftyp", b"M4A \0\0\0\0");
         file.extend(moov);
-        assert!(mp4_tables_fit(&mut std::io::Cursor::new(&file)));
+        assert!(!mp4_boxes_fit(&mut std::io::Cursor::new(&file)));
     }
 
     /// The MPEG-2 ADTS header walk adds up its frames' audio and stops at 2 hours, so the

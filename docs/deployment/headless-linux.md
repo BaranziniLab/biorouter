@@ -64,12 +64,15 @@ display; Biorouter Copilot itself still reports `desktop_unavailable` there (see
 > Ubuntu 22.04 and Rocky 9 and anything newer. Do not install the **desktop** `biorouter_*.deb` /
 > `Biorouter-*.rpm` on a server: it carries an Electron application the host cannot display.
 
-## Configure the provider before anything else
+## Configure the provider
 
-**A browser session cannot change its model or provider** — the picker is inert, deliberately, and
-the reasoning is [decision SD-1](serve-decisions.md) and
-[Reaching Biorouter from a browser](browser-access.md#the-model-is-fixed-before-you-start). The
-provider is chosen once, on the host, and holds for every session that daemon runs.
+Choose the provider in the browser, or at the terminal on the host. With nothing configured, the
+first page the browser shows is the provider list, and the page continues into the app once a
+provider works. That needs the page to be reached over `https` (a reverse proxy) or on the host
+itself, and a browser token, which `serve` always uses unless told `--no-token`; see
+[Choosing the provider and model](browser-access.md#choosing-the-provider-and-model) and
+[decision SD-18](serve-decisions.md#sd-18-the-person-in-the-served-page-sets-up-providers-and-an-agent-still-cannot).
+At the terminal:
 
 ```bash
 biorouter configure

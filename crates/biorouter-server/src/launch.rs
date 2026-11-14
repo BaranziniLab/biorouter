@@ -197,6 +197,53 @@ pub fn capability_config_moved_since_launch() -> Option<String> {
         .map(|(key, _)| (*key).to_string())
 }
 
+/// SD-18 (owner ruling, 2026-11-14): the person in the page a `biorouter serve`
+/// daemon served chose `value` for the pinned `key` there, and the provider
+/// route that wrote it has just written it. From now on SD-12's exemption
+/// follows that choice, exactly as it follows a value the operator wrote with
+/// `biorouter configure` before launch.
+///
+/// The pin takes the value the ROUTE wrote, never a fresh read of
+/// `config.yaml`: a shell that edits the file between the route's write and
+/// this call must not have its edit adopted along with the person's. Keys the
+/// person did not write keep their launch values, so a shell's edit to one of
+/// them still reads as drift.
+///
+/// Only the provider routes call it, and only after a write
+/// `auth::provider_choice_proof` admitted. A key outside the pinned set, or a
+/// process that recorded no launch state, changes nothing: the second keeps
+/// failing closed through [`capability_config_moved_since_launch`].
+pub fn adopt_person_choice(key: &str, value: Option<String>) {
+    let mut guard = LAUNCH.write().unwrap_or_else(PoisonError::into_inner);
+    let Some(state) = guard.as_mut() else {
+        return;
+    };
+    if let Some(entry) = state
+        .capability_config
+        .iter_mut()
+        .find(|(pinned, _)| *pinned == key)
+    {
+        entry.1 = value;
+    }
+}
+
+/// The value `key` is pinned to now: its launch value, or the value a person
+/// chose in the served page since ([`adopt_person_choice`]). `None` for a key
+/// that is unset, outside the pinned set, or when nothing was recorded.
+pub fn pinned_value(key: &str) -> Option<String> {
+    LAUNCH
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .and_then(|state| {
+            state
+                .capability_config
+                .iter()
+                .find(|(pinned, _)| *pinned == key)
+                .and_then(|(_, value)| value.clone())
+        })
+}
+
 /// Did whoever started this daemon declare it would hand over a user-action key?
 ///
 /// Read from the recorded launch state, never from the environment at request

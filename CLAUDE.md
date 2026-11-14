@@ -2072,15 +2072,25 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
 [`serve-architecture.md`](docs/deployment/serve-architecture.md),
 [`browser-access.md`](docs/deployment/browser-access.md).
 
-- **A browser session cannot change its model or provider, deliberately** (SD-1).
-  `set_config_provider` still 409s, and `commands/serve.rs` spawns the daemon with
-  `Stdio::null()` so no proof-of-user digest is installed — the property is enforced by the
-  process model, not by a check. The tier implied by the operator's `biorouter configure`
-  choice then holds for every session in that daemon. This closes open question 23 in
-  `docs/security/privacy-tiers-execution-plan.md`. ⚠ The refusal text is written for an
-  **agent**, so every surface that writes a capability key asks `isBrowserSurface()`
-  (`ui/desktop/src/utils/surface.ts`) and explains *before* the user can reach the 409. Do not
-  "fix" browser mode by weakening the refusal.
+- **The person in the served page sets up providers; a secret-only caller still cannot** (SD-18,
+  owner ruling 2026-11-14, superseding SD-1 in part). `commands/serve.rs` still spawns the daemon
+  with `Stdio::null()`, so no proof-of-user digest exists, but `auth::provider_choice_proof`
+  admits a request carrying the served document's `HttpOnly` cookie AND browser Fetch Metadata
+  from a same-origin page script (`Sec-Fetch-Site: same-origin`, mode `cors`, dest `empty`) on a
+  keyless daemon whose launcher promised no key. It is read ONLY by the provider routes
+  (`/config/upsert|remove` capability and destination gates, `/config/set_provider`,
+  `/config/check_provider`, custom providers, `/privacy/disclosure/ack`); every other proof-backed
+  control still asks `user_action_proof`, and `/agent/update_provider` does not read it, so an
+  open chat keeps its model in a browser. After an admitted write, SD-12's pin takes the value
+  the ROUTE wrote (`launch::adopt_person_choice`, never a re-read of `config.yaml`) and SD-10's
+  standing follows the new tier (`auth::adopt_served_operator_capability`). The page asks
+  `GET /config/provider_setup` first; `utils/providerSetupAccess.ts`'s `providersAreHostManaged()`
+  is what provider controls ask (not `isBrowserSurface()`), and it fails closed. Residual,
+  accepted: a shell that reads the token from the daemon's environment and forges the headers
+  with `curl` gets through (the owner's 2026-09-29 ruling on local forgery). Tests:
+  `cargo test -p biorouter-server --test provider_setup_no_user_key` (its own binary: the digest
+  and the served operator are process-global `OnceLock`s). Do not admit the served person on any
+  other route without a new record.
 - **A new chat starts on the configured model without a proof, and nothing else does** (SD-12).
   Until it, a `serve` daemon with a private provider configured refused EVERY `/agent/start`
   (the 2026-09-10 QA's F1): the new-chat bind asked for a proof a keyless daemon cannot check.

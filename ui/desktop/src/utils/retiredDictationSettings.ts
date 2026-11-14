@@ -1,6 +1,7 @@
 /**
  * The inherited cloud dictation kept its provider choice under this localStorage key. That
- * feature sent audio to OpenAI or ElevenLabs, and PR-01 of `docs/dictation/implementation-plan.md`
+ * feature sent audio to OpenAI or ElevenLabs, and PR-01 of
+ * `docs/history/local-dictation-2026-11/implementation-plan.md`
  * deleted it (DD-89), so nothing reads the key any more and the renderer removes it at startup.
  *
  * Removing a key that is not there does nothing, so calling this on every start clears it once

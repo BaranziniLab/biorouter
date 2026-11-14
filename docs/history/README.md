@@ -39,6 +39,12 @@ No documents sit directly in this folder apart from this index. All content sits
 |---|---|
 | [biorouter-crew](biorouter-crew/README.md) | The campaign that designed, built and tested Crew, from the first research on 2026-09-21 to its merge into `main` on 2026-09-27 (PR #366): the implementation plan and its §16 redesign and naming scope, the status ledger and handoff, the source investigations and independent reviews, four live QA rounds, the bounded evidence runs behind each acceptance claim, and the merge QA and three fix waves that followed (PR #377). Shipped. Its designs are living documentation under [crew/design](../crew/design/README.md), where the rows later fixes changed are marked in place. |
 
+## Local dictation
+
+| Folder | What it holds |
+|---|---|
+| [local-dictation-2026-11](local-dictation-2026-11/README.md) | The campaign that planned and built local dictation and the personal dictionary, from the owner's first decisions on 2026-11-05 to the merge into `main` on 2026-11-14 (PR #485, through the batch PR #501): the implementation plan with every owner decision, design decision and pull request of the plan |
+
 ## Desktop UI
 
 | Folder | What it holds |

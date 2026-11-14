@@ -24,7 +24,12 @@ import {
   type PrivacyBarrierBody,
 } from '../api';
 import { useConfig } from './ConfigContext';
-import { isUserActionRefusal, userActionHeaders } from '../utils/userAction';
+import {
+  forgetHostConfiguredProvider,
+  isUserActionRefusal,
+  userActionHeaders,
+} from '../utils/userAction';
+import { isBrowserSurface } from '../utils/surface';
 import { showCrossAffiliationNotice } from '../utils/crossAffiliationNotice';
 import {
   getModelDisplayName,
@@ -611,9 +616,16 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
     async (sessionId: string | null, model: Model, options?: ChangeModelOptions) => {
       const modelName = model.name;
       const providerName = model.provider;
+      // SD-18: in a browser served by `biorouter serve`, an open chat keeps the
+      // model it started on. The daemon refuses `/agent/update_provider` there,
+      // because the page states the host default as `X-Caller-Provider` and a
+      // chat moved to another tier would leave its reach. So a browser never
+      // binds a chat from here: the switch moves the default for new chats,
+      // which is the one thing Switch models offers there, and the toast says so.
+      const bindsChat = !!sessionId && !isBrowserSurface();
       // See `ChangeModelOptions`: from a chat, the app-wide default moves only
       // when the user asked for it; with no chat, it is the only thing to move.
-      const setsNewChatDefault = !sessionId || options?.alsoForNewChats === true;
+      const setsNewChatDefault = !bindsChat || options?.alsoForNewChats === true;
       let phase = 'agent';
       // W2-5. The name the warm-up dialog and the chip use. Asked when needed: the
       // catalog is read by the warm-up below, before any toast names the model.
@@ -643,7 +655,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         // have to be revised the moment it is — while the runtime check inside
         // the presenter is what actually decides.
         let boundNotice: unknown;
-        if (sessionId) {
+        if (sessionId && bindsChat) {
           const bound = await updateAgentProvider({
             body: {
               session_id: sessionId,
@@ -700,6 +712,9 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
             headers: await userActionHeaders(),
             throwOnError: true,
           });
+          // SD-18: a browser's `X-Caller-Provider` names the host default, which
+          // just moved; the next request reads it again. Only a browser caches it.
+          if (isBrowserSurface()) forgetHostConfiguredProvider();
 
           // A statement like any read, and ticketed like one: a read that left
           // before this write landed is older than what is now on screen, and
@@ -716,7 +731,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
           toastSuccess({
             title: CHANGE_MODEL_TOAST_TITLE,
             msg: switchedModelMessage(modelLabel(), model.subtext ?? providerName, {
-              chat: !!sessionId,
+              chat: bindsChat,
               newChats: setsNewChatDefault,
             }),
           });
@@ -812,6 +827,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
           headers: await userActionHeaders(),
           throwOnError: true,
         });
+        if (isBrowserSurface()) forgetHostConfiguredProvider();
         // Same API-mediated write, same stale cache (#52).
         await refreshCachedConfig();
         // F3. A seeded default is a new-chat default like any other; a window

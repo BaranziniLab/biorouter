@@ -1,4 +1,5 @@
-//! Builds the local dictation engine (DD-10 of `docs/dictation/implementation-plan.md`).
+//! Builds the local dictation engine (DD-10 of
+//! `docs/history/local-dictation-2026-11/implementation-plan.md`).
 //!
 //! Without the `engine` feature this only reads the pin, so `build_info` can name it.
 //! With the feature, whisper.cpp is configured by CMake from a copy of the vendored tree

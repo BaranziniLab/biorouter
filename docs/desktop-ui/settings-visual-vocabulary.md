@@ -523,7 +523,7 @@ The tunnel and session sharing (`components/settings/{tunnel,sessions}/`) are th
 the walker still skips. No route mounts them, so there is no screen to hold to the rules, and they
 are named in the settings root's `outOfScope` list in `settingsVocabulary.test.ts`. The inherited
 cloud dictation folder, `components/settings/dictation/`, was skipped for the same reason until
-PR-01 of the [dictation plan](../dictation/implementation-plan.md) deleted it in 2026-11; a
+PR-01 of the [dictation plan](../history/local-dictation-2026-11/implementation-plan.md) deleted it in 2026-11; a
 dictation folder written under Settings now is walked like any other. Do not add a name to a list
 to get a test green: a folder that is mounted belongs under the rules, and a root for a directory
 the walker has never reached is added with a line of its own.

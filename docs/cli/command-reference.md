@@ -2140,4 +2140,5 @@ Use the `"GWAS summary"` or `"enrichment"` search term to find and rerun it.
 - [Workspace control](../agent-loop/workspace-control.md) — the daemon routes behind `session watch`, `send`, `attach`, and `cancel`, and the agent-side tools that do the same things.
 - [Decision models](../agent-loop/decision-models.md): what a decision model is, monitors, the `decide` tool and phase gates, behind `decide`, `models decision list`, `session decisions` and `session monitors`.
 - [Reaching Biorouter from a browser](../deployment/browser-access.md) — the full guide to `serve`: the access token, reaching it from another machine, and what a browser session cannot do.
+- [Local dictation](../dictation/README.md): how the speech engine, the speech models and the personal dictionary work behind `dictation`, `dictate`, `transcribe` and `dictionary`, and how dictation behaves in a terminal session.
 - [Creating and sharing workflows](../workflows/creating-and-sharing-workflows.md) — how to author the workflow files that `run --workflow`, `workflow`, and `schedule` consume.

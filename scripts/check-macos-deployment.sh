@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # The macOS backends declare macOS 12.0 as their minimum (DD-11 in
-# docs/dictation/implementation-plan.md).
+# docs/history/local-dictation-2026-11/implementation-plan.md).
 #
 # Usage:
 #   scripts/check-macos-deployment.sh [--require-imports] BINARY...

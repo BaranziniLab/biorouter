@@ -1,15 +1,15 @@
-import { isBrowserSurface } from '../../utils/surface';
-
 /**
- * What a browser-served session is told instead of a 409.
+ * What a browser-served session is told when the host keeps the provider and model choice.
  *
- * `docs/deployment/serve-decisions.md` **SD-1**: a browser session runs whatever
- * provider and model the machine was configured with, because the daemon behind
- * `biorouter serve` holds no proof-of-user mechanism (SD-7) and every write to a
- * capability config key is refused by issue #56's DR-16 guard. SD-1's own
- * consequence clause is what this file implements — *"the interface must explain
- * the refusal rather than appear broken. A disabled picker with a reason is the
- * requirement; a 409 toast is not."*
+ * `docs/deployment/serve-decisions.md` **SD-1** made that every browser: the daemon behind
+ * `biorouter serve` held no proof-of-user mechanism (SD-7), and every write to a capability
+ * config key was refused by issue #56's DR-16 guard. **SD-18** opened it: the daemon now admits
+ * the served page itself to the provider routes, and says so through `GET /config/provider_setup`
+ * (`utils/providerSetupAccess.ts`). So these sentences are for the browser the daemon has NOT
+ * admitted (it refused, it is an older daemon, or it has not answered yet), and none of them may
+ * claim a browser can never set up a provider. SD-1's consequence clause still holds for that
+ * case: *"the interface must explain the refusal rather than appear broken. A disabled picker
+ * with a reason is the requirement; a 409 toast is not."*
  *
  * ⚠ **These strings are for a human.** The daemon's refusal body
  * (`crates/biorouter/src/privacy/refusal.rs`) is addressed to an AI agent and
@@ -17,6 +17,12 @@ import { isBrowserSurface } from '../../utils/surface';
  * and useless to someone in a browser who has no desktop application to open.
  * That file is privacy-critical and pinned by repo-grep tests; nothing here
  * changes it, and none of this should be copied back into it.
+ *
+ * ⚠ **Words only.** This file imports nothing that runs: the copy is read by modules a test
+ * bundles on its own (`steerUnavailableCopy.ts` takes `HOST_SERVE_COMMAND` from here), and a
+ * logic import here would drag the API client into each of them. The one function that pairs
+ * these words with the daemon's answer, `hostManagedModelReason`, lives in
+ * `utils/providerSetupAccess.ts`.
  *
  * ⚠ **One definition, seven surfaces.** The onboarding gate, the composer's
  * model chip, the switch-model dialog, Settings > Models, the reset control, the
@@ -38,12 +44,13 @@ export const HOST_MANAGED_MODEL_TITLE = 'The model is set on the host';
 export const HOST_MANAGED_MODEL_SHORT = `Biorouter is open in a browser, so the model comes from the machine running ${HOST_SERVE_COMMAND}.`;
 
 /**
- * What to do, and why a browser tab cannot: the info icon beside {@link HOST_MANAGED_MODEL_SHORT}
- * (owner, 2026-11-13: one line up front, the detail on hover). Two sentences.
+ * What to do, and why the choice is the host's here: the info icon beside
+ * {@link HOST_MANAGED_MODEL_SHORT} (owner, 2026-11-13: one line up front, the detail on hover).
+ * Two sentences. Shown only where the daemon did not admit this browser (SD-18).
  */
 export const HOST_MANAGED_MODEL_HELP =
-  `Change it there with ${HOST_CONFIGURE_COMMAND}, then reload this page. A browser tab cannot ` +
-  `switch models, so a private conversation never silently moves to a public model.`;
+  `Change it there with ${HOST_CONFIGURE_COMMAND}, then reload this page. Keeping the choice on ` +
+  `the host keeps a private conversation from silently moving to a public model.`;
 
 /** The full explanation as one string, for a disabled control's description. */
 export const HOST_MANAGED_MODEL_REASON = `${HOST_MANAGED_MODEL_SHORT} ${HOST_MANAGED_MODEL_HELP}`;
@@ -52,42 +59,43 @@ export const HOST_MANAGED_MODEL_REASON = `${HOST_MANAGED_MODEL_SHORT} ${HOST_MAN
 export const HOST_MANAGED_ONBOARDING_TITLE = 'Choose a model on the host';
 
 /**
- * The first-run screen's body.
- *
- * SD-1's dead-end case: a fresh browser user lands in onboarding, which is
- * exactly where provider selection happens, and every card there ends in a write
- * that 409s. So the cards are not offered at all — the user is told what to run
- * on the host instead.
+ * The first-run screen's one visible line, when the daemon gave no sentence of its own
+ * (`providerSetupRefusal()`): an older daemon, or a read that failed. The daemon's sentence
+ * replaces it whenever there is one, since it knows why it refused.
  */
-export const HOST_MANAGED_ONBOARDING_STEP =
-  `On the machine running ${HOST_SERVE_COMMAND}, run ${HOST_CONFIGURE_COMMAND} to choose a ` +
-  `provider and model, then reload this page.`;
+/** The panel's one visible line when the daemon gave no sentence of its own. */
+export const HOST_MANAGED_ONBOARDING_REASON = `No provider is set up yet. Choose one on the computer running ${HOST_SERVE_COMMAND}.`;
 
-/** Why the step happens on the host: the info icon beside the panel's title. */
+/** The first-run panel's InfoTip: what to do there, and why the choice stays on the host. */
 export const HOST_MANAGED_ONBOARDING_HELP =
-  `No provider is configured yet, and a browser tab cannot set one up. Choosing on the host keeps ` +
-  `a private conversation from silently moving to a public model.`;
+  `Run ${HOST_CONFIGURE_COMMAND} on that computer, then reload this page. Keeping the choice ` +
+  `there keeps a private conversation from silently moving to a public model.`;
 
-/** The first-run panel's whole account as one string: the step, then why. */
-export const HOST_MANAGED_ONBOARDING_REASON = `${HOST_MANAGED_ONBOARDING_STEP} ${HOST_MANAGED_ONBOARDING_HELP}`;
+/**
+ * Where a provider's key is kept, said on the first-run page of a browser the daemon admitted
+ * (SD-18) in place of the desktop's keychain sentence: the key is written by the daemon, on the
+ * computer running `biorouter serve`, and this tab keeps no copy.
+ */
+export const HOST_KEY_STORAGE_NOTICE = `Keys are kept on the computer running ${HOST_SERVE_COMMAND}, not in this browser.`;
 
 /**
  * W2-PRV-2, round 4. The settings that decide where a provider sends its
  * requests, and the key they carry: hosts, endpoints, regions, the AWS profile
  * and endpoint overrides, certificate paths, the coding-agent commands. The
- * daemon changes one only for a request that proves a person asked, and a
- * browser never can, so there they belong to the host as the model does
+ * daemon changes one only for a request that proves a person asked, which a
+ * browser does only once the daemon admits its page (SD-18), so until then they
+ * belong to the host as the model does
  * (`../settings/destinationConfigKeys.ts` names them).
  */
 export const HOST_MANAGED_DESTINATION_SHORT = `Biorouter is open in a browser, so where a provider sends its key and requests is set on the computer running ${HOST_SERVE_COMMAND}.`;
 
 /**
- * What to do, and why a browser tab cannot: the info icon beside
+ * What to do, and why this page cannot: the info icon beside
  * {@link HOST_MANAGED_DESTINATION_SHORT}. Two sentences.
  */
 export const HOST_MANAGED_DESTINATION_HELP =
-  `Change it there with ${HOST_CONFIGURE_COMMAND} or the desktop app, then reload this page. A ` +
-  `browser tab cannot change it, because nothing here can confirm that a person made the change.`;
+  `Change it there with ${HOST_CONFIGURE_COMMAND} or the desktop app, then reload this page. This ` +
+  `page cannot change it, because that computer has not let this browser set up providers.`;
 
 /** The full explanation as one string, for a provider form. */
 export const HOST_MANAGED_DESTINATION_REASON = `${HOST_MANAGED_DESTINATION_SHORT} ${HOST_MANAGED_DESTINATION_HELP}`;
@@ -105,13 +113,3 @@ export const HOST_MANAGED_CUSTOM_URL =
   `Biorouter is open in a browser, so moving this provider to a new URL needs its key typed ` +
   `again. Otherwise change the URL in the Biorouter desktop app on the computer running ` +
   `${HOST_SERVE_COMMAND}.`;
-
-/**
- * The reason a browser-served control is disabled, or `null` on the desktop.
- *
- * `null` rather than `''` is deliberate: a caller spreading this into a `title`
- * wants the attribute absent on the desktop, not present and empty.
- */
-export function hostManagedModelReason(): string | null {
-  return isBrowserSurface() ? HOST_MANAGED_MODEL_REASON : null;
-}

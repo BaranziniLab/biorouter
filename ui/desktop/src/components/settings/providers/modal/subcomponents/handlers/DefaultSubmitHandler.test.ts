@@ -3,10 +3,15 @@ import type { Mock } from 'vitest';
 
 vi.mock('../../../../../../api', () => ({
   checkProvider: vi.fn(async () => ({ data: {} })),
+  getProviderSetupAccess: vi.fn(async () => ({ data: { allowed: true } })),
 }));
 
 import { providerConfigSubmitHandler } from './DefaultSubmitHandler';
 import { BROWSER_SURFACE_MARKER } from '../../../../../../utils/surface';
+import {
+  loadProviderSetupAccess,
+  resetProviderSetupAccessForTests,
+} from '../../../../../../utils/providerSetupAccess';
 
 /**
  * What the daemon must end up writing into `config.yaml`.
@@ -433,6 +438,7 @@ describe('providerConfigSubmitHandler in a browser', () => {
 
   afterEach(() => {
     delete document.documentElement.dataset.biorouterSurface;
+    resetProviderSetupAccessForTests();
   });
 
   const values = {
@@ -457,6 +463,36 @@ describe('providerConfigSubmitHandler in a browser', () => {
       OPENAI_API_KEY: 'sk-new',
       OPENAI_TIMEOUT: '900',
     });
+  });
+
+  /**
+   * SD-18: a daemon that admits the served page takes destination keys from it and checks a
+   * moved host against the saved key, so that browser saves exactly as the desktop does.
+   */
+  it('saves every setting in a browser the daemon admits, checking a moved host first', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    await loadProviderSetupAccess();
+
+    await providerConfigSubmitHandler(upsert, openai, values);
+    const keys = upsert.mock.calls.map((call) => call[0]);
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        'OPENAI_API_KEY',
+        'OPENAI_HOST',
+        'OPENAI_BASE_PATH',
+        'OPENAI_TIMEOUT',
+      ])
+    );
+
+    // A save that moves only the host is checked against the saved key, before it lands.
+    upsert.mockClear();
+    check.mockClear();
+    await providerConfigSubmitHandler(upsert, openai, { OPENAI_HOST: 'https://gateway.example' });
+    expect(check).toHaveBeenCalled();
+    expect(check.mock.calls[0][0].body.candidate).toMatchObject({
+      OPENAI_HOST: 'https://gateway.example',
+    });
+    expect(check.mock.invocationCallOrder[0]).toBeLessThan(upsert.mock.invocationCallOrder[0]);
   });
 
   it('still saves every setting in the desktop app, which proves a person asked', async () => {

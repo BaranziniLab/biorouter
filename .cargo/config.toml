@@ -5,7 +5,7 @@
 [env]
 # The oldest macOS that `biorouter` and `biorouterd` start on: 12.0, the same
 # floor as the desktop app's own LSMinimumSystemVersion (DD-11 in
-# docs/dictation/implementation-plan.md).
+# docs/history/local-dictation-2026-11/implementation-plan.md).
 #
 # rustc reads this variable to stamp the minimum OS into every macOS binary it
 # links, and the `cc` crate passes it to clang as `-mmacosx-version-min` for

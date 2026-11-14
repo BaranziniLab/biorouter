@@ -493,9 +493,7 @@ fn banner_text(
         }
     }
     out.push_str(&format!("  {}\n\n", browser_token.provenance()));
-    out.push_str(
-        "  The model is whichever `biorouter configure` chose; a browser cannot change it.\n",
-    );
+    out.push_str(&format!("  {}\n", model_line(browser_token)));
     out.push_str(&format!("  {dictation}\n"));
     out.push_str("  Press Ctrl-C to stop.\n\n");
     out
@@ -571,6 +569,18 @@ fn dictation_readiness_with(
             Some(reason) => format!("Dictation: {reason}"),
             None => "Dictation: no speech model; run `biorouter dictation install`".to_string(),
         },
+    }
+}
+
+/// What the banner says about choosing the model (SD-18): the person in the
+/// page may choose it there, unless `--no-token` left the daemon unable to tell
+/// that page from any other local caller.
+fn model_line(browser_token: &BrowserToken) -> &'static str {
+    match browser_token {
+        BrowserToken::Off => {
+            "The model is whichever `biorouter configure` chose; without a token, a browser cannot change it."
+        }
+        _ => "Choose the model in the browser, or here with `biorouter configure`.",
     }
 }
 

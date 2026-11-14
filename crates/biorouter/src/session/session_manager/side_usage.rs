@@ -1,8 +1,8 @@
 //! Usage of provider calls a chat makes outside its turns: the stall check, a
 //! prompt hook's judge, the permission judge, the chat's title, a knowledge
 //! macro's sub-agent, MCP sampling, generating a workflow from the chat, a
-//! phase gate the chat's own model judged, and a compaction that was billed but
-//! did not land.
+//! phase gate the chat's own model judged, a compaction that was billed but
+//! did not land, and a decision answered under a chat provider's name.
 //! Each is billed by the provider, so each is written to the usage ledger as a
 //! side call ([`super::SideUsageEntry`]):
 //! counted in the chat's tokens and dollars and in the Usage panel, never as a
@@ -45,6 +45,12 @@ pub enum SideCall {
     /// `orchestration_plan::judge_gate`'s fallback. Counted, never held at a
     /// limit, like the decision-model gate it stands in for.
     GateJudge,
+    /// A logged decision whose model is under a chat provider's name
+    /// (`decision::log`). A decision provider's row keeps its own
+    /// `decision:<row id>` key, which the usage report counts as a decision
+    /// request by the provider's name; under a chat provider's name that row
+    /// would read as a turn, so it is a side call keyed by the row id.
+    Decision,
 }
 
 impl SideCall {
@@ -59,8 +65,17 @@ impl SideCall {
             SideCall::WorkflowCreation => "workflow_creation",
             SideCall::Compaction => "compaction",
             SideCall::GateJudge => "gate_judge",
+            SideCall::Decision => "decision",
         }
     }
+}
+
+/// The ledger key of one side call: [`SIDE_EVENT_KEY_PREFIX`], the call's
+/// [`SideCall::as_str`] and `id`. The ledger applies a key once, so a caller
+/// that may write the same call twice derives `id` from the call itself (a
+/// decision's row id); every other call passes a fresh uuid.
+pub fn side_event_key(call: SideCall, id: &str) -> String {
+    format!("{SIDE_EVENT_KEY_PREFIX}{}:{id}", call.as_str())
 }
 
 /// Run `f` with `session_id` (in `manager`'s store) as the chat side calls
@@ -132,11 +147,7 @@ pub async fn record_with(
         .filter(|provider| !provider.is_empty())
         .unwrap_or_else(|| provider_name.to_string());
     let entry = SideUsageEntry {
-        event_key: format!(
-            "{SIDE_EVENT_KEY_PREFIX}{}:{}",
-            call.as_str(),
-            uuid::Uuid::new_v4()
-        ),
+        event_key: side_event_key(call, &uuid::Uuid::new_v4().to_string()),
         session_id: session_id.to_string(),
         provider,
         model_id: usage.model.clone(),

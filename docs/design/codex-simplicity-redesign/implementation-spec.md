@@ -576,7 +576,7 @@ workstream and by Crew-like rows elsewhere):
   - generated code and other non-UI code: `api/**` (generated), `crates/**`, `preload.ts`;
   - unmounted Settings folders: `settings/{tunnel,sessions}/**` (`settings/dictation/`, the
     inherited cloud dictation, was frozen here until PR-01 of the
-    [dictation plan](../../dictation/implementation-plan.md) deleted it in 2026-11);
+    [dictation plan](../../history/local-dictation-2026-11/implementation-plan.md) deleted it in 2026-11);
   - other areas outside this redesign: `context_management/**` (except the class-only pass on
     `SystemNotificationInline.tsx` below), `LauncherView.tsx`, `Pair.tsx`, `ConfigContext.tsx`,
     `ModelAndProviderContext.tsx`, and `index.html` (except the regions the generator writes and
@@ -3185,7 +3185,7 @@ vision loop, which still measures the running app.
 
 Out of scope unless the owner asks:
 - deleting the unmounted Settings folders (`tunnel`, `sessions`; `dictation` was deleted in
-  2026-11 by PR-01 of the [dictation plan](../../dictation/implementation-plan.md), on the owner's
+  2026-11 by PR-01 of the [dictation plan](../../history/local-dictation-2026-11/implementation-plan.md), on the owner's
   decision);
 - a ⌘K chat palette;
 - an app-level "Reduce motion" setting (the OS setting covers it, [motion N]);

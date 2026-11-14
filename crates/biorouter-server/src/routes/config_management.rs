@@ -26,7 +26,7 @@ use biorouter::{
 };
 // Issue #56 DR-16. The LIB path, not `crate::auth` — see the note on the same
 // import in `routes::agent`.
-use biorouter_server::auth::is_user_action;
+use biorouter_server::auth::{is_provider_choice_proven, is_user_action};
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -350,9 +350,11 @@ pub async fn upsert_config(
     // DR-15's master opt-out, read INSIDE the gate. A direct read, not a
     // `CallCapability`: an HTTP config write is not a tool call and has no
     // admitted capability to inherit.
+    // SD-18: the person in a `biorouter serve` page proves themselves here too
+    // (`provider_choice_proof`); a caller holding only the secret does not.
     if biorouter::privacy::privacy_tiers_enabled()
         && biorouter::privacy::is_capability_key(&query.key)
-        && !is_user_action(&headers)
+        && !is_provider_choice_proven(&headers)
     {
         return Err((
             StatusCode::CONFLICT,
@@ -479,7 +481,14 @@ pub async fn upsert_config(
     let result = config.set(&query.key, &query.value, query.is_secret);
 
     match result {
-        Ok(_) => Ok(Json(Value::String(format!("Upserted key {}", query.key)))),
+        Ok(_) => {
+            adopt_person_provider_choice(
+                &headers,
+                &[(query.key.as_str(), config_value_string(&query.value))],
+            )
+            .await;
+            Ok(Json(Value::String(format!("Upserted key {}", query.key))))
+        }
         Err(_) => Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to upsert key {}", query.key),
@@ -552,7 +561,9 @@ enum RefusalReader {
 impl RefusalReader {
     /// `None` for a caller who proved a person asked, whom nothing refuses.
     fn of(headers: &http::HeaderMap) -> Option<Self> {
-        match biorouter_server::auth::user_action_proof(headers) {
+        // SD-18: the person in a served page may move a destination as the
+        // desktop's person may; `provider_choice_proof` is `Proven` for them.
+        match biorouter_server::auth::provider_choice_proof(headers) {
             biorouter_server::auth::UserActionProof::Proven => None,
             biorouter_server::auth::UserActionProof::Unproven => Some(Self::Agent),
             biorouter_server::auth::UserActionProof::NoKeyInstalled => {
@@ -1001,7 +1012,7 @@ pub async fn remove_config(
     // admitted capability to inherit.
     if biorouter::privacy::privacy_tiers_enabled()
         && biorouter::privacy::is_capability_key(&query.key)
-        && !is_user_action(&headers)
+        && !is_provider_choice_proven(&headers)
     {
         return Err((
             StatusCode::CONFLICT,
@@ -1031,7 +1042,12 @@ pub async fn remove_config(
     };
 
     match result {
-        Ok(_) => Ok(Json(format!("Removed key {}", query.key))),
+        Ok(_) => {
+            if !query.is_secret {
+                adopt_person_provider_choice(&headers, &[(query.key.as_str(), None)]).await;
+            }
+            Ok(Json(format!("Removed key {}", query.key)))
+        }
         Err(_) => Err((
             StatusCode::NOT_FOUND,
             format!("Configuration key {} not found", query.key),
@@ -2302,7 +2318,10 @@ pub async fn check_provider(
     // `/config/upsert` and `/config/remove`); written straight into
     // `config.yaml` by a shell they do not (DR-14's filesystem deny is
     // deferred), and then every sender follows.
-    let proof = biorouter_server::auth::user_action_proof(&headers);
+    //
+    // SD-18: the person in a `biorouter serve` page proves themselves here as the
+    // desktop's person does, so a check of the key they just saved runs with it.
+    let proof = biorouter_server::auth::provider_choice_proof(&headers);
     if let Some(refusal) = credential_check_refusal(live, candidate.is_some(), &proof) {
         return Err(refusal);
     }
@@ -2655,7 +2674,9 @@ pub async fn set_config_provider(
     // key-scoped guard — this route writes BIOROUTER_PROVIDER by construction,
     // so there is no tier-irrelevant call to exempt — but still subject to
     // DR-15's master opt-out, read here inside the gate.
-    if biorouter::privacy::privacy_tiers_enabled() && !is_user_action(&headers) {
+    // SD-18: the person in a `biorouter serve` page is admitted as the desktop's
+    // person is (`provider_choice_proof`).
+    if biorouter::privacy::privacy_tiers_enabled() && !is_provider_choice_proven(&headers) {
         return Err((
             StatusCode::CONFLICT,
             PrivacyRefusal::CapabilityConfigNeedsUser {
@@ -2665,6 +2686,10 @@ pub async fn set_config_provider(
         ));
     }
 
+    let chosen = [
+        ("BIOROUTER_PROVIDER", Some(provider.clone())),
+        ("BIOROUTER_MODEL", Some(model.clone())),
+    ];
     create_with_default_model(&provider)
         .await
         .and_then(|_| {
@@ -2680,7 +2705,132 @@ pub async fn set_config_provider(
                 .map_err(|e| anyhow::anyhow!(e))
         })
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    adopt_person_provider_choice(&headers, &chosen).await;
     Ok(())
+}
+
+/// SD-18 (owner ruling, 2026-11-14): after a provider route wrote capability
+/// keys for a person it admitted, the daemon's launch-time pin (SD-12) and the
+/// served page's standing (SD-10) follow that person's choice.
+///
+/// Only for a write `provider_choice_proof` admitted: a caller that reached the
+/// write without it (the privacy master switch off, or a key that decides no
+/// capability) changes neither, so a shell-written `config.yaml` stays untrusted.
+/// Only the keys in `written`, with the values the route wrote, never a re-read
+/// of the file (`launch::adopt_person_choice` says why).
+async fn adopt_person_provider_choice(
+    headers: &http::HeaderMap,
+    written: &[(&str, Option<String>)],
+) {
+    let capability_keys: Vec<_> = written
+        .iter()
+        .filter(|(key, _)| biorouter::privacy::is_capability_key(key))
+        .collect();
+    if capability_keys.is_empty() || !is_provider_choice_proven(headers) {
+        return;
+    }
+    for (key, value) in capability_keys {
+        biorouter_server::launch::adopt_person_choice(key, value.clone());
+    }
+    let tier = match biorouter_server::launch::pinned_value("BIOROUTER_PROVIDER") {
+        Some(provider) => biorouter::workflow::privacy::declared_provider_tier(&provider).await,
+        None => biorouter::privacy::ProviderTier::Public,
+    };
+    biorouter_server::auth::adopt_served_operator_capability(tier);
+}
+
+/// A config value as the string `Config::get_param::<String>` reads back for it,
+/// which is what the launch pin compares against.
+fn config_value_string(value: &Value) -> Option<String> {
+    match value {
+        Value::Null => None,
+        Value::String(text) => Some(text.clone()),
+        other => Some(other.to_string()),
+    }
+}
+
+/// What `GET /config/provider_setup` answers: may the caller choose providers
+/// and models on this daemon, and if not, why (SD-18).
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderSetupAccess {
+    /// Would `/config/set_provider`, `/config/upsert` of a provider key and the
+    /// model picker admit this caller? The same predicate they ask
+    /// (`auth::provider_choice_proof`), asked of this request.
+    pub allowed: bool,
+    /// Why not, in one sentence for a person. Absent when allowed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+/// The sentence a person reads when this daemon will not let them choose a
+/// provider from where they are. `None` when it will.
+fn provider_setup_refusal(headers: &http::HeaderMap, uri: &http::Uri) -> Option<&'static str> {
+    use biorouter_server::auth::UserActionProof;
+    match biorouter_server::auth::provider_choice_proof(headers) {
+        UserActionProof::Proven => None,
+        UserActionProof::Unproven => Some(
+            "This request did not come from the Biorouter app, so it cannot choose a provider.",
+        ),
+        UserActionProof::NoKeyInstalled if biorouter_server::launch::expected_a_user_action_key() => {
+            Some("Biorouter started without the key the app meant to hand it. Quit and reopen Biorouter.")
+        }
+        UserActionProof::NoKeyInstalled if !biorouter_server::auth::serves_a_tokened_interface() => {
+            Some(
+                "This Biorouter was started without a browser token, so it cannot tell this page \
+                 from another program. Choose a provider on the computer running it with \
+                 `biorouter configure`.",
+            )
+        }
+        // No browser metadata at a loopback address (or with no address at all):
+        // not a page this daemon served, whatever it is.
+        UserActionProof::NoKeyInstalled
+            if !biorouter_server::auth::sent_by_same_origin_page_script(headers)
+                && biorouter_server::auth::reached_over_a_secure_context(headers, uri) =>
+        {
+            Some(
+                "This request did not come from the page `biorouter serve` printed, so it \
+                 cannot choose a provider.",
+            )
+        }
+        // No browser metadata at a network address: a browser sends none to a
+        // plain-HTTP one, which is what SD-15 refuses a typed key over.
+        UserActionProof::NoKeyInstalled
+            if !biorouter_server::auth::sent_by_same_origin_page_script(headers) =>
+        {
+            Some(
+                "This page is open over plain HTTP at a network address, so a key typed here \
+                 would cross the network unencrypted. Open it over HTTPS or on the computer \
+                 running Biorouter, or run `biorouter configure` there.",
+            )
+        }
+        UserActionProof::NoKeyInstalled => Some(
+            "Open the address `biorouter serve` printed, then choose a provider here.",
+        ),
+    }
+}
+
+/// SD-18: whether this caller may choose providers and models here. The served
+/// page asks it before it offers the provider catalog, so a page that cannot
+/// set one up says why instead of failing on Save.
+#[utoipa::path(
+    get,
+    path = "/config/provider_setup",
+    responses(
+        (status = 200, description = "Whether this caller may choose providers and models on \
+                                      this daemon, and why not when it may not",
+         body = ProviderSetupAccess),
+    )
+)]
+pub async fn get_provider_setup_access(
+    uri: http::Uri,
+    headers: http::HeaderMap,
+) -> Json<ProviderSetupAccess> {
+    let reason = provider_setup_refusal(&headers, &uri);
+    Json(ProviderSetupAccess {
+        allowed: reason.is_none(),
+        reason: reason.map(str::to_string),
+    })
 }
 
 /// What `GET /privacy/disclosure` serves (issue #56, DR-17 requirement 3).
@@ -2760,7 +2910,9 @@ pub async fn get_privacy_disclosure() -> Json<PrivacyDisclosureResponse> {
     )
 )]
 pub async fn ack_privacy_disclosure(headers: http::HeaderMap) -> Result<(), (StatusCode, String)> {
-    if !is_user_action(&headers) {
+    // SD-18: reading the disclosure is part of choosing a model, so the person
+    // in a `biorouter serve` page may acknowledge it there.
+    if !is_provider_choice_proven(&headers) {
         return Err((
             StatusCode::FORBIDDEN,
             "Acknowledging the non-private-model disclosure is a user action. This request \
@@ -2817,6 +2969,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/config/custom-providers/{id}", get(get_custom_provider))
         .route("/config/check_provider", post(check_provider))
         .route("/config/set_provider", post(set_config_provider))
+        .route("/config/provider_setup", get(get_provider_setup_access))
         .with_state(state)
 }
 

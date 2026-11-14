@@ -6324,6 +6324,23 @@ export type ProviderMetadata = {
 };
 
 /**
+ * What `GET /config/provider_setup` answers: may the caller choose providers
+ * and models on this daemon, and if not, why (SD-18).
+ */
+export type ProviderSetupAccess = {
+    /**
+     * Would `/config/set_provider`, `/config/upsert` of a provider key and the
+     * model picker admit this caller? The same predicate they ask
+     * (`auth::provider_choice_proof`), asked of this request.
+     */
+    allowed: boolean;
+    /**
+     * Why not, in one sentence for a person. Absent when allowed.
+     */
+    reason?: string | null;
+};
+
+/**
  * CAPABILITY — the least-privileged model currently bound to a session.
  *
  * Deliberately **not** `Ord`: `max` over this type is always a bug. A mixed
@@ -10838,6 +10855,22 @@ export type GetPricingResponses = {
 };
 
 export type GetPricingResponse = GetPricingResponses[keyof GetPricingResponses];
+
+export type GetProviderSetupAccessData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/config/provider_setup';
+};
+
+export type GetProviderSetupAccessResponses = {
+    /**
+     * Whether this caller may choose providers and models on this daemon, and why not when it may not
+     */
+    200: ProviderSetupAccess;
+};
+
+export type GetProviderSetupAccessResponse = GetProviderSetupAccessResponses[keyof GetProviderSetupAccessResponses];
 
 export type ProvidersData = {
     body?: never;

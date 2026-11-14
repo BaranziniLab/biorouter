@@ -1,5 +1,5 @@
 //! The inherited cloud dictation is gone, and stays gone (DD-89, PR-01 of
-//! `docs/dictation/implementation-plan.md`).
+//! `docs/history/local-dictation-2026-11/implementation-plan.md`).
 //!
 //! Until PR-01 the daemon served three routes that took recorded audio and
 //! forwarded it to OpenAI's transcription API or to ElevenLabs, on the daemon

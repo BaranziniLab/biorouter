@@ -1911,6 +1911,28 @@
         }
       }
     },
+    "/config/provider_setup": {
+      "get": {
+        "tags": [
+          "super::routes::config_management"
+        ],
+        "summary": "SD-18: whether this caller may choose providers and models here. The served",
+        "description": "page asks it before it offers the provider catalog, so a page that cannot\nset one up says why instead of failing on Save.",
+        "operationId": "get_provider_setup_access",
+        "responses": {
+          "200": {
+            "description": "Whether this caller may choose providers and models on this daemon, and why not when it may not",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderSetupAccess"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/config/providers": {
       "get": {
         "tags": [
@@ -25697,6 +25719,24 @@
           },
           "tier": {
             "$ref": "#/components/schemas/ProviderTier"
+          }
+        }
+      },
+      "ProviderSetupAccess": {
+        "type": "object",
+        "description": "What `GET /config/provider_setup` answers: may the caller choose providers\nand models on this daemon, and if not, why (SD-18).",
+        "required": [
+          "allowed"
+        ],
+        "properties": {
+          "allowed": {
+            "type": "boolean",
+            "description": "Would `/config/set_provider`, `/config/upsert` of a provider key and the\nmodel picker admit this caller? The same predicate they ask\n(`auth::provider_choice_proof`), asked of this request."
+          },
+          "reason": {
+            "type": "string",
+            "description": "Why not, in one sentence for a person. Absent when allowed.",
+            "nullable": true
           }
         }
       },

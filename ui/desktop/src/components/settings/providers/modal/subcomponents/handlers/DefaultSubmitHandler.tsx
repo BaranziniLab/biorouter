@@ -1,6 +1,7 @@
 import { checkProvider, type CheckProviderRequest } from '../../../../../../api';
 import { userActionHeaders } from '../../../../../../utils/userAction';
-import { isBrowserSurface, isHostManagedConfigKey } from '../../../../../../utils/surface';
+import { isHostManagedConfigKey } from '../../../../../../utils/surface';
+import { providersAreHostManaged } from '../../../../../../utils/providerSetupAccess';
 import { coerceConfigKeyValue } from '../../../configKeyValue';
 import { isDestinationConfigKey } from '../../../../destinationConfigKeys';
 
@@ -66,15 +67,16 @@ export const providerConfigSubmitHandler = async (
   isCurrent: () => boolean = () => true
 ) => {
   const declared = provider.metadata.config_keys || [];
-  // W2-PRV-2, round 4. In a browser served by `biorouter serve`, a setting that
-  // decides where this provider sends its requests and key belongs to the
-  // computer running Biorouter: the daemon refuses to change one without a
-  // proof of a person, which a browser can never send. The form shows such a
-  // field and does not let it be edited, so writing it here could only re-save
-  // what is there or meet that refusal. It is left out; the provider keeps what
-  // the host set, or its built-in default.
+  // W2-PRV-2, round 4. In a browser served by `biorouter serve` that the daemon
+  // has not admitted to provider setup (SD-18), a setting that decides where
+  // this provider sends its requests and key belongs to the computer running
+  // Biorouter: the daemon refuses to change one without a proof of a person.
+  // The form shows such a field and does not let it be edited, so writing it
+  // here could only re-save what is there or meet that refusal. It is left out;
+  // the provider keeps what the host set, or its built-in default. A browser
+  // the daemon admits writes it exactly as the desktop does.
   const hostOwned = (name: string) =>
-    isBrowserSurface() && (isDestinationConfigKey(name) || isHostManagedConfigKey(name));
+    providersAreHostManaged() && (isDestinationConfigKey(name) || isHostManagedConfigKey(name));
   const parameters = declared.filter(
     (parameter) => parameter.secret === true || !hostOwned(parameter.name)
   );
@@ -132,12 +134,14 @@ export const providerConfigSubmitHandler = async (
   // W2-PRV-2: checked BEFORE anything is saved, whenever the provider holds a
   // credential: a save that carries a new key, and (in the app) one that moves a
   // host or endpoint the saved key will be sent to. A browser served by
-  // `biorouter serve` cannot prove a person, so there the daemon checks only
-  // with a key typed into the form, and only a save carrying the key is
-  // checked. Ollama's service was checked above, independently of credentials.
+  // `biorouter serve` that the daemon has not admitted (SD-18) cannot prove a
+  // person, so there the daemon checks only with a key typed into the form, and
+  // only a save carrying the key is checked. An admitted browser's live check
+  // uses the saved key, as the desktop's does. Ollama's service was checked
+  // above, independently of credentials.
   const carriesKey = writes.some(({ parameter }) => parameter.secret === true);
   const holdsKey = parameters.some((parameter) => parameter.secret === true);
-  if (writes.length > 0 && (carriesKey || (holdsKey && !isBrowserSurface()))) {
+  if (writes.length > 0 && (carriesKey || (holdsKey && !providersAreHostManaged()))) {
     await checkCandidateCredentials(
       provider.name,
       Object.fromEntries(writes.map(({ parameter, value }) => [parameter.name, String(value)]))

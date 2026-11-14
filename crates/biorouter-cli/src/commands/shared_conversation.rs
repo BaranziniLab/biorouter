@@ -1454,9 +1454,9 @@ fn observe_card_sequence(frame: &Value, turn_id: &str, sequence: &mut Option<u64
     Ok(true)
 }
 
-async fn observe_crew_step<F>(
+async fn observe_crew_step<F, S: FrameSource>(
     interaction: F,
-    stream: &mut DaemonEventStream,
+    stream: &mut S,
     deferred: &mut VecDeque<Value>,
     id: &str,
     turn_id: &str,
@@ -1487,9 +1487,14 @@ where
                 signal?;
                 return Ok(ObservedCrewStep::Stop);
             }
-            frame = stream.next_event() => {
+            frame = stream.next_frame() => {
                 let frame = frame?.context("Turn stream ended while a request waited; reattach to this session without new input")?;
-                if !observe_card_sequence(&frame, turn_id, &mut observed_sequence)? {
+                // The heartbeat (every 500 ms) is liveness, not content: deferring it would
+                // fill `deferred` within about two minutes of a step left open (a sign-in the
+                // person is still finishing) and end the turn with the error below.
+                if frame["type"].as_str() == Some("Ping")
+                    || !observe_card_sequence(&frame, turn_id, &mut observed_sequence)?
+                {
                     continue;
                 }
                 deferred_bytes = deferred_bytes.saturating_add(serde_json::to_vec(&frame)?.len());
@@ -2231,8 +2236,8 @@ mod tests {
 
     mod approval_expiry {
         use super::super::{
-            ask_until_expired, late_answer_notice, ClosedHere, FrameSource, WhileAsking,
-            APPROVAL_EXPIRED,
+            ask_until_expired, late_answer_notice, observe_crew_step, ClosedHere, FrameSource,
+            Interaction, ObservedCrewStep, WhileAsking, APPROVAL_EXPIRED, MAX_DEFERRED_CARD_FRAMES,
         };
         use anyhow::Result;
         use serde_json::{json, Value};
@@ -2314,6 +2319,64 @@ mod tests {
             .unwrap();
             assert!(matches!(asked, WhileAsking::Answered(Some(ref text)) if text == "deny"));
             assert_eq!(Vec::from(deferred), vec![expiry("card-2")]);
+        }
+
+        /// The heartbeats of a step held open longer than the deferred-frame cap
+        /// (twice the cap is about four minutes at one Ping every 500 ms).
+        fn heartbeats_past_the_cap() -> Vec<Value> {
+            vec![json!({"type": "Ping"}); MAX_DEFERRED_CARD_FRAMES * 2 + 1]
+        }
+
+        /// A Crew step left open (a sign-in the person is still finishing) keeps
+        /// waiting through the heartbeat however long it takes: Pings are not
+        /// deferred, so they never reach the cap, and the frames that matter still
+        /// reach the turn loop in order.
+        #[tokio::test]
+        async fn a_crew_step_held_open_past_the_cap_still_completes() {
+            let mut frames = heartbeats_past_the_cap();
+            frames.insert(3, json!({"type": "Notification", "seq": 6}));
+            let mut stream = said(frames);
+            let mut deferred = VecDeque::new();
+            let observed = observe_crew_step(
+                async { Ok(Interaction::Continue) },
+                &mut stream,
+                &mut deferred,
+                "card-1",
+                "turn-1",
+                Some(5),
+                false,
+            )
+            .await
+            .expect("the heartbeat does not end a step held open");
+            assert!(matches!(
+                observed,
+                ObservedCrewStep::Completed(Interaction::Continue)
+            ));
+            assert_eq!(
+                Vec::from(deferred),
+                vec![json!({"type": "Notification", "seq": 6})]
+            );
+        }
+
+        /// The same for an approval's prompt the person reads for minutes.
+        #[tokio::test]
+        async fn an_approval_held_open_past_the_cap_still_expires_cleanly() {
+            let mut frames = heartbeats_past_the_cap();
+            frames.push(expiry("card-1"));
+            let mut stream = said(frames);
+            let mut deferred = VecDeque::new();
+            let asked = ask_until_expired(
+                std::future::pending::<Result<Option<String>>>(),
+                &mut stream,
+                &mut deferred,
+                "card-1",
+                "turn-1",
+                Some(5),
+            )
+            .await
+            .expect("the heartbeat does not end a prompt held open");
+            assert!(matches!(asked, WhileAsking::Expired));
+            assert_eq!(Vec::from(deferred), vec![expiry("card-1")]);
         }
 
         /// A turn that ends under the prompt (stopped from another window)

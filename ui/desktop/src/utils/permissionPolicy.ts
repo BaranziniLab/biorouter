@@ -97,7 +97,7 @@ export function isAllowedArtifactFrameNavigation(candidate: string): boolean {
  *   frame the renderer creates is a `srcdoc` artifact or document preview, and
  *   none of them may ever reach the microphone, whatever URL it reports.
  *   `main.ts` passes each handler's own `details.isMainFrame`, and anything but
- *   `true` refuses (DD-65 in docs/dictation/implementation-plan.md). Both
+ *   `true` refuses (DD-65 in docs/history/local-dictation-2026-11/implementation-plan.md). Both
  *   handlers were measured receiving `isMainFrame: true` for the main frame,
  *   and a refusal reaches the page as `NotAllowedError: Permission denied`.
  *

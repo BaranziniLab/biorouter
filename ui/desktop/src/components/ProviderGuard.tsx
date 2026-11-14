@@ -9,7 +9,14 @@ import type { DetectedProviderSetup } from './onboarding/CommercialSetupCard';
 import { ProviderDetails } from '../api';
 import { createNavigationHandler } from '../utils/navigationUtils';
 import { isBrowserSurface } from '../utils/surface';
+import {
+  loadProviderSetupAccess,
+  providerSetupRefusal,
+  useProvidersAreHostManaged,
+} from '../utils/providerSetupAccess';
+import { forgetHostConfiguredProvider } from '../utils/userAction';
 import { HostManagedModelPanel } from './privacy/HostManagedModelPanel';
+import { HOST_KEY_STORAGE_NOTICE } from './privacy/hostManagedModelCopy';
 import { useFirstRunNoticeHold } from './privacy/firstRunNoticeDecision';
 import { markFirstPageDrawn } from './privacy/firstRunNoticeHandoff';
 import { getTitlebarControlInset } from './Layout/TitlebarControls';
@@ -54,11 +61,24 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
 
   const setView = useMemo(() => createNavigationHandler(navigate), [navigate]);
 
+  /**
+   * SD-1, then SD-18: on a browser served by `biorouter serve`, does the host keep the provider
+   * choice? `true` until the daemon has answered (fail closed), and the provider check below
+   * waits for that answer before it decides anything, so the loader stands until it is in. A
+   * browser the daemon admits gets the desktop's own page; one it refuses gets the panel.
+   */
+  const hostManaged = useProvidersAreHostManaged();
+
   const handleCommercialSuccess = async (setup: DetectedProviderSetup) => {
     await persistDetectedProviderSetup(upsert, setup);
   };
 
+  /**
+   * Setup is done: into the app, with no reload. A browser's `X-Caller-Provider` names the
+   * host default, which setup just wrote, so the cached one is dropped first (SD-18).
+   */
   const handleModelSelected = () => {
+    if (isBrowserSurface()) forgetHostConfiguredProvider();
     setUserInActiveSetup(false);
     setShowFirstTimeSetup(false);
     setHasProvider(true);
@@ -67,6 +87,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
 
   /** Llama Server and Ollama configure themselves *and* pick their own model. */
   const handleLocalComplete = () => {
+    if (isBrowserSurface()) forgetHostConfiguredProvider();
     setUserInActiveSetup(false);
     setShowFirstTimeSetup(false);
     setHasProvider(true);
@@ -101,6 +122,11 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
 
   useEffect(() => {
     const checkProvider = async () => {
+      // SD-18. Asked beside the provider read, never after it: a browser's answer decides
+      // between the catalog and the host panel, and the app's own provider controls read it
+      // too, so nothing renders until it is in. The desktop answers at once without a fetch,
+      // and a failed read answers "managed on the host" (it never throws).
+      const access = loadProviderSetupAccess();
       try {
         const provider = ((await read('BIOROUTER_PROVIDER', false)) as string) || '';
         const hasConfiguredProvider = provider.trim() !== '';
@@ -137,6 +163,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
         setHasProvider(false);
         setShowFirstTimeSetup(true);
       } finally {
+        await access;
         setIsChecking(false);
       }
     };
@@ -150,7 +177,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
    * provider listing (which constructs every configured provider) on every
    * launch just to render its children.
    */
-  const needsCatalog = !isChecking && !hasProvider && showFirstTimeSetup && !isBrowserSurface();
+  const needsCatalog = !isChecking && !hasProvider && showFirstTimeSetup && !hostManaged;
   useEffect(() => {
     if (!needsCatalog) return;
     let cancelled = false;
@@ -230,16 +257,17 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
 
   if (!hasProvider && showFirstTimeSetup) {
     /**
-     * SD-1's dead end, closed. Every path in the catalog below writes
-     * `BIOROUTER_PROVIDER`, and on a browser-served surface all of those writes
-     * are refused with a 409 whose body is addressed to an AI agent. Offering
-     * the picker and then refusing it is the exact failure SD-1 rules out, so
-     * the browser gets the one instruction that actually works — go and run it
-     * on the host — and the catalog is not rendered at all. The panel carries the
-     * reason itself, so the band adds no sentence of its own above it (FR-S-13).
+     * SD-1's dead end, closed, and SD-18's opening. Every path in the catalog below writes
+     * `BIOROUTER_PROVIDER`. A browser the daemon admits to provider setup (SD-18) gets exactly
+     * the desktop's page, and setup continues into the app as it does there. One it does not
+     * admit would meet a 409 addressed to an AI agent on every path, which is the failure SD-1
+     * rules out, so it gets the one instruction that works (run it on the host) and the
+     * catalog is not rendered at all. The panel carries the reason itself, so the band adds no
+     * sentence of its own above it (FR-S-13).
      */
-    const hostManaged = isBrowserSurface();
     const title = hostManaged ? firstRunCopy.hostTitle : firstRunCopy.title;
+    // A browser's keys are written by the daemon on the host, never kept in this tab.
+    const keyStorage = isBrowserSurface() ? HOST_KEY_STORAGE_NOTICE : KEY_STORAGE_NOTICE;
 
     /**
      * The first-run page is the redesigned app's page (R-34, vision FR-R1-2): one 44px band, then
@@ -280,18 +308,19 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
               <h1 className="min-w-0 truncate text-label text-text-default">{title}</h1>
               {hostManaged ? null : (
                 <InfoTip label={title} side="bottom" align="start">
-                  {`${providerPageCopy.onboardingHelp} ${KEY_STORAGE_NOTICE}`}
+                  {`${providerPageCopy.onboardingHelp} ${keyStorage}`}
                 </InfoTip>
               )}
             </div>
             {hostManaged ? null : (
               <>
                 <div ref={setTabsHost} className="br-provider-band-tabs-host" />
-                {/* The skip is offered for the desktop application only. On a browser surface
-                    there is nothing to explore *and* nothing the user can do about it from here:
-                    the host owns the choice, and a "continue without a provider" that led to a
-                    chat which can never be configured from this tab would be a second dead end
-                    dressed as an escape. Said once, in the band: the foot copy is gone. */}
+                {/* The skip is withheld only where the host owns the choice: a "continue
+                    without a provider" that led to a chat which can never be configured from
+                    this tab would be a second dead end dressed as an escape. The desktop, and a
+                    browser the daemon admits to setup (SD-18), can come back to Settings and
+                    choose later, so both keep it. Said once, in the band: the foot copy is
+                    gone. */}
                 <div className="biorouter-page-header-actions">
                   <Button
                     variant="ghost"
@@ -320,7 +349,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
         <ScrollArea className="w-full flex-1">
           <div className="br-page-headroom mx-auto w-full max-w-measure-chat px-6 pb-6">
             {hostManaged ? (
-              <HostManagedModelPanel />
+              <HostManagedModelPanel reason={providerSetupRefusal()} />
             ) : (
               <ProviderCatalog
                 tabsHost={tabsHost}

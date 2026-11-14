@@ -1527,6 +1527,82 @@ fn mp3_m4a_aac_and_ogg_decode_to_the_expected_length() {
         println!("{name}: {got} samples, decoded in {took:?}");
     }
 
+    // The MP4 layouts a recording arrives in: metadata tags (an `ilst` under `udta` and
+    // `meta`), `moov` before the audio, a fragmented file, QuickTime's `.mov`, and a file
+    // with a video track. The box walk that refuses a box longer than its parent must pass
+    // every one of them, to the expected length. A fragmented file keeps its encoder's
+    // priming, as ADTS does: the trim is read from `moov`'s edit list or Apple's tag, and
+    // ffmpeg's fragmented `moov` carries neither [M: +669 samples at 16 kHz, 42 ms].
+    let video = "testsrc=size=160x120:rate=10:duration=3";
+    let layouts: [(&str, Vec<&str>); 6] = [
+        (
+            "tagged.m4a",
+            vec![
+                "-c:a",
+                "aac",
+                "-metadata",
+                "title=Lab meeting",
+                "-metadata",
+                "comment=EPAS1",
+            ],
+        ),
+        (
+            "tagged-lossless.m4a",
+            vec!["-c:a", "alac", "-metadata", "title=Lossless memo"],
+        ),
+        (
+            "faststart.m4a",
+            vec!["-c:a", "aac", "-movflags", "+faststart"],
+        ),
+        (
+            "fragmented.mp4",
+            vec!["-c:a", "aac", "-movflags", "frag_keyframe+empty_moov"],
+        ),
+        ("quicktime.mov", vec!["-c:a", "aac", "-f", "mov"]),
+        (
+            "video.mp4",
+            vec![
+                "-f",
+                "lavfi",
+                "-i",
+                video,
+                "-map",
+                "1:v",
+                "-map",
+                "0:a",
+                "-c:v",
+                "mpeg4",
+                "-c:a",
+                "aac",
+                "-shortest",
+            ],
+        ),
+    ];
+    for (name, codec) in &layouts {
+        let encoded = dir.path().join(name);
+        let mut args: Vec<&std::ffi::OsStr> = vec!["-i".as_ref(), source.as_os_str()];
+        args.extend(codec.iter().map(|a| std::ffi::OsStr::new(*a)));
+        args.push(encoded.as_os_str());
+        ffmpeg(&args);
+        let decoded = decode_path(&encoded).unwrap_or_else(|e| panic!("{name}: {e:?}"));
+        let got = decoded.samples.len() as f64;
+        let extra = if name.starts_with("fragmented") {
+            ADTS_EXTRA_SAMPLES * 16_000.0 / 44_100.0
+        } else {
+            0.0
+        };
+        assert!(
+            got >= expected * 0.99 && got <= expected * 1.01 + extra,
+            "{name}: {got} samples, expected {expected}"
+        );
+        let bytes = std::fs::read(&encoded).unwrap();
+        assert_eq!(
+            decode_reader(bytes.as_slice()).unwrap_or_else(|e| panic!("{name}: {e:?}")),
+            decoded,
+            "{name} on stdin"
+        );
+    }
+
     // Apple's encoder writes ADTS headers that say MPEG-2 (0xFFF9), which symphonia's ADTS
     // reader does not sync on: the same frames with that bit decode to the same samples.
     let mpeg4 = std::fs::read(dir.path().join("tone.aac")).unwrap();
