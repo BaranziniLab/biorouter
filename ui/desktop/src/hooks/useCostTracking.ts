@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { fetchModelPricing } from '../utils/pricing';
 import { getSessionUsage, ModelUsageRow, Session } from '../api';
 import { userActionHeaders } from '../utils/userAction';
@@ -56,7 +56,31 @@ interface UseCostTrackingProps {
    * `Message` frame carries a copy of the last counters (BR-52).
    */
   liveTokens?: LiveTokenCounters | null;
+  /**
+   * Whether a turn is running in this chat (`isRunningState` of its `chatState`). When a turn
+   * ends the ledger is read again on `LATE_USAGE_READS_MS`, and while the chat is idle a return
+   * to the window reads it once more: side calls the daemon bills after the turn moved nothing
+   * this hook watches.
+   */
+  turnRunning?: boolean;
 }
+
+/**
+ * When the ledger is read again after a turn in an open chat ends, in milliseconds from the end.
+ * The daemon bills side calls after the turn's last frame: an eager or background compaction of a
+ * long prompt, or one that failed and still recorded its usage (`record_unapplied_compaction_usage`,
+ * which does not stamp the chat's row). None of them moves a counter this hook watches, so the
+ * footer's cost and the summary's Tokens kept the turn's figures until a reload (2026-11-13, a
+ * Claude Haiku 5.5 chat on Versa Bedrock: $0.127 shown, about $0.19 more billed). Five reads reach
+ * past a compaction of a long prompt; a new turn, a switch of chat or an unmount cancels the rest.
+ */
+export const LATE_USAGE_READS_MS: readonly number[] = [10_000, 30_000, 90_000, 180_000, 300_000];
+
+/**
+ * A return to the window reads the ledger once: its `focus` and `visibilitychange` arrive
+ * together, so a second one within this gap asks for nothing.
+ */
+export const RETURN_READ_GAP_MS = 2_000;
 
 /**
  * The label a `null` model_id row (turns recorded before model attribution, or
@@ -177,6 +201,19 @@ export async function buildModelCostRows(
 /** A chat's rows before its ledger answers: one array, so the prop stays stable. */
 const NO_ROWS: ModelCostRow[] = [];
 
+/** Every token the rows count, in all four buckets. A chat's ledger only grows while it lives. */
+export function ledgerTokenCount(rows: ModelCostRow[]): number {
+  return rows.reduce(
+    (sum, row) =>
+      sum +
+      row.inputTokens +
+      row.outputTokens +
+      (row.cacheReadTokens ?? 0) +
+      (row.cacheCreationTokens ?? 0),
+    0
+  );
+}
+
 /**
  * Per-model cost tracking backed by the real `token_events` ledger.
  *
@@ -208,8 +245,19 @@ const NO_ROWS: ModelCostRow[] = [];
  * beside its Limit section's own read, so the card's cost and its limit line
  * count the same requests: a side call made after the turn's last frame (the
  * chat's title, a knowledge macro) is in both, not in the limit alone.
+ *
+ * A side call billed later still (a background compaction) reaches the footer's
+ * cost and the summary's Tokens without the card: after a turn ends the ledger
+ * is read again on `LATE_USAGE_READS_MS`, and once more when the window comes
+ * back while the chat is idle. Nothing is read on a timer while a turn runs.
+ * A read that counts fewer tokens than the rows held never replaces them, so a
+ * stale answer can never lower the figures.
  */
-export const useCostTracking = ({ session, liveTokens }: UseCostTrackingProps) => {
+export const useCostTracking = ({
+  session,
+  liveTokens,
+  turnRunning = false,
+}: UseCostTrackingProps) => {
   const [ledger, setLedger] = useState<{ sessionId: string; rows: ModelCostRow[] } | null>(null);
   const [reads, setReads] = useState(0);
   const reload = useCallback(() => setReads((count) => count + 1), []);
@@ -241,7 +289,13 @@ export const useCostTracking = ({ session, liveTokens }: UseCostTrackingProps) =
         if (!response.data) throw new Error('the usage ledger did not answer');
         const priced = await buildModelCostRows(response.data.models ?? [], fetchModelPricing);
         if (!cancelled) {
-          setLedger({ sessionId, rows: priced });
+          // The ledger only grows while the chat lives: an answer that counts fewer tokens than
+          // the one held is stale, and never lowers the figures.
+          setLedger((held) =>
+            held?.sessionId === sessionId && ledgerTokenCount(priced) < ledgerTokenCount(held.rows)
+              ? held
+              : { sessionId, rows: priced }
+          );
         }
       } catch {
         if (!cancelled) {
@@ -264,6 +318,48 @@ export const useCostTracking = ({ session, liveTokens }: UseCostTrackingProps) =
     liveTotal,
     reads,
   ]);
+
+  // After a turn ends in this chat, read the ledger again on a short back-off: a side call billed
+  // after the turn's last frame moves no counter above. The ref says which chat this hook saw a
+  // turn run in; it is not cleared when the schedule starts, so React's development double run of
+  // an effect schedules again what its cleanup cancelled. A new turn, a switch of chat or an
+  // unmount cancels what is left of the schedule.
+  const turnSeenIn = useRef<string | null>(null);
+  useEffect(() => {
+    if (!sessionId) return;
+    if (turnRunning) {
+      turnSeenIn.current = sessionId;
+      return;
+    }
+    if (turnSeenIn.current !== sessionId) {
+      turnSeenIn.current = null;
+      return;
+    }
+    const timers = LATE_USAGE_READS_MS.map((delay) => setTimeout(reload, delay));
+    return () => {
+      for (const timer of timers) clearTimeout(timer);
+    };
+  }, [sessionId, turnRunning, reload]);
+
+  // A return to the window while the chat is idle reads it once more, for a side call billed
+  // after the schedule above ended or while the window was away.
+  useEffect(() => {
+    if (!sessionId || turnRunning) return;
+    let lastRead = Number.NEGATIVE_INFINITY;
+    const readOnReturn = () => {
+      if (document.visibilityState === 'hidden') return;
+      const now = Date.now();
+      if (now - lastRead < RETURN_READ_GAP_MS) return;
+      lastRead = now;
+      reload();
+    };
+    window.addEventListener('focus', readOnReturn);
+    document.addEventListener('visibilitychange', readOnReturn);
+    return () => {
+      window.removeEventListener('focus', readOnReturn);
+      document.removeEventListener('visibilitychange', readOnReturn);
+    };
+  }, [sessionId, turnRunning, reload]);
 
   const ledgerIsThisChats = !!sessionId && ledger?.sessionId === sessionId;
   const modelRows = ledgerIsThisChats ? ledger.rows : NO_ROWS;

@@ -46,10 +46,11 @@ vi.mock('./ModelAndProviderContext', () => ({
   useModelAndProvider: () => ({ currentModel: 'claude-opus-4-5', currentProvider: 'anthropic' }),
 }));
 
-import { defaultChatStreamRegistry } from '../hooks/chatStreamStore';
+import { defaultChatStreamRegistry, isRunningState } from '../hooks/chatStreamStore';
 import { useChatStream } from '../hooks/useChatStream';
-import { useCostTracking } from '../hooks/useCostTracking';
-import { footerCostInputs } from './BaseChat';
+import { LATE_USAGE_READS_MS, useCostTracking } from '../hooks/useCostTracking';
+import { mostCompleteBilledTokens } from '../utils/usageAccounting';
+import { footerCostInputs, selectBilledTokens, summaryTokensValue } from './BaseChat';
 import { CostTracker } from './bottom_menu/CostTracker';
 import { COST_CARD_COPY } from './bottom_menu/copy';
 
@@ -138,12 +139,18 @@ let mounts = 0;
 let sessionSeq = 0;
 const onStreamFinish = () => {};
 
-/** BaseChat's wiring, verbatim, around the footer's cost. */
+/** BaseChat's wiring, verbatim, around the footer's cost and the summary's Tokens. */
 function LiveChat({ sessionId }: { sessionId: string }) {
-  const { session, tokenState } = useChatStream({ sessionId, onStreamFinish });
+  const { session, tokenState, chatState } = useChatStream({ sessionId, onStreamFinish });
   const { sessionCosts, modelRows, ledgerSettled } = useCostTracking({
     session,
     liveTokens: tokenState,
+    turnRunning: isRunningState(chatState),
+  });
+  const railTokens = summaryTokensValue({
+    loading: false,
+    ledgerSettled,
+    billed: mostCompleteBilledTokens(selectBilledTokens(tokenState, session), modelRows),
   });
   const footer = footerCostInputs({
     ready: !!session && ledgerSettled,
@@ -156,12 +163,15 @@ function LiveChat({ sessionId }: { sessionId: string }) {
     mounts += 1;
   }, []);
   return (
-    <CostTracker
-      inputTokens={footer.accumulatedInputTokens}
-      outputTokens={footer.accumulatedOutputTokens}
-      sessionCosts={footer.sessionCosts}
-      modelCostRows={footer.modelCostRows}
-    />
+    <>
+      <span data-testid="rail-tokens">{railTokens}</span>
+      <CostTracker
+        inputTokens={footer.accumulatedInputTokens}
+        outputTokens={footer.accumulatedOutputTokens}
+        sessionCosts={footer.sessionCosts}
+        modelCostRows={footer.modelCostRows}
+      />
+    </>
   );
 }
 
@@ -170,6 +180,7 @@ const usageReads = (sessionId: string) =>
     (call) => (call[0] as { path: { session_id: string } }).path.session_id === sessionId
   );
 const figure = () => screen.getByTestId('chat-cost');
+const railTokens = () => screen.getByTestId('rail-tokens');
 const card = () => screen.getByRole('dialog', { name: COST_CARD_COPY.cardLabel });
 const byModel = () =>
   within(within(card()).getByRole('list', { name: COST_CARD_COPY.byModel })).getAllByRole(
@@ -298,6 +309,53 @@ describe('the footer’s cost in a live chat', () => {
     expect(usageReads(sid)).toHaveLength(2);
     for (const [options] of usageReads(sid)) {
       expect(options).toMatchObject({ headers: { 'X-User-Action': 'synthetic-proof' } });
+    }
+  });
+});
+
+/**
+ * 2026-11-13, a Claude Haiku 5.5 chat on Versa Bedrock: after a long-context turn, two
+ * eager-compaction side calls were billed AFTER the turn's last frame (the compaction failed, so
+ * nothing else changed). Nothing streamed and the chat's row was not stamped, so the footer's cost
+ * stayed at the turn's $0.127 and the summary's Tokens at 255k until a reload.
+ */
+describe('a side call billed after the turn, in a live chat', () => {
+  it('reaches the footer’s cost and the summary’s Tokens with no reload and no card', async () => {
+    const sid = `live-cost-late-${++sessionSeq}`;
+    await openChat(openedRow(sid, null, null));
+    const turn = await startTurn(sid);
+    await turn.tokens(5, counters(0, 0));
+    ledgerNow = [ledgerRow(20_000, 4_000, 1)];
+
+    // Fake time from the turn's end on, still moving with real time so `waitFor` works.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await turn.finish(counters(20_000, 4_000));
+      await waitFor(() => expect(figure()).toHaveTextContent('$0.12'));
+      expect(railTokens()).toHaveTextContent('24k');
+      const atEnd = usageReads(sid).length;
+
+      // The first re-read finds the compaction still running.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(LATE_USAGE_READS_MS[0]);
+      });
+      await waitFor(() => expect(usageReads(sid)).toHaveLength(atEnd + 1));
+      expect(figure()).toHaveTextContent('$0.12');
+
+      // Its two side calls are written 30 s after the turn ended.
+      ledgerNow = [ledgerRow(30_000, 6_000, 3)];
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(LATE_USAGE_READS_MS[1] - LATE_USAGE_READS_MS[0]);
+      });
+      await waitFor(() => expect(figure()).toHaveTextContent('$0.18'));
+      expect(railTokens()).toHaveTextContent('36k');
+      expect(screen.queryByRole('dialog', { name: COST_CARD_COPY.cardLabel })).toBeNull();
+      expect(mounts).toBe(1);
+      for (const [options] of usageReads(sid)) {
+        expect(options).toMatchObject({ headers: { 'X-User-Action': 'synthetic-proof' } });
+      }
+    } finally {
+      vi.useRealTimers();
     }
   });
 });
