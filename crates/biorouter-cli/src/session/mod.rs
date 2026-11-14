@@ -357,7 +357,7 @@ async fn install_speech_model_in_session(model: Option<String>) {
 }
 
 #[cfg(feature = "dictation")]
-fn review_dictionary_in_session() {
+pub(crate) fn review_dictionary_in_session() {
     use crate::commands::dictionary::{Action, Streams};
     let facts = crate::commands::dictionary::session_facts();
     let (mut stdin, mut stdout, mut stderr) =
