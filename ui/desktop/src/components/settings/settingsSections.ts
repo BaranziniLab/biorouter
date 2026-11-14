@@ -12,7 +12,7 @@
  * - `defaultModel`, `localModels`, `modelsDangerZone`: WS-SETTINGS-M
  *   (`settings/models/**`, `settings/reset_provider/**`).
  * - `dictation`: local dictation's Speech models (`settings/models/SpeechModelSection.tsx`,
- *   DD-66 in `docs/dictation/implementation-plan.md`).
+ *   DD-66 in `docs/history/local-dictation-2026-11/implementation-plan.md`).
  * - `memory`, `configuration`: WS-SETTINGS-B (`settings/memory/**`,
  *   `settings/config/**`).
  * - `usage`: WS-USAGE (`settings/usage/**`).

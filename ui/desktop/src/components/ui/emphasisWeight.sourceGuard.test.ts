@@ -17,7 +17,8 @@
  *
  * Excluded: `settings/tunnel/`, frozen and unmounted (nothing imports it, which the last case
  * keeps true), where two bare strongs remain that no person can see. `settings/dictation/`, the
- * inherited cloud dictation, was excluded too until PR-01 of `docs/dictation/implementation-plan.md`
+ * inherited cloud dictation, was excluded too until PR-01 of
+ * `docs/history/local-dictation-2026-11/implementation-plan.md`
  * deleted it in 2026-11; the local dictation components are guarded like any other.
  */
 import { readFileSync, readdirSync } from 'node:fs';

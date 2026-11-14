@@ -48,7 +48,7 @@ downloads on request. No installer carries any of them.
 The pin is `4da27c41cebadb3cbbcd2563e9c7cbc8d84bdcad` on upstream's master
 ("cli : fix stdout of model on windows (#4146)", 2026-11-03, ggml 0.28.0), the
 commit every design measurement used (DD-3 in
-[the implementation plan](../../docs/dictation/implementation-plan.md)).
+[the implementation plan](../../docs/history/local-dictation-2026-11/implementation-plan.md)).
 
 Every pin must contain `60c0be6ac8fa71b1a2ae2dd938a31a34a508e774`, "whisper :
 add check for ttype in whisper and parakeet (#4091)" (2026-10-02), the model

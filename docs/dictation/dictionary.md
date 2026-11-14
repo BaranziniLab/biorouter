@@ -4,7 +4,7 @@
 > **Status:** Current: the record of local dictation as it was built on branch `feat/local-dictation`, PR-01 to PR-33 (PR-07 and PR-32 withdrawn), with every code pull request committed by 2026-11-10 and before the release that carries it. Design rationale and the measurements taken while building it are kept with their dates; "As built" notes say where the code differs from the design. Suggestions from chats became a feature each person runs and measures for themselves on 2026-11-13, replacing the M-21 labelling gate ([Automatic extraction from chats](#automatic-extraction-from-chats)).
 > **Audience:** developers who maintain the store, the bias set, the capability, the extractor and the Dictionary page (PR-13, PR-14, PR-16, PR-20, PR-22, PR-23, PR-24, PR-26); reviewers of changes to them; the owner, whose decisions O-3, O-17, O-23 and O-31 to O-38 of 2026-11-05, O-43 and O-44 of 2026-11-10, and the plan's defaults O-5 to O-8 and O-21 this document follows.
 
-Each account that runs Biorouter has one dictionary: a file of terms such as UCSF or EPAS1 that dictation should spell the person's way. The daemon, the CLI and the agent's `dictionary` capability read and write that one file under one lock. Dictation feeds the eligible terms to the speech model as a token prompt and a decoder bonus, then corrects the transcript with guarded exact matching. Because Whisper can copy its prompt into the transcript when it hears no speech, a term learned in a private chat must never shape dictation aimed at a public model, so every channel reads one tier filtered set. This document specifies each part to the level an engineer can build from, with the acceptance check for each. The [implementation plan](implementation-plan.md) holds the decision register this document elaborates; where they differ, the plan wins.
+Each account that runs Biorouter has one dictionary: a file of terms such as UCSF or EPAS1 that dictation should spell the person's way. The daemon, the CLI and the agent's `dictionary` capability read and write that one file under one lock. Dictation feeds the eligible terms to the speech model as a token prompt and a decoder bonus, then corrects the transcript with guarded exact matching. Because Whisper can copy its prompt into the transcript when it hears no speech, a term learned in a private chat must never shape dictation aimed at a public model, so every channel reads one tier filtered set. This document specifies each part to the level an engineer can build from, with the acceptance check for each. The [implementation plan](../history/local-dictation-2026-11/implementation-plan.md) holds the decision register this document elaborates; where they differ, the plan wins.
 
 ## How to read this document
 
@@ -21,11 +21,11 @@ Identifiers:
 
 | Scheme | Meaning | Index |
 |---|---|---|
-| R1 to R8 | The owner's requirements | [Implementation plan](implementation-plan.md), "The owner's requirements" |
+| R1 to R8 | The owner's requirements | [Implementation plan](../history/local-dictation-2026-11/implementation-plan.md), "The owner's requirements" |
 | S1 to S20 | The canonical surfaces | [Surfaces](surfaces.md) |
-| DD-1 onward | Design decisions; this document elaborates DD-33 to DD-59, DD-67, DD-68, DD-71, DD-75 and DD-77 | [Implementation plan](implementation-plan.md), "Decision register" |
-| PR-01 to PR-33 | Pull requests in delivery order (PR-07 and PR-32 withdrawn) | [Implementation plan](implementation-plan.md), "Delivery plan" |
-| O-1 onward | The owner's decisions of 2026-11-05 and the plan's defaults; the text follows each | [Implementation plan](implementation-plan.md), "Owner decisions" |
+| DD-1 onward | Design decisions; this document elaborates DD-33 to DD-59, DD-67, DD-68, DD-71, DD-75 and DD-77 | [Implementation plan](../history/local-dictation-2026-11/implementation-plan.md), "Decision register" |
+| PR-01 to PR-33 | Pull requests in delivery order (PR-07 and PR-32 withdrawn) | [Implementation plan](../history/local-dictation-2026-11/implementation-plan.md), "Delivery plan" |
+| O-1 onward | The owner's decisions of 2026-11-05 and the plan's defaults; the text follows each | [Implementation plan](../history/local-dictation-2026-11/implementation-plan.md), "Owner decisions" |
 | M-1 onward | Measurements, defined in testing and release and dated in the checklist's log | [Testing and release](testing-and-release.md#measurements) |
 | MSG-… | Exact text a person sees | [Surfaces](surfaces.md), "Message catalog" |
 | P-1 to P-16 | Privacy invariants, each held by a named test | [Privacy invariants](#privacy-invariants) |
@@ -470,7 +470,7 @@ The Tier 1 accuracy test builds its dictionary through `bias_set` like every oth
 As built in PR-14, four details differ from the sketches above, each the smallest change the code needed:
 
 - `new_filtered(entries, table, scope, generation)` also takes the `bias_scope` the set reports and the store's in process generation, because `AllRows` alone cannot say whether the switch is off (scope public) or the person included private terms (scope private). The bonus table's `revision` is a hash of the generation, the table and each row's written form and bonus policy, so every generation rebuilds every table (oracle rule 9) and a mixing policy that changed while the store did not still gets a fresh one.
-- Rows with `bias = never` stay in the set, and the sketch and the predicate above now say so. The field table under [Field effects per channel](#field-effects-per-channel) keeps them out of the prompt and the bonus and lets correction use them, which is the more specific statement; DD-36's predicate in the [plan](implementation-plan.md), which also names `bias ≠ never`, would have made `never` mean "never correct to it" too.
+- Rows with `bias = never` stay in the set, and the sketch and the predicate above now say so. The field table under [Field effects per channel](#field-effects-per-channel) keeps them out of the prompt and the bonus and lets correction use them, which is the more specific statement; DD-36's predicate in the [plan](../history/local-dictation-2026-11/implementation-plan.md), which also names `bias ≠ never`, would have made `never` mean "never correct to it" too.
 - Every consumer of the set takes the `EligibleEntries` value itself, never a slice of rows: `select::plan`, `Corrector::new` and `EligibleEntries::bias_table`. The slice forms are private to the leaf crate, and `RecognitionEntry::from_entry`, which turns a raw store row into an entry, is pinned to `bias.rs` by the same repository walk as `new_filtered`.
 - A target's reach is private for `person_included` as well as for a private target, each only with private standing, so a Crew or external stream with an admitted `include_private_terms` gets the private rows the bias table test expects.
 - The terminal half of `Standing::from_checked` is `target::cli_bias`, which holds DD-77's rule in the core crate. The design first placed it in `crates/biorouter-cli/src/dictation/consent.rs`, but that file, which PR-25 added, mints `CaptureConsent` and asks `cli_bias` rather than building a `Standing` itself; `private_standing_is_built_in_two_files` (PR-16) names `target.rs`. PR-25, which added the terminal's consent prompt, left both: on 2026-11-10 the production calls are still `HttpCaller::dictation_standing` in `routes/session_reach.rs` and `target::cli_bias` in `target.rs`, the two the test names.
@@ -1611,7 +1611,7 @@ A shell can read `dictionary.json` directly, because DR-17 left the filesystem o
 
 ## Related documentation
 
-- [Implementation plan](implementation-plan.md): the requirements, the decision register this document elaborates, and the order of the pull requests.
+- [Implementation plan](../history/local-dictation-2026-11/implementation-plan.md): the requirements, the decision register this document elaborates, and the order of the pull requests.
 - [Voice dictation](README.md): the folder index and what each dictation document covers.
 - [Engine and models](engine-and-models.md): the worker protocol that carries the bias set, the decoding parameters, the `/dictation/*` routes and the managed `dictation:` block.
 - [Surfaces](surfaces.md): the composer, the private draft flag, the setup popover and the full message catalog quoted here by id.

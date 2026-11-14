@@ -106,7 +106,7 @@ recalled chat adds no institution, because only a call to an institution's conne
 and nothing is recorded while privacy tiers are switched off. And dictation into a chat whose
 agent has not loaded yet does not know the chat's model, so it uses only the private terms that
 carry no institution; the owner kept this behaviour on 2026-11-10 (O-43 in the
-[dictation plan](../dictation/implementation-plan.md#owner-decisions)).
+[dictation plan](../history/local-dictation-2026-11/implementation-plan.md#owner-decisions)).
 
 ## The rule, and the part everyone gets backwards
 

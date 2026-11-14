@@ -154,7 +154,7 @@ pub enum DictationError {
         model: String,
         detector: String,
     },
-    /// No speech model is installed at all: MSG-NO-MODEL-CLI's first sentence.
+    /// No speech model is installed at all: MSG-NO-MODEL.
     NoModel {
         host: String,
         account: String,

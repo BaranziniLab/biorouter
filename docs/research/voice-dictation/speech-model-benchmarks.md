@@ -1029,7 +1029,7 @@ In process, the routes, correction and the transcript add about 6 ms to the tail
 
 ## What the numbers support
 
-Each conclusion names the tables that support it. Where the numbers do not settle a point, it says so. The decisions themselves are made in the [implementation plan](../../dictation/implementation-plan.md)'s decision register.
+Each conclusion names the tables that support it. Where the numbers do not settle a point, it says so. The decisions themselves are made in the [implementation plan](../../history/local-dictation-2026-11/implementation-plan.md)'s decision register.
 
 ### Engine
 

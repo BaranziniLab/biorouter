@@ -150,7 +150,7 @@ and `foo__.*` both work.
 *For administrators.*
 
 The `dictation:` block governs local voice dictation (DD-90 in the
-[dictation implementation plan](../dictation/implementation-plan.md)). Every key only
+[dictation implementation plan](../history/local-dictation-2026-11/implementation-plan.md)). Every key only
 narrows, and writing `true` is the same as leaving the key out:
 
 ```yaml

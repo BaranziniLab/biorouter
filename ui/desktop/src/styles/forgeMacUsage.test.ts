@@ -5,7 +5,7 @@ import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
 
 /**
- * The microphone on macOS (DD-65 in docs/dictation/implementation-plan.md).
+ * The microphone on macOS (DD-65 in docs/history/local-dictation-2026-11/implementation-plan.md).
  *
  * Two things in `forge.config.ts` decide whether dictation can ever hear
  * anything in a signed, hardened app, and neither shows up anywhere until a
