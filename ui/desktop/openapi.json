@@ -29432,7 +29432,7 @@
           },
           "hiddenContext": {
             "type": "boolean",
-            "description": "A shipped **Context** the user switched off in Settings → Contexts. Such\na skill is hidden from the catalog but stays loadable by exact name; see\n`skills_extension::hidden_contexts_in`."
+            "description": "A shipped **Context** the user switched off in Settings → Contexts. Such\na skill is hidden from the catalog of a chat with no per-chat choice about\nit, but stays loadable by exact name; see\n`skills_extension::hidden_contexts_in`. A per-chat `add` still turns it on\nin that chat (`compose_state`)."
           },
           "machineEnabled": {
             "type": "boolean",

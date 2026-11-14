@@ -8262,8 +8262,10 @@ export type SkillState = {
     effective: boolean;
     /**
      * A shipped **Context** the user switched off in Settings → Contexts. Such
-     * a skill is hidden from the catalog but stays loadable by exact name; see
-     * `skills_extension::hidden_contexts_in`.
+     * a skill is hidden from the catalog of a chat with no per-chat choice about
+     * it, but stays loadable by exact name; see
+     * `skills_extension::hidden_contexts_in`. A per-chat `add` still turns it on
+     * in that chat (`compose_state`).
      */
     hiddenContext: boolean;
     /**
