@@ -2276,10 +2276,21 @@ impl Config {
         let result = match &self.secrets {
             SecretStorage::Keyring { service } => {
                 let json_value = serde_json::to_string(values)?;
-                self.handle_keyring_operation(
+                match self.handle_keyring_operation(
                     || self.keyring_write_blob(service, &json_value),
                     Some(values),
-                )
+                ) {
+                    // The credential store is unusable (headless Linux with no
+                    // Secret Service, a locked collection, WSL), and
+                    // `handle_keyring_fallback_error` has already written every
+                    // value to `secrets.yaml`, which each later read falls back
+                    // to. That is the save succeeding, not failing: reporting it
+                    // as an error answered every secret save on such a host 500
+                    // while the key sat on disk (serve browser setup live test,
+                    // 2026-11-14), and a retry hit the same unusable keyring.
+                    Err(ConfigError::FallbackToFileStorage) => Ok(()),
+                    other => other,
+                }
             }
             SecretStorage::File { path } => {
                 let yaml_value = serde_yaml::to_string(values)?;
@@ -5383,6 +5394,68 @@ mod tests {
             1,
             "24 concurrent cold readers must produce exactly one credential-store read"
         );
+    }
+
+    /// A secret saved where the credential store is unusable lands in
+    /// `secrets.yaml` and the save SUCCEEDS. It used to return
+    /// `FallbackToFileStorage` after writing the file, so on a headless Linux
+    /// host every secret save over HTTP answered 500 (and every retry, because
+    /// the configured storage stays `Keyring`), though the key was on disk.
+    #[test]
+    fn a_secret_saved_without_a_usable_keyring_falls_back_and_succeeds() -> Result<(), ConfigError>
+    {
+        struct NoSecretService;
+        impl KeyringBlobStore for NoSecretService {
+            fn get(&self, _: &str) -> Result<String, keyring::Error> {
+                Err(keyring::Error::PlatformFailure(
+                    "no Secret Service on this host".into(),
+                ))
+            }
+            fn set(&self, _: &str, _: &str) -> Result<(), keyring::Error> {
+                Err(keyring::Error::PlatformFailure(
+                    "no Secret Service on this host".into(),
+                ))
+            }
+            fn delete(&self, _: &str) -> Result<(), keyring::Error> {
+                Err(keyring::Error::PlatformFailure(
+                    "no Secret Service on this host".into(),
+                ))
+            }
+        }
+        let config_file = NamedTempFile::new().unwrap();
+        let config = Config {
+            config_path: config_file.path().to_path_buf(),
+            secrets: SecretStorage::Keyring {
+                service: "biorouter-test".to_string(),
+            },
+            guard: Mutex::new(()),
+            secrets_cache: Mutex::new(None),
+            secrets_read: Mutex::new(()),
+            values_cache: Mutex::new(ValuesCache::default()),
+            values_read: Mutex::new(()),
+            last_write_error: Mutex::new(WriteFailureRecord::default()),
+            test_keyring_store: Some(std::sync::Arc::new(NoSecretService)),
+            io_faults: IoFaults::default(),
+            io_probe: IoProbe::default(),
+        };
+
+        let key = "SD17_HEADLESS_FALLBACK_TEST_KEY";
+        config.set_secret(key, &"first")?;
+        let stored: String = config.get_secret(key)?;
+        assert_eq!(stored, "first");
+        // And again: the configured storage is still `Keyring`, so the second
+        // save meets the same unusable store and must succeed the same way.
+        config.set_secret(key, &"second")?;
+        config.invalidate_secrets_cache();
+        let stored: String = config.get_secret(key)?;
+        assert_eq!(stored, "second");
+        let on_disk = std::fs::read_to_string(Config::secrets_file_path()).unwrap();
+        assert!(
+            on_disk.contains(key),
+            "the fallback file does not hold the key"
+        );
+        config.delete_secret(key).ok();
+        Ok(())
     }
 
     #[test]
