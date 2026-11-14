@@ -66,6 +66,31 @@ const measure = (frame: Frame, selector: string): Promise<Measure> =>
     };
   }, selector);
 
+/**
+ * `selector`'s measurement once the runtime has acted: polled until `done` holds
+ * or 5 s pass, then returned for the test's own assertions, which still fail when
+ * it never does. The runtime re-centres from a 16 ms timer after a resize or a
+ * mutation, and a fixed sleep was not always long enough on a loaded CI runner:
+ * dragged from 920 px to 480 px, the slide was measured still placed for 920 px
+ * (PR #500's vitest 3/3).
+ */
+const settled = async (
+  frame: Frame,
+  selector: string,
+  done: (at: Measure) => boolean
+): Promise<Measure> => {
+  const deadline = Date.now() + 5000;
+  let at = await measure(frame, selector);
+  while (!done(at) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    at = await measure(frame, selector);
+  }
+  return at;
+};
+
+/** Content equally far from the frame's left and right edges, to a pixel. */
+const centred = (at: Measure) => Math.abs(at.left - at.frameRight) <= 1;
+
 describe('an HTML preview narrower than its frame', () => {
   let browser: Browser | null = null;
 
@@ -122,7 +147,7 @@ describe('an HTML preview narrower than its frame', () => {
         page(SLIDE, `body{margin:0;background:#e9ecf3}${SLIDE_STYLE}`),
         width
       );
-      const at = await measure(frame, '#slide');
+      const at = await settled(frame, '#slide', centred);
       expect(at.width).toBe(300);
       expect(Math.abs(at.left - at.frameRight)).toBeLessThanOrEqual(1);
       expect(at.left).toBeGreaterThan(20);
@@ -135,7 +160,7 @@ describe('an HTML preview narrower than its frame', () => {
     const { page: host, frame } = await framed(page(SLIDE, `body{margin:0}${SLIDE_STYLE}`), 360);
     for (const width of [920, 480, 780, 360]) {
       await resize(host, width);
-      const at = await measure(frame, '#slide');
+      const at = await settled(frame, '#slide', centred);
       expect(Math.abs(at.left - at.frameRight), `at ${width}px`).toBeLessThanOrEqual(1);
       expect(at.scrollWidth, `no sideways scroll at ${width}px`).toBe(at.visible);
     }
@@ -148,7 +173,7 @@ describe('an HTML preview narrower than its frame', () => {
       page('<canvas id="c" width="300" height="150"></canvas>'),
       620
     );
-    const at = await measure(frame, '#c');
+    const at = await settled(frame, '#c', centred);
     expect(Math.abs(at.left - at.frameRight)).toBeLessThanOrEqual(1);
     await host.close();
   });
@@ -159,7 +184,7 @@ describe('an HTML preview narrower than its frame', () => {
       page(`<div id="app"><main>${SLIDE}</main></div>`, `body{margin:0}${SLIDE_STYLE}`),
       620
     );
-    const at = await measure(frame, '#slide');
+    const at = await settled(frame, '#slide', centred);
     expect(Math.abs(at.left - at.frameRight)).toBeLessThanOrEqual(1);
     expect(at.left).toBeGreaterThan(100);
     await host.close();
@@ -171,7 +196,7 @@ describe('an HTML preview narrower than its frame', () => {
       page('<div id="half" style="width:50%;height:80px;background:#ccc"></div>', 'body{margin:0}'),
       600
     );
-    const first = await measure(frame, '#half');
+    const first = await settled(frame, '#half', centred);
     expect(first.width).toBe(300);
     expect(Math.abs(first.left - first.frameRight)).toBeLessThanOrEqual(1);
     await host.waitForTimeout(200);
@@ -189,8 +214,7 @@ describe('an HTML preview narrower than its frame', () => {
       canvas.height = 100;
       document.body.append(canvas);
     });
-    await host.waitForTimeout(120);
-    const at = await measure(frame, '#late');
+    const at = await settled(frame, '#late', centred);
     expect(Math.abs(at.left - at.frameRight)).toBeLessThanOrEqual(1);
     await host.close();
   });
@@ -204,7 +228,7 @@ describe('an HTML preview narrower than its frame', () => {
       ),
       620
     );
-    const at = await measure(frame, '#slide');
+    const at = await settled(frame, '#slide', centred);
     expect(at.visible).toBe(604);
     expect(Math.abs(at.left - at.frameRight)).toBeLessThanOrEqual(1);
     expect(at.right).toBeGreaterThanOrEqual(0);
@@ -220,7 +244,7 @@ describe('an HTML preview narrower than its frame', () => {
       ),
       620
     );
-    const slide = await measure(frame, '#slide');
+    const slide = await settled(frame, '#slide', centred);
     const nav = await measure(frame, '#nav');
     expect(Math.abs(slide.left - slide.frameRight)).toBeLessThanOrEqual(1);
     expect(nav.right).toBe(20);
@@ -238,7 +262,7 @@ describe('an HTML preview narrower than its frame', () => {
       ),
       620
     );
-    const chart = await measure(frame, '#chart');
+    const chart = await settled(frame, '#chart', centred);
     const tip = await measure(frame, '#tip');
     expect(Math.abs(chart.left - chart.frameRight)).toBeLessThanOrEqual(1);
     expect(tip.left).toBe(40);
@@ -277,9 +301,9 @@ describe('an HTML preview narrower than its frame', () => {
     it('a canvas that becomes wider than the frame after being centred', async () => {
       if (!browser) return;
       const { page: host, frame } = await framed(page(SLIDE, `body{margin:0}${SLIDE_STYLE}`), 920);
-      expect((await measure(frame, '#slide')).left).toBeGreaterThan(100);
+      expect((await settled(frame, '#slide', (at) => at.left > 100)).left).toBeGreaterThan(100);
       await resize(host, 280);
-      const at = await measure(frame, '#slide');
+      const at = await settled(frame, '#slide', (moved) => moved.translate === '');
       expect(at.left).toBe(0);
       expect(at.translate).toBe('');
       await host.close();
