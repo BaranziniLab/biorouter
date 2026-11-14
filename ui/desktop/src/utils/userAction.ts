@@ -1,4 +1,5 @@
 import { readConfig } from '../api';
+import { subscribeAppModelSelectionChanges } from './sessionBindingSync';
 import { isBrowserSurface } from './surface';
 
 /**
@@ -109,6 +110,21 @@ export const CALLER_PROVIDER_HEADER = 'X-Caller-Provider';
 /** The host's `BIOROUTER_PROVIDER`, once it has been read successfully. */
 let hostProvider: string | undefined;
 
+let followingHostDefault = false;
+/**
+ * SD-17: once a browser has cached the host default, drop it whenever any tab announces that
+ * the app-wide selection moved (`announceAppModelSelection` reaches this tab's own listeners
+ * and every other tab's). The direct {@link forgetHostConfiguredProvider} calls after this
+ * tab's own writes do the same sooner; this covers a change made in another tab.
+ */
+function followHostDefault(): void {
+  if (followingHostDefault) return;
+  followingHostDefault = true;
+  subscribeAppModelSelectionChanges(() => {
+    hostProvider = undefined;
+  });
+}
+
 /**
  * The provider the machine running `biorouter serve` was configured with.
  *
@@ -122,6 +138,7 @@ async function hostConfiguredProvider(): Promise<string | null> {
     const { data } = await readConfig({ body: { key: 'BIOROUTER_PROVIDER', is_secret: false } });
     if (typeof data === 'string' && data.trim()) {
       hostProvider = data.trim();
+      followHostDefault();
       return hostProvider;
     }
   } catch {
@@ -130,10 +147,22 @@ async function hostConfiguredProvider(): Promise<string | null> {
   return null;
 }
 
-/** For tests: forget the cached host provider. */
-export const resetHostProviderForTests = (): void => {
+/**
+ * Forget the cached host provider, so the next {@link userActionHeaders} reads it again.
+ *
+ * SD-17: a browser may now change the host's default (`/config/set_provider`, or an upsert of
+ * `BIOROUTER_PROVIDER` from a setup card), and `X-Caller-Provider` must name the new default
+ * from the next request on. Called after every renderer write of that key; a change another
+ * tab announces drops it too (`followHostDefault`). A change made on the host itself
+ * (`biorouter configure`) is not announced, so the page reads it again only on a reload. A
+ * no-op in effect on the desktop, which never reads the cache.
+ */
+export const forgetHostConfiguredProvider = (): void => {
   hostProvider = undefined;
 };
+
+/** For tests: forget the cached host provider. */
+export const resetHostProviderForTests = forgetHostConfiguredProvider;
 
 /**
  * The headers that answer the daemon's "may this caller reach this chat?" on

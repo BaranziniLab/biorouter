@@ -6,7 +6,7 @@ import { useConfig } from '../../ConfigContext';
 import { View, ViewOptions } from '../../../utils/navigationUtils';
 import { HostManagedModelNote } from '../../privacy/HostManagedModelNote';
 import { HOST_MANAGED_MODEL_REASON } from '../../privacy/hostManagedModelCopy';
-import { isBrowserSurface } from '../../../utils/surface';
+import { useProvidersAreHostManaged } from '../../../utils/providerSetupAccess';
 import { modelsDangerCopy } from '../models/copy';
 
 interface ResetProviderSectionProps {
@@ -24,10 +24,11 @@ export default function ResetProviderSection(_props: ResetProviderSectionProps) 
    * SD-1, and the half of it that is easy to miss: `/config/remove` is guarded
    * by the same predicate as `/config/upsert` (`is_capability_key`), because a
    * delete is not the absence of a write — it is a write of the key's default.
-   * So this button 409s in a browser exactly as the model picker does, and it
-   * would leave the session with no provider at all if it ever succeeded there.
+   * So this button 409s in a browser exactly as the model picker does, unless
+   * the daemon admitted this page to provider setup (SD-17), where it works as
+   * on the desktop and the reload lands on the first-run catalog.
    */
-  const hostManaged = isBrowserSurface();
+  const hostManaged = useProvidersAreHostManaged();
   // The reset clears both keys and reloads the window, so it asks first: a
   // destructive-styled button that acted on its first click was one stray
   // click away from sending the person back through onboarding.

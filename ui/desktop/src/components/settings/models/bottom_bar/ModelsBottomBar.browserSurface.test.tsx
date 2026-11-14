@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ModelsBottomBar from './ModelsBottomBar';
 import { __resetDisclosureStoreForTests } from '../../../privacy/disclosureCopy';
 import { BROWSER_SURFACE_MARKER } from '../../../../utils/surface';
+import {
+  loadProviderSetupAccess,
+  resetProviderSetupAccessForTests,
+} from '../../../../utils/providerSetupAccess';
 
 /**
  * SD-1 at the composer's model chip — the surface a browser user is most likely
@@ -16,12 +20,15 @@ const mocks = vi.hoisted(() => ({
   getProviders: vi.fn(async () => [] as unknown[]),
   getPrivacyDisclosure: vi.fn(),
   ackPrivacyDisclosure: vi.fn(),
+  getProviderSetupAccess: vi.fn(),
+  modalProps: null as null | Record<string, unknown>,
 }));
 
 vi.mock('../../../../api', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getPrivacyDisclosure: mocks.getPrivacyDisclosure,
   ackPrivacyDisclosure: mocks.ackPrivacyDisclosure,
+  getProviderSetupAccess: mocks.getProviderSetupAccess,
 }));
 
 // `PrivacyBadge` reads the master switch itself, so a suite that mocks
@@ -44,7 +51,10 @@ vi.mock('../../../ModelAndProviderContext', () => ({
 // Markers rather than `null`: the assertion that matters is whether a click
 // OPENED the dialog, which an empty stub cannot report.
 vi.mock('../subcomponents/SwitchModelModal', () => ({
-  SwitchModelModal: () => <div>SWITCH-MODEL-MODAL</div>,
+  SwitchModelModal: (props: Record<string, unknown>) => {
+    mocks.modalProps = props;
+    return <div>SWITCH-MODEL-MODAL</div>;
+  },
 }));
 
 const dropdownRef = { current: null } as unknown as React.RefObject<HTMLDivElement>;
@@ -86,6 +96,8 @@ describe('ModelsBottomBar on a browser-served surface', () => {
 
   afterEach(() => {
     delete document.documentElement.dataset.biorouterSurface;
+    resetProviderSetupAccessForTests();
+    mocks.modalProps = null;
   });
 
   /**
@@ -152,5 +164,27 @@ describe('ModelsBottomBar on a browser-served surface', () => {
 
     fireEvent.click(item);
     expect(await screen.findByText('SWITCH-MODEL-MODAL')).toBeInTheDocument();
+  });
+
+  /**
+   * SD-17. A daemon that admits the served page lets the chip change the default new chats
+   * start on, so the item works there. The dialog opens on that default rather than on this
+   * chat's binding, because in a browser a pick never moves the open chat.
+   */
+  it('opens Switch models on the default in a browser the daemon admits', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    mocks.getProviderSetupAccess.mockResolvedValue({ data: { allowed: true } });
+    await loadProviderSetupAccess();
+    renderBar();
+    openChip();
+
+    const item = await screen.findByRole('menuitem', { name: /Change model/ });
+    expect(item).not.toHaveAttribute('aria-disabled', 'true');
+    expect(screen.queryByTestId('host-managed-model-note')).toBeNull();
+
+    fireEvent.click(item);
+    expect(await screen.findByText('SWITCH-MODEL-MODAL')).toBeInTheDocument();
+    expect(mocks.modalProps?.initialProvider).toBeUndefined();
+    expect(mocks.modalProps?.initialModel).toBeUndefined();
   });
 });

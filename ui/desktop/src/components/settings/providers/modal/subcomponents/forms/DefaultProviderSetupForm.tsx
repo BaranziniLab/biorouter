@@ -6,7 +6,11 @@ import { ProviderDetails, ConfigKey } from '../../../../../../api';
 import { Disclosure } from '../../../../../ui/disclosure';
 import { Field } from '../../../../../ui/field';
 import { configLabels } from '../../../../../../utils/configUtils';
-import { isBrowserSurface, isHostManagedConfigKey } from '../../../../../../utils/surface';
+import { isHostManagedConfigKey } from '../../../../../../utils/surface';
+import {
+  providersAreHostManaged,
+  useProvidersAreHostManaged,
+} from '../../../../../../utils/providerSetupAccess';
 import { HostManagedModelNote } from '../../../../../privacy/HostManagedModelNote';
 import { isDestinationConfigKey } from '../../../../destinationConfigKeys';
 import { sentenceCase } from '../../../../config/configLabels';
@@ -136,15 +140,16 @@ function titleCaseFieldName(providerName: string, parameterName: string): string
 
 /**
  * W2-PRV-2, round 4. Is this field the host computer's in this renderer? In a
- * browser served by `biorouter serve`, a setting that decides where the
- * provider sends its requests and key cannot be changed: the daemon asks for a
- * proof of a person that a browser can never give. The field shows its value
- * and is not editable, and the submit handler leaves it out.
+ * browser served by `biorouter serve` that the daemon has not admitted to
+ * provider setup (SD-17), a setting that decides where the provider sends its
+ * requests and key cannot be changed: the daemon asks for a proof of a person
+ * that such a browser cannot give. The field shows its value and is not
+ * editable, and the submit handler leaves it out.
  */
 export function isHostOwnedProviderField(parameter: { name: string; secret?: boolean }): boolean {
   return (
     !parameter.secret &&
-    isBrowserSurface() &&
+    providersAreHostManaged() &&
     (isDestinationConfigKey(parameter.name) || isHostManagedConfigKey(parameter.name))
   );
 }
@@ -162,6 +167,8 @@ export default function DefaultProviderSetupForm({
   const [isLoading, setIsLoading] = useState(true);
   const [optionalExpanded, setOptionalExpanded] = useState(false);
   const { read } = useConfig();
+  // Re-render when the daemon's SD-17 answer arrives: `isHostOwnedProviderField` reads it.
+  useProvidersAreHostManaged();
 
   const loadConfigValues = useCallback(async () => {
     setIsLoading(true);

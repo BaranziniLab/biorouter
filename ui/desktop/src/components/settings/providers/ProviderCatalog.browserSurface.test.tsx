@@ -4,6 +4,10 @@ import type { ProviderDetails } from '../../../api';
 import ProviderCatalog from './ProviderCatalog';
 import { __resetDisclosureStoreForTests } from '../../privacy/disclosureCopy';
 import { BROWSER_SURFACE_MARKER } from '../../../utils/surface';
+import {
+  loadProviderSetupAccess,
+  resetProviderSetupAccessForTests,
+} from '../../../utils/providerSetupAccess';
 
 /**
  * SD-1 on Settings > Providers.
@@ -21,12 +25,14 @@ const mocks = vi.hoisted(() => ({
   ackPrivacyDisclosure: vi.fn(),
   fetchCodingAgentStatus: vi.fn(),
   upsert: vi.fn(),
+  getProviderSetupAccess: vi.fn(),
 }));
 
 vi.mock('../../../api', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getPrivacyDisclosure: mocks.getPrivacyDisclosure,
   ackPrivacyDisclosure: mocks.ackPrivacyDisclosure,
+  getProviderSetupAccess: mocks.getProviderSetupAccess,
 }));
 vi.mock('../../../utils/userAction', () => ({
   userActionHeaders: async () => ({ 'X-User-Action': 'test-key' }),
@@ -82,6 +88,7 @@ describe('ProviderCatalog on a browser-served surface', () => {
 
   afterEach(() => {
     delete document.documentElement.dataset.biorouterSurface;
+    resetProviderSetupAccessForTests();
   });
 
   /**
@@ -125,5 +132,25 @@ describe('ProviderCatalog on a browser-served surface', () => {
     // rather than winning a race against a note that has not arrived yet.
     await screen.findByTestId('non-private-model-note');
     expect(screen.queryByTestId('host-managed-model-note')).toBeNull();
+  });
+
+  /**
+   * SD-17: a daemon that admits the served page takes the whole catalog from it, so that
+   * browser's page is the desktop's, with no note saying the host owns the choice.
+   */
+  it('adds nothing in a browser the daemon lets set up providers', async () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    mocks.getProviderSetupAccess.mockResolvedValue({ data: { allowed: true } });
+    await loadProviderSetupAccess();
+    render(
+      <ProviderCatalog
+        providers={[provider('anthropic')]}
+        mode="settings"
+        configuredProvider={null}
+      />
+    );
+    await screen.findByTestId('non-private-model-note');
+    expect(screen.queryByTestId('host-managed-model-note')).toBeNull();
+    expect(screen.getByText('anthropic')).toBeInTheDocument();
   });
 });

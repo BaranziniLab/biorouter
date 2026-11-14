@@ -10,7 +10,8 @@ import { cn } from '../../../utils';
 import { Save } from '../../icons/app-icons';
 import { toastSuccess, toastError } from '../../../toasts';
 import { providerPrefixes } from '../../../utils/configUtils';
-import { isBrowserSurface, isHostManagedConfigKey } from '../../../utils/surface';
+import { isHostManagedConfigKey } from '../../../utils/surface';
+import { useProvidersAreHostManaged } from '../../../utils/providerSetupAccess';
 import { HostManagedModelNote, type HostManagedTopic } from '../../privacy/HostManagedModelNote';
 import { isDestinationConfigKey } from '../destinationConfigKeys';
 import { ModalShell } from '../../ModalShell';
@@ -135,9 +136,10 @@ export default function ConfigSettings() {
    * `destinationConfigKeys.ts`, pinned to the daemon's list by a Rust test).
    * Greying out the whole page would be wrong about the great majority of it,
    * so the question is asked per row. See `utils/surface.ts` for the first
-   * list and the drift risk it carries.
+   * list and the drift risk it carries. A browser the daemon admits to provider
+   * setup (SD-17) edits every row, as the desktop does.
    */
-  const hostManaged = isBrowserSurface();
+  const hostManaged = useProvidersAreHostManaged();
   const hostTopic = (key: string): HostManagedTopic | null => {
     if (!hostManaged) return null;
     if (isHostManagedConfigKey(key)) return 'model';

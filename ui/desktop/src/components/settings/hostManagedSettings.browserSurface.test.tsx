@@ -6,6 +6,10 @@ import { DefaultWorkerModelRow } from './models/subcomponents/DefaultWorkerModel
 import { defaultWorkerModelCopy } from './models/copy';
 import ConfigSettings from './config/ConfigSettings';
 import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
+import {
+  loadProviderSetupAccess,
+  resetProviderSetupAccessForTests,
+} from '../../utils/providerSetupAccess';
 
 /**
  * SD-1 across the remaining Settings surfaces that write a capability config
@@ -18,6 +22,11 @@ import { BROWSER_SURFACE_MARKER } from '../../utils/surface';
  *   delete is not the absence of a write — it is a write of the key's default.
  * - `ConfigSettings` → `/config/upsert` on whichever key the row names, which
  *   is why that one is guarded per key rather than per page.
+ *
+ * SD-17: a daemon that admits the served page to provider setup takes all three,
+ * so in that browser every one of these works as on the desktop (last block).
+ * The blocks before it are the browser the daemon has not admitted, which is
+ * also every browser until the daemon has answered.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -30,6 +39,12 @@ const mocks = vi.hoisted(() => ({
   config: {} as Record<string, unknown>,
   currentProvider: 'openai' as string | null,
   refreshCurrentModelAndProvider: vi.fn(),
+  getProviderSetupAccess: vi.fn(),
+}));
+
+vi.mock('../../api', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getProviderSetupAccess: mocks.getProviderSetupAccess,
 }));
 
 vi.mock('../ConfigContext', () => ({
@@ -80,10 +95,12 @@ beforeEach(() => {
   mocks.getProviderModels.mockResolvedValue([]);
   mocks.currentProvider = 'openai';
   mocks.config = {};
+  resetProviderSetupAccessForTests();
 });
 
 afterEach(() => {
   delete document.documentElement.dataset.biorouterSurface;
+  resetProviderSetupAccessForTests();
 });
 
 describe('Settings > Models — Switch models', () => {
@@ -267,5 +284,41 @@ describe('Settings > Configuration editor', () => {
 
     expect(await screen.findByDisplayValue('https://gateway.example')).toBeEnabled();
     expect(screen.queryByTestId('host-managed-config-OPENAI_HOST')).toBeNull();
+  });
+});
+
+describe('Settings > Models in a browser the daemon admits to provider setup (SD-17)', () => {
+  beforeEach(async () => {
+    browser();
+    mocks.getProviderSetupAccess.mockResolvedValue({ data: { allowed: true } });
+    await loadProviderSetupAccess();
+  });
+
+  it('opens Switch models, with no host note', () => {
+    render(<ModelSettingsButtons setView={vi.fn()} />);
+    const button = screen.getByRole('button', { name: 'Switch models' });
+    expect(button).toBeEnabled();
+    expect(screen.queryByTestId('host-managed-model-note')).toBeNull();
+
+    fireEvent.click(button);
+    expect(screen.getByText('SWITCH-MODEL-MODAL')).toBeInTheDocument();
+  });
+
+  it('offers Reset provider and model', () => {
+    render(<ResetProviderSection setView={vi.fn()} />);
+    expect(screen.getByRole('button', { name: RESET_BUTTON })).toBeEnabled();
+    expect(screen.queryByTestId('host-managed-model-note')).toBeNull();
+  });
+
+  it('leaves the provider and its host editable in the configuration editor', async () => {
+    mocks.currentProvider = 'ollama';
+    mocks.config = { BIOROUTER_PROVIDER: 'ollama', OLLAMA_HOST: 'http://localhost:11434' };
+    render(<ConfigSettings />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit configuration' }));
+
+    expect(await screen.findByDisplayValue('http://localhost:11434')).toBeEnabled();
+    expect(screen.getByDisplayValue('ollama')).toBeEnabled();
+    expect(screen.queryByTestId('host-managed-config-BIOROUTER_PROVIDER')).toBeNull();
+    expect(screen.queryByTestId('host-managed-config-OLLAMA_HOST')).toBeNull();
   });
 });

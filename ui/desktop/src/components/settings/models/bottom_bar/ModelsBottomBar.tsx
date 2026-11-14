@@ -47,6 +47,7 @@ import { decisionModelPlace, privacyBasisChipLine } from '../../../decisions/dec
 import { decisionModelLabel, type PrivacyBasis } from '../../../../utils/sessionDecisions';
 import { switchModelCopy } from '../copy';
 import { isBrowserSurface } from '../../../../utils/surface';
+import { useProvidersAreHostManaged } from '../../../../utils/providerSetupAccess';
 import type {
   ProviderDetails,
   ProviderTier,
@@ -336,12 +337,20 @@ export default function ModelsBottomBar({
    * SD-1 — is this chip's model chosen here, or on the machine running
    * `biorouter serve`?
    *
-   * ⚠ **Not state, and not fetched.** The surface a renderer is running on
-   * cannot change while it is running, so this is read straight from the DOM
-   * marker `renderer.tsx` stamps; a state hook here would add a render in which
-   * the two menu items are still offered.
+   * ⚠ **Fail closed.** On a browser surface this is `true` until the daemon has
+   * said this page may set up providers (SD-17, `utils/providerSetupAccess.ts`),
+   * so there is no render in which the menu item is offered and then refused.
+   * The launch check has normally asked already; the hook re-renders the chip
+   * if the answer lands after it mounted. The desktop answers `false` at once.
    */
-  const hostManaged = isBrowserSurface();
+  const hostManaged = useProvidersAreHostManaged();
+  /**
+   * SD-17: in a browser, an open chat keeps the model it started on, and Switch
+   * models changes the default new chats start on. So the dialog opens on that
+   * default, not on this chat's binding (D6's reason for the binding is a
+   * switch that moves the chat, which a browser never makes).
+   */
+  const switchesDefaultOnly = isBrowserSurface();
 
   /**
    * Issue #56 Gate B. What actually runs in THIS chat: the pin when there is
@@ -828,8 +837,8 @@ export default function ModelsBottomBar({
           sessionId={sessionId}
           privacyTier={privacyTier}
           privacyBasis={privacyBasis}
-          initialProvider={effectiveModel?.provider}
-          initialModel={effectiveModel?.model}
+          initialProvider={switchesDefaultOnly ? undefined : effectiveModel?.provider}
+          initialModel={switchesDefaultOnly ? undefined : effectiveModel?.model}
           setView={setView}
           onChooseForUnsentChat={unsentChat ? chooseForUnsentChat : undefined}
           unsentChatTabId={unsentChat ? pendingChat?.tabId : undefined}

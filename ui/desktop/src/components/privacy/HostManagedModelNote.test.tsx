@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HostManagedModelNote } from './HostManagedModelNote';
 import {
@@ -9,6 +9,10 @@ import {
   HOST_MANAGED_MODEL_REASON,
   HOST_MANAGED_MODEL_SHORT,
 } from './hostManagedModelCopy';
+import {
+  loadProviderSetupAccess,
+  resetProviderSetupAccessForTests,
+} from '../../utils/providerSetupAccess';
 
 /**
  * The regression this file exists for is not a rendering bug — it is a prop
@@ -24,14 +28,50 @@ vi.mock('../../utils/surface', () => ({
   isBrowserSurface: () => browserSurface,
 }));
 
+const apiMocks = vi.hoisted(() => ({ getProviderSetupAccess: vi.fn() }));
+vi.mock('../../api', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  getProviderSetupAccess: apiMocks.getProviderSetupAccess,
+}));
+
 let browserSurface = true;
 
 describe('HostManagedModelNote', () => {
   beforeEach(() => {
     browserSurface = true;
+    resetProviderSetupAccessForTests();
   });
   afterEach(() => {
     browserSurface = true;
+    resetProviderSetupAccessForTests();
+  });
+
+  /**
+   * SD-17: a browser the daemon admits to provider setup uses the controls as the desktop does,
+   * so the note that says the host owns the choice goes, and comes into view the moment it is
+   * known, without a remount.
+   */
+  it('renders nothing in a browser the daemon lets set up providers', async () => {
+    apiMocks.getProviderSetupAccess.mockResolvedValue({ data: { allowed: true } });
+    render(<HostManagedModelNote />);
+    // Fail closed: until the daemon has answered, the host owns the choice.
+    expect(screen.getByTestId('host-managed-model-note')).toBeInTheDocument();
+
+    await act(async () => {
+      await loadProviderSetupAccess();
+    });
+    expect(screen.queryByTestId('host-managed-model-note')).toBeNull();
+  });
+
+  it('stays in a browser the daemon refuses', async () => {
+    apiMocks.getProviderSetupAccess.mockResolvedValue({ data: { allowed: false } });
+    render(<HostManagedModelNote />);
+    await act(async () => {
+      await loadProviderSetupAccess();
+    });
+    expect(screen.getByTestId('host-managed-model-note')).toHaveTextContent(
+      HOST_MANAGED_MODEL_REASON
+    );
   });
 
   it('renders nothing on the desktop, so a call site can mount it unconditionally', () => {
