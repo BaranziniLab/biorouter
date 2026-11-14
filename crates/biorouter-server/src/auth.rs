@@ -290,7 +290,10 @@ pub fn is_user_action(headers: &axum::http::HeaderMap) -> bool {
 /// SD-8 stand exactly as they were.
 struct ServedOperator {
     browser_token: String,
-    capability: biorouter::privacy::ProviderTier,
+    /// Read at launch, and replaced only when the person in the served page
+    /// chooses another default provider there (SD-17,
+    /// [`adopt_served_operator_capability`]). Never re-read from `config.yaml`.
+    capability: std::sync::RwLock<biorouter::privacy::ProviderTier>,
 }
 
 static SERVED_OPERATOR: OnceLock<ServedOperator> = OnceLock::new();
@@ -305,8 +308,23 @@ pub fn install_served_operator(
 ) {
     let _ = SERVED_OPERATOR.set(ServedOperator {
         browser_token,
-        capability,
+        capability: std::sync::RwLock::new(capability),
     });
+}
+
+/// SD-17: the person in the served page chose a default provider there, so the
+/// standing SD-10 gives that page follows the tier of their choice from now on,
+/// exactly as it would had the operator chosen it with `biorouter configure`
+/// before launch. Called only by the provider routes, after a write that
+/// [`provider_choice_proof`] admitted. A daemon that serves no tokened interface
+/// has no standing to move, and this does nothing there.
+pub fn adopt_served_operator_capability(capability: biorouter::privacy::ProviderTier) {
+    if let Some(operator) = SERVED_OPERATOR.get() {
+        *operator
+            .capability
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = capability;
+    }
 }
 
 /// The capability a request earns by presenting the served document's cookie:
@@ -316,9 +334,106 @@ pub fn served_operator_capability(
     headers: &axum::http::HeaderMap,
 ) -> biorouter::privacy::ProviderTier {
     match SERVED_OPERATOR.get() {
-        Some(operator) if from_served_document(headers, operator) => operator.capability,
+        Some(operator) if from_served_document(headers, operator) => *operator
+            .capability
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner),
         _ => biorouter::privacy::ProviderTier::Public,
     }
+}
+
+/// Does this daemon serve its web interface behind a browser token, so that its
+/// own page can be told from any other local caller (SD-10)? `false` on the
+/// desktop's daemon, a hand-run `biorouterd`, and `biorouter serve --no-token`.
+pub fn serves_a_tokened_interface() -> bool {
+    SERVED_OPERATOR.get().is_some()
+}
+
+/// SD-17 (owner ruling, 2026-11-14): is this request the person in the page a
+/// `biorouter serve` daemon served, acting through that page's own script?
+///
+/// Three things, all of which a browser supplies and none of which a caller
+/// holding only the daemon secret has:
+///
+/// 1. The served document's session cookie (`HttpOnly`, `SameSite=Strict`),
+///    which only the token exchange sets and page script cannot read.
+/// 2. Fetch Metadata saying a script on this same origin sent it
+///    (`Sec-Fetch-Site: same-origin`, `Sec-Fetch-Mode: cors` or `same-origin`,
+///    `Sec-Fetch-Dest: empty`). Script cannot set a `Sec-` header, and a
+///    browser attaches them only to a loopback or `https` address, so their
+///    presence is also SD-15's secure context: a key typed in the page never
+///    crosses a plain-HTTP network address.
+/// 3. The daemon secret, which [`check_token`] already required. The shell
+///    that carries it is served only to a top-level navigation and cannot be
+///    framed (`routes::web_ui`), so an app page on the same origin, which does
+///    carry the cookie, cannot obtain it.
+///
+/// ⚠ **Not a defence against deliberate forgery.** `biorouter serve` hands the
+/// daemon its browser token in the environment, beside the secret (SD-10), so a
+/// model with a shell that sets out to read both and forge the headers with
+/// `curl` gets through. The owner ruled that case out of scope on 2026-09-29
+/// (local agent forgery on the user's own machine). What this closes is every
+/// ordinary path an agent has: the secret alone, the agent's HTTP tools, and an
+/// agent-written app page.
+pub fn served_person_present(headers: &axum::http::HeaderMap) -> bool {
+    let Some(operator) = SERVED_OPERATOR.get() else {
+        return false;
+    };
+    from_served_document(headers, operator) && sent_by_same_origin_page_script(headers)
+}
+
+/// Fetch Metadata a browser attaches to a `fetch` or XHR from a page on this
+/// same origin, and to nothing else: not a navigation, not a frame, not a
+/// cross-site request, and not a request from a client that is not a browser.
+pub fn sent_by_same_origin_page_script(headers: &axum::http::HeaderMap) -> bool {
+    let value = |name: &str| {
+        headers
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+            .map(|value| value.trim().to_ascii_lowercase())
+    };
+    value("sec-fetch-site").as_deref() == Some("same-origin")
+        && matches!(
+            value("sec-fetch-mode").as_deref(),
+            Some("cors" | "same-origin")
+        )
+        && value("sec-fetch-dest").as_deref() == Some("empty")
+}
+
+/// The proof the provider routes ask for (SD-17): [`user_action_proof`], plus
+/// one more way to be `Proven` — on a daemon that holds no user-action key and
+/// whose launcher never meant to hand it one, the person in the served page
+/// ([`served_person_present`]).
+///
+/// ⚠ **For choosing the host's providers and default model, and nothing else.**
+/// It is read by `/config/upsert` and `/config/remove` (the capability and
+/// destination gates), `/config/set_provider`, the custom-provider routes,
+/// `/config/check_provider` and the non-private-model disclosure's
+/// acknowledgement. `/agent/update_provider`, which moves an open chat to
+/// another model, does not read it: in a browser a chat keeps the model it
+/// started on (SD-1 for a running chat, unchanged), because the page's reach
+/// follows the host's default (SD-12) and a chat moved to a model of another
+/// tier would leave it. Every other proof-backed control (an approval, declassify,
+/// reset, the master switch, usage limits) still asks [`user_action_proof`],
+/// so SD-8 stands as it was.
+///
+/// A desktop daemon whose key did not arrive (`launch::expected_a_user_action_key`)
+/// is a fault to repair, not a served page, and gains nothing here.
+pub fn provider_choice_proof(headers: &axum::http::HeaderMap) -> UserActionProof {
+    match user_action_proof(headers) {
+        UserActionProof::NoKeyInstalled
+            if !crate::launch::expected_a_user_action_key() && served_person_present(headers) =>
+        {
+            UserActionProof::Proven
+        }
+        other => other,
+    }
+}
+
+/// The boolean form of [`provider_choice_proof`], for the gates that have one
+/// refusal to give.
+pub fn is_provider_choice_proven(headers: &axum::http::HeaderMap) -> bool {
+    matches!(provider_choice_proof(headers), UserActionProof::Proven)
 }
 
 /// Whether `headers` carry the cookie of the document a serve daemon served.
@@ -1114,6 +1229,63 @@ pub async fn check_token(
 
 #[cfg(test)]
 mod tests {
+    /// SD-17: only a script request from a page on this same origin carries the
+    /// Fetch Metadata the served-person proof asks for. A navigation, a frame, a
+    /// cross-site request and a client that sends none (curl, or any browser at a
+    /// plain-HTTP network address) do not.
+    #[test]
+    fn only_a_same_origin_page_script_carries_the_served_person_metadata() {
+        let with = |pairs: &[(&str, &str)]| {
+            let mut headers = axum::http::HeaderMap::new();
+            for (name, value) in pairs {
+                headers.insert(
+                    axum::http::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+                    value.parse().unwrap(),
+                );
+            }
+            super::sent_by_same_origin_page_script(&headers)
+        };
+        let script = [
+            ("sec-fetch-site", "same-origin"),
+            ("sec-fetch-mode", "cors"),
+            ("sec-fetch-dest", "empty"),
+        ];
+        assert!(with(&script));
+        assert!(with(&[
+            ("sec-fetch-site", "Same-Origin"),
+            ("sec-fetch-mode", "same-origin"),
+            ("sec-fetch-dest", "empty"),
+        ]));
+        for refused in [
+            vec![],
+            vec![("sec-fetch-site", "same-site"), script[1], script[2]],
+            vec![("sec-fetch-site", "cross-site"), script[1], script[2]],
+            vec![("sec-fetch-site", "none"), script[1], script[2]],
+            vec![
+                script[0],
+                ("sec-fetch-mode", "navigate"),
+                ("sec-fetch-dest", "document"),
+            ],
+            vec![
+                script[0],
+                ("sec-fetch-mode", "navigate"),
+                ("sec-fetch-dest", "iframe"),
+            ],
+            vec![
+                script[0],
+                ("sec-fetch-mode", "no-cors"),
+                ("sec-fetch-dest", "script"),
+            ],
+            vec![script[0], script[1]],
+            vec![script[1], script[2]],
+        ] {
+            assert!(
+                !with(&refused),
+                "{refused:?} was read as the page's own script"
+            );
+        }
+    }
+
     use super::{is_app_browser_get, is_unauthenticated_path, secret_matches, user_action_matches};
     /// The shared handler-body extractor. It lives under `src/routes/` rather
     /// than here for the reason [`secret_matches`] does — see its doc.
@@ -1177,6 +1349,10 @@ mod tests {
         // in a test.
         let agent_rs = include_str!("routes/agent.rs");
         let config_rs = include_str!("routes/config_management.rs");
+        // SD-17 (owner ruling, 2026-11-14): the provider routes ask
+        // `is_provider_choice_proven`, which is `user_action_proof` plus the
+        // person in a keyless `biorouter serve` page. It is still the guard: a
+        // caller holding only the secret is refused by it exactly as before.
         for (src, func, guard) in [
             (
                 agent_rs,
@@ -1188,12 +1364,20 @@ mod tests {
                 "async fn agent_add_extension",
                 "PrivateExtensionOverHttp",
             ),
-            (config_rs, "pub async fn upsert_config", "is_user_action("),
-            (config_rs, "pub async fn remove_config", "is_user_action("),
+            (
+                config_rs,
+                "pub async fn upsert_config",
+                "is_provider_choice_proven(",
+            ),
+            (
+                config_rs,
+                "pub async fn remove_config",
+                "is_provider_choice_proven(",
+            ),
             (
                 config_rs,
                 "pub async fn set_config_provider",
-                "is_user_action(",
+                "is_provider_choice_proven(",
             ),
         ] {
             assert!(
@@ -2365,7 +2549,7 @@ mod tests {
         let page = is_app_browser_get(&Method::GET, "/apps/some-app/").unwrap();
         let operator = ServedOperator {
             browser_token: "served-document-token".into(),
-            capability: biorouter::privacy::ProviderTier::Public,
+            capability: std::sync::RwLock::new(biorouter::privacy::ProviderTier::Public),
         };
         let mut headers = axum::http::HeaderMap::new();
         headers.insert(
@@ -2414,7 +2598,7 @@ mod tests {
 
         let operator = ServedOperator {
             browser_token: "served-document-token".into(),
-            capability: biorouter::privacy::ProviderTier::Public,
+            capability: std::sync::RwLock::new(biorouter::privacy::ProviderTier::Public),
         };
         let served = "biorouter_session=served-document-token";
         assert!(granted(

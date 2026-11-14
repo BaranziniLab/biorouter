@@ -21,13 +21,13 @@ first and then [Headless Linux deployment](headless-linux.md).
 
 ## Quickstart
 
-Choose the provider and model **before** you start serving — a browser session cannot change them
-(see [The model is fixed before you start](#the-model-is-fixed-before-you-start)). Either kind
-works: a commercial model, or a private one your institution hosts or that runs on the machine,
-which is the choice to make for patient data.
+Start serving, then choose a provider and model in the browser. When none is configured yet, the
+first page is the same provider list the desktop application shows on first run (Local,
+Institutional and Public). Either kind works: a commercial model, or a private one your
+institution hosts or that runs on the machine, which is the choice to make for patient data.
+`biorouter configure` at the terminal still works too, before or after you start.
 
 ```bash
-biorouter configure
 biorouter serve --open
 ```
 
@@ -40,7 +40,7 @@ biorouter serve --open
 
   The token above is shown once, and is new on every launch.
 
-  The model is whichever `biorouter configure` chose; a browser cannot change it.
+  Choose the model in the browser, or here with `biorouter configure`.
   Dictation: no speech model; run `biorouter dictation install`
   Press Ctrl-C to stop.
 ```
@@ -308,47 +308,47 @@ Whether to keep the access token depends on who else can reach the server's loop
   }
   ```
 
-## The model is fixed before you start
+## Choosing the provider and model
 
-**A browser session cannot change its model or provider.** The picker is inert, and this is
-deliberate — it is a privacy property, not a defect.
+**In the browser.** The person who opens the address `serve` printed can choose, add and edit the
+host's providers and its default model, in the same catalog the desktop application uses: on the
+first page when nothing is configured yet, and later in **Settings → Models** and the provider
+list. Once a provider works, the page continues into the app by itself. Keys you type go to the
+serving machine's secret store (on a headless Linux host, the `secrets.yaml` file beside its
+configuration), the same place `biorouter configure` puts them, and are never shown again.
 
-Biorouter classifies a conversation by the sensitivity of what it has touched, and a conversation
-that has reached a private, institution-hosted model may never later reach a public one. That
-guarantee depends on knowing which model a conversation ran against. The desktop application can
-change the provider mid-session because it holds proof that a human at the keyboard asked for the
-change; a browser tab holds no such proof, and manufacturing one would mean putting the key
-somewhere page JavaScript could reach — which is precisely what the mechanism exists to prevent.
+**At the terminal.** `biorouter configure` works as before, before or while `serve` runs. A change
+made there reaches new chats after `serve` is restarted; a change made in the browser applies at
+once.
 
-So the capability is withdrawn rather than approximated. The consequence is a good one: the
-provider is chosen once, at the terminal, and the tier that choice implies holds for **every**
-session in that daemon. A run started against an institutional model is private for its whole life;
-one started against a commercial model is public for its whole life. Neither can drift.
+Three limits, each with a reason:
+
+- **Only the page itself can do it.** A program that holds only the daemon's secret, such as an AI
+  agent in one of your chats, cannot change the provider: the daemon also asks for the page's
+  session cookie and for the headers a browser adds to the page's own requests. See
+  [decision SD-17](serve-decisions.md#sd-17-the-person-in-the-served-page-sets-up-providers-and-an-agent-still-cannot).
+- **Only over a secure address.** The browser adds those headers only for an `https` address or
+  this machine, so a key typed in the page never crosses a network unencrypted. A page opened at a
+  plain `http://` network address says so and points you to `biorouter configure`.
+- **Not with `--no-token`.** Without a token the daemon cannot tell its own page from any other
+  program on the machine, so the page tells you to run `biorouter configure` on the host.
 
 What that means for a chat you start in the browser:
 
-- **It starts on the configured model**, private or not, with nothing asked of you — choosing it
-  at the terminal was the decision.
+- **It starts on the default model**, private or not, with nothing asked of you. Choosing the
+  default was the decision.
 - **A private model makes it private with its first reply.** The tab you are in keeps working with
   it: the browser tells the daemon which model it runs under, and a chat is open to anything
   running under a model at least as private as the chat.
-- **Nothing in the browser can move it onto a different private model.** The configured one is the
-  only private model a chat started here ever reaches.
-- **A private chat started in the desktop application opens here only when the host's model is
-  private too.** On a host configured with a commercial model it stays out of reach, with a card
-  saying so; open it in the desktop application instead.
+- **An open chat keeps its model.** In the browser the model menu changes the default for new
+  chats. Moving a chat that is already open to another model is a desktop action.
+- **The page reaches what the default reaches.** A private chat, including one started in the
+  desktop application, opens here only while the default model is private. If you switch the
+  default to a commercial model, private chats stay out of reach in the browser until you choose a
+  private default again.
 
-The reasoning is recorded as [decision SD-12](serve-decisions.md#sd-12--a-new-chat-starts-on-the-operators-model-without-a-proof-and-nothing-else-does).
-
-**The fix is to choose the provider before you start serving:**
-
-```bash
-biorouter configure     # pick the provider and model
-biorouter serve
-```
-
-To change it, stop `serve` with `Ctrl-C`, run `biorouter configure` again, and start it back up.
-The reasoning is recorded in full as [decision SD-1](serve-decisions.md#sd-1--a-browser-session-cannot-change-its-model-or-provider-and-that-is-the-point);
+The reasoning is recorded as [decision SD-12](serve-decisions.md#sd-12--a-new-chat-starts-on-the-operators-model-without-a-proof-and-nothing-else-does)
+and [decision SD-17](serve-decisions.md#sd-17-the-person-in-the-served-page-sets-up-providers-and-an-agent-still-cannot);
 the classification system it protects is [privacy tiers](../security/privacy-tiers.md).
 
 ## What a browser can and cannot do
@@ -359,13 +359,13 @@ differs:
 
 | Area | In a browser |
 |---|---|
-| Chat, sessions, history, extensions, skills, knowledge bases, workflows | Work as they do in the desktop application, for everything public, with two differences that follow from the fixed model. A new chat starts on the host's configured model, and a private chat opens only on a host whose configured model is private — see [The model is fixed before you start](#the-model-is-fixed-before-you-start) and [decision SD-12](serve-decisions.md#sd-12--a-new-chat-starts-on-the-operators-model-without-a-proof-and-nothing-else-does). **Private** chats and knowledge bases appear in History and the Knowledge view only when the provider you configured is private, and being listed does not by itself make a private chat openable — see [decision SD-10](serve-decisions.md#sd-10--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else). |
+| Chat, sessions, history, extensions, skills, knowledge bases, workflows | Work as they do in the desktop application, for everything public, with two differences that follow from the default model. A new chat starts on the host's default model, and a private chat opens only on a host whose configured model is private — see [Choosing the provider and model](#choosing-the-provider-and-model) and [decision SD-12](serve-decisions.md#sd-12--a-new-chat-starts-on-the-operators-model-without-a-proof-and-nothing-else-does). **Private** chats and knowledge bases appear in History and the Knowledge view only when the provider you configured is private, and being listed does not by itself make a private chat openable — see [decision SD-10](serve-decisions.md#sd-10--the-served-interface-keeps-its-operators-reach-on-listings-and-knowledge-bases-and-gains-nothing-else). |
 | Workspace control, several conversations at once, live app agents | Work — these are WebSocket-backed daemon routes, reached on the same origin. |
 | Stopping a response, Stop and send | Work in an ordinary chat ([SD-11](serve-decisions.md#sd-11--stop-works-on-a-daemon-with-no-key-steering-does-not-and-a-subagents-tab-stays-the-persons)). |
 | Steering a response while it runs | **Not available.** Injecting text into a turn that is already running needs proof that a person acted, which only the desktop application holds. What you type is queued instead and sent when the turn ends, so nothing is lost — it simply does not redirect the answer in flight. |
 | A delegated subagent's own tab | **Read-only, and it says so before you try.** The tab shows the subagent's conversation and follows it while it works, but has no composer and no Stop button: sending to a subagent, steering it and stopping it need proof that a person acted, which only the desktop application holds. A note takes the composer's place, and one line takes the Stop button's ([SD-8](serve-decisions.md#sd-8--a-control-that-can-never-work-here-says-so-rather-than-failing-on-click)). |
 | Resetting app data (Settings → App → Danger zone → Reset data) | **Not available, and it says so before you try.** A reset deletes chats, knowledge bases and the rest for good, private ones included, so the daemon performs one only for a request that proves a person asked, which only the desktop application can send. The Reset data button is disabled, with a note under it saying why. On the machine running `biorouter serve`, reset from Settings in the Biorouter app there, or remove items from a terminal there with `biorouter session remove`, `schedule remove`, `skill remove` and `extension remove` ([SD-8](serve-decisions.md#sd-8--a-control-that-can-never-work-here-says-so-rather-than-failing-on-click)). |
-| Model and provider selection | **Not available.** See [The model is fixed before you start](#the-model-is-fixed-before-you-start). |
+| Model and provider selection | **Works**, for the host's providers and its default model, from the page `serve` printed over a secure address. An open chat keeps its model. See [Choosing the provider and model](#choosing-the-provider-and-model). |
 | Dictation and Dictionary | The browser records from its own microphone and sends audio to the host running `serve`; that host transcribes it. **Settings > Models > Speech models** installs on that host unless the operator uses `--no-dictation-install`, `BIOROUTER_DICTATION_BROWSER_INSTALL=false`, or managed policy. The Dictionary page allows adding, editing, accepting and deleting terms. Publicize, privatize, and settings that raise agent writes or turn chat learning on are done on the host with `biorouter dictionary`. A private add needs private standing. **Show in Finder** is unavailable because the model folder belongs to the host. |
 | Crew | **Not available, and it says so before you try.** Opening **Crew** in the browser shows "Crew needs the Biorouter desktop app", and nothing on that page asks the daemon for Crew data. A chat shows no Crew bar. Every Crew action, even listing saved workspaces, needs proof that a person is at this computer, which the desktop application and `biorouter crew` supply themselves; the daemon `biorouter serve` starts never holds it. A Crew request that reaches it anyway is refused with `crew_human_authority_unavailable` and the sentence "Crew isn't available in a browser opened with biorouter serve…", and no setting in the browser changes that. Use Crew in the desktop application, or with `biorouter crew` in a terminal, on your own computer. See the [Crew user manual](../crew/README.md) and [SD-8](serve-decisions.md#sd-8--a-control-that-can-never-work-here-says-so-rather-than-failing-on-click). |
 | Browsing the marketplace (Browse extensions, Browse skills) | Works. The page reads the live catalogue from `https://biorouter.ucsf.edu/registry.json` itself, so the browser, not the serving machine, has to reach that site. When it cannot, the catalogue bundled with Biorouter is shown, and the dialog says *showing bundled catalog (offline)*. Installs download through the serving machine. |
@@ -436,8 +436,9 @@ from inside it — `<application folder>\resources\bin\biorouter.exe setup-path`
 **A message does not start a chat.** The composer keeps what you typed, and a notice in the corner
 says why. The commonest cause is on the host rather than in the browser — for example *Failed to
 configure the selected provider for the new chat: Configuration value not found:
-OPENAI_API_KEY* means the model chosen with `biorouter configure` has no credential on the serving
-machine. Fix it there, restart `serve`, and open the new address it prints. **Copy error** on the
+OPENAI_API_KEY* means the default model has no credential on the serving machine. Add the key in
+**Settings → Models** in the browser, or with `biorouter configure` on the host (then restart
+`serve` and open the new address it prints). **Copy error** on the
 notice copies the daemon's own words, for a bug report.
 
 **The tab says the link needs its access token.** The `?t=` part was dropped — from a copy-paste, a
