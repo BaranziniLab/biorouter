@@ -34,7 +34,7 @@ use std::path::Path;
 use biorouter::dictation::audio::{f32_to_s16, resample_to_16k, SAMPLE_RATE};
 use symphonia::core::audio::SampleBuffer;
 use symphonia::core::codecs::{
-    CodecType, Decoder, DecoderOptions, CODEC_TYPE_NULL, CODEC_TYPE_OPUS,
+    CodecType, Decoder, DecoderOptions, CODEC_TYPE_ALAC, CODEC_TYPE_NULL, CODEC_TYPE_OPUS,
 };
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::{FormatOptions, FormatReader};
@@ -203,6 +203,9 @@ pub fn decode_path(path: &Path) -> Result<Decoded, DecodeError> {
         return decode(Box::new(source), ext.as_deref(), kind, Trim::NONE);
     }
     let trim = if is_mp4(head) {
+        if !mp4_tables_fit(&mut file) {
+            return Err(DecodeError::UnsupportedFormat { kind });
+        }
         let trim = mp4_trim(&mut file).unwrap_or(Trim::NONE);
         file.seek(SeekFrom::Start(0))
             .map_err(|_| DecodeError::Unreadable)?;
@@ -252,6 +255,10 @@ impl Trim {
         (frames(self.skip), self.keep.map(frames))
     }
 }
+
+/// The longest ALAC frame read, in samples per channel: the largest ffmpeg's decoder
+/// accepts (4,096 squared). Apple's encoder writes 4,096.
+const MAX_ALAC_FRAME_LENGTH: u32 = 4_096 * 4_096;
 
 /// The most of an MP4 file's `moov` box this reads to find its trim: a voice memo's is
 /// about 160 KB for 13 minutes; past this the audio is decoded untrimmed.
@@ -424,6 +431,115 @@ fn find_box(
     None
 }
 
+/// The sample tables symphonia 0.5's MP4 reader reserves room for from the count the file
+/// states, before it reads one entry (`Vec::with_capacity(entry_count)` in each `read`):
+/// the table's box type, the bytes of its body before the entries (version and flags, then
+/// the count, and `stsz`'s constant sample size between them), and the bytes of one entry.
+/// `stsz` holds entries only when that constant size is 0.
+const COUNTED_TABLES: [(&[u8; 4], u64, u64); 5] = [
+    (b"stts", 8, 8),
+    (b"stsc", 8, 12),
+    (b"stsz", 12, 4),
+    (b"stco", 8, 4),
+    (b"co64", 8, 8),
+];
+
+/// Whether every sample table in an MP4 file's `moov` can hold the entries its count
+/// states. A count its own box cannot hold is damage, and the reader would reserve it
+/// whole: a damaged `stsc` count of 0xA5000001 asked for 44 GB, which macOS grants lazily
+/// and Linux refuses by aborting the process, where no `catch_unwind` reaches. Only box
+/// headers and counts are read. A file whose boxes cannot be walked is left for the reader
+/// to judge.
+fn mp4_tables_fit(source: &mut (impl Read + Seek)) -> bool {
+    let Ok(len) = source.seek(SeekFrom::End(0)) else {
+        return true;
+    };
+    match find_box(source, 0, len, b"moov") {
+        Some((start, size)) => tables_fit_in(source, start, start.saturating_add(size).min(len), 0),
+        None => true,
+    }
+}
+
+/// [`mp4_tables_fit`] for the boxes between `from` and `to`, descending through
+/// `trak`, `mdia`, `minf` and `stbl` to the tables.
+fn tables_fit_in(source: &mut (impl Read + Seek), from: u64, to: u64, depth: u8) -> bool {
+    let mut at = from;
+    while at.saturating_add(8) <= to {
+        let Some((kind, body, end)) = box_at(source, at, to) else {
+            return true;
+        };
+        let container = [b"trak", b"mdia", b"minf", b"stbl"].contains(&&kind);
+        let fits = if container && depth < 4 {
+            tables_fit_in(source, body, end, depth + 1)
+        } else {
+            COUNTED_TABLES
+                .iter()
+                .find(|(table, ..)| **table == kind)
+                .is_none_or(|&(table, fixed, entry)| {
+                    table_fits(source, table, body, end - body, fixed, entry)
+                })
+        };
+        if !fits {
+            return false;
+        }
+        at = end;
+    }
+    true
+}
+
+/// The box whose header starts at `at`: its type, its body's offset, and its end, at most
+/// `to`.
+fn box_at(source: &mut (impl Read + Seek), at: u64, to: u64) -> Option<([u8; 4], u64, u64)> {
+    source.seek(SeekFrom::Start(at)).ok()?;
+    let mut head = [0u8; 16];
+    source.read_exact(head.get_mut(..8)?).ok()?;
+    let mut size = u64::from(u32::from_be_bytes(head.get(..4)?.try_into().ok()?));
+    let mut header = 8;
+    if size == 1 {
+        source.read_exact(head.get_mut(8..16)?).ok()?;
+        size = u64::from_be_bytes(head.get(8..16)?.try_into().ok()?);
+        header = 16;
+    } else if size == 0 {
+        size = to - at;
+    }
+    if size < header {
+        return None;
+    }
+    let kind = head.get(4..8)?.try_into().ok()?;
+    Some((kind, at + header, at.checked_add(size)?.min(to)))
+}
+
+/// Whether the table whose body is `len` bytes at `body` holds the entries its count
+/// states. A body too short to read the count from is left for the reader to judge.
+fn table_fits(
+    source: &mut (impl Read + Seek),
+    table: &[u8; 4],
+    body: u64,
+    len: u64,
+    fixed: u64,
+    entry: u64,
+) -> bool {
+    let mut head = [0u8; 12];
+    let Some(head) = head.get_mut(..fixed as usize) else {
+        return true;
+    };
+    if source.seek(SeekFrom::Start(body)).is_err() || source.read_exact(head).is_err() {
+        return true;
+    }
+    let word = |at: usize| {
+        head.get(at..at + 4)
+            .and_then(|b| b.try_into().ok())
+            .map(u32::from_be_bytes)
+    };
+    if table == b"stsz" && word(4) != Some(0) {
+        return true;
+    }
+    let Some(count) = word(fixed as usize - 4) else {
+        return true;
+    };
+    u64::from(count) * entry <= len.saturating_sub(fixed)
+}
+
 /// Whether `head` starts an ADTS frame whose header names MPEG-2 and carries no CRC
 /// (sync word 0xFFF9), as Apple's encoder writes `.aac` (afconvert, a Mac's export).
 /// symphonia 0.5's ADTS reader finds frames by the MPEG-4 word (0xFFF1) alone, and the
@@ -592,6 +708,9 @@ pub fn decode_reader(reader: impl Read) -> Result<Decoded, DecodeError> {
     }
     let mut source = std::io::Cursor::new(bytes);
     let trim = if is_mp4(source.get_ref()) {
+        if !mp4_tables_fit(&mut source) {
+            return Err(DecodeError::UnsupportedFormat { kind: None });
+        }
         mp4_trim(&mut source).unwrap_or(Trim::NONE)
     } else {
         Trim::NONE
@@ -651,6 +770,16 @@ fn open_track(
         if rate > 0 && frames > MAX_SECONDS * u64::from(rate) {
             return Err(DecodeError::TooLong);
         }
+    }
+    // The ALAC decoder reserves a frame of `frame_length` samples per channel when it is
+    // made, the configuration's first four bytes, unchecked; a damaged one can ask for
+    // tens of gigabytes, which aborts the process on Linux.
+    let alac_frames = (params.codec == CODEC_TYPE_ALAC)
+        .then(|| params.extra_data.as_deref()?.get(..4)?.try_into().ok())
+        .flatten()
+        .map(u32::from_be_bytes);
+    if alac_frames.is_some_and(|frames| frames > MAX_ALAC_FRAME_LENGTH) {
+        return Err(unsupported());
     }
     let decoder = symphonia::default::get_codecs()
         .make(&params, &DecoderOptions::default())
@@ -1702,10 +1831,23 @@ mod tests {
             // Any answer will do, an error or audio; returning at all is the test.
             let _ = decode_reader(bytes.as_slice());
         }
-        // The panic itself, caught: a damaged `stsc` entry count. The hook is silent only
-        // while the decode runs.
+        // A damaged `stsc` entry count (1 becomes 0xA5000001) is refused before symphonia
+        // reads the file: its reader would reserve 44 GB for it, which Linux refuses by
+        // aborting the process.
+        let stsc = find(b"stsc");
         let mut bytes = ALAC_M4A.to_vec();
-        bytes[find(b"stsc") + 8] ^= 0xA5;
+        bytes[stsc + 8] ^= 0xA5;
+        assert!(!mp4_tables_fit(&mut std::io::Cursor::new(&bytes)));
+        assert_eq!(
+            decode_reader(bytes.as_slice()).unwrap_err(),
+            DecodeError::UnsupportedFormat { kind: None }
+        );
+        assert!(mp4_tables_fit(&mut std::io::Cursor::new(ALAC_M4A)));
+        // The panic itself, caught: an `stsc` entry whose first chunk is 0, from which
+        // symphonia subtracts 1 unchecked. The hook is silent only while the decode runs.
+        let mut bytes = ALAC_M4A.to_vec();
+        bytes[stsc + 12..stsc + 16].fill(0);
+        assert!(mp4_tables_fit(&mut std::io::Cursor::new(&bytes)));
         assert_eq!(
             decode_reader(bytes.as_slice()).unwrap_err(),
             DecodeError::UnsupportedFormat { kind: None }
@@ -1727,6 +1869,20 @@ mod tests {
         assert_eq!(ALAC_M4A[depth], 16, "the fixture's bit depth");
         let mut bytes = ALAC_M4A.to_vec();
         bytes[depth] = 0;
+        assert_eq!(
+            decode_reader(bytes.as_slice()).unwrap_err(),
+            DecodeError::UnsupportedFormat { kind: None }
+        );
+        // The configuration's first four bytes are its frame length, 4,096; a damaged one
+        // (0xA5001000) would have the decoder reserve 22 GB when it is made.
+        let frames = config + 4 + 4;
+        assert_eq!(
+            ALAC_M4A[frames..frames + 4],
+            [0, 0, 0x10, 0],
+            "the frame length"
+        );
+        let mut bytes = ALAC_M4A.to_vec();
+        bytes[frames] ^= 0xA5;
         assert_eq!(
             decode_reader(bytes.as_slice()).unwrap_err(),
             DecodeError::UnsupportedFormat { kind: None }
