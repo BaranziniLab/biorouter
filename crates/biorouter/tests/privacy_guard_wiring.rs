@@ -3066,6 +3066,50 @@ fn scan_tree() -> Tree {
     }
 }
 
+/// Which of a file's production lines lie inside a `macro_rules!` definition, by brace
+/// matching over code text (comments and string bodies are already blanked). The
+/// definition's own line counts; a `macro_rules!` written with `(…);` or `[…];` is matched
+/// on the same bracket kind.
+fn macro_rules_bodies(lines: &[(usize, String)]) -> Vec<bool> {
+    let mut inside = vec![false; lines.len()];
+    let mut i = 0usize;
+    while i < lines.len() {
+        let Some((_, rest)) = lines[i].1.split_once("macro_rules!") else {
+            i += 1;
+            continue;
+        };
+        let open = rest.chars().find(|ch| matches!(ch, '{' | '(' | '['));
+        let close = match open {
+            Some('{') => '}',
+            Some('(') => ')',
+            Some('[') => ']',
+            _ => '}',
+        };
+        let open = open.unwrap_or('{');
+        let mut depth: i64 = 0;
+        let mut opened = false;
+        let mut j = i;
+        while j < lines.len() {
+            let text = if j == i { rest } else { lines[j].1.as_str() };
+            for ch in text.chars() {
+                if ch == open {
+                    depth += 1;
+                    opened = true;
+                } else if ch == close {
+                    depth -= 1;
+                }
+            }
+            inside[j] = true;
+            if opened && depth <= 0 {
+                break;
+            }
+            j += 1;
+        }
+        i = j + 1;
+    }
+    inside
+}
+
 fn is_word(ch: char) -> bool {
     ch.is_alphanumeric() || ch == '_'
 }
@@ -3206,20 +3250,29 @@ fn the_scan_really_separates_production_from_tests() {
     // One direction: spellings only tests use must be absent from the production
     // view. `CallCapability::for_test*` is the marker — production capabilities
     // come from `sample` or `public_enforced` — and `#[test]` is the blunt one.
+    //
+    // The two test attributes are not a leak inside a `macro_rules!` body: that is a
+    // template the library never compiles, and a test it writes exists only where the
+    // macro is invoked (`keep_this_test_binary_off_the_os_credential_store!` writes one
+    // into every test binary, and its own census holds every invocation to test code).
+    // Those lines stay in the production view; only this marker check passes over them.
     for marker in [
         "for_test_restricted",
         "CallCapability::for_test",
         "#[test]",
         "#[tokio::test]",
     ] {
+        let attribute = marker.starts_with("#[");
         let hits: Vec<String> = tree
             .production
             .iter()
             .flat_map(|(rel, lines)| {
+                let template = macro_rules_bodies(lines);
                 lines
                     .iter()
-                    .filter(|(_, t)| t.contains(marker))
-                    .map(move |(ln, _)| format!("{rel}:{ln}"))
+                    .enumerate()
+                    .filter(move |(i, (_, t))| t.contains(marker) && !(attribute && template[*i]))
+                    .map(move |(_, (ln, _))| format!("{rel}:{ln}"))
             })
             .collect();
         assert!(

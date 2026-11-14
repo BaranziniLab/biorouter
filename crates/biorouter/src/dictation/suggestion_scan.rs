@@ -137,7 +137,7 @@ pub async fn mark_not_learnable(
     let Ok(value) = (NotLearnable { reason }).to_value() else {
         return;
     };
-    if let Err(error) = sessions
+    if sessions
         .update_extension_state(
             session_id,
             NotLearnable::EXTENSION_NAME,
@@ -145,8 +145,11 @@ pub async fn mark_not_learnable(
             move |_| Ok(value),
         )
         .await
+        .is_err()
     {
-        tracing::debug!("could not keep chat {session_id} out of word scans: {error}");
+        // DD-93: a fixed message, and no field the allowlist does not name (it names
+        // neither a chat id nor an error).
+        tracing::debug!("could not keep a chat out of word scans");
     }
 }
 
