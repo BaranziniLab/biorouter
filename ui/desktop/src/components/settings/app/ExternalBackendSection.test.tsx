@@ -115,6 +115,27 @@ describe('S17 remote disclosure', () => {
     );
   });
 
+  it('names no host while the URL is not one (Phase C F-2)', async () => {
+    getSettings.mockResolvedValue({
+      externalBiorouterd: { enabled: true, url: 'not a url', secret: '', userActionKey: '' },
+    });
+    render(<ExternalBackendSection />);
+    await screen.findByLabelText(externalBackendCopy.url);
+    expect(screen.queryByTestId('external-dictation-disclosure')).toBeNull();
+
+    // Typing a valid address names its host; typing over it with text that is no URL, or a
+    // scheme the field refuses, takes the disclosure away again.
+    const field = screen.getByLabelText(externalBackendCopy.url);
+    fireEvent.change(field, { target: { value: 'https://lab.example:8443' } });
+    expect(screen.getByTestId('external-dictation-disclosure')).toHaveTextContent(
+      'Audio is transcribed on lab.example:8443'
+    );
+    fireEvent.change(field, { target: { value: 'not a url' } });
+    expect(screen.queryByTestId('external-dictation-disclosure')).toBeNull();
+    fireEvent.change(field, { target: { value: 'ftp://lab.example' } });
+    expect(screen.queryByTestId('external-dictation-disclosure')).toBeNull();
+  });
+
   it('does not claim remote transcription when external mode is off', async () => {
     getSettings.mockResolvedValue({
       externalBiorouterd: { enabled: false, url: 'https://lab.example' },

@@ -58,12 +58,16 @@ function parseConfig(
   };
 }
 
-/** The host a person typed, for the remote disclosure; the text as typed when it is no URL. */
-function hostOf(url: string): string {
+/**
+ * The host of the server URL a person typed, for the remote disclosure; `null` when the text is
+ * no http(s) URL, so the disclosure never names a host that is only the text as typed.
+ */
+function hostOf(url: string): string | null {
   try {
-    return new URL(url).host;
+    const parsed = new URL(url);
+    return ['http:', 'https:'].includes(parsed.protocol) && parsed.host ? parsed.host : null;
   } catch {
-    return url;
+    return null;
   }
 }
 
@@ -143,6 +147,8 @@ export default function ExternalBackendSection() {
     }
   };
 
+  const remoteHost = hostOf(config.url);
+
   return (
     <SettingSection id="external-backend" title={serverCopy.section} help={serverCopy.sectionHelp}>
       <SettingRow label={serverCopy.useExternal} help={serverCopy.useExternalHelp}>
@@ -212,9 +218,9 @@ export default function ExternalBackendSection() {
             />
           </SettingRow>
 
-          {config.url && (
+          {remoteHost && (
             <Note tone="neutral" testId="external-dictation-disclosure">
-              {dictationMessage('MSG-DISCLOSE-REMOTE', { host: hostOf(config.url) })}
+              {dictationMessage('MSG-DISCLOSE-REMOTE', { host: remoteHost })}
             </Note>
           )}
         </>
