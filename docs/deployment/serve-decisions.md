@@ -1,8 +1,9 @@
 # Decisions behind `biorouter serve`
 
 > **What this is.** The decision records governing browser-served Biorouter — why the daemon
-> serves the interface itself, why a browser session cannot change its model yet starts every
-> chat on the one the operator chose, why the standalone `biorouter-headless` binary was
+> serves the interface itself, why a browser session started out unable to change its model and
+> how the person in the served page now sets up providers (SD-18), why every chat starts on the
+> model the host chose, why the standalone `biorouter-headless` binary was
 > retired, how long the launch token stays good for, which chats the deprecated
 > `biorouter web` may still open, when a decision model may make a chat public there, and what
 > app pages on the served origin may do with a microphone grant. Each record states the ruling,
@@ -32,6 +33,11 @@ keeps its number and says what replaced it.
 ---
 
 ## SD-1 — A browser session cannot change its model or provider, and that is the point
+
+> **Superseded in part by [SD-18](#sd-18-the-person-in-the-served-page-sets-up-providers-and-an-agent-still-cannot)
+> (owner ruling, 2026-11-14).** The person in the page `serve` printed now chooses the host's
+> providers and default model there. A caller holding only the daemon secret is still refused
+> as below, and an open chat still keeps the model it started on.
 
 **Ruling.** `POST /config/set_provider` (`set_config_provider` in
 `crates/biorouter-server/src/routes/config_management.rs`) continues to refuse a request that
@@ -1493,6 +1499,110 @@ the browser's permitted dictionary writes. Biorouter Copilot with a per-task gra
 served microphone and then Send; this work adds no separate Copilot refusal (DD-88, O-15). ACP
 clients that extract text from a chat can carry dictated text outside the served page under their
 existing access. Per-app origins and a narrower ACP data boundary are separate future work.
+
+---
+
+## SD-18: The person in the served page sets up providers, and an agent still cannot
+
+**Ruling (owner, 2026-11-14). Supersedes SD-1 in part.** A person who opens the page
+`biorouter serve` printed can choose, add and edit the host's model providers and its default
+model from that page, with the same Local, Institutional and Public catalog the desktop shows on
+first run and in Settings. When no provider is configured, the first page is that catalog
+instead of an instruction to run `biorouter configure`, and once a provider is chosen the page
+continues into the app without a reload. A caller holding only the daemon secret is refused
+exactly as SD-1 refused it, and an open chat still keeps the model it started on.
+
+**Who is the person.** On a daemon that holds no user-action key and whose launcher never meant
+to hand it one, a request is the person in the served page (`auth::provider_choice_proof`) when
+it carries all of:
+
+1. the served document's session cookie, which only the token exchange sets and which is
+   `HttpOnly`, so page script cannot read it;
+2. the Fetch Metadata a browser attaches to a script request from a page on the same origin:
+   `Sec-Fetch-Site: same-origin`, `Sec-Fetch-Mode: cors` (or `same-origin`) and
+   `Sec-Fetch-Dest: empty`. Script cannot set a `Sec-` header, and a browser sends them only to a
+   loopback or `https` address, so they also prove SD-15's secure context;
+3. the daemon secret, which every API route already requires. The shell that carries it is served
+   only to a top-level navigation and cannot be framed (SD-14), so an app page on the same origin,
+   which does carry the cookie, cannot obtain it.
+
+**What it admits, and nothing more.** `/config/upsert` and `/config/remove` for the capability
+keys (`CAPABILITY_CONFIG_KEYS`) and the destination keys (SD-1's 2026-09-28 addendum),
+`/config/set_provider`, `/config/check_provider` (a live check now uses the key just saved), the
+custom-provider routes, and `POST /privacy/disclosure/ack`. The page asks
+`GET /config/provider_setup` first, which answers the same predicate for its own request and,
+when the answer is no, gives one sentence saying why. Every other control that needs a person
+(approvals, declassify, reset, the privacy master switch, usage limits, steering) still asks the
+desktop's proof, so SD-8 and SD-11 stand as they were.
+
+**What follows the person's choice.**
+
+- *SD-12's launch pin.* After a write this proof admitted, the pinned value of each capability
+  key the route wrote becomes the value it wrote (`launch::adopt_person_choice`), so a new chat
+  on the person's choice is not refused as drift. The pin takes the value the route wrote, never
+  a fresh read of `config.yaml`, so a shell that edits the file afterwards, or between the write
+  and the adoption, is still drift and still refused. A write the proof did not admit (the
+  privacy master switch off) adopts nothing.
+- *SD-10's standing.* The served page's tier on listings and knowledge bases follows the tier of
+  the provider the person chose (`auth::adopt_served_operator_capability`), as it would have had
+  the operator chosen it at the terminal before launch.
+- *Gate A and the ratchet are untouched.* A chat binds the default when it is created, and a chat
+  that has become private stays private. Changing the default from a private model to a public one
+  changes what new chats start on, and, because the page states the host's default as its
+  capability (SD-12), it also hides private chats from the page until a private default is chosen
+  again.
+
+**An open chat keeps its model.** `/agent/update_provider` does not read this proof. The page's
+reach follows the host's default, so a chat moved to a model of another tier would drift out of
+the page's reach. In the browser the model menu changes the default for new chats, and says that
+an open chat keeps its model.
+
+**Keys typed in the page** go to the same secret store the desktop uses (the plaintext
+`secrets.yaml` fallback on a headless Linux host), are never logged or echoed (`/config/read`
+answers a fixed mask), and are accepted only over a secure context, because the proof itself
+needs the browser's Fetch Metadata. A page opened at a plain-HTTP network address is told why it
+cannot set up a provider there.
+
+**Why.** SD-1 withheld the choice because nothing could tell the person from a model holding the
+secret, and the owner asked on 2026-11-14 that a server be usable from the browser alone, private
+or public, any provider. The served page is the one caller on such a daemon that a model reaches
+only by deliberately forging a browser. That case was ruled out of scope by the owner on
+2026-09-29: an agent on the user's own computer forging a human act is "on them", and the design
+should stay simple. What this record closes is every ordinary way a model reaches the daemon: the
+secret alone, its HTTP tools, and an app page it wrote.
+
+**Displaced alternatives.**
+
+- *Keep SD-1 and improve the instructions.* Rejected by the owner: a server without a terminal
+  session (JupyterHub, a container) had no way to start.
+- *Admit the cookie alone.* Rejected: `biorouter serve` hands the daemon its browser token in the
+  environment (SD-10), so a model with a shell reads the cookie's value with `ps eww`, and `curl`
+  sends it. The Fetch Metadata requirement is what makes that a deliberate forgery rather than an
+  ordinary request.
+- *Admit the person everywhere the desktop's proof is asked.* Rejected: an approval, a
+  declassification or a reset is irreversible or widens a model's reach, and SD-8's reasons for
+  withholding them do not change because a provider can now be chosen.
+- *Let the page move an open chat to another model.* Deferred, not refused. It needs the page's
+  reach to follow each chat's own model rather than the host's default, which is SD-10's open
+  decision about the transcript gate.
+
+**Consequences to accept.**
+
+- A model with a shell that sets out to forge a browser request (read the token and the secret
+  from the daemon's environment, then send the cookie and the `Sec-Fetch-*` headers with `curl`)
+  can choose the host's provider. That is the same deliberate-forgery residual the owner accepted
+  for the desktop's key file, and it is no wider than the model's shell, which can already write
+  `config.yaml` and wait for the next launch.
+- A `--no-token` daemon cannot tell its page from any other local caller, so it keeps SD-1: the
+  page says to run `biorouter configure` on the host.
+- Every browser that opens the printed address is the person (SD-9 and SD-10 say the same of the
+  listings): a colleague given the address can change the host's provider.
+
+Implemented in `crates/biorouter-server/src/auth.rs` (`provider_choice_proof`,
+`served_person_present`, `adopt_served_operator_capability`), `launch.rs`
+(`adopt_person_choice`), and `routes/config_management.rs` (`get_provider_setup_access` and the
+gates). Pinned by `crates/biorouter-server/tests/provider_setup_no_user_key.rs`, its own binary
+because the digest and the served operator are process-global `OnceLock`s.
 
 ---
 

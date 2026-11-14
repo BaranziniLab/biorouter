@@ -301,8 +301,12 @@ provider is read) is now empty and on the same page ground: it used to draw the 
 monogram on the muted grey, a second logo and a second ground before the wordmark (FR-R1-7, R-29). The
 splash itself (`index.html`) now draws the wordmark at rest on the page canvas, with no mark and no
 entrance (FR-R1-7, round 3; design.md, "The boot splash"), so the frame before this page is the same logo on
-the same ground. On a browser served by `biorouter serve` the band is
-the wordmark and "Get started", over the host-managed panel, which carries the reason itself.
+the same ground. On a browser served by `biorouter serve` the page asks the daemon first
+(`GET /config/provider_setup`, through `utils/providerSetupAccess.ts`). When the daemon admits the page
+(SD-17) the browser gets this same page, catalog, Skip and Open Crew included, and continues into the app
+once a provider works. When it refuses, the band is the wordmark and the title over the host-managed panel,
+whose one visible line is the daemon's own reason (with `biorouter configure` to copy and the rest in an
+InfoTip).
 
 The catalog opens once, at rest (FR-R1-1). With `holdUntilSettled` (both pages pass it) it draws a quiet
 skeleton at row height, with the three tab labels and none selected, until the provider list, the bound
@@ -580,19 +584,32 @@ when `BIOROUTER_PROVIDER` is empty **and** that key is true.
   disabled by a flag set months earlier for an unrelated reason.
 - A skip that **fails to save** keeps the wall up. Letting the user through anyway would
   put them in an app whose first-run screen returns on the next launch with no explanation.
-- The skip is **not offered on a browser-served surface**. There, the host owns the choice
-  (SD-1), so "continue without a provider" would lead to a chat this tab can never
-  configure — a second dead end wearing the clothes of an escape.
+- The skip is **offered on a browser-served surface only when the daemon admits the page**
+  (SD-17), because there the provider can still be chosen later in Settings. Where the daemon
+  refuses, the host owns the choice and the page shows the host-managed panel with no skip.
 
 ### Settings that belong to the host
 
-On a browser-served surface, the provider form shows the settings that decide where a provider
+Since SD-17 this applies only where the daemon refuses the page (`providersAreHostManaged()`): a
+`--no-token` daemon, a plain-HTTP network address, or a desktop daemon missing its key. A browser the
+daemon admits edits these settings as the desktop does.
+
+On such a browser-served surface, the provider form shows the settings that decide where a provider
 sends its requests and key (host, endpoint, base path, region, CA or client certificate path, a
 coding agent's command) read only, with a note that they are changed with `biorouter configure`
 on the host computer. The save leaves them out, and a required one the host has not set says so
 instead of "is required". A custom provider's form asks for the key again before a browser moves
 its saved key to a new URL, the one such move the daemon allows there. The daemon's side of this
-is [SD-1](../deployment/serve-decisions.md#sd-1--a-browser-session-cannot-change-its-model-or-provider-and-that-is-the-point).
+is [SD-1](../deployment/serve-decisions.md#sd-1--a-browser-session-cannot-change-its-model-or-provider-and-that-is-the-point),
+narrowed by [SD-17](../deployment/serve-decisions.md#sd-17-the-person-in-the-served-page-sets-up-providers-and-an-agent-still-cannot).
+
+### The model dialog in a browser
+
+In a browser the daemon admits, Switch models changes the host's default for new chats and never
+the open chat's model: the chat-scope checkbox is drawn disabled with "In a browser, an open chat
+keeps its model. New chats use the default you choose here." Moving the default from a private model
+to a public one first says "Private chats stay out of reach in this browser while a public model is
+the default.", because the page states the host's default as its capability (SD-12).
 
 ### The in-app no-provider state
 
@@ -651,7 +668,7 @@ suite here uses a `clickTab` helper that fires both.
 
 ## Related documentation
 
-- [Privacy tiers](../security/privacy-tiers.md) — §14.5 owns the three group labels and their notes; SD-1 owns the browser surface's behaviour.
+- [Privacy tiers](../security/privacy-tiers.md) — §14.5 owns the three group labels and their notes; SD-1 and SD-17 own the browser surface's behaviour.
 - [Settings visual vocabulary](settings-visual-vocabulary.md) — the row, section and InfoTip anatomy the catalog and the Models tab now share.
 - [Coding-agent providers](../providers/coding-agents/README.md) — what `claude_code` and `codex` are, and why both are `ProviderTier::Public`.
 - [Launching the dev GUI from a shell without a TTY](launching-the-dev-gui.md) — how to put this screen in front of you.
