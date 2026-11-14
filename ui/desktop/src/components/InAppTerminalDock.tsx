@@ -15,6 +15,7 @@ import { folderName, homeFolder } from '../utils/folderPath';
 import { TerminalCwd } from './TerminalCwd';
 import { TAB_CLOSE_CLASS, TAB_NEW_CLASS } from './chatGroups/tabClasses';
 import { isSystemMonoFontReady, loadSystemMonoFont } from '../utils/systemMonoFont';
+import { terminalLineHeight } from '../utils/terminalLineHeight';
 
 interface InAppTerminalDockProps {
   open: boolean;
@@ -87,7 +88,6 @@ function makePaneTitle(workingDir: string | undefined, index: number) {
 const TERMINAL_FONT =
   'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
 const TERMINAL_FONT_SIZE = 12;
-const TERMINAL_LINE_HEIGHT = 20 / 12; // design.md 9.15: code and terminal are 12/20, as Codex sets code
 
 /**
  * Terminal palettes, keyed by family then resolved mode — GENERATED.
@@ -309,7 +309,8 @@ const TerminalPaneView: React.FC<{
       cursorStyle: 'block',
       fontFamily: TERMINAL_FONT,
       fontSize: TERMINAL_FONT_SIZE * fontScaleRef.current,
-      lineHeight: TERMINAL_LINE_HEIGHT,
+      // design.md 9.15: 12px on a 20px line (`utils/terminalLineHeight.ts`).
+      lineHeight: terminalLineHeight(TERMINAL_FONT, TERMINAL_FONT_SIZE * fontScaleRef.current),
       scrollback: 8000,
       theme: TERMINAL_THEMES_BY_FAMILY[themeFamilyRef.current][resolvedThemeRef.current].terminal,
     });
@@ -346,6 +347,8 @@ const TerminalPaneView: React.FC<{
         // is ever painted in it.
         term.options.fontFamily = 'monospace';
         term.options.fontFamily = TERMINAL_FONT;
+        // The new face measures its own cell height, so the 20px row needs its own multiplier.
+        term.options.lineHeight = terminalLineHeight(TERMINAL_FONT, term.options.fontSize ?? 12);
         flushResize();
       });
     }
@@ -458,6 +461,7 @@ const TerminalPaneView: React.FC<{
     const nextFontSize = TERMINAL_FONT_SIZE * fontScale;
     if (!term || term.options.fontSize === nextFontSize) return;
     term.options.fontSize = nextFontSize;
+    term.options.lineHeight = terminalLineHeight(TERMINAL_FONT, nextFontSize);
     fitTerminal(false);
   }, [fontScale, fitTerminal]);
 
