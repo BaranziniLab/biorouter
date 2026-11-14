@@ -24,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { EmptyState } from '../ui/empty-state';
+import { PrivacyTiersOffNote } from '../privacy/PrivacyTiersOffNote';
 import { FilterInput } from '../ui/filter-input';
 import { InfoTip, useInfoTipId } from '../ui/info-tip';
 import { Note } from '../ui/note';
@@ -364,6 +365,9 @@ export default function DictionaryView() {
         <ReadableContent size="chat" className="relative min-h-0 flex-1 px-6">
           <ScrollArea className="h-full">
             <div className="relative py-4">
+              {/* The note every composer shows while the privacy tiers are off: here a private
+                  term shapes dictation into any chat, public ones included. */}
+              <PrivacyTiersOffNote className="mb-4" />
               {notice ? (
                 <Note
                   tone={dictionary.absent || policyOff ? 'warning' : 'danger'}

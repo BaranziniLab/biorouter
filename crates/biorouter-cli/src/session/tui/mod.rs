@@ -3260,18 +3260,32 @@ fn help_into(app: &mut App) {
         "Navigation",
         Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
     );
-    for (k, d) in [
-        ("↵", "send · ⇧↵ or ^J for a newline"),
-        ("↑ / ↓", "history · scroll with PageUp/Down or the mouse"),
-        ("^C", "clear the line, or quit when empty"),
-        ("^B", "show or hide the subagent pane"),
+    let mut keys: Vec<(String, &str)> = vec![
+        ("↵".into(), "send · ⇧↵ or ^J for a newline"),
         (
-            "^O",
-            "select a subagent: ↑↓ choose, ↵ opens its chat, esc back",
+            "↑ / ↓".into(),
+            "history · scroll with PageUp/Down or the mouse",
         ),
-    ] {
+        ("^C".into(), "clear the line, or quit when empty"),
+    ];
+    // The dictation key, as the footer names it (`dictation_hint`): the configured letter,
+    // offered only where dictation can run and the key is free.
+    if let Some(dictate) = dictation_hint(app).strip_prefix(" · ") {
+        if let Some(key) = dictate.strip_suffix(" dictate") {
+            keys.push((
+                key.to_string(),
+                "dictate · ↵ or the same key inserts the text, esc cancels",
+            ));
+        }
+    }
+    keys.push(("^B".into(), "show or hide the subagent pane"));
+    keys.push((
+        "^O".into(),
+        "select a subagent: ↑↓ choose, ↵ opens its chat, esc back",
+    ));
+    for (k, d) in keys {
         app.push_line(Line::from(vec![
-            Span::styled(help_cell(k, width), Style::new().fg(ACCENT)),
+            Span::styled(help_cell(&k, width), Style::new().fg(ACCENT)),
             Span::styled(d.to_string(), Style::new().add_modifier(Modifier::DIM)),
         ]));
     }
@@ -5681,6 +5695,31 @@ mod tests {
             app.decisions.is_none(),
             "^C stops the turn and closes the overlay"
         );
+    }
+
+    /// `/help` names the dictation key the footer names, under Navigation, and only where
+    /// dictation can run.
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn help_names_the_dictation_key_where_the_footer_does() {
+        let mut app = App::new(StatusInfo::default());
+        help_into(&mut app);
+        let all = buffer_lines(&mut app, 140, 60).join("\n");
+        assert!(!all.contains("dictate ·"), "{all}");
+        let mut app = App::new(StatusInfo::default());
+        app.dictation_available = true;
+        let footer = hint_text(&app, 200);
+        help_into(&mut app);
+        let all = buffer_lines(&mut app, 140, 60).join("\n");
+        if let Some(key) = dictation_chord() {
+            let named = format!("^{}", key.to_ascii_uppercase());
+            assert!(footer.contains(&format!("{named} dictate")), "{footer}");
+            assert!(
+                all.lines()
+                    .any(|l| l.contains(&named) && l.contains("dictate ·")),
+                "{all}"
+            );
+        }
     }
 
     #[test]

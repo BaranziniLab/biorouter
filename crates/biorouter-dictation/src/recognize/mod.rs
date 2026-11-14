@@ -56,7 +56,10 @@ impl RetryReason {
 }
 
 /// What a transcript reports as `bias_scope` (DD-29): `private` only when private
-/// entries may have shaped it.
+/// entries may have shaped it under the privacy tiers. With the privacy master switch off
+/// every row is eligible for every target and the scope still reads `public`, so the
+/// private draft flag stays silent while nothing is enforced (dictionary.md, "Privacy
+/// tiers and the bias set"); the composer and the Dictionary page say the switch is off.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BiasScope {
