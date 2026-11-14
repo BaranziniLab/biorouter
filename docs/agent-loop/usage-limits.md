@@ -152,7 +152,8 @@ Other spending doors follow the same rule:
   part-way would leave a monitor's verdict unknown. A phase gate that the chat's own model
   judges, because the chat has no decision model it may use or its decision model could not
   be reached, is counted the same way, as a side call on the chat (`SideCall::GateJudge`),
-  and is not stopped either.
+  and is not stopped either. So is a decision whose model is under a chat provider's name
+  (`side:decision:<row id>`, `SideCall::Decision`), once per decision row.
 - **Workflow generation.** The model call that turns a chat into a workflow is added to
   the chat's usage, so it counts too.
 - **Chat titles.** A chat at a limit is not named by a model. After a message the limit

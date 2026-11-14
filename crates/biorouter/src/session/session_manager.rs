@@ -976,7 +976,7 @@ pub struct UsageLedgerEntry {
 }
 
 /// One side call's usage: a provider call made for a chat that is not one of
-/// its turns. A decision model's call is the only kind today.
+/// its turns, such as a decision or a stall check (`side_usage::SideCall`).
 ///
 /// [`SessionManager::apply_side_usage_event`] adds it to the usage ledger (the
 /// Usage panel, `biorouter usage`, the chat's cost) and to the chat's
@@ -987,7 +987,8 @@ pub struct UsageLedgerEntry {
 #[derive(Debug, Clone)]
 pub struct SideUsageEntry {
     /// Identifies the call, so a retried write applies once. A decision uses
-    /// `decision:<decision row id>`.
+    /// `decision:<decision row id>`, or `side:decision:<decision row id>` when
+    /// its model is under a chat provider's name (`decision::log`).
     pub event_key: String,
     pub session_id: String,
     /// The provider that served the call, for example `baseten_decision`.
