@@ -658,6 +658,33 @@ pub fn private_from_next_turn_sentence(extension: &str) -> String {
     )
 }
 
+/// Issue #56 and DR-33 (design §3.9) for a private **knowledge base**: the words that replace
+/// the knowledge server's refusal (`biorouter_mcp::knowledge::tier::KB_PRIVATE_REFUSAL`) when
+/// this call's capability knows why the turn runs public. The knowledge server cannot see a
+/// `CallCapability`, so its one sentence asks the person to switch to a private model, which
+/// they just did (a switch while the turn ran) or which would not help (a decision model made
+/// the chat public). `None` keeps the server's sentence. The rule is the knowledge server's,
+/// unchanged; this only picks the words, from flags the caller reads off its one sample.
+///
+/// A mid-turn switch is asked first, as in [`privacy_refusal_explained`]. The decision
+/// sentence is given without the monitor's name: the words would cost a read of the bound
+/// provider's slot for every knowledge call, and the slot is read on refusal paths only.
+pub fn kb_refusal_explained(
+    private_from_next_turn: bool,
+    lowered_by_decision: bool,
+) -> Option<String> {
+    if private_from_next_turn {
+        return Some(
+            "This knowledge base is private, and this chat was switched to a private model while \
+             this turn was running. The new model takes effect from the next message, so the \
+             knowledge base cannot be read in this turn. Do not retry in this turn, through any \
+             tool; tell the person to ask again in their next message."
+                .to_string(),
+        );
+    }
+    lowered_by_decision.then(|| decision_lowered_sentence(None, None, RefusalAudience::Agent))
+}
+
 /// [`privacy_refusal`], naming the decision model when one lowered the chat
 /// (design §3.9), or saying the chat's new private model starts with the next
 /// message when the person switched it while this turn ran (issue #56). The
@@ -1217,6 +1244,25 @@ fn extension_enable_refusal_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Phase C, F-6: the knowledge server's one refusal is replaced only when the call knows
+    /// why its turn runs public, and a mid-turn switch is asked before a decision model.
+    #[test]
+    fn a_kb_refusal_says_why_the_turn_runs_public() {
+        assert_eq!(kb_refusal_explained(false, false), None);
+        let next = kb_refusal_explained(true, true).unwrap();
+        assert!(
+            next.contains("takes effect from the next message"),
+            "{next}"
+        );
+        assert!(
+            !next.contains("switch this chat to a private model"),
+            "{next}"
+        );
+        let decision = kb_refusal_explained(false, true).unwrap();
+        assert!(decision.contains("public decision model"), "{decision}");
+        assert!(decision.contains("knowledge bases"), "{decision}");
+    }
 
     /// Gate C's refusal, exercised the way `check_enable_allowed`'s four tests
     /// exercise it (`extension_manager_extension.rs`): no global config, no

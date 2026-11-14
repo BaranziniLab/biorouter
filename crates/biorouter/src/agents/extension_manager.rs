@@ -1045,6 +1045,21 @@ async fn call_admitted_tool(
 /// running waits out the job's interval first, after every admission check and
 /// before the call, and its result says it was held. `call` is the chat's
 /// session id and the prefixed tool name the pacing keys on.
+/// The knowledge server's private-base refusal in the words this call's capability can give
+/// ([`crate::privacy::refusal::kb_refusal_explained`]); every other error, and the refusal when
+/// there are no such words, unchanged.
+fn explain_kb_refusal(mut error: ErrorData, words: Option<&str>) -> ErrorData {
+    if let Some(words) = words {
+        if error
+            .message
+            .contains(biorouter_mcp::knowledge::tier::KB_PRIVATE_REFUSAL)
+        {
+            error.message = words.to_string().into();
+        }
+    }
+    error
+}
+
 async fn call_paced_tool(
     call: (&str, &str),
     client: &McpClientBox,
@@ -3846,6 +3861,13 @@ impl ExtensionManager {
         // DR-33, design §2.6. Decided here, at admission, off the same sample.
         let private_content =
             self.private_content_probe(&client_name, &tool_name, arguments.as_ref(), cap);
+        // Issue #56 and DR-33 for a private knowledge base: the knowledge server refuses in one
+        // sentence because it cannot see this call's capability. The words that say why are
+        // picked here, off the same sample, and replace only that sentence (Phase C, F-6).
+        let kb_refusal_words = crate::privacy::refusal::kb_refusal_explained(
+            cap.private_from_next_turn(),
+            cap.lowered_by_decision(),
+        );
 
         let fut = async move {
             let _file_authority = file_admission;
@@ -3872,7 +3894,8 @@ impl ExtensionManager {
                 cancellation_token,
                 computer_permit,
             )
-            .await?;
+            .await
+            .map_err(|error| explain_kb_refusal(error, kb_refusal_words.as_deref()))?;
             seal_file_diagnostics(
                 &mut result,
                 diagnostics_enabled,
@@ -4704,6 +4727,33 @@ mod tests {
     use rmcp::model::CallToolResult;
     use rmcp::model::{InitializeResult, JsonObject};
     use rmcp::{object, ServiceError as Error};
+
+    /// Phase C, F-6: a private knowledge base refused in a turn whose chat was switched to a
+    /// private model, or made public by a decision model, says why; every other error, and
+    /// the refusal with no words to give, is untouched.
+    #[test]
+    fn a_kb_refusal_takes_the_words_this_call_can_give() {
+        let refusal = ErrorData::new(
+            ErrorCode::INVALID_REQUEST,
+            biorouter_mcp::knowledge::tier::KB_PRIVATE_REFUSAL,
+            None,
+        );
+        let next = crate::privacy::refusal::kb_refusal_explained(true, false);
+        let explained = explain_kb_refusal(refusal.clone(), next.as_deref());
+        assert!(explained
+            .message
+            .contains("takes effect from the next message"));
+        assert_eq!(explained.code, refusal.code);
+
+        let decision = crate::privacy::refusal::kb_refusal_explained(false, true);
+        assert!(explain_kb_refusal(refusal.clone(), decision.as_deref())
+            .message
+            .contains("public decision model"));
+
+        assert_eq!(explain_kb_refusal(refusal.clone(), None), refusal);
+        let other = ErrorData::new(ErrorCode::INTERNAL_ERROR, "the base is busy", None);
+        assert_eq!(explain_kb_refusal(other.clone(), next.as_deref()), other);
+    }
 
     use rmcp::model::ListPromptsResult;
     use rmcp::model::ListResourcesResult;
