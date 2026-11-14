@@ -113,6 +113,11 @@ async fn async_main() -> anyhow::Result<()> {
             // the old folder. `run` reports it once logging is up.
             biorouter_mcp::app_folder::move_for_this_process();
             commands::agent::run(exit_with_parent).await?;
+            // SD-19: an update installed from the browser ends the daemon with the
+            // code `biorouter serve` answers by restarting it on the new version.
+            if biorouter::serve_update::updater::restart_requested() {
+                std::process::exit(biorouter::serve_update::RESTART_EXIT_CODE);
+            }
         }
         Commands::Mcp { server } => {
             // A child of the daemon: it resolves, and never moves.

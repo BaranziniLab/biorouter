@@ -51,6 +51,7 @@ pub mod providers;
 pub mod scheduler;
 pub mod scheduler_trait;
 pub mod security;
+pub mod serve_update;
 pub mod session;
 pub mod session_context;
 pub mod session_events;

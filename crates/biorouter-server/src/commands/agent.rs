@@ -454,6 +454,43 @@ fn spawn_crew_sweep() {
     });
 }
 
+/// SD-19: install this daemon's browser updater when `serve` started it with the restart
+/// contract, and start its background check.
+fn spawn_serve_updater(settings: &configuration::Settings, exit_with_parent: Option<u32>) {
+    use biorouter::serve_update::{self, feed::Feed, updater};
+    let supervised = std::env::var(serve_update::SUPERVISOR_ENV).ok().as_deref()
+        == Some(serve_update::SUPERVISOR_CONTRACT);
+    let (true, Some(_), Some(serve_pid)) =
+        (supervised, settings.serve_ui.as_ref(), exit_with_parent)
+    else {
+        return;
+    };
+    let feed = match Feed::from_env() {
+        Ok(feed) => feed,
+        Err(error) => {
+            tracing::warn!(%error, "browser updates are off: the update feed setting is not usable");
+            return;
+        }
+    };
+    if feed.overridden {
+        info!(
+            "browser updates read releases from {}",
+            serve_update::feed::FEED_ENV
+        );
+    }
+    let Ok(daemon_exe) = std::env::current_exe() else {
+        tracing::warn!("browser updates are off: this daemon cannot find its own executable");
+        return;
+    };
+    match updater::Updater::new(feed, settings.socket_addr().port(), serve_pid, daemon_exe) {
+        Ok(updater) => {
+            updater.spawn_background();
+            updater::install_global(updater);
+        }
+        Err(error) => tracing::warn!(%error, "browser updates are off"),
+    }
+}
+
 /// `app` with the web interface attached when this daemon was asked to serve one from the
 /// folder `serve_ui` names, unchanged otherwise. The caller adds it after `check_token`, so the
 /// shell and the static bundle sit outside that middleware (see `run`).
@@ -649,6 +686,12 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
 
     let app = app.layer(response_compression());
 
+    // SD-19: the browser page may update this daemon, but only when `serve`
+    // started it and declared it will restart it on the exit code an update
+    // ends with. Anything else (the desktop app's daemon, a hand-started one)
+    // never offers an update it could not come back from.
+    spawn_serve_updater(&settings, exit_with_parent);
+
     // Not `tokio::net::TcpListener::bind`: on Windows that socket is inherited by
     // every MCP extension, shell and coding agent this daemon spawns, and any one
     // of them that outlives the daemon keeps the port listening, which on a fixed
@@ -741,7 +784,11 @@ async fn serve(
     tokio::select! {
         result = &mut tcp_server => { result?; stop.cancel(); },
         _ = stop.cancelled() => {
-            if let Ok(result) = tokio::time::timeout(std::time::Duration::from_secs(10), &mut tcp_server).await { result?; }
+            // SD-19: a restart for an update has already stopped what it had to,
+            // and every open page is waiting for it to come back, so it waits two
+            // seconds for open requests rather than ten.
+            let drain = if biorouter::serve_update::updater::restart_requested() { 2 } else { 10 };
+            if let Ok(result) = tokio::time::timeout(std::time::Duration::from_secs(drain), &mut tcp_server).await { result?; }
         }
     }
     #[cfg(unix)]

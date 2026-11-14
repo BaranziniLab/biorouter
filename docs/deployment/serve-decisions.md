@@ -5,9 +5,9 @@
 > how the person in the served page now sets up providers (SD-18), why every chat starts on the
 > model the host chose, why the standalone `biorouter-headless` binary was
 > retired, how long the launch token stays good for, which chats the deprecated
-> `biorouter web` may still open, when a decision model may make a chat public there, and what
-> app pages on the served origin may do with a microphone grant. Each record states the ruling,
-> the alternatives it
+> `biorouter web` may still open, when a decision model may make a chat public there, what app
+> pages on the served origin may do with a microphone grant, and how the person on the page
+> updates it. Each record states the ruling, the alternatives it
 > displaced, and the consequence a future change would have to accept.
 > **Status:** Current.
 > **Audience:** developers working on the daemon, the CLI, or release packaging; agents making
@@ -1603,6 +1603,128 @@ Implemented in `crates/biorouter-server/src/auth.rs` (`provider_choice_proof`,
 (`adopt_person_choice`), and `routes/config_management.rs` (`get_provider_setup_access` and the
 gates). Pinned by `crates/biorouter-server/tests/provider_setup_no_user_key.rs`, its own binary
 because the digest and the served operator are process-global `OnceLock`s.
+
+---
+
+## SD-19: The person on the page updates `serve`, and it comes back on the same address
+
+**Ruling (owner, 2026-11-14).** A person using a `biorouter serve` page updates Biorouter from the
+page: the lower-left "Update to …" row (or Settings › About › Version) opens one dialog, one click
+installs the update, and Biorouter restarts and reloads the page on the new version. Usability
+first, with every boundary below holding.
+
+- **Who may install.** Only the person in the served page, by the proof SD-18 set up for
+  providers (`auth::served_person_present`: the served document's cookie, and Fetch Metadata
+  saying that page's own script sent the request), on top of the secret `check_token` already
+  demands. A caller holding only `X-Secret-Key` gets 403 `not_from_the_page`. A `--no-token`
+  daemon has no such cookie; there the Fetch Metadata alone stands in, which is no more open than
+  everything else on a daemon that chose no token. Reading the status (`GET /headless/update`)
+  needs only the secret: it changes nothing.
+- **Only a daemon `serve` can restart offers it.** `serve` declares it in
+  `BIOROUTER_SERVE_SUPERVISOR=restart-v1` (Unix only, beside `--exit-with-parent`). The desktop
+  app's daemon, a hand-started one, a Windows `serve` and a `serve` from before this record never
+  set it, so they never install anything and never exit asking to be restarted.
+- **Where releases come from.** GitHub's release API for `BaranziniLab/biorouter`, or the feed
+  `BIOROUTER_SERVE_UPDATE_FEED_URL` names (a mirror, or a test's local feed) in the same shape.
+  Either must be `https`, or `http` to this machine, and so must every file it names. A file is
+  installed only when its size and SHA-256 match the `digest` the release publishes; a file with no
+  published digest is never downloaded. The asset names are the release's own (CLAUDE.md, "Release
+  assets"); this record adds and renames none, so the usage dashboard's classifier is unaffected.
+- **How each installation updates.** Decided from where the daemon's own executable lives:
+
+  | Installation | One click when | Otherwise |
+  |---|---|---|
+  | Linux package (`biorouter-cli`, or the desktop `biorouter`; deb or rpm) | `serve` runs as root, or `sudo -n` works without a password: the package manager installs the release's package | One line for an administrator (below), then one click to restart |
+  | macOS app bundle | This account can write the bundle and its folder: the signed `Biorouter-darwin-<arch>-<v>.zip` is unpacked beside it and swapped in | "Install the new version from the download page" |
+  | Built from source | Never | "Update it with git pull and a new build" |
+  | Windows, or anything unrecognised | Never | "Install the update with the Biorouter app" |
+
+  A package is always updated through its package manager, never by replacing its files, so the
+  package database never names a version that is not on disk. A bundle must pass
+  `codesign --verify --deep --strict`, and when the installed bundle names a team, the new one must
+  name the same team (Squirrel.Mac's rule for the desktop app). A bundle is refused while the
+  desktop app is open from it.
+- **The administrator's line.** It copies the file the daemon already downloaded and verified into
+  a file only root can write, checks the SHA-256 of that copy, and installs it:
+  `sudo sh -c 'f=$(mktemp --suffix=.deb) && cp "<downloaded file>" "$f" && chmod 644 "$f" && echo "<sha256>  $f" | sha256sum -c --quiet - && apt-get install -y "$f"; …'`.
+  The copy is what makes it safe to hand to root: the download sits in this account's folder,
+  where an agent's shell could change it after it was verified. Once the new version is on disk
+  (from this line, `apt upgrade`, or anything else), the page offers **Restart**.
+- **Running as root.** When `serve` runs as root (common in a container) the package manager runs
+  directly. That grants nothing new: an agent in that daemon already has a root shell. The same
+  holds for passwordless `sudo`.
+- **Keeping the way back.** A package update first downloads and verifies the running version's
+  own package from the same feed; without it the update is refused, because there would be no way
+  back. A bundle update keeps the replaced bundle beside the new one (`.<name>.previous`). Before
+  anything restarts, the new binaries must run and print the new version; a package whose binaries
+  do not (the wrong CPU, too old a C library) is put back at once and the page says so, with
+  nothing restarted.
+- **The restart.** The daemon writes a restart plan, stops (waiting two seconds for open requests
+  rather than ten), and exits with 75. `serve` re-executes itself in place: same pid (a terminal,
+  `nohup` or a systemd unit sees nothing end), same command line, same address. When the new
+  daemon answers (it gets five minutes, not the usual one, so a first start that migrates its
+  stores is not mistaken for a failure; a daemon that exits is caught at once), the update is kept
+  and the kept copy deleted. When it does not, or anything else in the new image's start fails
+  first (a moved web folder, the port), `serve` puts the previous version back and re-executes
+  that, and the page says "Biorouter X didn't start, so Y was put back." An administrator's install
+  has no way back here: `serve` starts whatever is on disk, and says so in the terminal if that
+  fails.
+- **Running chats.** The install answers 409 `turns_running` while a turn runs, unless the request
+  says `stopRunning: true`. The dialog shows "N chats are still working and will stop." before the
+  click, so the click itself is that consent.
+- **The page.** "Downloading update…" with progress, then "Update ready to install" with one
+  button, then "Updating…" and "Restarting…", then a reload into the new version. Every open page
+  reloads by itself once Biorouter is back, including one that never saw the update start: the
+  first status request the new daemon refuses (401, or 429 from its failed-secret throttle) is the
+  signal. A page that reloaded moments ago and is still refused says the address changed instead of
+  reloading again.
+- **A look at the feed that fails** (an outage, a rate limit) never takes away an update already
+  downloaded and verified; it stays one click away.
+
+**The token across the restart.** The same token keeps working, which extends SD-9 rather than
+changing it. SD-9 makes stopping `serve` the operator's revocation; an update the person on the
+page asked for is not a stop, and `serve` keeps running under the same pid. A token the operator
+chose (`--token`, `BIOROUTER_BROWSER_TOKEN`) is found again where it came from; one this launch
+minted is carried to the re-executed image in a resume record readable by this account alone and
+deleted the moment it is read. The daemon secret is not carried: the new daemon mints its own, and
+the page learns it by reloading with its access cookie. That is also how the page knows the new
+daemon is up: its status request with the old secret first fails (nothing listening), then answers
+401 (a daemon that does not know it).
+
+**Why.** A `serve` installation usually runs on a server nobody sits at, so the desktop app's
+updater never reaches it, and "upgrade the installed packages on the serving machine" (the guidance
+until this record) left most users on old versions. One click from the page they already use is
+the update path they will actually take.
+
+**Displaced alternatives.**
+
+- *Let any holder of the secret install.* Rejected: a chat's model holds `developer__shell` and
+  recovers the secret with `ps eww`, and an agent must not be able to restart the server out from
+  under everyone using it.
+- *Replace a package's files directly.* Rejected: the package database would name a version that
+  is not on disk.
+- *Download with `curl` in the administrator's line.* Rejected: it needs `curl` on the server and a
+  second download, and the copy-then-check line verifies the same digest without either.
+- *Restart only the daemon, leaving the old `serve` running.* Rejected: `serve` decides how its
+  daemon starts, and an update that changed that must take effect now.
+- *A new token after an update.* Rejected: every open page, bookmark and colleague would need the
+  new address, which is the hiccup this record exists to remove.
+
+**Consequences to accept.**
+
+- Like SD-18's proof, the cookie is not a proof of a person against something that reads the
+  daemon's environment, where `serve` puts the token beside the secret. An agent that does that
+  can install an update the page would have offered. It cannot install anything else: only a file
+  matching the release's published digest is ever installed. The owner's ruling of 2026-09-29
+  (a local agent forging a person's action is not a threat this product designs against) applies.
+- Restarting stops every running chat, background shell job and scheduled run on that daemon.
+- Updating a Linux package needs network access to the feed twice (the update and the running
+  version's own package) and the disk for both.
+- A Linux arm64 server is offered no update: no arm64 package is published, so the page shows no
+  update row there rather than an error.
+- A rollback after the new version has migrated a store (the chat database) puts back a version
+  that may not open that store. The five-minute first-start window makes that unlikely; it is not
+  ruled out.
 
 ---
 
