@@ -666,12 +666,13 @@ pub fn private_from_next_turn_sentence(extension: &str) -> String {
 /// the chat public). `None` keeps the server's sentence. The rule is the knowledge server's,
 /// unchanged; this only picks the words, from flags the caller reads off its one sample.
 ///
-/// A mid-turn switch is asked first, as in [`privacy_refusal_explained`]. The decision
-/// sentence is given without the monitor's name: the words would cost a read of the bound
-/// provider's slot for every knowledge call, and the slot is read on refusal paths only.
+/// A mid-turn switch is asked first, as in [`privacy_refusal_explained`]. `lowered_by` names the
+/// decision model, read off the bound provider's slot on the refusal path only; `None` still
+/// gives the decision sentence, without the name.
 pub fn kb_refusal_explained(
     private_from_next_turn: bool,
     lowered_by_decision: bool,
+    lowered_by: Option<&super::decision_axes::LoweredBy>,
 ) -> Option<String> {
     if private_from_next_turn {
         return Some(
@@ -682,7 +683,7 @@ pub fn kb_refusal_explained(
                 .to_string(),
         );
     }
-    lowered_by_decision.then(|| decision_lowered_sentence(None, None, RefusalAudience::Agent))
+    lowered_by_decision.then(|| decision_lowered_sentence(None, lowered_by, RefusalAudience::Agent))
 }
 
 /// [`privacy_refusal`], naming the decision model when one lowered the chat
@@ -1249,8 +1250,8 @@ mod tests {
     /// why its turn runs public, and a mid-turn switch is asked before a decision model.
     #[test]
     fn a_kb_refusal_says_why_the_turn_runs_public() {
-        assert_eq!(kb_refusal_explained(false, false), None);
-        let next = kb_refusal_explained(true, true).unwrap();
+        assert_eq!(kb_refusal_explained(false, false, None), None);
+        let next = kb_refusal_explained(true, true, None).unwrap();
         assert!(
             next.contains("takes effect from the next message"),
             "{next}"
@@ -1259,9 +1260,13 @@ mod tests {
             !next.contains("switch this chat to a private model"),
             "{next}"
         );
-        let decision = kb_refusal_explained(false, true).unwrap();
+        let decision = kb_refusal_explained(false, true, None).unwrap();
         assert!(decision.contains("public decision model"), "{decision}");
         assert!(decision.contains("knowledge bases"), "{decision}");
+        // Phase C, W2-A: with the slot's cause, the words name the decision model.
+        let named = kb_refusal_explained(false, true, Some(&joey())).unwrap();
+        assert!(named.contains("joey-1"), "{named}");
+        assert!(named.contains("knowledge bases"), "{named}");
     }
 
     /// Gate C's refusal, exercised the way `check_enable_allowed`'s four tests

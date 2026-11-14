@@ -1040,42 +1040,57 @@ async fn call_admitted_tool(
     }
 }
 
-/// [`call_admitted_tool`] behind the status-check pacing
-/// (`tool_monitor::poll_pacing`): a repeated check of a job that is still
-/// running waits out the job's interval first, after every admission check and
-/// before the call, and its result says it was held. `call` is the chat's
-/// session id and the prefixed tool name the pacing keys on.
-/// Issue #56 and DR-33 for a private knowledge base: the knowledge server refuses in one sentence
-/// because it cannot see a call's capability. The words that say why come from the call's own
-/// sample (the `cap` its dispatch admitted it with, copied into the call's future) and replace
-/// only that sentence (Phase C, F-6).
-fn kb_refusal_words(cap: crate::privacy::CallCapability) -> Option<String> {
-    crate::privacy::refusal::kb_refusal_explained(
-        cap.private_from_next_turn(),
+/// Issue #56 and DR-33 for a private knowledge base: replaces the knowledge server's one refusal
+/// sentence (`tier::KB_PRIVATE_REFUSAL`), which cannot see a call's capability, with words that
+/// say why the turn runs public (Phase C, F-6). Every other error is returned unchanged. The
+/// reasons come from the call's own sample and, on this refusal path only, where they decide
+/// nothing (the call was already refused), from the provider slot:
+/// - **A switch to a private model while the turn ran.** A turn's own calls carry it in
+///   `CallCapability::private_from_next_turn`. A bridged coding-agent turn's capability is
+///   sampled once, when its grant is issued, so for that turn the switch shows only in the slot,
+///   which now holds a private model (Phase C, W2-A).
+/// - **A decision model that made the chat public,** named as the extension gate names it.
+///
+/// The slot is read here directly, for words only: a second `CallCapability::sample` would be a
+/// new sampling entry for the capability census.
+async fn explain_kb_refusal(
+    mut error: ErrorData,
+    cap: crate::privacy::CallCapability,
+    slot: &SharedProvider,
+) -> ErrorData {
+    if !error
+        .message
+        .contains(biorouter_mcp::knowledge::tier::KB_PRIVATE_REFUSAL)
+    {
+        return error;
+    }
+    let (now_private, lowered_by) = slot
+        .lock()
+        .await
+        .as_ref()
+        .map(|p| (p.tier().is_private(), p.decision_lowered_by().cloned()))
+        .unwrap_or((false, None));
+    let switched = cap.private_from_next_turn() || (!cap.tier().is_private() && now_private);
+    let lowered_by = lowered_by.filter(|_| cap.lowered_by_decision() && !switched);
+    if let Some(words) = crate::privacy::refusal::kb_refusal_explained(
+        switched,
         cap.lowered_by_decision(),
-    )
-}
-
-/// The knowledge server's private-base refusal in the words this call's capability can give
-/// ([`crate::privacy::refusal::kb_refusal_explained`]); every other error, and the refusal when
-/// there are no such words, unchanged.
-fn explain_kb_refusal(mut error: ErrorData, words: Option<&str>) -> ErrorData {
-    if let Some(words) = words {
-        if error
-            .message
-            .contains(biorouter_mcp::knowledge::tier::KB_PRIVATE_REFUSAL)
-        {
-            error.message = words.to_string().into();
-        }
+        lowered_by.as_ref(),
+    ) {
+        error.message = words.into();
     }
     error
 }
 
-/// One admitted call, paced. `call` is the session, the prefixed tool name and the capability
-/// the dispatch admitted it with, whose words a private knowledge base's refusal takes
-/// ([`kb_refusal_words`]).
+/// [`call_admitted_tool`] behind the status-check pacing
+/// (`tool_monitor::poll_pacing`): a repeated check of a job that is still
+/// running waits out the job's interval first, after every admission check and
+/// before the call, and its result says it was held. `call` is the chat's
+/// session id and the prefixed tool name the pacing keys on, then the
+/// capability the dispatch admitted the call with and the provider slot, for
+/// the words a private knowledge base's refusal takes ([`explain_kb_refusal`]).
 async fn call_paced_tool(
-    call: (&str, &str, crate::privacy::CallCapability),
+    call: (&str, &str, crate::privacy::CallCapability, &SharedProvider),
     client: &McpClientBox,
     tool_name: &str,
     arguments: Option<rmcp::model::JsonObject>,
@@ -1084,7 +1099,7 @@ async fn call_paced_tool(
     computer_permit: Option<crate::security::computer_use::ComputerUsePermit>,
 ) -> Result<rmcp::model::CallToolResult, ErrorData> {
     use crate::tool_monitor::poll_pacing;
-    let (session_id, prefixed_name, cap) = call;
+    let (session_id, prefixed_name, cap, slot) = call;
     let paced = poll_pacing::before_dispatch(
         session_id,
         prefixed_name,
@@ -1093,7 +1108,7 @@ async fn call_paced_tool(
     )
     .await;
     let _call_phase = crate::agents::phase_timing::Phase::start("mcp.call_tool");
-    let mut result = call_admitted_tool(
+    let result = call_admitted_tool(
         client,
         tool_name,
         arguments.clone(),
@@ -1101,8 +1116,11 @@ async fn call_paced_tool(
         cancellation_token,
         computer_permit,
     )
-    .await
-    .map_err(|error| explain_kb_refusal(error, kb_refusal_words(cap).as_deref()))?;
+    .await;
+    let mut result = match result {
+        Ok(result) => result,
+        Err(error) => return Err(explain_kb_refusal(error, cap, slot).await),
+    };
     poll_pacing::after_dispatch(paced, prefixed_name, arguments.as_ref(), &mut result);
     Ok(result)
 }
@@ -3877,13 +3895,10 @@ impl ExtensionManager {
         let private_content =
             self.private_content_probe(&client_name, &tool_name, arguments.as_ref(), cap);
 
+        let slot = self.provider.clone();
         let fut = async move {
             let _file_authority = file_admission;
-            tracing::debug!(
-                "dispatch_tool_call fut: calling client.call_tool tool={} session_id={}",
-                tool_name,
-                session_id
-            );
+            tracing::debug!(%tool_name, %session_id, "dispatch_tool_call: calling the tool");
             // H6 (fixed): this used to take a client-wide mutex and hold it
             // across the whole `call_tool` await, so two tool calls on the SAME
             // extension ran back-to-back — `sum(durations)` instead of
@@ -3894,7 +3909,7 @@ impl ExtensionManager {
             // where every path to a model converges. A repeated check of a
             // running job first waits out its interval (`call_paced_tool`).
             let mut result = call_paced_tool(
-                (&session_id, &prefixed_name, cap),
+                (&session_id, &prefixed_name, cap, &slot),
                 &client,
                 &tool_name,
                 arguments.clone(),
@@ -4737,29 +4752,55 @@ mod tests {
 
     /// Phase C, F-6: a private knowledge base refused in a turn whose chat was switched to a
     /// private model, or made public by a decision model, says why; every other error, and
-    /// the refusal with no words to give, is untouched.
-    #[test]
-    fn a_kb_refusal_takes_the_words_this_call_can_give() {
+    /// the refusal with no words to give, is untouched. W2-A: a bridged coding-agent turn's
+    /// capability predates the switch, so the slot, now holding a private model, decides.
+    #[tokio::test]
+    async fn a_kb_refusal_takes_the_words_this_call_can_give() {
+        use crate::privacy::{CallCapability, ProviderTier};
         let refusal = ErrorData::new(
             ErrorCode::INVALID_REQUEST,
             biorouter_mcp::knowledge::tier::KB_PRIVATE_REFUSAL,
             None,
         );
-        let next = crate::privacy::refusal::kb_refusal_explained(true, false);
-        let explained = explain_kb_refusal(refusal.clone(), next.as_deref());
+        let slot_at = |tier| -> SharedProvider { Arc::new(Mutex::new(Some(provider_at(tier)))) };
+        let public_slot = slot_at(ProviderTier::Public);
+        let private_slot = slot_at(ProviderTier::Private);
+        let public = CallCapability::for_test(ProviderTier::Public, true);
+
+        // A turn's own call, sampled after the switch.
+        let switched = CallCapability::for_test(ProviderTier::Private, true).no_wider_than(public);
+        assert!(switched.private_from_next_turn());
+        let explained = explain_kb_refusal(refusal.clone(), switched, &public_slot).await;
         assert!(explained
             .message
             .contains("takes effect from the next message"));
         assert_eq!(explained.code, refusal.code);
 
-        let decision = crate::privacy::refusal::kb_refusal_explained(false, true);
-        assert!(explain_kb_refusal(refusal.clone(), decision.as_deref())
+        // A bridged turn: its capability is the public one its grant was issued with.
+        let bridged = explain_kb_refusal(refusal.clone(), public, &private_slot).await;
+        assert!(
+            bridged
+                .message
+                .contains("takes effect from the next message"),
+            "{}",
+            bridged.message
+        );
+
+        let lowered = CallCapability::for_test_lowered_by_decision(true);
+        assert!(explain_kb_refusal(refusal.clone(), lowered, &public_slot)
+            .await
             .message
             .contains("public decision model"));
 
-        assert_eq!(explain_kb_refusal(refusal.clone(), None), refusal);
+        assert_eq!(
+            explain_kb_refusal(refusal.clone(), public, &public_slot).await,
+            refusal
+        );
         let other = ErrorData::new(ErrorCode::INTERNAL_ERROR, "the base is busy", None);
-        assert_eq!(explain_kb_refusal(other.clone(), next.as_deref()), other);
+        assert_eq!(
+            explain_kb_refusal(other.clone(), public, &private_slot).await,
+            other
+        );
     }
 
     use rmcp::model::ListPromptsResult;
