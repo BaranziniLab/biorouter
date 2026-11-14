@@ -461,6 +461,80 @@ async fn a_limit_smaller_than_one_request_says_so() -> Result<()> {
     Ok(())
 }
 
+/// A reply the limit stopped is not followed by a model naming call. This
+/// chat has spent nothing, so its spend alone leaves it free; only the gate's
+/// estimate of its first request passes the limit, as in a live chat at 0 of
+/// 30,000 tokens whose first request was estimated at 58,340 and which was
+/// still billed a `side:session_name` call. The title is the first words of
+/// the message and nothing is billed. Once the limit is lifted, a reply that
+/// runs is named by the model again.
+#[tokio::test]
+async fn a_chat_the_limit_stopped_is_not_named_by_a_model() -> Result<()> {
+    let _serial = SERIAL.lock().await;
+    let (agent, id, calls) = spendy_agent_with("New chat", Some(100)).await?;
+    usage_limit::set_for_session(
+        &agent.config.session_manager,
+        &id,
+        Some(ChatLimitOverride::Limit {
+            max_tokens: Some(50),
+            max_usd: None,
+        }),
+    )
+    .await?;
+
+    let responses = drain_with(
+        &agent,
+        config(&id, 3),
+        "Explain zebrafish fin regeneration in one short line please",
+    )
+    .await?;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "the gate stopped the reply"
+    );
+    assert!(agent.usage_limit_interrupted_reply());
+    assert!(
+        notices(&responses)
+            .iter()
+            .any(|n| n.starts_with(CHAT_LIMIT_REACHED_PREFIX)),
+        "the chat says why"
+    );
+
+    agent.maybe_rename_session(&id).await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        0,
+        "a chat the limit stopped was named by a model"
+    );
+    assert_eq!(chat_tokens(&agent, &id).await?, 0, "nothing was billed");
+    let session = agent.config.session_manager.get_session(&id, false).await?;
+    assert_eq!(
+        session.name, "Explain zebrafish fin regeneration in one short line",
+        "the title is the first words of the message"
+    );
+
+    // Lifted, the next reply runs, and the model names the chat again.
+    usage_limit::set_for_session(
+        &agent.config.session_manager,
+        &id,
+        Some(ChatLimitOverride::Unlimited),
+    )
+    .await?;
+    drain_with(&agent, config(&id, 3), "And in two lines?").await?;
+    let after_reply = calls.load(Ordering::SeqCst);
+    assert_eq!(after_reply, 1, "the lifted chat answered");
+    agent.maybe_rename_session(&id).await;
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        after_reply + 1,
+        "a chat with room is named by the model"
+    );
+    let session = agent.config.session_manager.get_session(&id, false).await?;
+    assert_eq!(session.name, "Done.");
+    Ok(())
+}
+
 #[tokio::test]
 async fn a_message_to_a_paused_chat_is_stored_and_makes_no_model_request() -> Result<()> {
     let _serial = SERIAL.lock().await;

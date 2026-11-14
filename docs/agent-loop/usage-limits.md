@@ -156,11 +156,16 @@ Other spending doors follow the same rule:
   (`side:decision:<row id>`, `SideCall::Decision`), once per decision row.
 - **Workflow generation.** The model call that turns a chat into a workflow is added to
   the chat's usage, so it counts too.
-- **Chat titles.** A chat at a limit is not named by a model. After a message the limit
-  stopped, a chat still called "New chat" gets the first words of its first message as
-  its title, and a chat that already has a title keeps it. The check is the same one the
-  turn makes before each model request (`SessionManager::maybe_update_name`). Below a
-  limit, the naming call is billed to the chat (`side:session_name`) and sees at most the
+- **Chat titles.** A chat at a limit, or whose next request is estimated past one, is not
+  named by a model. After a message the limit stopped, a chat still called "New chat" gets
+  the first words of its first message as its title, and a chat that already has a title
+  keeps it. Two checks decide it. A reply the limit stopped (the gate before a request, a
+  message sent to a paused chat, or the stop notice stored as the turn ended) makes no
+  naming call at all (`Agent::maybe_rename_session`), so a chat whose first request alone
+  was estimated past the limit is not named either. Otherwise the title asks the question
+  the composer and the prologue ask, the limit reached or the next request estimated to
+  pass it (`usage_limit::hold`, from `SessionManager::maybe_update_name`). Below a limit,
+  the naming call is billed to the chat (`side:session_name`) and sees at most the
   first 1,000 characters of each of the first three user messages, 3,000 in all
   (`providers::base::session_name_context`): sending the whole message billed a
   93K-token first message's title at 92,745 input tokens.
@@ -293,7 +298,7 @@ or reached.
 
 - `crates/biorouter/src/agents/usage_limit.rs`: the stored override, the resolver, the
   comparison, the next-request estimate (`project_request`, `estimate_next_request`,
-  `check_next`), the warning record (`announce_warning_once`), the dollar formatter, the
+  `check_next`, and `hold`, the paused state at rest), the warning record (`announce_warning_once`), the dollar formatter, the
   notice texts and the per-reply warn and stop state.
 - `crates/biorouter/src/session/session_manager/spend.rs`: `SessionManager::spend_snapshot`,
   the one spend read every check uses, and `last_request_usage`, the request an estimate
@@ -305,7 +310,8 @@ or reached.
   request, with the estimate, and before an overflow compaction, without it),
   `Agent::usage_limit_paused_notice` (the prologue), `Agent::usage_limit_turn_end_notice`
   (the end of a turn the limit did not stop) and `Agent::usage_limit_hold` (the check the
-  prologue, the end-of-turn model calls and `/compact` ask).
+  prologue, the end-of-turn model calls and `/compact` ask, through `usage_limit::hold`,
+  which a chat's title asks too).
 - `crates/biorouter/src/config/usage.rs`: the `usage:` section and its merge write.
 - `crates/biorouter-server/src/routes/usage_limit.rs` and `routes/usage.rs`: the routes.
 
