@@ -117,6 +117,36 @@ jobs:
       - name: Vendored Open Computer Use source
         run: ./scripts/check-vendored-computer-use.sh
 
+      # The vendored whisper.cpp subset (the local dictation engine, DD-3) must match
+      # its manifest both ways, be committable and exempt from end-of-line conversion,
+      # and name a pin that contains the CVE-2026-110810 loader fix. The self test
+      # proves the check fails on an edited, missing, extra or gitignored file.
+      - name: Vendored whisper.cpp source
+        run: |
+          ./scripts/check-vendored-whisper-cpp.sh
+          ./scripts/check-vendored-whisper-cpp.sh --self-test
+
+      # Dictation fixtures stay within 2.75 MiB in all, 1 MiB per file and 0.75 MiB of
+      # audio; real speech models belong in release assets. The self test proves a
+      # 1.1 MiB dummy fails.
+      - name: Dictation fixture size budget
+        run: |
+          ./scripts/check-dictation-fixtures.sh
+          ./scripts/check-dictation-fixtures.sh --self-test
+
+      # The engine's build prerequisites (DD-10 rules 7, 8, 10 and 11): cmake in the Docker
+      # builder, the hermit cmake pin, a Release CMake profile whatever the Cargo profile, no
+      # bindgen; and the crate boundaries: no engine in the Crew broker, no capture in the
+      # daemon. Read from Cargo.lock, because this job has no Rust toolchain. The self tests of
+      # the two Python checks that the nightly and the package smokes run cost milliseconds, so
+      # a broken checker shows itself on the pull request instead of the night after.
+      - name: Dictation build prerequisites
+        run: |
+          ./scripts/check-dictation-build-prereqs.sh
+          ./scripts/check-dictation-build-prereqs.sh --self-test
+          python3 -I scripts/check-windows-imports.py --self-test
+          python3 -I scripts/check-dictation-status-json.py --self-test
+
   # ── 2. Cross COMPILE gate — the BR-70 core. Docker, the SAME images/flags as
   #      scripts/release.sh (both source scripts/cross-env.sh). ubuntu-latest is
   #      just the docker HOST; the TARGET triple is what is being proven.
@@ -605,6 +635,25 @@ jobs:
           # mounts there.
           grep -q 'src="./assets/' src/web/index.html
           ! grep -q 'src="/assets/' src/web/index.html
+          worklet=$(find src/web/assets -maxdepth 1 -type f -name '*pcmCapture*.js' -print -quit)
+          [ -n "$worklet" ] || { echo 'the PCM capture worklet was inlined or omitted'; exit 1; }
+          worklet_ref=0
+          for chunk in src/web/assets/*.js; do
+            [ "$chunk" = "$worklet" ] && continue
+            if grep -qF "$(basename "$worklet")" "$chunk"; then worklet_ref=1; break; fi
+          done
+          [ "$worklet_ref" = 1 ] \
+            || { echo 'the web bundle does not reference the PCM capture worklet file'; exit 1; }
+
+      # The served dictation step below drives Chromium and Firefox with fake audio, and
+      # Firefox reads it through a PulseAudio server that step starts when none answers.
+      - name: Install Playwright browsers and the audio server for served dictation
+        if: matrix.shard == 3 && !cancelled()
+        working-directory: ui/desktop
+        run: |
+          set -euo pipefail
+          sudo apt-get install --yes --no-install-recommends pulseaudio pulseaudio-utils
+          npx playwright install --with-deps chromium firefox
 
       - name: Serve, and check the whole browser contract
         if: matrix.shard == 3 && !cancelled()
@@ -709,6 +758,47 @@ jobs:
           ! curl -s -o /dev/null --max-time 5 http://127.0.0.1:18777/status \
             || fail 'the daemon outlived serve'
           echo 'the browser contract holds'
+
+      - name: Served microphone and dictation in Chromium and Firefox
+        if: matrix.shard == 3 && !cancelled()
+        working-directory: ui/desktop
+        env:
+          BIOROUTER_SERVE_BIN: ${{ github.workspace }}/target/debug/biorouter
+          BIOROUTER_PW_CHANNEL: chromium
+        run: |
+          set -euo pipefail
+          pulse_pid=
+          pulse_start=
+          pulse_start_of() {
+            [ -r "/proc/$1/stat" ] || return 1
+            sed 's/^.*) //' "/proc/$1/stat" | awk '{print $20}'
+          }
+          stop_owned_pulse() {
+            if [ -n "$pulse_pid" ] &&
+               [ "$(pulse_start_of "$pulse_pid" 2>/dev/null || true)" = "$pulse_start" ] &&
+               [ "$(cat "/proc/$pulse_pid/comm" 2>/dev/null || true)" = pulseaudio ]; then
+              kill -TERM "$pulse_pid" 2>/dev/null || true
+              wait "$pulse_pid" || true
+            fi
+          }
+          trap stop_owned_pulse EXIT
+          if ! pactl info >/dev/null 2>&1; then
+            export XDG_RUNTIME_DIR="$RUNNER_TEMP/serve-pulse-runtime"
+            mkdir -p "$XDG_RUNTIME_DIR"
+            chmod 700 "$XDG_RUNTIME_DIR"
+            pulseaudio --daemonize=no --exit-idle-time=-1 > "$RUNNER_TEMP/serve-pulse.log" 2>&1 &
+            pulse_pid=$!
+            pulse_start="$(pulse_start_of "$pulse_pid")"
+            [ -n "$pulse_start" ] || { echo 'FAILED: Firefox audio server process not recorded'; exit 1; }
+            printf '%s %s\n' "$pulse_pid" "$pulse_start" > "$RUNNER_TEMP/serve-pulse-owned.pid"
+            for _ in $(seq 1 50); do
+              if pactl info >/dev/null 2>&1; then break; fi
+              if ! kill -0 "$pulse_pid" 2>/dev/null; then break; fi
+              sleep 0.2
+            done
+            pactl info >/dev/null 2>&1 || { echo 'FAILED: Firefox audio server unavailable'; exit 1; }
+          fi
+          npx playwright test tests/e2e/serve-app-microphone.spec.ts tests/e2e/serve-dictation.spec.ts --reporter=list
 
   # The required check `test (ubuntu-latest)`. A gate rather than a test job:
   # it fails unless every ubuntu job above passed (a job a `schedule` run skips
@@ -827,6 +917,88 @@ jobs:
           BIOROUTER_DISABLE_KEYRING: "true"
         run: cargo test --workspace --lib --bins --locked --no-fail-fast
 
+      # Minimum macOS of the backends (dictation plan, DD-11). .cargo/config.toml
+      # sets MACOSX_DEPLOYMENT_TARGET=12.0 for every cargo build; without it rustc
+      # stamps 11.0 while the `cc` crate compiles C at the SDK's version, and a
+      # strong import newer than the Mac makes dyld refuse the whole binary. The
+      # self test proves the check fails on a binary built with the variable
+      # cleared, and that the config file is what carries it.
+      #
+      # Full suite only: it reuses the unit graph the lib + bins step above
+      # builds, and a change that could move the floor (the toolchain or
+      # .cargo/config.toml) selects the full suite, as does every dispatch of
+      # this workflow for an engine change (CLAUDE.md, Local dictation).
+      #
+      # The binaries checked are the real `biorouterd` and `biorouter`, not the
+      # test executables the step above linked for those bin targets. A test
+      # executable's entry point is the test runner, so the linker's dead
+      # stripping drops every path only `main` reaches, and that path's imports
+      # with it: measured on 2026-11-05, the `biorouter` test executable had 148
+      # imports and the real binary 434. Engine code that only the real worker
+      # entry reaches would vanish the same way, strong imports included.
+      #
+      # cargo builds a package's bins for its integration tests, inside the unit
+      # graph of the step above (the same workspace features, dev-dependencies
+      # included, and the same test profile). So asking for one small std-only
+      # integration test per package, the two sandbox guards, compiles only the
+      # bin targets of those two packages and the two tests again. A plain
+      # `cargo build` would resolve
+      # features without the dev-dependencies, use the dev profile's debug info,
+      # and compile most of the graph a second time. A renamed guard makes cargo
+      # fail here ("no test target named"), not pass.
+      #
+      # They are unstripped, but --require-imports holds either way: the check
+      # reads a stripped binary's imports with nm, which is how release.sh's
+      # build_mac_backends and verify check the stripped binaries that ship.
+      - name: Backends declare macOS 12.0
+        if: ${{ !cancelled() && steps.suite.outputs.full == 'true' }}
+        timeout-minutes: 15
+        shell: bash
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: |
+          set -euo pipefail
+          scripts/check-macos-deployment.sh --self-test
+          cargo test --workspace --locked --no-run --message-format=json \
+            --test every_test_binary_is_sandboxed --test cli_test_binaries_are_sandboxed \
+            > "$RUNNER_TEMP/backend-artifacts.jsonl"
+          python3 - "$RUNNER_TEMP/backend-artifacts.jsonl" > "$RUNNER_TEMP/backend-executables" <<'PY'
+          import json, sys
+          found = {}
+          with open(sys.argv[1], encoding="utf-8") as artifacts:
+              for line in artifacts:
+                  try:
+                      message = json.loads(line)
+                  except ValueError:
+                      continue
+                  if message.get("reason") != "compiler-artifact" or not message.get("executable"):
+                      continue
+                  target = message["target"]
+                  # The real executable: a bin target built as a program, not as a test.
+                  if ("bin" in target["kind"] and target["name"] in ("biorouterd", "biorouter")
+                          and not message["profile"]["test"]):
+                      found[target["name"]] = message["executable"]
+          if set(found) != {"biorouterd", "biorouter"}:
+              sys.exit(f"expected the biorouterd and biorouter executables, found {sorted(found)}")
+          for name in sorted(found):
+              print(found[name])
+          PY
+          xargs scripts/check-macos-deployment.sh --require-imports < "$RUNNER_TEMP/backend-executables"
+
+      # The dictation engine's offline tests, the real `biorouterd`'s worker roles (PR-09:
+      # capture and an unknown role answer 2, and the self test decodes jfk.wav with the
+      # vendored fixtures), and the real engine worker under the real supervisor with
+      # `biorouter dictation status` (PR-10: frames on real pipes, a killed worker, a
+      # refused header, the managed policy). Ubuntu runs the three binaries in the offline
+      # integration step; this is their run on macOS, with Metal. Full suite only, like
+      # the lib + bins step whose unit graph `--workspace` keeps, so only biorouterd and
+      # the three tests are compiled again.
+      - name: cargo test (dictation engine, worker roles and supervisor)
+        if: ${{ !cancelled() && steps.suite.outputs.full == 'true' }}
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: cargo test --workspace --test dictation_engine_offline --test dictation_worker_role --test dictation_worker --locked --no-fail-fast
+
       - name: cargo test (sandbox integration)
         if: ${{ !cancelled() }}
         env:
@@ -935,6 +1107,21 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
+      # The dictation engine's offline tests, the real `biorouterd`'s worker roles (PR-09:
+      # capture and an unknown role answer 2, and the self test decodes jfk.wav with the
+      # vendored fixtures), and the real engine worker under the real supervisor with
+      # `biorouter dictation status` (PR-10: frames on real pipes, a killed worker, a
+      # refused header, the managed policy). Ubuntu runs the three binaries in the offline
+      # integration step; this is their run on the MSVC leg, which is where M-3 is decided
+      # (`MSVC_NATIVE` in crates/biorouter-dictation/build.rs). Full suite only, like the lib
+      # + bins step whose unit graph `--workspace` keeps, so only biorouterd and the three
+      # tests are compiled again.
+      - name: cargo test (dictation engine, worker roles and supervisor)
+        if: ${{ !cancelled() && steps.suite.outputs.full == 'true' }}
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        run: cargo test --workspace --test dictation_engine_offline --test dictation_worker_role --test dictation_worker --locked --no-fail-fast
+
       - name: cargo test (sandbox integration and bounded_fs)
         if: ${{ !cancelled() }}
         env:
@@ -989,6 +1176,21 @@ jobs:
           . scripts/cross-env.sh
           cross_linux   "cargo build --release --bin biorouterd --bin biorouter --bin biorouter-crew"
           cross_windows "cargo build --release --bin biorouterd --bin biorouter" "" "$WIN_DLL_STAGE"
+
+      # For windows-native-dictation below: the exes and the runtime DLLs the release stages
+      # beside them, exactly as this job's release command built them. Uploaded before the
+      # Linux checks that follow, so a red Linux step never hides the Windows result.
+      - name: Keep the mingw binaries for the native Windows run
+        uses: actions/upload-artifact@v4
+        with:
+          name: mingw-binaries
+          path: |
+            target/x86_64-pc-windows-gnu/release/biorouter.exe
+            target/x86_64-pc-windows-gnu/release/biorouterd.exe
+            target/x86_64-pc-windows-gnu/release/*.dll
+          if-no-files-found: error
+          retention-days: 3
+
       - name: Assert the glibc floor (2.31 / bullseye) is not raised
         run: ./scripts/check-glibc-floor.sh
 
@@ -1036,6 +1238,10 @@ jobs:
       # scripts/cross-env.sh). Its apt mirrors are what make the install step
       # work; when Debian 11 finally leaves them, this image moves forward
       # together with that pin, not on its own.
+      #
+      # The dictation self test (DD-12) runs here too: the engine loads the
+      # vendored test model and voice detector and decodes jfk.wav, offline, on
+      # the oldest glibc we ship to.
       - name: Boot all Linux binaries on the oldest supported distro
         env:
           DEB_PACKAGES: ${{ steps.runtime-deps.outputs.deb_packages }}
@@ -1046,8 +1252,241 @@ jobs:
             apt-get install -y --no-install-recommends $DEB_PACKAGES
             /w/target/x86_64-unknown-linux-gnu/release/biorouter --version
             /w/target/x86_64-unknown-linux-gnu/release/biorouterd --version
+            bash /w/scripts/dictation-self-test.sh --fixtures /w/vendor/whisper.cpp/source --expect-backend cpu /w/target/x86_64-unknown-linux-gnu/release/biorouter /w/target/x86_64-unknown-linux-gnu/release/biorouterd
             test -x /w/target/x86_64-unknown-linux-gnu/release/biorouter-crew
             crew_version=$(/w/target/x86_64-unknown-linux-gnu/release/biorouter-crew --version)
             case "$crew_version" in "biorouter-crew "*) ;; *) exit 1 ;; esac
             /w/target/x86_64-unknown-linux-gnu/release/biorouter-crew --help
           '
+
+      # The engine's ggml code is compiled for x86-64-v3 (AVX2, FMA, F16C, BMI2). On a
+      # processor without them, both binaries must still start, and the dictation self test
+      # must answer exit 20 with the MSG-CPU sentence instead of dying on SIGILL. A compiler
+      # that vectorizes a static initializer would break `--version` for every user of such a
+      # processor, before any check of ours runs. The self test first proves each step can
+      # fail. The last step reads `biorouter dictation status --format json` under the old
+      # processor: `unsupported_cpu`, with `avx2` among the missing features.
+      - name: Old processors get a sentence, not a crash (DD-12)
+        run: |
+          set -euo pipefail
+          ./scripts/check-dictation-isa.sh --self-test
+          ./scripts/check-dictation-isa.sh
+
+      # whisper.cpp is C++. A mingw link that takes libstdc++, libgcc, winpthreads or OpenMP
+      # as a DLL starts here and fails on a user's machine with a loader dialog (DD-10 rules
+      # 3 to 5). Measured on the shipped v1.94.1 binaries, built without the engine: both
+      # import only system DLLs, so the script carries no allowance.
+      - name: Windows binaries import only system DLLs
+        run: |
+          set -euo pipefail
+          python3 -I scripts/check-windows-imports.py --self-test
+          python3 -I scripts/check-windows-imports.py target/x86_64-pc-windows-gnu/release/biorouter.exe target/x86_64-pc-windows-gnu/release/biorouterd.exe
+
+      # P-10: the terminal's microphone code is a crate only biorouter-cli depends on, but the
+      # release command above builds both binaries in one Cargo invocation, which unifies
+      # features across them. So the daemon is checked as that command built it: no
+      # PulseAudio library name in its bytes, the hidden capture role refused with exit 2 on
+      # the oldest supported distro, and no capture crate in its dependency tree. The CLI must
+      # carry capture, loaded at run time: the names are in it and DT_NEEDED holds no sound
+      # library (DD-73). release.sh verify runs the same checks on the release's own build.
+      - name: Capture is absent from the daemon (P-10)
+        env:
+          DEB_PACKAGES: ${{ steps.runtime-deps.outputs.deb_packages }}
+        run: |
+          set -euo pipefail
+          linux=target/x86_64-unknown-linux-gnu/release
+          for daemon in "$linux/biorouterd" target/x86_64-pc-windows-gnu/release/biorouterd.exe; do
+            count=$(strings -a "$daemon" | grep -c libpulse || true)
+            if [ "$count" != 0 ]; then
+              echo "$daemon names libpulse $count times: capture code reached the daemon"
+              exit 1
+            fi
+          done
+          strings -a "$linux/biorouter" | grep -q 'libpulse.so.0' \
+            || { echo "biorouter carries no capture code"; exit 1; }
+          for bin in biorouter biorouterd; do
+            if readelf -d "$linux/$bin" | grep -E 'NEEDED.*(libasound|libpulse)'; then
+              echo "$bin links a sound library at load time"
+              exit 1
+            fi
+          done
+          code=$(docker run --rm -e DEB_PACKAGES -v "$PWD":/w debian:bullseye sh -c '
+            apt-get update -q >/dev/null
+            apt-get install -y --no-install-recommends $DEB_PACKAGES >/dev/null
+            /w/target/x86_64-unknown-linux-gnu/release/biorouterd __br-dictation-worker capture </dev/null >/dev/null 2>&1
+            echo $?' | tail -1)
+          if [ "$code" != 2 ]; then
+            echo "biorouterd __br-dictation-worker capture exited $code, expected 2"
+            exit 1
+          fi
+          tree=$(cargo tree --locked -p biorouter-server --features local-dictation -e normal,build --prefix none --color never)
+          grep -q '^biorouter-dictation ' <<< "$tree" \
+            || { echo "cargo tree listed no biorouter-dictation, so the check read nothing"; exit 1; }
+          if grep -q '^biorouter-dictation-capture ' <<< "$tree"; then
+            echo "biorouter-server depends on biorouter-dictation-capture"
+            exit 1
+          fi
+
+  # The shipped mingw binaries run the dictation self test on real Windows (M-1), with the
+  # fixtures in a folder whose path is not ASCII. whisper.cpp turns UTF-8 paths into UTF-16
+  # only under MSVC, so a mingw build that handed it a path would fail here; Biorouter opens
+  # the files itself. The folder name is built from a code point so this file stays ASCII.
+  # The real model run of M-1 (installed under such a folder, then `transcribe jfk.wav`)
+  # joined with PR-12; it is the job's last step.
+  #
+  # `!cancelled()`: it runs whenever the artifact exists, even when a Linux check of
+  # cross-build-nightly failed after the upload. When the build itself failed there is no
+  # artifact, and the download step fails on its own.
+  windows-native-dictation:
+    needs: cross-build-nightly
+    if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: mingw-binaries
+          path: mingw-binaries
+      - name: Self test of the mingw biorouter.exe and biorouterd.exe from a folder whose path is not ASCII
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:GITHUB_WORKSPACE 'vendor\whisper.cpp\source'
+          $folder = Join-Path $env:RUNNER_TEMP ('dictation-Jos' + [char]0x00E9)
+          New-Item -ItemType Directory -Force -Path $folder | Out-Null
+          $model = Join-Path $folder 'for-tests-ggml-base.en.bin'
+          $vad = Join-Path $folder 'for-tests-silero-v6.2.0-ggml.bin'
+          $wav = Join-Path $folder 'jfk.wav'
+          Copy-Item -LiteralPath (Join-Path $source 'models\for-tests-ggml-base.en.bin') -Destination $model
+          Copy-Item -LiteralPath (Join-Path $source 'models\for-tests-silero-v6.2.0-ggml.bin') -Destination $vad
+          Copy-Item -LiteralPath (Join-Path $source 'samples\jfk.wav') -Destination $wav
+          Write-Host "fixtures in $folder"
+          foreach ($name in @('biorouter.exe', 'biorouterd.exe')) {
+            $exe = Join-Path $env:GITHUB_WORKSPACE "mingw-binaries\$name"
+            $errFile = Join-Path $env:RUNNER_TEMP "$name.self-test.err"
+            $out = @(& $exe __br-dictation-worker self-test --model $model --vad $vad --wav $wav 2> $errFile)
+            $code = $LASTEXITCODE
+            $lines = @($out | ForEach-Object { "$_".TrimEnd("`r") } | Where-Object { $_ -ne '' })
+            if ($code -ne 0 -or $lines.Count -ne 1 -or -not $lines[0].Contains('"selftest":"ok"') -or -not $lines[0].Contains('"backend":"cpu"')) {
+              Get-Content -LiteralPath $errFile -ErrorAction SilentlyContinue | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
+              throw "$name dictation self test failed: exit $code, stdout: $($lines -join ' | ')"
+            }
+            Write-Host "${name}: $($lines[0])"
+          }
+          # The daemon never captures audio (P-10): the capture role answers 2 in biorouterd.
+          $daemon = Join-Path $env:GITHUB_WORKSPACE 'mingw-binaries\biorouterd.exe'
+          & $daemon __br-dictation-worker capture
+          if ($LASTEXITCODE -ne 2) {
+            throw "biorouterd.exe __br-dictation-worker capture exited $LASTEXITCODE, expected 2"
+          }
+          Write-Host 'biorouterd.exe answers the capture role with exit 2'
+          exit 0
+
+      # PR-10 on real Windows: `biorouter dictation status --verbose` starts the engine
+      # worker over its pipes (frames on stdout, the tokio spawner, the peak working set
+      # through K32GetProcessMemoryInfo) and reads its hello. Schema 1, no model; the probe
+      # worker says protocol 1 and exits 0 at end of file. From PR-25 the terminal's
+      # microphone comes from the capture child's probe, which a hosted runner answers
+      # honestly with no microphone: `no_device` from WASAPI with no input, or
+      # `no_audio_system` when the audio service does not answer; `dictation devices
+      # --format json` must give the same answer.
+      - name: dictation status --verbose of the mingw biorouter.exe
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'dictation-status-root'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          $env:BIOROUTER_PATH_ROOT = $root
+          $env:BIOROUTER_DISABLE_KEYRING = 'true'
+          $cli = Join-Path $env:GITHUB_WORKSPACE 'mingw-binaries\biorouter.exe'
+          $file = Join-Path $env:RUNNER_TEMP 'dictation-status.json'
+          $errFile = Join-Path $env:RUNNER_TEMP 'dictation-status.err'
+          $out = @(& $cli dictation status --format json --verbose 2> $errFile)
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Get-Content -LiteralPath $errFile -ErrorAction SilentlyContinue | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
+            throw "biorouter.exe dictation status --format json --verbose exited $code"
+          }
+          [System.IO.File]::WriteAllText($file, ($out -join "`n"))
+          python -I scripts/check-dictation-status-json.py --expect-no-models $file
+          if ($LASTEXITCODE -ne 0) { throw 'the dictation status of biorouter.exe is not schema 1' }
+          $status = Get-Content -Raw -LiteralPath $file | ConvertFrom-Json
+          if ($status.probe.hello.protocol -ne 1 -or $status.probe.exit_code -ne 0) {
+            throw "the probe worker did not say hello with protocol 1 and exit 0: $($status.probe | ConvertTo-Json -Compress -Depth 4)"
+          }
+          if ($status.capture.available -ne $false -or @('no_device', 'no_audio_system') -notcontains $status.capture.reason) {
+            throw "a hosted runner has no microphone, but the capture probe answered $($status.capture | ConvertTo-Json -Compress)"
+          }
+          $devicesOut = @(& $cli dictation devices --format json 2> $errFile)
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content -LiteralPath $errFile -ErrorAction SilentlyContinue | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
+            throw "biorouter.exe dictation devices --format json exited $LASTEXITCODE"
+          }
+          $devices = ($devicesOut -join "`n") | ConvertFrom-Json
+          if ($devices.schema -ne 1 -or $devices.available -ne $false -or $devices.reason -ne $status.capture.reason) {
+            throw "dictation devices disagrees with the status: $($devices | ConvertTo-Json -Compress)"
+          }
+          Write-Host "biorouter.exe capture probe: $($status.capture.reason) ($($status.capture.backend))"
+          Write-Host "biorouter.exe dictation status: engine $($status.engine.state), worker hello protocol $($status.probe.hello.protocol), exit $($status.probe.exit_code)"
+
+      # M-1's real model run (PR-12, DD-94: `transcribe`'s gate lands with it). The shipped
+      # installer puts `whisper-small.en-q8_0` and its voice detector, from A-1's releases,
+      # under a BIOROUTER_PATH_ROOT whose path is not ASCII, and `transcribe jfk.wav` must
+      # give the JFK sentence, case and punctuation aside. The engine opens the model, and
+      # the detector by its bare name inside its folder, under that path; this is the one
+      # check of that on real Windows. The downloaded files are cached in an ASCII folder
+      # by the catalog's pins and installed from there with `--from` on a hit, so most runs
+      # download nothing and every run still goes through the installer's verification.
+      - name: Restore the Light model and its voice detector
+        id: m1-models
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}\m1-models
+          key: dictation-m1-windows-small-en-${{ hashFiles('crates/biorouter-dictation/src/catalog.rs') }}
+      - name: transcribe jfk.wav with the real Light model under a path that is not ASCII
+        shell: pwsh
+        env:
+          CACHE_HIT: ${{ steps.m1-models.outputs.cache-hit }}
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP ('dictation-Jos' + [char]0x00E9 + '-m1')
+          $cache = Join-Path $env:RUNNER_TEMP 'm1-models'
+          New-Item -ItemType Directory -Force -Path $root, $cache | Out-Null
+          $env:BIOROUTER_PATH_ROOT = $root
+          $env:BIOROUTER_DISABLE_KEYRING = 'true'
+          $cli = Join-Path $env:GITHUB_WORKSPACE 'mingw-binaries\biorouter.exe'
+          $errFile = Join-Path $env:RUNNER_TEMP 'm1.err'
+          if ($env:CACHE_HIT -eq 'true') {
+            & $cli dictation install --yes --from $cache 2> $errFile
+          } else {
+            & $cli dictation install --yes whisper-small.en-q8_0 2> $errFile
+          }
+          if ($LASTEXITCODE -ne 0) {
+            Get-Content -LiteralPath $errFile -ErrorAction SilentlyContinue | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
+            throw "biorouter.exe dictation install exited $LASTEXITCODE"
+          }
+          if ($env:CACHE_HIT -ne 'true') {
+            Get-ChildItem -LiteralPath $root -Recurse -File -Filter '*.bin' | ForEach-Object {
+              Copy-Item -LiteralPath $_.FullName -Destination $cache
+            }
+          }
+          $jfk = Join-Path $env:GITHUB_WORKSPACE 'vendor\whisper.cpp\source\samples\jfk.wav'
+          $out = @(& $cli transcribe $jfk --model whisper-small.en-q8_0 --format json 2> $errFile)
+          $code = $LASTEXITCODE
+          if ($code -ne 0) {
+            Get-Content -LiteralPath $errFile -ErrorAction SilentlyContinue | Select-Object -Last 40 | ForEach-Object { Write-Host $_ }
+            throw "biorouter.exe transcribe exited $code, stdout: $($out -join ' ')"
+          }
+          $transcript = ($out -join "`n") | ConvertFrom-Json
+          $words = { param($text) (($text.ToLowerInvariant() -split '[^a-z0-9]+') | Where-Object { $_ -ne '' }) -join ' ' }
+          $expected = & $words 'And so my fellow Americans, ask not what your country can do for you, ask what you can do for your country.'
+          $got = & $words $transcript.text
+          if ($got -ne $expected) {
+            throw "transcribe gave '$($transcript.text)', not the JFK sentence"
+          }
+          Write-Host "biorouter.exe transcribe under $root on $($transcript.timings.backend): $($transcript.text)"
+          Write-Host "timings: $($transcript.timings | ConvertTo-Json -Compress)"
+      - name: Save the Light model and its voice detector
+        if: success() && steps.m1-models.outputs.cache-hit != 'true' && github.ref == 'refs/heads/main'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}\m1-models
+          key: dictation-m1-windows-small-en-${{ hashFiles('crates/biorouter-dictation/src/catalog.rs') }}

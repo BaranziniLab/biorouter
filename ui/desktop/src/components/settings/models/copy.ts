@@ -272,6 +272,93 @@ export const localModelsCopy = {
   pullFailed: (tag: string, reason: string) => `Ollama could not pull ${tag}: ${reason}`,
 } as const;
 
+/**
+ * The labels of **Settings > Models > Speech models** (DD-66, PR-18). The section's sentences (the
+ * privacy line, the policy note, every warning and result, and the help of the section and of its
+ * Model folder, Language, Microphone and Speed rows, MSG-SETTINGS-HELP to MSG-SPEED-HELP) are the
+ * dictation message catalog's, in `components/dictation/copy.ts`, which `copy.test.ts` holds to
+ * `docs/dictation/surfaces.md`; what is here are names, button labels and short status words, none
+ * of them a sentence.
+ */
+export const speechModelsCopy = {
+  section: 'Speech models',
+  install: 'Install',
+  update: 'Update',
+  use: 'Use',
+  remove: 'Remove',
+  cancel: 'Cancel',
+  /** The quiet word an installed row shows at rest; the ⋯ takes its place on hover. */
+  inUse: 'In use',
+  installed: 'Installed',
+  more: (name: string) => `More actions for ${name}`,
+  /** `574 MB`: decimal megabytes, the unit MSG-SETUP and the release page use. */
+  megabytes: (bytes: number) => `${Math.round(bytes / 1_000_000).toLocaleString()} MB`,
+  englishOnly: 'English only',
+  manyLanguages: 'Many languages',
+  recommended: 'Recommended for this computer',
+  /** The daemon's suitability words (DD-22), shown only when they warn. */
+  suitability: {
+    too_slow: 'Slow on this computer',
+    below_minimum: 'Below its memory minimum',
+    unsupported_cpu: 'Not supported by this processor',
+  },
+  superseded: 'A newer revision exists',
+  notAllowed: 'Not allowed by your organization',
+  managed: 'Managed by your organization',
+  /** A copy this account did not install, which Remove cannot reach (DD-19). */
+  location: {
+    system: 'In the shared folder',
+    managed: 'In your organization’s folder',
+    env: 'In the BIOROUTER_DICTATION_MODELS_DIR folder',
+  },
+  downloading: (percent: number, done: string, total: string) =>
+    `Downloading ${percent}% · ${done} of ${total}`,
+  /** A download with no count yet (the installer is connecting). */
+  downloadingUncounted: 'Downloading…',
+  verifying: 'Checking it against its pin…',
+  starting: 'Starting the download…',
+  cancelling: 'Cancelling…',
+  removing: 'Removing…',
+  switching: 'Switching…',
+  /** The confirmations; their sentences are MSG-TURBO-CPU and its kin, and MSG-REMOVE-CONFIRM. */
+  confirmInstallTitle: 'Install this speech model?',
+  confirmRemoveTitle: 'Remove this speech model?',
+  folder: 'Model folder',
+  /** The folder row's second line: the path, then whose folder it is. */
+  account: (user: string) => `account ${user}`,
+  showInFinder: 'Show in Finder',
+  showInExplorer: 'Show in Explorer',
+  showInFolder: 'Show in folder',
+  rescan: 'Rescan',
+  /** A placed voice detector in a Rescan result: the catalog's own name, with its version after it. */
+  voiceDetector: 'Silero voice detector',
+  language: 'Language',
+  autoLanguage: 'Detect automatically',
+  microphone: 'Microphone',
+  systemDefault: 'System default',
+  /** A device the browser lists without a name (before the first microphone permission). */
+  unnamedMicrophone: (index: number) => `Microphone ${index}`,
+  testMicrophone: 'Test microphone',
+  listening: (seconds: number) => `Listening… ${seconds} s`,
+  level: 'Microphone level',
+  heard: 'Sound detected',
+  speed: 'Speed',
+  testSpeed: 'Test speed',
+  testing: 'Testing…',
+  /** MSG-BENCH's `<backend>`. */
+  backend: { metal: 'Metal', cpu: 'CPU' } as Record<string, string>,
+  /** MSG-BENCH's `<suitability>`, in words. */
+  suitabilityWord: {
+    recommended: 'recommended',
+    suitable: 'suitable',
+    too_slow: 'too slow for dictation',
+    below_minimum: 'below its memory minimum',
+    unsupported_cpu: 'not supported',
+    unknown: 'not rated',
+  } as Record<string, string>,
+  retry: 'Retry',
+} as const;
+
 export const modelsDangerCopy = {
   section: 'Danger zone',
   row: 'Reset provider and model',

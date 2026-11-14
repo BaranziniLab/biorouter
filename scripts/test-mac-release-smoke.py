@@ -10,7 +10,9 @@ import unittest
 
 
 SOURCE = Path(__file__).with_name('smoke-test-release-artifacts.sh').read_text()
-MAC_SMOKE = SOURCE[SOURCE.index('smoke_mac()'):SOURCE.index('LINUX_DESKTOP_SMOKE=')]
+# From the microphone check (its sentence and `mac_microphone_problems`, which
+# `smoke_mac` calls) to the end of `smoke_mac`.
+MAC_SMOKE = SOURCE[SOURCE.index('MAC_MICROPHONE_USAGE='):SOURCE.index('LINUX_DESKTOP_SMOKE=')]
 
 STUBS = r'''
 trace() { printf '%s\n' "$*" >>"$CASE_ROOT/trace"; }
@@ -40,7 +42,28 @@ hdiutil() {
     rm -f "$mount/.fixture-attached"
   fi
 }
-codesign() { trace "codesign $*"; [ "$MODE" != codesign ] || return 37; }
+codesign() {
+  trace "codesign $*"
+  if [ "$1" = -d ]; then
+    # The signed entitlements, as `codesign -d --entitlements - --xml` prints them.
+    # Mode `entitlement` drops audio input from the helper alone, so the check
+    # has to find and name one file of the four.
+    printf '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>'
+    [ "$MODE" = entitlement ] && [[ "${@: -1}" == *'Biorouter Helper.app' ]] \
+      || printf '<key>com.apple.security.device.audio-input</key><true/>'
+    printf '</dict></plist>\n'
+    return 0
+  fi
+  [ "$MODE" != codesign ] || return 37
+}
+plutil() {
+  trace "plutil $*"
+  if [ "$MODE" = usage ]; then
+    printf 'This app needs access to the microphone\n'
+  else
+    printf '%s\n' "$MAC_MICROPHONE_USAGE"
+  fi
+}
 spctl() { trace "spctl $*"; [ "$MODE" != spctl ] || return 37; }
 xcrun() { trace "xcrun $*"; [ "$MODE" != stapler ] || return 37; }
 arch() {
@@ -49,6 +72,18 @@ arch() {
   [[ "$*" != *--version* ]] || /usr/bin/env "$@"
 }
 file() { trace "file $*"; [ "$MODE" != architecture ] && printf 'arm64 x86_64\n'; }
+# The dictation guards (PR-11) live outside the slice above: the size ceiling and the
+# model scan are traced, and the self test is answered for the fixture's absent repo.
+check_dictation_size() { trace "size $*"; }
+scan_ggml() { trace "scan $*"; }
+sw_vers() { printf '15.0\n'; }
+bash() {
+  if [ "$1" = "$ROOT/scripts/dictation-self-test.sh" ]; then
+    trace "dictation self test ${*:2}"
+    return 0
+  fi
+  command bash "$@"
+}
 python3() {
   if [ "$1" = "$ROOT/scripts/computer-use-runtime.py" ]; then
     trace "helper $*"
@@ -58,7 +93,7 @@ python3() {
     local code
     code="$(cat)"
     printf '%s\n' 'import os; os.kill = lambda pid, signal: None' "$code" | "$REAL_PYTHON" "$@"
-  elif [ "$MODE" = runtime-read-failure ]; then
+  elif [ "$MODE" = runtime-read-failure ] && [[ "$*" == *runtime.json* ]]; then
     return 37
   else
     "$REAL_PYTHON" "$@"
@@ -167,7 +202,10 @@ class MacReleaseSmoke(unittest.TestCase):
             self.assertTrue(all('preexisting' not in line for line in trace))
             signals = [line.split() for line in trace if line.startswith('kill ')]
             if signals:
-                app_pid = next(parts[2] for parts in signals if parts[1] == '-0')
+                # The app's pid: the one `kill -0` polls, or, when a startup prompt ended
+                # the wait before any poll, the first one stopped.
+                app_pid = next((parts[2] for parts in signals if parts[1] == '-0'),
+                               signals[0][2])
                 self.assertTrue(all(parts[2] in {app_pid, '425001', '425002'}
                                     for parts in signals), signals)
                 launch = next(line for line in trace if line.startswith('launch '))
@@ -177,14 +215,23 @@ class MacReleaseSmoke(unittest.TestCase):
             return result, trace
 
     def test_early_artifact_failures_clean_only_owned_paths_and_preserve_status(self):
-        for mode in ('helper', 'codesign', 'spctl', 'stapler', 'rosetta',
-                     'architecture', 'cli-version', 'daemon-version'):
+        for mode in ('helper', 'codesign', 'spctl', 'stapler', 'entitlement', 'usage',
+                     'rosetta', 'architecture', 'cli-version', 'daemon-version'):
             with self.subTest(mode=mode):
                 result, trace = self.run_fixture(mode, 'x64')
                 self.assertEqual(result.returncode, 37 if mode in
                                  ('helper', 'codesign', 'spctl', 'stapler') else 1, result.stderr)
                 self.assertFalse(any(line.startswith(('launch ', 'kill ')) for line in trace))
                 self.assertEqual(sum(line.startswith('hdiutil detach') for line in trace), 1)
+
+    def test_microphone_failures_name_what_is_missing(self):
+        result, _ = self.run_fixture('entitlement')
+        self.assertIn('arm64 microphone: ', result.stderr)
+        self.assertIn('Contents/Frameworks/Biorouter Helper.app', result.stderr)
+        self.assertEqual(result.stderr.count('audio-input is not in the signed'), 1, result.stderr)
+        result, _ = self.run_fixture('usage')
+        self.assertIn('arm64 microphone: NSMicrophoneUsageDescription is '
+                      '"This app needs access to the microphone"', result.stderr)
 
     def test_both_architectures_keep_native_checks_and_disposable_mock_keychain(self):
         for arch in ('arm64', 'x64'):
@@ -198,8 +245,24 @@ class MacReleaseSmoke(unittest.TestCase):
                 self.assertIn('KEYRING=true', launch)
                 self.assertIn('--user-data-dir=', launch)
                 self.assertIn('-u BIOROUTER_PATH_ROOT -u BIOROUTER_DEV_PROFILE_ROOT', launch)
-                for check in ('helper ', 'codesign ', 'spctl ', 'xcrun ', 'file ', 'version '):
+                for check in ('helper ', 'codesign ', 'spctl ', 'xcrun ', 'plutil ', 'file ',
+                              'version ', 'scan ', 'dictation self test '):
                     self.assertTrue(any(line.startswith(check) for line in trace), trace)
+                # Both shipped binaries are held to their ceiling, by the platform's name.
+                sizes = [line.split()[1:] for line in trace if line.startswith('size ')]
+                self.assertEqual([(platform, path.rsplit('/', 1)[1]) for platform, path in sizes],
+                                 [('darwin-' + arch, 'biorouter'), ('darwin-' + arch, 'biorouterd')],
+                                 sizes)
+                backend = 'metal' if arch == 'arm64' else 'cpu'
+                self.assertTrue(any(line.startswith('dictation self test ')
+                                    and '--expect-backend ' + backend in line
+                                    for line in trace), trace)
+                entitlements = [line for line in trace
+                                if line.startswith('codesign -d --entitlements - --xml ')]
+                self.assertEqual([line.rsplit('/Biorouter.app', 1)[1] for line in entitlements],
+                                 ['', '/Contents/Frameworks/Biorouter Helper.app',
+                                  '/Contents/Resources/bin/biorouter',
+                                  '/Contents/Resources/bin/biorouterd'], entitlements)
                 self.assertIn('validate private runtime key', trace)
                 self.assertIn('private userData exists before launch', trace)
                 self.assertEqual(sum(line.startswith('hdiutil detach') for line in trace), 1)

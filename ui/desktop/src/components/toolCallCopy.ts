@@ -371,6 +371,18 @@ export const TOOL_ROW_COPY = {
   stepUses: (dependencies: string) => ` (uses ${dependencies})`,
   imageAlt: 'Tool result',
   progressLabel: 'Tool progress',
+  // A dictionary__add_terms row's actions, one set per term the call recorded. The
+  // term is drawn beside its set, and each button's spoken name carries it too, so
+  // two terms' Keep and Undo are never two identical buttons. Each name starts with
+  // the visible label, so a voice command that says the label still finds it.
+  dictionaryAdd: 'Add to dictionary',
+  dictionaryAddName: (term: string) => `Add to dictionary: ${term}`,
+  dictionaryKeep: 'Keep',
+  dictionaryKeepName: (term: string) => `Keep ${term}`,
+  dictionaryUndo: 'Undo',
+  dictionaryUndoName: (term: string) => `Undo adding ${term}`,
+  dictionaryReview: 'Review in Dictionary',
+  dictionaryFailed: 'Dictionary',
 
   // A mirrored call that ran in the coding agent's own sandbox.
   notGated: 'not gated by Biorouter',

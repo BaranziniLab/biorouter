@@ -3,6 +3,8 @@ mod completion;
 mod elicitation;
 mod export;
 mod input;
+#[cfg(feature = "dictation")]
+pub(crate) use input::{dictation_key, get_newline_key};
 pub mod markdown;
 pub mod output;
 pub mod privacy;
@@ -251,6 +253,129 @@ pub struct CliSession {
     /// queries the (by then closed) store — without this snapshot every
     /// `--no-session` run reported zero tokens and zero messages.
     final_session_snapshot: Option<biorouter::session::Session>,
+}
+
+#[cfg(feature = "dictation")]
+struct SessionReviewPrompter;
+
+#[cfg(feature = "dictation")]
+impl crate::commands::dictionary::Prompter for SessionReviewPrompter {
+    fn confirm(&mut self, question: &str) -> std::io::Result<bool> {
+        cliclack::confirm(question).initial_value(false).interact()
+    }
+    fn phrase(&mut self, prompt: &str) -> std::io::Result<String> {
+        cliclack::input(prompt).required(false).interact()
+    }
+    fn choose(&mut self, question: &str, options: &[String]) -> std::io::Result<Option<usize>> {
+        let mut select = cliclack::select(question);
+        for (index, option) in options.iter().enumerate() {
+            select = select.item(Some(index), option, "");
+        }
+        select.item(None, "Cancel", "").interact()
+    }
+    fn multiselect(&mut self, question: &str, items: &[String]) -> std::io::Result<Vec<usize>> {
+        let mut select = cliclack::multiselect(question).required(false);
+        for (index, item) in items.iter().enumerate() {
+            select = select.item(index, item, "");
+        }
+        select.interact()
+    }
+}
+
+/// Read one line in the classic REPL, opening it with the text a recording left
+/// (`initial`, split at the cursor), which is then spent. Returns the input and that
+/// opening line joined, which the dictated spans are mapped from.
+#[cfg(feature = "dictation")]
+fn read_seeded_input(
+    editor: &mut rustyline::Editor<BioRouterCompleter, rustyline::history::DefaultHistory>,
+    initial: &mut Option<(String, String)>,
+) -> Result<(InputResult, Option<String>)> {
+    let seeded_line = initial
+        .as_ref()
+        .map(|(left, right)| format!("{left}{right}"));
+    let input = input::get_input_with_initial(
+        editor,
+        initial
+            .as_ref()
+            .map(|(left, right)| (left.as_str(), right.as_str())),
+    )?;
+    *initial = None;
+    Ok((input, seeded_line))
+}
+
+/// What the classic REPL learns from once an input is dispatched: for a message, the
+/// dictated spans (mapped onto the text as sent) and that text. Any other input
+/// forgets the spans.
+#[cfg(feature = "dictation")]
+fn take_correction(
+    input: &InputResult,
+    seeded_line: Option<&str>,
+    pending_spans: &mut Vec<crate::dictation::frontend::DictatedSpan>,
+) -> Option<(Vec<crate::dictation::frontend::DictatedSpan>, String)> {
+    match input {
+        InputResult::Message(content) if !content.starts_with('/') => {
+            if let Some(seed) = seeded_line {
+                crate::dictation::frontend::map_replacement(pending_spans, seed, content);
+            }
+            Some((std::mem::take(pending_spans), content.clone()))
+        }
+        _ => {
+            pending_spans.clear();
+            None
+        }
+    }
+}
+
+/// `/dictate status` in the classic REPL.
+#[cfg(feature = "dictation")]
+fn print_dictation_status(dictation_state: &crate::dictation::frontend::FrontendSession) {
+    println!(
+        "{}",
+        if dictation_state.paused() {
+            crate::dictation::messages::MSG_PAUSED
+        } else {
+            "Dictation is ready."
+        }
+    );
+}
+
+/// `/dictate install [MODEL]` in the classic REPL. The install asks before it
+/// downloads; a failure is printed and the chat goes on.
+#[cfg(feature = "dictation")]
+async fn install_speech_model_in_session(model: Option<String>) {
+    if let Err(error) =
+        crate::commands::dictation::handle_install(crate::commands::dictation::InstallArgs {
+            model,
+            from: None,
+            system: false,
+            yes: false,
+        })
+        .await
+    {
+        eprintln!("{error}");
+    }
+}
+
+#[cfg(feature = "dictation")]
+fn review_dictionary_in_session() {
+    use crate::commands::dictionary::{Action, Streams};
+    let facts = crate::commands::dictionary::session_facts();
+    let (mut stdin, mut stdout, mut stderr) =
+        (std::io::stdin(), std::io::stdout(), std::io::stderr());
+    let mut io = Streams {
+        out: &mut stdout,
+        err: &mut stderr,
+        input: &mut stdin,
+    };
+    if let Err(failure) = crate::commands::dictionary::run(
+        Action::Review,
+        &facts,
+        &biorouter::security::dictionary_store::open_store(),
+        &mut SessionReviewPrompter,
+        &mut io,
+    ) {
+        eprintln!("{}", failure.message);
+    }
 }
 
 // Cache structure for completion data
@@ -567,18 +692,69 @@ impl CliSession {
 
         output::display_greeting();
         print_startup_notices().await;
+        #[cfg(feature = "dictation")]
+        if let Some(key) = input::dictation_key().filter(|key| *key == input::get_newline_key()) {
+            eprintln!("{}", crate::dictation::messages::msg_key_clash(key));
+        }
+        #[cfg(feature = "dictation")]
+        let mut initial: Option<(String, String)> = None;
+        #[cfg(feature = "dictation")]
+        let dictation_state = crate::dictation::frontend::FrontendSession::default();
+        #[cfg(feature = "dictation")]
+        let mut pending_spans: Vec<crate::dictation::frontend::DictatedSpan> = Vec::new();
         loop {
             self.display_context_usage().await?;
 
             self.update_completion_cache().await?;
+            #[cfg(feature = "dictation")]
+            let (input, seeded_line) = read_seeded_input(&mut editor, &mut initial)?;
+            #[cfg(not(feature = "dictation"))]
             let input = input::get_input(&mut editor)?;
+            #[cfg(feature = "dictation")]
+            if let InputResult::Dictate { left, right } = input {
+                initial = Some(
+                    self.dictate_into_line(
+                        left,
+                        right,
+                        seeded_line.as_deref(),
+                        &mut pending_spans,
+                        &dictation_state,
+                    )
+                    .await,
+                );
+                continue;
+            }
+            #[cfg(feature = "dictation")]
+            if matches!(&input, InputResult::DictateRetry) {
+                if let Some(line) = self
+                    .retry_dictation_into_line(&mut pending_spans, &dictation_state)
+                    .await
+                {
+                    initial = Some(line);
+                }
+                continue;
+            }
+            #[cfg(feature = "dictation")]
+            if matches!(&input, InputResult::DictateStatus) {
+                pending_spans.clear();
+                print_dictation_status(&dictation_state);
+                continue;
+            }
             if matches!(input, InputResult::Exit) {
                 break;
             }
+            #[cfg(feature = "dictation")]
+            let correction = take_correction(&input, seeded_line.as_deref(), &mut pending_spans);
             self.handle_input(input, &history_manager, &mut editor)
                 .await?;
+            #[cfg(feature = "dictation")]
+            if let Some((spans, submitted)) = correction.filter(|_| self.last_abort.is_none()) {
+                self.observe_dictated_corrections(spans, &submitted).await;
+            }
         }
 
+        #[cfg(feature = "dictation")]
+        dictation_state.clear();
         self.end_session("exit").await;
 
         println!(
@@ -587,6 +763,145 @@ impl CliSession {
         );
 
         Ok(())
+    }
+
+    /// A recording into the classic REPL's line, split at the cursor into `left` and
+    /// `right`. Returns the line the next prompt opens with: the transcript inserted at
+    /// the cursor, or the line as it was when nothing was heard or the recording failed
+    /// (the reason is printed). `seeded_line` is the text this line opened with, which
+    /// the earlier dictated spans are mapped from.
+    #[cfg(feature = "dictation")]
+    async fn dictate_into_line(
+        &self,
+        left: String,
+        right: String,
+        seeded_line: Option<&str>,
+        pending_spans: &mut Vec<crate::dictation::frontend::DictatedSpan>,
+        dictation_state: &crate::dictation::frontend::FrontendSession,
+    ) -> (String, String) {
+        if let Some(seed) = seeded_line {
+            crate::dictation::frontend::map_replacement(
+                pending_spans,
+                seed,
+                &format!("{left}{right}"),
+            );
+        }
+        let affiliation = self
+            .agent
+            .provider()
+            .await
+            .ok()
+            .and_then(|provider| provider.affiliation());
+        let transcript = crate::dictation::frontend::capture_in_terminal(
+            Some(self.session_id.clone()),
+            affiliation,
+            dictation_state.clone(),
+        )
+        .await;
+        let inserted = match transcript {
+            Ok(Some(text)) => {
+                let separator = if left.chars().next_back().is_some_and(|c| !c.is_whitespace()) {
+                    " "
+                } else {
+                    ""
+                };
+                for span in pending_spans.iter_mut() {
+                    span.map_edit(left.len(), left.len(), separator.len() + text.trim().len());
+                }
+                pending_spans.push(
+                    crate::dictation::frontend::DictatedSpan::new(
+                        format!("{left}{separator}"),
+                        text.trim().to_string(),
+                        right.clone(),
+                    )
+                    .at_range(
+                        left.len() + separator.len(),
+                        left.len() + separator.len() + text.trim().len(),
+                    ),
+                );
+                if pending_spans.len() > 16 {
+                    pending_spans.remove(0);
+                }
+                format!("{left}{separator}{}", text.trim())
+            }
+            Ok(None) => left,
+            Err(reason) => {
+                eprintln!("{reason}");
+                left
+            }
+        };
+        (inserted, right)
+    }
+
+    /// `/dictate retry` in the classic REPL: transcribe the held recording again.
+    /// Returns the transcript as the next prompt's line, or `None` when there is
+    /// nothing to insert (a failure's reason is printed).
+    #[cfg(feature = "dictation")]
+    async fn retry_dictation_into_line(
+        &self,
+        pending_spans: &mut Vec<crate::dictation::frontend::DictatedSpan>,
+        dictation_state: &crate::dictation::frontend::FrontendSession,
+    ) -> Option<(String, String)> {
+        pending_spans.clear();
+        let affiliation = self
+            .agent
+            .provider()
+            .await
+            .ok()
+            .and_then(|provider| provider.affiliation());
+        match crate::dictation::frontend::retry_in_terminal(
+            Some(self.session_id.clone()),
+            affiliation,
+            dictation_state.clone(),
+        )
+        .await
+        {
+            Ok(Some(text)) => {
+                pending_spans.clear();
+                pending_spans.push(
+                    crate::dictation::frontend::DictatedSpan::new(
+                        String::new(),
+                        text.trim().to_string(),
+                        String::new(),
+                    )
+                    .at_range(0, text.trim().len()),
+                );
+                Some((text, String::new()))
+            }
+            Ok(None) => None,
+            Err(reason) => {
+                eprintln!("{reason}");
+                None
+            }
+        }
+    }
+
+    /// Learn from what the person changed in dictated text before sending it: one
+    /// observation per span, at most `MAX_PAIRS_PER_MESSAGE` for a message.
+    #[cfg(feature = "dictation")]
+    async fn observe_dictated_corrections(
+        &self,
+        spans: Vec<crate::dictation::frontend::DictatedSpan>,
+        submitted: &str,
+    ) {
+        let model = self
+            .agent
+            .provider()
+            .await
+            .ok()
+            .map(|provider| (provider.tier(), provider.affiliation()));
+        for span in spans
+            .into_iter()
+            .take(biorouter_dictation::recognize::learn::MAX_PAIRS_PER_MESSAGE)
+        {
+            crate::dictation::frontend::observe_correction(
+                &self.session_id,
+                model,
+                &span,
+                submitted,
+            )
+            .await;
+        }
     }
 
     /// Everything an interactive or headless session does as it ends, in order:
@@ -654,6 +969,18 @@ impl CliSession {
         editor: &mut rustyline::Editor<BioRouterCompleter, rustyline::history::DefaultHistory>,
     ) -> Result<()> {
         match input {
+            #[cfg(feature = "dictation")]
+            InputResult::Dictate { .. } => unreachable!("dictation is handled before dispatch"),
+            #[cfg(feature = "dictation")]
+            InputResult::DictateRetry => unreachable!("retry is handled before dispatch"),
+            #[cfg(feature = "dictation")]
+            InputResult::DictateStatus => unreachable!("status is handled before dispatch"),
+            #[cfg(feature = "dictation")]
+            InputResult::DictateInstall(model) => install_speech_model_in_session(model).await,
+            #[cfg(feature = "dictation")]
+            InputResult::DictionaryAdd(term) => self.add_dictionary_term(&term).await,
+            #[cfg(feature = "dictation")]
+            InputResult::DictionaryReview => review_dictionary_in_session(),
             InputResult::FolderAccess(args) => {
                 eprintln!("{}", self.folder_access_command(&args));
             }
@@ -722,6 +1049,22 @@ impl CliSession {
             }
         }
         Ok(())
+    }
+
+    /// `/dictionary add <term>` in the classic REPL: add a term from this chat, under
+    /// this chat's model, and print what happened.
+    #[cfg(feature = "dictation")]
+    async fn add_dictionary_term(&self, term: &str) {
+        let model = self
+            .agent
+            .provider()
+            .await
+            .ok()
+            .map(|provider| (provider.tier(), provider.affiliation()));
+        match crate::dictation::frontend::add_term(&self.session_id, model, term).await {
+            Ok(note) => println!("{note}"),
+            Err(reason) => eprintln!("{reason}"),
+        }
     }
 
     pub(crate) fn folder_access_command(&self, args: &str) -> String {

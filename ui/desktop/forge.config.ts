@@ -46,6 +46,56 @@ const nodePtyPrebuildDir = `/node_modules/node-pty/prebuilds/${nodePtyTargetPlat
 
 const isUnder = (file, dir) => file === dir || file.startsWith(`${dir}/`);
 
+// The microphone, for local dictation (DD-65 in docs/dictation/implementation-plan.md).
+//
+// What macOS shows when it asks a person for the microphone. Without this key
+// the prompt shows Electron's stock "This app needs access to the microphone".
+// `src/styles/forgeMacUsage.test.ts` pins the words, and `cmd_verify` in
+// scripts/release.sh and `smoke_mac` in scripts/smoke-test-release-artifacts.sh
+// read them back out of the built app's Info.plist.
+const MAC_MICROPHONE_USAGE =
+  'Biorouter uses the microphone only while you dictate, and does not save the recording.';
+
+// The four signed files that need `com.apple.security.device.audio-input`: the
+// app itself, `Biorouter Helper.app` (the helper Chromium's utility processes,
+// its audio service among them, run in), and the two backends under
+// `Resources/bin`, `biorouter` (the CLI, whose capture child records from a
+// terminal) and `biorouterd`. Under the hardened runtime a file without the
+// entitlement gets no prompt, and every request is denied.
+//
+// Before this list the four carried the entitlement only by accident: the
+// `entitlements`, `entitlements-inherit` and `signature-flags` keys under
+// `osxSign` below are option names @electron/osx-sign 1.3.3 never reads, so
+// every file was signed with osx-sign's own default set, which happens to
+// include audio input. The list is exactly that default set
+// (`node_modules/@electron/osx-sign/entitlements/default.darwin.plist`), so no
+// other entitlement of these four files changes; what changes is that audio
+// input is now stated here and checked by the release. Every other file keeps
+// osx-sign's default for its kind (the GPU, Renderer and Plugin helpers get
+// their narrower sets). `forgeMacUsage.test.ts` holds the list to that default.
+const MAC_MICROPHONE_ENTITLEMENTS = [
+  'com.apple.security.cs.allow-jit',
+  'com.apple.security.device.audio-input',
+  'com.apple.security.device.bluetooth',
+  'com.apple.security.device.camera',
+  'com.apple.security.device.print',
+  'com.apple.security.device.usb',
+  'com.apple.security.personal-information.location',
+];
+const MAC_MICROPHONE_FILES = [
+  /\/Biorouter\.app$/,
+  /\/Biorouter\.app\/Contents\/Frameworks\/Biorouter Helper\.app$/,
+  /\/Biorouter\.app\/Contents\/Resources\/bin\/biorouterd?$/,
+];
+
+/** Per file signing options for @electron/osx-sign: `{}` keeps its default. */
+function macSignOptionsForFile(filePath) {
+  if (!MAC_MICROPHONE_FILES.some((pattern) => pattern.test(filePath))) return {};
+  // A new array on every call: osx-sign overwrites `entitlements` on the object
+  // it is handed with the path of the plist it writes from the array.
+  return { entitlements: [...MAC_MICROPHONE_ENTITLEMENTS] };
+}
+
 /** Files electron-packager should copy into the app. Everything else is ignored. */
 function keepInPackage(file) {
   if (!file) return true; // the package root itself
@@ -130,6 +180,13 @@ let cfg = {
           ignore: (file) =>
             file.includes('/computer-use/BioRouter Computer Use.app') ||
             file.includes('/crew-broker/'),
+          // The microphone entitlement for the four files that record. See
+          // MAC_MICROPHONE_ENTITLEMENTS above.
+          optionsForFile: macSignOptionsForFile,
+          // ⚠ @electron/osx-sign 1.3.3 reads none of the next three keys (they are
+          // option names of its older releases), so `entitlements.plist` is
+          // signed into nothing. Wiring it in would change every signed file's
+          // entitlements and is a separate decision.
           entitlements: 'entitlements.plist',
           'entitlements-inherit': 'entitlements.plist',
           'signature-flags': 'library',
@@ -166,8 +223,10 @@ let cfg = {
       schemes: ['biorouter'],
     },
   ],
-  // macOS Info.plist extensions for drag-and-drop support
+  // macOS Info.plist extensions: drag-and-drop support and the microphone prompt
   extendInfo: {
+    // The sentence macOS shows when it asks for the microphone (dictation).
+    NSMicrophoneUsageDescription: MAC_MICROPHONE_USAGE,
     // Document types for drag-and-drop support onto dock icon
     CFBundleDocumentTypes: [
       {

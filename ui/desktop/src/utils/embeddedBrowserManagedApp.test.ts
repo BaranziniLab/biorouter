@@ -30,6 +30,7 @@ const electron = vi.hoisted(() => {
       loadURL: ReturnType<typeof vi.fn>;
       reload: ReturnType<typeof vi.fn>;
       executeJavaScript: ReturnType<typeof vi.fn>;
+      executeJavaScriptInIsolatedWorld: ReturnType<typeof vi.fn>;
       emit: (name: string, ...args: unknown[]) => void;
     };
   }> = [];
@@ -90,6 +91,11 @@ vi.mock('electron', () => ({
       executeJavaScript: vi.fn(async (source: string) =>
         new Function('document', `return ${source}`)(document)
       ),
+      // jsdom has one world, so the stand in runs the code against the same document.
+      executeJavaScriptInIsolatedWorld: vi.fn(
+        async (_worldId: number, scripts: { code: string }[]) =>
+          new Function('document', `return ${scripts[0].code}`)(document)
+      ),
       close: vi.fn(() => {
         this.closed = true;
       }),
@@ -123,6 +129,8 @@ import {
   createEmbeddedBrowser,
   destroyEmbeddedBrowser,
   destroyEmbeddedBrowsersForWindow,
+  DICTATION_FOCUS_WORLD_ID,
+  managedAppHasFocusedField,
   navigateEmbeddedBrowser,
   setEmbeddedBrowserVisible,
 } from './embeddedBrowser';
@@ -632,4 +640,62 @@ describe('managed app preview handoff', () => {
       ).toBe(false);
     }
   );
+});
+
+/**
+ * Dictate into this app (S15) asks the preview whether a text field is focused before main
+ * inserts dictated text. World 0 is the page's own main world, where the app's script can
+ * redefine `document.activeElement` or `instanceof` and answer for itself.
+ */
+describe('the Dictate into this app focus check', () => {
+  async function openApp(viewId: string) {
+    const context = backend();
+    createEmbeddedBrowser(
+      owner,
+      viewId,
+      `${context.baseUrl}/apps/queue-workbench/`,
+      vi.fn(),
+      context
+    );
+    await vi.waitFor(() => expect(electron.views[0].webContents.loadURL).toHaveBeenCalled());
+    return electron.views[0].webContents;
+  }
+
+  it('runs in a world of its own, never the page’s main world or the preload’s', async () => {
+    expect(DICTATION_FOCUS_WORLD_ID).not.toBe(0);
+    expect(DICTATION_FOCUS_WORLD_ID).not.toBe(999);
+    const contents = await openApp('focus-world');
+    contents.executeJavaScript.mockClear();
+    const field = document.createElement('input');
+    document.body.append(field);
+    field.focus();
+
+    await expect(managedAppHasFocusedField(owner, 'focus-world')).resolves.toBe(true);
+    expect(contents.executeJavaScriptInIsolatedWorld).toHaveBeenCalledTimes(1);
+    expect(contents.executeJavaScriptInIsolatedWorld.mock.calls[0][0]).toBe(
+      DICTATION_FOCUS_WORLD_ID
+    );
+    expect(contents.executeJavaScript).not.toHaveBeenCalled();
+
+    field.blur();
+    await expect(managedAppHasFocusedField(owner, 'focus-world')).resolves.toBe(false);
+  });
+
+  it('reads any answer but true, or a failure, as no focused field', async () => {
+    const contents = await openApp('focus-answers');
+    for (const answer of ['true', 1, { valueOf: () => true }]) {
+      contents.executeJavaScriptInIsolatedWorld.mockResolvedValueOnce(answer);
+      await expect(managedAppHasFocusedField(owner, 'focus-answers')).resolves.toBe(false);
+    }
+    contents.executeJavaScriptInIsolatedWorld.mockRejectedValueOnce(new Error('gone'));
+    await expect(managedAppHasFocusedField(owner, 'focus-answers')).resolves.toBe(false);
+  });
+
+  it('asks nothing of a page that is not a Biorouter app', async () => {
+    createEmbeddedBrowser(owner, 'focus-plain', 'https://example.org/', vi.fn());
+    await expect(managedAppHasFocusedField(owner, 'focus-plain')).resolves.toBe(false);
+    for (const view of electron.views) {
+      expect(view.webContents.executeJavaScriptInIsolatedWorld).not.toHaveBeenCalled();
+    }
+  });
 });

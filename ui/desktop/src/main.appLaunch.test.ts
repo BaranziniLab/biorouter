@@ -30,8 +30,19 @@ function windowDaemonAttachment(): ts.CallExpression {
     ts.forEachChild(node, visit);
   };
   visit(mainSyntax);
-  expect(attachments).toHaveLength(1);
-  return attachments[0];
+  // The one other attachment is PR-28's: the hidden dictation capture window and its review card
+  // reuse the daemon their owner window was attached with (createAnywhereWindow).
+  const enclosing = (node: ts.Node): string | undefined => {
+    for (let at: ts.Node | undefined = node.parent; at; at = at.parent) {
+      if (ts.isFunctionDeclaration(at)) return at.name?.text;
+    }
+    return undefined;
+  };
+  const windows = attachments.filter((call) => enclosing(call) !== 'createAnywhereWindow');
+  const anywhere = attachments.filter((call) => enclosing(call) === 'createAnywhereWindow');
+  expect(windows).toHaveLength(1);
+  expect(anywhere.length).toBeLessThanOrEqual(1);
+  return windows[0];
 }
 
 /** The body of one `ipcMain.handle` registration, up to the next `ipcMain.` call. */

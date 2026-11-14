@@ -2077,6 +2077,7 @@ function BaseChatContent({
           return false;
         }
         adoptDraftReasoningEffort(effortScope, newSession.id, submittedEffort);
+        customEvent.detail?.onAcceptedSession?.(newSession.id);
         navigateToRoute(
           navigate,
           `/pair?resumeSessionId=${newSession.id}`,
@@ -3036,6 +3037,9 @@ function BaseChatContent({
             // Before the first message the dialog opens in draft mode (DR-33).
             onOpenDecisionMonitors={openMonitors}
             privacyBasis={privacyBasis}
+            // DR-33: a new chat's dictation is judged with the decision models its
+            // start will carry.
+            draftDecisionSettings={draftDecisions?.settings ?? null}
             {...customChatInputProps}
           />
         </PendingChatModelContext.Provider>

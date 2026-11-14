@@ -24,6 +24,13 @@ export interface TranscriptRowProps {
    * InfoTip explaining the meta). Never inside the button.
    */
   trailing?: React.ReactNode;
+  /**
+   * `inline` (default) sets `trailing` after the head on the row's line. `below` gives it a
+   * line of its own under the head, starting at the label's left edge, so a trailing part that
+   * holds several controls never squeezes the label (a `dictionary__add_terms` row's terms,
+   * each beside its own Keep and Undo).
+   */
+  trailingPlacement?: 'inline' | 'below';
   /** Work in progress: the label breathes until the row is hovered or focused. */
   running?: boolean;
   /**
@@ -75,6 +82,7 @@ export function TranscriptRow({
   label,
   meta,
   trailing,
+  trailingPlacement = 'inline',
   running = false,
   tone = 'muted',
   statusLabel,
@@ -113,6 +121,17 @@ export function TranscriptRow({
     </>
   );
 
+  // Below the head, the trailing part is still inside the row's line, which wraps: the line is
+  // the element `message-meta.css` ends short under a message's hover actions, so the trailing
+  // line ends short with it.
+  const below = trailingPlacement === 'below' && trailing !== undefined && trailing !== null;
+  const lineProps = { 'data-trailing': below ? 'below' : undefined };
+  const trailingPart = below ? (
+    <div className="br-transcript-row-trailing">{trailing}</div>
+  ) : (
+    trailing
+  );
+
   const rootProps = {
     'data-testid': testId,
     'data-tone': tone,
@@ -122,9 +141,9 @@ export function TranscriptRow({
   if (!expandable) {
     return (
       <div {...rootProps} className={cn('br-transcript-row', className)}>
-        <div className="br-transcript-row-line">
+        <div className="br-transcript-row-line" {...lineProps}>
           <div className={cn('br-transcript-row-head', triggerClassName)}>{head}</div>
-          {trailing}
+          {trailingPart}
         </div>
       </div>
     );
@@ -137,14 +156,14 @@ export function TranscriptRow({
       onOpenChange={handleOpenChange}
       className={cn('br-transcript-row', className)}
     >
-      <div className="br-transcript-row-line">
+      <div className="br-transcript-row-line" {...lineProps}>
         <CollapsibleTrigger asChild>
           <button type="button" className={cn('br-transcript-row-head', triggerClassName)}>
             {head}
             <ChevronRight aria-hidden="true" className="br-transcript-row-chevron" />
           </button>
         </CollapsibleTrigger>
-        {trailing}
+        {trailingPart}
       </div>
       <CollapsibleContent className="biorouter-disclosure-panel">
         <div className="br-transcript-row-body">

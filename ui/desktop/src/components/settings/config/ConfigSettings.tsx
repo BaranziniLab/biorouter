@@ -261,6 +261,7 @@ export default function ConfigSettings() {
         // skip secrets and internal/hidden keys
         if (
           key === 'extensions' ||
+          key === 'dictation_dictionary_activation_version' ||
           key === 'BIOROUTER_TELEMETRY_ENABLED' ||
           key === 'tunnel_auto_start' ||
           key.includes('_KEY') ||

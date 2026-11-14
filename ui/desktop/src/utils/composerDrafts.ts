@@ -1,4 +1,11 @@
 import type { DroppedFile } from '../hooks/useFileDrop';
+import { spliceDictation, type Anchor } from './dictatedText';
+import {
+  mapDictatedSpans,
+  recordDictatedSpan,
+  type DictatedSpan,
+  type TranscriptChange,
+} from './dictationLedger';
 
 /**
  * What a NEW chat's composer holds while nobody has sent it — text, staged
@@ -92,6 +99,7 @@ export type ComposerDraft = {
   text: string;
   images: DraftImage[];
   files: DroppedFile[];
+  dictation?: DictatedSpan[];
 };
 
 export const EMPTY_COMPOSER_DRAFT: ComposerDraft = { text: '', images: [], files: [] };
@@ -128,6 +136,7 @@ function sameComposerDraft(a: ComposerDraft | undefined, b: ComposerDraft | unde
   const y = b as ComposerDraft;
   return (
     x.text === y.text &&
+    JSON.stringify(x.dictation ?? []) === JSON.stringify(y.dictation ?? []) &&
     x.images.length === y.images.length &&
     x.images.every(
       (image, i) =>
@@ -165,11 +174,82 @@ export function mergeComposerDraft(
   const returnedFileIds = new Set(returned.files.map((file) => file.id));
   return {
     text,
+    ...(now.dictation?.length || returned.dictation?.length
+      ? { dictation: mergedDictation(now, returned, text) }
+      : {}),
     images: [
       ...returned.images,
       ...now.images.filter((image) => !returnedPaths.has(image.filePath)),
     ],
     files: [...returned.files, ...now.files.filter((file) => !returnedFileIds.has(file.id))],
+  };
+}
+
+function mergedDictation(
+  now: ComposerDraft,
+  returned: ComposerDraft,
+  text: string
+): DictatedSpan[] {
+  if (text === now.text && text === returned.text) {
+    return [
+      ...new Map(
+        [...(returned.dictation ?? []), ...(now.dictation ?? [])].map((span) => [
+          span.recordId,
+          span,
+        ])
+      ).values(),
+    ].slice(-16);
+  }
+  if (text === returned.text) return returned.dictation ?? [];
+  if (text === now.text) return now.dictation ?? [];
+  const offset = returned.text.length + 2;
+  return [
+    ...(returned.dictation ?? []),
+    ...(now.dictation ?? []).map((span) => ({
+      ...span,
+      start: span.start + offset,
+      end: span.end + offset,
+    })),
+  ].slice(-16);
+}
+
+export interface DictationRecording {
+  recordId: string;
+  raw: string;
+  changes: TranscriptChange[];
+  model: string;
+  biasScope: 'public' | 'private';
+  dictionaryRevision?: string;
+}
+
+/** Record exactly the splice that inserted the transcript, including its added spaces. */
+export function recordComposerDictation(
+  spans: readonly DictatedSpan[],
+  before: string,
+  anchor: Anchor,
+  text: string,
+  recording: DictationRecording
+): { text: string; dictation: DictatedSpan[] } {
+  const planned = spliceDictation(before, anchor, text);
+  if (!planned.inserted) return { text: before, dictation: [...spans] };
+  const start = planned.caret - planned.inserted.length;
+  const endBefore = Math.min(Math.max(anchor.start, anchor.end), before.length);
+  return {
+    text: planned.value,
+    dictation: recordDictatedSpan(mapDictatedSpans(spans, before, planned.value), {
+      recordId: recording.recordId,
+      start,
+      end: planned.caret,
+      current: planned.inserted,
+      raw: recording.raw,
+      inserted: planned.inserted,
+      replaced: before.slice(start, endBefore),
+      changes: recording.changes,
+      state: 'pristine',
+      model: recording.model,
+      dictionaryRevision: recording.dictionaryRevision ?? '',
+      biasScope: recording.biasScope,
+    }),
   };
 }
 
@@ -239,6 +319,44 @@ export function giveBackToComposer(key: string, returned: ComposerDraft): void {
   if (isEmptyComposerDraft(returned)) return;
   saveComposerDraft(key, mergeComposerDraft(drafts.get(key), returned));
   for (const listener of [...(giveBackListeners.get(key) ?? [])]) listener(returned);
+}
+
+/**
+ * A transcript for a composer that unmounted while it dictated (a tab switch, a
+ * split, leaving Home): spliced into the draft stored under `key`, at `at`, with
+ * the same spacing rules as a live insert (`utils/dictatedText.ts`
+ * `spliceDictation`). `at` is the recording's anchor as last mapped, a caret
+ * position or the selection the dictation replaces.
+ *
+ * NOT a give-back. `giveBackToComposer` puts returned text before the draft,
+ * because a give-back is a message that was written first; dictated text goes
+ * where the person was when they started speaking. The write stamps the key like
+ * any other, so a composer mounted under it later adopts the new text.
+ */
+export function insertIntoComposerDraft(
+  key: string,
+  at: number | Anchor,
+  text: string,
+  recording?: DictationRecording
+): void {
+  const current = drafts.get(key) ?? EMPTY_COMPOSER_DRAFT;
+  const anchor = typeof at === 'number' ? { start: at, end: at } : at;
+  const { value, inserted } = spliceDictation(current.text, anchor, text);
+  if (!inserted) return;
+  if (recording) {
+    saveComposerDraft(key, {
+      ...current,
+      ...recordComposerDictation(current.dictation ?? [], current.text, anchor, text, recording),
+    });
+  } else {
+    saveComposerDraft(key, {
+      ...current,
+      text: value,
+      ...(current.dictation?.length
+        ? { dictation: mapDictatedSpans(current.dictation, current.text, value) }
+        : {}),
+    });
+  }
 }
 
 export type ComposerSend = {

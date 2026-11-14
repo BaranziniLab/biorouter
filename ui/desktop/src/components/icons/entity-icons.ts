@@ -5,6 +5,7 @@ import {
   Brain,
   ChatBubble,
   Clock,
+  Dictionary,
   Folder,
   Gauge,
   KnowledgeGraph,
@@ -36,7 +37,8 @@ export type EntityKind =
   | 'chat'
   | 'model'
   | 'folder'
-  | 'decision';
+  | 'decision'
+  | 'dictionary';
 
 export type EntityIcon = React.ComponentType<{
   className?: string;
@@ -61,4 +63,6 @@ export const ENTITY_ICONS: Record<EntityKind, EntityIcon> = {
   // section, the per-turn marker, the decision-chat card, the Decision models
   // group in the picker, the history tab and a `decisions__*` tool row.
   decision: Gauge,
+  // The dictation dictionary (DD-67). Its own glyph: memory and knowledge keep theirs.
+  dictionary: Dictionary,
 };

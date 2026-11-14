@@ -32,6 +32,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 const here = dirname(fileURLToPath(import.meta.url));
 const MAIN_CSS = readFileSync(resolve(here, '../../../styles/main.css'), 'utf8');
 const MODELS_CSS = readFileSync(resolve(here, 'models.css'), 'utf8');
+const SPEECH_CSS = readFileSync(resolve(here, 'speechModels.css'), 'utf8');
 
 const TOKEN_NAMES = [
   '--control-md',
@@ -146,7 +147,106 @@ const STATUS = {
   },
 };
 
+/**
+ * The dictation status Speech models reads (DD-66): turbo installed and in use, small.en not
+ * installed, at the folder a Mac account really has. The status store, the capture module, the
+ * dictation session and the model routes are stubbed, so the page makes no request and opens no
+ * device.
+ */
+const ALLOWED = { allowed: true, reason: null };
+const DICTATION_STATUS = {
+  engine: {
+    compiled: true,
+    state: 'stopped',
+    backend: 'metal',
+    device: 'Apple M4 Max',
+    threads: 8,
+    missing_cpu_features: [],
+    rss_bytes: null,
+  },
+  models: [
+    {
+      id: 'whisper-large-v3-turbo-q5_0',
+      display_name: 'Whisper large-v3-turbo (q5_0)',
+      installed: true,
+      bytes: 574041195,
+      location: 'user',
+      superseded: false,
+      suitability: 'recommended',
+      recommended: true,
+    },
+    {
+      id: 'whisper-small.en-q8_0',
+      display_name: 'Whisper small.en (q8_0)',
+      installed: false,
+      bytes: 264477561,
+      location: null,
+      superseded: false,
+      suitability: 'suitable',
+      recommended: false,
+    },
+  ],
+  active_model: 'whisper-large-v3-turbo-q5_0',
+  language: 'en',
+  install: ALLOWED,
+  install_job: null,
+  policy: {
+    managed: false,
+    enabled: ALLOWED,
+    capture: ALLOWED,
+    install: ALLOWED,
+    external_engine: ALLOWED,
+    dictionary: ALLOWED,
+    agent_writes: ALLOWED,
+    allowed_models: null,
+  },
+  limits: { max_seconds: 600, max_chunk_bytes: 65536, max_streams: 4 },
+  queue: { streams: 0, segments: 0 },
+  account: 'wgu',
+  host: 'mac',
+  models_dir: '/Users/wgu/.local/share/biorouter/dictation/models',
+};
+
 const STUBS: Array<{ filter: RegExp; contents: string }> = [
+  {
+    filter: /\/dictation\/dictationStore$/,
+    contents: `
+      const status = ${JSON.stringify(DICTATION_STATUS)};
+      const snapshot = { load: 'loaded', status, micStatus: 'granted' };
+      export const useDictationStatus = () => snapshot;
+      export const getDictationStatusSnapshot = () => snapshot;
+      export const refreshDictationStatus = async () => status;
+      export const noteDictationInterest = () => {};
+      export const readDictationViewer = () =>
+        ({ noiseReduction: false, showButton: true, ackHosts: [], policyOffHint: false });
+      export const writeDictationViewer = () => {};
+      export const remoteOldValues = () => ({});
+      export const dictationDaemonPlace = () => ({ kind: 'this-computer' });
+      export const hasUsableModel = (s) =>
+        !!s.active_model && s.models.some((m) => m.id === s.active_model && m.installed);
+    `,
+  },
+  {
+    filter: /\/dictation\/capture$/,
+    contents: `export const startCapture = async () => { throw new Error('no microphone here'); };`,
+  },
+  {
+    // Test speed's hold while this window dictates: nothing dictates on this page.
+    filter: /\/dictation\/dictationSession$/,
+    contents: `
+      export const isDictationRunning = () => false;
+      export const subscribeDictationRunning = () => () => {};
+    `,
+  },
+  {
+    filter: /\/dictation\/dictationApi$/,
+    contents: `
+      const answer = async () => ({ ok: true, status: 200, data: {} });
+      export const dictationModelsApi = {
+        install: answer, cancel: answer, remove: answer, select: answer, rescan: answer, bench: answer,
+      };
+    `,
+  },
   {
     filter: /\/ConfigContext$/,
     contents: `
@@ -235,6 +335,12 @@ import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import ModelsSection from './ModelsSection';
 
+// The desktop bridge the Speech models folder row asks for its Show in Finder.
+(window as unknown as { electron: object }).electron = {
+  platform: 'darwin',
+  dictationShowModelsFolder: async () => true,
+};
+
 createRoot(document.getElementById('root')!).render(
   <div style={{ width: 712, padding: 16 }}>
     <ModelsSection setView={() => {}} />
@@ -282,7 +388,7 @@ describe('the Models tab rows in a real layout engine (spec 3.13, 5.7)', () => {
       logLevel: 'silent',
     });
     script = bundle.outputFiles[0].text;
-    css = PREFLIGHT + readTokens() + primitiveBlocks() + MODELS_CSS;
+    css = PREFLIGHT + readTokens() + primitiveBlocks() + MODELS_CSS + SPEECH_CSS;
   }, 120_000);
 
   afterAll(async () => {
@@ -432,6 +538,99 @@ describe('the Models tab rows in a real layout engine (spec 3.13, 5.7)', () => {
         near(row.factsHeight, 16, 'facts line');
         near(row.factsTop, row.nameBottom, 'facts under the name');
       }
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('draws Speech models on the shared geometry: 56px model rows, 40px setting rows, one right edge (DD-66)', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open();
+    try {
+      await tab.waitForSelector('[data-testid^="speech-model-whisper"]');
+      const g = await tab.evaluate(() => {
+        const rect = (el: Element | null) => el!.getBoundingClientRect().toJSON();
+        const section = document.getElementById('settings-dictation')!;
+        const order = [...document.querySelectorAll('#models > section')].map((s) => s.id);
+        const models = [...section.querySelectorAll('[data-testid^="speech-model-whisper"]')].map(
+          (row) => {
+            const name = row.querySelector('.br-setting-row-label')!;
+            const facts = name.closest('.br-setting-row-text')!.lastElementChild!;
+            const install = row.querySelector('button[aria-label^="Install "]');
+            const menu = row.querySelector('button[aria-label^="More actions"]');
+            return {
+              height: rect(row).height,
+              nameBottom: rect(name).bottom,
+              factsTop: rect(facts).top,
+              factsHeight: rect(facts).height,
+              install: install ? rect(install) : null,
+              menu: menu ? rect(menu) : null,
+              menuOpacity: menu
+                ? Number(getComputedStyle(menu.closest('.br-row-actions')!).opacity)
+                : null,
+              meta: row.querySelector('.br-row-actions-meta')?.textContent?.trim() ?? null,
+            };
+          }
+        );
+        const settingRow = (id: string) => {
+          const row = section.querySelector(`[data-testid="${id}"]`)!;
+          const buttons = [...row.querySelectorAll('.br-setting-row-control button')];
+          const status = row.querySelector('.br-setting-row-status');
+          return {
+            height: rect(row).height,
+            lastButton: rect(buttons[buttons.length - 1]),
+            statusHeight: status ? rect(status).height : 0,
+          };
+        };
+        const change = rect(
+          document.querySelector('#settings-default-model button[aria-label="Switch models"]')
+        );
+        return {
+          order,
+          privacy: section.querySelector('[data-testid="speech-privacy-line"]')?.textContent,
+          models,
+          folder: settingRow('speech-model-folder'),
+          language: settingRow('speech-language'),
+          microphone: settingRow('speech-microphone'),
+          speed: settingRow('speech-speed'),
+          change,
+        };
+      });
+      expect(g.order).toEqual([
+        'settings-default-model',
+        'settings-local-models',
+        'settings-dictation',
+        'settings-models-danger-zone',
+      ]);
+      expect(g.privacy).toBe(
+        'Speech is transcribed by Biorouter on this computer. Audio is not saved.'
+      );
+      expect(g.models).toHaveLength(2);
+      for (const row of g.models) {
+        // A name over one facts line, as a local model is.
+        near(row.height, 56, 'speech model row');
+        near(row.factsHeight, 16, 'speech facts line');
+        near(row.factsTop, row.nameBottom, 'facts under the name');
+      }
+      const [turbo, small] = g.models;
+      // The model in use says so at rest; its ⋯ is hidden until the row is pointed at.
+      expect(turbo.meta).toBe('In use');
+      expect(turbo.menuOpacity).toBe(0);
+      near(turbo.menu!.right, g.change.right, 'the ⋯ against Change…');
+      // Install ends on the shared right edge.
+      near(small.install!.right, g.change.right, 'Install against Change…');
+      // One-line rows are 40px; the folder row is that plus its second line, the path.
+      for (const [what, row] of [
+        ['Language', g.language],
+        ['Microphone', g.microphone],
+        ['Speed', g.speed],
+      ] as const) {
+        near(row.height, 40, `${what} row`);
+        near(row.lastButton.right, g.change.right, `${what} control against Change…`);
+      }
+      expect(g.folder.statusHeight).toBeGreaterThanOrEqual(16);
+      near(g.folder.height, 40 + g.folder.statusHeight, 'Model folder row');
+      near(g.folder.lastButton.right, g.change.right, 'Rescan against Change…');
     } finally {
       await tab.close();
     }

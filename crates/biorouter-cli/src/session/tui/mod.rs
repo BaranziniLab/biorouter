@@ -47,7 +47,9 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use biorouter::conversation::Conversation;
 use biorouter::session::SessionManager;
 
-use self::app::{App, PermissionModal, StatusInfo, ACCENT};
+use self::app::{
+    App, PermissionModal, StatusInfo, ACCENT, DICTIONARY_REVIEW_TITLE, TOOL_APPROVAL_TITLE,
+};
 use super::CliSession;
 
 const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
@@ -62,6 +64,114 @@ const QUEUED_PREVIEW_MAX: u16 = 4;
 /// arms — which could drop a partially-decoded keypress (e.g. a mid-stream
 /// Ctrl-C).
 type Events = mpsc::UnboundedReceiver<Event>;
+
+#[cfg(feature = "dictation")]
+fn dictation_chord() -> Option<char> {
+    let key = std::env::var("BIOROUTER_CLI_DICTATION_KEY").unwrap_or_else(|_| "t".into());
+    let key = key.chars().next()?.to_ascii_lowercase();
+    (key.is_ascii_alphabetic() && !tui_binds_ctrl(key)).then_some(key)
+}
+
+/// Ctrl letters this interface already binds whatever the configuration: stop or
+/// close (C), quit (D), the subagent pane (B) and focus into it (O). A dictation
+/// key set to one of them is not offered, so the hints never advertise a key that
+/// does something else. The newline key is configurable and checked apart, with a
+/// note ([`key_collision`]).
+#[cfg(feature = "dictation")]
+fn tui_binds_ctrl(key: char) -> bool {
+    matches!(key, 'b' | 'c' | 'd' | 'o')
+}
+
+/// Dictation's keys come before the subagent pane's and the subagent chat's. While a
+/// recording runs, every key is dictation's (Enter stops it, Esc and Ctrl+C cancel
+/// it), so a key meant for the recording never moves focus. The chord starts a
+/// recording from the focused pane the way typing does, by handing focus back to
+/// the input. A subagent's chat is read only, so nothing is dictated into it.
+#[cfg(feature = "dictation")]
+fn dictation_key_first(app: &mut App, key: KeyEvent) -> bool {
+    if app.dictation.is_some() {
+        return dictation_key(app, key);
+    }
+    let chord = key.modifiers.contains(KeyModifiers::CONTROL)
+        && matches!(key.code, KeyCode::Char(c) if Some(c.to_ascii_lowercase()) == dictation_chord());
+    if chord && app.child.is_none() {
+        app.subagents.focused = false;
+        return dictation_key(app, key);
+    }
+    false
+}
+
+#[cfg(feature = "dictation")]
+fn key_collision(dictation: Option<char>, newline: char) -> bool {
+    dictation == Some(newline)
+}
+
+#[cfg(feature = "dictation")]
+fn dictation_key(app: &mut App, key: KeyEvent) -> bool {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    if app.dictation.is_some() {
+        match key.code {
+            KeyCode::Enter
+                if !app
+                    .dictation_status
+                    .as_deref()
+                    .unwrap_or_default()
+                    .contains("Transcribing") =>
+            {
+                app.stop_dictation()
+            }
+            KeyCode::Esc => app.cancel_dictation(),
+            KeyCode::Char('c') if ctrl => app.cancel_dictation(),
+            KeyCode::Char(c) if ctrl && Some(c.to_ascii_lowercase()) == dictation_chord() => {
+                app.stop_dictation()
+            }
+            _ if app
+                .dictation_status
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Transcribing") =>
+            {
+                return false
+            }
+            _ => {}
+        }
+        return true;
+    }
+    let slash = key.code == KeyCode::Enter && app.input.trim() == "/dictate";
+    let chord = ctrl
+        && matches!(key.code, KeyCode::Char(c) if Some(c.to_ascii_lowercase()) == dictation_chord());
+    if slash {
+        app.clear_input();
+    }
+    if slash || chord {
+        if !chord || !key_collision(dictation_chord(), crate::session::input::get_newline_key()) {
+            app.start_dictation();
+        }
+        return true;
+    }
+    false
+}
+
+#[cfg(feature = "dictation")]
+fn on_dictation_event(app: &mut App, event: Option<crate::dictation::frontend::Event>) {
+    use crate::dictation::frontend::Event as DictationEvent;
+    match event {
+        Some(DictationEvent::Starting) => {
+            app.dictation_status = Some(crate::dictation::messages::LINE_STARTING.into())
+        }
+        Some(DictationEvent::Recording(status) | DictationEvent::Transcribing(status)) => {
+            app.dictation_status = Some(status)
+        }
+        Some(DictationEvent::Text(text)) => app.insert_transcript(&text),
+        Some(DictationEvent::Failed(message)) => {
+            app.push_error(&message);
+            app.dictation = None;
+            app.dictation_status = None;
+            app.dictation_anchor = None;
+        }
+        Some(DictationEvent::Cancelled) | None => app.cancel_dictation(),
+    }
+}
 
 /// RAII guard owning the alternate screen + raw mode; restores on drop.
 struct Tui {
@@ -119,6 +229,41 @@ impl Tui {
         self.terminal.draw(|f| draw(f, app))?;
         Ok(())
     }
+
+    #[cfg(feature = "dictation")]
+    fn suspend(&mut self) -> Result<()> {
+        disable_raw_mode()?;
+        execute!(
+            std::io::stdout(),
+            SetCursorStyle::DefaultUserShape,
+            DisableBracketedPaste,
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+        #[cfg(unix)]
+        execute!(std::io::stdout(), PopKeyboardEnhancementFlags)?;
+        self.terminal.show_cursor()?;
+        Ok(())
+    }
+
+    #[cfg(feature = "dictation")]
+    fn resume(&mut self) -> Result<()> {
+        enable_raw_mode()?;
+        execute!(
+            std::io::stdout(),
+            EnterAlternateScreen,
+            EnableBracketedPaste,
+            EnableMouseCapture,
+            SetCursorStyle::BlinkingBar
+        )?;
+        #[cfg(unix)]
+        execute!(
+            std::io::stdout(),
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+        self.terminal.clear()?;
+        Ok(())
+    }
 }
 
 impl Drop for Tui {
@@ -137,13 +282,63 @@ impl Drop for Tui {
     }
 }
 
+/// Ready `app` to dictate into this chat: each recording carries the chat and its
+/// model's institution, and the dictation hint shows only when policy and the terminal
+/// admit it (checked without opening a device) and a speech model resolves.
+#[cfg(feature = "dictation")]
+async fn prepare_dictation(session: &CliSession, app: &mut App) {
+    app.dictation_session = Some(session.session_id.clone());
+    app.dictation_affiliation = session
+        .agent
+        .provider()
+        .await
+        .ok()
+        .and_then(|provider| provider.affiliation());
+    app.dictation_available = crate::dictation::frontend::hint_admitted_without_device()
+        && biorouter::dictation::service::service()
+            .resolve_for(
+                None,
+                Some(&biorouter::dictation::service::configured_language()),
+            )
+            .await
+            .is_ok();
+}
+
+/// Say so at startup when the dictation key is also the newline key.
+#[cfg(feature = "dictation")]
+fn note_dictation_key_clash(app: &mut App) {
+    if let Some(key) = dictation_chord()
+        .filter(|key| key_collision(Some(*key), crate::session::input::get_newline_key()))
+    {
+        app.push_note(&crate::dictation::messages::msg_key_clash(key));
+    }
+}
+
+/// The next event from the recording in progress; never ready while none runs. It
+/// borrows only the frontend's event channel, so it can wait in `select!` beside the
+/// child view's stream.
+#[cfg(feature = "dictation")]
+async fn next_dictation_event(
+    frontend: Option<&mut crate::dictation::frontend::Frontend>,
+) -> Option<crate::dictation::frontend::Event> {
+    let events = frontend.map(|frontend| &mut frontend.events);
+    match events {
+        Some(events) => events.recv().await,
+        None => std::future::pending().await,
+    }
+}
+
 /// Run the interactive session in the full-screen TUI.
 pub async fn run(session: &mut CliSession, initial_prompt: Option<String>) -> Result<()> {
     let mut tui = Tui::new()?;
     let mut app = App::new(status_from_session(session));
+    #[cfg(feature = "dictation")]
+    prepare_dictation(session, &mut app).await;
     app.set_catalog(build_catalog(session).await);
     greeting_into(&mut app);
     push_startup_notices(&mut app).await;
+    #[cfg(feature = "dictation")]
+    note_dictation_key_clash(&mut app);
     refresh_context(session, &mut app).await;
 
     // Single dedicated reader task → channel (see `Events`).
@@ -182,6 +377,12 @@ pub async fn run(session: &mut CliSession, initial_prompt: Option<String>) -> Re
             tui.draw(&mut app)?;
         }
         redraw = true;
+        // Dictation's events borrow only `app.dictation`, so the child view's
+        // stream below can borrow `app.child` beside them.
+        #[cfg(feature = "dictation")]
+        let dictation_event = next_dictation_event(app.dictation.as_mut());
+        #[cfg(not(feature = "dictation"))]
+        let dictation_event = std::future::pending::<()>();
         tokio::select! {
             event = rx.recv() => {
                 let Some(event) = event else {
@@ -219,8 +420,16 @@ pub async fn run(session: &mut CliSession, initial_prompt: Option<String>) -> Re
                 }
                 sync_child(&session_manager, &mut app).await;
             }
+            dictation = dictation_event => {
+                #[cfg(feature = "dictation")]
+                on_dictation_event(&mut app, dictation);
+                #[cfg(not(feature = "dictation"))]
+                let _ = dictation;
+            }
         }
     }
+    #[cfg(feature = "dictation")]
+    app.dictation_state.clear();
     Ok(())
 }
 
@@ -418,6 +627,11 @@ fn on_paste(app: &mut App, text: &str) {
     if app.child.is_some() {
         return; // read-only
     }
+    // A recording owns the composer until its text lands.
+    #[cfg(feature = "dictation")]
+    if app.dictation.is_some() {
+        return;
+    }
     app.subagents.focused = false;
     app.paste(text);
 }
@@ -528,12 +742,22 @@ fn on_key(app: &mut App, key: KeyEvent) -> Option<String> {
         }
         return None;
     }
+    #[cfg(feature = "dictation")]
+    let dictating = app.dictation.is_some();
+    #[cfg(feature = "dictation")]
+    if dictation_key_first(app, key) {
+        return None;
+    }
     if on_subagent_key(app, key, false) == PaneKey::Consumed {
         app.refresh_completion();
         return None;
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    #[cfg(feature = "dictation")]
+    if !dictating && dictation_key(app, key) {
+        return None;
+    }
 
     // The completion popup captures navigation keys first.
     if app.completion_active() {
@@ -589,6 +813,8 @@ fn on_key(app: &mut App, key: KeyEvent) -> Option<String> {
         KeyCode::Enter => {
             let text = app.input.trim().to_string();
             if !text.is_empty() {
+                #[cfg(feature = "dictation")]
+                app.stage_submission(&text);
                 app.history.push(text.clone());
                 app.clear_input();
                 submit = Some(text);
@@ -641,12 +867,22 @@ fn on_key_streaming(app: &mut App, key: KeyEvent) -> StreamAction {
         }
         return StreamAction::None;
     }
+    #[cfg(feature = "dictation")]
+    let dictating = app.dictation.is_some();
+    #[cfg(feature = "dictation")]
+    if dictation_key_first(app, key) {
+        return StreamAction::None;
+    }
     if on_subagent_key(app, key, true) == PaneKey::Consumed {
         app.refresh_completion();
         return StreamAction::None;
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    #[cfg(feature = "dictation")]
+    if !dictating && dictation_key(app, key) {
+        return StreamAction::None;
+    }
 
     if app.completion_active() {
         match key.code {
@@ -689,6 +925,8 @@ fn on_key_streaming(app: &mut App, key: KeyEvent) -> StreamAction {
         KeyCode::Enter => {
             let text = app.input.trim().to_string();
             if !text.is_empty() {
+                #[cfg(feature = "dictation")]
+                app.stage_submission(&text);
                 app.history.push(text.clone());
                 app.clear_input();
                 return StreamAction::Queue(text);
@@ -757,13 +995,11 @@ fn read_clipboard() -> Option<String> {
     clipboard.get_text().ok()
 }
 
+/// The TUI's copy, through the clipboard helper, which keeps the clipboard open while the
+/// TUI runs: on Linux a copy made with a clipboard dropped at once was gone before the
+/// paste.
 fn write_clipboard(text: &str) {
-    if text.is_empty() {
-        return;
-    }
-    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-        let _ = clipboard.set_text(text.to_string());
-    }
+    crate::dictation::clipboard::write_kept(text);
 }
 
 fn should_recall_history(app: &App, shift: bool) -> bool {
@@ -835,6 +1071,8 @@ async fn submit(
     rx: &mut Events,
     text: String,
 ) -> Result<()> {
+    #[cfg(feature = "dictation")]
+    let staged = app.take_submission(&text);
     // /compact runs a normal turn whose trigger tells the agent to condense the
     // history (mirrors the classic `/compact`).
     if text.trim() == "/compact" {
@@ -845,14 +1083,38 @@ async fn submit(
         session.messages.push(msg.clone());
         return drive_response(session, app, tui, rx, msg).await;
     }
-    if text.starts_with('/') && handle_slash(session, app, &text).await {
+    if text.starts_with('/') && handle_slash(session, app, tui, rx, &text).await {
         return Ok(());
     }
 
     app.push_user(&text);
     let user_message = Message::user().with_text(&text);
     session.messages.push(user_message.clone());
-    drive_response(session, app, tui, rx, user_message).await
+    let result = drive_response(session, app, tui, rx, user_message).await;
+    #[cfg(feature = "dictation")]
+    if result.is_ok() && session.last_abort.is_none() {
+        if let Some((raw, spans)) = staged {
+            let model = session
+                .agent
+                .provider()
+                .await
+                .ok()
+                .map(|provider| (provider.tier(), provider.affiliation()));
+            for span in spans
+                .into_iter()
+                .take(biorouter_dictation::recognize::learn::MAX_PAIRS_PER_MESSAGE)
+            {
+                crate::dictation::frontend::observe_correction(
+                    &session.session_id,
+                    model,
+                    &span,
+                    &raw,
+                )
+                .await;
+            }
+        }
+    }
+    result
 }
 
 /// Run any submissions the user queued (by typing + Enter) while the previous
@@ -928,6 +1190,15 @@ async fn drive_response(
             tui.draw(app)?;
             last_draw = now;
         }
+        #[cfg(feature = "dictation")]
+        let dictation_event = async {
+            match app.dictation.as_mut() {
+                Some(frontend) => frontend.events.recv().await,
+                None => std::future::pending().await,
+            }
+        };
+        #[cfg(not(feature = "dictation"))]
+        let dictation_event = std::future::pending::<()>();
         tokio::select! {
             _ = tick.tick() => {
                 app.spin = app.spin.wrapping_add(1);
@@ -936,6 +1207,12 @@ async fn drive_response(
                     refresh_subagents(&session_manager, &parent_id, app).await;
                 }
                 sync_child(&session_manager, app).await;
+            }
+            dictation = dictation_event => {
+                #[cfg(feature = "dictation")]
+                on_dictation_event(app, dictation);
+                #[cfg(not(feature = "dictation"))]
+                let _ = dictation;
             }
             ev = rx.recv() => {
                 match ev {
@@ -1209,6 +1486,7 @@ async fn run_permission_modal(
             .is_some_and(|(label, _)| *label == "Allow task"),
     );
     app.modal = Some(PermissionModal {
+        title: TOOL_APPROVAL_TITLE,
         prompt,
         options,
         selected,
@@ -1311,7 +1589,199 @@ async fn subagent_slash(session: &CliSession, app: &mut App, text: &str) {
 
 /// Handle slash commands that the TUI services locally. Returns true if handled.
 /// (`/compact` is handled in `submit` since it drives a turn.)
-async fn handle_slash(session: &mut CliSession, app: &mut App, text: &str) -> bool {
+#[cfg(feature = "dictation")]
+async fn review_dictionary(app: &mut App, tui: &mut Tui, rx: &mut Events) -> Result<()> {
+    use crate::commands::dictionary::{authorize_session_action, Action};
+    use biorouter::security::dictionary_store::{
+        open_store,
+        store::{Entry, EntrySource, EntryStatus},
+    };
+    authorize_session_action(&Action::Dismiss { ids: Vec::new() }).map_err(anyhow::Error::msg)?;
+    fn pending(entry: &Entry) -> bool {
+        entry.status == EntryStatus::Suggested
+            || entry.source == EntrySource::Agent && !entry.reviewed
+    }
+    let store = open_store();
+    let rows: Vec<Entry> = store
+        .view()?
+        .entries()
+        .iter()
+        .filter(|entry| pending(entry))
+        .cloned()
+        .collect();
+    if rows.is_empty() {
+        app.push_note("Nothing to review.");
+        return Ok(());
+    }
+    for row in rows {
+        app.modal = Some(PermissionModal {
+            title: DICTIONARY_REVIEW_TITLE,
+            prompt: Some(format!(
+                "Dictionary term: {} ({})\nKeep, dismiss, or skip this suggestion?",
+                row.written,
+                row.tier.as_str()
+            )),
+            options: vec![
+                ("Keep", "add to active dictionary"),
+                ("Dismiss", "remove this suggestion"),
+                ("Skip", "leave for later"),
+            ],
+            selected: 2,
+            scroll: 0,
+        });
+        let choice = loop {
+            tui.draw(app)?;
+            let key = match rx.recv().await {
+                Some(Event::Key(key)) => key,
+                Some(_) => continue,
+                None => break 2,
+            };
+            if key.kind != KeyEventKind::Press {
+                continue;
+            }
+            let modal = app.modal.as_mut().expect("dictionary modal");
+            match key.code {
+                KeyCode::Up => modal.selected = (modal.selected + 2) % 3,
+                KeyCode::Down => modal.selected = (modal.selected + 1) % 3,
+                KeyCode::Enter => break modal.selected,
+                KeyCode::Esc => break 2,
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break 2,
+                _ => {}
+            }
+        };
+        app.modal = None;
+        let id = row.id.clone();
+        match choice {
+            0 => {
+                authorize_session_action(&Action::Accept {
+                    ids: vec![id.to_string()],
+                })
+                .map_err(anyhow::Error::msg)?;
+                store.write(|file| {
+                    file.accept(
+                        &id,
+                        biorouter::security::dictionary_store::store::schema::now(),
+                    )
+                })?;
+                app.push_note("Kept.");
+            }
+            1 => {
+                authorize_session_action(&Action::Dismiss {
+                    ids: vec![id.to_string()],
+                })
+                .map_err(anyhow::Error::msg)?;
+                store.write(|file| {
+                    Ok(file.remove_confirmed(
+                        &[id],
+                        pending,
+                        biorouter::security::dictionary_store::store::schema::now(),
+                    ))
+                })?;
+                app.push_note("Dismissed.");
+            }
+            _ => break,
+        }
+    }
+    Ok(())
+}
+
+/// The `/dictate` and `/dictionary` commands, checked before every other slash
+/// command and handled here in full. `text` is already trimmed; returns false when
+/// it is none of them.
+#[cfg(feature = "dictation")]
+async fn dictation_slash(
+    session: &mut CliSession,
+    app: &mut App,
+    tui: &mut Tui,
+    rx: &mut Events,
+    text: &str,
+) -> bool {
+    match text {
+        "/dictate status" => {
+            let note = if app.dictation_state.paused() {
+                crate::dictation::messages::MSG_PAUSED.into()
+            } else {
+                app.dictation_status
+                    .clone()
+                    .unwrap_or_else(|| "Dictation is ready.".into())
+            };
+            app.push_note(&note);
+            true
+        }
+        "/dictate retry" => {
+            app.retry_dictation();
+            true
+        }
+        s if s == "/dictate install" || s.starts_with("/dictate install ") => {
+            let model = s
+                .strip_prefix("/dictate install")
+                .unwrap_or_default()
+                .trim();
+            let question = if model.is_empty() {
+                "Install the recommended speech model?".to_string()
+            } else {
+                format!("Install speech model {model}?")
+            };
+            match run_permission_modal(app, tui, rx, Some(question)).await {
+                Ok(Permission::AllowOnce) => {
+                    let model = (!model.is_empty()).then(|| model.to_string());
+                    let args = crate::commands::dictation::InstallArgs {
+                        model,
+                        from: None,
+                        system: false,
+                        yes: true,
+                    };
+                    if let Err(error) = tui.suspend() {
+                        app.push_error(&error.to_string());
+                    } else {
+                        let result = crate::commands::dictation::handle_install(args).await;
+                        let resumed = tui.resume();
+                        match (result, resumed) {
+                            (Ok(()), Ok(())) => app.push_note("Speech model installed."),
+                            (Err(error), _) | (_, Err(error)) => app.push_error(&error.to_string()),
+                        }
+                    }
+                }
+                Ok(_) => app.push_note("Nothing was installed."),
+                Err(error) => app.push_error(&error.to_string()),
+            }
+            true
+        }
+        s if s.starts_with("/dictionary add ") => {
+            let term = s.trim_start_matches("/dictionary add ").trim();
+            let model = session
+                .agent
+                .provider()
+                .await
+                .ok()
+                .map(|provider| (provider.tier(), provider.affiliation()));
+            match crate::dictation::frontend::add_term(&session.session_id, model, term).await {
+                Ok(note) => app.push_note(&note),
+                Err(reason) => app.push_error(&reason),
+            }
+            true
+        }
+        "/dictionary review" => {
+            if let Err(reason) = review_dictionary(app, tui, rx).await {
+                app.push_error(&reason.to_string());
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+async fn handle_slash(
+    session: &mut CliSession,
+    app: &mut App,
+    tui: &mut Tui,
+    rx: &mut Events,
+    text: &str,
+) -> bool {
+    #[cfg(feature = "dictation")]
+    if dictation_slash(session, app, tui, rx, text.trim()).await {
+        return true;
+    }
     match text.trim() {
         s if s == "/folder-access" || s.starts_with("/folder-access ") => {
             app.push_note(&session.folder_access_command(
@@ -1852,6 +2322,8 @@ fn draw_hints(f: &mut Frame, app: &App, area: Rect) {
 /// The hints line: the longest candidate for what has focus that fits.
 fn hint_text(app: &App, width: usize) -> String {
     const COMPACT: &str = "↵ send · ^J newline · / commands · ↑↓ history · ^C stop";
+    let dictate = dictation_hint(app);
+    let compact = format!("↵ send · ^J newline{dictate} · / commands · ↑↓ history · ^C stop");
     let candidates: Vec<String> = if let Some(overlay) = &app.decisions {
         if overlay.calls.is_some() {
             vec![
@@ -1880,19 +2352,21 @@ fn hint_text(app: &App, width: usize) -> String {
         vec![
             format!("{summary} · ^B show · ↵ send · / commands · ^C stop"),
             format!("{summary} · ^B show · ^C stop"),
+            compact,
             COMPACT.into(),
         ]
     } else if !app.subagents.model.rows.is_empty() {
         vec![
-            "↵ send · ^J newline · / commands · ↑↓ history · ^C stop · ^O select a subagent · ^B hide".into(),
-            "↵ send · / commands · ↑↓ history · ^C stop · ^O select · ^B hide".into(),
+            format!("↵ send · ^J newline{dictate} · / commands · ↑↓ history · ^C stop · ^O select a subagent · ^B hide"),
+            format!("↵ send{dictate} · / commands · ↑↓ history · ^C stop · ^O select · ^B hide"),
+            compact,
             COMPACT.into(),
         ]
     } else {
         vec![
-            "↵ send · ^J newline · / commands · ↑↓ history · ^C stop · ^B subagents · type anytime"
-                .into(),
-            "↵ send · ^J newline · / commands · ↑↓ history · ^C stop · ^B subagents".into(),
+            format!("↵ send · ^J newline{dictate} · / commands · ↑↓ history · ^C stop · ^B subagents · type anytime"),
+            format!("↵ send · ^J newline{dictate} · / commands · ↑↓ history · ^C stop · ^B subagents"),
+            compact,
             COMPACT.into(),
         ]
     };
@@ -1901,6 +2375,24 @@ fn hint_text(app: &App, width: usize) -> String {
         .into_iter()
         .find(|c| UnicodeWidthStr::width(c.as_str()) <= width)
         .unwrap_or(last)
+}
+
+/// The dictation key in the composer's hints, or nothing when dictation is not
+/// offered here: no admitted capture, no installed model, or a key that clashes.
+fn dictation_hint(app: &App) -> String {
+    #[cfg(feature = "dictation")]
+    {
+        dictation_chord()
+            .filter(|key| *key != crate::session::input::get_newline_key())
+            .filter(|_| app.dictation_available)
+            .map(|key| format!(" · ^{} dictate", key.to_ascii_uppercase()))
+            .unwrap_or_default()
+    }
+    #[cfg(not(feature = "dictation"))]
+    {
+        let _ = app;
+        String::new()
+    }
 }
 
 /// The queued-messages preview: the lines the user typed while the agent was
@@ -1963,6 +2455,10 @@ fn draw_input(f: &mut Frame, app: &mut App, area: Rect) {
     } else {
         (Color::Indexed(240), String::new())
     };
+    #[cfg(feature = "dictation")]
+    if let Some(status) = &app.dictation_status {
+        title = format!(" {status} ");
+    }
     // Surface messages typed while the agent is busy (they run next, in order).
     if !app.queued.is_empty() {
         title.push_str(&format!(" {} queued ↵ ", app.queued.len()));
@@ -2218,7 +2714,7 @@ fn draw_modal(f: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(Style::new().fg(ACCENT))
         .title(Span::styled(
-            " Tool approval · PgUp/PgDn to read ",
+            format!(" {} · PgUp/PgDn to read ", modal.title),
             Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(rect).inner(Margin::new(1, 0));
@@ -2461,6 +2957,15 @@ async fn build_catalog(session: &CliSession) -> Vec<app::CompletionItem> {
         kind: CompletionKind::Command,
     };
     items.push(cmd("/help", "Show commands and shortcuts"));
+    #[cfg(feature = "dictation")]
+    {
+        items.push(cmd("/dictate", "Record into the current message"));
+        items.push(cmd("/dictate status", "Show dictation state"));
+        items.push(cmd("/dictate retry", "Retry a failed recording"));
+        items.push(cmd("/dictate install", "Install a speech model"));
+        items.push(cmd("/dictionary add", "Add a term from this chat"));
+        items.push(cmd("/dictionary review", "Review suggested terms"));
+    }
     items.push(cmd(
         "/folder-access",
         "List or revoke this chat's folder grants",
@@ -2610,6 +3115,23 @@ fn help_into(app: &mut App) {
         ),
         ("/exit, /quit".to_string(), "leave the chat".to_string()),
     ];
+    #[cfg(feature = "dictation")]
+    commands.extend([
+        ("/dictate".into(), "record into the message".into()),
+        (
+            "/dictate status, /dictate retry".into(),
+            "show state or retry".into(),
+        ),
+        (
+            "/dictate install [MODEL]".into(),
+            "install a speech model".into(),
+        ),
+        (
+            "/dictionary add <term>".into(),
+            "add a term from this chat".into(),
+        ),
+        ("/dictionary review".into(), "review suggested terms".into()),
+    ]);
     commands.extend(
         biorouter::agents::execute_commands::list_commands()
             .iter()
@@ -2789,6 +3311,123 @@ mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
 
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn transcript_inserts_at_anchor_with_one_leading_space_and_no_trailing_space() {
+        let mut app = App::new(StatusInfo::default());
+        app.set_input("talk about EPAS1".into());
+        app.set_cursor("talk".len(), false);
+        app.dictation_anchor = Some((app.cursor, app.input.clone()));
+        app.insert_transcript(" ocrelizumab ");
+        assert_eq!(app.input, "talk ocrelizumab about EPAS1");
+        assert_eq!(app.cursor, "talk ocrelizumab".len());
+    }
+
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn edit_during_transcription_uses_current_cursor_and_keeps_unicode_boundaries() {
+        let mut app = App::new(StatusInfo::default());
+        app.set_input("β cell".into());
+        app.dictation_anchor = Some(("β".len(), app.input.clone()));
+        app.insert_char('s');
+        app.insert_transcript("EPAS1");
+        assert_eq!(app.input, "β cells EPAS1");
+    }
+
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn dictated_span_maps_manual_edit_and_is_carried_with_queued_submission() {
+        let mut app = App::new(StatusInfo::default());
+        app.set_input("Please check ".into());
+        app.dictation_anchor = Some((app.cursor, app.input.clone()));
+        app.insert_transcript("Epas one in the report");
+        let start = "Please check ".len();
+        app.selection_anchor = Some(start);
+        app.cursor = start + "Epas one".len();
+        assert!(app.delete_selection());
+        app.paste("EPAS1");
+        let text = on_key(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .expect("Enter submits the edited line");
+        let (raw, spans) = app.take_submission(&text).expect("queued ledger");
+        assert_eq!(spans.len(), 1);
+        let observation = spans[0].correction(&raw).expect("one correction");
+        assert_eq!(
+            (observation.from.as_str(), observation.to.as_str()),
+            ("Epas one", "EPAS1")
+        );
+    }
+
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn history_replacement_drops_dictated_spans() {
+        let mut app = App::new(StatusInfo::default());
+        app.dictation_anchor = Some((0, String::new()));
+        app.insert_transcript("EPAS1");
+        assert_eq!(app.dictated_spans.len(), 1);
+        app.set_input("older message".into());
+        assert!(app.dictated_spans.is_empty());
+    }
+
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn ctrl_c_during_dictation_does_not_cancel_the_stream() {
+        let mut app = App::new(StatusInfo::default());
+        app.dictation = Some(crate::dictation::frontend::Frontend::for_test());
+        let action = on_key_streaming(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        );
+        assert!(matches!(action, StreamAction::None));
+        assert!(app.dictation.is_none());
+    }
+
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn draw_input_shows_each_dictation_state_without_hiding_the_composer() {
+        let mut app = App::new(StatusInfo::default());
+        app.set_input("draft text".into());
+        for status in [
+            crate::dictation::messages::LINE_STARTING.to_string(),
+            crate::dictation::messages::line_recording(1_000, &[0.1; 5]),
+            crate::dictation::messages::line_transcribing(1_000),
+            crate::dictation::messages::MSG_PAUSED.to_string(),
+        ] {
+            app.dictation_status = Some(status.clone());
+            let frame = buffer_text(&mut app, 180, 25);
+            assert!(frame.contains(&status), "state: {status}");
+            assert!(frame.contains("draft text"));
+        }
+        app.dictation_status = None;
+        assert!(!buffer_text(&mut app, 180, 25).contains("REC"));
+    }
+
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn configured_newline_key_disables_only_the_colliding_dictation_chord() {
+        assert!(key_collision(Some('t'), 't'));
+        assert!(!key_collision(Some('t'), 'j'));
+        assert!(!key_collision(None, 'j'));
+        assert_eq!(
+            crate::dictation::messages::msg_key_clash('t'),
+            crate::dictation::messages::MSG_KEY_CLASH.replace("<key>", "T")
+        );
+    }
+
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn hint_is_hidden_without_admission_or_an_installed_model() {
+        let mut app = App::new(StatusInfo::default());
+        app.dictation_available = false;
+        assert!(!buffer_text(&mut app, 100, 25).contains("dictate"));
+        if let Some(key) = dictation_chord()
+            .filter(|key| !key_collision(Some(*key), crate::session::input::get_newline_key()))
+        {
+            app.dictation_available = true;
+            assert!(buffer_text(&mut app, 100, 25)
+                .contains(&format!("^{} dictate", key.to_ascii_uppercase())));
+        }
+    }
+
     fn buffer_text(app: &mut App, w: u16, h: u16) -> String {
         let backend = TestBackend::new(w, h);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -2800,6 +3439,28 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect()
+    }
+
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn public_fixed_sentence_survives_tui_event_input_and_120_column_draw() {
+        let prefix = "Dictation test. Only OK. No tools: \"";
+        let sentence = "Query the SPOKE knowledge graph for drugs that target EPAS1.";
+        let mut app = App::new(StatusInfo::default());
+        app.set_input(format!("{prefix}\""));
+        app.set_cursor(prefix.len(), false);
+        app.dictation_anchor = Some((app.cursor, app.input.clone()));
+        super::on_dictation_event(
+            &mut app,
+            Some(crate::dictation::frontend::Event::Text(
+                sentence.to_string(),
+            )),
+        );
+        assert_eq!(app.input, format!("{prefix} {sentence}\""));
+        assert_eq!(app.cursor, format!("{prefix} {sentence}").len());
+        let rendered = buffer_text(&mut app, 120, 40);
+        assert!(rendered.contains(sentence));
+        assert_eq!(app.last_input_text_width, 108);
     }
 
     #[test]
@@ -2965,6 +3626,7 @@ mod tests {
     fn renders_permission_modal() {
         let mut app = App::new(StatusInfo::default());
         app.modal = Some(PermissionModal {
+            title: TOOL_APPROVAL_TITLE,
             prompt: None,
             options: vec![("Allow", "allow once"), ("Deny", "deny")],
             selected: 0,
@@ -2973,6 +3635,38 @@ mod tests {
         let text = buffer_text(&mut app, 80, 24);
         assert!(text.contains("Tool approval"));
         assert!(text.contains("Allow"));
+    }
+
+    /// `/dictionary review` is not a tool approval, so its frame says what it is.
+    #[test]
+    fn the_dictionary_review_has_its_own_title() {
+        let mut app = App::new(StatusInfo::default());
+        app.modal = Some(PermissionModal {
+            title: DICTIONARY_REVIEW_TITLE,
+            prompt: Some("Dictionary term: EPAS1 (public)".into()),
+            options: vec![
+                ("Keep", "add to active dictionary"),
+                ("Skip", "leave for later"),
+            ],
+            selected: 1,
+            scroll: 0,
+        });
+        let text = buffer_text(&mut app, 80, 24);
+        assert!(text.contains("Dictionary review"), "{text}");
+        assert!(!text.contains("Tool approval"), "{text}");
+        // And `review_dictionary` is what opens it under that title.
+        let source = include_str!("mod.rs");
+        let opened_under = source
+            .split("async fn review_dictionary(")
+            .nth(1)
+            .and_then(|review| review.split("PermissionModal {").nth(1))
+            .and_then(|modal| modal.lines().nth(1))
+            .map(str::trim);
+        assert_eq!(
+            opened_under,
+            Some("title: DICTIONARY_REVIEW_TITLE,"),
+            "review_dictionary opens its modal under DICTIONARY_REVIEW_TITLE"
+        );
     }
 
     #[test]
@@ -2992,6 +3686,7 @@ mod tests {
 
         let mut app = App::new(StatusInfo::default());
         app.modal = Some(PermissionModal {
+            title: TOOL_APPROVAL_TITLE,
             prompt: Some(text),
             options: vec![("Allow", "allow once"), ("Deny", "deny")],
             selected: 1,
@@ -3010,6 +3705,7 @@ mod tests {
     fn long_task_disclosure_scrolls_while_choices_remain_visible() {
         let mut app = App::new(StatusInfo::default());
         app.modal = Some(PermissionModal {
+            title: TOOL_APPROVAL_TITLE,
             prompt: Some(format!(
                 "{}End of sensitive information disclosure",
                 "Biorouter Copilot on backend host\n".repeat(24)
@@ -3897,6 +4593,97 @@ mod tests {
         app.subagents.focused = false;
         app.subagents.selected = Some("child-research".into());
         app.child = Some(Box::new(view));
+    }
+
+    /// While a recording runs its keys come before the subagent pane's: Ctrl+O does
+    /// not move focus into the pane, Enter stops the recording instead of opening a
+    /// subagent, and Esc cancels it rather than leaving the pane.
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn a_recording_keeps_its_keys_ahead_of_the_subagent_pane() {
+        let mut app = app_with(two_subagents());
+        app.dictation = Some(crate::dictation::frontend::Frontend::for_test());
+        assert_eq!(on_key(&mut app, ctrl('o')), None);
+        assert!(!app.subagents.focused, "the pane took focus mid recording");
+        assert_eq!(on_key(&mut app, press(KeyCode::Enter)), None);
+        assert!(app.subagents.pending_open.is_none());
+        assert!(
+            app.dictation.is_some(),
+            "Enter stops, and the text is still on its way"
+        );
+        assert!(
+            matches!(on_key_streaming(&mut app, ctrl('b')), StreamAction::None),
+            "while transcribing a pane key passes to the pane"
+        );
+        assert!(
+            !app.subagents.visible(),
+            "Ctrl+B reached the pane while transcribing"
+        );
+        app.dictation_status = None;
+        assert_eq!(on_key(&mut app, press(KeyCode::Esc)), None);
+        assert!(app.dictation.is_none(), "Esc cancels the recording");
+    }
+
+    /// A subagent's chat is read only: the dictation key does nothing there, and a
+    /// paste while a recording runs leaves the composer alone.
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn nothing_is_dictated_into_a_subagent_chat_or_pasted_over_a_recording() {
+        let mut app = app_with(two_subagents());
+        open_research_child(&mut app);
+        if let Some(key) = dictation_chord() {
+            assert_eq!(on_key(&mut app, ctrl(key)), None);
+            assert!(
+                app.dictation.is_none(),
+                "a recording started in a read-only view"
+            );
+            assert!(app.child.is_some());
+        }
+        close_child(&mut app);
+        app.input = "draft".into();
+        app.cursor = app.input.len();
+        app.dictation = Some(crate::dictation::frontend::Frontend::for_test());
+        on_paste(&mut app, " pasted");
+        assert_eq!(app.input, "draft");
+    }
+
+    /// The `/decisions` overlay takes every key first, so the dictation key does not
+    /// start a recording under it, in the composer or while a turn streams.
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn the_decisions_overlay_keeps_the_dictation_key() {
+        let Some(key) = dictation_chord() else {
+            return;
+        };
+        let mut app = App::new(StatusInfo::default());
+        app.decisions = Some(decisions::DecisionsOverlay::new(SessionDecisionSummary {
+            total: 0,
+            aggregates: vec![],
+            recent_turns: vec![],
+        }));
+        assert_eq!(on_key(&mut app, ctrl(key)), None);
+        assert!(
+            app.dictation.is_none(),
+            "a recording started under the overlay"
+        );
+        assert!(app.decisions.is_some(), "the chord closed the overlay");
+        assert!(matches!(
+            on_key_streaming(&mut app, ctrl(key)),
+            StreamAction::None
+        ));
+        assert!(app.dictation.is_none());
+    }
+
+    /// The dictation key never names a letter this interface already binds.
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn the_dictation_key_skips_letters_the_interface_binds() {
+        for key in ['b', 'c', 'd', 'o'] {
+            assert!(tui_binds_ctrl(key), "{key}");
+        }
+        assert!(!tui_binds_ctrl('t'));
+        let app = app_with(two_subagents());
+        assert!(!hint_text(&app, 200).contains("dictate"));
     }
 
     #[test]

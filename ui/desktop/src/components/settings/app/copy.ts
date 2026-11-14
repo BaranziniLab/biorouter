@@ -82,6 +82,34 @@ export const aboutCopy = {
   opensInBrowser: 'Opens in your browser',
 } as const;
 
+/**
+ * Server, between About and the Danger zone (PR-29, S17). The row label is pinned by copy that
+ * points people at it ("Settings > App > Use external server": MSG-REMOTE-NO-KEY and the tray's
+ * old backend card), so a rename changes those sentences too.
+ */
+export const serverCopy = {
+  section: 'Server',
+  sectionHelp:
+    'Biorouter starts its own server on this computer unless you connect it to one running elsewhere.',
+  useExternal: 'Use external server',
+  useExternalHelp:
+    'Connect to a Biorouter server running elsewhere. New windows use it after you restart Biorouter.',
+  url: 'Server URL',
+  urlPlaceholder: 'http://127.0.0.1:3000',
+  urlWrongScheme: 'The address must start with http or https',
+  urlInvalid: 'This is not a valid address',
+  secret: 'Secret Key',
+  secretPlaceholder: 'The server’s secret key',
+  secretHelp: 'The secret key the server was started with (BIOROUTER_SERVER__SECRET_KEY).',
+  userActionKey: 'User Action Key',
+  userActionKeyPlaceholder: 'The key the server was started with',
+  userActionKeyHelp:
+    'Proves a request came from you rather than from the model. Without it, private chats cannot be opened, branched or reported through this server.',
+  restartLead: 'Note:',
+  restart:
+    'Changes take effect after you restart Biorouter. New chat windows connect to the external server.',
+} as const;
+
 export const resetCopy = {
   section: 'Danger zone',
   row: 'Reset data',

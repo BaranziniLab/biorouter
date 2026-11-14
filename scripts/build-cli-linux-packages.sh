@@ -18,8 +18,15 @@
 #   dist/cli/biorouter-cli-<version>-1.x86_64.rpm
 #
 # Each package is then smoke-tested in a clean container (install + run
-# `biorouter --version` and `biorouter doctor`) so we only ship functional
-# artifacts.
+# `biorouter --version`, the dictation self test and status, and `biorouter doctor`) so we
+# only ship functional artifacts.
+#
+# The dictation self test (scripts/dictation-self-test.sh) loads the vendored
+# test model and voice detector into the installed `biorouter` and `biorouterd`
+# and decodes jfk.wav offline: the proof that the engine in each package loads
+# and runs on its target. ROSETTA_ADVERTISE_AVX=1 lets Docker Desktop's amd64
+# emulation on an Apple Silicon release Mac report AVX2 to the engine if its
+# emulator would otherwise hide it; an x86 host ignores it.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -42,6 +49,47 @@ BR_HINT_LABEL="cli-pkg"
 # shellcheck source=scripts/lib/dependency-hint.sh
 . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/dependency-hint.sh"
 
+# No speech model ships in a package (R6, PR-11): in both smoke containers every file the
+# installed package lists (`dpkg -L`, `rpm -ql`) is read for the legacy ggml magic (`lmgg`
+# on disk), wherever packaging put it, and an empty list fails. The binary size ceilings,
+# which catch a speech model compiled into a binary, live in
+# scripts/smoke-test-release-artifacts.sh, which `release.sh verify` runs on these packages.
+# `set -x` is off while the list is read, so the log stays short.
+# shellcheck disable=SC2016
+GGML_SCAN='ggml_magic_at() {
+  [ "$(head -c 4 "$1" | tr -d "\000")" = lmgg ]
+}
+scan_ggml_list() {
+  local f n=0 trace=$-
+  set +x
+  while IFS= read -r f; do
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    n=$((n + 1))
+    if ggml_magic_at "$f"; then
+      echo "a speech model file ships in the package: $f" >&2
+      return 1
+    fi
+  done
+  if [ "$n" -eq 0 ]; then
+    echo "scan_ggml_list: the package lists no files" >&2
+    return 1
+  fi
+  case $trace in *x*) set -x ;; esac
+}'
+
+# `biorouter dictation status --format json`, written by a smoke container to
+# $OUT/dictation-status-<distro>.json, must be schema 1 with no model installed
+# (nothing is ever installed with a package) and no terminal microphone: the capture
+# probe finds no sound system in the container (`capture.reason` is `no_audio_system`
+# from PR-25). The file is removed after the check, so only the packages stay in $OUT.
+check_dictation_status() {
+  local file="$ROOT/$OUT/dictation-status-$1.json"
+  [ -s "$file" ] || die "the $1 smoke container wrote no dictation status"
+  python3 -I "$ROOT/scripts/check-dictation-status-json.py" --expect-capture-reason no_audio_system \
+    --expect-no-models "$file" || die "dictation status in the $1 package is not schema 1"
+  rm -f "$file"
+}
+
 
 br_require_command docker "The deb and rpm are built inside a container."
 docker info >/dev/null 2>&1 || br_dependency_die docker "docker daemon is not running" \
@@ -51,6 +99,9 @@ br_require_command node "The pinned esbuild helper is verified and staged with N
 [ -f "$REL/biorouter" ]  || die "missing $REL/biorouter — run: scripts/release.sh backends $VERSION"
 [ -f "$REL/biorouterd" ] || die "missing $REL/biorouterd — run: scripts/release.sh backends $VERSION"
 [ -f "$REL/biorouter-crew" ] || die "missing $REL/biorouter-crew — run: scripts/release.sh backends $VERSION"
+# Checked here because a missing bind mount source becomes an empty directory in the container.
+[ -f "$ROOT/vendor/whisper.cpp/source/samples/jfk.wav" ] && [ -f "$ROOT/scripts/dictation-self-test.sh" ] \
+  || die "missing the dictation self test or its fixtures (vendor/whisper.cpp/source, scripts/dictation-self-test.sh)"
 # The bytes about to be packaged, not the ones a build step once checked: a broker without the
 # default `join-by-name` feature passes every smoke test below and lets nobody join by invitation.
 bash "$ROOT/scripts/check-crew-broker-join.sh" "$REL/biorouter-crew" \
@@ -96,9 +147,15 @@ log "rpm: $RPM ($(du -h "$RPM" | cut -f1))"
 
 # ── 2. Smoke-test the .deb on a clean Debian system ───────────────────────────
 log "smoke-testing .deb on debian:bookworm-slim"
-docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg debian:bookworm-slim bash -euxc '
+docker run --rm --platform linux/amd64 -e ROSETTA_ADVERTISE_AVX=1 -v "$ROOT/$OUT":/pkg \
+  -e "GGML_SCAN=$GGML_SCAN" \
+  -v "$ROOT/vendor/whisper.cpp":/whisper.cpp:ro \
+  -v "$ROOT/scripts/dictation-self-test.sh":/smoke/dictation-self-test.sh:ro \
+  debian:bookworm-slim bash -euxc '
   apt-get update -q
   apt-get install -y --no-install-recommends "/pkg/'"$(basename "$DEB")"'"
+  eval "$GGML_SCAN"
+  dpkg -L "$(dpkg-deb -f "/pkg/'"$(basename "$DEB")"'" Package)" | scan_ggml_list
   test -x /usr/libexec/biorouter/computer-use/ocu
   test -s /usr/libexec/biorouter/computer-use/manifest.json
   /usr/libexec/biorouter/computer-use/ocu --version
@@ -106,6 +163,8 @@ docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg debian:bookworm-slim
   command -v biorouter && command -v biorouterd && command -v biorouter-crew
   biorouter --version
   biorouterd --version
+  bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu "$(command -v biorouter)" "$(command -v biorouterd)"
+  HOME=$(mktemp -d) biorouter dictation status --format json >"/pkg/dictation-status-$(. /etc/os-release && echo "$ID").json"
   test -x /usr/libexec/biorouter/esbuild
   test "$(/usr/libexec/biorouter/esbuild --version)" = "'"$(node -p "require('./ui/desktop/scripts/fetch-esbuild').ESBUILD_VERSION")"'"
   printf "console.log(1);\n" >/tmp/app.ts
@@ -126,11 +185,18 @@ docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg debian:bookworm-slim
   echo "DEB_SMOKE_OK"
 ' | grep -q DEB_SMOKE_OK || die "deb smoke test FAILED"
 log "deb smoke test passed ✓"
+check_dictation_status debian
 
 # ── 3. Smoke-test the .rpm on a clean Rocky Linux system ──────────────────────
 log "smoke-testing .rpm on rockylinux:9"
-docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg rockylinux:9 bash -euxc '
+docker run --rm --platform linux/amd64 -e ROSETTA_ADVERTISE_AVX=1 -v "$ROOT/$OUT":/pkg \
+  -e "GGML_SCAN=$GGML_SCAN" \
+  -v "$ROOT/vendor/whisper.cpp":/whisper.cpp:ro \
+  -v "$ROOT/scripts/dictation-self-test.sh":/smoke/dictation-self-test.sh:ro \
+  rockylinux:9 bash -euxc '
   dnf install -y "/pkg/'"$(basename "$RPM")"'"
+  eval "$GGML_SCAN"
+  rpm -ql "$(rpm -qp --qf "%{NAME}" "/pkg/'"$(basename "$RPM")"'")" | scan_ggml_list
   test -x /usr/libexec/biorouter/computer-use/ocu
   test -s /usr/libexec/biorouter/computer-use/manifest.json
   /usr/libexec/biorouter/computer-use/ocu --version
@@ -138,6 +204,8 @@ docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg rockylinux:9 bash -e
   command -v biorouter && command -v biorouterd && command -v biorouter-crew
   biorouter --version
   biorouterd --version
+  bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu "$(command -v biorouter)" "$(command -v biorouterd)"
+  HOME=$(mktemp -d) biorouter dictation status --format json >"/pkg/dictation-status-$(. /etc/os-release && echo "$ID").json"
   test -x /usr/libexec/biorouter/esbuild
   test "$(/usr/libexec/biorouter/esbuild --version)" = "'"$(node -p "require('./ui/desktop/scripts/fetch-esbuild').ESBUILD_VERSION")"'"
   printf "console.log(1);\n" >/tmp/app.ts
@@ -158,6 +226,7 @@ docker run --rm --platform linux/amd64 -v "$ROOT/$OUT":/pkg rockylinux:9 bash -e
   echo "RPM_SMOKE_OK"
 ' | grep -q RPM_SMOKE_OK || die "rpm smoke test FAILED"
 log "rpm smoke test passed ✓"
+check_dictation_status rocky
 
 log "CLI-only Linux packages built and verified:"
 log "  $DEB"

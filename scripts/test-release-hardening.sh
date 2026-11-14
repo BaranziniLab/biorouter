@@ -46,11 +46,14 @@ SOURCE_SHA="$(git -C "$ROOT" rev-parse HEAD)"
   activate_hermit() { :; }
   cargo() { printf 'cargo %s\n' "$*" >>"$MAC_TRACE"; }
   build_computer_use_helper() { printf 'helper %s\n' "$1" >>"$MAC_TRACE"; }
+  assert_mac_deployment_target() { printf 'guard %s\n' "$*" >>"$MAC_TRACE"; }
   ensure_docker() { fail "mac-backends unexpectedly requested Docker"; }
   run_cross_release() { fail "mac-backends unexpectedly cross-compiled a CI target"; }
   cmd_mac-backends "$VERSION"
-  expected="$(printf '%s\n' 'cargo build --release' 'cargo build --release --target x86_64-apple-darwin' 'helper darwin-arm64' 'helper darwin-x64')"
-  [ "$(cat "$MAC_TRACE")" = "$expected" ] || fail "mac-backends did not build both architectures and helpers"
+  expected="$(printf '%s\n' 'cargo build --release' 'cargo build --release --target x86_64-apple-darwin' \
+    "guard $ROOT/target/release/biorouter $ROOT/target/release/biorouterd $ROOT/target/x86_64-apple-darwin/release/biorouter $ROOT/target/x86_64-apple-darwin/release/biorouterd" \
+    'helper darwin-arm64' 'helper darwin-x64')"
+  [ "$(cat "$MAC_TRACE")" = "$expected" ] || fail "mac-backends did not build both architectures, check all four backends' minimum macOS, and build the helpers"
   assert_release_source "$VERSION"
   mutating_mac_build() {
     cargo() { printf 'source changed\n' >"$ROOT/changed-during-build.txt"; }
@@ -195,6 +198,57 @@ require_fresh_windows_smoke "$VERSION" "$LATEST_DRAFT_ASSET_UPDATED_AT"
 
 RELEASES_JSON="$BAD_RELEASES_JSON"
 expect_failure "uploaded digest mismatch check" verify_remote_release_assets "$VERSION"
+
+# The dictation accuracy gate (require_dictation_accuracy, PR-12). It asks GitHub two
+# filtered questions: has dictation-accuracy.yml ever succeeded, and which green runs exist
+# at the release's source commit. The stub answers each from its own file, as GitHub's
+# filters would, and refuses any other question, so a gate that asked about a different
+# commit, or read an unfiltered window, fails here.
+DICTATION_GREEN_JSON="$FIXTURE_ROOT/dictation-green.json"
+DICTATION_RUNS_JSON="$FIXTURE_ROOT/dictation-runs.json"
+DICTATION_GH_FAILS=0
+gh() {
+  [ "$DICTATION_GH_FAILS" = 0 ] || return 1
+  case " $* " in
+    *" run list --workflow dictation-accuracy.yml --status success --commit $SOURCE_SHA "*)
+      command cat "$DICTATION_RUNS_JSON" ;;
+    *" run list --workflow dictation-accuracy.yml --status success --limit 1 "*)
+      command cat "$DICTATION_GREEN_JSON" ;;
+    *) return 2 ;;
+  esac
+}
+dictation_run() {
+  printf '[{"displayTitle":"%s","conclusion":"success","headSha":"%s","event":"%s","url":"https://example.invalid/accuracy"}]\n' \
+    "$1" "$SOURCE_SHA" "$2" >"$DICTATION_RUNS_JSON"
+}
+
+# (1) Never green: inert, with the warning, and publication goes on.
+printf '[]\n' >"$DICTATION_GREEN_JSON"
+printf '[]\n' >"$DICTATION_RUNS_JSON"
+out="$(require_dictation_accuracy "$VERSION" 2>&1)" \
+  || fail "the dictation accuracy gate blocked before the workflow ever passed: $out"
+case "$out" in *"gate is inert"*) ;; *) fail "the inert dictation accuracy gate gave no warning: $out" ;; esac
+
+# (2) Armed (one success, ever), but no green dispatched run titled for this version at the
+# source commit: blocked, whatever else is green there.
+printf '[{"databaseId":1}]\n' >"$DICTATION_GREEN_JSON"
+expect_failure "dictation accuracy with no run at the source commit" \
+  require_dictation_accuracy "$VERSION"
+dictation_run "Dictation accuracy" schedule
+expect_failure "dictation accuracy with only a nightly run at the source commit" \
+  require_dictation_accuracy "$VERSION"
+dictation_run "Dictation accuracy v0.0.1" workflow_dispatch
+expect_failure "dictation accuracy run titled for another version" \
+  require_dictation_accuracy "$VERSION"
+
+# (3) The dispatched run for this version at the source commit passes.
+dictation_run "Dictation accuracy v$VERSION" workflow_dispatch
+require_dictation_accuracy "$VERSION"
+
+# (4) gh failing is a refusal, never the inert warning.
+DICTATION_GH_FAILS=1
+expect_failure "dictation accuracy with gh failing" require_dictation_accuracy "$VERSION"
+DICTATION_GH_FAILS=0
 
 python3 "$SOURCE_ROOT/scripts/test-mac-release-smoke.py"
 

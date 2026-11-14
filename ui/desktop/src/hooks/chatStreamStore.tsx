@@ -5145,7 +5145,7 @@ class ChatStreamController {
     messageId: string,
     newContent: string,
     editType: 'diverge' | 'edit' = 'diverge'
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     try {
       const { editMessage } = await import('../api');
       const message = this.messagesRef.find((m) => m.id === messageId);
@@ -5244,8 +5244,9 @@ class ChatStreamController {
           // conversation we just read back is again provably the whole store.
           this.viewNamesEveryStoredRow = true;
         }
-        await this.handleSubmit(newContent);
+        return await this.handleSubmit(newContent);
       }
+      return true;
     } catch (error) {
       const errorMsg = errorMessage(error);
       console.error('Failed to edit message:', error);
@@ -5254,6 +5255,7 @@ class ChatStreamController {
         title: 'Failed to edit message',
         msg: errorMsg,
       });
+      return false;
     }
   };
 }

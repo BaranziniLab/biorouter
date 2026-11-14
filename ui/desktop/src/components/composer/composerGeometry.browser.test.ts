@@ -12,7 +12,8 @@
  *    and stops at 40% of the window, then scrolls (Crew's field);
  *  - the controls row is 32px and sits directly under the field (Crew's card),
  *    the `+` glyph sits on the text's left edge, and Send ends the row at the
- *    card's inner right edge;
+ *    card's inner right edge, with the 28px microphone immediately left of it
+ *    (DD-60) and its recording pill 28px high in the same place;
  *  - a queue row is 28px, reads `↳ text` at rest, and its actions (and its
  *    grip, in place of the arrow) appear on hover and on keyboard focus;
  *  - an image thumbnail is 48px, its loading scrim is translucent, and its
@@ -122,6 +123,7 @@ const MARKUP = `
     <button style="height: 28px; padding: 0 8px;">Tools 15</button>
     <span class="br-composer-controls__spacer"></span>
     <div class="br-composer-controls__model"><button style="height: 28px; padding: 0 8px;">gpt-5.6-sol</button></div>
+    <span class="br-dictation-slot"><button id="mic" class="br-dictation-button" data-dictation-phase="idle" style="${BUTTON(28)}"><i id="mic-glyph" style="${GLYPH}"></i></button></span>
     <button id="send" style="${BUTTON(32)}"><i style="${GLYPH}"></i></button>
   </div>
 </div>
@@ -203,6 +205,7 @@ describe('the composer recipes in a real layout engine', () => {
       read('../MessageQueue.tsx'),
       read('../QuotedTextChip.tsx'),
       read('../MentionPopover.tsx'),
+      read('../dictation/DictationButton.tsx'),
     ].join('\n');
     for (const name of [
       'br-composer-card',
@@ -223,6 +226,11 @@ describe('the composer recipes in a real layout engine', () => {
       'br-quote-chip__text',
       'br-mention-menu',
       'biorouter-composer-card',
+      'br-dictation-slot',
+      'br-dictation-button',
+      'br-dictation-pill',
+      'br-dictation-bar',
+      'br-dictation-timer',
     ]) {
       expect(source, name).toContain(name);
     }
@@ -271,6 +279,37 @@ describe('the composer recipes in a real layout engine', () => {
     const send = await box('#send');
     expect(send.width).toBe(32);
     expect(card.x + card.width - (send.x + send.width)).toBe(1 + 12);
+  });
+
+  it('puts the 28px microphone immediately left of Send, and keeps its pill there', async (ctx) => {
+    if (!page) return ctx.skip();
+    const mic = await box('#mic');
+    const send = await box('#send');
+    expect([mic.width, mic.height]).toEqual([28, 28]);
+    // The row's 4px gap, and nothing between them.
+    expect(send.x - (mic.x + mic.width)).toBe(4);
+    await page.$eval('#mic', (el) => {
+      el.setAttribute('data-dictation-phase', 'recording');
+      el.style.width = '';
+      el.innerHTML =
+        '<span class="br-dictation-pill"><span class="br-dictation-bars">' +
+        '<span class="br-dictation-bar" data-bar="0"></span><span class="br-dictation-bar" data-bar="1"></span>' +
+        '<span class="br-dictation-bar" data-bar="2"></span><span class="br-dictation-bar" data-bar="3"></span>' +
+        '<span class="br-dictation-bar" data-bar="4"></span></span>' +
+        '<span class="br-dictation-timer">0:07</span></span>';
+    });
+    const pill = await box('#mic');
+    const card = await box('#card');
+    expect(pill.height).toBe(28);
+    expect(pill.width).toBeGreaterThan(28);
+    expect((await box('#send')).x - (pill.x + pill.width)).toBe(4);
+    expect(card.x + card.width - ((await box('#send')).x + 32)).toBe(1 + 12);
+    expect((await box('#controls')).height).toBe(32);
+    await page.$eval('#mic', (el) => {
+      el.setAttribute('data-dictation-phase', 'idle');
+      el.style.width = '28px';
+      el.innerHTML = '<i id="mic-glyph"></i>';
+    });
   });
 
   it('keeps a queue row at 28px and shows its actions only on hover', async (ctx) => {

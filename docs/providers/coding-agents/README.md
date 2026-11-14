@@ -20,9 +20,10 @@ gate that enforces it.
 Developer (shell, text editor, analyze, image processor), Biorouter Copilot (the
 sole native desktop observation and control capability), Web & Documents,
 Knowledge, Workspace, Skills, Extension Manager, Memory, To Do, Chat Recall,
-Decisions, Agent Drafter and Auto Visualiser all reach the child over the bridge.
-Knowledge, Workspace and Extension Manager reach it as audited subsets; see
-[the tool bridge](tool-bridge.md).
+Decisions, the Dictionary, Agent Drafter and Auto Visualiser all reach the child
+over the bridge. Knowledge, Workspace and Extension Manager reach it as audited
+subsets; see [the tool bridge](tool-bridge.md). A coding-agent chat is public, so
+the Dictionary's tools see and add only public terms there, as for any public model.
 
 Crew reaches the child in part. Its person tools, `crew__read` and `crew__change`,
 may cross, and only in a chat that is the person's own; every change still asks

@@ -28,5 +28,14 @@ export default defineConfig({
 
   build: {
     target: 'esnext',
+    // Dictation's AudioWorklet module must stay a real file (DD-64). Vite inlines
+    // assets under 4,096 B as `data:` URLs, and the renderer's content security
+    // policy blocks a `data:` worklet, so dictation would fail on the first click
+    // with "Unable to load a worklet's module". The import in
+    // `components/dictation/capture.ts` also says `?url&no-inline`; this keeps any
+    // other `*.worklet.js` from meeting the same fate. Everything else keeps
+    // Vite's default limit (`undefined`).
+    assetsInlineLimit: (filePath: string) =>
+      /\.worklet\.js(?:$|\?)/.test(filePath) ? false : undefined,
   },
 });

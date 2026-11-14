@@ -3,8 +3,8 @@
  *
  * ⚠ **INVARIANT 2 — THE `Components` DISCLOSURE IS COLLAPSED BY DEFAULT.** The
  * rail carries only `Home` and `New chat` (plus `Settings`, which sits outside
- * the group); the other six destinations — Workflows, Scheduler, Extensions,
- * Skills, Knowledge, Built apps — live inside a disclosure that a fresh profile
+ * the group); the other seven destinations (Workflows, Scheduler, Extensions,
+ * Skills, Knowledge, Dictionary, Built apps) live inside a disclosure that a fresh profile
  * renders **closed** (`AppSidebar.tsx`: `showComponentChildren` gates the group,
  * and the remembered preference is read from `biorouter:sidebar-components-expanded`,
  * which an isolated `--user-data-dir` has never written).
@@ -25,6 +25,7 @@ export const COMPONENT_LABELS = [
   'Extensions',
   'Skills',
   'Knowledge',
+  'Dictionary',
   'Built apps',
 ] as const;
 

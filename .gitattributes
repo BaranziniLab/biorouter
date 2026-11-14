@@ -38,6 +38,8 @@ crates/biorouter/src/agents/snapshots/*.snap linguist-language=Text
 *.gguf      binary
 *.brxt      binary
 *.brkb      binary
+*.wav       binary
+*.flac      binary
 
 # Unified diff markers require spaces on blank context lines and before Go tab indentation.
 vendor/computer-use/patches/*.patch text eol=lf whitespace=-blank-at-eol,-space-before-tab
@@ -56,3 +58,10 @@ vendor/computer-use/patches/*.patch text eol=lf whitespace=-blank-at-eol,-space-
 # '.gitignore', 'CODEOWNERS', 'LICENSE', 'Makefile']`, on a tree nobody had
 # edited.
 vendor/computer-use/source/** -text
+
+# The vendored whisper.cpp subset (the local dictation engine) is hashed file by file
+# into `vendor/whisper.cpp/source-manifest.json` for the same reason, and it also holds
+# four binary test fixtures. `scripts/check-vendored-whisper-cpp.sh` fails when any file
+# under it is not `-text`, on every platform, because whoever breaks this will be on
+# macOS or Linux and will see nothing.
+vendor/whisper.cpp/source/** -text

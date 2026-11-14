@@ -88,6 +88,8 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
                     "sidecar": llama,
                     "model_cache_dir": model_cache_dir,
                 },
+                // The object `biorouter dictation status --format json` prints.
+                "dictation": crate::commands::dictation::status_json(),
                 "shell_sandbox": sandbox_json(),
                 "computer_use": computer_use,
                 "update": update,
@@ -125,6 +127,12 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
     println!();
     section("Local models (Llama Server)");
     print_llama_status(&llama, &model_cache_dir);
+
+    // Local dictation: the lines `biorouter dictation status` prints. Never starts a
+    // worker.
+    println!();
+    section("Dictation");
+    crate::commands::dictation::print_status_lines();
 
     // Shell sandbox (BR-69): which OS-level enforcement tier the shell tool
     // would actually get on this host, and whether the opt-in gate is on.

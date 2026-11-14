@@ -59,6 +59,22 @@ pub fn name_to_key(name: &str) -> String {
         .to_lowercase()
 }
 
+fn parsed_extensions_map(raw: Mapping) -> IndexMap<String, ExtensionEntry> {
+    let mut extensions_map = IndexMap::with_capacity(raw.len());
+    for (k, v) in raw {
+        match (k, serde_yaml::from_value::<ExtensionEntry>(v)) {
+            (serde_yaml::Value::String(_), Ok(entry)) if is_retired_builtin_extension(&entry) => {}
+            (serde_yaml::Value::String(key), Ok(entry)) => {
+                extensions_map.insert(key, entry);
+            }
+            (k, v) => {
+                warn!(key = ?k, value = ?v, "Skipping malformed extension config entry");
+            }
+        }
+    }
+    extensions_map
+}
+
 fn get_extensions_map() -> IndexMap<String, ExtensionEntry> {
     let raw: Mapping = Config::global()
         .get_param(EXTENSIONS_CONFIG_KEY)
@@ -70,22 +86,7 @@ fn get_extensions_map() -> IndexMap<String, ExtensionEntry> {
             Default::default()
         });
 
-    let mut extensions_map = IndexMap::with_capacity(raw.len());
-    for (k, v) in raw {
-        match (k, serde_yaml::from_value::<ExtensionEntry>(v)) {
-            (serde_yaml::Value::String(_), Ok(entry)) if is_retired_builtin_extension(&entry) => {}
-            (serde_yaml::Value::String(key), Ok(entry)) => {
-                extensions_map.insert(key, entry);
-            }
-            (k, v) => {
-                warn!(
-                    key = ?k,
-                    value = ?v,
-                    "Skipping malformed extension config entry"
-                );
-            }
-        }
-    }
+    let mut extensions_map = parsed_extensions_map(raw);
 
     let migrated = Config::global()
         .get_param::<u32>(COMPUTER_USE_MIGRATION_KEY)
@@ -670,6 +671,83 @@ pub fn set_extension_enabled(key: &str, enabled: bool) {
         },
         row,
     );
+}
+
+/// Persist the dictionary choice and its first-activation marker in one config write.
+pub(crate) fn set_dictionary_activation(
+    enabled: bool,
+    activation_version_key: &str,
+    first_install: bool,
+) -> Result<(), super::base::ConfigError> {
+    set_dictionary_activation_in(
+        Config::global(),
+        enabled,
+        activation_version_key,
+        first_install,
+    )
+}
+
+pub(crate) fn set_dictionary_activation_in(
+    config: &Config,
+    enabled: bool,
+    activation_version_key: &str,
+    first_install: bool,
+) -> Result<(), super::base::ConfigError> {
+    use crate::catalog::{CatalogChangeReason, CatalogEntryChange};
+    let key = crate::dictation::activation::EXTENSION_KEY;
+    let outcome = config.update_values(|values| {
+        let marker_key = serde_yaml::to_value(activation_version_key)?;
+        if let Some(stored) = values.get(&marker_key) {
+            let version: u8 = serde_yaml::from_value(stored.clone())?;
+            if version == 1 && first_install {
+                return Ok(None);
+            }
+            if version != 1 {
+                return Err(super::base::ConfigError::DeserializeError(
+                    "Unsupported dictionary activation version".to_string(),
+                ));
+            }
+        }
+        let extensions_key = serde_yaml::to_value(EXTENSIONS_CONFIG_KEY)?;
+        let raw = values
+            .get(&extensions_key)
+            .cloned()
+            .map(serde_yaml::from_value::<Mapping>)
+            .transpose()?
+            .unwrap_or_default();
+        let mut extensions = parsed_extensions_map(raw);
+        migrate_computer_use_capabilities(&mut extensions);
+        inject_builtin_extensions(&mut extensions);
+        inject_platform_extensions(&mut extensions);
+        let entry = extensions
+            .get_mut(key)
+            .expect("the dictionary platform extension is registered");
+        let changed = entry.enabled != enabled;
+        entry.enabled = enabled;
+        let entry = entry.clone();
+        values.insert(extensions_key, serde_yaml::to_value(extensions)?);
+        values.insert(marker_key, serde_yaml::to_value(1_u8)?);
+        Ok(Some((changed, entry)))
+    })?;
+    if let Some((true, entry)) = outcome {
+        announce(
+            if enabled {
+                CatalogChangeReason::Enable
+            } else {
+                CatalogChangeReason::Disable
+            },
+            change_row(
+                key,
+                Some(&entry),
+                if enabled {
+                    CatalogEntryChange::Enabled
+                } else {
+                    CatalogEntryChange::Disabled
+                },
+            ),
+        );
+    }
+    Ok(())
 }
 
 pub fn get_all_extensions() -> Vec<ExtensionEntry> {

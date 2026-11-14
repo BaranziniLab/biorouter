@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { renderToString } from 'react-dom/server';
-import { aboutCopy, appearanceCopy, generalCopy } from './copy';
+import { aboutCopy, appearanceCopy, generalCopy, serverCopy } from './copy';
 
 // The General rows are what this file is about; the rest of the App tab is
 // other sections' business and pulls in the API client, the theme registry and
@@ -26,6 +26,8 @@ beforeEach(() => {
   Object.assign(window, {
     electron: {
       platform: 'darwin',
+      getSettings: vi.fn().mockResolvedValue({}),
+      saveSettings: vi.fn().mockResolvedValue(true),
       getMenuBarIconState: vi.fn().mockResolvedValue(true),
       getDockIconState: vi.fn().mockResolvedValue(true),
       getWakelockState: vi.fn().mockResolvedValue(true),
@@ -308,11 +310,17 @@ describe('Show costs', () => {
 });
 
 describe('App tab sections', () => {
-  it('orders General, Appearance, About', async () => {
+  it('orders General, Appearance, About, then Server', async () => {
     render(<AppSettingsSection />);
     await screen.findByRole('switch', { name: generalCopy.menuBar });
     const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
-    expect(headings).toEqual([generalCopy.section, appearanceCopy.section, aboutCopy.section]);
+    // Usage and the Danger zone are mocked out above; Server sits between them (PR-29).
+    expect(headings).toEqual([
+      generalCopy.section,
+      appearanceCopy.section,
+      aboutCopy.section,
+      serverCopy.section,
+    ]);
   });
 
   it('opens the notification settings from a row button named by its own words', async () => {
@@ -393,5 +401,14 @@ describe('Feedback exits', () => {
       (node) => node.textContent === aboutCopy.opensInBrowser
     );
     expect(hidden).toHaveLength(1);
+  });
+});
+
+describe('external backend Settings mount', () => {
+  it('puts Use external server in the actual App tab, with its explanation as help', async () => {
+    render(<AppSettingsSection />);
+    const external = await screen.findByRole('switch', { name: serverCopy.useExternal });
+    expect(external).toBeVisible();
+    expect(external).toHaveAccessibleDescription(serverCopy.useExternalHelp);
   });
 });

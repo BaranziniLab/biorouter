@@ -300,6 +300,19 @@ export type AgentInitializationError = {
 };
 
 /**
+ * Whether one door is open, and if not, the sentence to show. This is the shape
+ * every `policy` entry takes in `GET /dictation/status` and every refusal's
+ * reason (P-15).
+ */
+export type Allowance = {
+    allowed: boolean;
+    /**
+     * The sentence to show when `allowed` is false; `None` when it is true.
+     */
+    reason?: string | null;
+};
+
+/**
  * Why the caller has to choose, and what the choices are.
  */
 export type Ambiguity = {
@@ -2425,6 +2438,680 @@ export type Diagnostics = {
      * How many were raised, which is `items.len()` unless the cap bit.
      */
     total?: number;
+};
+
+/**
+ * 200 from `PUT /dictation/streams/{id}/audio`.
+ */
+export type DictationAudioAck = {
+    /**
+     * The corrected text of the segments decoded so far, when it changed since the last
+     * answer: a muted preview only, never inserted (DD-31).
+     */
+    partial?: string | null;
+    /**
+     * This stream's segments still waiting to be decoded.
+     */
+    queue_position: number;
+    /**
+     * Seconds of audio the stream holds after this chunk.
+     */
+    received_s: number;
+};
+
+export type DictationBench = {
+    elapsed_ms: number;
+    model: string;
+    rtf: number;
+};
+
+export type DictationBiasScope = 'public' | 'private';
+
+export type DictationCancelled = {
+    cancelled: boolean;
+};
+
+export type DictationEngine = {
+    /**
+     * `metal` or `cpu`; `None` without an engine or on a refused processor.
+     */
+    backend?: string | null;
+    compiled: boolean;
+    device?: string | null;
+    missing_cpu_features: Array<string>;
+    rss_bytes?: number | null;
+    state: DictationEngineState;
+    threads: number;
+};
+
+export type DictationEngineState = 'no_engine' | 'unsupported_cpu' | 'stopped' | 'starting' | 'ready' | 'error';
+
+/**
+ * Every refusal of a dictation route.
+ */
+export type DictationErrorBody = {
+    code: string;
+    expected_seq?: number | null;
+    /**
+     * The sentence to show, or empty where the client has its own.
+     */
+    message: string;
+};
+
+export type DictationInstallJob = {
+    bytes_done: number;
+    bytes_per_second: number;
+    bytes_total: number;
+    error?: string | null;
+    model: string;
+    phase: DictationInstallPhase;
+};
+
+export type DictationInstallPhase = 'downloading' | 'verifying' | 'installed' | 'failed';
+
+export type DictationInstallStarted = {
+    model: string;
+    phase: DictationInstallPhase;
+};
+
+export type DictationLimits = {
+    max_chunk_bytes: number;
+    max_seconds: number;
+    max_streams: number;
+};
+
+export type DictationModel = {
+    bytes: number;
+    display_name: string;
+    id: string;
+    /**
+     * A verified copy is in some folder.
+     */
+    installed: boolean;
+    location?: DictationModelLocation | null;
+    /**
+     * The class default.
+     */
+    recommended: boolean;
+    suitability: DictationSuitability;
+    superseded: boolean;
+};
+
+export type DictationModelLocation = 'user' | 'system' | 'managed' | 'env';
+
+export type DictationModelRequest = {
+    /**
+     * A catalog id.
+     */
+    model: string;
+};
+
+export type DictationModelsRemoved = {
+    /**
+     * The ids removed from this account's folder: the model, and its voice detector
+     * when no other speech model there needs it.
+     */
+    removed: Array<string>;
+};
+
+export type DictationPolicyView = {
+    agent_writes: Allowance;
+    allowed_models?: Array<string> | null;
+    capture: Allowance;
+    dictionary: Allowance;
+    enabled: Allowance;
+    external_engine: Allowance;
+    install: Allowance;
+    managed: boolean;
+};
+
+export type DictationQueue = {
+    segments: number;
+    streams: number;
+};
+
+export type DictationRescan = {
+    /**
+     * Catalog ids placed from files found by their SHA-256.
+     */
+    added: Array<string>;
+    /**
+     * File names no catalog pin matched.
+     */
+    unrecognized: Array<string>;
+};
+
+export type DictationSelectRequest = {
+    language?: string | null;
+    model?: string | null;
+};
+
+export type DictationSelection = {
+    active_model?: string | null;
+    language: string;
+};
+
+/**
+ * `GET /dictation/status`. Reading it never starts a worker.
+ */
+export type DictationStatus = {
+    account: string;
+    active_model?: string | null;
+    engine: DictationEngine;
+    host: string;
+    install: Allowance;
+    install_job?: DictationInstallJob | null;
+    language: string;
+    limits: DictationLimits;
+    /**
+     * Every catalog speech model, installed or not.
+     */
+    models: Array<DictationModel>;
+    models_dir: string;
+    policy: DictationPolicyView;
+    queue: DictationQueue;
+};
+
+/**
+ * 201 from `POST /dictation/streams`.
+ */
+export type DictationStreamCreated = {
+    idle_timeout_s: number;
+    max_chunk_bytes: number;
+    max_seconds: number;
+    stream_id: string;
+};
+
+/**
+ * `POST /dictation/streams`.
+ */
+export type DictationStreamRequest = {
+    /**
+     * At most 2 KiB; ranks the dictionary's terms and is never logged.
+     */
+    context?: string | null;
+    /**
+     * Always `s16le`.
+     */
+    format: string;
+    /**
+     * `crew` and `external` only: sent only after the person confirmed MSG-PRIVATE-TERMS
+     * for this recording, honoured only with the proof and private standing (O-8).
+     */
+    include_private_terms?: boolean;
+    /**
+     * A language code, or `auto`; the configured language when absent.
+     */
+    language?: string | null;
+    /**
+     * `new_chat` only: every decision model the composer's draft names for the new chat,
+     * its default and each monitor's, from the draft `/agent/start` will carry as
+     * `decision_settings` (DR-33). A public one makes the target public, as it will make
+     * the chat. Honoured only with the user action proof; without the proof, or when it
+     * does not parse, the new chat is judged public. It can only make the target more
+     * public, never more private.
+     */
+    new_chat_decision_models?: Array<DecisionModelRef> | null;
+    /**
+     * `new_chat` only: the tab's model pick, beside `new_chat_provider` and under the same
+     * rule, so a provider whose tier reads the model (an Ollama cloud tag) is judged as
+     * the new chat will bind it.
+     */
+    new_chat_model?: string | null;
+    /**
+     * `new_chat` only: the tab's provider pick, honoured only with the user action proof.
+     */
+    new_chat_provider?: string | null;
+    /**
+     * 16000, or the declared native rate (8,000 to 96,000).
+     */
+    sample_rate: number;
+    /**
+     * `chat` and `editor` only.
+     */
+    session_id?: string | null;
+    target_kind: DictationTargetKind;
+};
+
+export type DictationSuitability = 'recommended' | 'suitable' | 'too_slow' | 'below_minimum' | 'unsupported_cpu' | 'unknown';
+
+/**
+ * Where the dictated text goes.
+ */
+export type DictationTargetKind = 'chat' | 'new_chat' | 'editor' | 'crew' | 'external';
+
+/**
+ * The transcript, from `finish` or a read.
+ */
+export type DictationTranscript = {
+    audio_s: number;
+    bias_scope: DictationBiasScope;
+    changes: Array<DictationTranscriptChange>;
+    /**
+     * External target only: final corrected text consists entirely of complete terms
+     * from this stream's filtered dictionary set. No entries or counts leave the daemon.
+     */
+    dictionary_only?: boolean | null;
+    /**
+     * From `finish` to the transcript being ready.
+     */
+    elapsed_ms: number;
+    model: string;
+    no_speech: boolean;
+    /**
+     * As the engine wrote it, after the nonspeech filter.
+     */
+    raw_text: string;
+    retried?: DictationTranscriptRetry | null;
+    segments: Array<DictationTranscriptSegment>;
+    /**
+     * The corrected text.
+     */
+    text: string;
+    timings: DictationTranscriptTimings;
+};
+
+export type DictationTranscriptChange = {
+    end: number;
+    entry_id: string;
+    from: string;
+    /**
+     * `alias`, `exact` or `fuzzy`.
+     */
+    stage: string;
+    /**
+     * Characters (Unicode scalar values) of `text`.
+     */
+    start: number;
+    to: string;
+};
+
+/**
+ * 202 from `finish` or a read: the transcript is not ready yet.
+ */
+export type DictationTranscriptPending = {
+    pending: boolean;
+};
+
+export type DictationTranscriptRetry = {
+    /**
+     * `echo` or `collapse`.
+     */
+    reason: string;
+};
+
+export type DictationTranscriptSegment = {
+    /**
+     * Seconds from the start of the stream.
+     */
+    t0: number;
+    t1: number;
+    text: string;
+};
+
+/**
+ * Where the stop path's time went, as the daemon saw it.
+ */
+export type DictationTranscriptTimings = {
+    /**
+     * Segments decoded, the tail included.
+     */
+    segments: number;
+    /**
+     * Seconds of audio the tail held.
+     */
+    tail_audio_s: number;
+    /**
+     * The tail's decode.
+     */
+    tail_ms: number;
+    /**
+     * From `finish` to the tail's decode starting: a segment still decoding when the
+     * person stopped, or a model still loading.
+     */
+    wait_ms: number;
+};
+
+export type DictionaryAccepted = {
+    accepted: number;
+};
+
+/**
+ * The person's activation choice, separate from the store settings (DD-56).
+ */
+export type DictionaryActivationRequest = {
+    first_install?: boolean;
+    suggest_from_chats: boolean;
+};
+
+/**
+ * `POST /dictionary/entries`.
+ */
+export type DictionaryAddRequest = {
+    bias?: DictionaryBias | null;
+    context_cues?: Array<string>;
+    kind?: DictionaryTermKind | null;
+    match?: DictionaryMatch | null;
+    note?: string | null;
+    /**
+     * The chat the add started in (the context menu's **Add to Biorouter dictionary…**):
+     * a private row takes its institutions (O-36), read after `session_reach` admits
+     * the caller.
+     */
+    origin_session_id?: string | null;
+    /**
+     * The add started in a chat the renderer could not resolve (a shared transcript): a
+     * private row's institutions are unknown, `[]`.
+     */
+    origin_unresolved?: boolean;
+    /**
+     * **Only in private chats.** On a daemon with no key, refused without private
+     * standing (MSG-DICTIONARY-HOST-PRIVATE); there every term is stamped with the
+     * caller's standing.
+     */
+    private?: boolean;
+    spoken_forms?: Array<string>;
+    written: string;
+};
+
+/**
+ * A private row's institutions: empty when they are unknown, which only local models
+ * clear (O-32, O-35).
+ */
+export type DictionaryAffiliation = {
+    institutions: Array<DictionaryInstitution>;
+};
+
+/**
+ * What the agent's dictionary writes do (O-3).
+ */
+export type DictionaryAgentWrites = 'suggest' | 'on_request' | 'add';
+
+/**
+ * Whether one control may be used, and if not, the sentence to show before the click.
+ */
+export type DictionaryAllowance = {
+    allowed: boolean;
+    reason?: string | null;
+};
+
+/**
+ * What this caller may do, before any click, so no surface offers a doomed control.
+ */
+export type DictionaryAuthority = {
+    add_private: DictionaryAllowance;
+    delete: DictionaryAllowance;
+    raise_settings: DictionaryAllowance;
+    tier_change: DictionaryAllowance;
+    write: DictionaryAllowance;
+};
+
+/**
+ * Whether a row reaches the prompt; `always` is "pinned".
+ */
+export type DictionaryBias = 'auto' | 'always' | 'never';
+
+export type DictionaryDeleted = {
+    deleted: number;
+};
+
+export type DictionaryDismissed = {
+    dismissed: number;
+};
+
+/**
+ * `PATCH /dictionary/entries/{id}`: any of these fields; an absent field stays as it is,
+ * and `kind` or `note` sent as `null` clears it.
+ */
+export type DictionaryEditRequest = {
+    bias?: DictionaryBias | null;
+    context_cues?: Array<string> | null;
+    kind?: DictionaryTermKind | null;
+    match?: DictionaryMatch | null;
+    note?: string | null;
+    spoken_forms?: Array<string> | null;
+    written?: string | null;
+};
+
+/**
+ * 201 for a new row, with MSG-SAME-LETTERS when a row this caller can list folds to the
+ * same letters; 200 with `created: false` when the row already exists in the stamp tier.
+ */
+export type DictionaryEntryAnswer = {
+    created: boolean;
+    entry: DictionaryEntryView;
+    warning?: string | null;
+};
+
+/**
+ * One row, after a change.
+ */
+export type DictionaryEntryChanged = {
+    entry: DictionaryEntryView;
+};
+
+/**
+ * 200 from `GET /dictionary/entries`: at most 500 rows, newest change first. It carries no
+ * count of rows, listed or withheld (oracle rule 10).
+ */
+export type DictionaryEntryList = {
+    entries: Array<DictionaryEntryView>;
+    next_cursor?: string | null;
+};
+
+export type DictionaryEntrySource = 'user' | 'import' | 'agent' | 'auto' | 'correction';
+
+export type DictionaryEntryStatus = 'active' | 'suggested';
+
+/**
+ * `EntryView` ("Routes"): the stored row minus `seen`. `affiliation` is non null on
+ * private rows only. The usage figures, `suggested_in` and `came_from_a_chat` are present
+ * only for a caller with private standing (oracle rule 5).
+ */
+export type DictionaryEntryView = {
+    affiliation?: DictionaryAffiliation | null;
+    bias: DictionaryBias;
+    /**
+     * Private rows, for a caller with private standing: whether the row shows that it
+     * came from a chat (`Entry::came_from_a_chat`), which picks MSG-PUBLICIZE-WARN over
+     * MSG-PUBLICIZE-WARN-NO-CHAT before **Make public…**.
+     */
+    came_from_a_chat?: boolean | null;
+    context_cues: Array<string>;
+    corrected_to?: number | null;
+    created_at: string;
+    id: string;
+    kind?: DictionaryTermKind | null;
+    last_used_at?: string | null;
+    match: DictionaryMatch;
+    misrecognitions: Array<DictionaryMisrecognition>;
+    note?: string | null;
+    provenance?: DictionaryProvenance | null;
+    reason?: string | null;
+    /**
+     * The `If-Match` token of an edit.
+     */
+    rev: number;
+    reviewed: boolean;
+    source: DictionaryEntrySource;
+    spoken_forms: Array<string>;
+    status: DictionaryEntryStatus;
+    suggested_in?: string | null;
+    tier: DictionaryTier;
+    updated_at: string;
+    uses?: number | null;
+    written: string;
+};
+
+/**
+ * Every refusal of a dictionary route.
+ */
+export type DictionaryErrorBody = {
+    /**
+     * `agent`, `host_tier`, `host_settings`, `host_private`, `not_found`, `policy`,
+     * `unreadable`, `stale`, `cap`, `duplicate`, `too_large`, `bad_request`,
+     * `write_failed`, or a validation code (`too_long`, `url`, …).
+     */
+    code: string;
+    /**
+     * The sentence to show. It never names a term.
+     */
+    message: string;
+    /**
+     * `stale` only: the row's revision now.
+     */
+    rev?: number | null;
+};
+
+/**
+ * A list of entry ids, at most 5,000. An id that names nothing or a row this caller may
+ * not list is skipped as missing.
+ */
+export type DictionaryIdsRequest = {
+    ids: Array<string>;
+};
+
+/**
+ * What the import did, or would do, over the rows this caller can list (oracle rule 3).
+ */
+export type DictionaryImportAnswer = {
+    duplicate: number;
+    invalid: Array<DictionaryImportInvalid>;
+    merged: number;
+    new: number;
+};
+
+/**
+ * The import formats: one term per line, CSV or TSV with `written,spoken_forms,note`, or
+ * the export JSON.
+ */
+export type DictionaryImportFormat = 'lines' | 'csv' | 'tsv' | 'json';
+
+export type DictionaryImportInvalid = {
+    /**
+     * A validation code, `cap` or `unreadable`.
+     */
+    code: string;
+    line: number;
+};
+
+/**
+ * `POST /dictionary/import`: at most 1 MiB of content and 5,000 rows.
+ */
+export type DictionaryImportRequest = {
+    content: string;
+    /**
+     * Plan only: the counts the import would give, writing nothing.
+     */
+    dry_run?: boolean;
+    format: DictionaryImportFormat;
+    /**
+     * Import the rows not marked private as private. On a daemon with no key, refused
+     * without private standing, as is any row marked `"tier": "private"`.
+     */
+    private?: boolean;
+};
+
+/**
+ * One institution a private row names, with its published name (`null` when the
+ * registry publishes none).
+ */
+export type DictionaryInstitution = {
+    id: string;
+    name?: string | null;
+};
+
+export type DictionaryKept = {
+    kept: number;
+};
+
+/**
+ * How far correction may go for a row.
+ */
+export type DictionaryMatch = 'fuzzy' | 'exact' | 'prompt_only';
+
+export type DictionaryMisrecognition = {
+    count: number;
+    text: string;
+};
+
+/**
+ * One correction pair the composer's ledger found: never the transcript.
+ */
+export type DictionaryObservation = {
+    /**
+     * `rejected`: the row that made the change the person undid.
+     */
+    entry_id?: string | null;
+    from: string;
+    kind: DictionaryObservationKind;
+    /**
+     * The dictation's stream id.
+     */
+    record_id: string;
+    to: string;
+};
+
+export type DictionaryObservationKind = 'correction' | 'rejected';
+
+/**
+ * `POST /dictionary/observations`: at most 16 pairs, from the chat the send went to.
+ */
+export type DictionaryObservationsRequest = {
+    observations: Array<DictionaryObservation>;
+    session_id?: string | null;
+};
+
+export type DictionaryProvenance = {
+    at: string;
+    reason: DictionaryProvenanceReason;
+};
+
+/**
+ * Why a row changed tier.
+ */
+export type DictionaryProvenanceReason = 'publicized_by_user' | 'privatized_by_user';
+
+/**
+ * 200 from `GET` and `POST /dictionary/settings`. `suggest_from_chats` joins it with the
+ * `dictionary` capability (PR-23).
+ */
+export type DictionarySettings = {
+    agent_writes: DictionaryAgentWrites;
+    authority: DictionaryAuthority;
+    learn_from_chats: boolean;
+    suggest_from_chats: boolean;
+};
+
+/**
+ * `POST /dictionary/settings`.
+ */
+export type DictionarySettingsRequest = {
+    agent_writes?: DictionaryAgentWrites | null;
+    learn_from_chats?: boolean | null;
+};
+
+/**
+ * Which rows a listing holds.
+ */
+export type DictionaryStatusFilter = 'active' | 'suggested' | 'all';
+
+export type DictionaryTermKind = 'gene_symbol' | 'acronym' | 'name' | 'term';
+
+/**
+ * Which dictations may use a row.
+ */
+export type DictionaryTier = 'public' | 'private';
+
+/**
+ * `POST /dictionary/entries/{id}/tier`.
+ */
+export type DictionaryTierRequest = {
+    tier: DictionaryTier;
+};
+
+export type DictionaryUndoAgentAddRequest = {
+    expected_rev: number;
 };
 
 /**
@@ -8860,7 +9547,7 @@ export type AgentAddExtensionErrors = {
      */
     401: unknown;
     /**
-     * Refused by a privacy or subagent-control boundary: the named chat is private/absent, or is a subagent, and the request carried no proof it came from the user
+     * Refused by a privacy or subagent-control boundary: the named chat is private/absent, or is a subagent, and the request carried no proof it came from the user; or the extension is the Dictionary and the person did not ask (DD-56)
      */
     403: unknown;
     /**
@@ -12896,6 +13583,941 @@ export type DiagnosticsResponses = {
 };
 
 export type DiagnosticsResponse = DiagnosticsResponses[keyof DiagnosticsResponses];
+
+export type BenchDictationModelData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/dictation/bench';
+};
+
+export type BenchDictationModelErrors = {
+    /**
+     * policy
+     */
+    403: DictationErrorBody;
+    /**
+     * notCompiled, unsupportedCpu or noModel
+     */
+    409: DictationErrorBody;
+    /**
+     * engineFailed
+     */
+    500: DictationErrorBody;
+};
+
+export type BenchDictationModelError = BenchDictationModelErrors[keyof BenchDictationModelErrors];
+
+export type BenchDictationModelResponses = {
+    /**
+     * The active model's real time factor on this host, recorded for suitability
+     */
+    200: DictationBench;
+};
+
+export type BenchDictationModelResponse = BenchDictationModelResponses[keyof BenchDictationModelResponses];
+
+export type CancelDictationInstallData = {
+    body: DictationModelRequest;
+    path?: never;
+    query?: never;
+    url: '/dictation/models/cancel';
+};
+
+export type CancelDictationInstallResponses = {
+    /**
+     * Whether a running install of that model was cancelled; its partial stays for a resume
+     */
+    200: DictationCancelled;
+};
+
+export type CancelDictationInstallResponse = CancelDictationInstallResponses[keyof CancelDictationInstallResponses];
+
+export type DeleteDictationModelData = {
+    body: DictationModelRequest;
+    path?: never;
+    query?: never;
+    url: '/dictation/models/delete';
+};
+
+export type DeleteDictationModelErrors = {
+    /**
+     * proofRequired on a daemon that holds a user action key
+     */
+    403: DictationErrorBody;
+    /**
+     * notDeletable (a system, managed or env copy) or installBusy
+     */
+    409: DictationErrorBody;
+    /**
+     * Not a catalog model
+     */
+    422: DictationErrorBody;
+};
+
+export type DeleteDictationModelError = DeleteDictationModelErrors[keyof DeleteDictationModelErrors];
+
+export type DeleteDictationModelResponses = {
+    /**
+     * Removed from this account's folder; never refused by policy
+     */
+    200: DictationModelsRemoved;
+};
+
+export type DeleteDictationModelResponse = DeleteDictationModelResponses[keyof DeleteDictationModelResponses];
+
+export type InstallDictationModelData = {
+    body: DictationModelRequest;
+    path?: never;
+    query?: never;
+    url: '/dictation/models/install';
+};
+
+export type InstallDictationModelErrors = {
+    /**
+     * policy, proofRequired (MSG-INSTALL-AGENT) or installLocked (MSG-INSTALL-LOCKED)
+     */
+    403: DictationErrorBody;
+    /**
+     * notCompiled, unsupportedCpu or installBusy
+     */
+    409: DictationErrorBody;
+    /**
+     * Not a catalog speech model
+     */
+    422: DictationErrorBody;
+};
+
+export type InstallDictationModelError = InstallDictationModelErrors[keyof InstallDictationModelErrors];
+
+export type InstallDictationModelResponses = {
+    /**
+     * Already installed
+     */
+    200: DictationInstallStarted;
+    /**
+     * Installing; progress is in the status
+     */
+    202: DictationInstallStarted;
+};
+
+export type InstallDictationModelResponse = InstallDictationModelResponses[keyof InstallDictationModelResponses];
+
+export type RescanDictationModelsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/dictation/models/rescan';
+};
+
+export type RescanDictationModelsErrors = {
+    /**
+     * policy: managed policy turns dictation off
+     */
+    403: DictationErrorBody;
+};
+
+export type RescanDictationModelsError = RescanDictationModelsErrors[keyof RescanDictationModelsErrors];
+
+export type RescanDictationModelsResponses = {
+    /**
+     * Files in the models folders identified by SHA-256 against the catalog, and placed in this account's folder unless managed policy forbids downloads, when nothing is placed
+     */
+    200: DictationRescan;
+};
+
+export type RescanDictationModelsResponse = RescanDictationModelsResponses[keyof RescanDictationModelsResponses];
+
+export type SelectDictationModelData = {
+    body: DictationSelectRequest;
+    path?: never;
+    query?: never;
+    url: '/dictation/models/select';
+};
+
+export type SelectDictationModelErrors = {
+    /**
+     * policy, or proofRequired on a daemon that holds a user action key
+     */
+    403: DictationErrorBody;
+    /**
+     * noModel, or languageUnsupported for an English only model
+     */
+    409: DictationErrorBody;
+    /**
+     * An unknown model or language
+     */
+    422: DictationErrorBody;
+};
+
+export type SelectDictationModelError = SelectDictationModelErrors[keyof SelectDictationModelErrors];
+
+export type SelectDictationModelResponses = {
+    /**
+     * Saved as BIOROUTER_DICTATION_MODEL and BIOROUTER_DICTATION_LANGUAGE
+     */
+    200: DictationSelection;
+};
+
+export type SelectDictationModelResponse = SelectDictationModelResponses[keyof SelectDictationModelResponses];
+
+export type DictationStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/dictation/status';
+};
+
+export type DictationStatusResponses = {
+    /**
+     * The engine, the models, the policy and this caller's install allowance; never starts a worker
+     */
+    200: DictationStatus;
+};
+
+export type DictationStatusResponse = DictationStatusResponses[keyof DictationStatusResponses];
+
+export type CreateDictationStreamData = {
+    body: DictationStreamRequest;
+    path?: never;
+    query?: never;
+    url: '/dictation/streams';
+};
+
+export type CreateDictationStreamErrors = {
+    /**
+     * Managed policy turns dictation or live capture off
+     */
+    403: DictationErrorBody;
+    /**
+     * No engine, an unsupported processor, no model, or an English only model asked for another language
+     */
+    409: DictationErrorBody;
+    /**
+     * A body over 8 KiB or a context over 2 KiB
+     */
+    413: DictationErrorBody;
+    /**
+     * A malformed body
+     */
+    422: DictationErrorBody;
+    /**
+     * Eight open streams or 32 queued segments; Retry-After set
+     */
+    429: DictationErrorBody;
+    /**
+     * Not enough free memory to load the model
+     */
+    503: DictationErrorBody;
+};
+
+export type CreateDictationStreamError = CreateDictationStreamErrors[keyof CreateDictationStreamErrors];
+
+export type CreateDictationStreamResponses = {
+    /**
+     * The stream is open; the worker is being prepared
+     */
+    201: DictationStreamCreated;
+};
+
+export type CreateDictationStreamResponse = CreateDictationStreamResponses[keyof CreateDictationStreamResponses];
+
+export type DeleteDictationStreamData = {
+    body?: never;
+    path: {
+        /**
+         * The stream id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/dictation/streams/{id}';
+};
+
+export type DeleteDictationStreamResponses = {
+    /**
+     * Dropped: queued segments cancelled, audio and transcript zeroed
+     */
+    204: void;
+};
+
+export type DeleteDictationStreamResponse = DeleteDictationStreamResponses[keyof DeleteDictationStreamResponses];
+
+export type GetDictationStreamData = {
+    body?: never;
+    path: {
+        /**
+         * The stream id
+         */
+        id: string;
+    };
+    query?: {
+        /**
+         * Hold the read up to this many milliseconds (at most 3,000) for the transcript.
+         */
+        wait_ms?: number | null;
+    };
+    url: '/dictation/streams/{id}';
+};
+
+export type GetDictationStreamErrors = {
+    /**
+     * Expired, cancelled, or delivered and dropped
+     */
+    410: DictationErrorBody;
+    /**
+     * engineFailed
+     */
+    500: DictationErrorBody;
+};
+
+export type GetDictationStreamError = GetDictationStreamErrors[keyof GetDictationStreamErrors];
+
+export type GetDictationStreamResponses = {
+    /**
+     * The transcript
+     */
+    200: DictationTranscript;
+    /**
+     * Not ready yet
+     */
+    202: DictationTranscriptPending;
+};
+
+export type GetDictationStreamResponse = GetDictationStreamResponses[keyof GetDictationStreamResponses];
+
+export type AppendDictationAudioData = {
+    /**
+     * Raw 16 bit little endian samples, at most 524,288 B
+     */
+    body: Blob | File;
+    path: {
+        /**
+         * The stream id
+         */
+        id: string;
+    };
+    query: {
+        /**
+         * The chunk's sequence number, from 0.
+         */
+        seq: number;
+    };
+    url: '/dictation/streams/{id}/audio';
+};
+
+export type AppendDictationAudioErrors = {
+    /**
+     * A seq above the next expected one
+     */
+    409: DictationErrorBody;
+    /**
+     * Expired, cancelled or delivered and dropped
+     */
+    410: DictationErrorBody;
+    /**
+     * A chunk over 524,288 B, or past 600 s of audio
+     */
+    413: DictationErrorBody;
+    /**
+     * An odd number of bytes
+     */
+    422: DictationErrorBody;
+    /**
+     * engineFailed: a decode failed while the person spoke; the stream takes no more audio
+     */
+    500: DictationErrorBody;
+};
+
+export type AppendDictationAudioError = AppendDictationAudioErrors[keyof AppendDictationAudioErrors];
+
+export type AppendDictationAudioResponses = {
+    /**
+     * Appended, or a repeat answered as before
+     */
+    200: DictationAudioAck;
+};
+
+export type AppendDictationAudioResponse = AppendDictationAudioResponses[keyof AppendDictationAudioResponses];
+
+export type FinishDictationStreamData = {
+    /**
+     * Optional: the tail chunk, with its seq in the query, so a stop costs one round trip
+     */
+    body: Blob | File;
+    path: {
+        /**
+         * The stream id
+         */
+        id: string;
+    };
+    query?: {
+        /**
+         * With a body: the sequence number of the tail chunk `finish` carries.
+         */
+        seq?: number | null;
+    };
+    url: '/dictation/streams/{id}/finish';
+};
+
+export type FinishDictationStreamErrors = {
+    /**
+     * The tail chunk's seq is above the next expected one
+     */
+    409: DictationErrorBody;
+    /**
+     * Expired or cancelled
+     */
+    410: DictationErrorBody;
+    /**
+     * A tail chunk over 524,288 B
+     */
+    413: DictationErrorBody;
+    /**
+     * engineFailed: the worker exited or missed its deadline, at the stop or while the person spoke
+     */
+    500: DictationErrorBody;
+};
+
+export type FinishDictationStreamError = FinishDictationStreamErrors[keyof FinishDictationStreamErrors];
+
+export type FinishDictationStreamResponses = {
+    /**
+     * The transcript
+     */
+    200: DictationTranscript;
+    /**
+     * Not ready after 3 s; read it with GET
+     */
+    202: DictationTranscriptPending;
+};
+
+export type FinishDictationStreamResponse = FinishDictationStreamResponses[keyof FinishDictationStreamResponses];
+
+export type ActivateDictionaryData = {
+    body: DictionaryActivationRequest;
+    path?: never;
+    query?: never;
+    url: '/dictionary/activation';
+};
+
+export type ActivateDictionaryErrors = {
+    /**
+     * Missing proof or host setting refusal
+     */
+    403: DictionaryErrorBody;
+    /**
+     * The activation choice could not be saved
+     */
+    503: DictionaryErrorBody;
+};
+
+export type ActivateDictionaryError = ActivateDictionaryErrors[keyof ActivateDictionaryErrors];
+
+export type ActivateDictionaryResponses = {
+    /**
+     * The settings after activation
+     */
+    200: DictionarySettings;
+};
+
+export type ActivateDictionaryResponse = ActivateDictionaryResponses[keyof ActivateDictionaryResponses];
+
+export type ListDictionaryEntriesData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * `active`, `suggested` or `all` (the default).
+         */
+        status?: DictionaryStatusFilter | null;
+        /**
+         * A case folded substring of the written form, the spoken forms and the note.
+         */
+        q?: string | null;
+        /**
+         * The `next_cursor` of the previous page; opaque.
+         */
+        cursor?: string | null;
+    };
+    url: '/dictionary/entries';
+};
+
+export type ListDictionaryEntriesErrors = {
+    /**
+     * bad_request: a query this daemon cannot read, or a cursor it did not give
+     */
+    422: DictionaryErrorBody;
+    /**
+     * unreadable (MSG-DICTIONARY-FILE)
+     */
+    503: DictionaryErrorBody;
+};
+
+export type ListDictionaryEntriesError = ListDictionaryEntriesErrors[keyof ListDictionaryEntriesErrors];
+
+export type ListDictionaryEntriesResponses = {
+    /**
+     * The rows this caller may list, with an ETag over this page
+     */
+    200: DictionaryEntryList;
+};
+
+export type ListDictionaryEntriesResponse = ListDictionaryEntriesResponses[keyof ListDictionaryEntriesResponses];
+
+export type AddDictionaryEntryData = {
+    body: DictionaryAddRequest;
+    path?: never;
+    query?: never;
+    url: '/dictionary/entries';
+};
+
+export type AddDictionaryEntryErrors = {
+    /**
+     * agent (MSG-DICTIONARY-AGENT), host_private (MSG-DICTIONARY-HOST-PRIVATE) or policy (MSG-POLICY)
+     */
+    403: DictionaryErrorBody;
+    /**
+     * cap (MSG-DICTIONARY-CAP)
+     */
+    409: DictionaryErrorBody;
+    /**
+     * A validation code
+     */
+    422: DictionaryErrorBody;
+    /**
+     * unreadable (MSG-DICTIONARY-FILE)
+     */
+    503: DictionaryErrorBody;
+};
+
+export type AddDictionaryEntryError = AddDictionaryEntryErrors[keyof AddDictionaryEntryErrors];
+
+export type AddDictionaryEntryResponses = {
+    /**
+     * The row already exists in the stamp tier; created is false
+     */
+    200: DictionaryEntryAnswer;
+    /**
+     * A new row
+     */
+    201: DictionaryEntryAnswer;
+};
+
+export type AddDictionaryEntryResponse = AddDictionaryEntryResponses[keyof AddDictionaryEntryResponses];
+
+export type DeleteDictionaryEntriesData = {
+    body: DictionaryIdsRequest;
+    path?: never;
+    query?: never;
+    url: '/dictionary/entries/delete';
+};
+
+export type DeleteDictionaryEntriesErrors = {
+    /**
+     * agent
+     */
+    403: DictionaryErrorBody;
+};
+
+export type DeleteDictionaryEntriesError = DeleteDictionaryEntriesErrors[keyof DeleteDictionaryEntriesErrors];
+
+export type DeleteDictionaryEntriesResponses = {
+    /**
+     * How many of the listed rows were deleted, each with its tombstone; allowed under managed policy
+     */
+    200: DictionaryDeleted;
+};
+
+export type DeleteDictionaryEntriesResponse = DeleteDictionaryEntriesResponses[keyof DeleteDictionaryEntriesResponses];
+
+export type KeepDictionaryEntriesData = {
+    body: DictionaryIdsRequest;
+    path?: never;
+    query?: never;
+    url: '/dictionary/entries/keep';
+};
+
+export type KeepDictionaryEntriesErrors = {
+    /**
+     * agent or policy
+     */
+    403: DictionaryErrorBody;
+};
+
+export type KeepDictionaryEntriesError = KeepDictionaryEntriesErrors[keyof KeepDictionaryEntriesErrors];
+
+export type KeepDictionaryEntriesResponses = {
+    /**
+     * How many agent rows the person had not reviewed are now reviewed
+     */
+    200: DictionaryKept;
+};
+
+export type KeepDictionaryEntriesResponse = KeepDictionaryEntriesResponses[keyof KeepDictionaryEntriesResponses];
+
+export type DeleteDictionaryEntryData = {
+    body?: never;
+    path: {
+        /**
+         * The entry's id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/dictionary/entries/{id}';
+};
+
+export type DeleteDictionaryEntryErrors = {
+    /**
+     * agent
+     */
+    403: DictionaryErrorBody;
+    /**
+     * not_found (MSG-NOT-FOUND)
+     */
+    404: DictionaryErrorBody;
+};
+
+export type DeleteDictionaryEntryError = DeleteDictionaryEntryErrors[keyof DeleteDictionaryEntryErrors];
+
+export type DeleteDictionaryEntryResponses = {
+    /**
+     * Deleted, with a tombstone for its (fold key, tier); allowed under managed policy
+     */
+    204: void;
+};
+
+export type DeleteDictionaryEntryResponse = DeleteDictionaryEntryResponses[keyof DeleteDictionaryEntryResponses];
+
+export type EditDictionaryEntryData = {
+    body: DictionaryEditRequest;
+    path: {
+        /**
+         * The entry's id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/dictionary/entries/{id}';
+};
+
+export type EditDictionaryEntryErrors = {
+    /**
+     * agent or policy
+     */
+    403: DictionaryErrorBody;
+    /**
+     * not_found (MSG-NOT-FOUND)
+     */
+    404: DictionaryErrorBody;
+    /**
+     * duplicate (MSG-DICTIONARY-DUPLICATE)
+     */
+    409: DictionaryErrorBody;
+    /**
+     * stale (MSG-DICTIONARY-STALE), with the row's rev
+     */
+    412: DictionaryErrorBody;
+    /**
+     * A validation code
+     */
+    422: DictionaryErrorBody;
+};
+
+export type EditDictionaryEntryError = EditDictionaryEntryErrors[keyof EditDictionaryEntryErrors];
+
+export type EditDictionaryEntryResponses = {
+    /**
+     * The row after the edit (on a daemon with no key, a private standing caller's edit of a public row lands in its private twin)
+     */
+    200: DictionaryEntryChanged;
+};
+
+export type EditDictionaryEntryResponse = EditDictionaryEntryResponses[keyof EditDictionaryEntryResponses];
+
+export type ChangeDictionaryEntryTierData = {
+    body: DictionaryTierRequest;
+    path: {
+        /**
+         * The entry's id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/dictionary/entries/{id}/tier';
+};
+
+export type ChangeDictionaryEntryTierErrors = {
+    /**
+     * agent, host_tier (MSG-DICTIONARY-HOST-TIER, decided before the id is read) or policy
+     */
+    403: DictionaryErrorBody;
+    /**
+     * not_found (MSG-NOT-FOUND)
+     */
+    404: DictionaryErrorBody;
+    /**
+     * cap
+     */
+    409: DictionaryErrorBody;
+};
+
+export type ChangeDictionaryEntryTierError = ChangeDictionaryEntryTierErrors[keyof ChangeDictionaryEntryTierErrors];
+
+export type ChangeDictionaryEntryTierResponses = {
+    /**
+     * The row that holds the term afterwards: moved, or merged into its twin
+     */
+    200: DictionaryEntryChanged;
+};
+
+export type ChangeDictionaryEntryTierResponse = ChangeDictionaryEntryTierResponses[keyof ChangeDictionaryEntryTierResponses];
+
+export type UndoAgentDictionaryAddData = {
+    body: DictionaryUndoAgentAddRequest;
+    path: {
+        /**
+         * The agent row's id
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/dictionary/entries/{id}/undo-agent-add';
+};
+
+export type UndoAgentDictionaryAddErrors = {
+    /**
+     * The caller is not authorized to remove the row
+     */
+    403: DictionaryErrorBody;
+    /**
+     * Missing or hidden row
+     */
+    404: DictionaryErrorBody;
+    /**
+     * The row changed and was preserved
+     */
+    412: DictionaryErrorBody;
+    /**
+     * The dictionary could not be written
+     */
+    500: DictionaryErrorBody;
+    /**
+     * The dictionary could not be read
+     */
+    503: DictionaryErrorBody;
+};
+
+export type UndoAgentDictionaryAddError = UndoAgentDictionaryAddErrors[keyof UndoAgentDictionaryAddErrors];
+
+export type UndoAgentDictionaryAddResponses = {
+    /**
+     * Removed the unchanged active, unreviewed agent row
+     */
+    204: void;
+};
+
+export type UndoAgentDictionaryAddResponse = UndoAgentDictionaryAddResponses[keyof UndoAgentDictionaryAddResponses];
+
+export type ExportDictionaryData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Include private rows: honoured only with private standing, after the person
+         * confirmed MSG-EXPORT-PRIVATE.
+         */
+        include_private?: boolean | null;
+    };
+    url: '/dictionary/export';
+};
+
+export type ExportDictionaryErrors = {
+    /**
+     * agent
+     */
+    403: DictionaryErrorBody;
+    /**
+     * bad_request: a query this daemon cannot read
+     */
+    422: DictionaryErrorBody;
+};
+
+export type ExportDictionaryError = ExportDictionaryErrors[keyof ExportDictionaryErrors];
+
+export type ExportDictionaryResponses = {
+    /**
+     * The export JSON (biorouter.dictionary v1) as an attachment: no ids, session ids or usage; allowed under managed policy
+     */
+    200: unknown;
+};
+
+export type ImportDictionaryData = {
+    body: DictionaryImportRequest;
+    path?: never;
+    query?: never;
+    url: '/dictionary/import';
+};
+
+export type ImportDictionaryErrors = {
+    /**
+     * agent, host_private (MSG-DICTIONARY-HOST-PRIVATE, before any row is read) or policy
+     */
+    403: DictionaryErrorBody;
+    /**
+     * too_large: over 1 MiB or 5,000 rows
+     */
+    413: DictionaryErrorBody;
+    /**
+     * not_an_export or unparsable: the file as a whole could not be read
+     */
+    422: DictionaryErrorBody;
+};
+
+export type ImportDictionaryError = ImportDictionaryErrors[keyof ImportDictionaryErrors];
+
+export type ImportDictionaryResponses = {
+    /**
+     * The import's counts; it merges and never deletes
+     */
+    200: DictionaryImportAnswer;
+};
+
+export type ImportDictionaryResponse = ImportDictionaryResponses[keyof ImportDictionaryResponses];
+
+export type PostDictionaryObservationsData = {
+    body: DictionaryObservationsRequest;
+    path?: never;
+    query?: never;
+    url: '/dictionary/observations';
+};
+
+export type PostDictionaryObservationsErrors = {
+    /**
+     * agent or policy
+     */
+    403: DictionaryErrorBody;
+    /**
+     * too_large: more than 16 pairs
+     */
+    413: DictionaryErrorBody;
+};
+
+export type PostDictionaryObservationsError = PostDictionaryObservationsErrors[keyof PostDictionaryObservationsErrors];
+
+export type PostDictionaryObservationsResponses = {
+    /**
+     * Always, including a silent no op: a chat out of reach, a stamp this caller cannot list, a pair holding a secret or PII, or one seen before
+     */
+    204: void;
+};
+
+export type PostDictionaryObservationsResponse = PostDictionaryObservationsResponses[keyof PostDictionaryObservationsResponses];
+
+export type GetDictionarySettingsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/dictionary/settings';
+};
+
+export type GetDictionarySettingsErrors = {
+    /**
+     * unreadable (MSG-DICTIONARY-FILE)
+     */
+    503: DictionaryErrorBody;
+};
+
+export type GetDictionarySettingsError = GetDictionarySettingsErrors[keyof GetDictionarySettingsErrors];
+
+export type GetDictionarySettingsResponses = {
+    /**
+     * The stored settings and what this caller may do
+     */
+    200: DictionarySettings;
+};
+
+export type GetDictionarySettingsResponse = GetDictionarySettingsResponses[keyof GetDictionarySettingsResponses];
+
+export type ChangeDictionarySettingsData = {
+    body: DictionarySettingsRequest;
+    path?: never;
+    query?: never;
+    url: '/dictionary/settings';
+};
+
+export type ChangeDictionarySettingsErrors = {
+    /**
+     * agent, host_settings (MSG-DICTIONARY-HOST-SETTINGS, a raise on a daemon with no key) or policy
+     */
+    403: DictionaryErrorBody;
+};
+
+export type ChangeDictionarySettingsError = ChangeDictionarySettingsErrors[keyof ChangeDictionarySettingsErrors];
+
+export type ChangeDictionarySettingsResponses = {
+    /**
+     * The settings after the change
+     */
+    200: DictionarySettings;
+};
+
+export type ChangeDictionarySettingsResponse = ChangeDictionarySettingsResponses[keyof ChangeDictionarySettingsResponses];
+
+export type AcceptDictionarySuggestionsData = {
+    body: DictionaryIdsRequest;
+    path?: never;
+    query?: never;
+    url: '/dictionary/suggestions/accept';
+};
+
+export type AcceptDictionarySuggestionsErrors = {
+    /**
+     * agent or policy
+     */
+    403: DictionaryErrorBody;
+    /**
+     * cap: nothing was accepted
+     */
+    409: DictionaryErrorBody;
+};
+
+export type AcceptDictionarySuggestionsError = AcceptDictionarySuggestionsErrors[keyof AcceptDictionarySuggestionsErrors];
+
+export type AcceptDictionarySuggestionsResponses = {
+    /**
+     * How many suggestions are now active and reviewed
+     */
+    200: DictionaryAccepted;
+};
+
+export type AcceptDictionarySuggestionsResponse = AcceptDictionarySuggestionsResponses[keyof AcceptDictionarySuggestionsResponses];
+
+export type DismissDictionarySuggestionsData = {
+    body: DictionaryIdsRequest;
+    path?: never;
+    query?: never;
+    url: '/dictionary/suggestions/dismiss';
+};
+
+export type DismissDictionarySuggestionsErrors = {
+    /**
+     * agent
+     */
+    403: DictionaryErrorBody;
+};
+
+export type DismissDictionarySuggestionsError = DismissDictionarySuggestionsErrors[keyof DismissDictionarySuggestionsErrors];
+
+export type DismissDictionarySuggestionsResponses = {
+    /**
+     * How many suggestions were deleted, each with its tombstone; allowed under managed policy
+     */
+    200: DictionaryDismissed;
+};
+
+export type DismissDictionarySuggestionsResponse = DismissDictionarySuggestionsResponses[keyof DismissDictionarySuggestionsResponses];
 
 export type StartOpenrouterSetupData = {
     body?: never;

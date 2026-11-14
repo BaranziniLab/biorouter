@@ -39,6 +39,21 @@
   gap: 4px;
 }
 
+/* A trailing part placed below (`trailingPlacement="below"`) takes a line of its
+   own under the head, at the label's left edge (the glyph's 16px plus the
+   head's 8px gap), so the label keeps its words. It stays inside the line,
+   which wraps, so the padding `message-meta.css` gives the line reaches it. */
+.br-transcript-row-line[data-trailing='below'] {
+  flex-wrap: wrap;
+  row-gap: 0;
+}
+
+.br-transcript-row-line[data-trailing='below'] > .br-transcript-row-trailing {
+  flex: 1 0 100%;
+  min-width: 0;
+  padding-inline-start: 24px;
+}
+
 .br-transcript-row-head {
   display: inline-flex;
   flex: 0 1 auto;

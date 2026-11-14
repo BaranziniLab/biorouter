@@ -88,7 +88,7 @@ interface UseChatStreamReturn {
     messageId: string,
     newContent: string,
     editType?: 'diverge' | 'edit'
-  ) => Promise<void>;
+  ) => Promise<boolean>;
 }
 
 export function useChatStream({

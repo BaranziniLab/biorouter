@@ -324,6 +324,12 @@ jobs:
             *) echo "::error::packaged backend is '$got' but this release is $v"; exit 1 ;;
           esac
 
+          # The local dictation engine loads the vendored test model and voice detector and
+          # decodes jfk.wav, offline, in both packaged binaries (DD-12). Like the version
+          # above, it runs the copies the deb carries, natively on this x86_64 runner. The
+          # CLI-only packages ran the same test inside their install containers.
+          bash scripts/dictation-self-test.sh --expect-backend cpu "$res/bin/biorouter" "$res/bin/biorouterd"
+
           sha256sum "$deb" "$rpm" "$cli_deb" "$cli_rpm"
 
       - uses: actions/upload-artifact@v4

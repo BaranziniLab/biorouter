@@ -11,6 +11,8 @@
  * Owners of the sections that live outside WS-SETTINGS-A's files:
  * - `defaultModel`, `localModels`, `modelsDangerZone`: WS-SETTINGS-M
  *   (`settings/models/**`, `settings/reset_provider/**`).
+ * - `dictation`: local dictation's Speech models (`settings/models/SpeechModelSection.tsx`,
+ *   DD-66 in `docs/dictation/implementation-plan.md`).
  * - `memory`, `configuration`: WS-SETTINGS-B (`settings/memory/**`,
  *   `settings/config/**`).
  * - `usage`: WS-USAGE (`settings/usage/**`).
@@ -34,6 +36,8 @@ export const SETTINGS_SECTIONS = {
   // Models tab
   defaultModel: { id: 'settings-default-model', tab: 'models' },
   localModels: { id: 'settings-local-models', tab: 'models' },
+  // Speech models (DD-66): the setup popover's More in Settings lands here, by this key.
+  dictation: { id: 'settings-dictation', tab: 'models' },
   modelsDangerZone: { id: 'settings-models-danger-zone', tab: 'models' },
   // Chat tab
   approvals: { id: 'settings-approvals', tab: 'chat' },

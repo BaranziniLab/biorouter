@@ -68,6 +68,21 @@ const toolLists: Plugin = {
   },
 };
 
+/** Vite's `?url&no-inline` worklet import means nothing to esbuild; the worklet is not loaded here. */
+const workletUrl: Plugin = {
+  name: 'worklet-url',
+  setup(builder) {
+    builder.onResolve({ filter: /\.worklet\.js\?/ }, () => ({
+      path: 'worklet',
+      namespace: 'stub',
+    }));
+    builder.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({
+      contents: 'export default "";',
+      loader: 'js',
+    }));
+  },
+};
+
 const ENTRY = `
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
@@ -84,6 +99,20 @@ import {
 import { Button } from '../ui/button';
 import { PrivacyBadge } from '../ui/PrivacyBadge';
 import { ArrowUp, ChevronDown, Folder } from '../icons/app-icons';
+import { DictationButton } from '../dictation/DictationButton';
+
+/** The microphone's control at rest: what \`useDictationComposer\` hands it in a chat (DD-60). */
+const micControl = (key) => ({
+  key,
+  available: true,
+  activity: 'idle',
+  holdsComposer: false,
+  press() {},
+  stop() {},
+  cancel() {},
+  handleKeyDown: () => false,
+  noteInterest() {},
+});
 
 const IMAGE =
   'data:image/svg+xml;utf8,' +
@@ -148,6 +177,7 @@ function Card({
           <div className="br-composer-controls__model">
             {modelChip ?? <ModelChip />}
           </div>
+          <DictationButton control={micControl(id)} setView={() => {}} />
           <span className="flex-shrink-0">
             <Button
               id={id + '-send'}
@@ -323,7 +353,7 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
       format: 'iife',
       jsx: 'automatic',
       platform: 'browser',
-      plugins: [toolLists],
+      plugins: [toolLists, workletUrl],
       define: { 'process.env.NODE_ENV': '"production"' },
       loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
       logLevel: 'silent',
@@ -601,7 +631,7 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
   });
 
   it.for([760, 440, CHAT_MIN_WIDTH])(
-    'keeps the Tools-only chip, private model and Send on one row in a %ipx pane',
+    'keeps the Tools-only chip, private model, microphone and Send on one row in a %ipx pane',
     async (width, ctx) => {
       if (!browser) return ctx.skip();
       const tab = await open('light');
@@ -645,11 +675,18 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
             name: box('[data-kind="model"] .br-picker-chip__name'),
             lock: box('[data-kind="model"] [data-testid="privacy-badge"]'),
             chevron: box('[data-kind="model"] .br-picker-chip__chevron'),
+            mic: box('[data-testid="dictation-button"]'),
             send: box('#rest-send'),
           };
         });
         const tolerance = 0.5;
-        const ordered = [geometry.plus, geometry.tools, geometry.model, geometry.send];
+        const ordered = [
+          geometry.plus,
+          geometry.tools,
+          geometry.model,
+          geometry.mic,
+          geometry.send,
+        ];
         expect(geometry.card.width).toBe(width - CHAT_COLUMN_CHROME);
         for (const control of ordered) {
           expect(control.left).toBeGreaterThanOrEqual(geometry.card.left);
@@ -683,6 +720,9 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
         expect(geometry.name.scrollWidth).toBeGreaterThan(geometry.name.clientWidth);
         expect(geometry.send.width).toBe(32);
         expect(geometry.send.height).toBe(32);
+        // The microphone: the 28px ghost round button, immediately left of Send (DD-60).
+        expect([geometry.mic.width, geometry.mic.height]).toEqual([28, 28]);
+        expect(geometry.send.left - geometry.mic.right).toBe(4);
         if (SHOTS) {
           mkdirSync(SHOTS, { recursive: true });
           await tab.locator('#rest').screenshot({

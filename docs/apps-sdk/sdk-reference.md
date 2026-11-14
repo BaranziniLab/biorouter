@@ -17,6 +17,12 @@ The *behaviour* below is verified against the code:
 
 The *intent* behind each pillar lives in the [Apps SDK v2 design](v2-design.md); the sequence in which the pillars land is in the [phase roadmap](v2-phase-roadmap.md).
 
+## Dictation in apps
+
+Apps do not receive microphone access. In the Biorouter desktop preview, click into the app's text field, then use **Dictate into this app** in the preview toolbar; the button appears only while a text field in the app has focus, and works whether or not **Dictate into other apps** is on. The app receives text only. You can also use **Dictate to clipboard** in Biorouter, or `biorouter dictate --copy`, and paste. Your system's own dictation works without the Biorouter dictionary.
+
+In a browser without the Biorouter desktop app, dictate in Biorouter's composer and copy the text, or use your system's dictation. App pages cannot open the microphone. The preview button ships only after M-15 shows that text reaches the focused app field; if M-15 fails, this section must use MSG-APPS-NO-PREVIEW instead.
+
 ## What is and is not shipped
 
 The design describes nine pillars. Most of the surface below ships as documented; these are the exceptions, gathered in one place so you do not have to hunt for inline "Partial" markers.

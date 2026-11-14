@@ -66,6 +66,8 @@ vi.mock('./bottom_menu/ComposerFooter', () => ({
   ),
 }));
 vi.mock('./MessageQueue', () => ({ default: () => null }));
+// A decision chat's question editor reads the daemon through the generated client;
+// these tests are about where the composer puts things, so it is a stub here.
 vi.mock('./decisions/DecisionComposer', () => ({
   DecisionComposer: () => <div data-testid="decision-composer-stub" />,
   DECISION_CHAT_PLACEHOLDER: 'Ask the decision model',
@@ -150,6 +152,8 @@ describe('the composer is one card and one footer line', () => {
       within(controls).getByTestId('composer-plus'),
       within(controls).getByTestId('tools-chip-stub'),
       within(controls).getByTestId('model-chip-stub'),
+      // The microphone, immediately left of Send (DD-60).
+      within(controls).getByTestId('dictation-button'),
       within(controls).getByRole('button', { name: COMPOSER_COPY.send.label }),
     ];
     for (let i = 1; i < order.length; i++) {
@@ -157,6 +161,12 @@ describe('the composer is one card and one footer line', () => {
         order[i - 1].compareDocumentPosition(order[i]) & Node.DOCUMENT_POSITION_FOLLOWING
       ).toBeTruthy();
     }
+    // Send stays the row's last child: the footer inset and the geometry tests
+    // are derived from its edge.
+    const send = within(controls).getByRole('button', { name: COMPOSER_COPY.send.label });
+    expect(controls.lastElementChild?.contains(send)).toBe(true);
+    const mic = within(controls).getByTestId('dictation-button');
+    expect(controls.lastElementChild?.previousElementSibling?.contains(mic)).toBe(true);
   });
 
   it('puts the footer line under the card, outside it', () => {
@@ -212,6 +222,18 @@ describe('a decision chat (B-3)', () => {
     const controls = within(card()).getByTestId('chat-input-toolbar');
     expect(within(controls).getByTestId('composer-plus')).toBeInTheDocument();
     expect(within(controls).getByTestId('tools-chip-stub')).toBeInTheDocument();
+  });
+
+  // Owner decision, 2026-11-12: a decision chat shows the microphone. Dictation is
+  // input, not a model feature, so it stays immediately left of Send there too.
+  it('keeps the microphone beside Send', () => {
+    renderComposer({ effectiveModel: { provider: 'baseten_decision', model: 'joey-1' } });
+    expect(screen.getByTestId('decision-composer-stub')).toBeInTheDocument();
+    const controls = within(card()).getByTestId('chat-input-toolbar');
+    const send = within(controls).getByRole('button', { name: COMPOSER_COPY.send.label });
+    const mic = within(controls).getByTestId('dictation-button');
+    expect(controls.lastElementChild?.contains(send)).toBe(true);
+    expect(controls.lastElementChild?.previousElementSibling?.contains(mic)).toBe(true);
   });
 });
 

@@ -90,6 +90,35 @@ describe('TranscriptRow', () => {
     );
     const about = screen.getByRole('button', { name: 'About' });
     expect(about.closest('.br-transcript-row-head')).toBeNull();
+    // Inline by default: straight after the head, with no line of its own.
+    expect(about.closest('.br-transcript-row-trailing')).toBeNull();
+    expect(about.closest('.br-transcript-row-line')).not.toHaveAttribute('data-trailing');
+  });
+
+  it('gives trailing content a line of its own under the head when placed below', () => {
+    render(
+      <TranscriptRow
+        icon={Check}
+        label="Added terms"
+        trailingPlacement="below"
+        trailing={<button type="button">Keep</button>}
+      >
+        <p>Body</p>
+      </TranscriptRow>
+    );
+    const keep = screen.getByRole('button', { name: 'Keep' });
+    expect(keep.closest('.br-transcript-row-head')).toBeNull();
+    // Still inside the row's line (message-meta.css ends that line short), which wraps.
+    expect(keep.closest('.br-transcript-row-trailing')).not.toBeNull();
+    expect(keep.closest('.br-transcript-row-line')).toHaveAttribute('data-trailing', 'below');
+  });
+
+  it('marks no line for wrapping when there is nothing to place below', () => {
+    const { container } = render(
+      <TranscriptRow icon={Check} label="Added terms" trailingPlacement="below" />
+    );
+    expect(container.querySelector('.br-transcript-row-line')).not.toHaveAttribute('data-trailing');
+    expect(container.querySelector('.br-transcript-row-trailing')).toBeNull();
   });
 
   it('labels a well section in supporting type', () => {

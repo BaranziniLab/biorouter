@@ -12,6 +12,7 @@ import {
   composerDraftKeyForTab,
   giveBackToComposer,
   hasComposerDraft,
+  insertIntoComposerDraft,
   mergeComposerDraft,
   readComposerDraft,
   resetComposerDraftsForTests,
@@ -259,5 +260,88 @@ describe('send ownership after an existing tab disappears', () => {
     current.giveBack(draft('current question'));
     expect(readComposerDraft(key)?.text).toBe('current question');
     expect(isComposerSending(key)).toBe(false);
+  });
+});
+
+describe('insertIntoComposerDraft: dictated text for a composer that unmounted', () => {
+  it('splices at the anchor, keeps images and files, and stamps the key', () => {
+    const key = composerDraftKeyForTab('dictation');
+    saveComposerDraft(key, draft('Check the  results', { images: [image(9)] }));
+    const before = composerDraftVersion(key);
+    insertIntoComposerDraft(key, 'Check the'.length, 'EPAS1');
+    const stored = readComposerDraft(key);
+    expect(stored?.text).toBe('Check the EPAS1  results');
+    expect(stored?.images).toEqual([image(9)]);
+    expect(composerDraftVersion(key)).toBeGreaterThan(before);
+  });
+
+  it('puts the text where the person was, not before the draft as a give-back would', () => {
+    const key = composerDraftKeyForTab('order');
+    saveComposerDraft(key, draft('first line'));
+    insertIntoComposerDraft(key, 'first line'.length, 'spoken words');
+    expect(readComposerDraft(key)?.text).toBe('first line spoken words');
+  });
+
+  it('replaces a selection the dictation was started over', () => {
+    const key = composerDraftKeyForTab('selection');
+    saveComposerDraft(key, draft('replace THIS please'));
+    insertIntoComposerDraft(key, { start: 8, end: 12 }, 'that');
+    expect(readComposerDraft(key)?.text).toBe('replace that please');
+  });
+
+  it('creates the draft when the key held nothing, and ignores empty text', () => {
+    const key = composerDraftKeyForTab('empty');
+    insertIntoComposerDraft(key, 0, '   ');
+    expect(readComposerDraft(key)).toBeUndefined();
+    insertIntoComposerDraft(key, 0, '/bug in the parser');
+    expect(readComposerDraft(key)?.text).toBe('bug in the parser');
+  });
+});
+
+describe('dictation stays with its renderer draft', () => {
+  const recording = {
+    recordId: 'record-1',
+    raw: 'raw only in memory',
+    changes: [],
+    model: 'small',
+    biasScope: 'public' as const,
+  };
+  it('records a transcript delivered after unmount, including replaced text and spacing', () => {
+    const key = composerDraftKeyForTab('dictation');
+    saveComposerDraft(key, draft('Check old gene'));
+    insertIntoComposerDraft(key, { start: 6, end: 9 }, 'a pass one', recording);
+    const saved = readComposerDraft(key)!;
+    expect(saved.text).toBe('Check a pass one gene');
+    expect(saved.dictation?.[0]).toMatchObject({
+      recordId: 'record-1',
+      raw: recording.raw,
+      start: 6,
+      end: 16,
+      replaced: 'old',
+      inserted: 'a pass one',
+    });
+    const merged = mergeComposerDraft(draft('typed since'), saved);
+    expect(merged.dictation?.[0].start).toBe(6);
+    expect(merged.text.slice(merged.dictation![0].start, merged.dictation![0].end)).toBe(
+      'a pass one'
+    );
+    expect(isComposerSending(key)).toBe(false);
+  });
+
+  it('keeps both ledgers and offsets through a give-back, then frees them when the tab closes', () => {
+    const key = composerDraftKeyForTab('merge-ledgers');
+    saveComposerDraft(key, draft('First'));
+    insertIntoComposerDraft(key, 5, 'EPAS1', recording);
+    const first = readComposerDraft(key)!;
+    saveComposerDraft(key, draft('Second'));
+    insertIntoComposerDraft(key, 6, 'HIF2-alpha', { ...recording, recordId: 'record-2' });
+    giveBackToComposer(key, first);
+    const merged = readComposerDraft(key)!;
+    expect(merged.dictation?.map((span) => merged.text.slice(span.start, span.end))).toEqual([
+      ' EPAS1',
+      ' HIF2-alpha',
+    ]);
+    retainTabComposerDrafts([]);
+    expect(readComposerDraft(key)).toBeUndefined();
   });
 });

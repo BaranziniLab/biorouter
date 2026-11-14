@@ -1,0 +1,95 @@
+# The speech model pins compiled into Biorouter against what GitHub serves (PR-11,
+# docs/dictation/engine-and-models.md, "Verification and the nightly pin check").
+#
+# Biorouter trusts its compiled pins, never GitHub's reported digest at run time
+# (DD-17). Every night this reads each entry of STT_MODEL_CATALOG in
+# crates/biorouter-dictation/src/catalog.rs, and for each one checks that its release
+# in BaranziniLab/biorouter-models is immutable, that the asset's size and the digest
+# GitHub reports equal the pin, that `gh release verify-asset` passes, and that the
+# bytes the pinned URL serves hash to the pin. A red run means a release changed or a
+# pin is wrong; immutable releases should make both impossible, which is why it is
+# checked.
+name: Dictation model pins
+
+on:
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dictation-model-pins
+  cancel-in-progress: false
+
+jobs:
+  pins:
+    name: Catalog pins equal the published releases
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the pins from the catalog
+        run: |
+          python3 -I - <<'PY' > "$RUNNER_TEMP/pins.tsv"
+          import re, sys
+          source = open("crates/biorouter-dictation/src/catalog.rs").read()
+          consts = dict(re.findall(r'const (\w+): &str =\s*"([^"]*)";', source))
+          body = source[source.index("pub const STT_MODEL_CATALOG"):source.index("pub const RETIRED_STT_MODELS")]
+          entries = body.split("SttCatalogEntry {")[1:]
+          def field(block, name):
+              m = re.search(name + r':\s*([^,\n]+),', block)
+              if not m:
+                  sys.exit(f"no {name} in an entry")
+              value = m.group(1).strip()
+              if value.startswith('"'):
+                  return value.strip('"')
+              return consts.get(value, value).replace("_", "") if not value[0].isdigit() else value.replace("_", "")
+          rows = 0
+          for block in entries:
+              tag = field(block, "release_tag")
+              name = field(block, "file_name")
+              size = field(block, "size_bytes")
+              sha = field(block, "sha256")
+              url = re.search(r'urls:\s*&\["([^"]+)"', block).group(1)
+              if not re.fullmatch(r"[0-9a-f]{64}", sha):
+                  sys.exit(f"{tag}: the pin {sha!r} is not 64 hex digits")
+              print("\t".join([tag, name, size, sha, url]))
+              rows += 1
+          if rows < 3:
+              sys.exit(f"read only {rows} catalog entries; the parser no longer matches catalog.rs")
+          PY
+          cat "$RUNNER_TEMP/pins.tsv"
+
+      - name: Compare each pin with its release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: BaranziniLab/biorouter-models
+        run: |
+          set -euo pipefail
+          failed=0
+          while IFS=$'\t' read -r tag name size sha url; do
+            echo "::group::$tag"
+            if [ "$(gh release view "$tag" -R "$REPO" --json isImmutable --jq .isImmutable)" != "true" ]; then
+              echo "::error::$tag is not an immutable release"; failed=1
+            fi
+            reported=$(gh release view "$tag" -R "$REPO" --json assets \
+              --jq ".assets[] | select(.name == \"$name\") | \"\(.size) \(.digest)\"")
+            if [ "$reported" != "$size sha256:$sha" ]; then
+              echo "::error::$tag/$name: GitHub reports '$reported', the pin is '$size sha256:$sha'"; failed=1
+            fi
+            dir=$(mktemp -d)
+            if curl -fsSL --retry 3 -o "$dir/$name" "$url"; then
+              actual=$(sha256sum "$dir/$name" | cut -d' ' -f1)
+              [ "$actual" = "$sha" ] || { echo "::error::$url hashes to $actual, the pin is $sha"; failed=1; }
+              gh release verify-asset "$tag" "$dir/$name" -R "$REPO" \
+                || { echo "::error::gh release verify-asset failed for $tag/$name"; failed=1; }
+            else
+              echo "::error::$url could not be downloaded"; failed=1
+            fi
+            rm -rf "$dir"
+            echo "::endgroup::"
+          done < "$RUNNER_TEMP/pins.tsv"
+          exit "$failed"

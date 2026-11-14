@@ -1,0 +1,42 @@
+# Drug names the Fareez et al. 2022 subset is cut around (O-38, M-22), each written the way
+# a dictionary would hold it. Found by a whole word, case blind scan of the 272 clean
+# transcripts on 2026-11-06; general words the interviews use for medicines (antibiotics,
+# inhaler, puffer, steroid, statin, pill) are left out.
+Tylenol
+Advil
+metformin
+insulin
+ramipril
+penicillin
+ibuprofen
+Ventolin
+amoxicillin
+aspirin
+rosuvastatin
+amlodipine
+Spiriva
+Synthroid
+Claritin
+lisinopril
+EpiPen
+Tums
+hydromorphone
+metoprolol
+atorvastatin
+acetaminophen
+salbutamol
+morphine
+furosemide
+azithromycin
+citalopram
+Lasix
+colchicine
+Voltaren
+Flovent
+escitalopram
+Septra
+epinephrine
+Champix
+pantoprazole
+naproxen
+Symbicort

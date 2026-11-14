@@ -14,6 +14,9 @@ import {
   type Ref,
 } from 'react';
 import type { ProviderDetails } from '../../../api';
+import { CrewDictationButton } from '../../dictation/CrewDictationButton';
+import { DictationHoldReason, DictationNotices } from '../../dictation/DictationButton';
+import { dictationContext, useDictationComposer } from '../../dictation/useDictationComposer';
 import { Button } from '../../ui/button';
 import { Note } from '../../ui/note';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
@@ -569,6 +572,7 @@ export function Composer({ note, inputRef, agentPaneId }: ComposerProps) {
   } else {
     body = (
       <ComposerCard
+        dictationKey={`crew:channel:${destination}`}
         name={name}
         body={draft.body}
         setBody={editBody}
@@ -977,6 +981,7 @@ function composerNote({
 }
 
 interface ComposerCardProps {
+  dictationKey: string;
   name: string;
   body: string;
   setBody(body: string): void;
@@ -1073,6 +1078,7 @@ export function useRestoredDraftCaret(
 }
 
 function ComposerCard({
+  dictationKey,
   name,
   body,
   setBody,
@@ -1099,6 +1105,7 @@ function ComposerCard({
   inputRef,
 }: ComposerCardProps) {
   const textarea = useRef<HTMLTextAreaElement | null>(null);
+  const composing = useRef(false);
   const setTextarea = useCallback(
     (node: HTMLTextAreaElement | null) => {
       textarea.current = node;
@@ -1135,6 +1142,29 @@ function ComposerCard({
   }, [body]);
 
   const caret = useRestoredDraftCaret(textarea, body);
+  const dictationTarget = () => {
+    const field = textarea.current;
+    const at = Math.min(field?.selectionStart ?? body.length, body.length);
+    const context = dictationContext(body.slice(0, at));
+    return { target_kind: 'crew' as const, ...(context ? { context } : {}) };
+  };
+  const dictation = useDictationComposer({
+    key: dictationKey,
+    textAreaRef: textarea,
+    storesDraft: false,
+    target: dictationTarget,
+    setByState: (value, at) => {
+      caret.typed(value);
+      setBody(value);
+      setCaretAt(at);
+      requestAnimationFrame(() => {
+        const field = textarea.current;
+        if (field && document.activeElement === field) field.setSelectionRange(at, at);
+      });
+    },
+    isComposing: () => composing.current,
+    isEmpty: () => !body,
+  });
   // After an accepted row: the caret goes after what it inserted, not to the end.
   useLayoutEffect(() => {
     const at = placeCaret.current;
@@ -1156,6 +1186,7 @@ function ComposerCard({
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (dictation.handleKeyDown(e)) return;
     // An open suggestion list takes its keys first (Enter and Tab accept a row); it ignores every
     // key while an input method is composing, as the rest of this handler does.
     const listed = suggestions.onKeyDown(e);
@@ -1172,7 +1203,7 @@ function ComposerCard({
     )
       return;
     e.preventDefault();
-    if (!e.repeat) onSubmit();
+    if (!e.repeat && !dictation.holdsComposer) onSubmit();
   };
   /**
    * A pasted file goes to the upload path; pasted words stay words. Copying cells or rich text
@@ -1251,6 +1282,12 @@ function ComposerCard({
           onKeyDown(event);
         }}
         onPointerDown={caret.touched}
+        onCompositionStart={() => {
+          composing.current = true;
+        }}
+        onCompositionEnd={() => {
+          composing.current = false;
+        }}
         onFocus={(event) => {
           setFocused(true);
           caret.focused(event);
@@ -1258,6 +1295,7 @@ function ComposerCard({
         onBlur={() => setFocused(false)}
         onPaste={onPaste}
       />
+      <DictationNotices dictationKey={dictationKey} />
       {agentLine}
       <div className="crew-compose-controls">
         <AttachMenu
@@ -1279,6 +1317,13 @@ function ComposerCard({
           {composerCopy.askAgent}
         </Button>
         <span className="crew-compose-spacer" />
+        <CrewDictationButton
+          control={dictation}
+          target={dictationTarget}
+          onSettings={() => {
+            window.location.hash = '#/settings?section=dictation';
+          }}
+        />
         {/* One node in both modes. For a draft that starts a task it is "Start agent task", described
             by the consent line, and disabled while a task is starting (single flight) or when
             nothing would start; "Send message" stays its name for every other draft (C6). */}
@@ -1293,7 +1338,10 @@ function ComposerCard({
                 aria-label={agentMode ? composerCopy.startTask : composerCopy.send}
                 aria-describedby={agentMode && agentLine ? hintId : undefined}
                 aria-busy={(agentMode ? startingTask : posting) || undefined}
-                disabled={agentMode ? startingTask || agentRefused : !hasContent && !posting}
+                disabled={
+                  dictation.holdsComposer ||
+                  (agentMode ? startingTask || agentRefused : !hasContent && !posting)
+                }
                 className={cn(
                   !agentMode && !hasContent && 'cursor-not-allowed disabled:opacity-100'
                 )}
@@ -1316,11 +1364,15 @@ function ComposerCard({
             </span>
           </TooltipTrigger>
           <TooltipContent>
-            {agentMode
-              ? composerCopy.startTaskTooltip
-              : posting
-                ? composerCopy.sending
-                : composerCopy.send}
+            {dictation.holdsComposer ? (
+              <DictationHoldReason dictationKey={dictationKey} />
+            ) : agentMode ? (
+              composerCopy.startTaskTooltip
+            ) : posting ? (
+              composerCopy.sending
+            ) : (
+              composerCopy.send
+            )}
           </TooltipContent>
         </Tooltip>
       </div>

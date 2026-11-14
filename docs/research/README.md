@@ -1,9 +1,11 @@
 # Research
 
 This folder holds **external research** — studies of software outside BioRouter, written to
-inform BioRouter's own design. Its single topic today is the coding-agent landscape: eight
+inform BioRouter's own design. It has two topics. The coding-agent landscape is eight
 reports reviewing how other agentic coding tools build their feedback loops, each covering
-the same ten dimensions so they can be read side by side.
+the same ten dimensions so they can be read side by side. Voice dictation is a survey of
+dictation applications, speech engines and speech models, with the measurements Biorouter
+ran while choosing its own engine, models and dictionary design.
 
 Come here when you want to know **how somebody else solved a loop problem** — how Gemini CLI
 detects a stuck agent, how Cline checkpoints edits, how Codex CLI sandboxes a command — before
@@ -47,10 +49,23 @@ whole corpus benchmarks against, and is the only report on a closed-source produ
 fastest. [Gemini CLI](coding-agent-landscape/gemini-cli.md) covers an independent TypeScript
 architecture and is one of the corpus's deepest reports.
 
+## Voice dictation
+
+The [`voice-dictation/`](voice-dictation/README.md) subdirectory holds two documents. The
+[dictation tools survey](voice-dictation/dictation-tools-survey.md) reads whisper.cpp,
+sherpa-onnx, OpenAI Codex, Handy, VoiceInk, OpenWhispr and other projects at pinned commits:
+how each captures speech, runs a local model, applies a personal vocabulary and ships its
+models. The [speech model benchmarks](voice-dictation/speech-model-benchmarks.md) record
+Biorouter's own measurements of engines, models and vocabulary biasing on biomedical
+dictation, on synthetic and real speech, with the date each was taken and the measurements
+still missing. Biorouter's design that acts on them is in
+[`docs/dictation/`](../dictation/README.md).
+
 ## Related documentation
 
 - [Agentic loop review](../history/agent-loop-review/README.md) — the executive report these eight external reviews fed into, including the four head-to-head comparison chapters that score the agents against each other.
 - [Improvement proposals register](../history/agent-loop-review/improvement-proposals.md) — the `BR-1`…`BR-67` index; the destination for every proposal number cited in this folder.
 - [Agent loop](../agent-loop/README.md) — how BioRouter's own loop, context engineering, hooks and subagents work today, as opposed to how other tools do it.
 - [Agent-loop campaign](../history/agent-loop-campaign/README.md) — the implementation campaign that acted on the gaps these reports identified.
+- [Voice dictation](../dictation/README.md): Biorouter's local dictation design and plan, built on the voice dictation research here.
 - [Crew design and reference](../crew/design/README.md): an example of what does not belong here. BioRouter's own designs sit with their subsystem, and `scripts/docs-lint.py` refuses a research document that links this repository's code.

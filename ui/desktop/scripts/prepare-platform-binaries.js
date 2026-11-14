@@ -227,6 +227,45 @@ function assertNoForeignBinaries(targetPlatform) {
   }
 }
 
+/// The legacy ggml file magic as it lies on disk (0x67676d6c little endian): every
+/// whisper.cpp speech model and voice detector starts with it.
+const GGML_MAGIC = Buffer.from('lmgg', 'latin1');
+
+/// Every file under `binDir` that starts with the ggml magic (R6, DD-19).
+///
+/// No speech model ships with the app: a person installs one into Biorouter's own data
+/// folder. Everything in src/bin lands inside the app bundle (forge.config.ts
+/// `extraResource`), so a model file left there by a local test or a script would ship
+/// to everyone. The check reads four bytes of each file, so it costs nothing next to
+/// packaging.
+function speechModelFiles(binDir = srcBinDir) {
+  return listFilesRecursive(binDir)
+    .filter((file) => {
+      let fd;
+      try {
+        fd = fs.openSync(file, 'r');
+        const head = Buffer.alloc(4);
+        return fs.readSync(fd, head, 0, 4, 0) === 4 && head.equals(GGML_MAGIC);
+      } catch {
+        return false;
+      } finally {
+        if (fd !== undefined) fs.closeSync(fd);
+      }
+    })
+    .map((file) => path.relative(binDir, file));
+}
+
+function assertNoSpeechModels() {
+  const models = speechModelFiles();
+  if (models.length > 0) {
+    console.error(`\n❌ PACKAGING ERROR: ${models.length} speech model file(s) in src/bin:`);
+    for (const model of models) console.error(`   - ${model}`);
+    console.error('\nSpeech models are never part of an install or an update; a person installs');
+    console.error('one with `biorouter dictation install`. Delete these files and package again.');
+    process.exit(1);
+  }
+}
+
 function validateRequiredBinaries(targetPlatform) {
   // Both the server (biorouterd) AND the CLI (biorouter) must ship, so the app
   // can offer "install the Biorouter CLI" from its bundled binary.
@@ -345,6 +384,9 @@ function preparePlatformBinaries() {
   // ...and that no other platform's executables came along for the ride.
   assertNoForeignBinaries(targetPlatform);
 
+  // ...and that no speech model did either (R6).
+  assertNoSpeechModels();
+
   console.log('Platform binary preparation complete');
 }
 
@@ -353,4 +395,9 @@ if (require.main === module) {
   preparePlatformBinaries();
 }
 
-module.exports = { cleanBinDirectory, foreignBinaries, preparePlatformBinaries };
+module.exports = {
+  cleanBinDirectory,
+  foreignBinaries,
+  preparePlatformBinaries,
+  speechModelFiles,
+};

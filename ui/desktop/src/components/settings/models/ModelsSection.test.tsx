@@ -7,9 +7,10 @@ import { defaultModelCopy, modelsDangerCopy } from './copy';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 
 /**
- * The Models tab is three sections of rows (spec 3.13): Default model (a Model row with a
- * Change… action and a Providers row with Manage…), Local models, and the Danger zone. These
- * tests hold the anatomy and the deep-link ids; the dialogs and the inventory have their own.
+ * The Models tab is four sections of rows (spec 3.13, DD-66): Default model (a Model row with a
+ * Change… action and a Providers row with Manage…), Local models, Speech models, and the Danger
+ * zone. These tests hold the anatomy and the deep-link ids; the dialogs, the inventory and the
+ * speech models have their own.
  */
 
 const mocks = vi.hoisted(() => ({
@@ -53,6 +54,12 @@ vi.mock('./LocalModelInventory', () => ({
   default: () => <section id="settings-local-models">LOCAL-MODELS</section>,
 }));
 
+// Speech models (DD-66) has its own tests, `SpeechModelSection.test.tsx`, which render it against
+// a fake daemon, and pin it absent on a serve browser.
+vi.mock('./SpeechModelSection', () => ({
+  default: () => <section id="settings-dictation">SPEECH-MODELS</section>,
+}));
+
 vi.mock('./predefinedModelsUtils', () => ({
   getPredefinedModelsFromEnv: () => [],
   shouldShowPredefinedModels: () => mocks.predefined,
@@ -73,13 +80,22 @@ describe('ModelsSection', () => {
     mocks.getCurrentProviderDisplayName.mockResolvedValue('Versa Azure');
   });
 
-  it('holds three sections whose ids the Settings deep links scroll to', async () => {
+  it('holds four sections whose ids the Settings deep links scroll to, Speech models third', async () => {
     const { container } = render(<ModelsSection setView={vi.fn()} />);
     await screen.findByText('gpt-5.6-sol · Versa Azure');
 
     expect(container.querySelector(`#${SETTINGS_SECTION_IDS.defaultModel}`)).not.toBeNull();
     expect(container.querySelector(`#${SETTINGS_SECTION_IDS.localModels}`)).not.toBeNull();
+    expect(container.querySelector(`#${SETTINGS_SECTION_IDS.dictation}`)).not.toBeNull();
     expect(container.querySelector(`#${SETTINGS_SECTION_IDS.modelsDangerZone}`)).not.toBeNull();
+    // DD-66: between the local model inventory and the danger zone, in the tab's own order.
+    const sections = [...container.querySelectorAll('#models > section')].map((s) => s.id);
+    expect(sections).toEqual([
+      SETTINGS_SECTION_IDS.defaultModel,
+      SETTINGS_SECTION_IDS.localModels,
+      SETTINGS_SECTION_IDS.dictation,
+      SETTINGS_SECTION_IDS.modelsDangerZone,
+    ]);
     const dangerZone = container.querySelector(`#${SETTINGS_SECTION_IDS.modelsDangerZone}`);
     expect(
       within(dangerZone as HTMLElement).getByRole('heading', { name: modelsDangerCopy.section })

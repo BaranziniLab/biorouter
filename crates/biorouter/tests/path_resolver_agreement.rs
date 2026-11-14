@@ -26,6 +26,13 @@
 //! at the end of this file pin that `Paths` reaches that rule, that the layout
 //! it builds is etcetera's own, and that the rewrite after a move covers the
 //! files the stores really use.
+//!
+//! The local data folder (`Paths::local_data_dir()`, DD-19) is the one
+//! directory with no etcetera counterpart: on Windows it is `data` under the
+//! local root beside the cache, elsewhere the data folder itself, and under a
+//! sandbox root `<root>/data`. The table above needs no row for it, because
+//! each of its cases describes one base and the local base was already one;
+//! `biorouter_mcp::paths`'s own tests run the table against that base.
 
 use biorouter::config::paths::Paths;
 use serial_test::serial;
@@ -169,6 +176,33 @@ fn agent_drafter_store_honours_the_sandbox_root() {
     });
 }
 
+/// The dictionary store (DD-33, PR-13) is `<config>/dictionary`, resolved by the core
+/// and handed to the leaf crate, which takes every path as an argument. Under a sandbox
+/// root it must land inside the sandbox, or an isolated run would read and write the
+/// person's real terms.
+#[test]
+#[serial]
+fn dictionary_store_honours_the_sandbox_root() {
+    with_path_root(Some("/tmp/br-path-agreement"), || {
+        assert_eq!(
+            biorouter::security::dictionary_store::dictionary_dir(),
+            PathBuf::from("/tmp/br-path-agreement/config/dictionary"),
+            "the dictionary must be read from the sandbox, not the user's global store"
+        );
+        assert_eq!(
+            biorouter::security::dictionary_store::open_store().store_path(),
+            PathBuf::from("/tmp/br-path-agreement/config/dictionary/dictionary.json")
+        );
+    });
+    with_path_root(None, || {
+        assert_eq!(
+            biorouter::security::dictionary_store::dictionary_dir(),
+            Paths::config_dir().join("dictionary"),
+            "without a root the store sits in the platform's configuration folder"
+        );
+    });
+}
+
 #[test]
 #[serial]
 fn knowledge_store_honours_the_sandbox_root() {
@@ -235,6 +269,7 @@ fn paths_resolves_through_the_one_platform_function() {
             Paths::state_dir(),
             dirs.state.clone().unwrap_or(dirs.data.clone())
         );
+        assert_eq!(Paths::local_data_dir(), dirs.local_data);
         assert_eq!(biorouter_mcp::paths::config_dir(), dirs.config);
     });
 
@@ -309,6 +344,101 @@ fn the_windows_layout_is_etceteras_windows_strategy() {
             .join("biorouter")
             .join("config")
     );
+    // etcetera's Windows strategy has one data folder, the roaming one, so the
+    // local data folder has no counterpart there: it is `data` beside
+    // etcetera's own cache folder, under `%LOCALAPPDATA%`.
+    assert_eq!(
+        Some(ours.local_data.as_path()),
+        etcetera
+            .cache_dir()
+            .parent()
+            .map(|root| root.join("data"))
+            .as_deref()
+    );
+    assert_eq!(
+        ours.local_data,
+        local
+            .path()
+            .join(biorouter_mcp::app_folder::APP_AUTHOR)
+            .join("biorouter")
+            .join("data")
+    );
+}
+
+/// `Paths::local_data_dir()` under a sandbox root is `<root>/data`, the same
+/// folder as `data_dir()`, for every root the config agreement above takes.
+/// A blank root is no root, as everywhere else: the platform's own folder.
+#[test]
+#[serial]
+fn the_local_data_folder_honours_the_sandbox_root() {
+    for root in [
+        "/tmp/br-path-agreement",
+        "/tmp/br-path-agreement/",
+        "/tmp/br path agreement",
+        "/tmp/ br-path-agreement",
+    ] {
+        with_path_root(Some(root), || {
+            assert_eq!(Paths::local_data_dir(), PathBuf::from(root).join("data"));
+            assert_eq!(Paths::local_data_dir(), Paths::data_dir());
+            assert_eq!(
+                Paths::in_local_data_dir("dictation/models"),
+                PathBuf::from(root).join("data").join("dictation/models"),
+                "speech models must land inside the sandbox, not the user's real folder"
+            );
+        });
+    }
+    for blank in ["", "   ", "\t"] {
+        with_path_root(Some(blank), || {
+            let platform = biorouter_mcp::paths::platform_dirs().expect("a home dir");
+            assert_eq!(
+                Paths::local_data_dir(),
+                platform.local_data,
+                "a blank BIOROUTER_PATH_ROOT moved the local data folder"
+            );
+            assert!(Paths::local_data_dir().is_absolute());
+        });
+    }
+}
+
+/// Outside a sandbox the local data folder never roams: on Windows it is
+/// under `%LOCALAPPDATA%` and not `%APPDATA%`; elsewhere it is the data folder,
+/// which XDG never roams.
+///
+/// ⚠ CI runs this binary on ubuntu only, so the Windows branch below runs on a
+/// developer's Windows machine and nowhere else. The `--lib` tests in
+/// `config::paths::from_platform_tests` hold the `LocalData` mapping on every
+/// OS, windows-latest included.
+#[test]
+#[serial]
+fn the_local_data_folder_is_local_on_this_platform() {
+    let roaming = tempfile::tempdir().unwrap();
+    let local = tempfile::tempdir().unwrap();
+    let _env = env_lock::lock_env([
+        ("BIOROUTER_PATH_ROOT", None),
+        (
+            "APPDATA",
+            Some(roaming.path().to_string_lossy().into_owned()),
+        ),
+        (
+            "LOCALAPPDATA",
+            Some(local.path().to_string_lossy().into_owned()),
+        ),
+    ]);
+    let resolved = Paths::local_data_dir();
+    if cfg!(windows) {
+        assert_eq!(
+            resolved,
+            local
+                .path()
+                .join(biorouter_mcp::app_folder::APP_AUTHOR)
+                .join("biorouter")
+                .join("data")
+        );
+        assert!(!resolved.starts_with(roaming.path()));
+        assert_ne!(resolved, Paths::data_dir());
+    } else {
+        assert_eq!(resolved, Paths::data_dir());
+    }
 }
 
 /// The rewrite after a move names each store by a path of its own, because

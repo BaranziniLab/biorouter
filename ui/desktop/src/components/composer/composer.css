@@ -417,6 +417,229 @@
   flex: 0 1 auto;
 }
 
+/* ── The microphone, left of Send (DD-60) ───────────────────────────────── */
+
+/* `components/dictation/DictationButton.tsx`. Its phase is `data-dictation-phase`,
+   styled here rather than in new Tailwind strings (a new utility may never
+   generate under `BIOROUTER_NO_HMR`). No fifth card edge and no square glyph:
+   a square would read as a second Stop beside the turn's Stop. */
+.br-dictation-slot {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+}
+
+.br-dictation-button[data-dictation-phase='not-installed'] {
+  color: var(--text-muted);
+}
+
+.br-dictation-button[data-dictation-phase='unavailable'] {
+  color: var(--text-muted);
+}
+
+/* The recording pill: 28px high like the round button, as wide as its bars
+   and timer. Authored widths win over the round button's `w-control-sm`
+   utility, which is layered. */
+.br-dictation-button[data-dictation-phase='recording'],
+.br-dictation-button[data-dictation-phase='transcribing'] {
+  width: auto;
+  min-width: var(--control-sm, 28px);
+  height: var(--control-sm, 28px);
+  padding: 0 8px;
+  border-radius: var(--radius-full);
+  color: var(--text-accent);
+  background-color: color-mix(in srgb, var(--accent-muted) 45%, transparent);
+}
+
+.br-dictation-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+}
+
+.br-dictation-bars {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 14px;
+}
+
+/* Each bar scales with `--br-dictation-level`, which the pill's animation
+   frame writes (0 to 1); the weights give the five bars a shape. */
+.br-dictation-bar {
+  display: block;
+  width: 2px;
+  height: 14px;
+  border-radius: 1px;
+  background-color: currentColor;
+  transform-origin: center;
+  transform: scaleY(calc(0.2 + 0.8 * var(--br-dictation-level, 0) * var(--br-bar-weight, 1)));
+  transition: transform var(--dur-fast-min, 80ms) var(--ease-out, ease-out);
+}
+
+.br-dictation-bar[data-bar='0'] {
+  --br-bar-weight: 0.55;
+}
+.br-dictation-bar[data-bar='1'] {
+  --br-bar-weight: 0.85;
+}
+.br-dictation-bar[data-bar='2'] {
+  --br-bar-weight: 1;
+}
+.br-dictation-bar[data-bar='3'] {
+  --br-bar-weight: 0.75;
+}
+.br-dictation-bar[data-bar='4'] {
+  --br-bar-weight: 0.45;
+}
+
+/* Static under reduced motion: the bars hold one shape, the timer still counts. */
+@media (prefers-reduced-motion: reduce) {
+  .br-dictation-bar {
+    transform: scaleY(calc(0.35 + 0.4 * var(--br-bar-weight, 1)));
+    transition: none;
+  }
+}
+
+.br-dictation-timer {
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Arming: the microphone, then a spinner after 150 ms, so a fast start shows
+   no spinner at all. */
+.br-dictation-arming {
+  position: relative;
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+}
+
+.br-dictation-arming__mic,
+.br-dictation-arming__spinner {
+  position: absolute;
+  inset: 0;
+  display: inline-flex;
+}
+
+.br-dictation-arming__mic {
+  animation: br-dictation-hide 0s linear 150ms forwards;
+}
+
+.br-dictation-arming__spinner {
+  opacity: 0;
+  animation: br-dictation-show 0s linear 150ms forwards;
+}
+
+@keyframes br-dictation-show {
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes br-dictation-hide {
+  to {
+    opacity: 0;
+  }
+}
+
+/* Installing: a progress ring around the glyph. */
+.br-dictation-ring {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+}
+
+.br-dictation-ring svg {
+  position: absolute;
+  inset: 0;
+  transform: rotate(-90deg);
+}
+
+.br-dictation-ring__track,
+.br-dictation-ring__value {
+  fill: none;
+  stroke-width: 2;
+}
+
+.br-dictation-ring__track {
+  stroke: var(--border-subtle);
+}
+
+.br-dictation-ring__value {
+  stroke: var(--border-accent);
+  stroke-linecap: round;
+}
+
+/* The notice row's muted preview of what has been heard (DD-31). */
+.br-dictation-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.br-dictation-partial {
+  margin: 0;
+  color: var(--text-muted);
+  font-style: italic;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The setup popover. */
+.br-dictation-setup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+}
+
+.br-dictation-setup__title {
+  margin: 0;
+  font-size: var(--text-secondary);
+  line-height: var(--text-secondary--line-height);
+  font-weight: 600;
+  color: var(--text-default);
+}
+
+.br-dictation-setup__text,
+.br-dictation-setup__privacy,
+.br-dictation-setup__warning {
+  margin: 0;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-default);
+  overflow-wrap: anywhere;
+}
+
+.br-dictation-setup__privacy {
+  color: var(--text-muted);
+}
+
+.br-dictation-setup__warning {
+  color: var(--text-danger);
+}
+
+.br-dictation-setup__progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.br-dictation-setup__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 /* ── The footer line under the card ─────────────────────────────────────── */
 
 /* Derived insets, not chosen ones: the footer's items (`.br-footline__item`,

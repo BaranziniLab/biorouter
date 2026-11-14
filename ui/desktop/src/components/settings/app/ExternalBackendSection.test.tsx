@@ -89,3 +89,29 @@ describe('ExternalBackendSection', () => {
     expect(written.externalBiorouterd.userActionKey).toBe('set-by-hand');
   });
 });
+
+describe('S17 remote disclosure', () => {
+  it('names the backend host when external mode is on', async () => {
+    getSettings.mockResolvedValue({
+      externalBiorouterd: {
+        enabled: true,
+        url: 'https://lab.example:8443',
+        secret: '',
+        userActionKey: '',
+      },
+    });
+    render(<ExternalBackendSection />);
+    expect(await screen.findByTestId('external-dictation-disclosure')).toHaveTextContent(
+      'Audio is transcribed on lab.example:8443'
+    );
+  });
+
+  it('does not claim remote transcription when external mode is off', async () => {
+    getSettings.mockResolvedValue({
+      externalBiorouterd: { enabled: false, url: 'https://lab.example' },
+    });
+    render(<ExternalBackendSection />);
+    await screen.findByLabelText('Use external server');
+    expect(screen.queryByTestId('external-dictation-disclosure')).toBeNull();
+  });
+});

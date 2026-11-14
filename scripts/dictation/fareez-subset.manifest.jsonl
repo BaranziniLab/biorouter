@@ -1,0 +1,80 @@
+{"clip": "RES0008_0169240.flac", "terms": {"Tylenol": 1, "Advil": 1}, "source": "RES0008.mp3", "t0": 169.24, "t1": 178.7, "flac_sha256": "fb423484d31265bffd203b739ab7a31086cb1611fbd477d87648e995d88d7e61"}
+{"clip": "RES0008_0373095.flac", "terms": {"metformin": 1, "insulin": 1}, "source": "RES0008.mp3", "t0": 373.095, "t1": 393.585, "flac_sha256": "47efd8371f2ae53da47e3a833cffb67bd8d1ae30e9c0ea5a8f9be839c8de6526"}
+{"clip": "RES0008_0407520.flac", "terms": {"amlodipine": 1}, "source": "RES0008.mp3", "t0": 407.52, "t1": 413.38, "flac_sha256": "281eb48b2efb5f28b752bec27429588bcf8548106a25013c99364d9daa77f156"}
+{"clip": "RES0008_0468200.flac", "terms": {"amlodipine": 1}, "source": "RES0008.mp3", "t0": 468.2, "t1": 476.32, "flac_sha256": "eb91fb2b0d91e2b9470ee10545db3687bcf22f860aca9b61a6f5f12c1f8b47c1"}
+{"clip": "RES0083_0107880.flac", "terms": {"Tylenol": 1, "acetaminophen": 1}, "source": "RES0083.mp3", "t0": 107.88, "t1": 119.59, "flac_sha256": "b00928b9b93be15516a96ed4bea4843082cf27aae0b62daba532917e7e73700c"}
+{"clip": "RES0083_0289350.flac", "terms": {"Tylenol": 1}, "source": "RES0083.mp3", "t0": 289.35, "t1": 294.2, "flac_sha256": "3d73cd4e73db35080bb1915947b697f8acfa29ccbd0801104b5a34e7cc9bf50c"}
+{"clip": "RES0083_0294990.flac", "terms": {"Tylenol": 1}, "source": "RES0083.mp3", "t0": 294.99, "t1": 299.69, "flac_sha256": "6675d801fedc3474217b42508666f1c881104f6cc696daddc9f425b9bfe77459"}
+{"clip": "RES0083_0299490.flac", "terms": {"Tylenol": 1}, "source": "RES0083.mp3", "t0": 299.49, "t1": 305.03, "flac_sha256": "495728b14415579d647c266aaed1a3232df9d00a03db326fd0ac434adb159129"}
+{"clip": "RES0083_0348340.flac", "terms": {"penicillin": 1}, "source": "RES0083.mp3", "t0": 348.34, "t1": 355.56, "flac_sha256": "675a1b3e365029af3ca4c1d32eeffda8bf2b1b60ddc7e2eee9ce59617437cee0"}
+{"clip": "RES0083_0561189.flac", "terms": {"Tylenol": 3}, "source": "RES0083.mp3", "t0": 561.19, "t1": 567.97, "flac_sha256": "3ac7e9e69145377d718f060158c489c59be57053aac846c4d7065f553ace8e6a"}
+{"clip": "RES0114_0409085.flac", "terms": {"Ventolin": 1}, "source": "RES0114.mp3", "t0": 409.085, "t1": 411.945, "flac_sha256": "a951479419ea24668bca507d209f3e165502174ab3019bece32f400fb66534ef"}
+{"clip": "RES0114_0412245.flac", "terms": {"Spiriva": 1}, "source": "RES0114.mp3", "t0": 412.245, "t1": 416.375, "flac_sha256": "7c8e1f39ed6e45b6df56f84e6bd58953d0642e47a68a45e379786d9102144f1c"}
+{"clip": "RES0114_0423620.flac", "terms": {"Ventolin": 1}, "source": "RES0114.mp3", "t0": 423.62, "t1": 428.81, "flac_sha256": "e1bd8772f80dac748026ddf5a888a66d5ccd00029ea1d1121c094abd672a635f"}
+{"clip": "RES0114_0475790.flac", "terms": {"amoxicillin": 1}, "source": "RES0114.mp3", "t0": 475.79, "t1": 481.61, "flac_sha256": "1f1f7b77d7a3d53b745fb0af9030b748afa9fba0b8c3e8ebd107a7597831f1f1"}
+{"clip": "RES0114_0484170.flac", "terms": {"penicillin": 1, "amoxicillin": 1}, "source": "RES0114.mp3", "t0": 484.17, "t1": 490.0, "flac_sha256": "b476e65a5149c285216800a7c38f151a9f0908d95e9336f21afcadcf31281362"}
+{"clip": "RES0114_0753150.flac", "terms": {"amoxicillin": 1, "azithromycin": 1}, "source": "RES0114.mp3", "t0": 753.15, "t1": 769.97, "flac_sha256": "a70f2057eb0f66be581756f92bebc35378010674077e51ef60a2f9e80dde7e26"}
+{"clip": "DER0001_0335280.flac", "terms": {"Tylenol": 1, "Advil": 1}, "source": "DER0001.mp3", "t0": 335.28, "t1": 343.01, "flac_sha256": "194ba6450ff8db7260787228c997c1ea30e8e8e4fbfcbd98393e1a653ad51f89"}
+{"clip": "DER0001_0397390.flac", "terms": {"rosuvastatin": 1}, "source": "DER0001.mp3", "t0": 397.39, "t1": 406.25, "flac_sha256": "4268379ac0de76323180446e92227b9aff0dc82bad116adef2f2610784399179"}
+{"clip": "DER0001_0436350.flac", "terms": {"penicillin": 1}, "source": "DER0001.mp3", "t0": 436.35, "t1": 438.94, "flac_sha256": "c9fd952cba07567049981c647c7f6ce586bec9f4af0cc34f899d4dc640ffe3d4"}
+{"clip": "MSK0020_0085259.flac", "terms": {"Advil": 1}, "source": "MSK0020.mp3", "t0": 85.26, "t1": 98.83, "flac_sha256": "91d83ed513d06f7962af13333997bb41f8e0377fa54cb84452db2917c0427a86"}
+{"clip": "MSK0020_0354510.flac", "terms": {"metformin": 1}, "source": "MSK0020.mp3", "t0": 354.51, "t1": 362.17, "flac_sha256": "4b05a6365c91e82d88e1801043858354e467c288d3bb3329189c24fb88dbac58"}
+{"clip": "MSK0020_0874204.flac", "terms": {"ibuprofen": 1, "acetaminophen": 1}, "source": "MSK0020.mp3", "t0": 874.205, "t1": 883.025, "flac_sha256": "d2d7cbd6e7658953b4d8ca8daedf6ee35f98a5c4f01639b8c5b632b29bff6153"}
+{"clip": "RES0025_0406640.flac", "terms": {"hydromorphone": 1}, "source": "RES0025.mp3", "t0": 406.64, "t1": 415.9, "flac_sha256": "874663d4d8be9bdaa25db490c41b0c11a74d0f60f0f7fd1128ac766e73b7923a"}
+{"clip": "RES0025_0422320.flac", "terms": {"hydromorphone": 1}, "source": "RES0025.mp3", "t0": 422.32, "t1": 426.11, "flac_sha256": "e45b1c7ab6a025de5ccd0e3dd629bfaf409edc5b813e84f9bb3f7dd0231256ea"}
+{"clip": "RES0025_0433160.flac", "terms": {"hydromorphone": 1}, "source": "RES0025.mp3", "t0": 433.16, "t1": 440.96, "flac_sha256": "2610c71d5f07ebae92d297a4d37c8818d89e0e586964c3bc8b30b793efd45546"}
+{"clip": "RES0025_0681594.flac", "terms": {"Tylenol": 1}, "source": "RES0025.mp3", "t0": 681.595, "t1": 693.475, "flac_sha256": "d7bfebd0f7308ca765f18d0448d9ab86419ac00e268d2fc38acfe68e700f46c5"}
+{"clip": "RES0059_0254250.flac", "terms": {"Tylenol": 1}, "source": "RES0059.mp3", "t0": 254.25, "t1": 258.53, "flac_sha256": "c0ed6c3f63ec14c58d7e1bcf710791afb70aef4d9fe101bc08e1d3dbc5ee75ed"}
+{"clip": "RES0059_0410030.flac", "terms": {"Tylenol": 1, "Advil": 1, "ibuprofen": 1}, "source": "RES0059.mp3", "t0": 410.03, "t1": 419.56, "flac_sha256": "f33a356cea8cb56458052d5f679ddae3111c1b4c967e1d3609080e441a0101f3"}
+{"clip": "RES0059_0420500.flac", "terms": {"Claritin": 1}, "source": "RES0059.mp3", "t0": 420.5, "t1": 431.61, "flac_sha256": "aa36dbe20b000b3db5e4609366e23ff198d163dbd8ae072007c36ea0b55069d0"}
+{"clip": "RES0108_0241970.flac", "terms": {"metformin": 1}, "source": "RES0108.mp3", "t0": 241.97, "t1": 246.04, "flac_sha256": "e84898fa1c26beee6af3b974b86f23af93053e452dba799088d4cc899cfcbf5e"}
+{"clip": "RES0108_0250810.flac", "terms": {"ramipril": 1}, "source": "RES0108.mp3", "t0": 250.81, "t1": 256.89, "flac_sha256": "2e56da6c5c241ca272a60b69df2c8a863ea95b71c56f16f2bc2c8c476d45f777"}
+{"clip": "RES0108_0419720.flac", "terms": {"ramipril": 2}, "source": "RES0108.mp3", "t0": 419.72, "t1": 426.71, "flac_sha256": "d3e4e96786a024e851e83019da919ef3a8c6bcfb36a5310aa8cbeab723685291"}
+{"clip": "RES0108_0433290.flac", "terms": {"ramipril": 1}, "source": "RES0108.mp3", "t0": 433.29, "t1": 448.87, "flac_sha256": "fe4cfdc2659038da57abbd5d3c81ce6a3db686d97a4c96158d90a729c4385e01"}
+{"clip": "RES0110_0507760.flac", "terms": {"insulin": 1}, "source": "RES0110.mp3", "t0": 507.76, "t1": 529.96, "flac_sha256": "7d40e04079ab10cc9b348c0fab6489ea7277305eceb067f111111370609fe364"}
+{"clip": "RES0110_0550040.flac", "terms": {"insulin": 1}, "source": "RES0110.mp3", "t0": 550.04, "t1": 554.26, "flac_sha256": "ab1d4517c20f2975f6e106c19de7be9a9e51a5c77070c1b97e12372cf244488b"}
+{"clip": "RES0110_0555630.flac", "terms": {"insulin": 1, "Synthroid": 1}, "source": "RES0110.mp3", "t0": 555.63, "t1": 559.74, "flac_sha256": "d9a6ac01978cc68d36a52b0c63c755f124081d58cddc72aad13b07142070b6a5"}
+{"clip": "RES0110_0560839.flac", "terms": {"aspirin": 2}, "source": "RES0110.mp3", "t0": 560.84, "t1": 563.9, "flac_sha256": "3e8663e8582a668ff0d0d63ad56ad0f9c4992758345655fe0bcd210cb193bd68"}
+{"clip": "RES0131_0142710.flac", "terms": {"Tylenol": 1, "Advil": 1}, "source": "RES0131.mp3", "t0": 142.71, "t1": 150.08, "flac_sha256": "3b9073806a8ca91f03305836ddbd3f8ffc4d9a19553a8759041bb98bef163fe9"}
+{"clip": "RES0131_0347090.flac", "terms": {"Ventolin": 1}, "source": "RES0131.mp3", "t0": 347.09, "t1": 353.51, "flac_sha256": "8d3198f3f476f8fb39896e2bb59105461056397de3ec2627cd206d046b105dc3"}
+{"clip": "RES0131_0370640.flac", "terms": {"Ventolin": 1}, "source": "RES0131.mp3", "t0": 370.64, "t1": 375.46, "flac_sha256": "ebaac1b3409ef659b1d17a398c649b0c609ccba0a322dbd5762b8caa710a56f5"}
+{"clip": "RES0141_0093580.flac", "terms": {"Advil": 1}, "source": "RES0141.mp3", "t0": 93.58, "t1": 95.7, "flac_sha256": "8b64b9d41e9c97f9fbb272ed9e9e913b6c77a4aef3a92d0f7403833dec982e8d"}
+{"clip": "RES0141_0231250.flac", "terms": {"metformin": 1}, "source": "RES0141.mp3", "t0": 231.25, "t1": 239.58, "flac_sha256": "f3bcf4d17ec90eb83904c50eef3ffa6e7f84e988b5e518fe4e3d1d286ca177ff"}
+{"clip": "RES0141_0240020.flac", "terms": {"metformin": 1}, "source": "RES0141.mp3", "t0": 240.02, "t1": 242.3, "flac_sha256": "80ee157b98fc51d113bef2bc3094360cfbd5fe8db10dd8cf58f06f5fc9ac2443"}
+{"clip": "RES0141_0272880.flac", "terms": {"metformin": 1}, "source": "RES0141.mp3", "t0": 272.88, "t1": 275.86, "flac_sha256": "3eb216bf10f6b07fe21a156ca15f9c89b4dda7cee339aef5dcd37c96504b908a"}
+{"clip": "RES0141_0278260.flac", "terms": {"naproxen": 1}, "source": "RES0141.mp3", "t0": 278.26, "t1": 289.02, "flac_sha256": "4d0823dfe1ae8ebc0728ba9ad7459671cb17b1b8ce9cbac43d324051ff40bdda"}
+{"clip": "CAR0005_0341360.flac", "terms": {"Tylenol": 1, "Advil": 1}, "source": "CAR0005.mp3", "t0": 341.36, "t1": 349.57, "flac_sha256": "a2c10ccdd91de83a7906e76b9b6b69022dceee28ab3c34a67162558f764e10aa"}
+{"clip": "MSK0014_0176850.flac", "terms": {"Advil": 1}, "source": "MSK0014.mp3", "t0": 176.85, "t1": 183.32, "flac_sha256": "e3d51d6cec4a3744401bd4b7423b633b40d91156741e9106f8f2b402743201e3"}
+{"clip": "MSK0014_0419030.flac", "terms": {"ramipril": 1, "furosemide": 1}, "source": "MSK0014.mp3", "t0": 419.03, "t1": 431.66, "flac_sha256": "2308bf02823ceb563a46c25f67ca25df147fcc680d285a8acab800e0f2d57253"}
+{"clip": "MSK0014_0449700.flac", "terms": {"penicillin": 1}, "source": "MSK0014.mp3", "t0": 449.7, "t1": 453.05, "flac_sha256": "26cbfdcae5716922758192a36d046fb903fdbf2513292d4d94d8094739168353"}
+{"clip": "MSK0022_0371360.flac", "terms": {"acetaminophen": 1}, "source": "MSK0022.mp3", "t0": 371.36, "t1": 378.14, "flac_sha256": "2d2908d67c1829a5f22b5b01647902d9e5a69f9e59e1bc05255776a25b71d91d"}
+{"clip": "MSK0022_0377740.flac", "terms": {"Advil": 1, "ibuprofen": 1}, "source": "MSK0022.mp3", "t0": 377.74, "t1": 380.11, "flac_sha256": "dc48729fecd3d88af2e239f58db2ff80dcae610543472aab474df8bd9bccf2d0"}
+{"clip": "MSK0022_0617430.flac", "terms": {"Synthroid": 2}, "source": "MSK0022.mp3", "t0": 617.43, "t1": 622.8, "flac_sha256": "90fa99d8c702517c6957dba2b68e4483daccf91ac192ee86f4e599f7875365d4"}
+{"clip": "MSK0033_0205650.flac", "terms": {"Tylenol": 1, "Advil": 1}, "source": "MSK0033.mp3", "t0": 205.65, "t1": 214.57, "flac_sha256": "90496b0f2ae677b95046be90d910116af6971d3e012500aea2c411ed22e2e835"}
+{"clip": "MSK0033_0678260.flac", "terms": {"Tylenol": 1, "Advil": 1}, "source": "MSK0033.mp3", "t0": 678.26, "t1": 683.62, "flac_sha256": "dd3ad91f1945221691c0e51c3362373aff8006e5fe4f47fd9d48f62f30a9d237"}
+{"clip": "MSK0033_0688939.flac", "terms": {"Tylenol": 1}, "source": "MSK0033.mp3", "t0": 688.94, "t1": 691.74, "flac_sha256": "fdb4eee0f4669889a42632508c09957aa2722037f9b490534db94b0e24f63b1a"}
+{"clip": "MSK0049_0420210.flac", "terms": {"insulin": 1, "ramipril": 1}, "source": "MSK0049.mp3", "t0": 420.21, "t1": 431.99, "flac_sha256": "fdfa111250f03ce0e0a2a9a73de42dbc063a275a22a7b95e4e3de61737768141"}
+{"clip": "MSK0049_0714079.flac", "terms": {"Tylenol": 1}, "source": "MSK0049.mp3", "t0": 714.08, "t1": 719.55, "flac_sha256": "1895f02670b5a318fd1eeaa7915b6fb6bfe90a3b0de57a8b0a3969c8defa6610"}
+{"clip": "MSK0049_0719150.flac", "terms": {"ibuprofen": 1}, "source": "MSK0049.mp3", "t0": 719.15, "t1": 724.75, "flac_sha256": "fda2bfb5ccde8919e39101080553f45c45be84a3f3b5c14da1f18cb15f729c5c"}
+{"clip": "MSK0049_0736010.flac", "terms": {"Voltaren": 1}, "source": "MSK0049.mp3", "t0": 736.01, "t1": 740.22, "flac_sha256": "457b7f812be19b38185a44f03e4a86cfdc945b1f3fc7dbed225b641fc1ef3da3"}
+{"clip": "RES0099_0354460.flac", "terms": {"Tylenol": 1}, "source": "RES0099.mp3", "t0": 354.46, "t1": 363.24, "flac_sha256": "7575a0948fa3a7633e17cca7ad3803d94e18c6708a8f3a818f15b776b58cb3c3"}
+{"clip": "RES0099_0391200.flac", "terms": {"metformin": 1}, "source": "RES0099.mp3", "t0": 391.2, "t1": 393.6, "flac_sha256": "962847bf9d7ff1012efe5c17ec5c037ffa0a01e329276d877d4c80a16a379d13"}
+{"clip": "RES0136_0165520.flac", "terms": {"morphine": 1}, "source": "RES0136.mp3", "t0": 165.52, "t1": 169.37, "flac_sha256": "8e7c07a757f3b4e10310d542e2a4b7cb26a4454f2a65c0354d777b68c8fcf67e"}
+{"clip": "RES0136_0168970.flac", "terms": {"morphine": 1}, "source": "RES0136.mp3", "t0": 168.97, "t1": 175.74, "flac_sha256": "e3d69e32a9c417f2595f0c15ef224ce9abc7992c995729c02eb7b53dfe4c4c35"}
+{"clip": "RES0136_0181540.flac", "terms": {"morphine": 1}, "source": "RES0136.mp3", "t0": 181.54, "t1": 186.3, "flac_sha256": "745ca1992c4fcc243d4d293c193fcc9107d5244f846dd21f1939d4f60185487f"}
+{"clip": "RES0136_0450080.flac", "terms": {"Advil": 1}, "source": "RES0136.mp3", "t0": 450.08, "t1": 452.27, "flac_sha256": "a4121355eb6c79a72725a05cf96a0866555bd430b40fb8e67347d04721ec6bdb"}
+{"clip": "RES0139_0236940.flac", "terms": {"ramipril": 1}, "source": "RES0139.mp3", "t0": 236.94, "t1": 244.39, "flac_sha256": "1ff244dd970e0880d0b842fd66b0bac0ea6d5168cf3d9a99308fd9cde3228a63"}
+{"clip": "RES0139_0264820.flac", "terms": {"penicillin": 1}, "source": "RES0139.mp3", "t0": 264.82, "t1": 268.68, "flac_sha256": "77ef5681b7aea0b6793ac230d1141b8657afedf7562555848586434f14d77fce"}
+{"clip": "RES0140_0187150.flac", "terms": {"hydromorphone": 1}, "source": "RES0140.mp3", "t0": 187.15, "t1": 193.65, "flac_sha256": "50b38b0180fa201cfb692db89025f3fefde21ef47deaa973513f6c7558049d64"}
+{"clip": "RES0140_0201200.flac", "terms": {"Tylenol": 1}, "source": "RES0140.mp3", "t0": 201.2, "t1": 203.44, "flac_sha256": "cc6829293fed558bad5b3034958836f5d19ffee4167f2e94880cd94f49b355de"}
+{"clip": "RES0140_0219430.flac", "terms": {"Tylenol": 1}, "source": "RES0140.mp3", "t0": 219.43, "t1": 226.49, "flac_sha256": "5e06e9daeb088ae3215a69eb298552717eafb148aa90ad0cd6fe736962776225"}
+{"clip": "RES0159_0315440.flac", "terms": {"Advil": 1}, "source": "RES0159.mp3", "t0": 315.44, "t1": 321.01, "flac_sha256": "0d68806de3a1be1b40575f9f6301b98265b7e01aaf8646a82d6c6d674b3f7ff7"}
+{"clip": "RES0159_0324690.flac", "terms": {"Advil": 1}, "source": "RES0159.mp3", "t0": 324.69, "t1": 330.83, "flac_sha256": "d0bc14603963fcc35e21262156aa10f4cf5b29b39a2466b9a2ab019b52d65417"}
+{"clip": "MSK0005_0064450.flac", "terms": {"ibuprofen": 1}, "source": "MSK0005.mp3", "t0": 64.45, "t1": 71.11, "flac_sha256": "1db506ff5365de9a6a5507f5475f7b66df4d60f19fb8f8c7933ce446296098f0"}
+{"clip": "MSK0005_0585810.flac", "terms": {"Tylenol": 1, "Advil": 1}, "source": "MSK0005.mp3", "t0": 585.81, "t1": 590.69, "flac_sha256": "77cdf7e5deee7d1a1e25ad943c057d40d4291a8e18d4efb716f7615c3f7eb2a4"}
+{"clip": "MSK0005_0769709.flac", "terms": {"Tylenol": 1}, "source": "MSK0005.mp3", "t0": 769.71, "t1": 773.29, "flac_sha256": "d28598f8bf073f1b453765a6b30f97e5910b380a677a0253d8dfca230dc8259c"}
+{"clip": "MSK0013_0369710.flac", "terms": {"insulin": 1}, "source": "MSK0013.mp3", "t0": 369.71, "t1": 373.45, "flac_sha256": "a7449dc2f5b58c14c61527512b939db5eda8c064a2c65794bae23481d8e4506e"}
+{"clip": "MSK0013_0377050.flac", "terms": {"atorvastatin": 1}, "source": "MSK0013.mp3", "t0": 377.05, "t1": 379.93, "flac_sha256": "38a0cb81383d93a4933ec78e46bb97ecfd656563d8613dcda0f40758708007f6"}
+{"clip": "MSK0041_0105330.flac", "terms": {"ibuprofen": 1}, "source": "MSK0041.mp3", "t0": 105.33, "t1": 126.7, "flac_sha256": "31cd838d2744cd7313561731f6bd4a1e5e6917ea0b6f148896219859585b5876"}
+{"clip": "MSK0041_0386120.flac", "terms": {"insulin": 1, "ramipril": 1}, "source": "MSK0041.mp3", "t0": 386.12, "t1": 392.56, "flac_sha256": "c7d3976b354be74313c54fe2ba54971d5e65c7bb42301d3cc5e06cbeeaf58361"}
+{"clip": "MSK0041_0883449.flac", "terms": {"colchicine": 1}, "source": "MSK0041.mp3", "t0": 883.45, "t1": 889.52, "flac_sha256": "0bf611ca86a750cf4f3ed8e970369286156d17bc56ad19b5a0a2eff9f57c5426"}

@@ -2291,6 +2291,10 @@ pub async fn interrupt(
             .map_err(IntoResponse::into_response)?,
     };
     let (phase, phase_age_ms) = agent.loop_phase_snapshot();
+    let dictionary_stamp = biorouter::dictation::extractor::admission_stamp();
+    // Only as much of the steer as the extractor reads is copied.
+    let dictionary_text =
+        dictionary_stamp.map(|_| biorouter::dictation::extractor::capped(&req.text).to_owned());
     let admission = state.with_steer_target(&session_id, req.expected_turn_id.as_deref(), || {
         agent.try_queue_soft_interrupt_keyed(req.text, provenance, req.turn_id.clone())
     });
@@ -2303,6 +2307,11 @@ pub async fn interrupt(
     };
     match admission {
         Ok(admission) => {
+            if !admission.duplicate {
+                if let (Some(stamp), Some(text)) = (dictionary_stamp, dictionary_text) {
+                    agent.queue_dictionary_observation(&session_id, text, stamp);
+                }
+            }
             // Instrumentation for "a steer never landed": the phase it was
             // accepted into is what it is waiting behind. Paired with the
             // agent's `steer_consumed` line.
@@ -2329,28 +2338,38 @@ pub async fn interrupt(
                 }),
             ))
         }
+        Err(refused) => Err(steer_refused(&state, &session_id, phase, refused)),
+    }
+}
+
+/// The 409 for a steer the agent's queue refused (#69), logged with the loop `phase` it
+/// met. `TurnEnded` says whether another turn is already running (`not_accepting_yet`)
+/// or none is (`no_turn`); `TurnClosing` says the turn is ending.
+fn steer_refused(
+    state: &AppState,
+    session_id: &str,
+    phase: biorouter::agents::loop_phase::LoopPhase,
+    refused: InterruptRefused,
+) -> axum::response::Response {
+    match refused {
         // #69: the turn the caller addressed has ended. Refusing is the honest
         // answer — queueing for whatever runs next is the bug this replaces.
-        Err(InterruptRefused::TurnEnded) => {
-            let reason = if state.is_turn_active(&session_id) {
+        InterruptRefused::TurnEnded => {
+            let reason = if state.is_turn_active(session_id) {
                 InterruptRefusalReason::NotAcceptingYet
             } else {
                 InterruptRefusalReason::NoTurn
             };
             tracing::info!(session_id, phase = phase.as_str(), ?reason, "steer_refused");
-            Err(interrupt_conflict(&state, &session_id, reason))
+            interrupt_conflict(state, session_id, reason)
         }
-        Err(InterruptRefused::TurnClosing) => {
+        InterruptRefused::TurnClosing => {
             tracing::info!(
                 session_id,
                 phase = phase.as_str(),
                 "steer_refused turn_closing"
             );
-            Err(interrupt_conflict(
-                &state,
-                &session_id,
-                InterruptRefusalReason::TurnClosing,
-            ))
+            interrupt_conflict(state, session_id, InterruptRefusalReason::TurnClosing)
         }
     }
 }
@@ -5716,6 +5735,82 @@ mod tests {
                 ),
                 biorouter::agents::Drained::Empty => panic!("the steer must be queued"),
             }
+        }
+
+        #[tokio::test(flavor = "multi_thread")]
+        async fn interrupt_without_a_pinned_turn_provider_does_not_learn() {
+            use biorouter::agents::extension::ExtensionConfig;
+            use biorouter::security::dictionary_store::open_store;
+
+            install_test_user_action_key();
+            let state = AppState::new().await.unwrap();
+            let temp = tempfile::tempdir().unwrap();
+            let session = state
+                .session_manager()
+                .create_session(
+                    temp.path().to_path_buf(),
+                    "pr24-interrupt".into(),
+                    biorouter::session::session_manager::SessionType::User,
+                )
+                .await
+                .unwrap();
+            let _guard = begin_turn(&state, &session.id).unwrap();
+            let agent = state.get_agent(session.id.clone()).await.unwrap();
+            agent.open_for_turn(biorouter::agents::TurnId::new("pr24-interrupt-turn"));
+            // `dictionary` is a platform extension; a `Builtin` config naming it is
+            // refused with "Unknown builtin extension".
+            agent
+                .add_extension(ExtensionConfig::Platform {
+                    name: "dictionary".into(),
+                    description: "Dictionary".into(),
+                    bundled: Some(true),
+                    available_tools: vec![],
+                })
+                .await
+                .unwrap();
+            // This binary's tests share one sandbox store, so the setting goes back to
+            // what it was on the way out, a failed assertion included.
+            struct RestoreLearning(bool);
+            impl Drop for RestoreLearning {
+                fn drop(&mut self) {
+                    let was = self.0;
+                    let _ = open_store().write(|file| {
+                        file.settings.learn_from_chats = was;
+                        Ok(())
+                    });
+                }
+            }
+            let _restore =
+                RestoreLearning(open_store().view().unwrap().settings().learn_from_chats);
+            open_store()
+                .write(|file| {
+                    file.settings.learn_from_chats = true;
+                    Ok(())
+                })
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(2), async {
+                while biorouter::dictation::extractor::admission_stamp().is_none() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            let request = || {
+                routes(Arc::clone(&state)).oneshot(interrupt_request_with_turn(
+                    &session.id,
+                    "PR24TERM7",
+                    Some("pr24-interrupt-key"),
+                ))
+            };
+            assert_eq!(request().await.unwrap().status(), StatusCode::ACCEPTED);
+            assert_eq!(request().await.unwrap().status(), StatusCode::ACCEPTED);
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            assert!(!open_store()
+                .view()
+                .unwrap()
+                .entries()
+                .iter()
+                .any(|row| row.written == "PR24TERM7"));
         }
 
         #[tokio::test(flavor = "multi_thread")]

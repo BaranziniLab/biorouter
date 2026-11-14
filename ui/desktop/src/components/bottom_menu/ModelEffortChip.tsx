@@ -28,6 +28,12 @@ export interface ModelEffortChipProps {
   privacyBasis?: PrivacyBasis | null;
   /** Opens the provider catalog when no model is configured. */
   setView: (view: View, options?: ViewOptions) => void;
+  /**
+   * The composer's dictation key, under which a draft dictated with private
+   * terms eligible is flagged (DD-71): switching an unsent chat holding one to a
+   * public model asks MSG-PRIVATE-DRAFT-SWITCH first.
+   */
+  dictationDraftKey?: string;
 }
 
 export function ModelEffortChip({
@@ -37,6 +43,7 @@ export function ModelEffortChip({
   privacyTier,
   privacyBasis,
   setView,
+  dictationDraftKey,
 }: ModelEffortChipProps) {
   return (
     <div data-testid="composer-model-chip" className="flex min-w-0 items-center">
@@ -47,6 +54,7 @@ export function ModelEffortChip({
         privacyBasis={privacyBasis}
         setView={setView}
         reasoningScope={reasoningScope}
+        dictationDraftKey={dictationDraftKey}
         hideAlertPopover
       />
     </div>

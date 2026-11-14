@@ -53,6 +53,25 @@ describe('settings deep links', () => {
     expect(resolveSettingsDeepLink('usage')).toEqual({ tab: 'app', sectionId: 'settings-usage' });
   });
 
+  /**
+   * DD-66: Speech models is a section of the Models tab, not a fourth tab, and the setup
+   * popover's More in Settings (PR-19) lands on it by the section key `dictation`. A section key,
+   * not a new deep link: the legacy set pinned above is unchanged.
+   */
+  it('lands `dictation` on the Speech models section of the Models tab, with no fourth tab', () => {
+    expect(resolveSettingsDeepLink('dictation')).toEqual({
+      tab: 'models',
+      sectionId: 'settings-dictation',
+    });
+    expect(SETTINGS_TABS).toEqual(['models', 'chat', 'app']);
+    expect(Object.prototype.hasOwnProperty.call(SETTINGS_DEEP_LINKS, 'dictation')).toBe(false);
+    const modelsTab = Object.entries(SETTINGS_SECTIONS)
+      .filter(([, section]) => section.tab === 'models')
+      .map(([key]) => key);
+    // Between the local model inventory and the danger zone, as the tab draws them.
+    expect(modelsTab).toEqual(['defaultModel', 'localModels', 'dictation', 'modelsDangerZone']);
+  });
+
   it('ignores unknown, empty and prototype keys', () => {
     expect(resolveSettingsDeepLink(undefined)).toBeNull();
     expect(resolveSettingsDeepLink('')).toBeNull();

@@ -58,6 +58,8 @@ const packagedRendererDir = path.resolve(
 );
 const packagedEntry = pathToFileURL(path.join(packagedRendererDir, 'index.html'));
 const devEntry = new URL('http://localhost:5173/');
+/** What both handlers pass as `details.isMainFrame` for the renderer's own document. */
+const MAIN_FRAME = true;
 
 describe('permissionPolicy', () => {
   it('matches only the configured development renderer origin', () => {
@@ -114,22 +116,123 @@ describe('permissionPolicy', () => {
   it('allows only audio capture requested by Biorouter itself', () => {
     const appUrl = new URL('http://localhost:5173/');
     expect(
-      isAllowedRendererPermission('media', 'http://localhost:5173/pair', appUrl, ['audio'])
+      isAllowedRendererPermission(
+        'media',
+        'http://localhost:5173/pair',
+        appUrl,
+        ['audio'],
+        MAIN_FRAME
+      )
     ).toBe(true);
     expect(
-      isAllowedRendererPermission('media', 'http://localhost:5173/pair', appUrl, ['video'])
+      isAllowedRendererPermission(
+        'media',
+        'http://localhost:5173/pair',
+        appUrl,
+        ['video'],
+        MAIN_FRAME
+      )
     ).toBe(false);
     expect(
-      isAllowedRendererPermission('media', 'http://localhost:5173/pair', appUrl, ['audio', 'video'])
+      isAllowedRendererPermission(
+        'media',
+        'http://localhost:5173/pair',
+        appUrl,
+        ['audio', 'video'],
+        MAIN_FRAME
+      )
     ).toBe(false);
-    expect(isAllowedRendererPermission('geolocation', 'http://localhost:5173/', appUrl, [])).toBe(
-      false
-    );
     expect(
-      isAllowedRendererPermission('media', 'file:///tmp/biorouter-artifacts/evil.html', appUrl, [
-        'audio',
-      ])
+      isAllowedRendererPermission('geolocation', 'http://localhost:5173/', appUrl, [], MAIN_FRAME)
     ).toBe(false);
+    expect(
+      isAllowedRendererPermission(
+        'media',
+        'file:///tmp/biorouter-artifacts/evil.html',
+        appUrl,
+        ['audio'],
+        MAIN_FRAME
+      )
+    ).toBe(false);
+  });
+});
+
+/**
+ * DD-65: the microphone goes to the renderer's main frame and nowhere else.
+ * Every frame the renderer creates is a `srcdoc` artifact or document preview,
+ * so a frame asking for audio is a generated document reaching for the
+ * microphone. `main.ts` passes each handler's own `details.isMainFrame`; the
+ * check handler hands over `[details.mediaType ?? 'unknown']` and the request
+ * handler `details.mediaTypes ?? []`, so both shapes are tried.
+ */
+describe('renderer microphone permission', () => {
+  const appEntries = [
+    ['http://localhost:5173/#/pair', devEntry],
+    [`${packagedEntry.href}#/pair`, packagedEntry],
+  ] as const;
+
+  it('grants audio to the main frame of Biorouter itself', () => {
+    for (const [url, appUrl] of appEntries) {
+      expect(isAllowedRendererPermission('media', url, appUrl, ['audio'], true)).toBe(true);
+    }
+  });
+
+  it('refuses audio to any frame that is not the main frame, even at the app URL', () => {
+    for (const [url, appUrl] of appEntries) {
+      expect(isAllowedRendererPermission('media', url, appUrl, ['audio'], false)).toBe(false);
+    }
+  });
+
+  it('refuses audio to a srcdoc or blank frame, whatever it claims to be', () => {
+    for (const [, appUrl] of appEntries) {
+      for (const url of ['about:srcdoc', 'about:blank']) {
+        for (const isMainFrame of [true, false]) {
+          expect(
+            isAllowedRendererPermission('media', url, appUrl, ['audio'], isMainFrame),
+            `${url} isMainFrame=${isMainFrame}`
+          ).toBe(false);
+        }
+      }
+    }
+  });
+
+  it('refuses video, audio with video, and an unnamed media type to the main frame', () => {
+    for (const [url, appUrl] of appEntries) {
+      for (const mediaTypes of [['audio', 'video'], ['video'], ['unknown'], []]) {
+        expect(
+          isAllowedRendererPermission('media', url, appUrl, mediaTypes, true),
+          JSON.stringify(mediaTypes)
+        ).toBe(false);
+      }
+    }
+  });
+
+  it('refuses when the frame flag is anything but true at run time', () => {
+    // The type says boolean; an Electron that stopped sending the field would
+    // hand over undefined, which must read as "not the main frame".
+    for (const [url, appUrl] of appEntries) {
+      for (const flag of [undefined, null, 1, 'true']) {
+        expect(
+          isAllowedRendererPermission('media', url, appUrl, ['audio'], flag as unknown as boolean),
+          String(flag)
+        ).toBe(false);
+      }
+    }
+  });
+
+  it('never grants a subframe anything the main frame is refused', () => {
+    for (const [url, appUrl] of appEntries) {
+      for (const permission of EVERY_ELECTRON_PERMISSION) {
+        for (const mediaTypes of [[], ['unknown'], ['audio'], ['video'], ['audio', 'video']]) {
+          if (!isAllowedRendererPermission(permission, url, appUrl, mediaTypes, true)) {
+            expect(
+              isAllowedRendererPermission(permission, url, appUrl, mediaTypes, false),
+              `${permission} ${JSON.stringify(mediaTypes)}`
+            ).toBe(false);
+          }
+        }
+      }
+    }
   });
 });
 
@@ -153,7 +256,9 @@ describe('renderer clipboard permissions', () => {
   it('lets the dev renderer write the clipboard', () => {
     for (const mediaTypes of handlerMediaShapes) {
       for (const url of ['http://localhost:5173/', 'http://localhost:5173/#/crew/general']) {
-        expect(isAllowedRendererPermission(WRITE, url, devEntry, mediaTypes)).toBe(true);
+        expect(isAllowedRendererPermission(WRITE, url, devEntry, mediaTypes, MAIN_FRAME)).toBe(
+          true
+        );
       }
     }
   });
@@ -162,7 +267,9 @@ describe('renderer clipboard permissions', () => {
     const entry = packagedEntry.href;
     for (const mediaTypes of handlerMediaShapes) {
       for (const url of [entry, `${entry}#/crew/general`, `${entry}?tab=public#/`]) {
-        expect(isAllowedRendererPermission(WRITE, url, packagedEntry, mediaTypes)).toBe(true);
+        expect(isAllowedRendererPermission(WRITE, url, packagedEntry, mediaTypes, MAIN_FRAME)).toBe(
+          true
+        );
       }
     }
   });
@@ -180,10 +287,10 @@ describe('renderer clipboard permissions', () => {
       '',
       packagedEntry.href,
     ]) {
-      expect(isAllowedRendererPermission(WRITE, url, devEntry, [])).toBe(false);
+      expect(isAllowedRendererPermission(WRITE, url, devEntry, [], MAIN_FRAME)).toBe(false);
     }
     for (const url of ['http://localhost:5173/', 'about:srcdoc', 'null', '']) {
-      expect(isAllowedRendererPermission(WRITE, url, packagedEntry, [])).toBe(false);
+      expect(isAllowedRendererPermission(WRITE, url, packagedEntry, [], MAIN_FRAME)).toBe(false);
     }
   });
 
@@ -199,7 +306,7 @@ describe('renderer clipboard permissions', () => {
       'file:///etc/passwd',
     ];
     for (const url of outside) {
-      expect(isAllowedRendererPermission(WRITE, url, packagedEntry, [])).toBe(false);
+      expect(isAllowedRendererPermission(WRITE, url, packagedEntry, [], MAIN_FRAME)).toBe(false);
     }
   });
 
@@ -208,7 +315,7 @@ describe('renderer clipboard permissions', () => {
     // document. Only `details.requestingUrl` says which file asked, so the
     // origin alone must never be enough.
     for (const origin of ['file:///', 'file://']) {
-      expect(isAllowedRendererPermission(WRITE, origin, packagedEntry, [])).toBe(false);
+      expect(isAllowedRendererPermission(WRITE, origin, packagedEntry, [], MAIN_FRAME)).toBe(false);
     }
   });
 
@@ -222,8 +329,10 @@ describe('renderer clipboard permissions', () => {
         ['http://localhost:5173/', devEntry],
         [packagedEntry.href, packagedEntry],
       ] as const) {
-        expect(isAllowedRendererPermission(permission, url, appUrl, [])).toBe(false);
-        expect(isAllowedRendererPermission(permission, url, appUrl, ['audio'])).toBe(false);
+        expect(isAllowedRendererPermission(permission, url, appUrl, [], MAIN_FRAME)).toBe(false);
+        expect(isAllowedRendererPermission(permission, url, appUrl, ['audio'], MAIN_FRAME)).toBe(
+          false
+        );
       }
     }
   });
@@ -237,14 +346,33 @@ describe('renderer clipboard permissions', () => {
       for (const permission of EVERY_ELECTRON_PERMISSION) {
         for (const mediaTypes of handlerMediaShapes) {
           expect(
-            isAllowedRendererPermission(permission, url, appUrl, mediaTypes),
+            isAllowedRendererPermission(permission, url, appUrl, mediaTypes, MAIN_FRAME),
             `${permission} ${JSON.stringify(mediaTypes)} from ${url}`
           ).toBe(permission === WRITE);
         }
       }
-      // The audio rule is the only other grant, and it is unchanged.
-      expect(isAllowedRendererPermission('media', url, appUrl, ['audio'])).toBe(true);
-      expect(isAllowedRendererPermission('media', url, appUrl, ['audio', 'video'])).toBe(false);
+      // The audio rule is the only other grant, and only to the main frame.
+      expect(isAllowedRendererPermission('media', url, appUrl, ['audio'], MAIN_FRAME)).toBe(true);
+      expect(isAllowedRendererPermission('media', url, appUrl, ['audio'], false)).toBe(false);
+      expect(
+        isAllowedRendererPermission('media', url, appUrl, ['audio', 'video'], MAIN_FRAME)
+      ).toBe(false);
     }
+  });
+});
+
+describe('external backend laptop managed policy', () => {
+  it('refuses only media when laptop capture is disabled', () => {
+    const appUrl = new URL('file:///Applications/Biorouter.app/Contents/Resources/app/index.html');
+    const renderer = appUrl.href;
+    expect(isAllowedRendererPermission('media', renderer, appUrl, ['audio'], true, false)).toBe(
+      false
+    );
+    expect(
+      isAllowedRendererPermission('clipboard-sanitized-write', renderer, appUrl, [], true, false)
+    ).toBe(true);
+    expect(isAllowedRendererPermission('media', renderer, appUrl, ['audio'], true, true)).toBe(
+      true
+    );
   });
 });

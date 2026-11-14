@@ -15,15 +15,15 @@ use biorouter::session::{Session, SessionManager, WorkingDirUpdate};
 use fs_err as fs;
 use rmcp::model::{CallToolResult, RawContent, ResourceContents, Role};
 use sacp::schema::{
-    AgentCapabilities, AuthenticateRequest, AuthenticateResponse, BlobResourceContents,
-    CancelNotification, Content, ContentBlock, ContentChunk, EmbeddedResource,
-    EmbeddedResourceResource, ImageContent, InitializeRequest, InitializeResponse,
-    LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer, NewSessionRequest,
-    NewSessionResponse, PermissionOption, PermissionOptionKind, PromptCapabilities, PromptRequest,
-    PromptResponse, RequestPermissionOutcome, RequestPermissionRequest, ResourceLink, SessionId,
-    SessionNotification, SessionUpdate, StopReason, TextContent, TextResourceContents, ToolCall,
-    ToolCallContent, ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
-    ToolCallUpdateFields, ToolKind,
+    AgentCapabilities, AuthenticateRequest, AuthenticateResponse, AvailableCommand,
+    AvailableCommandsUpdate, BlobResourceContents, CancelNotification, Content, ContentBlock,
+    ContentChunk, EmbeddedResource, EmbeddedResourceResource, ImageContent, InitializeRequest,
+    InitializeResponse, LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer,
+    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind,
+    PromptCapabilities, PromptRequest, PromptResponse, RequestPermissionOutcome,
+    RequestPermissionRequest, ResourceLink, SessionId, SessionNotification, SessionUpdate,
+    StopReason, TextContent, TextResourceContents, ToolCall, ToolCallContent, ToolCallId,
+    ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
 };
 use sacp::{AgentToClient, ByteStreams, Handled, JrConnectionCx, JrMessageHandler, MessageCx};
 use std::collections::HashMap;
@@ -33,6 +33,21 @@ use tokio_util::compat::{TokioAsyncReadCompatExt as _, TokioAsyncWriteCompatExt 
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, warn};
 use url::Url;
+
+const ACP_CLIENT_ENV: &str = "BIOROUTER_ACP_CLIENT";
+const JUPYTER_AI_CLIENT: &str = "jupyter-ai";
+const ACP_DICTATE_DESCRIPTION: &str = "How to dictate into this editor";
+const MSG_ACP_DICTATE: &str = "To dictate, use Dictate to clipboard in the Biorouter app or run `biorouter dictate --copy`, then paste. Your system's own dictation also works, without your Biorouter dictionary.";
+const MSG_ACP_NOTE: &str = "(An audio clip was attached here. Biorouter does not take audio from this editor, so the clip was left out. To dictate, use Dictate to clipboard in the Biorouter app or run `biorouter dictate --copy`, then paste. Your system's own dictation also works, without your Biorouter dictionary.)";
+
+fn dictate_command_update(available: bool) -> Option<AvailableCommandsUpdate> {
+    available.then(|| {
+        AvailableCommandsUpdate::new(vec![AvailableCommand::new(
+            "dictate",
+            ACP_DICTATE_DESCRIPTION,
+        )])
+    })
+}
 
 struct BioRouterAcpSession {
     messages: Conversation,
@@ -49,6 +64,7 @@ pub struct BioRouterAcpAgent {
     /// that launched us (an editor). False over the WebSocket transport, whose
     /// clients are artifact documents and must never gain process execution.
     allow_stdio_mcp: bool,
+    dictate_available: bool,
 }
 
 pub struct BioRouterAcpConfig {
@@ -392,14 +408,39 @@ impl BioRouterAcpAgent {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             agent: agent_ptr,
             allow_stdio_mcp: true,
+            dictate_available: true,
         })
     }
 
-    /// Deny client-registered stdio MCP servers on this agent. Used for the
-    /// WebSocket transport, where the peer is untrusted artifact content.
+    /// Deny client-registered stdio MCP servers and the dictate command on this
+    /// agent. Used for the WebSocket transport, where the peer is untrusted
+    /// artifact content.
     pub fn deny_stdio_mcp(mut self) -> Self {
         self.allow_stdio_mcp = false;
+        self.dictate_available = false;
+        self.agent.set_dictionary_learning(false);
         self
+    }
+
+    /// Jupyter AI displays ACP available commands, but this persona has no
+    /// dictation feature.
+    fn without_dictate_command(mut self) -> Self {
+        self.dictate_available = false;
+        self
+    }
+
+    fn announce_dictate_command(
+        &self,
+        session_id: SessionId,
+        cx: &JrConnectionCx<AgentToClient>,
+    ) -> Result<(), sacp::Error> {
+        if let Some(update) = dictate_command_update(self.dictate_available) {
+            cx.send_notification(SessionNotification::new(
+                session_id,
+                SessionUpdate::AvailableCommandsUpdate(update),
+            ))?;
+        }
+        Ok(())
     }
 
     /// Names of all extensions registered on the shared agent. Exposed for
@@ -419,7 +460,7 @@ impl BioRouterAcpAgent {
             .collect()
     }
 
-    fn convert_acp_prompt_to_message(&self, prompt: Vec<ContentBlock>) -> Message {
+    fn convert_acp_prompt_to_message(prompt: Vec<ContentBlock>) -> Message {
         let mut user_message = Message::user();
 
         // Process all content blocks from the prompt
@@ -451,7 +492,11 @@ impl BioRouterAcpAgent {
                         user_message = user_message.with_text(text)
                     }
                 }
-                ContentBlock::Audio(..) => (),
+                ContentBlock::Audio(..) => {
+                    // The clip itself never reaches the provider (DD-82): the
+                    // turn carries the note in its place.
+                    user_message = user_message.with_text(MSG_ACP_NOTE);
+                }
                 _ => (), // Handle any future ContentBlock variants
             }
         }
@@ -987,12 +1032,68 @@ impl BioRouterAcpAgent {
         Ok(LoadSessionResponse::new())
     }
 
+    /// Answer the dictation a prompt carries before the agent sees it: a lone `/dictate`
+    /// gets MSG-ACP-DICTATE where the command is offered, and audio blocks get
+    /// MSG-ACP-NOTE. Returns the response that ends the turn there (`/dictate`, or a
+    /// prompt of nothing but audio), or `None` when the prompt goes on to the agent.
+    fn answer_dictation_in_prompt(
+        &self,
+        args: &PromptRequest,
+        cx: &JrConnectionCx<AgentToClient>,
+    ) -> Result<Option<PromptResponse>, sacp::Error> {
+        if self.dictate_available
+            && matches!(
+                args.prompt.as_slice(),
+                [ContentBlock::Text(text)] if text.text.as_str() == "/dictate"
+            )
+        {
+            cx.send_notification(SessionNotification::new(
+                args.session_id.clone(),
+                SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                    TextContent::new(MSG_ACP_DICTATE),
+                ))),
+            ))?;
+            return Ok(Some(PromptResponse::new(StopReason::EndTurn)));
+        }
+
+        let has_audio = args
+            .prompt
+            .iter()
+            .any(|block| matches!(block, ContentBlock::Audio(_)));
+        if has_audio {
+            cx.send_notification(SessionNotification::new(
+                args.session_id.clone(),
+                SessionUpdate::AgentMessageChunk(ContentChunk::new(ContentBlock::Text(
+                    TextContent::new(MSG_ACP_NOTE),
+                ))),
+            ))?;
+            if args
+                .prompt
+                .iter()
+                .all(|block| matches!(block, ContentBlock::Audio(_)))
+            {
+                return Ok(Some(PromptResponse::new(StopReason::EndTurn)));
+            }
+        }
+        Ok(None)
+    }
+
     async fn on_prompt(
         &self,
         args: PromptRequest,
         cx: &JrConnectionCx<AgentToClient>,
     ) -> Result<PromptResponse, sacp::Error> {
         let session_id = args.session_id.0.to_string();
+        if !self.sessions.lock().await.contains_key(&session_id) {
+            return Err(
+                sacp::Error::invalid_params().data(format!("Session not found: {}", session_id))
+            );
+        }
+
+        if let Some(response) = self.answer_dictation_in_prompt(&args, cx)? {
+            return Ok(response);
+        }
+
         let cancel_token = CancellationToken::new();
 
         {
@@ -1003,7 +1104,7 @@ impl BioRouterAcpAgent {
             session.cancel_token = Some(cancel_token.clone());
         }
 
-        let user_message = self.convert_acp_prompt_to_message(args.prompt);
+        let user_message = Self::convert_acp_prompt_to_message(args.prompt);
 
         let session_config = SessionConfig {
             id: session_id.clone(),
@@ -1117,10 +1218,16 @@ impl JrMessageHandler for BioRouterAcpHandler {
         use sacp::util::MatchMessageFrom;
         use sacp::JrRequestCx;
 
+        // A request the agent cannot complete is ANSWERED with its error. An
+        // error returned from this handler instead makes sacp close the whole
+        // connection without responding, and the client then waits forever for
+        // the answer: a `session/load` of a deleted chat took the connection
+        // down with it, and an in-process test client hung with nothing in the
+        // log. Only a failure to write to the client itself is returned.
         MatchMessageFrom::new(message, &cx)
             .if_request(
                 |req: InitializeRequest, req_cx: JrRequestCx<InitializeResponse>| async {
-                    req_cx.respond(self.agent.on_initialize(req).await?)
+                    req_cx.respond_with_result(self.agent.on_initialize(req).await)
                 },
             )
             .await
@@ -1132,13 +1239,33 @@ impl JrMessageHandler for BioRouterAcpHandler {
             .await
             .if_request(
                 |req: NewSessionRequest, req_cx: JrRequestCx<NewSessionResponse>| async {
-                    req_cx.respond(self.agent.on_new_session(req).await?)
+                    match self.agent.on_new_session(req).await {
+                        Ok(response) => {
+                            let session_id = response.session_id.clone();
+                            req_cx.respond(response)?;
+                            self.agent.announce_dictate_command(session_id, &cx)
+                        }
+                        Err(error) => {
+                            warn!(%error, "session/new failed");
+                            req_cx.respond_with_error(error)
+                        }
+                    }
                 },
             )
             .await
             .if_request(
                 |req: LoadSessionRequest, req_cx: JrRequestCx<LoadSessionResponse>| async {
-                    req_cx.respond(self.agent.on_load_session(req, &cx).await?)
+                    let session_id = req.session_id.clone();
+                    match self.agent.on_load_session(req, &cx).await {
+                        Ok(response) => {
+                            req_cx.respond(response)?;
+                            self.agent.announce_dictate_command(session_id, &cx)
+                        }
+                        Err(error) => {
+                            warn!(%session_id, %error, "session/load failed");
+                            req_cx.respond_with_error(error)
+                        }
+                    }
                 },
             )
             .await
@@ -1189,6 +1316,9 @@ where
 }
 
 pub async fn run(builtins: Vec<String>) -> Result<()> {
+    biorouter::dictation::activation::set_process_surface(
+        biorouter::dictation::activation::Surface::Acp,
+    );
     info!("listening on stdio");
 
     let outgoing = tokio::io::stdout().compat_write();
@@ -1197,8 +1327,19 @@ pub async fn run(builtins: Vec<String>) -> Result<()> {
     // stdio transport: the peer is the local process that launched us (an
     // editor / Jupyter AI), running with the user's own privileges, so load the
     // user's enabled config extensions — matching the CLI and GUI.
-    let agent = Arc::new(BioRouterAcpAgent::new(builtins, true).await?);
+    let mut agent = BioRouterAcpAgent::new(builtins, true).await?;
+    if client_hides_dictate(std::env::var(ACP_CLIENT_ENV).ok().as_deref()) {
+        agent = agent.without_dictate_command();
+    }
+    let agent = Arc::new(agent);
     serve(agent, incoming, outgoing).await
+}
+
+/// Whether the stdio client named in `BIOROUTER_ACP_CLIENT` is one that must not
+/// be offered `/dictate`. The Jupyter AI persona names itself there (O-30: Jupyter
+/// AI has no dictation feature), and every other client, or none, keeps it.
+fn client_hides_dictate(client: Option<&str>) -> bool {
+    client == Some(JUPYTER_AI_CLIENT)
 }
 
 /// Default address for the ACP WebSocket server. Matches the default endpoint
@@ -1282,9 +1423,9 @@ fn token_from_query(query: &str) -> Option<&str> {
 
 /// Resolve the bearer token the WebSocket server will require.
 ///
-/// The desktop app sets `BIOROUTER_ACP_WS_TOKEN` when it spawns the sidecar. A
-/// human running `biorouter acp --ws` by hand gets a freshly generated token
-/// printed once, so the endpoint is never unauthenticated by default.
+/// An operator can supply `BIOROUTER_ACP_WS_TOKEN` for a WebSocket sidecar.
+/// Otherwise a fresh token is printed once for the person launching it, so the
+/// endpoint is never unauthenticated by default.
 fn resolve_ws_token() -> String {
     if let Ok(token) = std::env::var(ACP_WS_TOKEN_ENV) {
         if !token.is_empty() {
@@ -1317,6 +1458,12 @@ fn resolve_ws_token() -> String {
 /// The agent additionally refuses client-registered stdio MCP servers here
 /// (`deny_stdio_mcp`), so a token leak cannot escalate to process execution.
 pub async fn run_ws(builtins: Vec<String>, addr: String) -> Result<()> {
+    if builtins
+        .iter()
+        .any(|name| biorouter::dictation::activation::is_dictionary_name(name))
+    {
+        anyhow::bail!("The Dictionary capability is unavailable over ACP WebSocket.");
+    }
     use tokio_tungstenite::tungstenite::handshake::server::{
         ErrorResponse, Request, Response as HsResponse,
     };
@@ -1385,6 +1532,14 @@ pub async fn run_ws(builtins: Vec<String>, addr: String) -> Result<()> {
     }
 }
 
+/// Building an agent in a test takes this turn. `with_config` installs the process's
+/// decision log over the new agent's store and the log follows the newest store, so
+/// an agent built by one test while another counts its decision rows points the log at
+/// the wrong store. The decision log test holds the turn for its whole run; the agent
+/// helper in `tests` holds it while it builds.
+#[cfg(test)]
+static AGENT_STORE_TURN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1395,6 +1550,87 @@ mod tests {
     use std::io::Write;
     use tempfile::NamedTempFile;
     use test_case::test_case;
+
+    #[test]
+    fn audio_content_becomes_the_catalog_note_in_the_turn() {
+        use sacp::schema::AudioContent;
+
+        let message = BioRouterAcpAgent::convert_acp_prompt_to_message(vec![
+            ContentBlock::Text(TextContent::new("retained text")),
+            ContentBlock::Audio(AudioContent::new("discard-me", "audio/wav")),
+        ]);
+        assert!(matches!(
+            message.content.as_slice(),
+            [MessageContent::Text(text), MessageContent::Text(note)]
+                if text.text.as_str() == "retained text" && note.text.as_str() == MSG_ACP_NOTE
+        ));
+    }
+
+    #[test]
+    fn dictate_is_only_in_an_enabled_clients_command_list() {
+        let update = dictate_command_update(true).unwrap();
+        assert_eq!(update.available_commands.len(), 1);
+        assert_eq!(update.available_commands[0].name, "dictate");
+        assert_eq!(
+            update.available_commands[0].description,
+            ACP_DICTATE_DESCRIPTION
+        );
+        assert!(dictate_command_update(false).is_none());
+    }
+
+    /// O-30: only the Jupyter AI persona's own name hides `/dictate`; any other
+    /// value, a near miss, or no value keeps it for that stdio client.
+    #[test]
+    fn only_the_jupyter_ai_persona_name_hides_dictate() {
+        assert!(client_hides_dictate(Some("jupyter-ai")));
+        for other in [
+            None,
+            Some(""),
+            Some("zed"),
+            Some("Jupyter-AI"),
+            Some("jupyter-ai "),
+        ] {
+            assert!(!client_hides_dictate(other), "{other:?}");
+        }
+    }
+
+    /// Both doors that take `/dictate` away really clear it on the agent the
+    /// transports serve: the Jupyter AI persona's on stdio, and the WebSocket
+    /// transport's `deny_stdio_mcp`. A fresh stdio agent keeps it, and
+    /// `run_ws` builds its agent through `deny_stdio_mcp`.
+    #[tokio::test]
+    async fn the_persona_and_the_websocket_agent_offer_no_dictate_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let stdio = acp_agent_with_the_dictionary_loaded(dir.path()).await;
+        assert!(
+            stdio.dictate_available,
+            "a stdio client is offered /dictate"
+        );
+        assert!(dictate_command_update(stdio.dictate_available).is_some());
+
+        let persona = acp_agent_with_the_dictionary_loaded(dir.path())
+            .await
+            .without_dictate_command();
+        assert!(!persona.dictate_available);
+        assert!(dictate_command_update(persona.dictate_available).is_none());
+
+        let websocket = acp_agent_with_the_dictionary_loaded(dir.path())
+            .await
+            .deny_stdio_mcp();
+        assert!(!websocket.dictate_available);
+        assert!(dictate_command_update(websocket.dictate_available).is_none());
+
+        let source = include_str!("server.rs");
+        let run_ws = source
+            .split("pub async fn run_ws(")
+            .nth(1)
+            .and_then(|rest| rest.split("\n}\n").next())
+            .expect("run_ws is defined in this file");
+        assert!(
+            run_ws.contains(".deny_stdio_mcp()"),
+            "run_ws must build its agent through deny_stdio_mcp"
+        );
+    }
 
     /// The ACP client draws this in a human's editor, so the guardrail's
     /// untrusted-data frame must not reach it. The fixture is built with the
@@ -1603,6 +1839,186 @@ print(\"hello, world\")
     ) {
         assert_eq!(outcome_to_confirmation(&input), expected);
     }
+
+    /// Runs a transport entry point (`run` or `run_ws`) with a provider value
+    /// that cannot be read as a provider name. Both resolve the provider before
+    /// they serve anything, so they stop at "No provider configured" without
+    /// reading the person's configured provider, touching a credential store or
+    /// serving stdio. The override is task local and never reaches the
+    /// environment. The caller boxes the entry point because its future is too
+    /// large for a test thread's stack in a debug build, and the timeout makes
+    /// a test fail rather than hang if an entry point ever got as far as
+    /// serving.
+    async fn run_entry_point_without_a_provider(
+        entry_point: std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>>>>,
+    ) -> Result<()> {
+        let scoped = biorouter::config::with_config_overrides(
+            HashMap::from([("BIOROUTER_PROVIDER".to_string(), "42".to_string())]),
+            entry_point,
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(60), scoped)
+            .await
+            .expect("the transport entry point kept running instead of returning")
+    }
+
+    const DICTIONARY_TOOLS: [&str; 3] = [
+        "dictionary__add_terms",
+        "dictionary__list_terms",
+        "dictionary__remove_added_terms",
+    ];
+
+    fn dictionary_tool_names(tools: Vec<rmcp::model::Tool>) -> std::collections::BTreeSet<String> {
+        tools
+            .into_iter()
+            .map(|tool| tool.name.to_string())
+            .filter(|name| name.starts_with("dictionary__"))
+            .collect()
+    }
+
+    /// An ACP agent with the Dictionary capability loaded through the same
+    /// `--with-builtin` path `run` and `run_ws` use, on a provider that is
+    /// never called.
+    async fn acp_agent_with_the_dictionary_loaded(dir: &std::path::Path) -> BioRouterAcpAgent {
+        use biorouter::providers::api_client::{ApiClient, AuthMethod};
+        let api_client = ApiClient::new(
+            "http://127.0.0.1:1".to_string(),
+            AuthMethod::BearerToken("test-key".to_string()),
+        )
+        .unwrap();
+        let provider = Arc::new(biorouter::providers::openai::OpenAiProvider::new(
+            api_client,
+            biorouter::model::ModelConfig::new("gpt-5-nano").unwrap(),
+        ));
+        // Installing this agent re-points the process's decision log at its store.
+        let _turn = super::AGENT_STORE_TURN.lock().await;
+        BioRouterAcpAgent::with_config(BioRouterAcpConfig {
+            provider,
+            builtins: vec!["dictionary".to_string()],
+            work_dir: dir.to_path_buf(),
+            data_dir: dir.to_path_buf(),
+            config_dir: dir.to_path_buf(),
+            biorouter_mode: biorouter::config::BioRouterMode::Auto,
+            extensions: Vec::new(),
+        })
+        .await
+        .unwrap()
+    }
+
+    async fn open_acp_session(agent: &BioRouterAcpAgent, dir: &std::path::Path) -> String {
+        agent
+            .on_new_session(NewSessionRequest::new(dir))
+            .await
+            .expect("the ACP new session handler opens a chat")
+            .session_id
+            .0
+            .to_string()
+    }
+
+    /// PR-23: `run_ws` refuses `--with-builtin dictionary` by its normalised
+    /// name, also when other builtins come with it, before it builds an agent.
+    /// The last case is the control: without the Dictionary the same call
+    /// passes the check and stops later, at provider resolution, so the
+    /// refusal is about that one name.
+    #[tokio::test]
+    async fn acp_websocket_refuses_the_dictionary_builtin_by_name() {
+        for name in ["dictionary", "Dictionary", " dictionary "] {
+            let err = run_entry_point_without_a_provider(Box::pin(run_ws(
+                vec!["developer".to_string(), name.to_string()],
+                "127.0.0.1:0".to_string(),
+            )))
+            .await
+            .expect_err("run_ws must refuse the Dictionary builtin");
+            assert_eq!(
+                err.to_string(),
+                "The Dictionary capability is unavailable over ACP WebSocket.",
+                "builtin {name:?}"
+            );
+        }
+
+        let err = run_entry_point_without_a_provider(Box::pin(run_ws(
+            vec!["developer".to_string()],
+            "127.0.0.1:0".to_string(),
+        )))
+        .await
+        .expect_err("the unreadable provider stops run_ws before it serves");
+        assert!(
+            err.to_string().starts_with("No provider configured"),
+            "a builtin list without the Dictionary was refused for another reason: {err}"
+        );
+    }
+
+    /// PR-23: a `--ws` agent (`deny_stdio_mcp`) has dictionary learning turned
+    /// off, so even with the Dictionary extension loaded the model's roster in
+    /// an ACP chat has no `dictionary__` tool. The same agent without
+    /// `deny_stdio_mcp`, as stdio builds it, advertises all three, which shows
+    /// the WebSocket setup is what removes them.
+    #[tokio::test]
+    async fn an_acp_websocket_agent_offers_the_model_no_dictionary_tool() {
+        let expected: std::collections::BTreeSet<String> = DICTIONARY_TOOLS
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+
+        let stdio_dir = tempfile::tempdir().unwrap();
+        let stdio = acp_agent_with_the_dictionary_loaded(stdio_dir.path()).await;
+        let stdio_session = open_acp_session(&stdio, stdio_dir.path()).await;
+        assert!(stdio.agent.dictionary_learning_enabled());
+        assert_eq!(
+            dictionary_tool_names(stdio.agent.list_tools(&stdio_session, None).await),
+            expected,
+            "control: an ACP stdio agent with the Dictionary loaded offers its tools"
+        );
+
+        let ws_dir = tempfile::tempdir().unwrap();
+        let ws = acp_agent_with_the_dictionary_loaded(ws_dir.path())
+            .await
+            .deny_stdio_mcp();
+        let ws_session = open_acp_session(&ws, ws_dir.path()).await;
+        assert!(!ws.agent.dictionary_learning_enabled());
+        assert_eq!(
+            dictionary_tool_names(
+                ws.agent
+                    .list_tools_for_permission_settings(&ws_session, None)
+                    .await
+            ),
+            expected,
+            "premise: the Dictionary extension is installed on the WebSocket agent"
+        );
+        let offered = dictionary_tool_names(ws.agent.list_tools(&ws_session, None).await);
+        assert!(
+            offered.is_empty(),
+            "an ACP WebSocket chat offered the model dictionary tools: {offered:?}"
+        );
+    }
+
+    /// PR-23: ACP stdio always suggests. `run` marks the process as the ACP
+    /// surface before anything else, and from then on the activation module
+    /// reports suggest only for the whole process. The provider override stops
+    /// `run` right after that setup, before it serves stdio.
+    #[tokio::test]
+    async fn acp_stdio_setup_forces_suggest_only_for_the_process() {
+        use biorouter::dictation::activation::{
+            process_surface, suggest_only_for_process, Surface,
+        };
+        assert!(
+            !suggest_only_for_process(),
+            "premise: nothing in this test binary forced suggest only before `run`"
+        );
+
+        let err = run_entry_point_without_a_provider(Box::pin(run(Vec::new())))
+            .await
+            .expect_err("the unreadable provider stops run before it serves stdio");
+        assert!(
+            err.to_string().starts_with("No provider configured"),
+            "run stopped somewhere other than provider resolution: {err}"
+        );
+
+        assert_eq!(process_surface(), Surface::Acp);
+        assert!(
+            suggest_only_for_process(),
+            "after the ACP stdio setup the process must be suggest only"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1662,6 +2078,7 @@ mod decision_log_tests {
     /// anything is sent, and the failure is still a row in the chat's log.
     #[test]
     fn a_decision_in_an_acp_session_is_logged_in_its_store() {
+        let _turn = super::AGENT_STORE_TURN.blocking_lock();
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_stack_size(16 * 1024 * 1024)

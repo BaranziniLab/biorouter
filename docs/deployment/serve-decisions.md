@@ -4,8 +4,9 @@
 > serves the interface itself, why a browser session cannot change its model yet starts every
 > chat on the one the operator chose, why the standalone `biorouter-headless` binary was
 > retired, how long the launch token stays good for, which chats the deprecated
-> `biorouter web` may still open, and when a decision model may make a chat public there. Each
-> record states the ruling, the alternatives it
+> `biorouter web` may still open, when a decision model may make a chat public there, and what
+> app pages on the served origin may do with a microphone grant. Each record states the ruling,
+> the alternatives it
 > displaced, and the consequence a future change would have to accept.
 > **Status:** Current.
 > **Audience:** developers working on the daemon, the CLI, or release packaging; agents making
@@ -1374,6 +1375,124 @@ running it can make.
   it is public from the moment the write lands, and nothing it held before was exposed. Tying the
   lowering to a caller that states it owns the target chat was considered and not built, because
   a holder of the secret can state that too.
+
+---
+
+## SD-17: App pages turn the microphone off; the grant still belongs to the origin
+
+> **First part (2026-11-05).** The header ruling landed before a served page could ask for the
+> microphone. The browser dictation ruling below completes this record with PR-21.
+
+**Ruling.** Every document an Agent Drafter app serves carries
+`Permissions-Policy: microphone=(), camera=(), display-capture=()`: the app's page and its build
+failure page (`routes::apps::app_page_response`), every file under its `dist/` and `assets/`
+(`with_app_file_csp`), its figure frame (`figure_frame`) and its launch bounce (`launch_bounce`).
+The value is the constant `APP_PERMISSIONS_POLICY`. The shell (`routes::web_ui::index`) carries
+`Permissions-Policy: microphone=(self)`. The header governs each of those documents and the frames
+it holds. It does not take the person's grant away from the origin, so it does not, by itself,
+keep an app from recording on that grant: see the first two consequences below.
+
+**Why.** Dictation on `biorouter serve` asks the person's browser for the microphone from the
+shell. A browser remembers that permission for the origin, not for the page, and every app this
+daemon serves is on the shell's origin (SD-14), running code an agent wrote. With no policy, an
+app page could call `getUserMedia` in its own document and record on the person's grant to the
+shell without a prompt, as soon as that grant is a lasting one. `Permissions-Policy` is the
+control that acts per document inside one origin: a document whose policy turns a feature off
+cannot use it whatever the origin's permission says, and neither can any frame it holds. It does
+not follow a popup the document opens, which is a new top level document with a policy of its own.
+So the header closes the direct path, the one any app page would reach for first, and leaves the
+grant where the browser keeps it. The camera and screen capture are off in the same header
+because no app uses them, and an origin wide grant for either would reach agent written code the
+same way.
+
+**What each piece does.**
+
+- On an app's page, its `assets/` documents and every frame they hold, Chromium rejects
+  `getUserMedia` with `NotAllowedError`, while the shell on the same origin, under the same
+  grant, still records. `ui/desktop/tests/e2e/serve-app-microphone.spec.ts` checks exactly that
+  against a real `biorouter serve`. A second test there, labelled SD-17 residual, pins the popup
+  path below as it is today, so a change that closes it has to flip that test on purpose.
+- The figure frame is sandboxed to an opaque origin and inherits the policy of the app page that
+  frames it. Its own header covers the case where something opens it at the top level.
+- The launch bounce runs no script. It carries the header so that no document under
+  `/apps/{id}/` answers without it.
+- On the shell, `microphone=(self)` is the browser's default written out: the shell is the page
+  that asks, and no frame of another origin may.
+- A test in `routes::apps` reads the file and fails when an item there answers with HTML (a
+  function or `impl` block that names `text/html`, axum's `Html`, or `mime_for`) and does not send
+  `APP_PERMISSIONS_POLICY`, directly or through `app_page_response` or `with_app_file_csp`.
+
+**Displaced alternatives.**
+
+- *`microphone=(self)` on app pages.* `self` is the shared origin, so it grants exactly what the
+  header is there to withhold.
+- *Rely on the content security policy as it stands.* It governs what a page loads and runs, not
+  the permissions it uses. An app page's `default-src 'none'` does not stop `getUserMedia`.
+- *Serve each app on an origin of its own first.* That is the complete fix SD-14 names, and it
+  would close the residuals below too. It changes the cookies, the launch link, the App SDK and
+  the proxy setups of SD-15, so the headers come first.
+
+**Consequences to accept.**
+
+- In Chromium, a same-origin popup that an app page opens does not inherit the app's policy, so
+  the page can record on a lasting grant through it (measured in Chrome 157, 2026-11-05). From
+  the app page, `window.open('about:blank')` followed by
+  `getUserMedia({ audio: true })` on the popup's `navigator` returns a live audio track, and the
+  popup reports that its policy allows the microphone. The same works for a popup to any document
+  this origin serves without the header, such as `/status`, the shell's refusal page, a JSON route
+  like `/apps/{id}/models`, or the app refusal page in `auth.rs`. A real app gets the user
+  activation `window.open` needs from any click. No response header closes the `about:blank`
+  case, because no response makes that document; per app origins do. A content security policy
+  `sandbox` on app pages without `allow-popups` would block this path, but it also breaks the
+  links the App SDK opens with `target="_blank"` (`agent_drafter/templates/sdk.ts`); that choice
+  is the owner's, and it is open.
+- Firefox and Safari ignore `Permissions-Policy`. There, an app page on the shell's origin can use
+  a lasting microphone grant the person gave the shell in its own document as well as through a
+  popup, and no header changes that. No app page asks for the microphone, and per app origins
+  close it.
+- So on every browser, Chromium included, a lasting microphone grant to the served origin can
+  reach code an agent wrote. What the served interface asks of the person before the first
+  recording, given that, is decided in the second part of this record, before any served page asks
+  for the microphone.
+- Under a path prefix (SD-15), the origin belongs to the proxy and is shared with every other page
+  it serves, such as other people's notebooks. These headers govern only what this daemon
+  answers; the rest of that origin is outside them, which is why the served interface warns
+  before the first recording there.
+- An app cannot use the microphone, the camera or screen capture in its own page in a browser that
+  enforces the header. The desktop preview already refuses every permission to an app. An app
+  that wants speech gets text the person dictated somewhere else and pasted or inserted.
+- The header also goes on the non-HTML files under `dist/` and `assets/`. A browser ignores it
+  there; sending it on every file keeps the rule one line.
+
+**Browser dictation ruling (PR-21).** The served browser captures audio on the viewer's device
+and sends it to the daemon on the host running `serve`. A stream needs the daemon secret. A
+user-action proof is not required; on the desktop it decides whether private dictionary terms
+may bias recognition. In a served browser, `X-Caller-Provider` states the host's configured
+provider and gives private standing when that provider is private. The browser cookie's operator
+standing under SD-10 can list private dictionary rows even when that header is absent. Listing
+does not create private bias standing or grant a private row an institutional stamp.
+
+A keyless daemon accepts an install of a compiled, pinned speech model with its secret. The
+operator can stop browser installs with `biorouter serve --no-dictation-install`,
+`BIOROUTER_DICTATION_BROWSER_INSTALL=false`, or managed policy. The first switch passes `false`
+only to the daemon started by that `serve` command. A browser may add, edit, accept and delete
+dictionary terms one at a time. Publicize and privatize, raising `agent_writes`, and turning chat
+learning or dictionary suggestions on stay with the host. The page disables those actions with
+the matching host command before a click. A private add also needs private standing.
+
+Before the first microphone recording, the served page shows MSG-SHARED-ORIGIN once per browser
+origin. It tells the person that a microphone grant reaches every page on that origin and
+recommends **Allow this time** unless every page there is trusted. The person continues from a
+fresh click, which keeps `getUserMedia` inside a user gesture. Settings' microphone test follows
+the same gate. Behind a JupyterHub path prefix, other notebook pages can share that origin.
+
+The notice is a disclosure, not an authority proof. Chromium's app-page header does not govern a
+same-origin popup, and Firefox and Safari do not enforce the header. A keyless daemon's secret
+also lets any holder, including an agent shell that recovers it, install a pinned model and make
+the browser's permitted dictionary writes. Biorouter Copilot with a per-task grant can click the
+served microphone and then Send; this work adds no separate Copilot refusal (DD-88, O-15). ACP
+clients that extract text from a chat can carry dictated text outside the served page under their
+existing access. Per-app origins and a narrower ACP data boundary are separate future work.
 
 ---
 

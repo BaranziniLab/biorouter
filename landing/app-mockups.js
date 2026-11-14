@@ -23,6 +23,7 @@
     scheduler: '<path d="M12 6v6l4 2"/><circle cx="12" cy="12" r="10"/>',
     extensions: '<path d="M15.39 4.39a1 1 0 0 0 1.68-.474 2.5 2.5 0 1 1 3.014 3.015 1 1 0 0 0-.474 1.68l1.683 1.682a2.414 2.414 0 0 1 0 3.414L19.61 15.39a1 1 0 0 1-1.68-.474 2.5 2.5 0 1 0-3.014 3.015 1 1 0 0 1 .474 1.68l-1.683 1.682a2.414 2.414 0 0 1-3.414 0L8.61 19.61a1 1 0 0 0-1.68.474 2.5 2.5 0 1 1-3.014-3.015 1 1 0 0 0 .474-1.68l-1.683-1.682a2.414 2.414 0 0 1 0-3.414L4.39 8.61a1 1 0 0 1 1.68.474 2.5 2.5 0 1 0 3.014-3.015 1 1 0 0 1-.474-1.68l1.683-1.682a2.414 2.414 0 0 1 3.414 0z"/>',
     skills: '<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83z"/><path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/><path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/>',
+    dictionary: '<path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H19a1 1 0 0 1 1 1v18a1 1 0 0 1-1 1H6.5a1 1 0 0 1 0-5H20"/><path d="m8 13 4-7 4 7"/><path d="M9.1 11h5.7"/>',
     knowledge: '<circle cx="12" cy="12" r="3"/><circle cx="5" cy="6" r="1.6"/><circle cx="19" cy="6" r="1.6"/><circle cx="6" cy="18" r="1.6"/><circle cx="18" cy="18" r="1.6"/><path d="M10 10.5L6 7M14 10.5l4-3.5M10 14l-4 3M14 14l4 3"/>',
     apps: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 8h20"/><path d="M6 4v4"/><path d="M10 4v4"/>',
     settings: '<path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/>',
@@ -79,9 +80,9 @@
   }
 
   /* Sidebar nav definition. Labels and order mirror AppSidebar.tsx:
-     primaryItems (Home, New chat), then the six componentItems that sit behind
+     primaryItems (Home, New chat), then the seven componentItems that sit behind
      the `Components` disclosure, then settingsItem pinned to the footer. The
-     mockup shows the six expanded, which is one click away in the app.
+     mockup shows the seven expanded, which is one click away in the app.
 
      There is no History row: History is reached from the Recents list, so the
      history screen below passes a key that matches nothing and no row lights
@@ -97,6 +98,7 @@
     { k: 'extensions', label: 'Extensions', icon: 'extensions' },
     { k: 'skills', label: 'Skills', icon: 'skills' },
     { k: 'knowledge', label: 'Knowledge', icon: 'knowledge' },
+    { k: 'dictionary', label: 'Dictionary', icon: 'dictionary' },
     { k: 'apps', label: 'Built apps', icon: 'apps' },
     { sep: true },
     { k: 'settings', label: 'Settings', icon: 'settings' },

@@ -24,8 +24,11 @@ import { installViewportPinWarning } from './utils/viewportPin';
 import { readRegistryDownload } from './utils/registryDownloadResult';
 import { openAppInThisBrowser } from './utils/appLaunchLink';
 import { exportAppInThisBrowser } from './utils/appExportRequest';
+import { clearRetiredDictationSettings } from './utils/retiredDictationSettings';
 
 const App = lazy(() => import('./App'));
+const DictationCapturePage = lazy(() => import('./components/dictation/DictationCapturePage'));
+const DictationReviewCard = lazy(() => import('./components/dictation/DictationReviewCard'));
 
 type HeadlessConfig = {
   apiBaseUrl: string;
@@ -313,6 +316,15 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       setDockIcon: async () => false,
       getDockIconState: async () => false,
       openNotificationsSettings: async () => false,
+      // Dictation in a browser: the browser owns the microphone permission and
+      // asks for it itself, so there is no operating system status to read, no
+      // prompt to raise first and no settings page to open (MSG-MIC-BROWSER says
+      // where the switch is); no screen lock signal and no update restart to hold.
+      dictationMicStatus: async () => 'unknown',
+      dictationMicRequest: async () => true,
+      dictationOpenMicSettings: async () => false,
+      setDictationBusy: () => {},
+      onDictationLockScreen: () => () => {},
       getSettings: async () => {
         const result = await headlessJson<HeadlessSettingsResponse>(
           headlessConfig.headlessBaseUrl,
@@ -587,8 +599,13 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
     installViewportPinWarning();
   }
 
+  // The deleted cloud dictation's provider choice (DD-89). Local only, so it needs no daemon.
+  clearRetiredDictationSettings();
+
   // Check if we're in the launcher view (doesn't need biorouterd connection)
   const isLauncher = window.location.hash === '#/launcher';
+  const isCapture = window.location.hash === '#/dictation-capture';
+  const isReview = window.location.hash === '#/dictation-review';
 
   if (!isLauncher) {
     console.log('window created, getting biorouterd connection info');
@@ -605,12 +622,22 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
     // The day-one privacy notice's count starts here, in parallel with the app chunk loading and
     // the first-run page's provider fetch, and the first-run page waits for its answer so the
     // notice and the page arrive together (FR-R4-4). A leaf module: it pulls in no dialog.
-    startFirstRunNoticeCount();
+    if (!isCapture && !isReview) startFirstRunNoticeCount();
     // And the notice then waits for the splash to leave and the first page to draw before it
     // opens, so a count that wins the race does not put the dialog over the fading wordmark and
     // an empty ground (FR-R5-1). Declared here, before React renders, because the page that
     // clears it mounts in the same commit as the gate and could not declare it in time.
-    holdFirstRunNoticeForFirstPage();
+    if (!isCapture && !isReview) holdFirstRunNoticeForFirstPage();
+  }
+
+  if (isCapture || isReview) {
+    ReactDOM.createRoot(document.getElementById('root')!).render(
+      <Suspense fallback={null}>
+        {isCapture ? <DictationCapturePage /> : <DictationReviewCard />}
+        <DismissBootSplash />
+      </Suspense>
+    );
+    return;
   }
 
   ReactDOM.createRoot(document.getElementById('root')!).render(

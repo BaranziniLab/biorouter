@@ -1,0 +1,215 @@
+# Tier 1 accuracy for local dictation (PR-12; docs/dictation/testing-and-release.md,
+# "Tier 1: networked nightly accuracy").
+#
+# Runs the real speech models on the CPU of a hosted runner: the JFK sample through the
+# product's own service, worker and CLI, and the PriMock57 evaluation set
+# (`eval-primock57-subset-r1` in BaranziniLab/biorouter-models, pinned by SHA-256 in the
+# test) twice: with no dictionary (the baseline arm, PR-12) and with the set's 26 terms
+# through the shipped mechanism (the dictionary arm, PR-14). Since PR-14b the shipped
+# mechanism is the token prompt alone, ending in a period, with correction (M-22), and the
+# dictionary arm's floors were set again for it on 2026-11-06: strict recall on the clean
+# utterances, and on every condition no collapse, no false correction and no more
+# spurious insertions than its recorded floor (`DICTIONARY_RECALL_FLOORS`,
+# `DEGRADED_INSERTION_FLOORS` in crates/biorouter/tests/dictation_accuracy.rs). The
+# degraded copies' insertion floors were measured on Apple Silicon only and have no
+# headroom, so on this x86 runner a count above them is a `::warning::`, not a failure,
+# until the first hosted run's counts are written into the test.
+#
+# Schedule: small.en every night and on pull requests that touch the engine; turbo every
+# week; both default models on a dispatch, whose run is named `Dictation accuracy
+# v<version>` when a version is given. `scripts/release.sh publish` looks for that run at
+# the release's source commit (`require_dictation_accuracy`, O-22).
+#
+# The job fails only on a default model's floor (both catalog models are a default for
+# their hardware class). Measured figures appear here and in the artifacts only, never in
+# user facing documents (O-23).
+#
+# Caches: the models only, restored by the catalog's pins and saved from main alone, so a
+# branch never writes a private copy into the repository's 10 GB budget. No Rust cache:
+# a nightly cold build costs minutes, and a cache of its own would cost the shared ones
+# their place (see rust.yml's save-if note).
+name: Dictation accuracy
+run-name: ${{ github.event_name == 'workflow_dispatch' && inputs.version != '' && format('Dictation accuracy v{0}', inputs.version) || 'Dictation accuracy' }}
+
+on:
+  schedule:
+    # Nightly: whisper-small.en-q8_0.
+    - cron: "23 7 * * *"
+    # Weekly, on Sundays: whisper-large-v3-turbo-q5_0.
+    - cron: "47 8 * * 0"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The release this run vouches for; names the run `Dictation accuracy v<version>`. Both default models run."
+        required: false
+        type: string
+  pull_request:
+    paths:
+      - "crates/biorouter-dictation/**"
+      - "vendor/whisper.cpp/**"
+      # The file reader: its MP3, M4A, AAC and Ogg tests need ffmpeg, which only this
+      # job installs (PR-12b).
+      - "crates/biorouter-cli/src/dictation/decode.rs"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dictation-accuracy-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  plan:
+    name: Choose the models
+    runs-on: ubuntu-latest
+    outputs:
+      models: ${{ steps.pick.outputs.models }}
+    steps:
+      - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          SCHEDULE: ${{ github.event.schedule }}
+        run: |
+          set -euo pipefail
+          case "$EVENT|$SCHEDULE" in
+            "schedule|47 8 * * 0") models='["whisper-large-v3-turbo-q5_0"]' ;;
+            workflow_dispatch\|*) models='["whisper-small.en-q8_0","whisper-large-v3-turbo-q5_0"]' ;;
+            *) models='["whisper-small.en-q8_0"]' ;;
+          esac
+          echo "models=$models" >> "$GITHUB_OUTPUT"
+          echo "models: $models"
+
+  accuracy:
+    name: Tier 1 (${{ matrix.model }})
+    needs: plan
+    runs-on: ubuntu-latest
+    # About 5 minutes of decoding for small.en and an hour for turbo on 4 CPU threads,
+    # plus a cold build; hosted runners are slower than the measurement machine.
+    timeout-minutes: ${{ matrix.model == 'whisper-large-v3-turbo-q5_0' && 240 || 90 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        model: ${{ fromJSON(needs.plan.outputs.models) }}
+    env:
+      BIOROUTER_DISABLE_KEYRING: "true"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      BIOROUTER_DICTATION_ACCURACY_MODELS: ${{ matrix.model }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.92"
+
+      - name: Install protoc (build-script dep)
+        uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install native build dependencies and ffmpeg
+        run: |
+          # The runner image's Microsoft lists have answered 403 before; nothing here
+          # comes from them (rust.yml says more).
+          sudo rm -f /etc/apt/sources.list.d/microsoft-prod.list \
+                     /etc/apt/sources.list.d/azure-cli.list \
+                     /etc/apt/sources.list.d/microsoft-prod.sources \
+                     /etc/apt/sources.list.d/azure-cli.sources
+          sudo apt-get update
+          sudo apt-get install --yes libdbus-1-dev libxcb1-dev pkg-config cmake ffmpeg
+
+      - name: Where the models and outputs go
+        run: |
+          echo "BIOROUTER_DICTATION_MODELS_DIR=$RUNNER_TEMP/models" >> "$GITHUB_ENV"
+          echo "BIOROUTER_DICTATION_EVALSET=$RUNNER_TEMP/eval/primock57-subset-r1.tar" >> "$GITHUB_ENV"
+          echo "BIOROUTER_DICTATION_ACCURACY_OUT=$RUNNER_TEMP/accuracy" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/models" "$RUNNER_TEMP/eval" "$RUNNER_TEMP/accuracy"
+
+      - name: Restore the model
+        id: models
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/models
+          key: dictation-models-${{ matrix.model }}-${{ hashFiles('crates/biorouter-dictation/src/catalog.rs') }}
+
+      - name: Download the evaluation set
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download eval-primock57-subset-r1 -R BaranziniLab/biorouter-models \
+            -p primock57-subset-r1.tar -D "$RUNNER_TEMP/eval"
+          ls -l "$RUNNER_TEMP/eval"
+
+      # The detector downloaded end to end through the installer, with the compiled pin.
+      - name: cargo test (model download, live)
+        run: cargo test -p biorouter-dictation --features engine --test model_download_live --locked -- --ignored
+
+      # The JFK sample and PriMock57 through the real service and worker, both arms, with
+      # their floors. A model missing from the cache is installed by the product's
+      # installer. M-22's arms and the prompt tail measurement need the synthetic set,
+      # which CI does not have, so they say so and return.
+      - name: cargo test (Tier 1 accuracy, baseline and dictionary arms)
+        run: cargo test -p biorouter --features local-dictation --test dictation_accuracy --locked -- --ignored
+
+      # `biorouter transcribe` with the real model, from jfk.wav and from its M4A, AAC and
+      # Ogg Vorbis copies, with the same words; MP3, M4A, AAC (ADTS), Ogg Vorbis and Ogg
+      # FLAC files encoded by ffmpeg decode to their length, and Opus, WebM and Apple
+      # Lossless are refused with the ffmpeg line (DD-78, O-39, PR-12b); an agent's shell
+      # gets no private term (DD-77); the terms a transcript holds have their `uses` raised
+      # after the text is out (PR-14b).
+      - name: cargo test (transcribe and file decoding)
+        run: cargo test -p biorouter-cli --test dictation_cli --locked -- --ignored --test-threads=1
+
+      - name: Report
+        if: always()
+        run: |
+          python3 -I - "$BIOROUTER_DICTATION_ACCURACY_OUT/summary.json" >> "$GITHUB_STEP_SUMMARY" <<'PY'
+          import json, os, sys
+          path = sys.argv[1]
+          if not os.path.exists(path):
+              print("No accuracy summary was written.")
+              sys.exit(0)
+          summary = json.load(open(path))
+          print("| model | condition | strict recall | collapses | word error rate | median per clip | real time factor |")
+          print("|---|---|---|---|---|---|---|")
+          for model, conditions in summary.items():
+              for name, row in conditions.items():
+                  if not isinstance(row, dict) or "strict_recall" not in row:
+                      continue
+                  print(f"| {model} | {name} | {row['hits']}/{row['occurrences']} | {len(row['collapses'])} | "
+                        f"{100 * row['word_error_rate']:.1f} % | {row['median_ms']} ms | {row['real_time_factor']:.2f} |")
+              gaps = conditions.get("gaps", {})
+              print(f"\n{model}: {gaps.get('outputs')} of {gaps.get('of')} gaps gave output (floor {gaps.get('floor')}); backend {conditions.get('backend')}\n")
+          dictionary = os.path.join(os.path.dirname(path), "dictionary-summary.json")
+          if os.path.exists(dictionary):
+              print("\n**With the dictionary** (the shipped mechanism)\n")
+              print("| model | condition | strict recall | floor | before correction | collapses | false corrections | spurious insertions | median per clip |")
+              print("|---|---|---|---|---|---|---|---|---|")
+              for model, conditions in json.load(open(dictionary)).items():
+                  for name, row in conditions.items():
+                      if not isinstance(row, dict) or "hits" not in row:
+                          continue
+                      floor = row.get("floor")
+                      print(f"| {model} | {name} | {row['hits']}/{row['occurrences']} | {floor if floor is not None else '-'} | "
+                            f"{row['raw_hits']} | {len(row['collapses'])} | {len(row['false_corrections'])} | "
+                            f"{row['spurious_insertions']} | {row['median_ms']} ms |")
+                  gaps = conditions.get("gaps", {})
+                  print(f"\n{model}: {gaps.get('outputs')} of {gaps.get('of')} gaps gave output (floor {gaps.get('floor')}), spurious insertions {gaps.get('spurious_insertions')}\n")
+          PY
+
+      - name: Upload the tables and transcripts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dictation-accuracy-${{ matrix.model }}
+          path: ${{ runner.temp }}/accuracy
+          if-no-files-found: warn
+
+      # Only after a green run, so a cut download is never saved as the model.
+      - name: Save the model
+        if: success() && github.ref == 'refs/heads/main' && steps.models.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/models
+          key: dictation-models-${{ matrix.model }}-${{ hashFiles('crates/biorouter-dictation/src/catalog.rs') }}
