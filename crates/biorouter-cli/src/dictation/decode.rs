@@ -467,24 +467,34 @@ const MAX_BOX_DEPTH: u8 = 12;
 /// lazily on macOS fails on Linux, where no `catch_unwind` reaches either.
 ///
 /// So the walk follows the reader's own descent ([`children_at`]) through the top level
-/// `moov` and `meta`, and refuses a box that runs past the box holding it or past the file,
-/// a header that does not fit in what is left of its parent, a table count its box cannot
-/// hold, and a sample larger than the file. Only box headers, counts and sample sizes are
-/// read. A file whose top level cannot be walked is left for the reader to judge.
+/// `moov`, `meta` and `moof`, and refuses a box that runs past the box holding it or past
+/// the file, a header that does not fit in what is left of its parent, a table count its
+/// box cannot hold, and a sample larger than the file, whether `stsz` or a fragment
+/// ([`fragment_fits`]) sizes it. Only box headers, counts and sample sizes are read. A top
+/// level header the walk cannot read is refused too: the reader would add its size to its
+/// position unchecked.
 fn mp4_boxes_fit(source: &mut (impl Read + Seek)) -> bool {
     let Ok(len) = source.seek(SeekFrom::End(0)) else {
         return true;
     };
     let mut at = 0u64;
     while at.saturating_add(8) <= len {
+        // A header the walk cannot read, one smaller than itself, or a 64 bit size that
+        // wraps past the end of the address space: the reader adds that size to its
+        // position unchecked, and in a release build wraps and reads on unbounded.
         let Some((kind, body, end)) = box_header(source, at, len) else {
-            return true;
+            return false;
         };
         if kind == *b"moov" || kind == *b"meta" {
             let first = body + if kind == *b"meta" { 4 } else { 0 };
             if end > len || first > end || !boxes_fit_in(source, &kind, first, end, len, 0) {
                 return false;
             }
+        }
+        // A fragment: its sample sizes and counts. One cut short at the end of a recording is
+        // left to the reader, which stops at the end of the file before it reads a packet.
+        if kind == *b"moof" && end <= len && !boxes_fit_in(source, &kind, body, end, len, 0) {
+            return false;
         }
         // Another top level box, an `mdat` above all, may run past the end of a recording
         // cut short: the reader skips it, so the audio before the cut still decodes.
@@ -528,6 +538,9 @@ fn boxes_fit_in(
         if parent == b"stbl" && !table_fits(source, &kind, body, end - body, file_len) {
             return false;
         }
+        if !fragment_fits(source, parent, &kind, body, end - body, file_len) {
+            return false;
+        }
         if let Some(offset) = children_at(parent, &kind, source, body) {
             let Some(first) = body.checked_add(offset).filter(|first| *first <= end) else {
                 return false;
@@ -560,6 +573,7 @@ fn children_at(
         | (b"mdia", b"minf")
         | (b"minf", b"stbl")
         | (b"meta", b"ilst")
+        | (b"moof", b"traf")
         | (b"ilst", _) => Some(0),
         (b"udta", b"meta") => Some(4),
         (b"stbl", b"stsd") => Some(8),
@@ -576,6 +590,73 @@ fn children_at(
         }
         (entry, b"wave") if AUDIO_SAMPLE_ENTRIES.contains(&entry) => Some(0),
         _ => None,
+    }
+}
+
+/// Whether a fragmented file's sample sizes fit in a file of `file_len` bytes, and a run's
+/// count in its box: the reader reads each packet of a fragment into a buffer of the size
+/// `trun` gives it, or the default `tfhd` or `trex` sets, each up to 4 GiB. `trex` (in
+/// `mvex`) holds a default size after its version and flags, track and description index
+/// and duration. `tfhd` holds one after optional fields its flags name. `trun` names in its
+/// flags which fields each sample carries. Any other box, or a body too short to read, is
+/// left for the reader to judge.
+fn fragment_fits(
+    source: &mut (impl Read + Seek),
+    parent: &[u8; 4],
+    kind: &[u8; 4],
+    body: u64,
+    len: u64,
+    file_len: u64,
+) -> bool {
+    let mut read_u32 = |offset: u64| -> Option<u32> {
+        let mut word = [0u8; 4];
+        source
+            .seek(SeekFrom::Start(body.checked_add(offset)?))
+            .ok()?;
+        source.read_exact(&mut word).ok()?;
+        Some(u32::from_be_bytes(word))
+    };
+    let fits = |size: Option<u32>| size.is_none_or(|size| u64::from(size) <= file_len);
+    match (parent, kind) {
+        (b"mvex", b"trex") if len >= 20 => fits(read_u32(16)),
+        (b"traf", b"tfhd") => {
+            let Some(flags) = read_u32(0).map(|word| word & 0x00ff_ffff) else {
+                return true;
+            };
+            if flags & 0x10 == 0 {
+                return true;
+            }
+            // Track id, then the optional fields before the default size.
+            let at = 8 + [(0x01, 8), (0x02, 4), (0x08, 4)]
+                .iter()
+                .filter(|(flag, _)| flags & flag != 0)
+                .map(|(_, bytes)| bytes)
+                .sum::<u64>();
+            at + 4 > len || fits(read_u32(at))
+        }
+        (b"traf", b"trun") => {
+            let (Some(flags), Some(count)) = (read_u32(0), read_u32(4)) else {
+                return true;
+            };
+            let flags = flags & 0x00ff_ffff;
+            let first = 8 + [(0x001, 4), (0x004, 4)]
+                .iter()
+                .filter(|(flag, _)| flags & flag != 0)
+                .map(|(_, bytes)| bytes)
+                .sum::<u64>();
+            let fields = [0x100, 0x200, 0x400, 0x800];
+            let per_sample = 4 * fields.iter().filter(|flag| flags & *flag != 0).count() as u64;
+            if first > len || u64::from(count) * per_sample > len - first {
+                return false;
+            }
+            if flags & 0x200 == 0 {
+                return true;
+            }
+            // The size follows the duration when the run carries both.
+            let size_at = first + if flags & 0x100 != 0 { 4 } else { 0 };
+            (0..u64::from(count)).all(|n| fits(read_u32(size_at + n * per_sample)))
+        }
+        _ => true,
     }
 }
 
@@ -2112,6 +2193,70 @@ mod tests {
         };
         assert!(fits(&udta([0; 4])));
         assert!(!fits(&udta(*b"free")));
+    }
+
+    /// A top level box whose 64 bit size wraps past the end of the address space is refused:
+    /// the reader adds the size to its position unchecked, and a release build wraps and
+    /// reads `moov` with no bound (a debug build panics instead, which `decode` catches).
+    #[test]
+    fn a_top_level_size_that_wraps_is_refused() {
+        let mut file = mp4_box(b"ftyp", b"M4A \0\0\0\0");
+        file.extend(mp4_box64(b"moov", u64::MAX, &mp4_box(b"trak", &[])));
+        assert!(!mp4_boxes_fit(&mut std::io::Cursor::new(&file)));
+        assert_eq!(
+            decode_reader(file.as_slice()).unwrap_err(),
+            DecodeError::UnsupportedFormat { kind: None }
+        );
+    }
+
+    /// A fragmented file's packet sizes are bounded by the file, as `stsz`'s are: the default
+    /// size in `trex` and in `tfhd`, and each size in `trun`, whose count must also fit in its
+    /// box. Real sizes pass.
+    #[test]
+    fn fragment_sample_sizes_are_bounded_by_the_file() {
+        let fits = |boxes: &[Vec<u8>]| {
+            let mut file = mp4_box(b"ftyp", b"iso6\0\0\0\0");
+            for b in boxes {
+                file.extend_from_slice(b);
+            }
+            mp4_boxes_fit(&mut std::io::Cursor::new(&file))
+        };
+        let words =
+            |words: &[u32]| -> Vec<u8> { words.iter().flat_map(|w| w.to_be_bytes()).collect() };
+        let huge = 0xffff_fff0;
+        // `trex`: version and flags, track, description index, duration, then the size.
+        let trex = |size: u32| {
+            let mvex = mp4_box(
+                b"mvex",
+                &mp4_box(b"trex", &words(&[0, 1, 1, 1024, size, 0])),
+            );
+            mp4_box(b"moov", &mvex)
+        };
+        // Real sizes fit in the file, which here is a few dozen bytes.
+        assert!(fits(&[trex(16)]));
+        assert!(!fits(&[trex(huge)]));
+        // `tfhd` with the default size flag (0x10) after a base data offset (0x01).
+        let tfhd = |size: u32| {
+            let mut body = words(&[0x11, 1]);
+            body.extend_from_slice(&[0; 8]);
+            body.extend(words(&[size]));
+            mp4_box(b"moof", &mp4_box(b"traf", &mp4_box(b"tfhd", &body)))
+        };
+        assert!(fits(&[tfhd(16)]));
+        assert!(!fits(&[tfhd(huge)]));
+        // `trun` with a data offset (0x001), and durations (0x100) and sizes (0x200) per
+        // sample: the size is the second word of each sample.
+        let trun = |count: u32, samples: &[u32]| {
+            let mut body = words(&[0x301, count, 8]);
+            body.extend(words(samples));
+            mp4_box(b"moof", &mp4_box(b"traf", &mp4_box(b"trun", &body)))
+        };
+        assert!(fits(&[trun(2, &[1024, 12, 1024, 16])]));
+        assert!(!fits(&[trun(2, &[1024, 12, 1024, huge])]));
+        assert!(
+            !fits(&[trun(3, &[1024, 12, 1024, 16])]),
+            "a count the box cannot hold"
+        );
     }
 
     /// A sample table whose 64 bit size header runs past the `stbl` holding it is refused:
