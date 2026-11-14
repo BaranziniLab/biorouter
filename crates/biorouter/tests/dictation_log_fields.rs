@@ -20,6 +20,8 @@
 //! refuses them rather than guess: write the line with a level macro. Macro calls written
 //! with `(`, `[` or `{`, and calls nested in another call's arguments, are all read.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::path::{Path, PathBuf};
 
 /// The fields a dictation log line may carry (DD-93). None is audio, text, a prompt, a

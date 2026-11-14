@@ -53,6 +53,8 @@
 //! takes libtest's `--ignored`, `--include-ignored` and name filters; other flags are
 //! accepted and have no effect.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

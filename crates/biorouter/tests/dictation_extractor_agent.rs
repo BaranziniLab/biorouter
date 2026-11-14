@@ -9,6 +9,8 @@
 //! `agents/agent.rs`: such a chat's turn cannot reach a model without a live workspace
 //! broker, and the scope it needs comes from a crate private test helper.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 mod dictation_extractor_support;
 
 use biorouter::conversation::message::{Message, MessageProvenance, ProvenanceKind};

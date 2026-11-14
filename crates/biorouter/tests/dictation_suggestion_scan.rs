@@ -5,6 +5,8 @@
 //! A Crew scoped chat is the lib test `a_crew_scoped_chat_is_never_scanned` in
 //! `dictation/suggestion_scan.rs`, because the scope comes from a crate private helper.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 mod dictation_extractor_support;
 
 use std::sync::atomic::{AtomicBool, Ordering};

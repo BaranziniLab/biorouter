@@ -3,6 +3,9 @@
 //! The owner's run root is read from `PR24_PRECISION_ROOT`, never written here, because this file
 //! ships in a public repository. Each owner-only test returns early, and says so, when that
 //! variable or its own inputs are not set.
+
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::dictation::extractor::candidates;
 use biorouter::security::dictionary_store::store::fold_key;
 use sqlx::{Connection, Row};

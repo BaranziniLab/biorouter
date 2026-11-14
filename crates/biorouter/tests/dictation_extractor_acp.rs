@@ -5,6 +5,8 @@
 //! undone, so it would end every other extractor test in the same process. The shared
 //! helpers are in `dictation_extractor_support`.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 mod dictation_extractor_support;
 
 use biorouter::dictation::activation::{process_surface, set_process_surface, Surface};
