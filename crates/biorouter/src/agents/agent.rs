@@ -13269,17 +13269,11 @@ impl Agent {
     /// from: the bound provider and model, and no prompt size (so the
     /// estimate is the previous request plus its answer).
     async fn usage_limit_resting_inputs(&self) -> crate::agents::usage_limit::NextRequestInputs {
-        let (provider, model) = match self.provider().await {
-            Ok(provider) => (
-                Some(provider.get_name().to_string()),
-                Some(provider.get_model_config().model_name),
-            ),
-            Err(_) => (None, None),
-        };
-        crate::agents::usage_limit::NextRequestInputs {
-            provider,
-            model,
-            ..Default::default()
+        match self.provider().await {
+            Ok(provider) => {
+                crate::agents::usage_limit::NextRequestInputs::at_rest(provider.as_ref())
+            }
+            Err(_) => Default::default(),
         }
     }
 
@@ -13289,26 +13283,15 @@ impl Agent {
     /// or recorded. `None` when the chat may go on, or when the check fails
     /// (logged). The prologue asks it, and so do the model calls a turn makes
     /// at its end (self-critique, the `/goal` judge, prompt Stop hooks) and
-    /// `/compact`, each before a model request of its own.
+    /// `/compact`, each before a model request of its own. A chat's title
+    /// asks the same question ([`crate::agents::usage_limit::hold`], from
+    /// `SessionManager::maybe_update_name`).
     pub(super) async fn usage_limit_hold(
         &self,
         session_id: &str,
     ) -> Option<crate::agents::usage_limit::LimitHit> {
-        use crate::agents::usage_limit;
-        let config = crate::config::UsageLimits::load();
         let inputs = self.usage_limit_resting_inputs().await;
-        match usage_limit::check_next(&self.config.session_manager, session_id, &config, || inputs)
-            .await
-        {
-            Ok(check) => check.reached,
-            Err(e) => {
-                warn!(
-                    session_id,
-                    "usage limit check failed, not enforced this time: {e:#}"
-                );
-                None
-            }
-        }
+        crate::agents::usage_limit::hold(&self.config.session_manager, session_id, inputs).await
     }
 
     /// Whether a usage limit cut this agent's last reply short: its gate
@@ -17490,18 +17473,32 @@ impl Agent {
     ///
     /// After a turn that ended on a provider failure the title comes from the
     /// first message instead ([`Self::provider_failed_last_turn`]): the
-    /// model is not called again only to name the chat. A later turn that
-    /// reaches the model still renames it, because a title the user did not
-    /// set is regenerated during the first few exchanges.
+    /// model is not called again only to name the chat. The same holds after
+    /// a reply a usage limit stopped (`usage_limit_reply`), so a chat the
+    /// limit paused is billed no title. A later turn that reaches the model
+    /// still renames it, because a title the user did not set is regenerated
+    /// during the first few exchanges.
     pub async fn maybe_rename_session(&self, session_id: &str) {
-        if self.provider_failed_last_turn.load(Ordering::SeqCst) {
+        // A reply a usage limit stopped (its gate before a model request, a
+        // message sent to a paused chat, or the stop notice stored as the turn
+        // ended) made its last model request: a title is one more, so it
+        // comes from the first message. The gate's own estimate can see what
+        // the resting check in `maybe_update_name` cannot, such as a chat's
+        // first request sized by the context manager.
+        let limit_stopped =
+            self.usage_limit_reply.stopped() || self.usage_limit_reply.interrupted();
+        if self.provider_failed_last_turn.load(Ordering::SeqCst) || limit_stopped {
             if let Err(e) = self
                 .config
                 .session_manager
                 .maybe_update_name_without_model(session_id)
                 .await
             {
-                warn!("Failed to name the session after a provider failure: {}", e);
+                if limit_stopped {
+                    warn!("Failed to name the session after a usage limit stop: {}", e);
+                } else {
+                    warn!("Failed to name the session after a provider failure: {}", e);
+                }
             }
             return;
         }

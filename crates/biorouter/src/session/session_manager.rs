@@ -3683,23 +3683,30 @@ impl SessionManager {
             return Ok(());
         }
 
-        // A chat at a usage limit makes no model request, a title included:
-        // the same decision the reply loop's gate makes before each request
-        // (`agents::usage_limit::reached_limit`). Live, a chat paused by its
-        // monthly limit still billed a naming call after every message.
+        // A chat at a usage limit, or whose next request is estimated to pass
+        // one, makes no model request, a title included: the paused state
+        // the composer and the prologue show (`agents::usage_limit::hold`,
+        // which `Agent::usage_limit_hold` asks too), estimated for the model
+        // the title would go to. Live, a chat paused by its monthly limit
+        // billed a naming call after every message, and a chat paused on its
+        // estimate ($0.235 of $0.25, the next request about $0.026) was still
+        // billed one when the check read only the spend.
         let provider = match provider {
-            Some(provider)
-                if crate::agents::usage_limit::reached_limit(self, id)
-                    .await
-                    .is_some() =>
-            {
-                tracing::debug!(
-                    session_id = id,
-                    "usage limit reached; naming the chat without a model"
-                );
-                None
+            Some(provider) => {
+                let resting =
+                    crate::agents::usage_limit::NextRequestInputs::at_rest(provider.as_ref());
+                if let Some(hit) = crate::agents::usage_limit::hold(self, id, resting).await {
+                    tracing::debug!(
+                        session_id = id,
+                        projected = hit.next_request.is_some(),
+                        "usage limit holds the next request; naming the chat without a model"
+                    );
+                    None
+                } else {
+                    Some(provider)
+                }
             }
-            provider => provider,
+            None => None,
         };
 
         // Without a model only the placeholder is replaced: a title an earlier
@@ -23550,6 +23557,105 @@ mod naming_at_a_limit_tests {
         assert_eq!(asked.load(Ordering::SeqCst), 1);
         assert_eq!(
             sm.get_session(open, false).await.unwrap().name,
+            "Generated title"
+        );
+    }
+
+    /// The paused state is the one the composer and the prologue show: a chat
+    /// still under its limit whose next request (the previous one plus its
+    /// answer) is estimated to pass it is paused too, so it is not named by a
+    /// model either (live: $0.235 of $0.25 with the next request about
+    /// $0.026, and a `side:session_name` call billed anyway). A chat with room
+    /// for its next request is still named by the model.
+    #[tokio::test]
+    async fn a_chat_paused_on_its_estimate_is_named_without_a_model() {
+        use crate::agents::usage_limit::{self, ChatLimitOverride, NextRequestInputs};
+        let temp = tempfile::tempdir().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let asked = Arc::new(AtomicUsize::new(0));
+        let mut chats = Vec::new();
+        // 520 used, and the next request is estimated at the previous 500 in
+        // plus its 20 out as the prompt, and 20 out again: 540. 1,060 passes
+        // 1,000; it fits in 1,000,000.
+        for (name, limit) in [("paused", 1_000_u64), ("roomy", 1_000_000)] {
+            let session = sm
+                .create_session(
+                    temp.path().to_path_buf(),
+                    crate::session::DEFAULT_SESSION_NAME.to_string(),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            sm.add_message(
+                &session.id,
+                &Message::user().with_text(format!("Explain the {name} chat in one line.")),
+            )
+            .await
+            .unwrap();
+            sm.add_message(&session.id, &Message::assistant().with_text("ok"))
+                .await
+                .unwrap();
+            usage_limit::set_for_session(
+                &sm,
+                &session.id,
+                Some(ChatLimitOverride::Limit {
+                    max_tokens: Some(limit),
+                    max_usd: None,
+                }),
+            )
+            .await
+            .unwrap();
+            sm.record_token_event(
+                &session.id,
+                Some(500),
+                Some(20),
+                520,
+                Some("mock-model"),
+                Some("mock"),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            chats.push(session.id);
+        }
+        let (paused, roomy) = (&chats[0], &chats[1]);
+        let resting = || NextRequestInputs::at_rest(&CountingNamer(Arc::default()));
+        assert!(
+            usage_limit::reached_limit(&sm, paused).await.is_none(),
+            "the fixture is still under its limit"
+        );
+        let hold = usage_limit::hold(&sm, paused, resting()).await;
+        assert!(
+            hold.as_ref().is_some_and(|hit| hit.next_request.is_some()),
+            "the fixture is paused on its estimate: {hold:?}"
+        );
+        assert!(usage_limit::hold(&sm, roomy, resting()).await.is_none());
+
+        sm.maybe_update_name(paused, Arc::new(CountingNamer(asked.clone())))
+            .await
+            .unwrap();
+        assert_eq!(
+            asked.load(Ordering::SeqCst),
+            0,
+            "no naming call in a chat paused on its estimate"
+        );
+        assert_eq!(
+            sm.get_session(paused, false).await.unwrap().name,
+            "Explain the paused chat in one line."
+        );
+        assert_eq!(
+            sm.spend_snapshot(paused, false).await.unwrap().chat_tokens,
+            520,
+            "nothing more was billed to the paused chat"
+        );
+
+        sm.maybe_update_name(roomy, Arc::new(CountingNamer(asked.clone())))
+            .await
+            .unwrap();
+        assert_eq!(asked.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            sm.get_session(roomy, false).await.unwrap().name,
             "Generated title"
         );
     }

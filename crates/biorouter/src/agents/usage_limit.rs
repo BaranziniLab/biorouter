@@ -501,6 +501,19 @@ pub struct NextRequestInputs {
     pub added_estimate: Option<u64>,
 }
 
+impl NextRequestInputs {
+    /// What the composer, the prologue and a chat's title estimate the next
+    /// request from: `provider`'s name and model, and no prompt size, so the
+    /// estimate is the previous request plus its answer ([`hold`]).
+    pub fn at_rest(provider: &dyn crate::providers::base::Provider) -> Self {
+        Self {
+            provider: Some(provider.get_name().to_string()),
+            model: Some(provider.get_model_config().model_name),
+            ..Default::default()
+        }
+    }
+}
+
 /// The token buckets the next request is expected to bill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProjectedRequest {
@@ -1008,6 +1021,31 @@ pub async fn check_next(
         ),
     }
     Ok(found)
+}
+
+/// The limit that holds `session_id`'s next model request at rest: reached,
+/// or the next request (the previous one plus its answer,
+/// [`NextRequestInputs::at_rest`]) estimated to pass it. The paused state the
+/// composer and the prologue show; the prologue, the model calls a turn makes
+/// at its end, `/compact` and a chat's title ask it, each before a model
+/// request of its own. Nothing is stored or recorded. A failed read is logged
+/// and treated as not held, like [`reached_limit`].
+pub async fn hold(
+    session_manager: &SessionManager,
+    session_id: &str,
+    inputs: NextRequestInputs,
+) -> Option<LimitHit> {
+    let config = UsageLimits::load();
+    match check_next(session_manager, session_id, &config, || inputs).await {
+        Ok(check) => check.reached,
+        Err(e) => {
+            tracing::warn!(
+                session_id,
+                "usage limit check failed, not enforced this time: {e:#}"
+            );
+            None
+        }
+    }
 }
 
 /// The reached limit for `session_id`, if any. A failed read is logged and
