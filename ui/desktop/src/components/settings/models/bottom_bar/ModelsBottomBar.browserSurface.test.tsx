@@ -167,7 +167,7 @@ describe('ModelsBottomBar on a browser-served surface', () => {
   });
 
   /**
-   * SD-17. A daemon that admits the served page lets the chip change the default new chats
+   * SD-18. A daemon that admits the served page lets the chip change the default new chats
    * start on, so the item works there. The dialog opens on that default rather than on this
    * chat's binding, because in a browser a pick never moves the open chat.
    */

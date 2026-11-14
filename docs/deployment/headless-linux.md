@@ -71,7 +71,7 @@ first page the browser shows is the provider list, and the page continues into t
 provider works. That needs the page to be reached over `https` (a reverse proxy) or on the host
 itself, and a browser token, which `serve` always uses unless told `--no-token`; see
 [Choosing the provider and model](browser-access.md#choosing-the-provider-and-model) and
-[decision SD-17](serve-decisions.md#sd-17-the-person-in-the-served-page-sets-up-providers-and-an-agent-still-cannot).
+[decision SD-18](serve-decisions.md#sd-18-the-person-in-the-served-page-sets-up-providers-and-an-agent-still-cannot).
 At the terminal:
 
 ```bash

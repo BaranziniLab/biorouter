@@ -326,7 +326,7 @@ Three limits, each with a reason:
 - **Only the page itself can do it.** A program that holds only the daemon's secret, such as an AI
   agent in one of your chats, cannot change the provider: the daemon also asks for the page's
   session cookie and for the headers a browser adds to the page's own requests. See
-  [decision SD-17](serve-decisions.md#sd-17-the-person-in-the-served-page-sets-up-providers-and-an-agent-still-cannot).
+  [decision SD-18](serve-decisions.md#sd-18-the-person-in-the-served-page-sets-up-providers-and-an-agent-still-cannot).
 - **Only over a secure address.** The browser adds those headers only for an `https` address or
   this machine, so a key typed in the page never crosses a network unencrypted. A page opened at a
   plain `http://` network address says so and points you to `biorouter configure`.
@@ -348,7 +348,7 @@ What that means for a chat you start in the browser:
   private default again.
 
 The reasoning is recorded as [decision SD-12](serve-decisions.md#sd-12--a-new-chat-starts-on-the-operators-model-without-a-proof-and-nothing-else-does)
-and [decision SD-17](serve-decisions.md#sd-17-the-person-in-the-served-page-sets-up-providers-and-an-agent-still-cannot);
+and [decision SD-18](serve-decisions.md#sd-18-the-person-in-the-served-page-sets-up-providers-and-an-agent-still-cannot);
 the classification system it protects is [privacy tiers](../security/privacy-tiers.md).
 
 ## What a browser can and cannot do

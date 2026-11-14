@@ -1916,7 +1916,7 @@
         "tags": [
           "super::routes::config_management"
         ],
-        "summary": "SD-17: whether this caller may choose providers and models here. The served",
+        "summary": "SD-18: whether this caller may choose providers and models here. The served",
         "description": "page asks it before it offers the provider catalog, so a page that cannot\nset one up says why instead of failing on Save.",
         "operationId": "get_provider_setup_access",
         "responses": {
@@ -25724,7 +25724,7 @@
       },
       "ProviderSetupAccess": {
         "type": "object",
-        "description": "What `GET /config/provider_setup` answers: may the caller choose providers\nand models on this daemon, and if not, why (SD-17).",
+        "description": "What `GET /config/provider_setup` answers: may the caller choose providers\nand models on this daemon, and if not, why (SD-18).",
         "required": [
           "allowed"
         ],

@@ -1,4 +1,4 @@
-//! SD-17 (owner ruling, 2026-11-14): on a `biorouter serve` daemon, which holds
+//! SD-18 (owner ruling, 2026-11-14): on a `biorouter serve` daemon, which holds
 //! no proof-of-user key (SD-7), the person in the served page chooses the host's
 //! providers and default model from the browser, and a caller holding only the
 //! daemon secret still cannot.
@@ -181,7 +181,7 @@ fn ollama_choice() -> Value {
 }
 
 /// The proof, as each kind of caller earns it. Only the served page's own
-/// script is a person here; everything else is answered as before SD-17.
+/// script is a person here; everything else is answered as before SD-18.
 #[test]
 #[serial]
 fn only_the_served_pages_script_is_a_person() {
@@ -209,7 +209,7 @@ fn only_the_served_pages_script_is_a_person() {
     assert_eq!(
         user_action_proof(&headers(SERVED_PAGE)),
         UserActionProof::NoKeyInstalled,
-        "SD-17 widened the general proof of a person, which it must not"
+        "SD-18 widened the general proof of a person, which it must not"
     );
 }
 

@@ -83,7 +83,7 @@ export default function CustomProviderForm({
   const keepsSavedKey = initialData !== null && hasSavedKey;
   /**
    * W2-PRV-2, round 4. In a browser served by `biorouter serve` that the daemon
-   * has not admitted to provider setup (SD-17), the daemon refuses to move a
+   * has not admitted to provider setup (SD-18), the daemon refuses to move a
    * saved key to a new URL, since nothing there can confirm a person asked.
    * Typing the key again replaces it, and that is allowed. An admitted browser
    * moves it as the desktop does.

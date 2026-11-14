@@ -6325,7 +6325,7 @@ export type ProviderMetadata = {
 
 /**
  * What `GET /config/provider_setup` answers: may the caller choose providers
- * and models on this daemon, and if not, why (SD-17).
+ * and models on this daemon, and if not, why (SD-18).
  */
 export type ProviderSetupAccess = {
     /**

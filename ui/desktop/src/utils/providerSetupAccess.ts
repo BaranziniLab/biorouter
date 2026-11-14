@@ -4,7 +4,7 @@ import { HOST_MANAGED_MODEL_REASON } from '../components/privacy/hostManagedMode
 import { isBrowserSurface } from './surface';
 
 /**
- * SD-17: may the person in this browser tab set up providers and the host's default model?
+ * SD-18: may the person in this browser tab set up providers and the host's default model?
  *
  * SD-1 used to answer "never" for every browser served by `biorouter serve`, so every provider
  * and model control there was disabled with a note sending the person to `biorouter configure`

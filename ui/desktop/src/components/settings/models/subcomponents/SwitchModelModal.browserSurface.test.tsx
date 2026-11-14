@@ -203,7 +203,7 @@ describe('SwitchModelModal on a browser-served surface', () => {
   });
 
   /**
-   * SD-17. A daemon that admits the served page takes `/config/set_provider`, so the dialog
+   * SD-18. A daemon that admits the served page takes `/config/set_provider`, so the dialog
    * works, but only for the default new chats start on: `/agent/update_provider` stays refused
    * in a browser, where an open chat keeps the model it started on. So the chat's half of the
    * choice is drawn unavailable with its reason, and the confirm changes the default.

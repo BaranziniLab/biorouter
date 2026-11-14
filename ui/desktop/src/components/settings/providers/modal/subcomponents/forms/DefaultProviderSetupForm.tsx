@@ -141,7 +141,7 @@ function titleCaseFieldName(providerName: string, parameterName: string): string
 /**
  * W2-PRV-2, round 4. Is this field the host computer's in this renderer? In a
  * browser served by `biorouter serve` that the daemon has not admitted to
- * provider setup (SD-17), a setting that decides where the provider sends its
+ * provider setup (SD-18), a setting that decides where the provider sends its
  * requests and key cannot be changed: the daemon asks for a proof of a person
  * that such a browser cannot give. The field shows its value and is not
  * editable, and the submit handler leaves it out.
@@ -167,7 +167,7 @@ export default function DefaultProviderSetupForm({
   const [isLoading, setIsLoading] = useState(true);
   const [optionalExpanded, setOptionalExpanded] = useState(false);
   const { read } = useConfig();
-  // Re-render when the daemon's SD-17 answer arrives: `isHostOwnedProviderField` reads it.
+  // Re-render when the daemon's SD-18 answer arrives: `isHostOwnedProviderField` reads it.
   useProvidersAreHostManaged();
 
   const loadConfigValues = useCallback(async () => {

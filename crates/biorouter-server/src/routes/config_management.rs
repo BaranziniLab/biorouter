@@ -350,7 +350,7 @@ pub async fn upsert_config(
     // DR-15's master opt-out, read INSIDE the gate. A direct read, not a
     // `CallCapability`: an HTTP config write is not a tool call and has no
     // admitted capability to inherit.
-    // SD-17: the person in a `biorouter serve` page proves themselves here too
+    // SD-18: the person in a `biorouter serve` page proves themselves here too
     // (`provider_choice_proof`); a caller holding only the secret does not.
     if biorouter::privacy::privacy_tiers_enabled()
         && biorouter::privacy::is_capability_key(&query.key)
@@ -561,7 +561,7 @@ enum RefusalReader {
 impl RefusalReader {
     /// `None` for a caller who proved a person asked, whom nothing refuses.
     fn of(headers: &http::HeaderMap) -> Option<Self> {
-        // SD-17: the person in a served page may move a destination as the
+        // SD-18: the person in a served page may move a destination as the
         // desktop's person may; `provider_choice_proof` is `Proven` for them.
         match biorouter_server::auth::provider_choice_proof(headers) {
             biorouter_server::auth::UserActionProof::Proven => None,
@@ -2319,7 +2319,7 @@ pub async fn check_provider(
     // `config.yaml` by a shell they do not (DR-14's filesystem deny is
     // deferred), and then every sender follows.
     //
-    // SD-17: the person in a `biorouter serve` page proves themselves here as the
+    // SD-18: the person in a `biorouter serve` page proves themselves here as the
     // desktop's person does, so a check of the key they just saved runs with it.
     let proof = biorouter_server::auth::provider_choice_proof(&headers);
     if let Some(refusal) = credential_check_refusal(live, candidate.is_some(), &proof) {
@@ -2674,7 +2674,7 @@ pub async fn set_config_provider(
     // key-scoped guard — this route writes BIOROUTER_PROVIDER by construction,
     // so there is no tier-irrelevant call to exempt — but still subject to
     // DR-15's master opt-out, read here inside the gate.
-    // SD-17: the person in a `biorouter serve` page is admitted as the desktop's
+    // SD-18: the person in a `biorouter serve` page is admitted as the desktop's
     // person is (`provider_choice_proof`).
     if biorouter::privacy::privacy_tiers_enabled() && !is_provider_choice_proven(&headers) {
         return Err((
@@ -2709,7 +2709,7 @@ pub async fn set_config_provider(
     Ok(())
 }
 
-/// SD-17 (owner ruling, 2026-11-14): after a provider route wrote capability
+/// SD-18 (owner ruling, 2026-11-14): after a provider route wrote capability
 /// keys for a person it admitted, the daemon's launch-time pin (SD-12) and the
 /// served page's standing (SD-10) follow that person's choice.
 ///
@@ -2750,7 +2750,7 @@ fn config_value_string(value: &Value) -> Option<String> {
 }
 
 /// What `GET /config/provider_setup` answers: may the caller choose providers
-/// and models on this daemon, and if not, why (SD-17).
+/// and models on this daemon, and if not, why (SD-18).
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSetupAccess {
@@ -2810,7 +2810,7 @@ fn provider_setup_refusal(headers: &http::HeaderMap, uri: &http::Uri) -> Option<
     }
 }
 
-/// SD-17: whether this caller may choose providers and models here. The served
+/// SD-18: whether this caller may choose providers and models here. The served
 /// page asks it before it offers the provider catalog, so a page that cannot
 /// set one up says why instead of failing on Save.
 #[utoipa::path(
@@ -2910,7 +2910,7 @@ pub async fn get_privacy_disclosure() -> Json<PrivacyDisclosureResponse> {
     )
 )]
 pub async fn ack_privacy_disclosure(headers: http::HeaderMap) -> Result<(), (StatusCode, String)> {
-    // SD-17: reading the disclosure is part of choosing a model, so the person
+    // SD-18: reading the disclosure is part of choosing a model, so the person
     // in a `biorouter serve` page may acknowledge it there.
     if !is_provider_choice_proven(&headers) {
         return Err((

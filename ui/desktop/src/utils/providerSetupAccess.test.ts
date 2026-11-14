@@ -10,7 +10,7 @@ import {
 } from './providerSetupAccess';
 
 /**
- * SD-17: the page's one answer to "may this browser set up providers?". Three properties a
+ * SD-18: the page's one answer to "may this browser set up providers?". Three properties a
  * rewrite gets wrong: the desktop never asks, a browser is host-managed until the daemon says
  * otherwise (and whenever it could not), and only a real answer is kept.
  */

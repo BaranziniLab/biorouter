@@ -316,7 +316,7 @@ export const SWITCH_SCOPE_NEW_CHATS =
   'Applies to new chats in every window. Existing chats keep their model.';
 export const ALSO_FOR_NEW_CHATS_LABEL = 'Also use for new chats';
 /**
- * SD-17. In a browser the daemon admits to provider setup, a pick here changes the default new
+ * SD-18. In a browser the daemon admits to provider setup, a pick here changes the default new
  * chats start on and never the open chat's model (`/agent/update_provider` is refused there),
  * so the chat's half of the choice is drawn, unavailable, with this line as its reason.
  */
@@ -324,7 +324,7 @@ export const USE_FOR_THIS_CHAT_LABEL = 'Use for this chat';
 export const BROWSER_KEEPS_CHAT_MODEL =
   'In a browser, an open chat keeps its model. New chats use the default you choose here.';
 /**
- * SD-17. The page states the host's default as its capability (SD-12), so a public default
+ * SD-18. The page states the host's default as its capability (SD-12), so a public default
  * keeps private chats out of the page's reach. Said before the switch, never after.
  */
 export const BROWSER_PUBLIC_DEFAULT_HIDES_PRIVATE =
@@ -445,7 +445,7 @@ export const SwitchModelModal = ({
    */
   const crewAccessState = useChatCrewAccessState(sessionId);
   /**
-   * SD-17: a browser served by `biorouter serve` never moves a chat's model. The daemon refuses
+   * SD-18: a browser served by `biorouter serve` never moves a chat's model. The daemon refuses
    * `/agent/update_provider` there, because the page states the host default as
    * `X-Caller-Provider` and a chat moved to another tier would leave the page's reach. So in a
    * browser every pick here is the default new chats start on, whatever opened the dialog: a
@@ -579,7 +579,7 @@ export const SwitchModelModal = ({
 
   // W2-PRV-7: the provider the selection would bind, and whether that makes a
   // public chat private (see PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP). Never in a
-  // browser, where the pick binds no chat (SD-17).
+  // browser, where the pick binds no chat (SD-18).
   const selectedProviderName = usePredefinedModels ? selectedPredefinedModel?.provider : provider;
   const becomesPrivate =
     chatScope &&
@@ -600,13 +600,13 @@ export const SwitchModelModal = ({
    * and `changeModel` writes `BIOROUTER_PROVIDER` through
    * `/config/set_provider`, which the daemon refuses with prose written for an
    * AI agent. The same "pre-flight, not post-refusal" rule the tier check above
-   * follows. Since SD-17 a browser the daemon admits to provider setup is not
+   * follows. Since SD-18 a browser the daemon admits to provider setup is not
    * host-managed, and this dialog changes its default (see `chatScope`).
    */
   const hostManaged = useProvidersAreHostManaged();
-  /** SD-17: a started chat in an admitted browser keeps its model, said beside the choice. */
+  /** SD-18: a started chat in an admitted browser keeps its model, said beside the choice. */
   const browserKeepsChatModel = browser && !hostManaged && !!sessionId;
-  /** SD-17: a browser moving the default from a private model to a public one is told first. */
+  /** SD-18: a browser moving the default from a private model to a public one is told first. */
   const tierOfProvider = (name: string | null | undefined) =>
     activeProviders.find((row) => row.name === name)?.metadata.tier;
   const browserPublicDefaultHidesPrivate =
@@ -620,7 +620,7 @@ export const SwitchModelModal = ({
 
   /**
    * The tier pre-flight is about the chat a pick would bind. In a browser no pick binds the
-   * chat (SD-17), so nothing is barred for the chat's sake.
+   * chat (SD-18), so nothing is barred for the chat's sake.
    */
   const chatTier = chatScope ? privacyTier : undefined;
   const blockedReasonFor = useCallback(
@@ -850,7 +850,7 @@ export const SwitchModelModal = ({
       };
       // W2-PRV-6: an unsent chat holds its pick until it starts. Only the box
       // makes it the model new chats start on as well. Not in a browser, where
-      // the pick is the default the unsent chat starts on (SD-17).
+      // the pick is the default the unsent chat starts on (SD-18).
       if (chatScope && !sessionId && onChooseForUnsentChat) {
         if (alsoForNewChats && !(await changeModel(null, modelObj, { onRefusal }))) {
           setSubmitError(
@@ -864,7 +864,7 @@ export const SwitchModelModal = ({
         onClose();
         return;
       }
-      // SD-17: in a browser the chat is never named, so `changeModel` moves
+      // SD-18: in a browser the chat is never named, so `changeModel` moves
       // only the default for new chats and never calls `/agent/update_provider`.
       const changed =
         chatScope && sessionId
@@ -995,7 +995,7 @@ export const SwitchModelModal = ({
             isCodingAgentProviderId(row.name) && !row.is_configured && !row.unavailable_reason
         );
         // Choosing one writes its command key, a destination key a browser may
-        // write only once the daemon admits its page (SD-17).
+        // write only once the daemon admits its page (SD-18).
         if (unconnected.length > 0 && !providersAreHostManaged()) {
           void (async () => {
             try {
@@ -1582,7 +1582,7 @@ export const SwitchModelModal = ({
         )}
 
         {/*
-          SD-17. The chat's half of the choice, drawn and unavailable, with its
+          SD-18. The chat's half of the choice, drawn and unavailable, with its
           reason as the one line under it: a person who opened this from a chat
           sees that the chat stays as it is before they pick, never a refusal
           after. The default for new chats is what the confirm changes.

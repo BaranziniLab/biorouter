@@ -25,7 +25,7 @@ export default function ResetProviderSection(_props: ResetProviderSectionProps) 
    * by the same predicate as `/config/upsert` (`is_capability_key`), because a
    * delete is not the absence of a write — it is a write of the key's default.
    * So this button 409s in a browser exactly as the model picker does, unless
-   * the daemon admitted this page to provider setup (SD-17), where it works as
+   * the daemon admitted this page to provider setup (SD-18), where it works as
    * on the desktop and the reload lands on the first-run catalog.
    */
   const hostManaged = useProvidersAreHostManaged();

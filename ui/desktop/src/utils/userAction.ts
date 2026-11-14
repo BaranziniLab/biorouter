@@ -112,7 +112,7 @@ let hostProvider: string | undefined;
 
 let followingHostDefault = false;
 /**
- * SD-17: once a browser has cached the host default, drop it whenever any tab announces that
+ * SD-18: once a browser has cached the host default, drop it whenever any tab announces that
  * the app-wide selection moved (`announceAppModelSelection` reaches this tab's own listeners
  * and every other tab's). The direct {@link forgetHostConfiguredProvider} calls after this
  * tab's own writes do the same sooner; this covers a change made in another tab.
@@ -150,7 +150,7 @@ async function hostConfiguredProvider(): Promise<string | null> {
 /**
  * Forget the cached host provider, so the next {@link userActionHeaders} reads it again.
  *
- * SD-17: a browser may now change the host's default (`/config/set_provider`, or an upsert of
+ * SD-18: a browser may now change the host's default (`/config/set_provider`, or an upsert of
  * `BIOROUTER_PROVIDER` from a setup card), and `X-Caller-Provider` must name the new default
  * from the next request on. Called after every renderer write of that key; a change another
  * tab announces drops it too (`followHostDefault`). A change made on the host itself

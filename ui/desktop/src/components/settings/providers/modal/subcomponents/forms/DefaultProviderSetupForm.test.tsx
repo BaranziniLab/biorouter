@@ -21,7 +21,7 @@ vi.mock('../../../../../../api', async (importOriginal) => ({
   getProviderSetupAccess: mocks.getProviderSetupAccess,
 }));
 
-/** SD-17: put this page in a browser the daemon admits to provider setup. */
+/** SD-18: put this page in a browser the daemon admits to provider setup. */
 async function admittedBrowser() {
   document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
   mocks.getProviderSetupAccess.mockResolvedValue({ data: { allowed: true } });
@@ -613,7 +613,7 @@ describe('DefaultProviderSetupForm in a browser', () => {
     expect(screen.queryByTestId('host-managed-destination-note')).toBeNull();
   });
 
-  // SD-17: the daemon takes destination keys from a page it admits, so the form is the desktop's.
+  // SD-18: the daemon takes destination keys from a page it admits, so the form is the desktop's.
   it('leaves every field editable in a browser the daemon admits', async () => {
     await admittedBrowser();
     render(<Harness provider={openai} />);
