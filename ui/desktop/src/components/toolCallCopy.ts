@@ -528,10 +528,31 @@ export const APPROVAL_COPY = {
         ? `This chat may read ${workspace} as you until you take it back`
         : 'This chat may read this workspace as you until you take it back',
   },
-  // A refusal, so it stays visible (principle 2).
-  browserCannotApprove:
+  // A refusal, so its instruction stays visible (principle 2); why a browser cannot approve is
+  // the info icon beside it (owner, 2026-11-13: one line up front, the detail on hover).
+  browserCannotApprove: 'Answer this request in the Biorouter desktop app.',
+  browserCannotApproveName: 'approving in a browser',
+  browserCannotApproveWhy:
     'This page is served to a browser, which has no way to prove a decision came from you ' +
-    'rather than from the model. Answer this request in the Biorouter desktop app.',
+    'rather than from the model.',
+  /** A security finding's own words, when they run past one line or hold several reasons. */
+  findingDetails: 'Details',
+  findingReasons: (n: number) => `All ${n} reasons`,
+  findingName: 'this warning',
+  /** The folder-access card's decisions, and what each one does, on hover. */
+  folder: {
+    allowOnceHelp: (onceDescendants: boolean) =>
+      onceDescendants
+        ? 'Lets this operation read this folder and its subfolders, this time only.'
+        : 'Lets this operation use only its listed files, this time only.',
+    allowSessionHelp:
+      'Lets this chat use this folder and its subfolders until the session grant expires.',
+    denyHelp: 'Refuses this folder for this operation, and tells the assistant you said no.',
+    cancelHelp: 'Ends this operation without recording an answer about the folder.',
+    refused: 'Folder approval was refused.',
+    refusedHelp: 'Check the separate approval key and try again; this operation remains pending.',
+    refusedName: 'this refusal',
+  },
 } as const;
 
 export const PREVIEW_COPY = {
@@ -550,6 +571,9 @@ export const PREVIEW_COPY = {
 
 export const ELICITATION_COPY = {
   fallbackQuestion: 'Biorouter needs some information from you.',
+  /** The rest of a long request, past its first sentence. */
+  more: 'Details',
+  moreName: 'this request',
   submit: 'Submit',
   submitting: 'Submitting…',
   sent: 'Information sent',

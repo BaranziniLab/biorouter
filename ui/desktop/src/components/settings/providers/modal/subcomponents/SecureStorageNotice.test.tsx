@@ -2,7 +2,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { KEY_STORAGE_NOTICE, SecureStorageNotice } from './SecureStorageNotice';
+import { KEY_STORAGE_LINE, KEY_STORAGE_NOTICE, SecureStorageNotice } from './SecureStorageNotice';
 
 // The daemon keeps provider keys in the OS credential store only when one
 // answers; every unpackaged build, dev profile, headless Linux, SSH, WSL and
@@ -12,8 +12,12 @@ import { KEY_STORAGE_NOTICE, SecureStorageNotice } from './SecureStorageNotice';
 describe('SecureStorageNotice', () => {
   it('says where keys are kept without promising the keychain or encryption', () => {
     render(<SecureStorageNotice />);
-    const notice = screen.getByText(KEY_STORAGE_NOTICE);
-    expect(notice).toBeInTheDocument();
+    // One line on screen; the keychain-or-file detail is the InfoTip beside it, heard with it.
+    expect(screen.getByText(KEY_STORAGE_LINE)).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: 'About where keys are kept' })
+    ).toHaveAccessibleDescription(KEY_STORAGE_NOTICE);
+    expect(KEY_STORAGE_LINE).not.toMatch(/encrypt|keychain|securely/i);
     expect(KEY_STORAGE_NOTICE).toMatch(/when one is available, otherwise/);
     expect(KEY_STORAGE_NOTICE).not.toMatch(/encrypt/i);
     expect(KEY_STORAGE_NOTICE).not.toMatch(/stored securely in the keychain/i);

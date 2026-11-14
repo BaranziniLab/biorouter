@@ -215,10 +215,11 @@ export const sidebarCopy = {
       teams > 0 ? `${teams} more ${teams === 1 ? 'team' : 'teams'}` : null,
       channels > 0 ? `${channels} more ${channels === 1 ? 'channel' : 'channels'}` : null,
     ].filter((part): part is string => part !== null);
-    return `${parts.join(' and ')} you’re in ${
-      teams + channels === 1 ? 'isn’t' : 'aren’t'
-    } listed here, because this workspace is too large to list at once.`;
+    return `${parts.join(' and ')} you’re in ${teams + channels === 1 ? 'isn’t' : 'aren’t'} listed here.`;
   },
+  /** Behind the line's info icon (owner, 2026-11-13): why. */
+  unlistedLabel: 'the missing places',
+  unlistedWhy: 'This workspace is too large to list at once.',
 
   team: {
     /** The team header's accessible name. */

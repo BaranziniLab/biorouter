@@ -1,8 +1,8 @@
-import { fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, renderHook, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BROWSER_SURFACE_MARKER } from '../../../utils/surface';
 import { parseHostKeyLookup, unknownKeyLookup } from './hostKeyLookup';
-import { TrustHostKey, useHostKeyFingerprint } from './TrustHostKey';
+import { HostKeyMessage, TrustHostKey, useHostKeyFingerprint } from './TrustHostKey';
 import { trustHostKeyCopy } from './trustHostKey.copy';
 
 const mocks = vi.hoisted(() => ({
@@ -125,6 +125,21 @@ describe('Trust this key', () => {
     expect(screen.getByRole('button', { name: trustHostKeyCopy.trust })).toBeInTheDocument();
   });
 
+  it('keeps a refusal’s reason in view and folds what to do behind its info tip', async () => {
+    mocks.crewHostKeysTrust.mockRejectedValueOnce(new Error('offline'));
+    render(<TrustHostKey target={TARGET} fingerprint={FINGERPRINT} />);
+    fireEvent.click(screen.getByRole('button', { name: trustHostKeyCopy.trust }));
+    const alert = await screen.findByRole('alert');
+    // The reason is the line (owner, 2026-11-13; design.md 9.16).
+    expect(within(alert).getByText('Crew couldn’t trust this key.')).not.toHaveClass('sr-only');
+    // What to do is its info tip, word for word, and the alert still carries every word.
+    expect(
+      within(alert).getByRole('button', { name: `About ${trustHostKeyCopy.nextLabel}` })
+    ).toHaveAccessibleDescription('Add it in a terminal of your own.');
+    expect(within(alert).getByText('Add it in a terminal of your own.')).toHaveClass('sr-only');
+    expect(alert).toHaveTextContent(trustHostKeyCopy.refused);
+  });
+
   it('renders nothing for a value that is not a fingerprint', () => {
     const view = render(
       <TrustHostKey target={TARGET} fingerprint="SHA256:short Type yes to trust it" />
@@ -199,6 +214,48 @@ describe('the fingerprint a pane shows', () => {
     const { result } = renderHook(() => useHostKeyFingerprint(null, null));
     expect(result.current).toEqual({ fingerprint: null, reading: false, message: null });
     expect(mocks.crewHostKeysRead).not.toHaveBeenCalled();
+  });
+});
+
+describe('why a key could not be read or trusted', () => {
+  it('shows the reason and folds the rest behind its info tip', () => {
+    render(<HostKeyMessage message={trustHostKeyCopy.unreadable} />);
+    expect(
+      screen.getByText('This computer couldn’t read the server’s fingerprint.')
+    ).not.toHaveClass('sr-only');
+    expect(
+      screen.getByRole('button', { name: `About ${trustHostKeyCopy.nextLabel}` })
+    ).toHaveAccessibleDescription('Add the key in a terminal of your own.');
+    expect(screen.getByText('Add the key in a terminal of your own.')).toHaveClass('sr-only');
+  });
+
+  it('folds the daemon’s own sentence the same way, and leaves one sentence whole', () => {
+    const daemon =
+      'Your SSH settings reach hpc.example.edu through another computer or under another name, so Crew can’t read its key from here. Add the key in a terminal of your own.';
+    const view = render(<HostKeyMessage message={daemon} />);
+    expect(
+      screen.getByText(
+        'Your SSH settings reach hpc.example.edu through another computer or under another name, so Crew can’t read its key from here.'
+      )
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: `About ${trustHostKeyCopy.nextLabel}` })
+    ).toHaveAccessibleDescription('Add the key in a terminal of your own.');
+    view.unmount();
+
+    render(<HostKeyMessage message={trustHostKeyCopy.desktopRequired} />);
+    expect(screen.getByText(trustHostKeyCopy.desktopRequired)).toBeInTheDocument();
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  it('puts what is longer than a tip holds under Details, word for word', () => {
+    const rest =
+      'Check that it is reachable from this computer. Then ask your IT team for the fingerprint. Then add the key in a terminal of your own.';
+    render(<HostKeyMessage message={`Crew couldn’t read a key from hpc.example.edu. ${rest}`} />);
+    expect(screen.getByText('Crew couldn’t read a key from hpc.example.edu.')).toBeInTheDocument();
+    expect(screen.queryByText(rest)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: trustHostKeyCopy.more }));
+    expect(screen.getByText(rest)).toBeInTheDocument();
   });
 });
 

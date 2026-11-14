@@ -58,11 +58,13 @@ export default function ProviderSetupActions({
       );
     }
 
+    // The question only: the dialog's subtitle already says the deletion is permanent
+    // (`deleteConsequence`), so "This cannot be undone." here said it twice in one dialog.
     return (
       <div className="flex w-full items-center justify-between gap-3">
         <p className="flex-1 text-secondary text-text-muted">
           Delete <strong className="font-semibold text-text-default">{providerName}</strong>{' '}
-          configuration? This cannot be undone.
+          configuration?
         </p>
         <div className="flex flex-shrink-0 items-center gap-2">
           <Button variant="secondary" onClick={onCancelDelete}>

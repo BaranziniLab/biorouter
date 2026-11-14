@@ -122,7 +122,12 @@ describe('the cross-institutional refusal in the transcript', () => {
     // DR-16's proof, per request. Without it the daemon refuses with a 403.
     expect(options.headers['X-User-Action']).toBe('ua-key-1');
 
-    expect(await screen.findByText('Recorded for this chat only.')).toBeInTheDocument();
+    // The card's one visible line says what happens next; the daemon's own record of the
+    // acceptance folds, verbatim, under one click (design.md 9.16).
+    expect(await screen.findByText(/Approval recorded\./)).toBeVisible();
+    expect(screen.queryByText('Recorded for this chat only.')).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'What was recorded' }));
+    expect(await screen.findByText('Recorded for this chat only.')).toBeVisible();
   });
 
   it('opens onto the accept control when the refusal lands after the row was drawn', async () => {

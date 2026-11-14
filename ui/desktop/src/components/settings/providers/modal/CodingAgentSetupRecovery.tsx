@@ -36,12 +36,9 @@ export default function CodingAgentSetupRecovery({
       className="space-y-4 text-body text-text-default"
       data-testid="coding-agent-setup-recovery"
     >
-      <p className="text-text-muted">
-        {name} uses its installed command-line app and your subscription sign-in.
-        {kind === 'claude_code'
-          ? ' To use an Anthropic API key instead, choose Anthropic under API providers.'
-          : ' To use an OpenAI API key instead, choose OpenAI under API providers.'}
-      </p>
+      {/* What the agent runs on, and the API-key provider to choose instead, are the dialog
+          title's InfoTip (`providerSetupCopy.agentRecoveryHelp`): the visible line here is the
+          state of the check (owner, 2026-11-13). */}
       {controls.isChecking ? (
         <p role="status">Checking installation and sign-in…</p>
       ) : controls.loadError || !agent ? (

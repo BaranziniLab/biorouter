@@ -3,7 +3,9 @@ import { connectionSettingsCopy, inviteCopy } from '../dialogs/copy';
 import * as onboardingCopy from './copy';
 import {
   FULL_ACCESS_IS_YOU,
+  FULL_ACCESS_REACH,
   fullAccessHost,
+  fullAccessLead,
   hostCopy,
   joinCopy,
   notSetUpCopy,
@@ -75,9 +77,22 @@ describe('setupCopy (OW-9)', () => {
   });
 
   it('carries the one warning for As me on the server, and the host’s extra sentence', () => {
+    // The consent sentence, in view (design.md 9.16)...
     expect(joinCopy.fullWarning('wanjun', 'leo.ucsf.edu')).toBe(
-      'Your agent will run commands as wanjun on leo.ucsf.edu: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark.'
+      'Your agent will run commands as wanjun on leo.ucsf.edu: it can read and change anything your account can.'
     );
+    expect(joinCopy.fullWarning(null, 'leo')).toBe(fullAccessLead('you', 'leo'));
+    // ...and the rest of the warning behind Details, every word of it, in the order it was read.
+    expect(joinCopy.fullWarningDetails()).toEqual([
+      'It can also use the network and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust.',
+      'Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark.',
+    ]);
+    expect(FULL_ACCESS_REACH).toBe(joinCopy.fullWarningDetails()[0]);
+    expect(joinCopy.fullWarningDetails('lab')).toEqual([
+      FULL_ACCESS_REACH,
+      FULL_ACCESS_IS_YOU,
+      fullAccessHost('lab'),
+    ]);
     // Under account ownership a process running as the host's account is the host (finding 16).
     expect(joinCopy.fullWarningHost('lab')).toMatch(
       /channels you’re not in\. It can also act as the host of lab\.$/
@@ -90,7 +105,8 @@ describe('setupCopy (OW-9)', () => {
     expect(fullAccessHost('lab')).toBe(
       'You host lab from this account, so your agent can also read the workspace’s own files on the server, including channels you’re not in. It can also act as the host of lab.'
     );
-    expect(joinCopy.fullWarning(null, 'leo').endsWith(` ${FULL_ACCESS_IS_YOU}`)).toBe(true);
+    // Without the host's sentence, FULL_ACCESS_IS_YOU still ends the warning.
+    expect(joinCopy.fullWarningDetails(null).slice(-1)).toEqual([FULL_ACCESS_IS_YOU]);
     expect(
       connectionSettingsCopy.fullWarning('@alice', 'leo').endsWith(` ${FULL_ACCESS_IS_YOU}`)
     ).toBe(true);

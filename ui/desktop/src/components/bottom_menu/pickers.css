@@ -172,6 +172,14 @@
   line-height: var(--text-secondary--line-height);
 }
 
+/* An empty line with an InfoTip (design.md 9.16): one group, centred by the block's
+   `text-center`, the glyph on the line's middle rather than its baseline. */
+.br-picker-panel__empty-line {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+}
+
 /* A list row: the menu recipe (32px, 13/18), a name, then the switch. */
 .br-picker-row {
   height: auto;

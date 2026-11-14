@@ -39,12 +39,23 @@
   white-space: nowrap;
 }
 
-/* The store's folder, inside its InfoTip: a machine string on its own line, mono, breakable. */
+/* The store's folder, inside its InfoTip, on its own line and breakable. It says where the store
+   lives, so it is a name with a place and keeps the tip's body face (design.md D-42), written from
+   `~` by the component. */
 .br-memory-path {
   display: block;
   margin-top: 2px;
-  font-family: var(--font-mono);
   overflow-wrap: anywhere;
+}
+
+/* A memory's first three lines (`MEMORY_ENTRY_LINES` in MemorySection.tsx); "Show more" opens the
+   rest in place. Authored, not `line-clamp-3`, for the BIOROUTER_NO_HMR reason above. */
+.br-memory-entry-clamp {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
 }
 
 /* An empty store or no project: one muted row, with the InfoTip beside the words. */

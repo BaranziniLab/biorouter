@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { CrewStepRequest } from '../../../api';
 import { isBrowserSurface } from '../../../utils/surface';
 import { Button } from '../../ui/button';
+import { Disclosure } from '../../ui/disclosure';
 import { SignInDialog } from '../auth/SignInDialog';
 import type { CrewSignInTarget } from '../CrewAuthentication';
 import { sanitizeDisplayText } from '../identity/displayText';
@@ -93,11 +94,27 @@ export default function CrewSignInStep({
           : null;
   const acting = seen === 'waiting' || seen === 'dismissing';
 
+  // Where the typing goes stays in view; which server and where to type wait behind the title's
+  // info icon. Where no Sign in window opens, the warning stays and the way to sign in folds
+  // (owner, 2026-11-13).
   return (
-    <CrewStepFrame kind="signIn" title={crewSignInStepCopy.title(login)}>
+    <CrewStepFrame
+      kind="signIn"
+      title={crewSignInStepCopy.title(login)}
+      titleHelp={
+        signInHere
+          ? { label: crewSignInStepCopy.aboutLabel, help: crewSignInStepCopy.about(login, server) }
+          : undefined
+      }
+    >
       <p className="text-supporting text-text-muted">
-        {signInHere ? crewSignInStepCopy.lead(login, server) : crewSignInStepCopy.fallback}
+        {signInHere ? crewSignInStepCopy.lead : crewSignInStepCopy.fallback}
       </p>
+      {signInHere ? null : (
+        <Disclosure label={crewSignInStepCopy.fallbackHowLabel}>
+          <p className="text-supporting text-text-muted">{crewSignInStepCopy.fallbackHow}</p>
+        </Disclosure>
+      )}
       {acting ? (
         <div className="flex flex-wrap items-center gap-2">
           {signInHere ? (

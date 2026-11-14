@@ -2,7 +2,9 @@ import * as React from 'react';
 import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
+import CustomRadio from '../../ui/CustomRadio';
 import { Disclosure } from '../../ui/disclosure';
+import { InfoTip } from '../../ui/info-tip';
 import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
 import { AlertTriangle, Copy } from '../../icons/app-icons';
@@ -730,6 +732,20 @@ function AgentAccessFields({
   onRoot(value: string): void;
 }) {
   const level = form.access;
+  const groupId = React.useId();
+  // What each level means is behind the question's info icon (owner, 2026-11-13); only a level
+  // that can't be chosen says why under its label, since that is a refusal.
+  const levels: { value: AgentAccessLevel; label: string; detail?: string; disabled?: boolean }[] =
+    [
+      { value: 'off', label: copy.accessOff },
+      { value: 'folder', label: copy.accessFolder },
+      {
+        value: 'full',
+        label: copy.accessFull,
+        detail: fullUnavailable ? copy.accessFullUnavailable(server) : undefined,
+        disabled: fullUnavailable,
+      },
+    ];
   const folderHelp =
     level === 'full'
       ? copy.fullFolderHelp
@@ -738,24 +754,38 @@ function AgentAccessFields({
         : copy.remoteExecutionHelp;
   return (
     <div className="flex min-w-0 flex-col gap-3" data-crew-agent-access={level}>
-      <RadioRows<AgentAccessLevel>
-        label={copy.access(server)}
-        name={`${ids.root}-access`}
-        value={level}
-        onChange={onAccess}
-        options={[
-          { value: 'off', label: copy.accessOff, detail: copy.accessOffDetail(server) },
-          { value: 'folder', label: copy.accessFolder, detail: copy.accessFolderDetail },
-          {
-            value: 'full',
-            label: copy.accessFull,
-            detail: fullUnavailable
-              ? copy.accessFullUnavailable(server)
-              : copy.accessFullDetail(account),
-            disabled: fullUnavailable,
-          },
-        ]}
-      />
+      {/* Named by the question alone and described by its info tip, so the icon's own name
+          stays out of the group's name. */}
+      <div
+        role="radiogroup"
+        aria-labelledby={`${groupId}-label`}
+        aria-describedby={`${groupId}-help`}
+        className="flex flex-col"
+      >
+        <span className="inline-flex items-center gap-1">
+          <span id={`${groupId}-label`} className="text-label text-text-default">
+            {copy.access(server)}
+          </span>
+          <InfoTip
+            label={copy.accessHelpLabel}
+            help={copy.accessHelp(account)}
+            id={`${groupId}-help`}
+          />
+        </span>
+        {levels.map((option) => (
+          <CustomRadio
+            key={option.value}
+            id={`${groupId}-${option.value}`}
+            name={`${ids.root}-access`}
+            value={option.value}
+            checked={level === option.value}
+            disabled={option.disabled}
+            onChange={() => onAccess(option.value)}
+            label={option.label}
+            secondaryLabel={option.detail}
+          />
+        ))}
+      </div>
       {level !== 'off' ? (
         <Field
           id={ids.root}
@@ -780,9 +810,19 @@ function AgentAccessFields({
         </Field>
       ) : null}
       {level === 'full' ? (
-        <Note tone="warning" icon={AlertTriangle} testId="crew-full-access-warning">
-          <p>{copy.fullWarning(account ?? 'you', server)}</p>
-          {hostsHere ? <p className="mt-1">{copy.fullWarningHost(workspace)}</p> : null}
+        // The consent sentence in view; the rest of what full access allows, and the host's
+        // sentence, word for word behind Details (owner, 2026-11-13).
+        <Note
+          tone="warning"
+          icon={AlertTriangle}
+          testId="crew-full-access-warning"
+          details={copy.fullWarningDetails(hostsHere ? workspace : null).map((text, index) => (
+            <p key={index} className={index > 0 ? 'mt-1' : undefined}>
+              {text}
+            </p>
+          ))}
+        >
+          <p>{copy.fullWarningLead(account ?? 'you', server)}</p>
         </Note>
       ) : null}
     </div>

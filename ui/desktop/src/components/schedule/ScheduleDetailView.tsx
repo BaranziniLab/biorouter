@@ -6,6 +6,8 @@ import { Skeleton } from '../ui/skeleton';
 import { EmptyState } from '../ui/empty-state';
 import { Spinner } from '../ui/spinner';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
+import { Disclosure } from '../ui/disclosure';
+import { CopyField } from '../ui/copy-field';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import type { RowActionItem } from '../ui/row-actions';
 import {
@@ -35,6 +37,7 @@ import { ReadableContent } from '../Layout/ReadableContent';
 import { PageHeader, PageHeaderAction, PageHeaderMenu } from '../Layout/PageHeader';
 import { ChatKindIcon } from '../chats/ChatKindIcon';
 import { formatToLocalDateWithTimezone } from '../../utils/date';
+import { homeFolder, tildePath } from '../../utils/folderPath';
 import { billedSessionTokenEstimate, formatBilledTokenEstimate } from '../../utils/billedTokens';
 import { scheduleDisplayName } from '../../utils/builtins';
 import { getSession, Session, type SessionClassification } from '../../api';
@@ -51,6 +54,48 @@ const errorText = (error: unknown, fallback: string) =>
 
 /** The file a path names, for a row that shows names rather than paths. */
 const fileNameOf = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+
+/** Past this, an error's first sentence is still more than its row's two lines can show. */
+const ERROR_HEADLINE_MAX = 160;
+
+/**
+ * What a schedule's Last error row shows of the daemon's message: its first line, cut at the end
+ * of its first sentence. `folded` says the row leaves something out, so the whole message sits
+ * behind a disclosure under it (owner, 2026-11-13: one line up front, the rest folded). The first
+ * line always shows: an error is never hover-only or folded away entirely (spec 2.6).
+ */
+function errorHeadline(error: string): { headline: string; folded: boolean } {
+  const whole = error.trim();
+  const firstLine = (whole.split(/\r?\n/, 1)[0] ?? '').trim();
+  const end = firstLine.search(/[.!?](\s|$)/);
+  const headline = end >= 0 ? firstLine.slice(0, end + 1) : firstLine;
+  return { headline, folded: headline !== whole || headline.length > ERROR_HEADLINE_MAX };
+}
+
+/**
+ * A failing job's last error. Issue #56: without it the only record of a repeatedly failing job
+ * is a daemon log line, because each run mints a fresh session, so there is no chat to open and
+ * read either. The row says the first sentence in danger ink, clamped to two lines; a longer
+ * message (a stack, a provider's JSON) is one press away in full, with Copy, rather than a block
+ * of red text in the facts card.
+ */
+function LastErrorRow({ error }: { error: string }) {
+  const { headline, folded } = errorHeadline(error);
+  return (
+    <FactRow label={copy.lastError}>
+      <span className="line-clamp-2 min-w-0 text-body text-text-danger [overflow-wrap:anywhere]">
+        {headline}
+      </span>
+      {folded && (
+        <div className="w-full">
+          <Disclosure label={copy.fullError}>
+            <CopyField value={error} label={copy.lastErrorCopyLabel} multiline />
+          </Disclosure>
+        </div>
+      )}
+    </FactRow>
+  );
+}
 
 interface ScheduleSessionMeta {
   id: string;
@@ -517,15 +562,19 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                 )}
                 {scheduleDetails && (
                   <ScheduleFacts>
+                    {/* The raw cron is data, read character by character: the code
+                        face and size. The workflow's path says where the file lives, so
+                        it is sans and from `~` (design.md D-42), as History writes a
+                        folder. */}
                     <DefinitionRow
                       label={copy.runs}
-                      tooltip={<span className="font-mono">{scheduleDetails.cron}</span>}
+                      tooltip={<span className="font-mono text-code">{scheduleDetails.cron}</span>}
                     >
                       {readableCronOf(scheduleDetails.cron)}
                     </DefinitionRow>
                     <DefinitionRow
                       label={copy.workflow}
-                      tooltip={<span className="font-mono">{scheduleDetails.source}</span>}
+                      tooltip={tildePath(scheduleDetails.source, homeFolder())}
                     >
                       {fileNameOf(scheduleDetails.source)}
                     </DefinitionRow>
@@ -539,13 +588,8 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                     >
                       {formatRunTime(scheduleDetails.last_run) ?? scheduleCopy.notRunYet}
                     </DefinitionRow>
-                    {/* Issue #56. Without this the only record of a repeatedly
-                        failing job is a daemon log line: each run mints a fresh
-                        session, so there is no chat to open and read either. */}
                     {scheduleDetails.last_error && (
-                      <DefinitionRow label={copy.lastError} tone="danger">
-                        {scheduleDetails.last_error}
-                      </DefinitionRow>
+                      <LastErrorRow error={scheduleDetails.last_error} />
                     )}
                     {running && scheduleDetails.process_start_time && (
                       <DefinitionRow

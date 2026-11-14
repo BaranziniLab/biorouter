@@ -4,6 +4,7 @@ import { listFolderAccess, revokeFolderAccess, type FolderGrantView } from '../.
 import { userActionHeaders } from '../../utils/userAction';
 import { isBrowserSurface } from '../../utils/surface';
 import { folderAccessLifetime } from '../../utils/folderAccessLifetime';
+import { InfoTip, useInfoTipId } from '../ui/info-tip';
 import { Input } from '../ui/input';
 import { FOLDER_ACCESS_COPY } from './copy';
 import {
@@ -15,17 +16,23 @@ import {
   FooterCardNote,
   FooterCardPath,
   FooterCardRow,
-  FooterCardSection,
   FooterCardValue,
 } from './FooterCard';
+import { FooterCardHelpSection } from './FooterCardHelpSection';
 import type { FooterCard as FooterCardState } from './useFooterCard';
 
 /**
  * The folder chip's card (spec 3.7), one of the footer's three `FooterCard`s: the folder this
  * chat works in (with Choose folder… while the chat is empty), then every other folder the chat
- * may use, each with Revoke, then which tools ask for folder approval. It opens from the footer's
- * folder chip (`DirSwitcher`), which owns the Popover root and its anchor; `useFooterCard` says
- * when it opens.
+ * may use, each with Revoke. It opens from the footer's folder chip (`DirSwitcher`), which owns
+ * the Popover root and its anchor; `useFooterCard` says when it opens.
+ *
+ * Only the readings are drawn; what explains them waits in an InfoTip beside each label (owner,
+ * 2026-11-13: one line up front, the detail on hover or on click). Which tools ask for folder
+ * approval is the Working folder label's, on Home and in a chat alike; when a session grant ends
+ * and that one-time grants are not listed is the Other approved folders label's; and in a
+ * browser, where the approval key comes from is the key field's, which keeps it as the field's
+ * accessible description.
  *
  * ⚠ **This is the desktop's and the browser's only way to revoke a folder grant**
  * (docs/security/folder-access.md). It used to be a "Folder access" button beside the chip that
@@ -161,6 +168,7 @@ export function FolderAccessCard({
 }: FolderAccessCardProps) {
   const labelId = useId();
   const approvalKeyId = useId();
+  const approvalKeyHelpId = useInfoTipId();
   // One test of "is this a chat" for the section and its read alike. They used to differ: the
   // section showed for any defined id while the read skipped an empty one, so a new chat's card
   // said "Checking folder access…" for as long as it stayed open.
@@ -197,7 +205,11 @@ export function FolderAccessCard({
       align="start"
       testId="folder-access-card"
     >
-      <FooterCardSection label={FOLDER_ACCESS_COPY.workingFolder}>
+      <FooterCardHelpSection
+        label={FOLDER_ACCESS_COPY.workingFolder}
+        about={FOLDER_ACCESS_COPY.aboutWorkingFolder}
+        help={FOLDER_ACCESS_COPY.whoAsks}
+      >
         {workingDir === null ? (
           <FooterCardValue>{FOLDER_ACCESS_COPY.workingFolderUnknown}</FooterCardValue>
         ) : (
@@ -213,10 +225,15 @@ export function FolderAccessCard({
             </FooterCardAction>
           </FooterCardActions>
         )}
-      </FooterCardSection>
+      </FooterCardHelpSection>
 
       {chatId !== undefined && (
-        <FooterCardSection label={FOLDER_ACCESS_COPY.otherFolders} labelId={labelId}>
+        <FooterCardHelpSection
+          label={FOLDER_ACCESS_COPY.otherFolders}
+          labelId={labelId}
+          about={FOLDER_ACCESS_COPY.aboutOtherFolders}
+          help={`${folderAccessLifetime()} ${FOLDER_ACCESS_COPY.onceNotListed}`}
+        >
           {loadFailed ? (
             <FooterCardNote role="alert" tone="danger">
               {FOLDER_ACCESS_COPY.loadFailed}
@@ -255,10 +272,18 @@ export function FolderAccessCard({
           )}
           {browser && grants !== null && grants.length > 0 && (
             <div className="br-footer-card__key">
-              {/* A card label like every other: the muted 12/16 of a section's label. */}
-              <label htmlFor={approvalKeyId} className="br-footer-card__label">
-                {FOLDER_ACCESS_COPY.approvalKey}
-              </label>
+              {/* A card label like every other: the muted 12/16 of a section's label. Its help is
+                  the InfoTip beside it, never inside the <label>, and the field's description. */}
+              <div className="flex min-w-0 items-center">
+                <label htmlFor={approvalKeyId} className="br-footer-card__label">
+                  {FOLDER_ACCESS_COPY.approvalKey}
+                </label>
+                <InfoTip
+                  id={approvalKeyHelpId}
+                  label={FOLDER_ACCESS_COPY.aboutApprovalKey}
+                  help={FOLDER_ACCESS_COPY.approvalKeyHelp}
+                />
+              </div>
               <Input
                 id={approvalKeyId}
                 type="password"
@@ -266,20 +291,12 @@ export function FolderAccessCard({
                 machine
                 value={approvalKey}
                 onChange={(event) => setApprovalKey(event.target.value)}
-                aria-describedby={`${approvalKeyId}-help`}
+                aria-describedby={approvalKeyHelpId}
               />
-              <span id={`${approvalKeyId}-help`} className="text-supporting text-text-muted">
-                {FOLDER_ACCESS_COPY.approvalKeyHelp}
-              </span>
             </div>
           )}
-          <FooterCardNote>
-            {folderAccessLifetime()} {FOLDER_ACCESS_COPY.onceNotListed}
-          </FooterCardNote>
-        </FooterCardSection>
+        </FooterCardHelpSection>
       )}
-
-      <FooterCardNote>{FOLDER_ACCESS_COPY.whoAsks}</FooterCardNote>
     </FooterCard>
   );
 }

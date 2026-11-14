@@ -4,6 +4,7 @@ import { Avatar } from '../../ui/avatar';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
+import CustomRadio from '../../ui/CustomRadio';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -14,6 +15,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
+import { InfoTip } from '../../ui/info-tip';
 import { Note } from '../../ui/note';
 import { PrivacyBadge } from '../../ui/PrivacyBadge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../ui/tabs';
@@ -41,7 +43,7 @@ import type { ConfirmIntent, ErrorSource, WorkspaceSettingsTab } from '../state/
 import { copyText } from './clipboard';
 import { CrewConfirmation } from './confirmations';
 import { contextCopy, workspaceSettingsCopy as copy } from './copy';
-import { DialogErrorNote, RadioRows, useDismissOwnError } from './fields';
+import { DialogErrorNote, useDismissOwnError } from './fields';
 import {
   brokerSupports,
   CONTEXT_MAX_BYTES,
@@ -392,9 +394,22 @@ function GeneralTab({
                   }`}
                   data-crew-settings-storage-note=""
                 >
-                  {fullness.level === 'full'
-                    ? `${sidebarCopy.storage.full(workspace)} ${sidebarCopy.storage.nowFull}`
-                    : `${sidebarCopy.storage.filling(workspace, fullness.percent)} ${sidebarCopy.storage.whenFull}`}
+                  {/* The state in view; what works once full is its info tip (owner,
+                      2026-11-13). */}
+                  <span>
+                    {fullness.level === 'full'
+                      ? sidebarCopy.storage.full(workspace)
+                      : sidebarCopy.storage.filling(workspace, fullness.percent)}
+                  </span>{' '}
+                  <InfoTip
+                    label={copy.storageHelpLabel}
+                    help={
+                      fullness.level === 'full'
+                        ? sidebarCopy.storage.nowFull
+                        : sidebarCopy.storage.whenFull
+                    }
+                    data-testid="crew-settings-storage-help"
+                  />
                 </p>
               ) : undefined
             }
@@ -447,6 +462,7 @@ function Governance({ view }: { view: DialogView }) {
   const { crew, dir, snapshot, workspace } = view;
   const key = 'mutate:workspace.set_governance';
   const [chosen, setChosen] = React.useState<'open' | 'managed' | null>(null);
+  const groupId = React.useId();
   const current = snapshot?.workspace.governance === 'open' ? 'open' : 'managed';
   const verified = crew.snapshot !== null && crew.observedPrivacy !== null;
   if (!dir.viewerIsHost)
@@ -467,23 +483,45 @@ function Governance({ view }: { view: DialogView }) {
       })
       .finally(() => setChosen(null));
   };
+  const value = chosen ?? current;
+  const disabled = !verified || crew.isPending(key);
+  const options = [
+    { value: 'open' as const, label: copy.governance.open },
+    { value: 'managed' as const, label: copy.governance.managed },
+  ];
+  // What each choice lets people do is the question's info tip (owner, 2026-11-13), and the
+  // group's description; the host's own reach stays a line under it.
   return (
     <div className="mt-4 flex flex-col gap-1 px-3" data-crew-settings-governance="">
-      <RadioRows<'open' | 'managed'>
-        label={copy.governance.label}
-        name="crew-workspace-governance"
-        value={chosen ?? current}
-        disabled={!verified || crew.isPending(key)}
-        onChange={choose}
-        options={[
-          { value: 'open', label: copy.governance.open, detail: copy.governance.openDetail },
-          {
-            value: 'managed',
-            label: copy.governance.managed,
-            detail: copy.governance.managedDetail,
-          },
-        ]}
-      />
+      <div
+        role="radiogroup"
+        aria-labelledby={`${groupId}-label`}
+        aria-describedby={`${groupId}-help`}
+        className="flex flex-col"
+      >
+        <span className="inline-flex items-center gap-1">
+          <span id={`${groupId}-label`} className="text-label text-text-default">
+            {copy.governance.label}
+          </span>
+          <InfoTip
+            label={copy.governance.label}
+            help={copy.governance.help}
+            id={`${groupId}-help`}
+          />
+        </span>
+        {options.map((option) => (
+          <CustomRadio
+            key={option.value}
+            id={`${groupId}-${option.value}`}
+            name="crew-workspace-governance"
+            value={option.value}
+            checked={value === option.value}
+            disabled={disabled}
+            onChange={() => choose(option.value)}
+            label={option.label}
+          />
+        ))}
+      </div>
       <p className="text-supporting text-text-muted">{copy.governance.hostOnly(workspace)}</p>
     </div>
   );
@@ -666,6 +704,7 @@ function ContextTab({ view }: { view: DialogView }) {
   const who = shown?.updated_by ? personLabel(shown.updated_by, 'inline', dir) : null;
   const meta = shown ? contextCopy.saved(shown.revision, who, savedWhen(shown.updated_at)) : null;
   const helpId = `${fieldId}-help`;
+  const infoId = `${fieldId}-info`;
 
   if (isChecking(view))
     return (
@@ -676,9 +715,14 @@ function ContextTab({ view }: { view: DialogView }) {
 
   return (
     <div className="flex flex-col gap-2 px-3 py-1" data-crew-settings-context="">
-      <label htmlFor={fieldId} className="text-label text-text-default">
-        {contextCopy.label}
-      </label>
+      {/* What the context is for is the label's info tip, and the editor's description too
+          (owner, 2026-11-13). */}
+      <span className="inline-flex items-center gap-1">
+        <label htmlFor={fieldId} className="text-label text-text-default">
+          {contextCopy.label}
+        </label>
+        <InfoTip label={contextCopy.label} help={contextCopy.help(workspace)} id={infoId} />
+      </span>
       <Textarea
         id={fieldId}
         rows={10}
@@ -686,7 +730,7 @@ function ContextTab({ view }: { view: DialogView }) {
         readOnly={!editable}
         spellCheck={false}
         placeholder={editable ? contextCopy.placeholder : contextCopy.empty}
-        aria-describedby={helpId}
+        aria-describedby={`${infoId} ${helpId}`}
         aria-invalid={tooLarge || undefined}
         value={text}
         onChange={(event) => {
@@ -697,7 +741,6 @@ function ContextTab({ view }: { view: DialogView }) {
       <div id={helpId} className="flex flex-col gap-1 text-supporting text-text-muted">
         {tooLarge ? <span className="text-text-danger">{contextCopy.tooLarge}</span> : null}
         {meta ? <span data-crew-context-revision="">{meta}</span> : null}
-        <span>{contextCopy.help(workspace)}</span>
         {!editable ? (
           <span>
             {contextCopy.hostOnly(dir.host ? personLabel(dir.host, 'authority', dir) : null)}
@@ -722,7 +765,11 @@ function ContextTab({ view }: { view: DialogView }) {
             </Button>
           }
         >
-          <p>{contextCopy.conflict(who)}</p>
+          {/* What happened in view; what to do about it beside the actions that do it. */}
+          <p>
+            <span>{contextCopy.conflict(who)}</span>{' '}
+            <InfoTip label={contextCopy.conflictLabel} help={contextCopy.conflictHelp} />
+          </p>
         </Note>
       ) : null}
       {notice ? (

@@ -92,6 +92,16 @@ function lastDialog(): DialogProps {
 }
 
 /** No surface on the card can take a value. */
+/**
+ * The card's controls that act: every button but the title's info icon, which only explains
+ * (design.md 9.16).
+ */
+function actionButtons() {
+  return screen
+    .queryAllByRole('button')
+    .filter((button) => !button.getAttribute('aria-label')?.startsWith('About '));
+}
+
 function expectNoInput(container: HTMLElement) {
   expect(container.querySelector('input, textarea, select, [contenteditable]')).toBeNull();
 }
@@ -104,12 +114,22 @@ describe('the sign-in card', () => {
       server: 'hpc\u200B.example.edu',
     });
     expect(screen.getByText(crewSignInStepCopy.title('you@hpc.example.edu'))).toBeInTheDocument();
-    expect(
-      screen.getByText(crewSignInStepCopy.lead('you@hpc.example.edu', 'hpc.example.edu'))
-    ).toBeInTheDocument();
-    expect(crewSignInStepCopy.lead('you@hpc.example.edu', 'hpc.example.edu')).toBe(
-      'Sign in to you@hpc.example.edu on hpc.example.edu. What you type goes to ssh on that server, never to this chat or the model. Type only into the Sign in window.'
+    // Where the typing goes is a privacy disclosure, so it is the line in view (owner,
+    // 2026-11-13; design.md 9.16).
+    const lead = screen.getByText(crewSignInStepCopy.lead);
+    expect(lead).not.toHaveClass('sr-only');
+    expect(crewSignInStepCopy.lead).toBe(
+      'What you type goes to ssh on that server, never to this chat or the model.'
     );
+    // Which server, and where to type, are the title's info tip, word for word, and only there.
+    const about = crewSignInStepCopy.about('you@hpc.example.edu', 'hpc.example.edu');
+    expect(about).toBe(
+      'Sign in to you@hpc.example.edu on hpc.example.edu. Type only into the Sign in window.'
+    );
+    expect(
+      screen.getByRole('button', { name: `About ${crewSignInStepCopy.aboutLabel}` })
+    ).toHaveAccessibleDescription(about);
+    expect(screen.getByText(about)).toHaveClass('sr-only');
     expectNoInput(view.container);
   });
 
@@ -189,7 +209,7 @@ describe('the sign-in card', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Sign in to/ }));
     act(() => lastDialog().onSignedIn());
     expect(screen.getByRole('status')).toHaveTextContent(crewSignInStepCopy.signedIn);
-    expect(screen.queryByRole('button')).toBeNull();
+    expect(actionButtons()).toEqual([]);
     expect(lastDialog().open).toBe(false);
   });
 
@@ -206,7 +226,7 @@ describe('the sign-in card', () => {
         body: { id: 'card-1', session_id: 'chat-1', outcome: 'dismiss' },
       })
     );
-    expect(screen.queryByRole('button')).toBeNull();
+    expect(actionButtons()).toEqual([]);
   });
 
   it('says the sign-in no longer waits when the daemon had no such card', async () => {
@@ -222,8 +242,21 @@ describe('the sign-in card', () => {
     mocks.browser = true;
     const view = card();
     expect(screen.getByText(crewSignInStepCopy.fallback)).toBeInTheDocument();
-    expect(crewSignInStepCopy.fallback).toMatch(/^Sign in is only in the desktop app\./);
+    expect(crewSignInStepCopy.fallback).toBe(
+      'Sign in is only in the desktop app. Never type your password into the chat.'
+    );
+    // Where to sign in instead is folded under its disclosure, and still all there once opened.
+    expect(screen.queryByText(crewSignInStepCopy.fallbackHow)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: crewSignInStepCopy.fallbackHowLabel }));
+    expect(screen.getByText(crewSignInStepCopy.fallbackHow)).toBeInTheDocument();
+    expect(crewSignInStepCopy.fallbackHow).toBe(
+      'Open Crew there and choose Sign in, or run biorouter crew auth in a terminal.'
+    );
     expect(screen.queryByRole('button', { name: /^Sign in to/ })).toBeNull();
+    // No info tip names a server the card cannot sign in to here.
+    expect(
+      screen.queryByRole('button', { name: `About ${crewSignInStepCopy.aboutLabel}` })
+    ).toBeNull();
     expect(mocks.dialogs).toHaveLength(0);
     // Nothing is read for a window that cannot open.
     expect(mocks.asked.every(({ enabled }) => !enabled)).toBe(true);
@@ -246,7 +279,9 @@ describe('the sign-in copy', () => {
   it('says computer, never device, uses no dashes, and asks for nothing in the chat', () => {
     const words = [
       crewSignInStepCopy.title('x'),
-      crewSignInStepCopy.lead('x', 'y'),
+      crewSignInStepCopy.lead,
+      crewSignInStepCopy.aboutLabel,
+      crewSignInStepCopy.about('x', 'y'),
       crewSignInStepCopy.signIn,
       crewSignInStepCopy.signInLabel('x', 'y'),
       crewSignInStepCopy.dismiss,
@@ -255,6 +290,8 @@ describe('the sign-in copy', () => {
       crewSignInStepCopy.gone,
       crewSignInStepCopy.windowFallback,
       crewSignInStepCopy.fallback,
+      crewSignInStepCopy.fallbackHowLabel,
+      crewSignInStepCopy.fallbackHow,
     ];
     for (const text of words) {
       expect(text).not.toMatch(/\bdevices?\b/i);

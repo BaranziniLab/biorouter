@@ -3,8 +3,10 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ExtensionsPanel,
+  extensionsEmptyHelp,
   extensionsEmptyText,
   useExtensionPicker,
+  type ExtensionPicker,
 } from './BottomMenuExtensionSelection';
 import { EXTENSIONS_COPY, TOOLS_COPY } from './copy';
 import { CATALOG_CHANGED_EVENT } from '../../utils/catalogSubscription';
@@ -810,28 +812,87 @@ describe('extensionsEmptyText', () => {
     expect(extensionsEmptyText({ query: 'xyz', answered: false, failed: true })).toBe(
       EXTENSIONS_COPY.noMatch
     );
+    expect(extensionsEmptyHelp({ query: 'xyz', answered: false, failed: true })).toBeUndefined();
   });
   it('says it is loading before the chat has answered', () => {
     expect(extensionsEmptyText({ query: '', answered: false })).toBe('Loading extensions…');
+    expect(extensionsEmptyHelp({ query: '', answered: false })).toBeUndefined();
   });
   it('says the read failed rather than that there are none', () => {
     expect(extensionsEmptyText({ query: '', answered: true, failed: true })).toBe(
       "Couldn't load this chat's extensions."
     );
+    expect(extensionsEmptyHelp({ query: '', answered: true, failed: true })).toBeUndefined();
   });
   it('says none were added only once the chat answered with none, and that built-ins stay on', () => {
-    expect(extensionsEmptyText({ query: '', answered: true, failed: false })).toBe(
-      'No extensions added to this chat. Built-in capabilities are always on; manage them in Settings.'
-    );
+    const picker = { query: '', answered: true, failed: false };
+    expect(extensionsEmptyText(picker)).toBe('No extensions added to this chat.');
+    // The second sentence is the InfoTip beside that line (design.md 9.16), word for word.
+    expect(extensionsEmptyHelp(picker)).toEqual({
+      about: 'built-in capabilities',
+      text: 'Built-in capabilities are always on; manage them in Settings.',
+    });
   });
   it('speaks of the next chat on Home, where the list is the next chat’s', () => {
-    expect(extensionsEmptyText({ query: '', answered: true, failed: false, isHubView: true })).toBe(
-      'No extensions added for the next chat. Built-in capabilities are always on; manage them in Settings.'
-    );
+    const picker = { query: '', answered: true, failed: false, isHubView: true };
+    expect(extensionsEmptyText(picker)).toBe('No extensions added for the next chat.');
+    expect(extensionsEmptyHelp(picker)).toEqual({
+      about: 'built-in capabilities',
+      text: 'Built-in capabilities are always on; manage them in Settings.',
+    });
   });
   it('never calls an empty list unavailable', () => {
-    for (const text of [EXTENSIONS_COPY.empty, EXTENSIONS_COPY.emptyNextChat]) {
+    for (const text of [
+      EXTENSIONS_COPY.empty,
+      EXTENSIONS_COPY.emptyNextChat,
+      EXTENSIONS_COPY.emptyHelp,
+    ]) {
       expect(text).not.toMatch(/available/i);
     }
+  });
+
+  /** design.md 9.16: one visible line, and the rest one hover, Tab or click away. */
+  it('shows one line and puts the built-in sentence in the InfoTip beside it', () => {
+    const picker: ExtensionPicker = {
+      sessionId: 'session-1',
+      isHubView: false,
+      activeCount: 0,
+      answered: true,
+      failed: false,
+      query: '',
+      setQuery: () => {},
+      rows: [],
+      toggle: () => {},
+      bulk: null,
+    };
+    render(<ExtensionsPanel picker={picker} />);
+
+    expect(screen.getByText('No extensions added to this chat.')).toBeVisible();
+    const tip = screen.getByRole('button', { name: 'About built-in capabilities' });
+    expect(tip).toHaveAccessibleDescription(
+      'Built-in capabilities are always on; manage them in Settings.'
+    );
+    // The help is not a visible paragraph: only the tip's hidden description holds it.
+    expect(
+      screen.queryByText(/^Built-in capabilities are always on/, { selector: ':not(.sr-only)' })
+    ).toBeNull();
+  });
+
+  it('draws no InfoTip while the list is loading', () => {
+    const picker: ExtensionPicker = {
+      sessionId: 'session-1',
+      isHubView: false,
+      activeCount: 0,
+      answered: false,
+      query: '',
+      setQuery: () => {},
+      rows: [],
+      toggle: () => {},
+      bulk: null,
+    };
+    render(<ExtensionsPanel picker={picker} />);
+
+    expect(screen.getByText('Loading extensions…')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'About built-in capabilities' })).toBeNull();
   });
 });

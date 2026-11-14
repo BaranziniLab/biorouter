@@ -19,6 +19,47 @@ import ExtensionCredentialsDialog from './ExtensionCredentialsDialog';
 import { EXTENSION_MODAL_COPY as COPY } from '../copy';
 import './extension-modal.css';
 
+/**
+ * An extension's installation notes, split after the first sentence or line: the lead is shown,
+ * the rest folds behind "Show the rest". A note with one sentence, or whose first sentence runs
+ * past {@link NOTES_LEAD_MAX} characters (no clean break to fold at), is shown whole, where the
+ * Note's own eight-line clamp still bounds it.
+ */
+const NOTES_LEAD_MAX = 200;
+
+/**
+ * A lead shorter than this is a list marker or an abbreviation ("1.", "e.g.", "Step 1."), not a
+ * sentence, so the cut moves on to the next break: numbered steps show their first step rather
+ * than "1.". The same floor as `MIN_SENTENCE_CHARS` in `utils/proseFold.ts`.
+ */
+const NOTES_LEAD_MIN = 12;
+
+function splitInstallationNotes(
+  text: string | undefined
+): { lead: string; rest: string | null } | null {
+  const notes = text?.trim();
+  if (!notes) return null;
+  // A line break, or a stop followed by what starts a sentence (as `proseFold.ts` reads one), so
+  // "e.g. on macOS" mid-sentence is not an end.
+  const breaks = /[.!?](?=\s+["'([“‘]?[A-Z0-9]|\s*$)|\n/g;
+  let match: RegExpExecArray | null;
+  while ((match = breaks.exec(notes)) !== null) {
+    const isLineBreak = match[0] === '\n';
+    const cut = isLineBreak ? match.index : match.index + 1;
+    const lead = notes.slice(0, cut).trim();
+    // A stop is measured on its own line, so "2." opening the second line of a numbered list is
+    // never taken for the end of a sentence even when the first line was too short to cut at.
+    const sentence = isLineBreak
+      ? lead
+      : notes.slice(notes.lastIndexOf('\n', match.index) + 1, cut).trim();
+    if (sentence.length < NOTES_LEAD_MIN) continue;
+    const rest = notes.slice(cut).trim();
+    if (!rest || lead.length > NOTES_LEAD_MAX) break;
+    return { lead, rest };
+  }
+  return { lead: notes, rest: null };
+}
+
 interface ExtensionModalProps {
   title: string;
   initialData: ExtensionFormData;
@@ -380,6 +421,8 @@ export default function ExtensionModal({
    */
   const resultingTier = classifyExtension(formData.name);
   const tierNotice = resultingTier === 'private' ? COPY.tierPrivate : COPY.tierPublic;
+  const tierHelp = resultingTier === 'private' ? COPY.tierPrivateHelp : COPY.tierPublicHelp;
+  const notes = splitInstallationNotes(formData.installation_notes);
 
   return (
     <>
@@ -449,6 +492,8 @@ export default function ExtensionModal({
         }
       >
         {showDeleteConfirmation ? (
+          // The question's subtitle says credentials are kept; reuse on reinstall, and what
+          // Review keeps, are this glyph's help.
           <div className="flex items-center gap-1">
             <Button variant="secondary" size="sm" onClick={() => setShowCredentials(true)}>
               {COPY.reviewCredentials}
@@ -457,10 +502,18 @@ export default function ExtensionModal({
           </div>
         ) : (
           <div className="br-ext-form" ref={formRef}>
-            {formData.installation_notes && (
-              <Note tone="info" icon={Info}>
+            {notes && (
+              // The first sentence is on screen; the rest of what the author wrote is one click
+              // away, so a long note never pushes the Name and Type fields below the fold (owner,
+              // 2026-11-13). A person reads it once.
+              <Note
+                tone="info"
+                icon={Info}
+                details={notes.rest ?? undefined}
+                detailsLabel={COPY.installationNotesRest}
+              >
                 <div className="text-label text-text-default">{COPY.installationNotes}</div>
-                <div className="mt-1">{formData.installation_notes}</div>
+                <div className="mt-1">{notes.lead}</div>
               </Note>
             )}
 
@@ -500,10 +553,13 @@ export default function ExtensionModal({
 
                 {modalType === 'add' && (
                   // §13.5, and it stays on screen: the tier this name will produce, said before
-                  // the person commits. A badge and the one sentence, no box around either.
+                  // the person commits. A badge and the one sentence, no box around either; what
+                  // the tier lets a model do is the InfoTip beside the sentence.
                   <div className="br-ext-tier">
                     <PrivacyBadge tier={resultingTier} />
-                    <p className="text-supporting text-text-muted">{tierNotice}</p>
+                    <p className="text-supporting text-text-muted">
+                      {tierNotice} <InfoTip label={COPY.tierLabel} help={tierHelp} />
+                    </p>
                   </div>
                 )}
 

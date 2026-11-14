@@ -116,7 +116,7 @@ export function SharePathDialog({ onClose }: SharePathDialogProps) {
             spellCheck={false}
             translate="no"
             placeholder={copy.placeholder(login)}
-            className="font-mono"
+            className="font-mono text-code"
             aria-invalid={invalid || undefined}
             // The helper saying when to use this, or the error that replaces it.
             aria-describedby={helpId(pathId)}

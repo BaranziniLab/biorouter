@@ -969,8 +969,11 @@ export async function selectCrewTransferFile(
         type: 'warning',
         title: 'Replace Crew download destination',
         message: `Replace ${visibleText(path.basename(chosen))} after the download is verified?`,
+        // A native box has no fold, so the detail is two short sentences in plain words (owner,
+        // 2026-11-13): the daemon found the file and keeps it until the download is verified, and
+        // a different destination is a new selection.
         detail:
-          'The daemon has checked the existing file. It remains in place until the download passes verification; any destination change requires a new selection.',
+          'Biorouter found the existing file and keeps it until the download is verified. To save somewhere else, choose a new destination.',
         buttons: ['Cancel', 'Replace file'],
         defaultId: 0,
         cancelId: 0,

@@ -252,18 +252,35 @@ describe('HostDialog', () => {
   it('prepares the hosting identity on Continue and shows the start command with its key', async () => {
     const view = renderHost();
     await fillName();
+    // Who can see the name is a privacy exposure, so it is the visible line under the field and
+    // the field's description; the format rule and the preview are its info icon (owner,
+    // 2026-11-13; design.md 9.16).
+    const nameField = screen.getByLabelText(hostCopy.workspaceName);
+    expect(nameField).toHaveAccessibleDescription(expect.stringContaining(hostCopy.consequence));
+    const consequenceLine = screen.getByText(hostCopy.consequence);
+    expect(consequenceLine.tagName).toBe('P');
+    expect(consequenceLine).not.toHaveClass('sr-only');
+    expect(nameField.getAttribute('aria-describedby')?.split(' ')[0]).toBe(consequenceLine.id);
+    expect(
+      screen.getByRole('button', { name: `About ${hostCopy.workspaceName}` })
+    ).toHaveAccessibleDescription(
+      `${hostCopy.workspaceNameHelper} ${hostCopy.preview('lab-data')}.`
+    );
     fireEvent.click(screen.getByRole('button', { name: hostCopy.continue }));
 
     expect(await screen.findByText(hostCopy.startHeading('hpc.ucsf.edu'))).toBeInTheDocument();
     expect(view.crew().prepareHostingDevice).toHaveBeenCalledOnce();
     expect(screen.getByText(hostCopy.stepOf(2, 3, 'Start'))).toBeInTheDocument();
-    expect(screen.getByText(hostCopy.consequence)).toBeInTheDocument();
 
     // The step leads with its action, Set up and start Crew (OW-9), and no shell block (U1): the
     // commands are the manual path's, folded under it.
     const start = screen.getByRole('button', { name: hostCopy.setUpAndStart });
     expect(start).toHaveFocus();
     expect(start).toHaveAccessibleDescription(hostCopy.setUpAndStartHint('hpc.ucsf.edu', 'alice'));
+    // The same words are the heading's info tip, not a paragraph under the button.
+    expect(
+      screen.getByRole('button', { name: `About ${hostCopy.setUpAndStart}` })
+    ).toHaveAccessibleDescription(hostCopy.setUpAndStartHint('hpc.ucsf.edu', 'alice'));
     expect(screen.queryByText(hostCopy.runThis('hpc.ucsf.edu', 'alice'))).toBeNull();
     expect(screen.queryByText(/--bootstrap-key/)).toBeNull();
     expect(screen.queryByLabelText(hostCopy.pasted)).toBeNull();
@@ -273,7 +290,10 @@ describe('HostDialog', () => {
     const command = screen.getByText(/--name lab-data --bootstrap-key c{64}/);
     // One command per line, scrolling sideways rather than wrapping mid-flag (T-42).
     expect(command.closest('[data-slot="copy-field"]')).toHaveClass('crew-onboard-command');
-    expect(screen.getByText(hostCopy.runYourselfBody('hpc.ucsf.edu', 'alice'))).toBeVisible();
+    // One instruction says what to run, where, and what to do with what it printed.
+    expect(screen.getByText(hostCopy.runThis('hpc.ucsf.edu', 'alice'))).toHaveTextContent(
+      'Run these commands in a terminal signed in to hpc.ucsf.edu as alice, then paste what they printed.'
+    );
     expect(screen.getByRole('button', { name: hostCopy.continue })).toBeInTheDocument();
 
     // The embedded terminal is a plain shell: nothing is typed or run for the person.
@@ -283,7 +303,9 @@ describe('HostDialog', () => {
 
     expect(screen.getByText(hostCopy.notSignedIn)).toBeInTheDocument();
     expect(screen.getByText('ssh alice@hpc.ucsf.edu')).toBeInTheDocument();
-    expect(screen.getByText(hostCopy.confirmServer)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: `About ${hostCopy.confirmServerLabel}` })
+    ).toHaveAccessibleDescription(hostCopy.confirmServer);
   });
 
   it('says what went wrong when the paste is not what Crew prints', async () => {
@@ -426,13 +448,21 @@ describe('HostDialog', () => {
     await throughStart();
 
     expect(screen.getByText('3F2A 9C1E 77B0 D4E1')).toBeInTheDocument();
-    // The fingerprint says what it is for (T-34).
-    expect(screen.getByText(hostCopy.fingerprintHelper)).toBeInTheDocument();
+    // The fingerprint says what it is for (T-34), behind its info icon.
+    expect(
+      screen.getByRole('button', { name: `About ${joinCopy.fingerprintLabel}` })
+    ).toHaveAccessibleDescription(hostCopy.fingerprintHelper);
     expect(screen.getByText(hostCopy.createBody('lab-data'))).toBeInTheDocument();
     // Create also writes the label Name chose, which can't be undone: it says so before the
-    // person commits, in the label step's words, instead of asking again afterwards (G4).
+    // person commits, instead of asking again afterwards (G4). What the mark does is behind its
+    // info icon; that it can't be undone stays in view.
     expect(screen.getByTestId('crew-host-create-label')).toHaveTextContent(
-      'Creating lab-data also marks it as a ucsf workspace, for everyone who works there. Agents working in lab-data can then use only models approved for ucsf. This can’t be undone.'
+      'Creating lab-data also marks it as a ucsf workspace. This can’t be undone.'
+    );
+    expect(
+      screen.getByRole('button', { name: `About ${hostCopy.createLabelInfo}` })
+    ).toHaveAccessibleDescription(
+      'The mark is for everyone who works in lab-data: agents there can then use only models approved for ucsf.'
     );
     fireEvent.click(screen.getByRole('button', { name: hostCopy.create }));
 
@@ -847,10 +877,10 @@ describe('HostDialog', () => {
     ).toBeInTheDocument();
     // The Host dialog already asked: say what that set, and what this sets that it did not. That
     // dialog has closed, so this never names its steps ("Step 1 set UCSF…", F9).
-    expect(screen.getByTestId('crew-host-label-why')).toHaveTextContent(
+    expect(screen.getByTestId('crew-host-label-why')).toHaveAccessibleDescription(
       'You set UCSF as this computer’s institution when you created lab-data. Marking lab-data sets it for the workspace itself, for everyone who works there.'
     );
-    expect(screen.getByTestId('crew-host-label-why')).not.toHaveTextContent(/\bStep\b/);
+    expect(screen.getByTestId('crew-host-label-why')).not.toHaveAccessibleDescription(/\bStep\b/);
     expect(
       screen.getByText(
         'Agents working in lab-data can then use only models approved for UCSF. This can’t be undone.'
@@ -931,12 +961,19 @@ describe('HostDialog', () => {
       fireEvent.click(row);
       // Three levels, the default with its one warning; the host's own account says more.
       expect(screen.getByRole('radio', { name: /^As me on the server/ })).toBeChecked();
-      expect(screen.getByTestId('crew-onboard-full-warning')).toHaveTextContent(
-        joinCopy.fullWarning('alice', 'hpc.ucsf.edu')
-      );
-      expect(screen.getByTestId('crew-onboard-full-warning')).toHaveTextContent(
-        joinCopy.fullWarningHost('lab-data')
-      );
+      const warning = screen.getByTestId('crew-onboard-full-warning');
+      expect(warning).toHaveTextContent(joinCopy.fullWarning('alice', 'hpc.ucsf.edu'));
+      // The consent sentence in view; the rest, the host's sentence last, behind Details
+      // (design.md 9.16).
+      expect(warning).not.toHaveTextContent(joinCopy.fullWarningHost('lab-data'));
+      fireEvent.click(within(warning).getByRole('button', { name: 'Details' }));
+      expect(
+        Array.from(
+          within(warning).getByTestId('crew-onboard-full-warning-details').querySelectorAll('p'),
+          (p) => p.textContent
+        )
+      ).toEqual(joinCopy.fullWarningDetails('lab-data'));
+      expect(warning).toHaveTextContent(joinCopy.fullWarningHost('lab-data'));
       fireEvent.click(screen.getByRole('radio', { name: /^In a folder/ }));
       expect(screen.queryByTestId('crew-onboard-full-warning')).toBeNull();
       // The work folder in plain words, not "an absolute path on the server" (Q3-49).
@@ -1018,7 +1055,7 @@ describe('HostDialog', () => {
       await waitFor(() => expect(connect).toHaveBeenCalled());
       expect(heading).toHaveTextContent('wong-lab on 52.33.141.141');
       expect(screen.queryByText(hostCopy.createHeading('wong-lab', 'lab-server'))).toBeNull();
-      expect(screen.getByTestId('crew-host-server-alias')).toHaveTextContent(
+      expect(screen.getByTestId('crew-host-server-alias')).toHaveAccessibleDescription(
         'Your SSH settings call this server lab-server.'
       );
     });
@@ -1696,6 +1733,21 @@ describe('HostDialog and account ownership (AO-9)', () => {
     renderHost();
     await throughStart();
     expect(screen.getByText(hostCopy.createBody('lab-data'))).toBeInTheDocument();
+    expect(hostCopy.createBody('lab-data')).toBe(
+      'Creating lab-data makes your server account its host.'
+    );
+    // What that lets another computer do later is behind the line's info icon, not a second
+    // sentence in view (design.md 9.16).
+    expect(screen.getByTestId('crew-host-create-body-more')).toHaveAccessibleName(
+      `About ${hostCopy.createBodyMoreLabel}`
+    );
+    expect(screen.getByTestId('crew-host-create-body-more')).toHaveAccessibleDescription(
+      'Any computer that signs in as you can open it as host later.'
+    );
+    expect(screen.getByText(hostCopy.createBodyMore)).toHaveAttribute(
+      'data-slot',
+      'info-tip-description'
+    );
     expect(document.body.textContent).not.toMatch(/first admin device/);
   });
 

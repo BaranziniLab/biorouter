@@ -9,20 +9,30 @@
 
 export const rejoinCopy = {
   /**
-   * `crew_device_key_missing` (AO-9): the daemon's sentence, for when the bar has no code of its
-   * own to show.
+   * `crew_device_key_missing` (AO-9): the daemon's first sentence, for when the bar has no code of
+   * its own to show. The daemon's second sentence, "Choose Add this computer again…", is the
+   * note's own button, so the bar does not say it again (owner, 2026-11-13: one line).
    */
-  keyMissing: (workspace: string) =>
-    `This computer no longer has its key for ${workspace}. Choose Add this computer again to make a new one.`,
-  /** `crew_device_not_recognized` (AO-9). */
-  notRecognized: (workspace: string) =>
-    `${workspace} no longer recognizes this computer. Choose Add this computer again while you are still a member.`,
-  /** The person removed this computer from Keys (AO-5). */
-  removedHere: (workspace: string) =>
-    `You removed this computer from ${workspace}. Choose Add this computer again to use it here.`,
+  keyMissing: (workspace: string) => `This computer no longer has its key for ${workspace}.`,
+  /** `crew_device_not_recognized` (AO-9), its first sentence, as `keyMissing`. */
+  notRecognized: (workspace: string) => `${workspace} no longer recognizes this computer.`,
+  /**
+   * The daemon's second sentence for `crew_device_not_recognized`, word for word. Unlike
+   * `keyMissing`'s, it is not only the button: it says the way back works only while the account
+   * is still a member, so it stays behind the info icon beside `notRecognized` rather than going.
+   */
+  notRecognizedHelp: 'Choose Add this computer again while you are still a member.',
+  /** That info icon's name: "About adding this computer again". */
+  notRecognizedHelpLabel: 'adding this computer again',
+  /** The person removed this computer from Keys (AO-5); the button says what to do. */
+  removedHere: (workspace: string) => `You removed this computer from ${workspace}.`,
   action: 'Add this computer again',
   pending: 'Adding this computer…',
-  /** Once the workspace admitted the new key. Chats need access again: the policy epoch moved. */
+  /**
+   * Once the workspace admitted the new key. Chats need access again: the policy epoch moved. The
+   * bar shows the first sentence and folds the second behind its Details (`splitFirstSentence`),
+   * so the words stay the command line's.
+   */
   done: (workspace: string) =>
     `This computer is back in ${workspace}. Chats that had Crew access through it need access again.`,
   /** The cap of 32 made room by removing the oldest computer (AO-2). */
@@ -84,7 +94,11 @@ export const deviceCopy = {
   remove: 'Remove',
   removeLabel: (fingerprint: string) => `Remove computer ${fingerprint}`,
   removeThisLabel: 'Remove this computer',
-  /** AO-5: revoking is the second step; SSH access is the first. */
+  /**
+   * AO-5: revoking is the second step; SSH access is the first. The command line's words
+   * (`REMOVE_DEVICE_SSH_FIRST`). The question shows the first sentence, the consequence, and folds
+   * the steps behind its Details (owner, 2026-11-13).
+   */
   sshWarning:
     'A lost computer can still sign in as you while it has an SSH key or password for your account. First remove its key from ~/.ssh/authorized_keys on the server, or change your password. Then remove it here.',
   confirm: (fingerprint: string) => `Remove ${fingerprint} from your account?`,
@@ -97,7 +111,10 @@ export const deviceCopy = {
   confirmThisAction: 'Remove this computer',
   keep: 'Keep',
   removed: (fingerprint: string) => `Removed ${fingerprint}.`,
+  /** Shown as "Removed this computer.", with the way back behind its info icon (owner, 2026-11-13). */
   removedThis: 'Removed this computer. Choose Add this computer again to use the workspace here.',
+  /** The info icon beside "Removed this computer.": its name is "About using this computer again". */
+  removedThisHelpLabel: 'using this computer again',
   failed: 'Couldn’t remove the computer.',
 } as const;
 

@@ -255,6 +255,19 @@ export default function ProviderConfigurationModal({
             ? providerSetupCopy.setUp(provider.metadata.display_name)
             : providerSetupCopy.needsAttention
         }
+        titleInfo={
+          codingAgentKind ? (
+            // Named for the agent, as the form dialog's InfoTip is ("About Claude Code").
+            <InfoTip
+              label={provider.metadata.display_name}
+              help={providerSetupCopy.agentRecoveryHelp(
+                provider.metadata.display_name,
+                codingAgentKind === 'claude_code' ? 'Anthropic' : 'OpenAI'
+              )}
+              data-testid="provider-recovery-title-info"
+            />
+          ) : undefined
+        }
         subtitle={
           codingAgentKind ? providerSetupCopy.agentCheckFailed : providerSetupCopy.checkFailed
         }
@@ -291,13 +304,20 @@ export default function ProviderConfigurationModal({
           ) : (
             <>
               <p className="whitespace-pre-wrap break-words text-body">{error}</p>
-              <p className="mt-3 text-secondary text-text-muted">{providerSetupCopy.tryAgain}</p>
-              {provider.name === 'ollama' && (
-                <p className="mt-3 text-secondary text-text-muted">
-                  The host address tells Biorouter where to connect; it does not start Ollama. Open
-                  Ollama on the computer at that address, then choose Check again.
-                </p>
-              )}
+              {/* The error stays as it came; Ollama's host advice is the InfoTip beside the
+                  next step (owner, 2026-11-13: one line up front, the detail on hover). */}
+              <p className="mt-3 text-secondary text-text-muted">
+                {providerSetupCopy.tryAgain}
+                {provider.name === 'ollama' && (
+                  <>
+                    {' '}
+                    <InfoTip
+                      label={providerSetupCopy.ollamaHostLabel}
+                      help={providerSetupCopy.ollamaHostHelp}
+                    />
+                  </>
+                )}
+              </p>
             </>
           )}
         </div>

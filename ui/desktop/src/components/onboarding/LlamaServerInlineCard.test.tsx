@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import LlamaServerInlineCard from './LlamaServerInlineCard';
-import { llamaCopy } from './copy';
+import { llamaCopy, splitMemoryWarning } from './copy';
 import { localModelsCopy } from '../settings/models/copy';
-import { llamaMemoryWarning, windowsVramNote } from '../settings/models/localModelMemory';
+import {
+  acceleratorMemoryExplanation,
+  llamaMemoryWarning,
+  windowsVramNote,
+} from '../settings/models/localModelMemory';
 import type { LlamaCppModel, LlamaCppSystemInfo } from '../../api';
 import {
   llamaServerStore,
@@ -135,6 +139,24 @@ describe('LlamaServerInlineCard', () => {
     vi.useRealTimers();
   });
 
+  // Owner, 2026-11-13: the missing-binary state said two sentences with the command and the
+  // variable inline. The pill says what is missing; one instruction and the command to paste stay,
+  // and the other ways out are the instruction's InfoTip.
+  it('says a missing llama-server in one instruction, a copyable command and an InfoTip', async () => {
+    mockLlamacppStatus.mockResolvedValue(statusResponse({ state: 'no_binary' }));
+    render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
+    expect(await screen.findByText(llamaCopy.binaryMissing)).toBeInTheDocument();
+    expect(screen.getByText(llamaCopy.binaryMissingInstruction)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: `Copy ${llamaCopy.binaryMissingCommand}` })
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: `About ${llamaCopy.binaryMissingTipLabel}` })
+    ).toHaveAccessibleDescription(llamaCopy.binaryMissingTip);
+    expect(llamaCopy.binaryMissingTip).toContain('BIOROUTER_LLAMACPP_BIN');
+    expect(screen.queryByTestId('llamacpp-start')).toBeNull();
+  });
+
   it('preselects the default catalog model', async () => {
     render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
     const select = await screen.findByTestId('llamacpp-model-select');
@@ -233,7 +255,7 @@ describe('LlamaServerInlineCard', () => {
       expect(screen.queryByText(/no install needed/)).toBeNull();
     });
 
-    it('opens Advanced on the description, the fit and the machine values in mono', async () => {
+    it('opens Advanced on the description, the fit, the ids in mono and the store as a place', async () => {
       render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
       fireEvent.click(await screen.findByRole('button', { name: llamaCopy.advanced }));
       const details = await screen.findByTestId('llamacpp-details');
@@ -245,9 +267,15 @@ describe('LlamaServerInlineCard', () => {
       );
       expect(details).not.toHaveTextContent('Recommended for this machine.');
       expect(details).not.toHaveTextContent('apple_unified');
+      // An id is read character by character: mono at the code role (12/20).
       const tag = screen.getByText('qwen3.8:27b');
-      expect(tag).toHaveClass('font-mono');
-      expect(screen.getByText('/tmp/models')).toHaveClass('font-mono');
+      expect(tag).toHaveClass('font-mono', 'text-code');
+      // Where the model lives is a place, not data (design.md D-42): sans, with the absolute path
+      // it stands for kept on the node.
+      const store = screen.getByText('/tmp/models');
+      expect(store).toHaveAttribute('data-path', '/tmp/models');
+      expect(store).not.toHaveClass('font-mono');
+      expect(store.closest('dd')).not.toHaveClass('font-mono');
       // Labels are the sans face; the old "Store:" label was mono with its value.
       expect(screen.getByText(localModelsCopy.detail.modelStore)).not.toHaveClass('font-mono');
     });
@@ -267,7 +295,10 @@ describe('LlamaServerInlineCard', () => {
       const value = label.nextElementSibling as HTMLElement;
       // The spec in mono, where the download stands as a sans word after it.
       expect(value).not.toHaveClass('font-mono');
-      expect(screen.getByText('ggml-org/Qwen3.8-27B-GGUF:Q4_K_M')).toHaveClass('font-mono');
+      expect(screen.getByText('ggml-org/Qwen3.8-27B-GGUF:Q4_K_M')).toHaveClass(
+        'font-mono',
+        'text-code'
+      );
       expect(value).toHaveTextContent(
         `ggml-org/Qwen3.8-27B-GGUF:Q4_K_M · ${llamaCopy.fallbackIfNeeded}`
       );
@@ -373,10 +404,18 @@ describe('LlamaServerInlineCard', () => {
 
       fireEvent.click(screen.getByTestId('llamacpp-start'));
       expect(await screen.findByText('Load Qwen3.8 27B anyway?')).toBeInTheDocument();
-      // The confirmation says the shared sentence, in GB.
+      // The confirmation says the shared sentence, in GB: its consequence up front, and what the
+      // memory figure means on this machine behind "Why?" (owner, 2026-11-13), as Settings does.
       const sentence = llamaMemoryWarning(entry, system) as string;
       expect(sentence).toMatch(/^Qwen3\.8 27B needs at least 32 GB of GPU-addressable memory/);
-      expect(screen.getByText(sentence)).toBeInTheDocument();
+      const meaning = acceleratorMemoryExplanation(system.accelerator_memory_kind);
+      const { consequence } = splitMemoryWarning(sentence, meaning);
+      expect(consequence).toMatch(/^Qwen3\.8 27B needs at least 32 GB of GPU-addressable memory/);
+      expect(consequence).not.toContain(meaning);
+      expect(screen.getByText(consequence)).toBeInTheDocument();
+      expect(screen.queryByText(meaning)).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: llamaCopy.why }));
+      expect(await screen.findByText(meaning)).toBeInTheDocument();
       expect(mockLlamacppEnsure).not.toHaveBeenCalled();
     });
 

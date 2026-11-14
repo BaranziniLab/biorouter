@@ -5878,6 +5878,30 @@ ipcMain.handle('get-allowed-extensions', async () => {
   return await getAllowList();
 });
 
+/**
+ * The installed SF Mono, for every code surface (owner, 2026-11-12: code should read
+ * like the text around it, the way Codex's does). Codex names it first in its code
+ * stack (`ui-monospace, SFMono-Regular, "SF Mono", …`), but Chromium resolves none of
+ * those names on macOS, so code fell back to Menlo, a wider face that looked unlike
+ * the text. The renderer registers these bytes under the family "SF Mono" with the
+ * FontFace API (`utils/systemMonoFont.ts`). macOS only, two fixed read-only paths, no
+ * argument; `null` elsewhere or when the file is absent, and the stack falls through.
+ */
+const SYSTEM_MONO_FONT_FILES = {
+  regular: '/System/Library/Fonts/SFNSMono.ttf',
+  italic: '/System/Library/Fonts/SFNSMonoItalic.ttf',
+} as const;
+
+ipcMain.handle('get-system-mono-font', async () => {
+  if (process.platform !== 'darwin') return null;
+  const read = (path: string) => fs.readFile(path).catch(() => null);
+  const [regular, italic] = await Promise.all([
+    read(SYSTEM_MONO_FONT_FILES.regular),
+    read(SYSTEM_MONO_FONT_FILES.italic),
+  ]);
+  return regular ? { regular, italic } : null;
+});
+
 function parseFrontmatterFromSkillMd(
   content: string
 ): { name: string; description: string } | null {

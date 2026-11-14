@@ -137,7 +137,7 @@ describe('JoinStatusCard on a workspace that belongs to accounts', () => {
   it('keeps Add another computer on an older server', async () => {
     answer({ status: 'not_invited', add_device: false, workspace_name: 'lab' });
     renderCard(fakeConnection({ account_identity: false }));
-    expect(await screen.findByTestId('crew-join-not-invited-before')).toHaveTextContent(
+    expect(await screen.findByTestId('crew-join-not-invited-before')).toHaveAccessibleDescription(
       /Add another computer for/
     );
   });

@@ -148,7 +148,7 @@ describe('a Crew step card in a chat', () => {
 
     const unlock = render(standalone(streamed({ kind: 'vault', action: 'unlock' })));
     expect(screen.getByText(crewVaultStepCopy.unlockTitle)).toBeInTheDocument();
-    expect(screen.getByText(crewVaultStepCopy.unlockFallback)).toBeInTheDocument();
+    expect(screen.getByText(crewVaultStepCopy.fallbackWarning)).toBeInTheDocument();
     expectNoInput(unlock.container);
     unlock.unmount();
 
@@ -192,9 +192,12 @@ describe('a Crew step card in a chat', () => {
     expect(
       screen.getByText(crewHostKeyStepCopy.changedTitle('hpc.example.edu'))
     ).toBeInTheDocument();
-    expect(screen.getAllByRole('button').map((button) => button.textContent)).toEqual([
-      'Copy details for IT',
-    ]);
+    expect(
+      screen
+        .getAllByRole('button')
+        .filter((button) => !button.getAttribute('aria-label')?.startsWith('About '))
+        .map((button) => button.textContent)
+    ).toEqual(['Copy details for IT']);
     changed.unmount();
   });
 
@@ -203,7 +206,20 @@ describe('a Crew step card in a chat', () => {
       inMessage(streamed({ kind: 'somethingNewer', prompt: 'Type your password' }), true)
     );
     expect(screen.getByTestId('crew-step-card')).toHaveAttribute('data-crew-step', 'unknown');
-    expect(screen.getByText(crewStepCopy.unknown)).toBeInTheDocument();
+    // A short title, the warning in view, and what the step is behind the title's info tip
+    // (owner, 2026-11-13; design.md 9.16).
+    expect(screen.getByText(crewStepCopy.unknownTitle)).toBeInTheDocument();
+    expect(crewStepCopy.unknownTitle).toBe('A Crew step needs you.');
+    expect(screen.getByText(crewStepCopy.unknownWarning)).not.toHaveClass('sr-only');
+    expect(crewStepCopy.unknownWarning).toBe(
+      'Never type a password, code or passphrase into the chat.'
+    );
+    expect(
+      screen.getByRole('button', { name: `About ${crewStepCopy.unknownHelpLabel}` })
+    ).toHaveAccessibleDescription(
+      'This chat needs a step only you can take in Crew. Open Crew to finish it.'
+    );
+    expect(screen.getByText(crewStepCopy.unknownHelp)).toHaveClass('sr-only');
     expect(screen.queryByText('Type your password')).toBeNull();
     expectNoInput(view.container);
   });
@@ -361,7 +377,16 @@ describe('a changed host key, kept as a notice (WI-17)', () => {
     const line = screen.getByTestId('crew-step-ended');
     expect(line).toHaveTextContent(crewStepCopy.changedKeyNotice);
     expect(line).toHaveAttribute('data-crew-step', 'hostKey');
-    expect(screen.queryAllByRole('button')).toEqual([]);
+    // The refusal is the line; what it means for the server is its info tip, word for word, and
+    // that icon is the only button: nothing here acts (owner, 2026-11-13; design.md 9.16).
+    const about = screen.getByRole('button', {
+      name: `About ${crewStepCopy.changedKeyNoticeHelpLabel}`,
+    });
+    expect(about).toHaveAccessibleDescription(
+      "Nothing connects to it until the server's IT team confirms the change."
+    );
+    expect(screen.getByText(crewStepCopy.changedKeyNoticeHelp)).toHaveClass('sr-only');
+    expect(screen.queryAllByRole('button')).toEqual([about]);
     expect(view.container.textContent).not.toContain('hpc.example.edu');
     expect(view.container.textContent).not.toContain('SHA256:');
     expectNoInput(view.container);
@@ -371,24 +396,32 @@ describe('a changed host key, kept as a notice (WI-17)', () => {
 describe('the Crew step copy', () => {
   it('says computer, never device, and uses no dashes', () => {
     const words = [
-      crewStepCopy.unknown,
+      crewStepCopy.unknownTitle,
+      crewStepCopy.unknownHelpLabel,
+      crewStepCopy.unknownHelp,
+      crewStepCopy.unknownWarning,
       crewStepCopy.actsAsYou,
       crewStepCopy.notWaiting,
       crewStepCopy.changedKeyNotice,
+      crewStepCopy.changedKeyNoticeHelpLabel,
+      crewStepCopy.changedKeyNoticeHelp,
       ...Object.values(crewStepCopy.ended),
       crewSignInStepCopy.title('x'),
       crewSignInStepCopy.fallback,
+      crewSignInStepCopy.fallbackHow,
       crewSignInStepCopy.windowFallback,
       crewVaultStepCopy.unlockTitle,
       crewVaultStepCopy.initTitle,
-      crewVaultStepCopy.unlockFallback,
-      crewVaultStepCopy.initFallback,
+      crewVaultStepCopy.fallbackWarning,
+      crewVaultStepCopy.unlockHow,
+      crewVaultStepCopy.initHow,
       crewHostKeyStepCopy.unknownTitle('x'),
       crewHostKeyStepCopy.changedTitle('x'),
       crewHostKeyStepCopy.read,
       crewHostKeyStepCopy.goesOn,
       crewHostKeyStepCopy.notNow,
       crewHostKeyStepCopy.dismissed,
+      crewHostKeyStepCopy.dismissedHelp,
       crewHostKeyStepCopy.ended,
     ];
     for (const text of words) {

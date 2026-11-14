@@ -1,6 +1,9 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import AnnotationOverlay from './AnnotationOverlay';
+import AnnotationOverlay, {
+  ANNOTATION_MODIFIERS_HINT,
+  ANNOTATION_PROMPT,
+} from './AnnotationOverlay';
 
 /**
  * The interaction is lifted from `Cmd+Shift+4`, and these tests pin the parts
@@ -123,5 +126,24 @@ describe('the modifiers', () => {
     drag(overlay, [100, 100], [300, 250]);
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(onCancel).toHaveBeenCalledOnce();
+  });
+});
+
+describe('the pill over the preview', () => {
+  /**
+   * One line: the action and the way out (owner, 2026-11-13). The modifier keys moved to the
+   * camera button's tooltip, because the overlay takes no pointer events and so cannot hold a
+   * hover of its own.
+   */
+  it('says the action and the way out, and leaves the modifier keys to the camera button', () => {
+    setup();
+    const pill = screen.getByText(ANNOTATION_PROMPT);
+    expect(pill).toHaveTextContent('Drag to select a region');
+    expect(pill).toHaveTextContent('Esc to cancel');
+    expect(pill).not.toHaveTextContent(/Shift|Option|Space/);
+    // Nothing is lost: every key the overlay honours is still said, on the trigger.
+    for (const key of ['Shift', 'Option', 'Space']) {
+      expect(ANNOTATION_MODIFIERS_HINT).toContain(key);
+    }
   });
 });

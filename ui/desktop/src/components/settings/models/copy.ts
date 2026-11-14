@@ -237,6 +237,8 @@ export const localModelsCopy = {
     warmUpAnyway: 'Warm up anyway',
     fallbackConfirm: 'Continue',
     cancel: 'Cancel',
+    /** The disclosure that holds what the memory figure means on this machine. */
+    why: 'Why?',
   },
   /**
    * Both sentences name the model by its display name, never `ollama_name`: that tag may be a
@@ -365,11 +367,13 @@ export const speechModelsCopy = {
 export const modelsDangerCopy = {
   section: 'Danger zone',
   row: 'Reset provider and model',
-  rowHelp: 'Clears the provider and model new chats start on, so you can choose them again.',
+  /** The row's InfoTip; it also holds the welcome-screen fallback the confirmation used to say. */
+  rowHelp:
+    'Clears the provider and model new chats start on, so you can choose them again. With no defaults left, Biorouter opens the welcome screen.',
   open: 'Reset…',
   confirmTitle: 'Reset provider and model?',
-  confirmMessage:
-    'New chats will have no provider or model until you choose them again. If no defaults are available, Biorouter opens the welcome screen.',
+  /** The consequence, one line, at the decision (owner, 2026-11-13). */
+  confirmMessage: 'New chats will have no provider or model until you choose them again.',
   confirm: 'Reset',
   cancel: 'Cancel',
 } as const;

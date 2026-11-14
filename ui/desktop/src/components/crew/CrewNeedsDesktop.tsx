@@ -1,5 +1,6 @@
 import { Users } from '../icons/app-icons';
 import { EmptyState } from '../ui/empty-state';
+import { InfoTip } from '../ui/info-tip';
 import { SetupScreen } from './onboarding/parts';
 
 /**
@@ -24,11 +25,15 @@ import { SetupScreen } from './onboarding/parts';
  */
 export const crewNeedsDesktopCopy = {
   title: 'Crew needs the Biorouter desktop app',
+  /** What to do, in view; why is behind the info icon under it (owner, 2026-11-13). */
   body:
-    'This page is open in a web browser through biorouter serve. Every Crew action needs proof ' +
-    'that you, not an AI agent, asked for it, and a browser has no way to give that proof. ' +
     'Open Crew in the Biorouter desktop app on your own computer, or use the biorouter crew ' +
     'commands in a terminal there.',
+  why: 'Why?',
+  whyLabel: 'why Crew needs the desktop app',
+  whyHelp:
+    'This page is open in a web browser through biorouter serve. Every Crew action needs proof ' +
+    'that you, not an AI agent, asked for it, and a browser has no way to give that proof.',
 } as const;
 
 export function CrewNeedsDesktop() {
@@ -39,6 +44,13 @@ export function CrewNeedsDesktop() {
           icon={Users}
           title={crewNeedsDesktopCopy.title}
           description={crewNeedsDesktopCopy.body}
+          actions={
+            // Help, not an action: nothing here talks to the daemon.
+            <span className="inline-flex items-center gap-1 text-supporting text-text-muted">
+              {crewNeedsDesktopCopy.why}
+              <InfoTip label={crewNeedsDesktopCopy.whyLabel} help={crewNeedsDesktopCopy.whyHelp} />
+            </span>
+          }
         />
       </SetupScreen>
     </div>

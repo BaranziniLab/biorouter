@@ -144,7 +144,9 @@ describe('SchedulesView interactions', () => {
 
     const dialog = screen.getByRole('dialog');
     expect(dialog).toHaveTextContent(DELETE_SCHEDULE_MESSAGE);
-    expect(DELETE_SCHEDULE_MESSAGE).toMatch(/workflow it runs is left in place/i);
+    // The file that survives is named, so the delete never reads as removing the workflow.
+    expect(DELETE_SCHEDULE_MESSAGE).toMatch(/leaves its workflow in place/i);
+    expect(DELETE_SCHEDULE_MESSAGE).toMatch(/cannot be undone/i);
     expect(DELETE_SCHEDULE_MESSAGE).not.toMatch(/run configuration/i);
   });
 

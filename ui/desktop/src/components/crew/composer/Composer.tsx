@@ -18,6 +18,7 @@ import { CrewDictationButton } from '../../dictation/CrewDictationButton';
 import { DictationHoldReason, DictationNotices } from '../../dictation/DictationButton';
 import { dictationContext, useDictationComposer } from '../../dictation/useDictationComposer';
 import { Button } from '../../ui/button';
+import { InfoTip } from '../../ui/info-tip';
 import { Note } from '../../ui/note';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { ArrowUp, Bot, Loader2, X } from '../../icons/app-icons';
@@ -841,9 +842,14 @@ function AgentConsentLine({
             {composerCopy.agentStartsWith(model)}{' '}
             <ModelTierMarks provider={provider} privateOnly={privateOnly} />.
           </span>{' '}
-          <span>
-            {reads > 1 ? composerCopy.agentReadsWide(reads, slug) : composerCopy.agentReads(slug)}
-          </span>
+          {/* What the task reads and where it posts is the line's info tip (owner, 2026-11-13);
+              what it may do on the server stays in view, as a term of the consent Enter gives. */}
+          <InfoTip
+            label={composerCopy.agentScopeLabel}
+            help={
+              reads > 1 ? composerCopy.agentReadsWide(reads, slug) : composerCopy.agentReads(slug)
+            }
+          />
           {access && <span className="crew-compose-agent-access">{access}</span>}
           {accessWarning && (
             <span className="crew-compose-agent-access" data-crew-full-access="">

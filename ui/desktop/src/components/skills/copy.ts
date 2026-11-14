@@ -54,9 +54,13 @@ export const SKILLS_COPY = {
 
   confirmDeletePackageTitle: (name: string) => `Delete package "${name}"?`,
   confirmDeleteSkillTitle: (name: string) => `Delete "${name}"?`,
+  /**
+   * One line each (design.md 9.16): what goes, and that it cannot be undone. That is the
+   * consequence of an irreversible action, so all of it stays the dialog's visible message.
+   */
   confirmDeletePackageMessage: (count: number) =>
-    `This removes all ${count} skills in this package from disk. It cannot be undone.`,
-  confirmDeleteSkillMessage: 'This removes the skill folder from disk. It cannot be undone.',
+    `This removes all ${count} skills in this package from disk and cannot be undone.`,
+  confirmDeleteSkillMessage: 'This removes the skill folder from disk and cannot be undone.',
   confirmDeletePackage: 'Delete package',
   confirmDelete: 'Delete',
   cancel: 'Cancel',
@@ -83,10 +87,16 @@ export const ADD_SKILL_COPY = {
   installed: (n: number) => `Installed ${n} skill${n === 1 ? '' : 's'}`,
   fileCount: (n: number) => `${n} file${n === 1 ? '' : 's'}`,
   entryPoint: (name: string) => `Entry point: ${name}`,
-  remoteDaemon:
-    'Biorouter is running on another machine, so it cannot read a file you drop here. Copy the ' +
-    'skill onto that machine and add it with `biorouter skill install <path>`, or paste a ' +
-    'repository URL above.',
+  /**
+   * A refusal, so its reason is the visible line; how to install the skill on that machine folds
+   * under it, with the command as a value to copy (the .brxt dialog's `noLocalPath*` pattern).
+   */
+  remoteDaemon: 'Biorouter is running on another machine, so it cannot read a file you drop here.',
+  remoteDaemonHow: 'How to install it on that machine',
+  remoteDaemonSteps: 'Copy the skill onto that machine, then run this command there:',
+  remoteDaemonCommand: 'biorouter skill install <path>',
+  remoteDaemonCommandLabel: 'install command',
+  remoteDaemonUrl: 'Or paste a repository URL above.',
   requestFailed: 'the request failed.',
 } as const;
 

@@ -11,7 +11,7 @@
  */
 import { useId, useState } from 'react';
 import './tool-call.css';
-import { Code, FileText, Terminal } from './icons/app-icons';
+import { AlertTriangle, Code, FileText, Terminal } from './icons/app-icons';
 import type { ActionRequired, ToolPreview, ToolPreviewLine, ToolRisk } from '../api';
 import { Badge, type BadgeTone } from './ui/badge';
 import { InfoTip } from './ui/info-tip';
@@ -27,10 +27,18 @@ export type ToolConfirmationPreview = NonNullable<ToolConfirmationData['preview'
 /** Lines shown before the preview collapses behind a "Show more" toggle. */
 const COLLAPSED_LINES = 12;
 
+/**
+ * The grade is carried by its WORD, not by a hue (owner, 2026-11-12; design.md
+ * 9.14, red is rare). A permission prompt already asks for attention, so its
+ * chip must not sound an alarm: every grade is a neutral chip, and the riskiest
+ * is the same chip in the primary ink (`strong`), read first without a colour.
+ * Never `danger` here, never green for "safe", and not the accent either: a
+ * Parchment coral wash read as a pinkish red (vision review, 2026-11-12).
+ */
 const RISK_TONES: Record<ToolRisk, BadgeTone> = {
-  low: 'success',
-  medium: 'warning',
-  high: 'danger',
+  low: 'neutral',
+  medium: 'neutral',
+  high: 'strong',
   unknown: 'neutral',
 };
 
@@ -41,8 +49,14 @@ const RISK_TONES: Record<ToolRisk, BadgeTone> = {
 export function ToolRiskBadge({ risk }: { risk: ToolRisk }) {
   const known = risk in RISK_TONES;
   const grade: ToolRisk = known ? risk : 'unknown';
+  // The riskiest grade also carries the warning triangle, the app's one
+  // "look before you allow" glyph (the folder card's finding line wears it), so
+  // it reads apart from the other neutral chips by word, ink AND shape.
   return (
     <Badge data-testid="tool-risk-badge" tone={RISK_TONES[grade]}>
+      {grade === 'high' ? (
+        <AlertTriangle aria-hidden="true" className="size-3 shrink-0 text-text-warning" />
+      ) : null}
       {PREVIEW_COPY.risk[grade]}
     </Badge>
   );
@@ -78,7 +92,11 @@ function PreviewFrame({
 }: {
   icon: React.ReactNode;
   title: string;
-  /** A path: set in the code face. A label ("Command") stays in the UI face. */
+  /**
+   * A path: the file the call writes, an argument read character by character, so it is set in
+   * the code role (`font-mono text-code`, design.md D-42). A label ("Command") stays in the UI
+   * face.
+   */
   machineTitle?: boolean;
   meta?: React.ReactNode;
   truncated: boolean;
@@ -96,7 +114,7 @@ function PreviewFrame({
         </span>
         {/* A long path truncates; the whole path stays one hover away. */}
         <span
-          className={machineTitle ? 'truncate font-mono' : 'truncate'}
+          className={machineTitle ? 'truncate font-mono text-code' : 'truncate'}
           title={machineTitle ? title : undefined}
         >
           {title}
@@ -223,7 +241,8 @@ function ArgumentFields({ fields }: { fields: Array<[string, unknown]> }) {
     <dl className="br-tool-preview-fields">
       {fields.map(([key, value]) => (
         <div key={key} data-testid="tool-preview-field">
-          <dt className="font-mono text-supporting text-text-muted">{key}</dt>
+          {/* The argument's name is an identifier, so it is code: the code role, muted. */}
+          <dt className="font-mono text-code text-text-muted">{key}</dt>
           <dd
             data-testid={`tool-preview-value-${key}`}
             className="br-tool-preview-text font-mono text-code text-text-default"
@@ -295,6 +314,19 @@ export function FolderAccessDetails({ preview }: { preview: FolderAccessPreview 
       </ul>
     </div>
   );
+}
+
+/**
+ * The folder-access card's helper text, behind the info icon beside its question: what
+ * the grant covers, then how long a session grant lasts. Two sentences, the InfoTip's
+ * limit (design.md 9.16), so the scope and Allow once share the first one.
+ */
+export function folderAccessHelp(preview: { access: string; onceDescendants?: boolean }): string {
+  const access = preview.access.charAt(0).toUpperCase() + preview.access.slice(1);
+  const once = preview.onceDescendants
+    ? 'Allow once covers this folder and its subfolders for this operation.'
+    : "Allow once covers only this operation's files.";
+  return `${access} access, including subfolders; ${once} ${folderAccessLifetime()}`;
 }
 
 /** Render whatever the backend resolved this call into. */

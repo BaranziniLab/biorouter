@@ -63,7 +63,14 @@ export default function CrewStepCard({
     return streamed ? (
       <CrewHostKeyStep sessionId={sessionId} id={id} step={step} onHolding={setHolding} />
     ) : (
-      <CrewStepEnded kind={kind} line={crewStepCopy.changedKeyNotice} />
+      <CrewStepEnded
+        kind={kind}
+        line={crewStepCopy.changedKeyNotice}
+        help={{
+          label: crewStepCopy.changedKeyNoticeHelpLabel,
+          help: crewStepCopy.changedKeyNoticeHelp,
+        }}
+      />
     );
   }
   const waits = streamed && ending === undefined && turnActive;
@@ -79,6 +86,15 @@ export default function CrewStepCard({
     case 'hostKey':
       return <CrewHostKeyStep sessionId={sessionId} id={id} step={step} onHolding={setHolding} />;
     default:
-      return <CrewStepFrame kind="unknown" title={crewStepCopy.unknown} />;
+      // A short title, what the step is behind its info icon, and the warning in view.
+      return (
+        <CrewStepFrame
+          kind="unknown"
+          title={crewStepCopy.unknownTitle}
+          titleHelp={{ label: crewStepCopy.unknownHelpLabel, help: crewStepCopy.unknownHelp }}
+        >
+          <p className="text-supporting text-text-muted">{crewStepCopy.unknownWarning}</p>
+        </CrewStepFrame>
+      );
   }
 }

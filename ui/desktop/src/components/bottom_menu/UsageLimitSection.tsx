@@ -21,9 +21,9 @@ import {
   FooterCardActions,
   FooterCardDetail,
   FooterCardNote,
-  FooterCardSection,
   FooterCardValue,
 } from './FooterCard';
+import { FooterCardHelpSection } from './FooterCardHelpSection';
 import type { SessionUsageLimitController } from './useSessionUsageLimit';
 
 /**
@@ -146,6 +146,31 @@ export function nextRequestReading(
   return null;
 }
 
+/**
+ * The Limit label's InfoTip, or `undefined` when there is nothing to explain (then no glyph is
+ * drawn): why a dollar limit cannot stop the chat, and why this card offers no write, in a
+ * subagent's chat (the parent's limit counts it) or a `biorouter serve` browser (SD-8). At most two
+ * sentences, the InfoTip's limit, so both dollar limits inert at once take one sentence. These used
+ * to be muted notes stacked under the readings, up to four of them (owner, 2026-11-13: the reading
+ * up front, the detail on hover or on click).
+ */
+export function limitHelp(
+  state: SessionUsageLimitResponse,
+  showCosts: boolean,
+  ownChat: boolean,
+  browser: boolean
+): string | undefined {
+  const parts: string[] = [];
+  const chatInert = showCosts && state.chatDollarLimitInert;
+  const monthInert = showCosts && state.monthDollarLimitInert;
+  if (chatInert && monthInert) parts.push(COPY.bothDollarInert);
+  else if (chatInert) parts.push(COPY.chatDollarInert);
+  else if (monthInert) parts.push(COPY.monthDollarInert);
+  if (!ownChat) parts.push(COPY.parentChat);
+  else if (browser) parts.push(COPY.browserNote);
+  return parts.length > 0 ? parts.join(' ') : undefined;
+}
+
 export interface UsageLimitSectionProps {
   controller: SessionUsageLimitController;
   /** Whether the card is open: an edit in progress is dropped when it closes. */
@@ -175,7 +200,9 @@ export interface UsageLimitSectionProps {
  *
  * A write this surface can never make says so instead of offering the control: a `biorouter
  * serve` browser holds no proof of a person (SD-8), and a subagent's chat counts toward its
- * parent's limit, which the daemon refuses to change from the child.
+ * parent's limit, which the daemon refuses to change from the child. Why is the Limit label's
+ * InfoTip (`limitHelp`), with a dollar limit nothing can trip; a pause, a warning and a failed
+ * write stay visible lines.
  */
 export function UsageLimitSection({
   controller,
@@ -186,6 +213,9 @@ export function UsageLimitSection({
   contentRef,
 }: UsageLimitSectionProps) {
   const { state, sessionId, loadFailed, saving, saveError } = controller;
+  // A subagent's chat counts toward its parent's limit, so its card reads the parent's figures.
+  const ownChat = !!state && state.billingSessionId === sessionId;
+  const browser = isBrowserSurface();
   const fieldId = useId();
   const errorId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -268,8 +298,6 @@ export function UsageLimitSection({
 
     const monthLine = monthUsedReading(state, showCosts);
     const nextLine = nextRequestReading(state, showCosts);
-    const ownChat = state.billingSessionId === sessionId;
-    const browser = isBrowserSurface();
     const canWrite = ownChat && !browser;
     const override = state.chatOverride ?? null;
 
@@ -299,14 +327,6 @@ export function UsageLimitSection({
             {nearLimit(state) === 'month' ? COPY.warnMonth : COPY.warnChat}
           </FooterCardNote>
         )}
-        {showCosts && state.chatDollarLimitInert && (
-          <FooterCardNote>{COPY.chatDollarInert}</FooterCardNote>
-        )}
-        {showCosts && state.monthDollarLimitInert && (
-          <FooterCardNote>{COPY.monthDollarInert}</FooterCardNote>
-        )}
-        {!ownChat && <FooterCardNote>{COPY.parentChat}</FooterCardNote>}
-        {ownChat && browser && <FooterCardNote>{COPY.browserNote}</FooterCardNote>}
 
         {canWrite && editing && (
           <div className="br-footer-card__limit-form">
@@ -413,10 +433,14 @@ export function UsageLimitSection({
   };
 
   return (
-    <FooterCardSection label={COPY.section}>
+    <FooterCardHelpSection
+      label={COPY.section}
+      about={COPY.aboutLimit}
+      help={sessionId && state ? limitHelp(state, showCosts, ownChat, browser) : undefined}
+    >
       <div data-testid="usage-limit-section" className="br-footer-card__limit">
         {body()}
       </div>
-    </FooterCardSection>
+    </FooterCardHelpSection>
   );
 }

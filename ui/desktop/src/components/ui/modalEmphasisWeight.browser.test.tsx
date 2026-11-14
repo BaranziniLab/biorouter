@@ -4,8 +4,9 @@
  * principle 3), measured in Chromium with the whole stylesheet:
  *
  * - the workflow warning's preview names its fields ("Title", "Description"),
- * - the update dialog, once the download is done, names the button it points at ("Restart &
- *   update").
+ * - the update dialog, once the download is done, draws nothing heavier than 600. It used to
+ *   name the button it pointed at in a strong ("Click Restart & update and ..."); since the owner's
+ *   2026-11-13 pass its line no longer restates the button, so it carries no strong at all.
  *
  * A bare `<strong>` takes Tailwind preflight's `font-weight: bolder`, which computes to 700 on
  * Arial, and the type system draws only 400 and 600. Arial draws both as bold, so nothing moves on
@@ -209,7 +210,7 @@ describe('Dialog emphasis is 600, never 700 (V4-R7-6)', () => {
         return false;
       });
     }
-    await tab.waitForSelector('[role="dialog"] strong');
+    await tab.waitForSelector(scene === 'update' ? '[role="dialog"] p' : '[role="dialog"] strong');
     return tab;
   }
 
@@ -255,13 +256,13 @@ describe('Dialog emphasis is 600, never 700 (V4-R7-6)', () => {
       }
     });
 
-    it(`the update dialog names its button at 600, nothing heavier (${mode})`, async (ctx) => {
+    it(`the update dialog draws nothing heavier than 600 (${mode})`, async (ctx) => {
       if (!browser) return ctx.skip();
       const tab = await open('update', dark);
       try {
         const weights = await weightsIn(tab);
-        expect(weights.strong.map((s) => s.text)).toEqual(['Restart & update']);
-        expect(weights.strong[0].weight).toBe('600');
+        // No restated button name any more; an emphasis that comes back must be 600 too.
+        for (const { text, weight } of weights.strong) expect(weight, text ?? '').toBe('600');
         expect(weights.max).toBeLessThanOrEqual(600);
       } finally {
         await tab.close();

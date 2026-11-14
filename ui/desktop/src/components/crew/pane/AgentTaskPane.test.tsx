@@ -365,6 +365,10 @@ describe('AgentTaskPane', () => {
       renderCrew(Layout);
       const task = await openAgent(user);
       expect(task).toHaveAccessibleDescription(agentCopy.taskPosted('#general'));
+      // Seen through the Task label's info tip (owner, 2026-11-13).
+      expect(
+        screen.getByRole('button', { name: `About ${agentCopy.task}` })
+      ).toHaveAccessibleDescription(agentCopy.taskPosted('#general'));
       expect(agentCopy.taskPosted('#general')).toBe(
         'Your task is posted in #general so everyone there can see what your agent was asked.'
       );
@@ -380,10 +384,14 @@ describe('AgentTaskPane', () => {
       fireEvent.change(task, { target: { value: rows(LONG_TASK_LINES) } });
       expect(task).toHaveAccessibleDescription(agentCopy.taskPosted('#general'));
 
+      expect(screen.queryByText(agentCopy.taskLong)).toBeNull();
+
       fireEvent.change(task, { target: { value: rows(LONG_TASK_LINES + 1) } });
       expect(task).toHaveAccessibleDescription(
         `${agentCopy.taskPosted('#general')} ${agentCopy.taskLong}`
       );
+      // The warning about pasted data is in view once it applies.
+      expect(screen.getByText(agentCopy.taskLong)).toBeVisible();
     });
 
     it('is at least six lines, grows with its text, and shows focus with the accent edge (T-16)', async () => {

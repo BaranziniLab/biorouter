@@ -8,6 +8,7 @@ import { CopyField } from '../ui/copy-field';
 import InAppTerminalDock from '../InAppTerminalDock';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { InfoTip } from '../ui/info-tip';
+import { homeFolder, tildePath } from '../../utils/folderPath';
 import { agentCopy } from './copy';
 import {
   AGENT_COMMAND_CONFIG,
@@ -566,8 +567,9 @@ export function agentPlanName(plan: string): string {
  * found.
  *
  * Both agents' lines have one shape (vision FR-R3-6): "Version 2.1.283 · Max plan · ada@…" and
- * "Version 0.157.1", the number in mono at the line's 12px (a version is a machine string,
- * principle 3) and everything else in the line's sans face.
+ * "Version 0.157.1", the number in mono at the code role, 12/20 (a version is a machine string,
+ * principle 3), and everything else in the line's sans face. The path in the tooltip is where the
+ * CLI lives, so it is sans and written from `~` (design.md D-42).
  */
 export function CodingAgentProvenance({ agent }: { agent: CodingAgentAvailability }) {
   // The plan and the account join the version on one line (FR-R1-8): a ready agent's panel was a
@@ -588,7 +590,8 @@ export function CodingAgentProvenance({ agent }: { agent: CodingAgentAvailabilit
     >
       {agent.version ? (
         <>
-          {agentCopy.version} <span className="font-mono">{agentVersionNumber(agent.version)}</span>
+          {agentCopy.version}{' '}
+          <span className="font-mono text-code">{agentVersionNumber(agent.version)}</span>
         </>
       ) : (
         agentCopy.installed
@@ -600,8 +603,11 @@ export function CodingAgentProvenance({ agent }: { agent: CodingAgentAvailabilit
       {version && agent.path ? (
         <Tooltip>
           <TooltipTrigger asChild>{version}</TooltipTrigger>
-          <TooltipContent side="bottom" className="max-w-96 break-all text-wrap font-mono">
-            {agent.path}
+          {/* Where the CLI lives: a place, in the sans face and from `~` (design.md D-42). */}
+          <TooltipContent side="bottom" className="max-w-96 text-wrap [overflow-wrap:anywhere]">
+            <span dir="ltr" data-path={agent.path}>
+              {tildePath(agent.path, homeFolder())}
+            </span>
           </TooltipContent>
         </Tooltip>
       ) : (

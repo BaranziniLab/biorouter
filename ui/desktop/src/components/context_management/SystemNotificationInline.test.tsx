@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { Message } from '../../api';
 import { SystemNotificationInline } from './SystemNotificationInline';
@@ -42,6 +42,31 @@ describe('SystemNotificationInline', () => {
     const text = 'Usage limit reached for this chat: 1,000 of 1,000 tokens.';
     render(<SystemNotificationInline message={inlineNotice(text)} />);
     expect(screen.getByText(text)).toHaveAttribute('data-usage-limit-notice', 'chatReached');
+  });
+
+  // Owner, 2026-11-13: a notice past one line keeps its first sentence (the reason) on the
+  // row, and the guidance after it is the info icon's.
+  it('keeps the reason on the row and folds the guidance behind the info icon', () => {
+    const reason = 'Monthly usage limit reached: $12.00 of $10.00.';
+    const guidance =
+      'To continue, raise or lift it in Settings > App > Usage. The month resets on the 1st, local time.';
+    render(<SystemNotificationInline message={inlineNotice(`${reason} ${guidance}`)} />);
+    expect(screen.getByText(reason)).toHaveAttribute('data-usage-limit-notice', 'monthReached');
+    expect(screen.getByRole('button', { name: 'About this notice' })).toHaveAccessibleDescription(
+      guidance
+    );
+  });
+
+  it('folds a tail too long for the info icon under Details, word for word', () => {
+    const reason =
+      'Nothing ran: this reply is a call to shell written as text, not a tool call Biorouter can run.';
+    const tail =
+      'Smaller local models often do this. A larger model, or fewer extensions turned on in this chat, may help. Try again after changing either.';
+    render(<SystemNotificationInline message={inlineNotice(`${reason} ${tail}`)} />);
+    expect(screen.getByText(reason)).toBeInTheDocument();
+    expect(screen.queryByText(tail)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+    expect(screen.getByText(tail)).toBeInTheDocument();
   });
 
   it('leaves the marker off any other notice', () => {

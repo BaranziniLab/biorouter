@@ -19,7 +19,7 @@ import {
   privacyTiersRecordFromConfig,
   type PrivacyTiersRecord,
 } from './privacyTiers';
-import { privacyRowCopy } from './copy';
+import { privacyOffStripCopy, privacyRowCopy } from './copy';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 
 // Re-exported so the panel stays the name every existing importer already
@@ -187,18 +187,28 @@ export default function PrivacyPanel() {
           // H3: the headline, the HOW and the path are the composer note's own
           // (`privacyTiersOffCopy`) — its one control lands here, and the two
           // must not tell the user different stories. The consequence stays
-          // this panel's, which says more than the composer has room for.
+          // this panel's, which says more than the composer has room for. The
+          // state (headline, how, where it is recorded) is the visible line; the
+          // consequence is one click away under "What this means" (owner,
+          // 2026-11-13), and the statement below still says, in bold, that the
+          // three things are not being stopped.
           <Note
             tone={offCopy.tone}
             role="status"
             testId="privacy-enforcement-off-strip"
             className="min-w-0"
+            detailsLabel={privacyOffStripCopy.whatThisMeans}
+            details={
+              <p>
+                Nothing on this machine is separating private chats, extensions or knowledge bases
+                from public models, and Biorouter is not recording which chats touch private
+                material. Every badge in the app reads <em>enforcement off</em> while this is the
+                case. Turning them back on restores them for what is already marked private.
+              </p>
+            }
           >
             <strong className="font-semibold">{offCopy.headline}</strong>{' '}
             {offCopy.how && <>{offCopy.how} </>}
-            Nothing on this machine is separating private chats, extensions or knowledge bases from
-            public models, and Biorouter is not recording which chats touch private material. Every
-            badge in the app reads <em>enforcement off</em> while this is the case.
             <RecordedIn path={offCopy.path} />
           </Note>
         )}
@@ -257,13 +267,13 @@ export default function PrivacyPanel() {
               // The served copy names three things Biorouter "does stop". With
               // the master switch off it stops none of them, so reprinting that
               // paragraph unqualified would be a false statement on the very
-              // screen the user turned it off from.
+              // screen the user turned it off from. What turning them back on
+              // restores is said once, in the strip's "What this means" above.
               <p className="min-w-0 text-text-muted">
                 <strong className="font-semibold">
                   Those three are not being stopped right now. Privacy tiers are off on this
                   machine.
-                </strong>{' '}
-                Turning them back on restores them for what is already marked private.
+                </strong>
               </p>
             )}
           </Note>

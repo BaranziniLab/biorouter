@@ -48,7 +48,11 @@ export default {
       // A tooltip is a surface, so it is shared rather than set to this
       // family's own `text-default` navy.
       'background-inverse': '#1f1e1c',
-      'background-danger': '#e61048',
+      // Red is rare (design.md 9.14): the danger tone is drawn in ink, its fill
+      // the secondary ink and its text the primary ink. The family's red lives
+      // on in `background-critical` / `text-critical`, the danger-zone button only.
+      'background-critical': '#e61048',
+      'background-danger': '#506380',
       'background-success': '#007242',
       'background-info': '#0f388a',
       'background-warning': '#8a5a00',
@@ -69,7 +73,8 @@ export default {
       // 22% over the ground), not just on white: a Note paints the pair, and the
       // old stops measured 3.5–4.5:1 there (live QA T-18). Darkened in OKLCH
       // lightness at a fixed hue; `check-contrast.mjs` asserts every pair.
-      'text-danger': '#a8032f',
+      'text-danger': '#052049',
+      'text-critical': '#a8032f',
       'text-success': '#02653a',
       'text-warning': '#7a5000',
       'text-info': '#0f388a',
@@ -235,7 +240,11 @@ export default {
       'background-medium': '#2c2c29',
       'background-strong': '#3a3a36',
       'background-inverse': '#ededea',
-      'background-danger': '#f5768a',
+      // Red is rare (design.md 9.14): the danger tone is drawn in ink, its fill
+      // the secondary ink and its text the primary ink. The family's red lives
+      // on in `background-critical` / `text-critical`, the danger-zone button only.
+      'background-critical': '#f5768a',
+      'background-danger': '#b4b9bf',
       'background-success': '#5fbf74',
       'background-info': '#7fb3e6',
       'background-warning': '#feb80a',
@@ -253,7 +262,8 @@ export default {
       'text-subtle': '#909aa6',
       'text-inverse': '#052049',
       // Status inks are held to 4.5:1 on their OWN WASH; see the light block.
-      'text-danger': '#fd90a0',
+      'text-danger': '#f2f3f4',
+      'text-critical': '#fd90a0',
       'text-success': '#63c277',
       'text-warning': '#feb80a',
       'text-info': '#7fb3e6',

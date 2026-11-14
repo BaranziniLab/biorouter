@@ -41,6 +41,10 @@ import { cn } from '../../utils';
  */
 const toneClass = {
   neutral: 'br-badge-neutral text-text-muted',
+  // The neutral chip in the primary ink: the one word in a set that has to be
+  // read first, without a hue (design.md 9.14, red is rare). A permission
+  // prompt's "Destructive" grade wears it; the other grades are `neutral`.
+  strong: 'br-badge-neutral text-text-default',
   accent: 'bg-background-accent/22 text-text-accent',
   info: 'bg-background-info/22 text-text-info',
   success: 'bg-background-success/22 text-text-success',

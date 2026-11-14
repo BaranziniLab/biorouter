@@ -50,6 +50,13 @@ const buttonVariants = cva(
         // button and let a modal scrim ghost straight through it.
         destructive:
           'br-button-inert bg-background-danger/22 text-text-danger tint-interactive biorouter-focus-surface',
+        // The danger zone's button (owner, 2026-11-12): the one control still drawn
+        // in the family red, because what it does is real, irreversible danger
+        // (Reset data, Reset provider, Delete workspace). Every other destructive
+        // action uses `destructive`, which is calm ink since red became rare
+        // (design.md 9.14). The same translucent pink the danger button wore before.
+        critical:
+          'br-button-inert bg-background-critical/22 text-text-critical tint-interactive biorouter-focus-surface',
         // FILLS BEFORE LINES (owner message 13, R-27, design.md 9.11): the
         // secondary action is a subtle solid fill with no outline. It rests on
         // the control ground (`.br-fill-rest`: `--background-fill`, or the page

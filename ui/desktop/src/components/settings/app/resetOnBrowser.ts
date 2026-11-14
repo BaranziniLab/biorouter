@@ -28,10 +28,18 @@ import { isBrowserSurface } from '../../../utils/surface';
  * is where the control works.
  */
 export const RESET_NEEDS_HOST_REASON =
-  'This page is served to a browser, which has no way to prove a request came from you rather ' +
-  'than from a model. Resetting deletes data for good, so it needs that proof. On the machine ' +
-  'running biorouter serve, reset from Settings in the Biorouter app there, or remove items one ' +
-  'at a time from a terminal there with `biorouter session remove` and its siblings.';
+  'Reset is only available in the Biorouter app on the machine running biorouter serve.';
+
+/**
+ * Why, and the terminal alternative: the InfoTip beside {@link RESET_NEEDS_HOST_REASON}, so the
+ * refusal is one line and the detail is a hover away (owner, 2026-11-13). Two sentences.
+ */
+export const RESET_NEEDS_HOST_WHY =
+  'A reset deletes data for good and needs proof a person asked, which a browser can’t give. ' +
+  'In a terminal there, use biorouter session remove and its siblings.';
+
+/** The InfoTip's name: "About reset in a browser". */
+export const RESET_NEEDS_HOST_LABEL = 'reset in a browser';
 
 /**
  * Why this surface does not offer a reset, or `null` where it does — the

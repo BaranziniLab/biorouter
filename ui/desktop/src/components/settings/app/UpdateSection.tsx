@@ -201,7 +201,8 @@ export default function UpdateSection() {
       </SettingRow>
 
       {(checkRequested || installRequested) && phase === 'error' && state.error && (
-        // The failure stays visible (principle 2), with the one way forward beside it.
+        // The failure stays visible (principle 2), with the one way forward beside it. The
+        // updater's message is a sentence, not code, so it is in the body face (D-33).
         <Note
           tone="danger"
           role="alert"
@@ -216,7 +217,7 @@ export default function UpdateSection() {
             </Button>
           }
         >
-          <span className="font-mono">{state.error}</span>
+          <span className="break-words">{state.error}</span>
         </Note>
       )}
     </>

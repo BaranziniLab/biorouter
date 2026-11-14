@@ -73,6 +73,12 @@ describe('NodePreview', () => {
     expect(outside).toHaveBeenCalledTimes(1);
   });
 
+  // Design.md D-42: the page's path in the footer says where it lives, so it is sans.
+  it('writes the page path in the footer as a place, not as code', () => {
+    render(<NodePreview kbId="soul" node={node} mode="light" onClose={() => undefined} />);
+    expect(screen.getByText('entities/MYC.md')).not.toHaveClass('font-mono');
+  });
+
   it('titles a typed page with its identifier, not its slug', () => {
     expect(nodeTitle(typed)).toBe('Metformin');
     // The frontmatter block below the title has always shown `identifier`; a

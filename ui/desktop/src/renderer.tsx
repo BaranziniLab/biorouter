@@ -5,6 +5,7 @@ if (typeof (globalThis as Record<string, unknown>).process === 'undefined') {
 
 import React, { Suspense, lazy } from 'react';
 import ReactDOM from 'react-dom/client';
+import { loadSystemMonoFont } from './utils/systemMonoFont';
 import { ConfigProvider } from './components/ConfigContext';
 import { startFirstRunNoticeCount } from './components/privacy/firstRunNoticeDecision';
 import { holdFirstRunNoticeForFirstPage } from './components/privacy/firstRunNoticeHandoff';
@@ -639,6 +640,11 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
     );
     return;
   }
+
+  // The code face (utils/systemMonoFont.ts): registered in the background, never
+  // awaited, so the first paint waits on nothing; code draws in the fallback for the
+  // few milliseconds the local file takes, then swaps.
+  void loadSystemMonoFont();
 
   ReactDOM.createRoot(document.getElementById('root')!).render(
     <React.StrictMode>

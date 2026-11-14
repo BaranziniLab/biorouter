@@ -65,7 +65,15 @@ describe('the Crew route on each surface (CROSSCUT-5)', () => {
     renderRoute();
     expect(screen.getByRole('heading', { name: crewNeedsDesktopCopy.title })).toBeInTheDocument();
     expect(screen.getByText(crewNeedsDesktopCopy.body)).toBeInTheDocument();
-    expect(screen.queryAllByRole('button')).toEqual([]);
+    // Why is the page's one info tip (owner, 2026-11-13); it is help, and no other control is here.
+    expect(
+      screen.getByRole('button', { name: `About ${crewNeedsDesktopCopy.whyLabel}` })
+    ).toHaveAccessibleDescription(crewNeedsDesktopCopy.whyHelp);
+    expect(
+      screen
+        .queryAllByRole('button')
+        .filter((button) => !button.matches('[data-slot="info-tip-trigger"]'))
+    ).toEqual([]);
     expect(screen.queryAllByRole('textbox')).toEqual([]);
     expect(mocked.crewHttp).not.toHaveBeenCalled();
     expect(mocked.crewRequest).not.toHaveBeenCalled();

@@ -38,6 +38,17 @@ function StableLabel({ shown, other }: { shown: string; other: string }) {
   );
 }
 
+/** The fold under an error's first line that holds the rest of its output. */
+const ERROR_DETAILS_LABEL = 'Details';
+
+/** An error's first non-empty line, and everything after it (trimmed), for the fold. */
+function errorLines(error: string): { first: string; rest: string } {
+  const text = error.trim();
+  const newline = text.indexOf('\n');
+  if (newline < 0) return { first: text, rest: '' };
+  return { first: text.slice(0, newline).trim(), rest: text.slice(newline + 1).trim() };
+}
+
 /**
  * The standing extension-failure notice, on the page the failure is ABOUT.
  *
@@ -86,9 +97,27 @@ export function ExtensionLoadFailureNotice({
 
   return (
     <div className="mb-4 flex flex-col gap-2" data-testid="extension-load-failures">
-      {failures.map((failure) => (
-        <Note key={failure.name} tone="danger" role="alert" icon={AlertCircle}>
-          {/* A line and its error, with the actions in a column at the trailing edge: two quiet
+      {failures.map((failure) => {
+        const error = errorLines(failure.error);
+        return (
+          <Note
+            key={failure.name}
+            tone="danger"
+            role="alert"
+            icon={AlertCircle}
+            // The rest of a multi-line error goes in the Note's own `details`, which it renders
+            // outside its clamped node. Folded inside `children`, opening it grew the content past
+            // the Note's ceiling and the stack opened behind a fade, a second "Show more" away.
+            details={
+              error.rest ? (
+                <pre className="whitespace-pre-wrap font-mono text-code [overflow-wrap:anywhere]">
+                  {error.rest}
+                </pre>
+              ) : undefined
+            }
+            detailsLabel={ERROR_DETAILS_LABEL}
+          >
+            {/* A line and its error, with the actions in a column at the trailing edge: two quiet
               text actions and a round X, centred on the title, with no second row of buttons
               under the error, which wraps before them. The Note's own action slot did this, but
               its slot cannot see the title beside it, and the actions now step aside: below about
@@ -97,53 +126,62 @@ export function ExtensionLoadFailureNotice({
               While a toast stands beside them, `data-toast-aside` moves them left, out from under
               it, as far as the title allows (`alerts/toastClearance.ts`); the error and
               everything below stay put. */}
-          <div className="br-ext-notice-body">
-            {/* The extension's name as the catalogue spells it (CDWAgent), never its config key
+            <div className="br-ext-notice-body">
+              {/* The extension's name as the catalogue spells it (CDWAgent), never its config key
                 title-cased (Cdwagent): principle 10, and the name the Extensions row uses. */}
-            <div className="br-ext-notice-name text-label text-text-default">
-              {LOAD_FAILURE_COPY.failedToLoad(extensionDisplayName(failure.name))}
-            </div>
-            <div className="br-ext-notice-actions" data-toast-aside="">
-              {onAskBiorouter && (
+              <div className="br-ext-notice-name text-label text-text-default">
+                {LOAD_FAILURE_COPY.failedToLoad(extensionDisplayName(failure.name))}
+              </div>
+              <div className="br-ext-notice-actions" data-toast-aside="">
+                {onAskBiorouter && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    onClick={() => onAskBiorouter(createExtensionRecoverHints(failure.error))}
+                  >
+                    {LOAD_FAILURE_COPY.askBiorouter}
+                  </Button>
+                )}
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => onAskBiorouter(createExtensionRecoverHints(failure.error))}
+                  onClick={() => {
+                    navigator.clipboard?.writeText(failure.error);
+                    markCopied(failure.name);
+                  }}
                 >
-                  {LOAD_FAILURE_COPY.askBiorouter}
+                  <StableLabel
+                    shown={
+                      copied === failure.name
+                        ? LOAD_FAILURE_COPY.copied
+                        : LOAD_FAILURE_COPY.copyError
+                    }
+                    other={
+                      copied === failure.name
+                        ? LOAD_FAILURE_COPY.copyError
+                        : LOAD_FAILURE_COPY.copied
+                    }
+                  />
                 </Button>
-              )}
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => {
-                  navigator.clipboard?.writeText(failure.error);
-                  markCopied(failure.name);
-                }}
-              >
-                <StableLabel
-                  shown={
-                    copied === failure.name ? LOAD_FAILURE_COPY.copied : LOAD_FAILURE_COPY.copyError
-                  }
-                  other={
-                    copied === failure.name ? LOAD_FAILURE_COPY.copyError : LOAD_FAILURE_COPY.copied
-                  }
+                <IconAction
+                  icon={X}
+                  label={LOAD_FAILURE_COPY.dismiss}
+                  size="sm"
+                  onSelect={() => dismissExtensionLoadFailure(failure.name)}
                 />
-              </Button>
-              <IconAction
-                icon={X}
-                label={LOAD_FAILURE_COPY.dismiss}
-                size="sm"
-                onSelect={() => dismissExtensionLoadFailure(failure.name)}
-              />
+              </div>
+              {/* The error's first line, always: it just happened, and it is what a person reads
+                first. The rest of a multi-line error (a process's output, a stack) folds under
+                "Details" (the Note's `details`, above) in the code face, since it is output to
+                read character by character (owner, 2026-11-13: one line up front, the detail a
+                click away). Copy error still copies the whole thing. */}
+              <div className="br-ext-notice-error mt-1 [overflow-wrap:anywhere]">
+                <div>{error.first}</div>
+              </div>
             </div>
-            {/* The error, which the Note clamps behind "Show more" past its ceiling. This
-                surface has room, and the toast's hard truncation is what sent people looking
-                for details in the first place. */}
-            <div className="br-ext-notice-error mt-1 [overflow-wrap:anywhere]">{failure.error}</div>
-          </div>
-        </Note>
-      ))}
+          </Note>
+        );
+      })}
     </div>
   );
 }

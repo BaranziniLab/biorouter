@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BioRouterHintsModal } from './BioRouterHintsModal';
 import { hintsDialogCopy } from './copy';
@@ -58,6 +59,18 @@ describe('Project hints dialog', () => {
     fireEvent.click(screen.getByRole('button', { name: hintsDialogCopy.copyPath }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('/work/proj/.biorouterhints'));
     expect(await screen.findByRole('status')).toHaveTextContent(hintsDialogCopy.pathCopied);
+  });
+
+  it('names the file in the Copy path tooltip in the body face, as where it lives (D-42)', async () => {
+    electron.readFile.mockResolvedValue({ file: '', found: true, error: null });
+    const user = userEvent.setup();
+    render(<BioRouterHintsModal directory="/work/proj" setIsBioRouterHintsModalOpen={vi.fn()} />);
+    await screen.findByRole('dialog', { name: hintsDialogCopy.title });
+
+    await user.hover(screen.getByRole('button', { name: hintsDialogCopy.copyPath }));
+    const tip = await screen.findByRole('tooltip');
+    expect(tip).toHaveTextContent('/work/proj/.biorouterhints');
+    expect(tip.querySelector('[class~="font-mono"]')).toBeNull();
   });
 
   it('says so when the path cannot be copied', async () => {

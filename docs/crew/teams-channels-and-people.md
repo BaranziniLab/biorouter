@@ -36,7 +36,7 @@ In an open workspace, a person let in is added to every team and every channel t
 - A bold channel name with a count, up to "99+", has unread messages. A pencil marks an unsent message, and while the channel has unread messages the count shows in its place. See [Unread messages](messages-and-files.md#unread-messages).
 - **Archived ({n})** under a team shows its archived channels.
 - The sidebar lists only your channels. In an open workspace, **Browse channels** under a team, **Browse channels in {team}…** in the team's **⋯** menu and **Browse channels…** in the workspace menu list the teams and channels you can join ([Browse and join channels](#browse-and-join-channels)). In a managed workspace, under a team you did not create, the sidebar says "Other channels in {team} appear once someone adds you." Ask the channel's owner, or the host if the host is in that channel.
-- In a very large workspace, a line under the teams, such as "2 more teams and 1 more channel you’re in aren’t listed here, because this workspace is too large to list at once.", says that the sidebar cannot list all of yours.
+- In a very large workspace, a line under the teams, such as "2 more teams and 1 more channel you’re in aren’t listed here.", says that the sidebar cannot list all of yours. Its info icon says why: the workspace is too large to list at once.
 
 When you open a team with no channel remembered, Crew opens its `#general`.
 - Right click a channel for **Mark as read** (open channel only), **Copy channel name** and **Copy channel ID**, which support staff may ask for.

@@ -76,6 +76,60 @@ describe('ExtensionLoadFailureNotice', () => {
     expect(screen.getByText(error)).toBeInTheDocument();
   });
 
+  // Owner, 2026-11-13: one line up front, the detail a click away. A multi-line process error
+  // keeps its first line on screen (it just happened) and folds the rest under Details, in the
+  // code face because it is output. Copy error still copies all of it.
+  it('keeps the first line of a multi-line error visible and folds the rest under Details', () => {
+    const error =
+      'failed to start the MCP server: spawn uvx ENOENT\n  at ChildProcess._handle.onexit\n  at node:internal/child_process:284';
+    recordExtensionLoadResults([{ name: 'cdwagent', success: false, error }]);
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+
+    render(<ExtensionLoadFailureNotice />);
+
+    expect(
+      screen.getByText('failed to start the MCP server: spawn uvx ENOENT')
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/ChildProcess/)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+    const rest = screen.getByText(/ChildProcess/);
+    expect(rest).toHaveTextContent(
+      'at ChildProcess._handle.onexit at node:internal/child_process:284'
+    );
+    expect(rest).toHaveClass('font-mono', 'text-code');
+
+    fireEvent.click(screen.getByRole('button', { name: COPY.copyError }));
+    expect(writeText).toHaveBeenCalledWith(error);
+  });
+
+  // Review of #488: the fold sat inside the Note's children, the node the Note clamps at
+  // `--note-max-height`, so opening Details grew the content past the ceiling and the stack opened
+  // behind a fade, a second "Show more" away. It is the Note's own `details` now, which the Note
+  // renders outside that node. jsdom lays nothing out, so this pins where the fold lives: the
+  // clamped node is the one wrapping the notice's body, and neither the control nor the opened
+  // output may be inside it.
+  it('folds the rest of the error outside the clamped node of the Note, so opening it is never clipped', () => {
+    const error = 'spawn uvx ENOENT\n  at ChildProcess._handle.onexit';
+    recordExtensionLoadResults([{ name: 'cdwagent', success: false, error }]);
+
+    render(<ExtensionLoadFailureNotice />);
+
+    const alert = screen.getByRole('alert');
+    const clampNode = alert.querySelector('.br-ext-notice-body')?.parentElement as HTMLElement;
+    expect(clampNode).not.toBeNull();
+    expect(clampNode).toHaveTextContent('spawn uvx ENOENT');
+
+    const details = within(alert).getByRole('button', { name: 'Details' });
+    expect(clampNode).not.toContainElement(details);
+
+    fireEvent.click(details);
+    const rest = within(alert).getByText(/ChildProcess/);
+    expect(clampNode).not.toContainElement(rest);
+    expect(alert).toContainElement(rest);
+  });
+
   // Principle 10. The daemon reports a config KEY, and title-casing it read "Cdwagent failed to
   // load" and "Computercontroller failed to load" on the page that otherwise says CDWAgent and
   // Biorouter Copilot. The notice asks the one resolver for the name a person already knows.

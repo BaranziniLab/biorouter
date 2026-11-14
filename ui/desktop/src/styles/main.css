@@ -194,7 +194,9 @@
   --text-caps--font-weight: 500;
   --text-caps--letter-spacing: 0.04em;
 
-  --text-code: 13px; /* code blocks and terminal — byte-identical to each other */
+  /* Code blocks and terminal, byte-identical to each other. 12/20 is Codex's code
+     size (design.md 9.15): with SF Mono, 13px read wide beside the 13 to 14px text. */
+  --text-code: 12px;
   --text-code--line-height: 20px;
   --text-code--font-weight: 400;
   /* @ws WS-TOKENS end: type roles */
@@ -533,13 +535,16 @@
   --row-height: 40px; /* D-12·B — one row rhythm, no compact mode. A-03 retunes to 36px in phase 8. */
 
   /* The ceiling on an in-place prose block (`components/ui/note.tsx`). DERIVED:
-     eight lines of `--text-supporting` (8 × 16px) plus the note's own 2 × 10px
+     three lines of `--text-supporting` (3 × 16px) plus the note's own 2 × 10px
      vertical padding. Above that a notice has stopped being a notice and has
      become a document, which is the shape the settings audit reported as
      "banners that are essentially just a long block of text" — so the note
      clamps here and offers "Show more" instead. The precedent for clamping
-     rather than truncating is `utils/messageClamp.ts`. */
-  --note-max-height: 148px;
+     rather than truncating is `utils/messageClamp.ts`. It was eight lines
+     (148px) until 2026-11-13, when the owner ruled out solid blocks of text
+     anywhere (design.md 9.16); a note says its point in a line or two and folds
+     the rest. */
+  --note-max-height: 68px;
 
   /* Overlay widths (§3.6/§3.7). Three dialog widths and one full-screen replace
      the fifteen distinct `max-w` values in use; `full` is not a token because it
@@ -773,8 +778,14 @@
      here, but that file is still the theme's stated source of truth and feeds
      the derived artifacts. */
   --background-inverse: #1f1e1c;
-  /* Status FILLS — a solid background. The ink placed on top is --text-on-*. */
-  --background-danger: var(--color-red-600);
+  /* Status FILLS — a solid background. The ink placed on top is --text-on-*.
+     RED IS RARE (design.md 9.14): the danger fill is the secondary ink, not red,
+     so a failed status, a destructive button and a risk chip read as calm ink and
+     their words and glyph say what happened. Mirrored in each theme file. The
+     family's red is kept as `--background-critical` / `--text-critical`, for the
+     one place red still means real danger: the danger-zone button. */
+  --background-danger: #635c54;
+  --background-critical: var(--color-red-600);
   --background-success: var(--color-green-600);
   --background-info: var(--color-blue-700);
   --background-warning: var(--color-yellow-700);
@@ -788,6 +799,8 @@
   --border-strong: var(--color-neutral-300);
   --border-input: #c9c9c3;
   --border-default: var(--border-subtle);
+  /* The edge of a field whose value is invalid, or of a drop zone that refused a
+     file (design.md 9.14). It keeps the family red; nothing else uses it. */
   --border-danger: var(--color-red-600);
   --border-success: var(--color-green-600);
   --border-warning: var(--color-yellow-700);
@@ -820,7 +833,12 @@
      mode. The figures below are that worst case (the wash over
      `--background-muted`) — re-measure rather than carry them forward.
      Mirrored in `themes/parchment.theme.mjs`; change the two together. */
-  --text-danger: #a51a14; /* 4.69:1 on its wash, 7.61:1 on white */
+  /* Danger is not a hue here (design.md 9.14, red is rare): its ink IS the
+     primary ink and its wash a light neutral step (8%, below), so an error note,
+     a failed state or a "Delete" item reads as plain ink with its glyph. The
+     family red the danger-zone button wears is `--text-critical`. */
+  --text-danger: #2a2520;
+  --text-critical: #a51a14; /* 4.69:1 on its wash, 7.61:1 on white */
   --text-success: #05662d; /* 4.60:1 on its wash */
   --text-warning: #7a5000; /* 4.61:1 on its wash */
   --text-info: #1053b0; /* 4.69:1 on its wash */
@@ -841,7 +859,9 @@
      background-COLOR (a chip brings no ground of its own), whereas the overlay
      tints are painted as a background-IMAGE by `tint-interactive` precisely
      because they must composite over one. */
-  --wash-danger: color-mix(in oklab, var(--text-danger) 22%, transparent);
+  /* Danger's ink is the primary ink, so its wash is 8%, not 22%: about the
+     strong fill step, a quiet neutral rather than a grey slab. */
+  --wash-danger: color-mix(in oklab, var(--text-danger) 8%, transparent);
   --wash-success: color-mix(in oklab, var(--text-success) 22%, transparent);
   --wash-warning: color-mix(in oklab, var(--text-warning) 22%, transparent);
   --wash-info: color-mix(in oklab, var(--text-info) 22%, transparent);
@@ -855,7 +875,7 @@
      mix against the ground is the only stop that lands on the note's actual
      composite. Same formula, same derivation from `--text-*`, so a family that
      re-points its status inks moves both together. */
-  --wash-solid-danger: color-mix(in oklab, var(--text-danger) 22%, var(--background-default));
+  --wash-solid-danger: color-mix(in oklab, var(--text-danger) 8%, var(--background-default));
   --wash-solid-success: color-mix(in oklab, var(--text-success) 22%, var(--background-default));
   --wash-solid-warning: color-mix(in oklab, var(--text-warning) 22%, var(--background-default));
   --wash-solid-info: color-mix(in oklab, var(--text-info) 22%, var(--background-default));
@@ -1019,7 +1039,9 @@
   --background-fill-strong: #2c2c29;
   /* @ws WS-TOKENS end: fill tokens (dark) */
   --background-inverse: #ededea;
-  --background-danger: var(--color-red-100);
+  /* Red is rare (design.md 9.14): the dark danger fill is the secondary ink. */
+  --background-danger: #b0a892;
+  --background-critical: var(--color-red-100);
   --background-success: var(--color-green-100);
   --background-info: var(--color-blue-100);
   --background-warning: var(--color-yellow-100);
@@ -1037,6 +1059,7 @@
   --control-track-off: #33332f;
   /* @ws WS-TOKENS end: control edges (dark) */
   --border-default: var(--border-subtle);
+  /* The invalid-field edge, the one red left in the chrome (design.md 9.14). */
   --border-danger: var(--color-red-100);
   --border-success: var(--color-green-100);
   --border-warning: var(--color-yellow-100);
@@ -1054,7 +1077,8 @@
   /* Status inks are held to 4.5:1 on their own wash (see the light block):
      danger and info were lifted off `red-100` / `blue-100` (4.32 / 4.86 on the
      wash over the card ground, 3.95 / 4.43 over `--background-muted`). */
-  --text-danger: #ff8f8c; /* 4.66:1 on its wash */
+  --text-danger: #f4f0e6; /* the primary ink: red is rare (design.md 9.14) */
+  --text-critical: #ff8f8c; /* 4.66:1 on its wash; the danger-zone button */
   --text-success: var(--color-green-100);
   --text-warning: var(--color-yellow-100);
   --text-info: #80b0fa; /* 4.62:1 on its wash */
@@ -1187,7 +1211,8 @@
   --background-medium: #ecece9;
   --background-strong: #dcdcd8;
   --background-inverse: #1f1e1c;
-  --background-danger: #e61048;
+  --background-danger: #506380;
+  --background-critical: #e61048;
   --background-success: #007242;
   --background-info: #0f388a;
   --background-warning: #8a5a00;
@@ -1204,7 +1229,8 @@
   --text-muted: #506380;
   --text-subtle: #586780;
   --text-inverse: #ffffff;
-  --text-danger: #a8032f;
+  --text-danger: #052049;
+  --text-critical: #a8032f;
   --text-success: #02653a;
   --text-warning: #7a5000;
   --text-info: #0f388a;
@@ -1266,7 +1292,8 @@
   --background-medium: #2c2c29;
   --background-strong: #3a3a36;
   --background-inverse: #ededea;
-  --background-danger: #f5768a;
+  --background-danger: #b4b9bf;
+  --background-critical: #f5768a;
   --background-success: #5fbf74;
   --background-info: #7fb3e6;
   --background-warning: #feb80a;
@@ -1283,7 +1310,8 @@
   --text-muted: #b4b9bf;
   --text-subtle: #909aa6;
   --text-inverse: #052049;
-  --text-danger: #fd90a0;
+  --text-danger: #f2f3f4;
+  --text-critical: #fd90a0;
   --text-success: #63c277;
   --text-warning: #feb80a;
   --text-info: #7fb3e6;
@@ -1377,7 +1405,8 @@
   --background-medium: #ecece9;
   --background-strong: #dcdcd8;
   --background-inverse: #1f1e1c;
-  --background-danger: #c4232b;
+  --background-danger: #5c5a55;
+  --background-critical: #c4232b;
   --background-success: #0f7150;
   --background-info: #0a69bc;
   --background-warning: #6e6300;
@@ -1394,7 +1423,8 @@
   --text-muted: #5c5a55;
   --text-subtle: #69675f;
   --text-inverse: #ffffff;
-  --text-danger: #a8061c;
+  --text-danger: #1f1e1c;
+  --text-critical: #a8061c;
   --text-success: #026546;
   --text-warning: #625800;
   --text-info: #0258a2;
@@ -1456,7 +1486,8 @@
   --background-medium: #2c2c29;
   --background-strong: #3a3a36;
   --background-inverse: #ededea;
-  --background-danger: #ff9592;
+  --background-danger: #a5a39d;
+  --background-critical: #ff9592;
   --background-success: #3dd68c;
   --background-info: #70b8ff;
   --background-warning: #f2e06b;
@@ -1473,7 +1504,8 @@
   --text-muted: #a5a39d;
   --text-subtle: #9c9a93;
   --text-inverse: #131312;
-  --text-danger: #ff9592;
+  --text-danger: #ededea;
+  --text-critical: #ff9592;
   --text-success: #3dd68c;
   --text-warning: #f2e06b;
   --text-info: #70b8ff;
@@ -1534,6 +1566,7 @@
   /* @ws WS-TOKENS end: fill token mirrors */
   --color-background-inverse: var(--background-inverse);
   --color-background-danger: var(--background-danger);
+  --color-background-critical: var(--background-critical);
   --color-background-success: var(--background-success);
   --color-background-info: var(--background-info);
   --color-background-warning: var(--background-warning);
@@ -1607,6 +1640,7 @@
   --color-text-subtle: var(--text-subtle);
   --color-text-inverse: var(--text-inverse);
   --color-text-danger: var(--text-danger);
+  --color-text-critical: var(--text-critical);
   --color-text-success: var(--text-success);
   --color-text-warning: var(--text-warning);
   --color-text-info: var(--text-info);
@@ -1620,14 +1654,18 @@
      in the base layer, and Tailwind's own `--default-font-family`, both resolve
      through here.
 
-     The mono stack below is UNCHANGED and stays that way: it is shared verbatim
-     by markdown code blocks AND the xterm terminal, so a pasted command and its
-     output are set identically. `--font-code` above is a name for it, not a
-     second copy of it. */
+     The mono stack below is shared verbatim by markdown code blocks AND the
+     xterm terminal, so a pasted command and its output are set identically.
+     `--font-code` above is a name for it, not a second copy of it.
+
+     It is Codex's code stack, verbatim (owner, 2026-11-12: code should read like
+     the text around it, as Codex's does). On macOS desktop "SF Mono" is the
+     installed system face, registered by `utils/systemMonoFont.ts`, because
+     Chromium resolves none of the first three names on its own and code used to
+     fall back to Menlo. Elsewhere the stack falls through as Codex's does. */
   --font-sans: var(--font-body);
   --font-mono:
-    ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, 'Liberation Mono',
-    monospace;
+    ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
 
   --color-heat-0: var(--heat-0);
   --color-heat-1: var(--heat-1);

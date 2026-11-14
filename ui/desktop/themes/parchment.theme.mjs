@@ -54,7 +54,11 @@ export default {
       // each set it to its own `text-default` — but a tooltip is a SURFACE, so
       // all three now paint it and place their own `text-inverse` on top.
       'background-inverse': '#1f1e1c',
-      'background-danger': '#b3261e',
+      // Red is rare (design.md 9.14): the danger tone is drawn in ink, its fill
+      // the secondary ink and its text the primary ink. The family's red lives
+      // on in `background-critical` / `text-critical`, the danger-zone button only.
+      'background-critical': '#b3261e',
+      'background-danger': '#635c54',
       'background-success': '#1f7a3d',
       'background-info': '#1e5fbf',
       'background-warning': '#8a5a00',
@@ -75,7 +79,8 @@ export default {
       // 22% over the ground), not just on white: a Note paints the pair, and the
       // old stops measured 3.5–4.5:1 there (live QA T-18). Darkened in OKLCH
       // lightness at a fixed hue; `check-contrast.mjs` asserts every pair.
-      'text-danger': '#a51a14',
+      'text-danger': '#2a2520',
+      'text-critical': '#a51a14',
       'text-success': '#05662d',
       'text-warning': '#7a5000',
       'text-info': '#1053b0',
@@ -205,7 +210,11 @@ export default {
       'background-medium': '#2c2c29',
       'background-strong': '#3a3a36',
       'background-inverse': '#ededea',
-      'background-danger': '#f07575',
+      // Red is rare (design.md 9.14): the danger tone is drawn in ink, its fill
+      // the secondary ink and its text the primary ink. The family's red lives
+      // on in `background-critical` / `text-critical`, the danger-zone button only.
+      'background-critical': '#f07575',
+      'background-danger': '#b0a892',
       'background-success': '#7ac87c',
       'background-info': '#7aabf5',
       'background-warning': '#f0c84a',
@@ -223,7 +232,8 @@ export default {
       'text-subtle': '#9c937b',
       'text-inverse': '#16120c',
       // Status inks are held to 4.5:1 on their OWN WASH; see the light block.
-      'text-danger': '#ff8f8c',
+      'text-danger': '#f4f0e6',
+      'text-critical': '#ff8f8c',
       'text-success': '#7ac87c',
       'text-warning': '#f0c84a',
       'text-info': '#80b0fa',

@@ -2,6 +2,10 @@ import * as React from 'react';
 import { ModalShell } from '../ModalShell';
 import { Button } from './button';
 import { uiCopy } from './copy';
+import { Disclosure } from './disclosure';
+
+/** The words on a confirmation's detail disclosure, when the caller names none. */
+export const CONFIRMATION_DETAILS_LABEL = 'Details';
 
 /**
  * A yes-or-no confirmation: a title, one message, Cancel and the action.
@@ -13,6 +17,10 @@ import { uiCopy } from './copy';
  * same row menu sat at the top.
  *
  * The message is the dialog's description (`describedBy`), in body text, not a 12px subtitle.
+ * It is ONE sentence: what pressing the button will do. The consequence of an irreversible action
+ * always stays there. Anything a person may want after it (the figures behind a warning, what a
+ * term means on this machine) goes in `details`, behind a closed disclosure under the message
+ * (owner, 2026-11-13: one line up front, the rest on a click).
  * While `isSubmitting` the dialog must be answered (`purpose="required"`): no ×, no Escape, no
  * backdrop, so a dismissal cannot orphan the running action.
  */
@@ -26,19 +34,36 @@ export function ConfirmationModal({
   cancelLabel = 'No',
   isSubmitting = false,
   confirmVariant = 'default',
+  details,
+  detailsLabel = CONFIRMATION_DETAILS_LABEL,
   children,
   onOpenAutoFocus,
   onCloseAutoFocus,
 }: {
   isOpen: boolean;
   title: string;
+  /** One sentence: what the action will do. An irreversible action's consequence stays here. */
   message: string;
   onConfirm: () => void;
   onCancel: () => void;
   confirmLabel?: string;
   cancelLabel?: string;
   isSubmitting?: boolean; // To handle debounce state
-  confirmVariant?: 'default' | 'destructive' | 'outline' | 'secondary' | 'ghost' | 'link';
+  confirmVariant?:
+    | 'default'
+    | 'destructive'
+    | 'critical'
+    | 'outline'
+    | 'secondary'
+    | 'ghost'
+    | 'link';
+  /**
+   * What a person may want after the message, folded behind a closed disclosure under it: the
+   * reason, the figures, a second sentence. A string is set as muted body text.
+   */
+  details?: React.ReactNode;
+  /** The disclosure's words: "Details", or a better name for this detail ("Why?"). */
+  detailsLabel?: string;
   /**
    * Rendered between the message and the buttons — for the one line a caller must show in place,
    * such as the refusal of the action being confirmed, so it lands in the dialog rather than
@@ -83,6 +108,15 @@ export function ConfirmationModal({
       <p id={messageId} className="text-body text-text-muted">
         {message}
       </p>
+      {details !== undefined && details !== null && details !== '' ? (
+        <Disclosure label={detailsLabel}>
+          {typeof details === 'string' ? (
+            <p className="text-body text-text-muted">{details}</p>
+          ) : (
+            details
+          )}
+        </Disclosure>
+      ) : null}
       {children}
     </ModalShell>
   );

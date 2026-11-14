@@ -4,6 +4,7 @@ import { toastError, toastSuccess } from '../../toasts';
 import { userActionHeaders } from '../../utils/userAction';
 import { usePrivacyTiersEnabled } from '../ConfigContext';
 import { DangerousConfirmDialog } from '../ui/DangerousConfirmDialog';
+import { InfoTip } from '../ui/info-tip';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -143,10 +144,18 @@ export function KbTierControl({ kb, onSetTier, busy = false }: KbTierControlProp
           open
           busy={busy}
           title={`Make "${kb.name}" public?`}
+          // One line of consequence at the decision, with the counts; the rest of it (what
+          // the pages hold, and that a read cannot be taken back) is the InfoTip beside it, and
+          // is still read with the dialog's description (owner, 2026-11-13).
           description={
-            `Every model, including public ones, will be able to read ${blastRadius(kb)}, ` +
-            'including anything a private chat wrote into it. This cannot be undone for ' +
-            'content that has already been read.'
+            <>
+              {`Every model, including public ones, will be able to read ${blastRadius(kb)}.`}
+              <InfoTip
+                className="align-middle"
+                label={knowledgeCopy.tier.makePublicInfoLabel}
+                help={knowledgeCopy.tier.makePublicInfo}
+              />
+            </>
           }
           // The ID, not the name. Knowledge bases routinely share a display name
           // (`Notes`, `Default`, an imported archive's), and the point of the
@@ -169,7 +178,9 @@ export function KbTierControl({ kb, onSetTier, busy = false }: KbTierControlProp
             <p className="truncate text-label text-text-default" title={kb.name}>
               {kb.name}
             </p>
-            <p className="mt-0.5 font-mono text-supporting text-text-muted">{kb.id}</p>
+            {/* The ID is the phrase typed below, read character by character: the code
+                role (design.md D-33). */}
+            <p className="mt-0.5 font-mono text-code text-text-muted">{kb.id}</p>
           </div>
         </DangerousConfirmDialog>
       )}

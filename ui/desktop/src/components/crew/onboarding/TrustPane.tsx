@@ -3,8 +3,14 @@ import { AlertTriangle, Fingerprint as FingerprintIcon } from '../../icons/app-i
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
+import { InfoTip } from '../../ui/info-tip';
 import { parseHostKeyLookup } from '../hostKeys/hostKeyLookup';
-import { TrustHostKey, useHostKeyFingerprint, type HostKeyTarget } from '../hostKeys/TrustHostKey';
+import {
+  HostKeyMessage,
+  TrustHostKey,
+  useHostKeyFingerprint,
+  type HostKeyTarget,
+} from '../hostKeys/TrustHostKey';
 import { trustHostKeyCopy } from '../hostKeys/trustHostKey.copy';
 import { connectionServer, personFromProjection, personLabel } from '../identity';
 import { serverLabel } from '../sidebar/sidebarView';
@@ -115,7 +121,7 @@ function UnknownHostKey() {
             {trustHostKeyCopy.reading}
           </p>
         ) : message ? (
-          <p className="text-supporting text-text-muted">{message}</p>
+          <HostKeyMessage message={message} />
         ) : null}
         {offered && target ? (
           <TrustHostKey
@@ -171,7 +177,12 @@ function ChangedHostKey() {
         title={trustCopy.changedTitle(host)}
         testId="crew-trust-changed"
       >
-        <p className="text-body text-text-default">{trustCopy.changedBody}</p>
+        {/* The refusal in view; why Crew itself won't connect is behind its info icon (owner,
+            2026-11-13). */}
+        <p className="text-body text-text-default">
+          <span>{trustCopy.changedBody}</span>{' '}
+          <InfoTip label={trustCopy.changedWhyLabel} help={trustCopy.changedWhy} />
+        </p>
         {/* Shown to read and compare, not handed on one by one: the one action is the details
             for IT, which carry both. */}
         {known ? <Fingerprint label={trustCopy.previous} value={known} /> : null}

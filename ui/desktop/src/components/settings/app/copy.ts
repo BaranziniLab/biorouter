@@ -39,7 +39,7 @@ export const generalCopy = {
    */
   openSubagentTabs: 'Open subagent tabs automatically',
   openSubagentTabsHelp:
-    'When off, subagents run in the background and the chat summary lists them. When on, each opens in its own tab, unless “Never open tabs automatically” is on.',
+    'When off, subagents run in the background, listed in the chat summary. When on, each opens in a tab unless “Never open tabs automatically” is on.',
   showCosts: 'Show costs',
   showCostsHelp: 'Model prices and usage costs, in chats and on this page.',
 } as const;
@@ -98,16 +98,13 @@ export const serverCopy = {
   urlPlaceholder: 'http://127.0.0.1:3000',
   urlWrongScheme: 'The address must start with http or https',
   urlInvalid: 'This is not a valid address',
-  secret: 'Secret Key',
+  secret: 'Secret key',
   secretPlaceholder: 'The server’s secret key',
   secretHelp: 'The secret key the server was started with (BIOROUTER_SERVER__SECRET_KEY).',
-  userActionKey: 'User Action Key',
+  userActionKey: 'User action key',
   userActionKeyPlaceholder: 'The key the server was started with',
   userActionKeyHelp:
-    'Proves a request came from you rather than from the model. Without it, private chats cannot be opened, branched or reported through this server.',
-  restartLead: 'Note:',
-  restart:
-    'Changes take effect after you restart Biorouter. New chat windows connect to the external server.',
+    'Proves a request came from you, not the model; the server gets its SHA-256 on stdin at start. Without it, private chats can’t be opened, branched or reported here.',
 } as const;
 
 export const resetCopy = {

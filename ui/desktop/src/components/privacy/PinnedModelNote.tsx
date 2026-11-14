@@ -1,4 +1,6 @@
+import { InfoTip } from '../ui/info-tip';
 import { Note } from '../ui/note';
+import { pinnedModelNoticeParts } from './pinnedModel';
 import { usePinnedModel } from './usePinnedModel';
 import type { PinnedModelView } from '../../hooks/chatStreamStore';
 import type { Session } from '../../api/types.gen';
@@ -24,6 +26,11 @@ import type { Session } from '../../api/types.gen';
  * disclosure note already records: the condition is standing, so the statement
  * of it is too. It disappears on its own the moment the user selects a model
  * this chat can use.
+ *
+ * Its line is where the chat stays and why, the reason the selection is not in
+ * force; which selection is not used is the info icon beside it, and still that
+ * icon's accessible description (owner, 2026-11-13: one line up front, the
+ * detail on hover).
  */
 export function PinnedModelNote({
   session,
@@ -39,9 +46,16 @@ export function PinnedModelNote({
 }) {
   const { notice } = usePinnedModel(session, reportedByTurn);
   if (!notice) return null;
+  const { lead, detail } = pinnedModelNoticeParts(notice);
   return (
     <Note tone="neutral" role="status" testId="pinned-model-note" className={className}>
-      {notice}
+      {lead}
+      {detail ? (
+        <>
+          {' '}
+          <InfoTip label="the selected model" help={detail} />
+        </>
+      ) : null}
     </Note>
   );
 }

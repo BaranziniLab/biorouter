@@ -4,6 +4,7 @@ import { toast } from 'react-toastify';
 import { AlertTriangle, Users } from '../../icons/app-icons';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
+import { InfoTip } from '../../ui/info-tip';
 import { Note } from '../../ui/note';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
 import { cn } from '../../../utils';
@@ -321,11 +322,19 @@ export function ChatCrewAccessBar({ access, chatTitle, className }: ChatCrewAcce
             </div>
           }
         >
-          {settingsChanged
-            ? accessCopy.chatSettingsChanged(destination)
-            : access.state === 'expired'
-              ? accessCopy.chatExpired(destination)
-              : accessCopy.chatRevoked(destination)}
+          {settingsChanged ? (
+            accessCopy.chatSettingsChanged(destination)
+          ) : access.state === 'expired' ? (
+            accessCopy.chatExpired(destination)
+          ) : (
+            <>
+              <span>{accessCopy.chatRevoked(destination)}</span>{' '}
+              <InfoTip
+                label={accessCopy.chatHoldsMessagesLabel}
+                help={accessCopy.chatHoldsMessages}
+              />
+            </>
+          )}
         </Note>
       </div>
     );

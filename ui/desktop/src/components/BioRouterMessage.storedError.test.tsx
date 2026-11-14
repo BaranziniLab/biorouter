@@ -48,9 +48,15 @@ describe('BioRouterMessage stored turn error', () => {
     expect(screen.queryByTestId('markdown')).toBeNull();
     const row = screen.getByTestId('stored-turn-error');
     expect(row).toHaveTextContent('Model authentication failed');
-    expect(row).toHaveTextContent(`Authentication failed. Status: 401 Unauthorized. ${ADVICE}`);
+    // The error's first sentence is the line; the rest folds, word for word, under Details
+    // with the raw response (design.md 9.16).
+    expect(row).toHaveTextContent('Authentication failed.');
+    expect(row).not.toHaveTextContent('Retrying will not help');
     expect(screen.queryByText(/Invalid client id/)).toBeNull();
-    expect(screen.getByRole('button', { name: transcriptCopy.turn.details })).toBeInTheDocument();
+    const details = screen.getByRole('button', { name: transcriptCopy.turn.details });
+    fireEvent.click(details);
+    expect(row).toHaveTextContent(`Status: 401 Unauthorized. ${ADVICE}`);
+    expect(screen.getByText(/Invalid client id/)).toBeInTheDocument();
     // History reads it back quietly; no floating message actions on an error.
     expect(row).not.toHaveAttribute('role', 'alert');
     expect(container.querySelector('.br-message-actions-scope')).toBeNull();

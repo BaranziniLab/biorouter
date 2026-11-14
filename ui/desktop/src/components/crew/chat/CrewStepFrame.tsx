@@ -2,8 +2,28 @@ import type { ReactNode } from 'react';
 import { dismissCrewStep } from '../../../api';
 import { userActionHeaders } from '../../../utils/userAction';
 import { Lock } from '../../icons/app-icons';
+import { InfoTip } from '../../ui/info-tip';
 import { crewStepCopy } from './CrewStepCard.copy';
 import type { CardEnding } from './streamedCrewSteps';
+
+/** Words folded behind an info icon: what the icon is about, and the help itself. */
+export interface StepHelp {
+  /** The icon's accessible name reads "About {label}". */
+  label: string;
+  /** At most two sentences (design.md 9.16). */
+  help: string;
+}
+
+/** An InfoTip after a line of text, with the space a sentence would leave before it. */
+function HelpAfter({ help }: { help?: StepHelp }) {
+  if (!help) return null;
+  return (
+    <>
+      {' '}
+      <InfoTip label={help.label} help={help.help} />
+    </>
+  );
+}
 
 /**
  * The frame every Crew step card shares (the owner's D1 ruling on AO-12): a
@@ -11,16 +31,23 @@ import type { CardEnding } from './streamedCrewSteps';
  * body. A card is the ask, never the answer, so the frame holds no input and
  * a step body must never add one: what the person types goes to the window the
  * step opens (the Sign in window, the OS-native vault prompt), never here.
+ *
+ * A step keeps one line of its own in view, the one that says where the typing goes, and what
+ * explains the step waits behind the info icon beside the title (`titleHelp`; owner,
+ * 2026-11-13, design.md 9.16).
  */
 export function CrewStepFrame({
   kind,
   title,
+  titleHelp,
   children,
 }: {
   /** The step's kind, stamped as `data-crew-step` for tests and probes. */
   kind: string;
   /** Fixed text plus the daemon's sanitized values. */
   title: string;
+  /** What the step is, folded behind an info icon beside the title. */
+  titleHelp?: StepHelp;
   children?: ReactNode;
 }) {
   return (
@@ -30,7 +57,10 @@ export function CrewStepFrame({
       data-crew-step={kind}
     >
       <div className="flex min-w-0 flex-col gap-1">
-        <div className="text-label text-text-default">{title}</div>
+        <div className="text-label text-text-default">
+          <span>{title}</span>
+          <HelpAfter help={titleHelp} />
+        </div>
         <div className="flex items-center gap-1.5 text-supporting text-text-muted">
           <Lock aria-hidden="true" className="size-3.5 shrink-0" />
           <span>{crewStepCopy.actsAsYou}</span>
@@ -45,18 +75,22 @@ export function CrewStepFrame({
  * What a Crew step draws where nothing waits on it: one fixed line, with no button and nothing
  * the card carried. For a card this window saw the daemon end (WI-17), the line says how it
  * ended (`crewStepCopy.ended`); for one read back from a transcript, only that nothing waits
- * (`crewStepCopy.notWaiting`), or the fixed `line` its caller names.
+ * (`crewStepCopy.notWaiting`), or the fixed `line` its caller names, with any more it has to say
+ * behind an info icon (`help`).
  */
 export function CrewStepEnded({
   kind,
   ending,
   line,
+  help,
 }: {
   kind: string;
   /** How the daemon said it ended, when this window saw it end. */
   ending?: CardEnding;
   /** A fixed line in place of the default one. */
   line?: string;
+  /** Fixed words that follow `line`, folded behind an info icon beside it. */
+  help?: StepHelp;
 }) {
   return (
     <p
@@ -66,6 +100,7 @@ export function CrewStepEnded({
       data-ending={ending}
     >
       {line ?? (ending ? crewStepCopy.ended[ending] : crewStepCopy.notWaiting)}
+      <HelpAfter help={help} />
     </p>
   );
 }

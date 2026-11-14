@@ -53,9 +53,18 @@ describe('KbTierControl', () => {
     // latter for free, which is exactly the wrong implementation this rejects.
     expect(screen.getByText(/214 pages/)).toBeInTheDocument();
     expect(screen.getByText(/37 raw sources/)).toBeInTheDocument();
+    // One line of consequence on screen; what it includes and that a read cannot be taken back
+    // are the InfoTip beside it, and still part of the dialog's description.
     expect(
-      screen.getByText(/cannot be undone for content that has already been read/i)
-    ).toBeInTheDocument();
+      screen.getByRole('button', { name: 'About making this base public' })
+    ).toHaveAccessibleDescription(
+      /anything a private chat wrote into it\. This cannot be undone for content that has already been read/i
+    );
+    expect(screen.getByRole('dialog')).toHaveAccessibleDescription(
+      /cannot be undone for content that has already been read/i
+    );
+    // The ID to retype is set in the code role.
+    expect(screen.getByText('omop', { selector: 'p' })).toHaveClass('font-mono', 'text-code');
 
     const confirm = screen.getByRole('button', { name: /Make public/ });
     expect(confirm).toBeDisabled();

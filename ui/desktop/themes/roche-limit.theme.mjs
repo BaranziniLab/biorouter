@@ -49,7 +49,11 @@ export default {
       'background-medium': '#ecece9',
       'background-strong': '#dcdcd8',
       'background-inverse': '#1f1e1c',
-      'background-danger': '#c4232b',
+      // Red is rare (design.md 9.14): the danger tone is drawn in ink, its fill
+      // the secondary ink and its text the primary ink. The family's red lives
+      // on in `background-critical` / `text-critical`, the danger-zone button only.
+      'background-critical': '#c4232b',
+      'background-danger': '#5c5a55',
       'background-success': '#0f7150',
       'background-info': '#0a69bc',
       'background-warning': '#6e6300',
@@ -70,7 +74,8 @@ export default {
       // 22% over the ground), not just on white: a Note paints the pair, and the
       // old stops measured 3.5–4.5:1 there (live QA T-18). Darkened in OKLCH
       // lightness at a fixed hue; `check-contrast.mjs` asserts every pair.
-      'text-danger': '#a8061c',
+      'text-danger': '#1f1e1c',
+      'text-critical': '#a8061c',
       'text-success': '#026546',
       'text-warning': '#625800',
       'text-info': '#0258a2',
@@ -221,7 +226,11 @@ export default {
       'background-medium': '#2c2c29',
       'background-strong': '#3a3a36',
       'background-inverse': '#ededea',
-      'background-danger': '#ff9592',
+      // Red is rare (design.md 9.14): the danger tone is drawn in ink, its fill
+      // the secondary ink and its text the primary ink. The family's red lives
+      // on in `background-critical` / `text-critical`, the danger-zone button only.
+      'background-critical': '#ff9592',
+      'background-danger': '#a5a39d',
       'background-success': '#3dd68c',
       'background-info': '#70b8ff',
       'background-warning': '#f2e06b',
@@ -238,7 +247,8 @@ export default {
       'text-muted': '#a5a39d',
       'text-subtle': '#9c9a93',
       'text-inverse': '#131312',
-      'text-danger': '#ff9592',
+      'text-danger': '#ededea',
+      'text-critical': '#ff9592',
       'text-success': '#3dd68c',
       'text-warning': '#f2e06b',
       'text-info': '#70b8ff',

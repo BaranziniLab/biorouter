@@ -59,6 +59,9 @@ const PER_FAMILY = new Set([
   'background-success',
   'background-warning',
   'background-info',
+  // The family's red, kept for the one danger-zone button (design.md 9.14).
+  'background-critical',
+  'text-critical',
   'border-danger',
   'border-success',
   'border-warning',

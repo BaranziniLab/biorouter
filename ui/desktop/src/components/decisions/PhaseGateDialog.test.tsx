@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { fitsInfoTip } from '../../utils/proseFold';
 import { parseDecisionModelEntries } from '../../utils/sessionDecisions';
 import { parseSessionSubagents, type PhaseSnapshot } from '../../utils/sessionSubagents';
 import { wirePhase, wireSubagents } from '../../utils/sessionSubagents.fixture';
@@ -617,6 +618,24 @@ describe('the editor', () => {
     );
     for (const label of [PHASE_GATE_COPY.editor.questions, PHASE_GATE_COPY.editor.threshold]) {
       expect(screen.getByRole('button', { name: `About ${label}` })).toBeInTheDocument();
+    }
+    // 9.16: who answers sits behind Questions' tip, what passing takes behind Threshold's, each
+    // within the InfoTip's two sentences and about 160 characters.
+    expect(
+      screen.getByRole('button', { name: `About ${PHASE_GATE_COPY.editor.questions}` })
+    ).toHaveAccessibleDescription(
+      "A decision model answers each question from the phase's hand-off and its subagents' results, or the chat's own model when the chat has none."
+    );
+    expect(
+      screen.getByRole('button', { name: `About ${PHASE_GATE_COPY.editor.threshold}` })
+    ).toHaveAccessibleDescription(
+      'The probability of yes each question must reach. The phase completes only when every answer reaches the threshold.'
+    );
+    for (const help of [
+      PHASE_GATE_COPY.editor.questionsHelp,
+      PHASE_GATE_COPY.editor.thresholdHelp,
+    ]) {
+      expect(fitsInfoTip(help)).toBe(true);
     }
     // The inner filled card is gone: the fields sit on the dialog ground.
     expect(screen.getByTestId('phase-gate-editor')).not.toHaveClass('br-fill-surface');

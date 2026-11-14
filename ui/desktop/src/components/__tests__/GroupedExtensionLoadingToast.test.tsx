@@ -2,7 +2,11 @@ import { describe, it, expect } from 'vitest';
 import userEvent from '@testing-library/user-event';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
-import { GroupedExtensionLoadingToast } from '../GroupedExtensionLoadingToast';
+import {
+  EXTENSION_ERROR_DETAILS_LABEL,
+  extensionErrorLayers,
+  GroupedExtensionLoadingToast,
+} from '../GroupedExtensionLoadingToast';
 
 const renderWithRouter = (component: React.ReactElement) => {
   return render(<MemoryRouter>{component}</MemoryRouter>);
@@ -167,5 +171,33 @@ describe('GroupedExtensionLoadingToast', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     expect(screen.getByText(/spawn ENOENT/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Copy error' })).toBeInTheDocument();
+    // A short error is its own line: nothing to fold.
+    expect(
+      screen.queryByRole('button', { name: EXTENSION_ERROR_DETAILS_LABEL })
+    ).not.toBeInTheDocument();
+  });
+
+  // Owner, 2026-11-13: a long error's first line stays in view and the whole error folds under
+  // it. It used to read "Failed to add extension", with the error only in Copy error.
+  it('keeps a long error’s first line in view and folds the whole error behind Error details', async () => {
+    const user = userEvent.setup();
+    const error =
+      'Failed to start MCP server: exited with code 1\nTraceback (most recent call last):\n  File "server.py", line 3, in <module>\nModuleNotFoundError: No module named mcp';
+    renderWithRouter(
+      <GroupedExtensionLoadingToast
+        extensions={[{ name: 'memory', status: 'error' as const, error }]}
+        totalCount={1}
+        isComplete={true}
+      />
+    );
+    await user.click(screen.getByRole('button', { name: 'View details' }));
+
+    const line = screen.getByText('Failed to start MCP server: exited with code 1');
+    expect(line).toHaveClass('line-clamp-2');
+    expect(screen.queryByText(/ModuleNotFoundError/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: EXTENSION_ERROR_DETAILS_LABEL }));
+    const full = screen.getByText(/ModuleNotFoundError: No module named mcp/);
+    expect(full).toHaveClass('font-mono', 'text-code');
+    expect(extensionErrorLayers('spawn ENOENT')).toEqual({ line: 'spawn ENOENT', full: null });
   });
 });

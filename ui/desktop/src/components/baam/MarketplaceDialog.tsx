@@ -4,6 +4,7 @@ import { ModalShell } from '../ModalShell';
 import { Input } from '../ui/input';
 import { Skeleton } from '../ui/skeleton';
 import { InfoTip } from '../ui/info-tip';
+import { TruncatedLine } from '../ui/truncated-line';
 import { Search } from '../icons/app-icons';
 import { cn } from '../../utils';
 import { catalogFreshnessLine } from './registry';
@@ -197,7 +198,7 @@ export interface MarketplaceRowProps {
   badges?: React.ReactNode;
   /** A short muted fact after the badges: organization · version, or the type. */
   meta?: React.ReactNode;
-  /** The second line, clamped to one line. */
+  /** The second line, clamped to one line; while it is cut off a tooltip holds the whole of it. */
   description?: string;
   /** A control before the text (the selection checkbox). */
   leading?: React.ReactNode;
@@ -246,8 +247,15 @@ export function MarketplaceRow({
             </span>
           )}
         </span>
+        {/* One line, and the clipped end a hover away (`TruncatedLine`): the registry's
+            sentence was cut off with nowhere to read the rest. No Tab stop in a `label` row,
+            where the row is already the control. */}
         {description && (
-          <span className="block truncate text-supporting text-text-muted">{description}</span>
+          <TruncatedLine
+            text={description}
+            focusable={as !== 'label'}
+            className="text-supporting text-text-muted"
+          />
         )}
       </span>
       {trailing != null && <span className="flex shrink-0 items-center gap-2">{trailing}</span>}

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, act, cleanup, waitFor } from '@testing-library/react';
-import UpdateAvailableModal from './UpdateAvailableModal';
+import { render, screen, fireEvent, act, cleanup, waitFor, within } from '@testing-library/react';
+import UpdateAvailableModal, { UPDATE_COPY } from './UpdateAvailableModal';
 import type { UpdaterEventPayload, UpdaterState } from '../utils/updaterState';
 import { OPEN_UPDATE_MODAL_EVENT } from '../utils/updateUiEvents';
 
@@ -118,6 +118,27 @@ describe('UpdateAvailableModal — one-click flow', () => {
     expect(installUpdate).not.toHaveBeenCalled();
   });
 
+  it('keeps an error first line in view and folds the trace behind Error details', async () => {
+    const trace = 'net::ERR_CONNECTION_RESET\n    at ClientRequest.<anonymous> (updater.js:12:3)';
+    render(<UpdateAvailableModal />);
+    emitAct({ event: 'update-available', data: { version: '1.86.0' } });
+    emitAct({ event: 'error', data: trace });
+    requestModal({
+      phase: 'error',
+      latestVersion: '1.86.0',
+      percent: 0,
+      usingFallback: false,
+      error: trace,
+    });
+
+    const first = await screen.findByText('net::ERR_CONNECTION_RESET');
+    expect(first).not.toHaveClass('font-mono');
+    expect(screen.queryByText(/ClientRequest/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: UPDATE_COPY.errorDetails }));
+    const rest = await screen.findByText(/ClientRequest/);
+    expect(rest).toHaveClass('font-mono', 'text-code');
+  });
+
   it('shows an error state without a fake install button', async () => {
     render(<UpdateAvailableModal />);
     emitAct({ event: 'update-available', data: { version: '1.86.0' } });
@@ -132,6 +153,8 @@ describe('UpdateAvailableModal — one-click flow', () => {
 
     expect(await screen.findByText(/Update failed/i)).toBeTruthy();
     expect(screen.getByText(/network unreachable/i)).toBeTruthy();
+    // An error sentence is read, not code: the sans face (owner, 2026-11-13).
+    expect(screen.getByText(/network unreachable/i)).not.toHaveClass('font-mono');
     expect(screen.queryByRole('button', { name: /Restart & Update/i })).toBeNull();
     // A failure with the update in hand can be retried now, not in three hours.
     expect(screen.getByRole('button', { name: /Try again/i })).toBeTruthy();
@@ -190,7 +213,7 @@ describe('UpdateAvailableModal — one-click flow', () => {
     expect(await screen.findByRole('button', { name: /Restart & Update/i })).toBeTruthy();
   });
 
-  it('names the button it points at in 600, never a bare strong (V4-R7-6)', async () => {
+  it('says one line under the title, never a bare strong, and does not restate its button (V4-R7-6)', async () => {
     render(<UpdateAvailableModal />);
     emitAct({ event: 'update-downloaded', data: { version: '1.86.0' } });
     requestModal({
@@ -202,10 +225,16 @@ describe('UpdateAvailableModal — one-click flow', () => {
     const dialog = await screen.findByRole('dialog');
     // A bare <strong> takes preflight's `bolder`, which computes to 700; the type system draws 600.
     // jsdom has no preflight, so the class is what this can see (Chromium measures the weight in
-    // ui/modalEmphasisWeight.browser.test.tsx).
-    const strong = Array.from(dialog.querySelectorAll('strong'));
-    expect(strong.map((s) => s.textContent)).toEqual(['Restart & update']);
-    expect(strong[0]).toHaveClass('font-semibold');
+    // ui/modalEmphasisWeight.browser.test.tsx). The line used to name the button in a strong
+    // ("Click Restart & update and ..."); the button names itself, so the line no longer does
+    // (owner, 2026-11-13), and any emphasis that comes back must still be 600.
+    expect(dialog.querySelectorAll('strong:not(.font-semibold)')).toHaveLength(0);
+    for (const node of within(dialog).getAllByText(/Restart & update/i)) {
+      expect(node.closest('button')).not.toBeNull();
+    }
+    expect(
+      within(dialog).getByText(`${UPDATE_COPY.restartLine} ${UPDATE_COPY.keptLine}`)
+    ).toBeInTheDocument();
   });
 });
 
@@ -364,6 +393,21 @@ describe('UpdateAvailableModal — assisted (non-mac) download', () => {
     expect(await screen.findByRole('button', { name: /Install update/i })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Restart & Update/i })).toBeNull();
     expect(screen.queryByText(/reopen on the new version automatically/i)).toBeNull();
+  });
+
+  /**
+   * Owner, 2026-11-13: one line per state, the reason behind it in an InfoTip. The assisted line
+   * says what the person gets; why the app cannot replace itself is the InfoTip's.
+   */
+  it('keeps the reason for the assisted download in an InfoTip beside its one line', async () => {
+    render(<UpdateAvailableModal />);
+    emitAct({ event: 'update-available', data: { version: '1.86.0' }, usingFallback: true });
+    requestModal({ phase: 'available', latestVersion: '1.86.0', percent: 0, usingFallback: true });
+
+    expect(await screen.findByText(UPDATE_COPY.awaitingLine)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: `About ${UPDATE_COPY.awaitingTipLabel}` })
+    ).toHaveAccessibleDescription(UPDATE_COPY.awaitingTip);
   });
 
   /** Once bytes are moving, progress is real again even in assisted mode. */

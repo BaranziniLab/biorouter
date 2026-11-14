@@ -3,6 +3,7 @@ import { Check } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
+import { InfoTip } from '../../ui/info-tip';
 import { Note } from '../../ui/note';
 import { crewErrorCode } from '../api/errors';
 import { CrewHttpError } from '../crewApi';
@@ -470,15 +471,24 @@ export function SetupProgress({
                 </Button>
               ) : null}
               {job.problem.code === HOST_STORAGE_UNSAFE_CODE ? (
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  aria-describedby={fixHintId}
-                  onClick={() => void job.retry({ fixStoragePermissions: true })}
-                >
-                  {setupCopy.fixStorage}
-                </Button>
+                // What Fix it for me runs is the button's description and its info tip, beside
+                // it, not a second paragraph in the note (owner, 2026-11-13).
+                <span className="inline-flex items-center gap-1">
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    aria-describedby={fixHintId}
+                    onClick={() => void job.retry({ fixStoragePermissions: true })}
+                  >
+                    {setupCopy.fixStorage}
+                  </Button>
+                  <InfoTip
+                    label={setupCopy.fixStorage}
+                    id={fixHintId}
+                    help={setupCopy.fixStorageHint}
+                  />
+                </span>
               ) : null}
               {problemAction}
               <Button type="button" variant="secondary" size="sm" onClick={() => void job.retry()}>
@@ -488,11 +498,6 @@ export function SetupProgress({
           }
         >
           <p>{job.problem.message}</p>
-          {job.problem.code === HOST_STORAGE_UNSAFE_CODE ? (
-            <p id={fixHintId} className="mt-1">
-              {setupCopy.fixStorageHint}
-            </p>
-          ) : null}
         </Note>
       ) : null}
       {/* The server's host key could not be verified: how to verify it, as Join's trust pane
@@ -518,7 +523,7 @@ export function SetupProgress({
           <pre
             tabIndex={0}
             aria-label={setupCopy.outputLabel}
-            className="crew-onboard-output font-mono text-supporting text-text-default"
+            className="crew-onboard-output font-mono text-code text-text-default"
           >
             {job.problem.output}
           </pre>

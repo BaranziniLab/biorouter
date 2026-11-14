@@ -1,6 +1,10 @@
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useIngestStream } from './useIngestStream';
+import {
+  STREAM_ENDED_DETAIL,
+  STREAM_ENDED_WITHOUT_TERMINAL,
+  useIngestStream,
+} from './useIngestStream';
 
 vi.mock('./knowledgeRequest', () => ({
   buildKnowledgeUrl: async (path: string) => `http://backend.test${path}`,
@@ -97,9 +101,15 @@ describe('useIngestStream terminal frames', () => {
 
     expect(run.status).toBe('error');
     expect(result.current.status).toBe('error');
-    expect(run.error).toContain('outcome is uncertain');
-    expect(result.current.error).toContain('Refresh the knowledge base and history');
-    expect(result.current.error).not.toContain('Nothing was added');
+    // The error is one line; what it means and what to do is the detail the digest log shows
+    // under it (`DispatchProgress`, asserted in IngestPanel.streamFailure.test.tsx).
+    expect(run.error).toBe(STREAM_ENDED_WITHOUT_TERMINAL);
+    expect(result.current.error).toBe(STREAM_ENDED_WITHOUT_TERMINAL);
+    expect(STREAM_ENDED_DETAIL).toContain('outcome is uncertain');
+    expect(STREAM_ENDED_DETAIL).toContain('Refresh the knowledge base and history');
+    expect(`${STREAM_ENDED_WITHOUT_TERMINAL} ${STREAM_ENDED_DETAIL}`).not.toContain(
+      'Nothing was added'
+    );
   });
 
   it('treats an entirely empty stream as a failure too', async () => {
@@ -114,8 +124,7 @@ describe('useIngestStream terminal frames', () => {
 
     expect(run.status).toBe('error');
     expect(result.current.status).toBe('error');
-    expect(result.current.error).toContain('outcome is uncertain');
-    expect(result.current.error).toContain('Refresh');
+    expect(result.current.error).toBe(STREAM_ENDED_WITHOUT_TERMINAL);
   });
 
   // The other side of the same change. A stream with no terminal frame is now a

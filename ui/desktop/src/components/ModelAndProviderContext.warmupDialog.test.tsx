@@ -6,7 +6,12 @@ import { join } from 'node:path';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { ModelAndProviderProvider, useModelAndProvider } from './ModelAndProviderContext';
+import {
+  ModelAndProviderProvider,
+  useModelAndProvider,
+  warmupFirstUseHelp,
+  WARMUP_FIRST_USE_LABEL,
+} from './ModelAndProviderContext';
 import { MODAL_ANCHOR_TOP_STYLE } from './ModalShell';
 import type Model from './settings/models/modelInterface';
 
@@ -177,6 +182,11 @@ async function openTheSheet() {
   return screen.getByRole('dialog');
 }
 
+/** Open the folded detail list (owner, 2026-11-13: it starts closed, under its summary). */
+function openTheDetail() {
+  fireEvent.click(screen.getByRole('button', { name: 'Advanced' }));
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.read.mockImplementation(async (key: string) => {
@@ -224,6 +234,7 @@ describe('the local-model warm-up dialog fits the window', () => {
 
   it('scrolls the detail block between the header and the footer, not the sheet', async () => {
     const dialog = await openTheSheet();
+    openTheDetail();
     const scrollers = [...dialog.querySelectorAll('.overflow-y-auto')];
     // Exactly one: a second scroller would mean the header or the footer had been folded into
     // the scrolled area, which is the failure this file is about.
@@ -250,13 +261,39 @@ describe('the local-model warm-up dialog fits the window', () => {
   it('names the model in the sentence that describes the dialog', async () => {
     const dialog = await openTheSheet();
     expect(dialog).toHaveAccessibleName('Warm up local model');
-    expect(dialog).toHaveAccessibleDescription(
-      'Qwen3.6 35B runs on this computer. First use can take a while because the model may need to load, download, and produce a test response.'
-    );
+    // One line under the title; why first use is slow is the title's InfoTip (owner, 2026-11-13).
+    expect(dialog).toHaveAccessibleDescription('Qwen3.6 35B runs on this computer.');
+    expect(
+      within(dialog).getByRole('button', { name: `About ${WARMUP_FIRST_USE_LABEL}` })
+    ).toHaveAccessibleDescription(warmupFirstUseHelp(false));
+    expect(warmupFirstUseHelp(false)).toMatch(/^First use can take a while/);
+  });
+
+  it('opens on the warning and the buttons, with the detail folded under its summary', async () => {
+    const dialog = await openTheSheet();
+    const toggle = within(dialog).getByRole('button', { name: 'Advanced' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    // The summary says the size and the fit word; the rows are not mounted until it opens.
+    expect(within(dialog).getByTestId('warmup-summary')).toHaveTextContent('23 GB · ');
+    expect(within(dialog).queryByText('Model store')).toBeNull();
+    // The warning leads with its consequence; what the memory figure means here is folded.
+    expect(within(dialog).getByText(/This machine reports 8 GB VRAM\.$/)).toBeInTheDocument();
+    expect(within(dialog).queryByText(/this means VRAM, not regular system RAM/)).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Details' }));
+    expect(within(dialog).getByText(/this means VRAM, not regular system RAM/)).toBeInTheDocument();
+    // The Windows reminder is the second warning, so it is folded with it.
+    expect(within(dialog).getByText(/regular system RAM does not satisfy/)).toBeInTheDocument();
+    openTheDetail();
+    // Where the model lives is a place in sans (D-42); the Ollama tag is an id in mono.
+    const store = within(dialog).getByText('/Users/test/.ollama/models');
+    expect(store).toHaveAttribute('data-path', '/Users/test/.ollama/models');
+    expect(store.closest('.font-mono')).toBeNull();
+    expect(within(dialog).getByText('qwen3.6:latest')).toHaveClass('font-mono', 'text-code');
   });
 
   it('draws the warnings as a note and the detail as a filled panel, with no outlined box', async () => {
     const dialog = await openTheSheet();
+    openTheDetail();
     // The 8 GB machine against a 64 GB recommendation, and Windows: two warnings, in one note.
     const note = within(dialog).getByText(/recommends 64 GB GPU-addressable memory/);
     expect(note.closest('.br-fill-surface')).not.toBeNull();
@@ -279,6 +316,7 @@ describe('the local-model warm-up dialog fits the window', () => {
 describe('the warm-up dialog says only what is true of the local copy', () => {
   it('names the size as the model size, whichever way the copy stands', async () => {
     const dialog = await openTheSheet();
+    openTheDetail();
     expect(within(dialog).getByText('Model size')).toBeInTheDocument();
     expect(within(dialog).getByText('23 GB')).toBeInTheDocument();
     expect(within(dialog).queryByText('Download')).toBeNull();
@@ -286,7 +324,12 @@ describe('the warm-up dialog says only what is true of the local copy', () => {
 
   it('keeps the download wording and its details while the model still needs downloading', async () => {
     const dialog = await openTheSheet();
-    expect(dialog).toHaveAccessibleDescription(/may need to load, download, and produce/);
+    // The one line under the title; why first use is slow, download and all, is its InfoTip.
+    expect(dialog).toHaveAccessibleDescription('Qwen3.6 35B runs on this computer.');
+    expect(
+      within(dialog).getByRole('button', { name: `About ${WARMUP_FIRST_USE_LABEL}` })
+    ).toHaveAccessibleDescription(/may need to load, download, and produce/);
+    openTheDetail();
     expect(within(dialog).getByText('Needs download')).toBeInTheDocument();
     for (const label of ['Llama Server fallback', 'Ollama model', 'Model store', 'Model blob']) {
       expect(within(dialog).getByText(label)).toBeInTheDocument();
@@ -296,9 +339,13 @@ describe('the warm-up dialog says only what is true of the local copy', () => {
   it('drops the download wording and its details once the model is on this computer', async () => {
     mocks.llamacppStatus.mockResolvedValue(downloadedStatus);
     const dialog = await openTheSheet();
-    expect(dialog).toHaveAccessibleDescription(
-      'Qwen3.6 35B runs on this computer. First use can take a while because the model may need to load and produce a test response.'
+    expect(dialog).toHaveAccessibleDescription('Qwen3.6 35B runs on this computer.');
+    expect(
+      within(dialog).getByRole('button', { name: `About ${WARMUP_FIRST_USE_LABEL}` })
+    ).toHaveAccessibleDescription(
+      'First use can take a while because the model may need to load and produce a test response.'
     );
+    openTheDetail();
     expect(within(dialog).getByText('Model size')).toBeInTheDocument();
     expect(within(dialog).getByText('Downloaded')).toBeInTheDocument();
     for (const label of ['Llama Server fallback', 'Ollama model', 'Model store', 'Model blob']) {
@@ -326,6 +373,7 @@ describe('the warm-up dialog says only what is true of the local copy', () => {
       },
     });
     const dialog = await openTheSheet();
+    openTheDetail();
     expect(within(dialog).getByText('Downloaded in Ollama')).toBeInTheDocument();
     expect(within(dialog).queryByText('Llama Server fallback')).toBeNull();
     expect(within(dialog).queryByText('Model blob')).toBeNull();
@@ -462,6 +510,7 @@ describe('the warm-up dialog says the fit in plain words', () => {
   ])('%s reads as words, never as the id', async (kind, os, detected, verdict) => {
     mocks.llamacppStatus.mockResolvedValue(machine(kind, os));
     const dialog = await openTheSheet();
+    openTheDetail();
     const row = (label: string) => within(dialog).getByText(label).nextElementSibling;
     expect(row('Detected GPU memory')).toHaveTextContent(detected);
     expect(row('Recommended GPU memory')).toHaveTextContent('48 GB');

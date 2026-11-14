@@ -91,7 +91,7 @@ describe('the type roles', () => {
     ['chip', '12px', '16px', '500'],
     ['caps', '12px', '16px', '500'],
     ['secondary', '13px', '18px', '400'],
-    ['code', '13px', '20px', '400'],
+    ['code', '12px', '20px', '400'],
     ['body', '14px', '20px', '400'],
     ['label', '14px', '20px', '500'],
     ['prose', '14px', '21px', '400'],

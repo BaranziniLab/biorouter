@@ -104,12 +104,38 @@ describe('Crew’s person-tool cards (AO-12)', () => {
     window.removeEventListener(CREW_READ_CONSENT_EVENT, listen);
   });
 
-  it('shows the summary and the lines under it as separate lines', () => {
+  it('shows the summary and the first fact as separate lines, the rest behind the info icon', () => {
     renderCard(consent);
-    const finding = screen.getByTestId('tool-security-finding');
-    expect(finding.querySelector('.whitespace-pre-line')).toHaveTextContent(
-      /Let this chat read acct-lab as you\s+It can then read/
+    // The summary is the line beside the triangle (design.md 9.16).
+    expect(screen.getByTestId('tool-security-finding-summary')).toHaveTextContent(
+      /^Let this chat read acct-lab as you$/
     );
+    // The first fact's first sentence is the consequence, on its own line under it.
+    const fact = screen.getByText(/^It can then read what you see in acct-lab on leo\.ucsf\.edu/);
+    // Its own words, before the info icon (whose words reach it only as a description).
+    expect(fact.firstChild?.textContent).toBe(
+      'It can then read what you see in acct-lab on leo.ucsf.edu: messages, files, names and the context document, until you take this back.'
+    );
+    // The rest is the info icon's, word for word.
+    expect(screen.getByRole('button', { name: 'About this warning' })).toHaveAccessibleDescription(
+      'It changes nothing; every change still asks you.'
+    );
+  });
+
+  it('folds a Crew card’s further facts under Details when they outgrow the info icon', () => {
+    renderCard({
+      toolName: 'crew__change',
+      prompt:
+        'Delete #methods (Lab) in acct-lab on leo.ucsf.edu as you\nIts messages and files are removed from the workspace.\nNobody can post in it after this.\nThe file and the post are marked Private, so public models never read them. Members who can read them there still open them from the post.',
+      arguments: { action: 'channel_delete', channel: 'methods' },
+    });
+    expect(
+      screen.getByText('Its messages and files are removed from the workspace.')
+    ).toBeVisible();
+    expect(screen.queryByText('Nobody can post in it after this.')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Details' }));
+    expect(screen.getByText('Nobody can post in it after this.')).toBeInTheDocument();
+    expect(screen.getByText(/so public models never read them/)).toBeInTheDocument();
   });
 
   it('keeps "Allow once" for a change, and offers no Change once it is answered', async () => {
@@ -519,6 +545,21 @@ describe('ToolCallConfirmation when no approval can be granted', () => {
     expect(screen.queryByRole('button', { name: /^deny$/i })).not.toBeInTheDocument();
   });
 
+  // Owner, 2026-11-13: the refusal's instruction is the visible line; why a browser cannot
+  // approve is the info icon beside it, and still the icon's accessible description.
+  it('keeps the instruction on the line and the reason behind its info icon', () => {
+    marker().biorouterSurface = 'headless';
+    renderCard();
+
+    const status = screen.getByRole('status');
+    expect(status.querySelector('p')?.firstChild?.textContent).toBe(
+      'Answer this request in the Biorouter desktop app.'
+    );
+    expect(
+      screen.getByRole('button', { name: 'About approving in a browser' })
+    ).toHaveAccessibleDescription(/no way to prove a decision came from you/);
+  });
+
   it('offers the buttons normally on the desktop surface', () => {
     renderCard();
 
@@ -691,6 +732,34 @@ describe('ToolCallConfirmation for a /bug report (final check)', () => {
       expect(screen.queryByRole('button', { name: /Always allow/i })).toBeNull();
       unmount();
     }
+  });
+
+  // Owner, 2026-11-13: no solid chunk of text. The finding's first sentence stays beside the
+  // triangle; a short rest is the info icon's, a longer one and every further reason fold.
+  it('keeps the first sentence of a long finding on the line and folds the rest', () => {
+    const rest = 'Read the body below before you publish it anywhere.';
+    reportCard({
+      prompt: `⚠ This chat is PRIVATE: it ran on a private model and the report names it. ${rest}`,
+    });
+    const finding = screen.getByTestId('tool-security-finding');
+    expect(finding.querySelector('span')?.firstChild?.textContent).toBe(
+      'This chat is PRIVATE: it ran on a private model and the report names it.'
+    );
+    expect(screen.getByRole('button', { name: 'About this warning' })).toHaveAccessibleDescription(
+      rest
+    );
+  });
+
+  it('folds every reason after the first behind one disclosure, in order and in full', () => {
+    const second = 'The arguments name a file outside the working folder.';
+    reportCard({ prompt: `Possible prompt injection in the arguments.\n\n${second}` });
+    const finding = screen.getByTestId('tool-security-finding');
+    expect(finding).toHaveTextContent('Possible prompt injection in the arguments.');
+    expect(screen.queryByText(second)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'All 2 reasons' }));
+    expect(screen.getByText(second)).toBeInTheDocument();
+    // Still a finding: "Always allow" stays withheld.
+    expect(screen.queryByRole('button', { name: /Always allow/i })).toBeNull();
   });
 
   it('keeps a warning glyph that is not the lead, and a prompt that is only a glyph', () => {

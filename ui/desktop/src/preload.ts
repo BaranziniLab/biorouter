@@ -243,6 +243,12 @@ interface UpdaterEvent {
 }
 
 // Define the API types in a single place
+/** The installed SF Mono (regular, and italic when present), as raw font bytes. */
+export interface SystemMonoFont {
+  regular: Uint8Array;
+  italic: Uint8Array | null;
+}
+
 type ElectronAPI = {
   copyConversationId?: (id: string) => Promise<void>;
   copySelectedText?: (text: string) => Promise<void>;
@@ -302,6 +308,8 @@ type ElectronAPI = {
   deleteFile: (filePath: string) => Promise<boolean>;
   deleteDirectory: (dirPath: string) => Promise<boolean>;
   getAllowedExtensions: () => Promise<string[]>;
+  /** The installed SF Mono's bytes on macOS, else null (`utils/systemMonoFont.ts`). */
+  getSystemMonoFont?: () => Promise<SystemMonoFont | null>;
   getPathForFile: (file: File) => string;
   setMenuBarIcon: (show: boolean) => Promise<boolean>;
   getMenuBarIconState: () => Promise<boolean>;
@@ -879,6 +887,7 @@ const electronAPI: ElectronAPI = {
   deleteDirectory: (dirPath: string) => ipcRenderer.invoke('delete-directory', dirPath),
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   getAllowedExtensions: () => ipcRenderer.invoke('get-allowed-extensions'),
+  getSystemMonoFont: () => ipcRenderer.invoke('get-system-mono-font'),
   setMenuBarIcon: (show: boolean) => ipcRenderer.invoke('set-menu-bar-icon', show),
   getMenuBarIconState: () => ipcRenderer.invoke('get-menu-bar-icon-state'),
   setDockIcon: (show: boolean) => ipcRenderer.invoke('set-dock-icon', show),

@@ -53,7 +53,9 @@ export const layoutCopy = {
    */
   institution: {
     title: hostCopy.labelTitle,
-    body: hostCopy.labelBody,
+    undone: hostCopy.labelUndone,
+    effect: hostCopy.labelBodyEffect,
+    effectLabel: hostCopy.labelBodyLabel,
     set: checklistCopy.setInstitution,
     later: hostCopy.labelLater,
   },

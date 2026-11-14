@@ -1,7 +1,12 @@
 import { AlertCircle, CheckCircle2, ChevronDown, ChevronRight } from '../icons/app-icons';
 import { useMemo, useState } from 'react';
 import { Spinner } from '../ui/spinner';
-import type { StreamState, SubAgentEvent } from './hooks/useIngestStream';
+import {
+  STREAM_ENDED_DETAIL,
+  STREAM_ENDED_WITHOUT_TERMINAL,
+  type StreamState,
+  type SubAgentEvent,
+} from './hooks/useIngestStream';
 
 function prettyToolName(name: string): string {
   const raw = name.startsWith('kb_') ? name.slice(3) : name;
@@ -32,7 +37,14 @@ function summarizeArgs(args: unknown): string {
   return entries.length > 0 ? entries.join(' • ') : 'Using the current staged source context.';
 }
 
-function renderEventLine(ev: SubAgentEvent): { tone: string; text: string } {
+interface LogLine {
+  tone: string;
+  text: string;
+  /** The digest's own error, drawn with the alert glyph at the end of the log. */
+  alert?: boolean;
+}
+
+function renderEventLine(ev: SubAgentEvent): LogLine {
   if (ev.kind === 'step') {
     return {
       tone: 'text-text-default',
@@ -100,7 +112,20 @@ export function DispatchProgress({ state }: Props) {
               ? `Digest error: ${state.error}`
               : '';
 
-  const lines = useMemo(() => state.events.map(renderEventLine), [state.events]);
+  // The header says the error in one line, cut to the row's width; the whole of it closes the
+  // log (owner, 2026-11-13: one line up front, the detail in the fold under it). A stream that
+  // ended with no result says there what that means and what to do.
+  const lines = useMemo(() => {
+    const rendered = state.events.map(renderEventLine);
+    if (state.status === 'error' && state.error) {
+      rendered.push({
+        tone: 'text-text-danger',
+        text: state.error === STREAM_ENDED_WITHOUT_TERMINAL ? STREAM_ENDED_DETAIL : state.error,
+        alert: true,
+      });
+    }
+    return rendered;
+  }, [state.events, state.status, state.error]);
 
   if (state.status === 'idle') return null;
 
@@ -126,7 +151,9 @@ export function DispatchProgress({ state }: Props) {
               aria-hidden="true"
             />
           )}
-          <span className="min-w-0 break-words">{statusLabel}</span>
+          <span className={state.status === 'error' ? 'min-w-0 truncate' : 'min-w-0 break-words'}>
+            {statusLabel}
+          </span>
         </button>
         <span className="shrink-0 text-supporting tabular-nums text-text-muted">
           {state.events.length} events
@@ -151,12 +178,12 @@ export function DispatchProgress({ state }: Props) {
 
             {lines.map((line, index) => (
               <div key={index} className={`flex items-start gap-2 ${line.tone}`}>
-                {line.text.startsWith('Completed') ? (
+                {!line.alert && line.text.startsWith('Completed') ? (
                   <CheckCircle2
                     className="mt-0.5 h-icon-row w-icon-row shrink-0"
                     aria-hidden="true"
                   />
-                ) : line.text.startsWith('Issue') || line.text.startsWith('Digest error') ? (
+                ) : line.alert || line.text.startsWith('Issue') ? (
                   <AlertCircle
                     className="mt-0.5 h-icon-row w-icon-row shrink-0"
                     aria-hidden="true"

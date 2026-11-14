@@ -123,15 +123,15 @@ To change it:
 
 ### Your agent on the server
 
-**Your agent on lab.example.edu** answers "What can your agent do on lab.example.edu?" with three levels. You choose it for your own account, and nobody else can change it. Public models never get any of them.
+**Your agent on lab.example.edu** answers "What can your agent do on lab.example.edu?" with three levels, and the info icon beside the question says what **In a folder** and **As me on the server** allow. You choose it for your own account, and nobody else can change it. Public models never get any of them.
 
 | Level | What your agent may do |
 |---|---|
-| **Off** | "Your agent doesn’t use this server." |
-| **In a folder** | "It reads and writes one folder, and can run commands there in a sandbox." Type the folder's full path, such as `/home/bob/project`, in **Remote work folder**, and turn on **Let my agent run commands in this folder** to let it run commands there. A server whose Linux kernel cannot confine commands to a folder (older than 6.2) gives a folder files only, and commands there need **As me on the server**. |
-| **As me on the server** | Full access: "It runs commands as bob, with your files, programs and network." A work folder is optional: leave it empty, and Biorouter creates one in `~/crew-work`, named for the workspace. |
+| **Off** | Your agent doesn’t use this server. |
+| **In a folder** | Your agent reads and writes one folder, and can run commands there in a sandbox. Type the folder's full path, such as `/home/bob/project`, in **Remote work folder**, and turn on **Let my agent run commands in this folder** to let it run commands there. A server whose Linux kernel cannot confine commands to a folder (older than 6.2) gives a folder files only, and commands there need **As me on the server**. |
+| **As me on the server** | Full access: your agent runs commands as bob, with your files, programs and network. A work folder is optional: leave it empty, and Biorouter creates one in `~/crew-work`, named for the workspace. |
 
-**As me on the server** comes with one warning, which you read before you choose Join: "Your agent will run commands as bob on lab.example.edu: it can read and change anything your account can, use the network, and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust. Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark." When the invitation's host is the account you join as, for example when you host the workspace and join it from another computer, the warning adds "You host chen-lab from this account, so your agent can also read the workspace’s own files on the server, including channels you’re not in. It can also act as the host of chen-lab." See [What your agent may do on the server](agents-and-chat-access.md#what-your-agent-may-do-on-the-server).
+**As me on the server** comes with one warning, which you read before you choose Join: "Your agent will run commands as bob on lab.example.edu: it can read and change anything your account can." The rest of the warning is under **Details** in it: "It can also use the network and start programs that keep running after access ends. Other people’s messages and files in channels it reads can try to steer it. Use a private model you trust." and "Crew treats anything running as your account as you, so your agent can also add a computer to your account and post in Crew as you, with no agent mark." When the invitation's host is the account you join as, for example when you host the workspace and join it from another computer, **Details** adds "You host chen-lab from this account, so your agent can also read the workspace’s own files on the server, including channels you’re not in. It can also act as the host of chen-lab." See [What your agent may do on the server](agents-and-chat-access.md#what-your-agent-may-do-on-the-server).
 
 Joining gives your connection exactly the level you chose. **Off** stays off once the connection has connected: setting Crew up never turns access on by itself. One case is different: a connection saved but never connected from this computer (the desktop's setup failed, for example) that you then join with `biorouter crew join` gets the same level `biorouter crew setup` gives a new connection, **As me on the server**, and the terminal says so before anything runs. Change the level later in **Connection settings…**.
 
@@ -198,22 +198,22 @@ Use this on a new computer, or after you removed a workspace from this one, to o
 | **Start** | You host the workspace, and it is stopped, for example after the server restarted. | Starts that workspace on the server, and restarts no other, then says "Started chen-lab on Crew {version}.". Then choose **Open**. |
 | **Update Crew** | You host the workspace, it is running, and it runs an older Crew than this Biorouter has. | Updates Crew in your account and restarts that workspace on it, and no other, then says "Restarted chen-lab on Crew {version}.". When other people are connected, Crew asks first: "2 other people are connected. Their running agent commands will stop." A server with a Crew from before account ownership cannot say who is connected, so Crew asks then too: "Other people may be connected. Their running agent commands will stop." Choose **Update and restart**, or **Not now**. |
 
-Until you update it, a running workspace you host that runs an older Crew says so under its row, with the Crew it runs and the one it would restart on, such as "Runs Crew 1.94.1, not 1.94.2." The row also says what **Update Crew** does: "Update Crew restarts it." When other people are or may be connected to it, who is connected follows, such as "2 other people are connected. Their running agent commands will stop." You see this after **Look for workspaces**, after **Update Crew** or **Install Crew** in a note about the Crew in your account (below), because neither restarts a workspace, and on every other row after **Update Crew** or **Start** on one row.
+Until you update it, a running workspace you host that runs an older Crew says so under its row, with the Crew it runs and the one it would restart on, such as "Runs Crew 1.94.1, not 1.94.2." The info icon beside its **Update Crew** says what the button does: "Update Crew restarts it." When other people are or may be connected to it, who is connected follows, such as "2 other people are connected. Their running agent commands will stop." You see this after **Look for workspaces**, after **Update Crew** or **Install Crew** in a note about the Crew in your account (below), because neither restarts a workspace, and on every other row after **Update Crew** or **Start** on one row.
 
-After **Update Crew** or **Start** on a row, that workspace, if it is left on its older Crew, says why under its row, such as "It wasn’t restarted, because 2 other people are connected. Choose Update Crew to restart it anyway." The other rows that run an older Crew keep saying what **Update Crew** does, because nothing tried to restart them. A workspace that runs a newer Crew than the one installed in your account, or keeps its data outside `~/.local/share/biorouter-crew`, is not offered **Update Crew** again, because an update cannot restart it: it reads "It runs Crew {version}, newer than the Crew installed in your account, so it was left running." or "It keeps its state outside ~/.local/share/biorouter-crew, so Crew can’t restart it. Restart it on lab.example.edu yourself." A restart that fails says so under the row, with Crew's reason.
+After **Update Crew** or **Start** on a row, that workspace, if it is left on its older Crew, says why under its row, such as "It wasn’t restarted, because 2 other people are connected." Its **Update Crew** stays, to restart it anyway. The other rows that run an older Crew keep saying what **Update Crew** does behind its info icon, because nothing tried to restart them. A workspace that runs a newer Crew than the one installed in your account, or keeps its data outside `~/.local/share/biorouter-crew`, is not offered **Update Crew** again, because an update cannot restart it: it reads "It runs Crew {version}, newer than the Crew installed in your account, so it was left running." or "It keeps its state outside ~/.local/share/biorouter-crew, so Crew can’t restart it. Restart it on lab.example.edu yourself." A restart that fails says so under the row, with Crew's reason.
 
 The workspaces are listed by the Crew in your own account on the server. When that Crew cannot list them, the steps end at "Looking for workspaces", marked as failed, with no "Ready", and the dialog says why:
 
-- "Crew {version} in your account on lab.example.edu is too old to list workspaces. Choose Update Crew to update it.", with **Update Crew**.
-- "Crew isn’t installed in your account on lab.example.edu, so Biorouter can’t look for workspaces there. Choose Install Crew to install it.", with **Install Crew**.
+- "Crew {version} in your account on lab.example.edu is too old to list workspaces.", with **Update Crew**.
+- "Crew isn’t installed in your account on lab.example.edu, so Biorouter can’t look for workspaces there.", with **Install Crew**.
 
 Either button installs this Biorouter's Crew in your account and restarts no workspace. The same step then lists the workspaces, so you do not need to choose **Look for workspaces** again. A Biorouter that carries no Crew of its own shows only the reason, after "Crew couldn’t list the workspaces on the server:", with no button. When the listing fails or takes too long, the dialog shows Crew's reason the same way.
 
 When a step ends, and the button you pressed lost the keyboard focus while it ran, Crew puts the focus on that workspace's first button, or on the first workspace found.
 
-A workspace you were removed from has no button, and reads "You were removed from chen-lab. Ask a member to invite you again." When the list is empty, Crew says "There are no workspaces for you on lab.example.edu. To join someone else’s, ask them to invite you."
+A workspace you were removed from has no button, and reads "You were removed from chen-lab. Ask a member to invite you again." When the list is empty, Crew says "There are no workspaces for you on lab.example.edu.", and its info icon adds "To join someone else’s, ask them to invite you."
 
-Crew trusts a workspace found this way because the server vouches for it: it runs in a folder only its host's account controls, as a program running as that account. Check that the host Crew names is the one you expect. When two hosts on the server have a workspace with the same name, Crew says "Two people host a workspace named chen-lab here. Check the host before you open one.", and names each host in the list.
+Crew trusts a workspace found this way because the server vouches for it: it runs in a folder only its host's account controls, as a program running as that account. Check that the host Crew names is the one you expect. When two hosts on the server have a workspace with the same name, Crew says "Two people host a workspace named chen-lab here.", with "Check the host before you open one." behind its info icon, and names each host in the list.
 
 From a terminal, `biorouter crew open chen-lab --server bob@lab.example.edu` does the same ([Open a workspace from a terminal](command-line.md#open-a-workspace-from-a-terminal)).
 
@@ -221,16 +221,18 @@ From a terminal, `biorouter crew open chen-lab --server bob@lab.example.edu` doe
 
 A computer can lose its key for a workspace, for example after you reinstalled the computer or cleared its keychain, or after you removed it in **Keys and security…** ([Your computers](privacy-and-security.md#your-computers)). The connection bar then says one of these, whether Crew finds out when it connects or while a channel is open:
 
-- "This computer no longer has its key for {workspace}. Choose Add this computer again to make a new one."
-- "{workspace} no longer recognizes this computer. Choose Add this computer again while you are still a member."
-- "You removed this computer from {workspace}. Choose Add this computer again to use it here."
+- "This computer no longer has its key for {workspace}."
+- "{workspace} no longer recognizes this computer."
+- "You removed this computer from {workspace}."
+
+Each one comes with an **Add this computer again** button.
 
 To fix it:
 
 1. Choose **Add this computer again** in the connection bar. It reads "Adding this computer…" while it works.
 2. If the server asks for a password or a code, sign in.
 
-Crew makes a new key for this computer and adds it to the workspace as your account. The bar then says "This computer is back in {workspace}. Chats that had Crew access through it need access again." The saved connection stays, with its settings. Grant a chat its access again with `/crew`. **Reconnect** is a different action: it only dials the server again with the key this computer has.
+Crew makes a new key for this computer and adds it to the workspace as your account. The bar then says "This computer is back in {workspace}. Chats that had Crew access through it need access again.", the second sentence under its **Details**. The saved connection stays, with its settings. Grant a chat its access again with `/crew`. **Reconnect** is a different action: it only dials the server again with the key this computer has.
 
 A workspace keeps up to 32 computers for each person. When a new one would be the 33rd, the workspace removes your oldest computer, and the bar adds "To make room, the workspace removed your oldest computer, {fingerprint}."
 
@@ -238,7 +240,7 @@ From a terminal, run `biorouter crew rejoin` ([Add this computer again from a te
 
 ## Add this computer to your existing account
 
-On a server with a current Crew, use [Open a workspace on a server](#open-a-workspace-on-a-server). Your new computer joins as your account, and you keep your teams and channels. Your host cannot invite you again while you are a member: their Invite dialog says "@bob is already in chen-lab. A new computer of theirs gets in when they open chen-lab on it, signed in to the server as @bob."
+On a server with a current Crew, use [Open a workspace on a server](#open-a-workspace-on-a-server). Your new computer joins as your account, and you keep your teams and channels. Your host cannot invite you again while you are a member: their Invite dialog says "@bob is already in chen-lab. A new computer of theirs gets in when they open chen-lab on it, signed in to the server as @bob.", the second sentence behind its info icon.
 
 On a server with an older Crew:
 

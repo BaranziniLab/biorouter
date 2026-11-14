@@ -6,6 +6,13 @@ import { SettingRow, SettingSection } from '../../ui/setting-row';
 import { dictationMessage } from '../../dictation/copy';
 import { serverCopy } from './copy';
 
+/**
+ * The section's words, under the name its own tests and #488's read them by. The same object as
+ * `serverCopy` (`./copy`), so Settings > App and this section can never name a field two ways.
+ * The restart is said once, in the switch's help (owner, 2026-11-13).
+ */
+export const externalBackendCopy = serverCopy;
+
 interface ExternalBiorouterdConfig {
   enabled: boolean;
   url: string;
@@ -210,9 +217,6 @@ export default function ExternalBackendSection() {
               {dictationMessage('MSG-DISCLOSE-REMOTE', { host: hostOf(config.url) })}
             </Note>
           )}
-          <Note tone="warning">
-            <strong className="font-semibold">{serverCopy.restartLead}</strong> {serverCopy.restart}
-          </Note>
         </>
       )}
     </SettingSection>

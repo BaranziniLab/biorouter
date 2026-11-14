@@ -1,6 +1,6 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { Note, type NoteTone } from './note';
+import { NOTE_DETAILS_LABEL, Note, type NoteTone } from './note';
 
 /**
  * Class-list assertions, not computed styles.
@@ -157,5 +157,33 @@ describe('Note', () => {
     );
     expect(box().querySelector('.biorouter-note-clamp')).toBeNull();
     expect(screen.queryByRole('button', { name: /Show more/ })).toBeNull();
+  });
+
+  // Owner, 2026-11-13: a note says its one sentence and folds the rest.
+  it('folds `details` behind a closed disclosure under the body, outside the clamp', () => {
+    render(
+      <Note testId="note" tone="warning" details="The figures behind it.">
+        The one sentence.
+      </Note>
+    );
+    expect(screen.getByText('The one sentence.')).toBeInTheDocument();
+    const toggle = screen.getByRole('button', { name: NOTE_DETAILS_LABEL });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('The figures behind it.')).toBeNull();
+    fireEvent.click(toggle);
+    expect(screen.getByText('The figures behind it.')).toBeInTheDocument();
+    // The disclosure is never inside the clamped node, so a clamp can never hide its trigger.
+    expect(toggle.closest('.biorouter-note-clamp')).toBeNull();
+  });
+
+  it('names its disclosure as asked, and draws none without details', () => {
+    const { rerender } = render(
+      <Note testId="note" details="Because." detailsLabel="Why?">
+        Line.
+      </Note>
+    );
+    expect(screen.getByRole('button', { name: 'Why?' })).toBeInTheDocument();
+    rerender(<Note testId="note">Line.</Note>);
+    expect(screen.queryByRole('button')).toBeNull();
   });
 });

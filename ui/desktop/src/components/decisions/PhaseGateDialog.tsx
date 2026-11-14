@@ -165,14 +165,16 @@ export const PHASE_GATE_COPY = {
   editor: {
     replaces: 'Saving makes this gate yours and starts its attempts over.',
     questions: 'Questions',
+    /** 9.16: who answers, and from what. What passing takes is the Threshold field's tip. */
     questionsHelp:
-      "A decision model answers each question from the phase's hand-off and its subagents' results, or the chat's own model when the chat has none. The phase completes only when every answer reaches the threshold.",
+      "A decision model answers each question from the phase's hand-off and its subagents' results, or the chat's own model when the chat has none.",
     question: (n: number) => `Question ${n}`,
     addQuestion: 'Add a question',
     removeQuestion: (n: number) => `Remove question ${n}`,
     questionLimit: `A gate asks at most ${GATE_QUESTIONS_MAX} questions.`,
     threshold: 'Threshold',
-    thresholdHelp: 'The probability of yes each question must reach.',
+    thresholdHelp:
+      'The probability of yes each question must reach. The phase completes only when every answer reaches the threshold.',
     /** R2: the helper names its outcome, in words. */
     thresholdRule: (t: string) => `Passes when every question's P(yes) is at or above ${t}.`,
     thresholdLow:

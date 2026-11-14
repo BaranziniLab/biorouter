@@ -464,12 +464,11 @@ impl App {
 
     pub fn push_error(&mut self, text: &str) {
         self.push_blank();
+        // Red is rare (design.md 9.14): the bold "error:" says what this is, and the
+        // message keeps the terminal's own ink. A failed request is rarely an alarm.
         self.push_line(Line::from(vec![
-            Span::styled(
-                "error: ",
-                Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(text.to_string(), Style::new().fg(Color::Red)),
+            Span::styled("error: ", Style::new().add_modifier(Modifier::BOLD)),
+            Span::raw(text.to_string()),
         ]));
     }
 

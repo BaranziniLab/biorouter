@@ -9,6 +9,7 @@ import { Input } from '../ui/input';
 import { Skeleton } from '../ui/skeleton';
 import { FilterInput } from '../ui/filter-input';
 import { InfoTip } from '../ui/info-tip';
+import { TruncatedLine } from '../ui/truncated-line';
 import { IconAction, RowActions, RowContextMenu, type RowActionItem } from '../ui/row-actions';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { ModalShell } from '../ModalShell';
@@ -817,10 +818,16 @@ export function WorkflowRow({
             )}
             {builtIn && <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />}
           </div>
+          {/* One line, the clipped end a hover away. No Tab stop: a click on the row's own
+              surface opens the editor, which holds the whole description, and a focusable line
+              would be a control the row's click skips. */}
           {workflow.description && (
-            <p className="min-w-0 truncate text-supporting text-text-muted">
-              {workflow.description}
-            </p>
+            <TruncatedLine
+              as="p"
+              text={workflow.description}
+              focusable={false}
+              className="text-supporting text-text-muted"
+            />
           )}
         </div>
         <RowActions

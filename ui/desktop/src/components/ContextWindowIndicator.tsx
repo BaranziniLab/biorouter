@@ -14,6 +14,7 @@ import {
   FooterCardValue,
 } from './bottom_menu/FooterCard';
 import { useFooterCard } from './bottom_menu/useFooterCard';
+import { InfoTip } from './ui/info-tip';
 import {
   AUTO_COMPACT_MAX_TOKENS_KEY,
   effectiveAutoCompactTrigger,
@@ -36,10 +37,14 @@ const AUTO_COMPACT_DEFAULT_PCT = 80;
 /**
  * The note while the token ceiling, not the marker's share, is where Biorouter compacts (a window
  * over 250k tokens by default). Local rather than in `CONTEXT_CARD_COPY` because only this card
- * says it.
+ * says it. One line in the card; why the marker does not move it is the note's InfoTip (owner,
+ * 2026-11-13: one line up front, the detail on hover).
  */
 export const CEILING_NOTE = (tokens: string, pct: number) =>
-  `Biorouter compacts this chat automatically at ${tokens} tokens used (${pct}%), the limit for any window. The marker sets a share of the window, which applies only below that.`;
+  `Compacts automatically at ${tokens} tokens used (${pct}%).`;
+export const CEILING_HELP_LABEL = 'the compaction limit';
+export const CEILING_HELP =
+  'That is the limit for any window. The marker sets a share of the window, which applies only below it.';
 /** The ceiling tick's accessible description, read with the bar. */
 export const CEILING_TICK_LABEL = (tokens: string) => `Compacts at ${tokens} tokens`;
 
@@ -384,11 +389,16 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
         )}
       </div>
       <FooterCardNote>
-        {compactsAt === null
-          ? CONTEXT_CARD_COPY.autoCompactOff
-          : ceilingTick
-            ? CEILING_NOTE(fmt(ceilingTick.tokens), Math.max(1, Math.round(ceilingTick.pct)))
-            : CONTEXT_CARD_COPY.autoCompactNote(compactsAt)}
+        {compactsAt === null ? (
+          CONTEXT_CARD_COPY.autoCompactOff
+        ) : ceilingTick ? (
+          <>
+            {CEILING_NOTE(fmt(ceilingTick.tokens), Math.max(1, Math.round(ceilingTick.pct)))}
+            <InfoTip label={CEILING_HELP_LABEL} help={CEILING_HELP} />
+          </>
+        ) : (
+          CONTEXT_CARD_COPY.autoCompactNote(compactsAt)
+        )}
       </FooterCardNote>
       <FooterCardActions>
         <FooterCardAction

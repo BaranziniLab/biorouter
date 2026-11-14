@@ -38,6 +38,10 @@ export const knowledgeCopy = {
     publicHint: 'Any model can read this base',
     makePublic: 'Make public…',
     makePrivate: 'Make private',
+    /** The Make public dialog's InfoTip, beside its one line of consequence. */
+    makePublicInfoLabel: 'making this base public',
+    makePublicInfo:
+      'That includes anything a private chat wrote into it. This cannot be undone for content that has already been read.',
     /** The badge-button's whole accessible name, as one hidden run (Crew UXN-15). */
     name: (label: string, hint: string, enforcementOff: boolean) =>
       `${label}${enforcementOff ? ' (enforcement off)' : ''}: ${hint}`,
@@ -58,8 +62,9 @@ export const knowledgeCopy = {
     dropButtonName: 'Drag and drop to stage, or choose sources',
     dropHint: 'PDF, Office, web pages, folders',
     dropInfoLabel: 'staging files',
+    // Two sentences, about 160 characters: the InfoTip's ceiling (spec 2.6).
     dropInfo:
-      'Readable files (.pdf, .pptx, .xlsx, .docx, .csv, .md, .html, .txt) are staged one by one, and folders and archives are unpacked; binaries are skipped. Import a .brkb archive from Manage bases.',
+      'Files (.pdf, .pptx, .xlsx, .docx, .csv, .md, .html, .txt) are staged one by one, folders and archives unpacked, binaries skipped. Import a .brkb from Manage bases.',
     pasteText: 'Paste text',
     chooserTitle: 'Stage knowledge sources',
     chooserSubtitle: 'Add files, or a folder or archive.',

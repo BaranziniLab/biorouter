@@ -15,6 +15,18 @@ type Drag = {
 const MIN_REGION_PX = 8;
 
 /**
+ * The pill over the preview while a region is being picked: the one action and the way out
+ * (owner, 2026-11-13: one line up front). The overlay takes no pointer events, so the rest
+ * cannot be a hover here; it is {@link ANNOTATION_MODIFIERS_HINT}, on the camera button that
+ * starts and cancels the mode.
+ */
+export const ANNOTATION_PROMPT = 'Drag to select a region · Esc to cancel';
+
+/** The modifier keys, said as the camera button's tooltip (`ArtifactViewer`). */
+export const ANNOTATION_MODIFIERS_HINT =
+  'Hold Shift for a square, Option to size from the center, or Space to move the box.';
+
+/**
  * Drag a rectangle over the panel to select a region.
  *
  * The affordances are lifted from `Cmd+Shift+4`, deliberately: that is the
@@ -263,7 +275,7 @@ export default function AnnotationOverlay({
       {!drag && (
         <div className="pointer-events-none absolute inset-x-0 top-3 flex justify-center">
           <p className="rounded-element bg-black/75 px-2.5 py-1 text-supporting text-white">
-            Drag to select a region · Shift square · Option center · Space move · Esc cancel
+            {ANNOTATION_PROMPT}
           </p>
         </div>
       )}

@@ -81,9 +81,12 @@ describe('a host setup stopped by unsafe storage (L3)', () => {
     const problem = await screen.findByTestId('crew-setup-problem');
     // The daemon's own sentence, naming the folders and the command, and what the button does.
     expect(problem).toHaveTextContent(UNSAFE_MESSAGE);
-    expect(problem).toHaveTextContent(setupCopy.fixStorageHint);
     const fix = within(problem).getByRole('button', { name: setupCopy.fixStorage });
     expect(fix).toHaveAccessibleDescription(setupCopy.fixStorageHint);
+    // What the button does is its info tip, beside it (owner, 2026-11-13).
+    expect(
+      within(problem).getByRole('button', { name: `About ${setupCopy.fixStorage}` })
+    ).toHaveAccessibleDescription(setupCopy.fixStorageHint);
     // The folders it named, under Show details.
     fireEvent.click(screen.getByRole('button', { name: setupCopy.output }));
     expect(screen.getByLabelText(setupCopy.outputLabel)).toHaveTextContent(UNSAFE_DETAIL);

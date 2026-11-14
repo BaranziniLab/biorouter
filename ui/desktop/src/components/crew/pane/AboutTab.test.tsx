@@ -64,7 +64,9 @@ describe('AboutTab', () => {
     const about = await shown();
     expect(within(about).getByText('#general')).toBeInTheDocument();
     expect(within(about).getByText(aboutCopy.restricted)).toBeInTheDocument();
-    expect(within(about).getByText(aboutCopy.restrictedHint)).toBeInTheDocument();
+    expect(
+      within(about).getByRole('button', { name: `About ${aboutCopy.whoCanRead}` })
+    ).toHaveAccessibleDescription(aboutCopy.restrictedHint);
     expect(within(about).getAllByText('Alice Chen')).toHaveLength(2);
     expect(within(about).getByText('Analysis Lab')).toBeInTheDocument();
     expect(about.textContent).not.toMatch(UUID);
@@ -94,9 +96,13 @@ describe('AboutTab', () => {
     const about = await shown();
     const label = within(about).getByText(aboutCopy.whoCanRead);
     expect(label.tagName).toBe('DT');
-    expect(label.nextElementSibling).toHaveTextContent(
-      `${aboutCopy.restricted}${aboutCopy.restrictedHint}`
-    );
+    expect(label.nextElementSibling).toHaveTextContent(aboutCopy.restricted);
+    // Why, from the channel's mark, is the value's info tip (owner, 2026-11-13).
+    expect(
+      within(label.nextElementSibling as HTMLElement).getByRole('button', {
+        name: `About ${aboutCopy.whoCanRead}`,
+      })
+    ).toHaveAccessibleDescription(aboutCopy.restrictedHint);
     expect(aboutCopy.restricted).toBe('Private models only');
     expect(within(about).queryByText('Content')).toBeNull();
     expect(within(about).queryByText('Restricted')).toBeNull();
@@ -233,7 +239,9 @@ describe('AboutTab', () => {
     act(() => currentCrew().selectChannel(methods.id));
     await waitFor(() => expect(currentCrew().channel?.id).toBe(methods.id));
     expect(screen.getByText(aboutCopy.publicSafe)).toBeInTheDocument();
-    expect(screen.getByText(aboutCopy.publicSafeHint)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: `About ${aboutCopy.whoCanRead}` })
+    ).toHaveAccessibleDescription(aboutCopy.publicSafeHint);
   });
 });
 

@@ -1213,6 +1213,22 @@ Key invariants, each learned from a real bug:
   in Parchment), so a nav icon is one ink with its label and the accent is held
   for the active row's rail and the lock badge; it still differs per family
   because the ink does.
+- **Red is rare** ([design.md](design.md) 9.14; owner, 2026-11-12). The danger
+  tone is drawn in INK at the token layer: `--text-danger` is the primary ink,
+  `--background-danger` the secondary ink and `--wash-danger` that ink at 8%, in
+  every family and mode, so a failure, a risk chip, a destructive button or an
+  error note reads calm and is identified by its words and glyph (`FAILED_GLYPH`,
+  a circled ✕, for a failed transcript line; the Destructive risk grade is the
+  `strong` neutral Badge). Red is left for real danger only: `--border-danger`,
+  the edge of an invalid field or a refusing drop zone, and Button `critical`
+  (`--background-critical`, `--text-critical`), the danger zones' buttons in
+  Settings › Models, Settings › App and a Crew channel's About. Never bring red
+  back with a hex or a `--color-red-*` utility; `styles/redIsRare.test.ts` holds it.
+- **Code is set in SF Mono on macOS** (design.md 9.15). `--font-mono` is Codex's
+  code stack verbatim, but Chromium resolves none of `ui-monospace`,
+  `SFMono-Regular` or `"SF Mono"`, so code used to render in Menlo. The main
+  process reads the installed `SFNSMono.ttf` (`get-system-mono-font`, macOS only)
+  and `utils/systemMonoFont.ts` registers it as "SF Mono" with the FontFace API.
 - **`terminalGround` is now the same token in all three** — `--background-muted`,
   in both modes. The warning that used to sit here was right and still is, aimed
   at a changed fact: Parchment dark really did paint `--background-code`, and

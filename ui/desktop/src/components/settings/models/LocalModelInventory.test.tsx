@@ -281,16 +281,15 @@ describe('LocalModelInventory', () => {
     }
   });
 
-  /// The three machine values of the info dialog (the model id, the Hugging Face spec and the
-  /// path) are set in ONE face (vision round 2, V4-R2-8). They were mixed: the paths mono at the 13px
-  /// code role, the two ids sans (F-21 argued an id is a name because the list row behind the dialog
-  /// printed it in the body font; the row no longer prints it). Mono at the supporting size is the
-  /// scale's mono size for IDs (spec 5.3). The prose rows stay in the body face, so this is not
-  /// "the dialog is all monospace".
+  /// The info dialog's machine values (design.md D-42). The two identifiers (the Ollama tag and the
+  /// Hugging Face spec) are read character by character, so they are mono at the code role (12/20,
+  /// the role every code surface uses). The two paths say where the model lives, so they are names
+  /// with a place, in the body face like every other folder in the app. They were one mono face at
+  /// the supporting size (V4-R2-8) until D-42 put a folder that says where something lives in sans.
   ///
   /// jsdom never runs Tailwind, so a computed-font assertion would pass whatever the class says.
   /// This asserts the CLASS on the value element.
-  it('sets the model id, the GGUF spec and the model store in one mono face (V4-R2-8)', async () => {
+  it('sets the two ids in mono at the code role and the two paths in the body face (D-42)', async () => {
     mockLlamacppStatus.mockResolvedValue(
       statusResponse(
         {},
@@ -308,22 +307,27 @@ describe('LocalModelInventory', () => {
       return value as HTMLElement;
     };
 
-    const machine = [
-      localModelsCopy.detail.ollamaModel,
-      localModelsCopy.detail.fallbackDownload,
-      localModelsCopy.detail.modelStore,
-      localModelsCopy.detail.modelBlob,
-    ];
-    const classes: string[] = [];
-    for (const label of machine) classes.push((await valueFor(label)).className);
-    for (const [index, className] of classes.entries()) {
-      expect(className, machine[index]).toMatch(/\bfont-mono\b/);
-      expect(className, machine[index]).toMatch(/\btext-supporting\b/);
-      // The 13px code role is the terminal's and a code block's, not a fact list's.
-      expect(className, machine[index]).not.toMatch(/\btext-code\b/);
+    const ids = [localModelsCopy.detail.ollamaModel, localModelsCopy.detail.fallbackDownload];
+    const idClasses: string[] = [];
+    for (const label of ids) idClasses.push((await valueFor(label)).className);
+    for (const [index, className] of idClasses.entries()) {
+      expect(className, ids[index]).toMatch(/\bfont-mono\b/);
+      expect(className, ids[index]).toMatch(/\btext-code\b/);
+      expect(className, ids[index]).not.toMatch(/\btext-supporting\b/);
     }
-    // One face, one size: the four class strings are the same.
-    expect(new Set(classes).size).toBe(1);
+    // One face, one size for the ids: the two class strings are the same.
+    expect(new Set(idClasses).size).toBe(1);
+
+    // The paths: the body face, still breaking anywhere so a long path never widens the dialog.
+    const paths = [localModelsCopy.detail.modelStore, localModelsCopy.detail.modelBlob];
+    for (const label of paths) {
+      const className = (await valueFor(label)).className;
+      expect(className, label).not.toMatch(/font-mono/);
+      expect(className, label).toMatch(/\bbreak-all\b/);
+    }
+    expect(await valueFor(localModelsCopy.detail.modelBlob)).toHaveTextContent(
+      '/tmp/models/qwen3.8-27b.gguf'
+    );
 
     // Prose values stay in the body face.
     for (const label of [localModelsCopy.detail.family, localModelsCopy.detail.download]) {
@@ -670,6 +674,63 @@ describe('LocalModelInventory', () => {
     ).toBeInTheDocument();
     expect(mockCheckOllamaStatus).not.toHaveBeenCalled();
     expect(mockLlamacppEnsure).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The confirmation says the consequence; what the memory figure means on this kind of machine
+   * is behind "Why?" (owner, 2026-11-13: one line up front, the detail a click away).
+   */
+  it('folds what the memory figure means behind Why? in the resource confirmation', async () => {
+    mockLlamacppStatus.mockResolvedValue(
+      statusResponse(
+        {},
+        { suitable: false, suitability_status: 'below_minimum' },
+        { os: 'macos', accelerator_memory_gib: 16, accelerator_memory_kind: 'apple_unified' }
+      )
+    );
+    const user = userEvent.setup();
+    render(<LocalModelInventory />);
+
+    await user.click(await screen.findByText('Install'));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveTextContent(
+      'Qwen3.8 27B needs at least 32 GB of GPU-addressable memory (48 GB recommended). This machine reports 16 GB unified memory, so it may fail to load or run very slowly.'
+    );
+    expect(dialog).not.toHaveTextContent(localModelsCopy.memoryMeaning.unified);
+
+    await user.click(
+      within(dialog).getByRole('button', { name: localModelsCopy.confirmResources.why })
+    );
+    expect(dialog).toHaveTextContent(localModelsCopy.memoryMeaning.unified);
+    expect(mockLlamacppEnsure).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The info dialog's subtitle is the catalog description's lead; the rest of the description is
+   * the InfoTip beside the title, so nothing the daemon wrote is lost.
+   */
+  it('shows the description lead as the subtitle and the rest in the title InfoTip', async () => {
+    mockLlamacppStatus.mockResolvedValue(
+      statusResponse(
+        {},
+        {
+          description:
+            "Default local model: Alibaba's Qwen3.8 27B (August 2026, Apache 2.0), a dense model built for agentic coding",
+        }
+      )
+    );
+    render(<LocalModelInventory />);
+    const user = await openRowMenu();
+    await user.click(await screen.findByRole('menuitem', { name: localModelsCopy.viewInfo }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toHaveAccessibleDescription(
+      "Default local model: Alibaba's Qwen3.8 27B (August 2026, Apache 2.0)"
+    );
+    expect(
+      within(dialog).getByRole('button', { name: 'About Qwen3.8 27B' })
+    ).toHaveAccessibleDescription('A dense model built for agentic coding.');
   });
 
   describe('deleting a model Llama Server found in Ollama', () => {

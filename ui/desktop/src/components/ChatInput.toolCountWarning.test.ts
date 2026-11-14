@@ -7,9 +7,16 @@ describe('toolCountWarning', () => {
     window.addEventListener('current-chat-extensions:open', open);
 
     const warning = toolCountWarning(61, 'chat-1');
-    expect(warning?.message).toContain('This chat can call 61 tools');
-    expect(warning?.message).toContain('including built-in capabilities');
-    expect(warning?.message).toContain('Capability defaults apply to a new chat');
+    // The count is the one visible line; the line that restated the action button is gone, and
+    // why it matters is the alert's info icon (owner, 2026-11-13; design.md 9.16).
+    expect(warning?.message).toBe(
+      'This chat can call 61 tools, including built-in capabilities (recommended: 60 or fewer).'
+    );
+    expect(warning?.help).toBe(
+      'Too many tools can degrade performance. Capability defaults apply to a new chat.'
+    );
+    expect(warning?.message).not.toContain('Review currently attached extensions');
+    expect(warning?.help).not.toContain('Review currently attached extensions');
     expect(warning?.action?.text).toBe('Review extensions');
     warning?.action?.onClick();
 

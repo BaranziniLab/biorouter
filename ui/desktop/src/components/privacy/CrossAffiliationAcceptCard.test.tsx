@@ -49,7 +49,9 @@ describe('CrossAffiliationAcceptCard', () => {
     expect(mockAccept).toHaveBeenCalledWith('chat_7', 'ucsfomopagent');
 
     // The confirmation is the daemon's composition, not a paraphrase: the
-    // sentence recorded and the sentence read must not differ by a word.
+    // sentence recorded and the sentence read must not differ by a word. It
+    // folds whole under "What was recorded" (owner, 2026-11-13), one click away.
+    await user.click(await screen.findByRole('button', { name: 'What was recorded' }));
     expect(await screen.findByText(ACCEPTED)).toBeInTheDocument();
     // …and the control is gone, so a second press cannot re-post it.
     expect(screen.queryByRole('button', { name: /approve this flow/i })).not.toBeInTheDocument();
@@ -59,6 +61,9 @@ describe('CrossAffiliationAcceptCard', () => {
     expect(screen.getByTestId('cross-affiliation-accepted')).toHaveTextContent(
       /try that step again/i
     );
+    expect(
+      screen.getByRole('button', { name: 'About trying the step again' })
+    ).toHaveAccessibleDescription('It was told not to retry on its own.');
   });
 
   it('says what failed and leaves the control pressable when the daemon refuses', async () => {
@@ -114,6 +119,7 @@ describe('CrossAffiliationAcceptCard', () => {
     // …and the control itself is the same one, posting the same triple.
     await user.click(await screen.findByRole('button', { name: /approve this flow/i }));
     expect(mockAccept).toHaveBeenCalledWith('chat_7', 'ucsfomopagent');
+    await user.click(await screen.findByRole('button', { name: 'What was recorded' }));
     expect(await screen.findByText(ACCEPTED)).toBeInTheDocument();
   });
 
@@ -187,5 +193,14 @@ describe('CrossAffiliationAcceptCard', () => {
     // exists to enforce stopped reaching the screen. This closes it: the two
     // tests now pin the same bytes at both ends of the wire.
     expect(screen.getByTestId('cross-affiliation-accept')).toHaveTextContent(GRANT_SCOPE_COPY);
+    // Owner, 2026-11-13: the first sentence, byte for byte, is the visible line, and the rest is
+    // the info icon's accessible description, so the same bytes are split, never paraphrased.
+    const scope = screen.getByTestId('cross-affiliation-scope');
+    const lead = scope.firstChild?.textContent ?? '';
+    expect(GRANT_SCOPE_COPY.startsWith(lead)).toBe(true);
+    expect(lead).toMatch(/^Approving records your acceptance .* only\.$/);
+    expect(
+      screen.getByRole('button', { name: 'About what approving covers' })
+    ).toHaveAccessibleDescription(GRANT_SCOPE_COPY.slice(lead.length + 1));
   });
 });

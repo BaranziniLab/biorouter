@@ -1,7 +1,7 @@
 import './transcript-row.css';
 import * as React from 'react';
 import { cn } from '../utils';
-import { ChevronRight } from './icons/app-icons';
+import { ChevronRight, CircleX } from './icons/app-icons';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible';
 
 /** Any 16px glyph component: a tool glyph, `Brain`, `Check`, `AlertTriangle`. */
@@ -34,9 +34,11 @@ export interface TranscriptRowProps {
   /** Work in progress: the label breathes until the row is hovered or focused. */
   running?: boolean;
   /**
-   * `danger` draws the line in danger ink: a call that failed, or a row that
-   * failed to render. Only the row's own line; rows nested in its body keep
-   * their own tone.
+   * `danger` marks a call that failed, or a row that failed to render. It is
+   * drawn calm, not red (design.md 9.14, red is rare): the line keeps the muted
+   * ink and the leading glyph becomes the failure glyph ({@link FAILED_GLYPH}),
+   * so the words and that one shape say "failed". Only the row's own line; rows
+   * nested in its body keep their own tone.
    */
   tone?: 'muted' | 'danger';
   /** A screen-reader status beside the glyph ("Tool status: success"). */
@@ -60,6 +62,13 @@ export interface TranscriptRowProps {
   triggerClassName?: string;
   'data-testid'?: string;
 }
+
+/**
+ * The glyph every failed line wears in place of its tool's own: a circled ✕, in
+ * the primary ink while the line itself stays muted. With the "Failed to …" verb
+ * it identifies a failure at a glance without colour (design.md 9.14).
+ */
+export const FAILED_GLYPH = CircleX;
 
 /**
  * The one transcript line (D-17: a tool call is a line, not a card).
@@ -107,7 +116,7 @@ export function TranscriptRow({
   const head = (
     <>
       <span className="br-transcript-row-glyph" data-tool-glyph={glyph} aria-hidden="true">
-        <Icon />
+        {tone === 'danger' ? <FAILED_GLYPH /> : <Icon />}
       </span>
       {statusLabel ? <span role="img" className="sr-only" aria-label={statusLabel} /> : null}
       <span className="br-transcript-row-label">{label}</span>

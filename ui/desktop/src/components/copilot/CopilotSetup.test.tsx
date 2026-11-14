@@ -40,7 +40,12 @@ describe('CopilotSetup', () => {
     fireEvent.click(checkButton());
     await screen.findByText('Runtime ready');
     expect(screen.getByText(/OS permissions: Not checked/)).toBeVisible();
-    expect(screen.getByText(/server-host/)).toBeVisible();
+    // Which runtime answered is the state line's InfoTip, not two lines of the panel.
+    const about = screen.getByRole('button', { name: 'About this runtime' });
+    expect(about).toHaveAccessibleDescription(
+      'Backend computer: server-host. Runtime version: 0.3.5 · darwin-arm64.'
+    );
+    expect(screen.getByText('Runtime ready')).toContainElement(about);
   });
 
   // A real machine had three copies of the helper — an installed Biorouter, a
@@ -61,11 +66,13 @@ describe('CopilotSetup', () => {
     render(<CopilotSetup />);
     fireEvent.click(checkButton());
     await screen.findByText(/Screen Recording: not allowed/);
-    expect(
-      screen.getByText(
-        '/Users/x/src/target/debug/computer-use/BioRouter Computer Use.app/Contents/MacOS/ocu'
-      )
-    ).toBeVisible();
+    const path = screen.getByText(
+      '/Users/x/src/target/debug/computer-use/BioRouter Computer Use.app/Contents/MacOS/ocu'
+    );
+    expect(path).toBeVisible();
+    // Data read character by character, so it is set as code (design.md D-42).
+    expect(path.tagName).toBe('CODE');
+    expect(path).toHaveClass('font-mono', 'text-code');
   });
 
   // The negative control: a ready runtime must NOT nag about a path, or every
@@ -136,6 +143,10 @@ describe('CopilotSetup', () => {
 
       expect(await screen.findByText(message)).toBeVisible();
       expect(screen.getAllByText(/Biorouter Computer Use/i)).toHaveLength(1);
+      // What to do if macOS asks to reopen the app is the InfoTip beside the macOS line.
+      expect(
+        screen.getByRole('button', { name: 'About allowing permissions on macOS' })
+      ).toHaveAccessibleDescription(/Checking permissions does not grant them/);
       expect(
         screen.getByText(/Review Accessibility and Screen Recording in System Settings/)
       ).toHaveTextContent('on the backend computer, then check again.');
@@ -296,6 +307,10 @@ describe('permission repair controls', () => {
     fireEvent.click(checkButton());
     expect(await screen.findByText(/this does not mean access was denied/)).toBeVisible();
     expect(screen.getByText('native helper timed out')).toBeVisible();
+    // The failure's first line is in view; what to do about it is the InfoTip beside it.
+    expect(
+      screen.getByRole('button', { name: 'About recovering from a failed check' })
+    ).toHaveAccessibleDescription(/Restart Biorouter on the backend computer and check again/);
     expect(screen.queryByText(/A required OS permission is missing/)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Open Accessibility settings' })).toBeNull();
   });
@@ -360,7 +375,10 @@ describe('permission repair controls', () => {
     });
     render(<CopilotSetup />);
     fireEvent.click(checkButton());
-    expect(await screen.findByText(/If it is remote, changing permissions/)).toBeVisible();
+    expect(await screen.findByText('Make these changes on the backend computer.')).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: 'About a remote backend' })
+    ).toHaveAccessibleDescription(/If it is remote, changing permissions/);
     expect(screen.queryByRole('button', { name: 'Open Accessibility settings' })).toBeNull();
     expect(openSettings).not.toHaveBeenCalled();
   });

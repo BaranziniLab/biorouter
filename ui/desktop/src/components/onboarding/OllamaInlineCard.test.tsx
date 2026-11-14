@@ -621,9 +621,18 @@ describe('OllamaInlineCard', () => {
     render(<OllamaInlineCard onSuccess={vi.fn()} />);
 
     const note = await screen.findByTestId('ollama-public-note');
-    expect(note).toHaveTextContent('public, not private');
-    expect(note).toHaveTextContent('http://gpu-box.lab.example:11434');
+    // The consequence is the visible line; what counts as this computer and what is sent are the
+    // InfoTip at its end, and still the note's text for a screen reader (design.md 9.16).
+    expect(note.firstChild?.textContent).toBe(
+      ollamaCopy.publicNoteShort('http://gpu-box.lab.example:11434')
+    );
+    expect(note).toHaveTextContent('a private chat cannot use it');
     expect(note).toHaveAttribute('role', 'note');
+    expect(
+      within(note).getByRole('button', { name: `About ${ollamaCopy.publicTierTipLabel}` })
+    ).toHaveAccessibleDescription(ollamaCopy.publicTierTip);
+    expect(ollamaCopy.publicTierTip).toMatch(/localhost, 127\.0\.0\.1 and ::1/);
+    expect(ollamaCopy.publicTierTip).toMatch(/prompts and files/);
     expect(document.body.textContent).not.toMatch(/Free, private, offline/);
     expect(document.body.textContent).not.toMatch(/your own machine/);
     // The status line says Public first: the row sits under Local, whose tier line says nothing
@@ -677,7 +686,7 @@ describe('OllamaInlineCard', () => {
       render(<OllamaInlineCard onSuccess={vi.fn()} />);
 
       const note = await screen.findByTestId('ollama-public-note');
-      expect(note).toHaveTextContent(ollamaCopy.publicNote('http://0.0.0.0:11434'));
+      expect(note).toHaveTextContent(ollamaCopy.publicNoteShort('http://0.0.0.0:11434'));
       expect(note).not.toHaveTextContent('http://127.0.0.1:11434');
       expect(screen.getByTestId('ollama-tier-label').closest('.br-status-pill')).toHaveTextContent(
         `${ollamaCopy.publicTier} · ${words('http://0.0.0.0:11434')}`
