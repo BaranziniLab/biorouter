@@ -415,7 +415,8 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
       ? agentCopy.notApproved(institution.label)
       : null;
   // "Use for future tasks" (OW-11): offered under a model that is not already the one Crew tasks
-  // start on, where the configuration can be written and the model could run a Crew task.
+  // start on, where the configuration can be written and the model's provider is configured (any
+  // provider, Claude Code and Codex included; the workspace admits a model by privacy).
   const offerAsDefault =
     models.saveTaskDefault !== undefined &&
     selected !== null &&

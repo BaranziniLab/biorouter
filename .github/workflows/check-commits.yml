@@ -1,8 +1,12 @@
 name: Check Commit Messages
 
+# Pushes to main and pull requests. A push to a pull request's branch also
+# fires `pull_request`, which reports the same `no-ai-coauthor` check on the
+# same commit, so a `push` run there was a second runner slot for one answer
+# (until 2026-11-13 this listened to pushes on every branch).
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
 
 jobs:

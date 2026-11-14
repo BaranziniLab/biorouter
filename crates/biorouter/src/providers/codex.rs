@@ -429,6 +429,17 @@ struct TurnOutcome {
 }
 
 impl CodexProvider {
+    /// Construct a provider pointed at an arbitrary binary, for tests: the twin of
+    /// `ClaudeCodeProvider::for_tests`. Nothing is spawned until a turn runs.
+    #[doc(hidden)]
+    pub fn for_tests(command: PathBuf, model: &str) -> Self {
+        Self {
+            command,
+            model: ModelConfig::new(model).expect("a valid test model"),
+            name: KIND.provider_id().to_string(),
+        }
+    }
+
     pub async fn from_env(model: ModelConfig) -> Result<Self> {
         // Resolution only, no spawning: `GET /config/providers` builds every
         // provider under a 3s timeout to sample tier and affiliation.
@@ -2313,6 +2324,60 @@ for line in sys.stdin:
         AppServer::spawn(cmd)
             .await
             .expect("the fake app server should start")
+    }
+
+    /// Coding-agent parity, CP-7 (`docs/crew/design/coding-agent-parity.md`): Crew admits a
+    /// Codex chat as it admits any public model because the Codex child has no tool of its own,
+    /// only Biorouter's, through the bridge. These are the flags that argument rests on: no
+    /// shell or exec of its own, no apps, plugins, browser, computer use or second agent, no
+    /// personal configuration or MCP server, no writes and no web search. Dropping one is a
+    /// defect in the bridge for every chat, and it also breaks what Crew relies on.
+    #[test]
+    fn crew_relies_on_the_coding_agent_isolation_flags() {
+        for feature in [
+            "shell_tool",
+            "unified_exec",
+            "apps",
+            "plugins",
+            "browser_use",
+            "computer_use",
+            "in_app_browser",
+            "multi_agent",
+        ] {
+            assert!(
+                DISABLED_CHILD_FEATURES.contains(&feature),
+                "Crew relies on Codex's {feature} being off"
+            );
+        }
+        let home = tempfile::TempDir::new().unwrap();
+        let command =
+            test_provider().app_server_command(Some(home.path()), DISABLED_CHILD_FEATURES);
+        let args: Vec<_> = command.as_std().get_args().collect();
+        assert!(args.iter().any(|arg| *arg == "--strict-config"), "{args:?}");
+        assert!(
+            command
+                .as_std()
+                .get_envs()
+                .any(|(key, value)| key == std::ffi::OsStr::new("CODEX_HOME")
+                    && value == Some(home.path().as_os_str())),
+            "the child reads only its isolated home"
+        );
+        let bridged = CodexProvider::thread_params(
+            "S",
+            "/tmp",
+            "gpt-5.5",
+            Some("http://127.0.0.1:9/tool_bridge/deadbeef"),
+        );
+        assert_eq!(bridged["sandbox"], "read-only");
+        assert_eq!(bridged["config"]["web_search"], "disabled");
+        let servers = bridged["config"]["mcp_servers"]
+            .as_object()
+            .expect("the bridge is the child's MCP server");
+        assert_eq!(
+            servers.keys().collect::<Vec<_>>(),
+            ["biorouter"],
+            "Biorouter's relay is the only MCP server"
+        );
     }
 
     /// The thread is read-only, ephemeral, and carries Biorouter's instructions.

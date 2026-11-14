@@ -1284,24 +1284,29 @@ const CODING_AGENT_BRIDGE_ALLOWED_EXTENSION_MANAGER_TOOLS: &[&str] = &[
     "extensionmanager__remove_extension",
 ];
 
-// Crew's two person tools, by the owner's D3 ruling: a Claude Code or Codex chat that is the
-// person's own may read and change Crew as they can, exactly as any other model in that chat.
+// Every Crew tool, by the owner's rulings: D3 (2026-11-06) gave a Claude Code or Codex chat
+// the person's own tools, and coding-agent parity (2026-11-12,
+// `docs/crew/design/coding-agent-parity.md`) gave it everything else a chat on any other
+// provider has in Crew: a grant to a channel and a Crew task, which work through the grant's
+// worker tools `crew__connections` and `crew__request`. Crew admits a model by privacy alone
+// (`crew::model_match`), so these chats reach public workspaces and are refused private ones,
+// as any public model is.
 //
-// ⚠ This list says only what MAY cross. Whether a chat gets either tool is still
+// ⚠ This list says only what MAY cross. Whether a chat gets a tool is still
 // `CrewToolStanding::offers`, the rule its own roster follows: the bridge takes Crew tools
 // from that roster and never from the registry (`prepare_coding_agent_bridge_plan`), and
-// dispatch asks the same rule again inside the bridged call. So an app's chat, a subagent, a
-// chat a Crew grant restricts and a process with no host get none, and `crew__change` needs
-// a person's proof. Every change parks its own proof-backed card (the permission inspector
-// leaves both tools to it), and a read takes the bridge's capability, Public for both coding
-// agents, so it returns only Public content. The grant's worker tools (`crew__connections`,
-// `crew__request`) are deliberately absent. Crew refuses these providers for everything a grant
-// does, in three places: a grant is never admitted for one (`checked_run_admission`), a chat
-// that holds a grant cannot be bound to one (`check_provider_binding`), and a Crew task cannot
-// start on one (`routes/crew.rs`), because the vendor's own agent runs tools Crew cannot
-// isolate. So the worker tools could only ever answer "type /crew", and a /crew that then
-// refuses this provider.
-const CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS: &[&str] = &["crew__read", "crew__change"];
+// dispatch asks the same rule again inside the bridged call. So a person's own chat gets the
+// person tools; a chat that holds a grant, and a Crew task's chat, get the two worker tools and
+// nothing else (the bridge keeps the grant's tool limit, CP-4); an app's chat, a subagent and a
+// process with no host get none; and `crew__change` needs a person's proof. Every change parks
+// its own proof-backed card, and every call takes the bridge's capability (the chat's DR-33
+// tier, CP-5), which Crew's dispatch check matches against the grant.
+const CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS: &[&str] = &[
+    "crew__read",
+    "crew__change",
+    "crew__connections",
+    "crew__request",
+];
 
 const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
     CodingAgentBridgePolicy {
@@ -1389,9 +1394,9 @@ const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
 /// wrong for Decisions, and nothing told the two apart until this table
 /// existed: every bundled capability is now in exactly one of the two tables,
 /// and `every_bundled_capability_is_bridged_or_withheld_on_purpose` fails on a
-/// capability that is in neither. Crew is in the policy table, not here: only
-/// its person tools may cross, and its grant tools are simply not on that
-/// allowlist (`CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS`).
+/// capability that is in neither. Crew is in the policy table with all four of
+/// its tools; the chat's own roster decides which of them cross
+/// (`CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS`).
 ///
 /// `note` is what the bridged model reads about the capability in place of its
 /// own instructions (`ExtensionInfo::withheld_note`). Without it the model read
@@ -1427,42 +1432,12 @@ const CODING_AGENT_BRIDGE_EXCLUSIONS: &[CodingAgentBridgeExclusion] = &[
     },
 ];
 
-/// What a bridged model reads about a capability that HAS a bridge policy when
-/// none of its tools crosses this turn, in place of its own instructions and
-/// the template's "loaded but has no effective tools" line.
-///
-/// A policy says which tools may cross, not that any will: Crew's admits only
-/// its person tools, which `CrewToolStanding::offers` gives only some chats.
-/// Without a note a Claude Code or Codex chat read that Crew was loaded with
-/// nothing to call, and could tell a person neither why nor what to do, which
-/// is the failure that hid Decisions.
-struct CodingAgentBridgeEmptyNote {
-    target_name: &'static str,
-    note: &'static str,
-}
-
-const CODING_AGENT_BRIDGE_EMPTY_NOTES: &[CodingAgentBridgeEmptyNote] = &[
-    // Holds wherever no Crew tool reaches the chat, which is wherever the
-    // chat's own Crew roster lacks the person tools. It speaks only of what a
-    // grant does (a channel connection, a Crew task), which Crew refuses these
-    // providers in every build (the three refusals named above
-    // `CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS`), so it never claims a person
-    // tool is absent where one might be offered.
-    CodingAgentBridgeEmptyNote {
-        target_name: "crew",
-        note: "No Crew tool is available in this chat. A chat on Claude Code or Codex cannot be \
-               connected to a Crew channel, and a Crew task cannot run on either, because Crew \
-               cannot isolate the tools their own agent runs. If the person asks for Crew, tell \
-               them this, and suggest they switch this chat to a model from any other provider \
-               in the model menu, or start a new chat with one, and then type /crew to connect \
-               it.",
-    },
-];
-
 /// Tell a bridged model why a capability it can see has no tools, in place of
 /// that capability's own instructions: a withheld capability's note
-/// (`CodingAgentBridgeExclusion`), or a bridged one's note for a turn in which
-/// none of its tools crosses (`CodingAgentBridgeEmptyNote`).
+/// (`CodingAgentBridgeExclusion`). A bridged capability with no tool this turn
+/// reads what it reads on any other provider: Crew's empty-roster note, which
+/// told a bridged chat it could never be connected to a Crew channel, went with
+/// coding-agent parity (CP-4).
 ///
 /// Only a capability with no effective tool this turn is noted: the note says
 /// there is nothing to call, so it must never replace a roster that has
@@ -1479,11 +1454,6 @@ pub(super) fn note_capabilities_withheld_from_the_bridge(
         let Some(note) = CODING_AGENT_BRIDGE_EXCLUSIONS
             .iter()
             .map(|exclusion| (exclusion.target_name, exclusion.note))
-            .chain(
-                CODING_AGENT_BRIDGE_EMPTY_NOTES
-                    .iter()
-                    .map(|empty| (empty.target_name, empty.note)),
-            )
             .find(|(target_name, _)| {
                 resolve_bundled_extension(target_name)
                     .is_some_and(|target| target.key() == info.name)
@@ -9402,11 +9372,16 @@ impl Agent {
 
     /// Resolve a binding for the human-only Crew grant route without running a
     /// completion. Expired worker credentials must not prevent renewal.
+    ///
+    /// Crew judges the chat by its DR-33 privacy (coding-agent parity, CP-1): the bound slot
+    /// already folds the chat's decision models in, and a chat with nothing bound has its stored
+    /// model folded with the decision models its row names, as its slot would be. Without that
+    /// a chat a public decision model made public was judged by its private model alone.
     pub async fn provider_for_crew_grant(&self, session: &Session) -> Result<Arc<dyn Provider>> {
-        let provider =
-            match self.bound_provider_unchecked().await {
-                Some(provider) => provider,
-                None => {
+        let provider = match self.bound_provider_unchecked().await {
+            Some(provider) => provider,
+            None => {
+                let stored =
                     crate::providers::create_from_persisted(
                         session.provider_name.as_deref().ok_or_else(|| {
                             anyhow!("Choose a model before granting Crew access.")
@@ -9415,9 +9390,15 @@ impl Agent {
                             anyhow!("Choose a model before granting Crew access.")
                         })?,
                     )
-                    .await?
-                }
-            };
+                    .await?;
+                let axes = if self.folds_decision_axes() {
+                    crate::privacy::decision_axes::from_row(session)
+                } else {
+                    crate::privacy::decision_axes::DecisionAxes::identity()
+                };
+                crate::providers::decision_bound::DecisionBoundProvider::bind(stored, axes)
+            }
+        };
         crate::crew::manager()?
             .check_provider_binding(&session.id, provider.as_ref())
             .await?;
@@ -10235,6 +10216,7 @@ impl Agent {
     /// `tests/privacy_guard_wiring.rs` holds the rest of the turn to this.
     pub(super) async fn prepare_coding_agent_bridge_plan(
         &self,
+        session_id: &str,
         iteration_provider: &Arc<dyn Provider>,
         tools: &[Tool],
     ) -> Option<CodingAgentBridgePlan> {
@@ -10300,6 +10282,10 @@ impl Agent {
                 &extension_targets,
             )
             .await;
+        let (tools, granted) = self.keep_a_crew_grants_tool_limit(session_id, tools).await;
+        // Gate B-1 refuses a granted chat both, so the plan holds neither.
+        let delegation_available = delegation_available && !granted;
+        let bug_report_available = bug_report_available && !granted;
         Some(CodingAgentBridgePlan {
             capability,
             tools,
@@ -10308,6 +10294,36 @@ impl Agent {
             delegation_available,
             bug_report: bug_report_available,
         })
+    }
+
+    /// CP-4 (coding-agent parity): a chat that holds a Crew grant is offered over the bridge
+    /// exactly what its own roster offers it, the grant's worker tools and the checklist
+    /// (gate B-1, `crew::scoped_tool_allowed`), never a tool recovered from the registry, which
+    /// lists every enabled extension's tools whatever the chat is. Without this a granted
+    /// Claude Code chat with Developer on was offered `developer__shell`, which dispatch then
+    /// refused. Dispatch still asks gate B-1 for every bridged call.
+    ///
+    /// When Crew's policy cannot be read, nothing is offered, as the chat's own roster offers
+    /// nothing then (`list_tools`). Answers the tools kept and whether a grant restricts the
+    /// chat (true too when the policy cannot be read).
+    async fn keep_a_crew_grants_tool_limit(
+        &self,
+        session_id: &str,
+        mut tools: Vec<Tool>,
+    ) -> (Vec<Tool>, bool) {
+        match crate::crew::manager() {
+            Ok(crew) => {
+                let granted = crew.is_scoped_session(session_id).await;
+                if granted {
+                    tools.retain(|tool| crate::crew::scoped_tool_allowed(&tool.name));
+                }
+                (tools, granted)
+            }
+            Err(error) => {
+                tracing::error!("Crew policy could not be read: {error}");
+                (Vec::new(), true)
+            }
+        }
     }
 
     async fn create_coding_agent_bridge_lease(
@@ -21626,7 +21642,7 @@ mod tests {
         tools: &[Tool],
     ) -> Option<coding_agent_bridge::BridgeLease> {
         let plan = agent
-            .prepare_coding_agent_bridge_plan(iteration_provider, tools)
+            .prepare_coding_agent_bridge_plan(&session.id, iteration_provider, tools)
             .await;
         agent
             .issue_tool_bridge(
@@ -21763,7 +21779,7 @@ mod tests {
         let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
         let tools = agent.list_tools(&session_id, None).await;
         let plan = agent
-            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .prepare_coding_agent_bridge_plan(&session_id, &provider, &tools)
             .await
             .expect("Codex needs a bridge plan");
         let session = agent
@@ -21806,7 +21822,7 @@ mod tests {
         );
         let refreshed_tools = agent.list_tools(&session_id, None).await;
         let refreshed_plan = agent
-            .prepare_coding_agent_bridge_plan(&provider, &refreshed_tools)
+            .prepare_coding_agent_bridge_plan(&session_id, &provider, &refreshed_tools)
             .await
             .unwrap();
         agent
@@ -21882,7 +21898,7 @@ mod tests {
         let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
         let tools = agent.list_tools(&session_id, None).await;
         let plan = agent
-            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .prepare_coding_agent_bridge_plan(&session_id, &provider, &tools)
             .await
             .expect("Codex needs a bridge plan");
         assert!(
@@ -21969,7 +21985,7 @@ mod tests {
                 name: provider_name,
             });
             let plan = agent
-                .prepare_coding_agent_bridge_plan(&provider, &tools)
+                .prepare_coding_agent_bridge_plan(&session_id, &provider, &tools)
                 .await
                 .unwrap_or_else(|| panic!("{provider_name} needs a bridge plan"));
             for expected in decision_tools {
@@ -22018,7 +22034,7 @@ mod tests {
             name: "claude_code",
         });
         let stale_plan = agent
-            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .prepare_coding_agent_bridge_plan(&session_id, &provider, &tools)
             .await
             .expect("Claude Code needs a bridge plan");
         agent
@@ -22042,7 +22058,7 @@ mod tests {
         assert!(refusal.contains("no longer enabled"), "{refusal}");
         let tools = agent.list_tools(&session_id, None).await;
         let plan = agent
-            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .prepare_coding_agent_bridge_plan(&session_id, &provider, &tools)
             .await
             .expect("Claude Code needs a bridge plan");
         assert!(
@@ -22160,50 +22176,20 @@ mod tests {
             unaccounted.join(", ")
         );
 
-        // A note for a turn in which none of a capability's tools crosses
-        // belongs to a bridged capability: a withheld one has its own note.
-        let empty_noted: BTreeSet<String> = CODING_AGENT_BRIDGE_EMPTY_NOTES
-            .iter()
-            .map(|empty| key_of(empty.target_name))
-            .collect();
-        assert_eq!(
-            empty_noted.len(),
-            CODING_AGENT_BRIDGE_EMPTY_NOTES.len(),
-            "two entries in CODING_AGENT_BRIDGE_EMPTY_NOTES name the same capability"
-        );
-        for key in &empty_noted {
-            assert!(
-                bridged.contains(key),
-                "`{key}` is in CODING_AGENT_BRIDGE_EMPTY_NOTES with no entry in \
-                 CODING_AGENT_BRIDGE_POLICIES; a withheld capability's note belongs in \
-                 CODING_AGENT_BRIDGE_EXCLUSIONS"
-            );
-        }
-
         for (target_name, note) in CODING_AGENT_BRIDGE_EXCLUSIONS
             .iter()
             .map(|exclusion| (exclusion.target_name, exclusion.note))
-            .chain(
-                CODING_AGENT_BRIDGE_EMPTY_NOTES
-                    .iter()
-                    .map(|empty| (empty.target_name, empty.note)),
-            )
         {
             assert!(
                 note.len() > 40 && note.ends_with('.') && !note.contains(['\u{2014}', '\u{2013}']),
                 "`{target_name}` needs a plain note the model can pass on: {note}"
             );
         }
-        // Crew's tools can all be absent from a bridged chat (in this build
-        // always), and the person must then hear why and what to do.
-        assert!(
-            empty_noted.contains("crew"),
-            "Crew needs a CODING_AGENT_BRIDGE_EMPTY_NOTES entry"
-        );
         // Pinned, so withholding another capability, or bridging this one, is a
         // decision rather than an accident. Code Execution would only wrap tools
-        // the child already has. Crew is bridged, for its person tools alone
-        // (`a_coding_agent_is_never_offered_crews_grant_tools`).
+        // the child already has. Crew is bridged with all four of its tools, and
+        // the chat's own roster decides which cross (coding-agent parity, CP-4;
+        // `a_coding_agent_is_offered_crew_by_its_chats_own_roster`).
         assert_eq!(
             withheld,
             BTreeSet::from(["code_execution".to_string()]),
@@ -22211,13 +22197,27 @@ mod tests {
              docs/providers/coding-agents/README.md together"
         );
         assert!(bridged.contains("crew"), "Crew must have a bridge policy");
+        let crew_allowlist: BTreeSet<&str> = CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(
+            crew_allowlist,
+            BTreeSet::from([
+                "crew__change",
+                "crew__connections",
+                "crew__read",
+                "crew__request"
+            ]),
+            "Crew's bridge row admits every Crew tool; the chat's roster decides (CP-4)"
+        );
     }
 
     /// What a bridged model reads about a capability with no tool this turn:
-    /// Code Execution's exclusion note, Crew's note for a chat no Crew tool
-    /// reaches, and for any other bridged capability the template's own line,
-    /// left alone. A roster with anything in it is never replaced, so Crew's
-    /// note cannot hide a person tool that did cross.
+    /// Code Execution's exclusion note, and for every bridged capability, Crew
+    /// included, the template's own line, left alone, as on any other provider
+    /// (coding-agent parity, CP-4). A roster with anything in it is never
+    /// replaced.
     #[test]
     fn a_bridged_chat_reads_why_a_capability_has_no_tool_this_turn() {
         use crate::agents::extension::ExtensionInfo;
@@ -22227,63 +22227,36 @@ mod tests {
             info.available_tools = tools.iter().map(|tool| (*tool).to_string()).collect();
             info
         };
-        let note_of = |table: &[(&'static str, &'static str)], name: &str| {
-            table
-                .iter()
-                .find(|(target_name, _)| *target_name == name)
-                .map(|(_, note)| note.to_string())
-                .unwrap_or_else(|| panic!("{name} has a note"))
-        };
-        let exclusions: Vec<_> = CODING_AGENT_BRIDGE_EXCLUSIONS
+        let code_execution_note = CODING_AGENT_BRIDGE_EXCLUSIONS
             .iter()
-            .map(|exclusion| (exclusion.target_name, exclusion.note))
-            .collect();
-        let empty_notes: Vec<_> = CODING_AGENT_BRIDGE_EMPTY_NOTES
-            .iter()
-            .map(|empty| (empty.target_name, empty.note))
-            .collect();
-        let crew_note = note_of(&empty_notes, "crew");
-        // The note is what the person ends up hearing, so it holds both halves
-        // of the answer: why there is no Crew here, and what to do instead.
-        for part in [
-            "Claude Code or Codex",
-            "cannot isolate",
-            "any other provider",
-            "/crew",
-        ] {
-            assert!(crew_note.contains(part), "the Crew note lacks {part:?}");
-        }
+            .find(|exclusion| exclusion.target_name == "code_execution")
+            .expect("Code Execution is withheld")
+            .note;
 
         let mut infos = vec![
             entry("code_execution", &[]),
             entry("crew", &[]),
             entry("decisions", &[]),
             entry("todo", &["todo_write"]),
+            entry("crew", &["read"]),
         ];
-        // A person tool that crossed keeps Crew's roster and guidance.
-        let mut crew_with_a_tool = entry("crew", &["read"]);
         // A third-party extension named like a capability is not that capability.
         let mut extension = ExtensionInfo::new("crew", "a third-party server", false);
         extension.tool_roster_known = true;
         infos.push(extension);
         note_capabilities_withheld_from_the_bridge(&mut infos);
-        note_capabilities_withheld_from_the_bridge(std::slice::from_mut(&mut crew_with_a_tool));
 
-        assert_eq!(
-            infos[0].withheld_note.as_deref(),
-            Some(note_of(&exclusions, "code_execution").as_str())
+        assert_eq!(infos[0].withheld_note.as_deref(), Some(code_execution_note));
+        assert!(
+            infos[0].instructions.is_empty(),
+            "Code Execution's instructions describe tools it was not given"
         );
-        assert_eq!(infos[1].withheld_note.as_deref(), Some(crew_note.as_str()));
-        for noted in &infos[..2] {
-            assert!(
-                noted.instructions.is_empty(),
-                "{}: its instructions describe tools it was not given",
-                noted.name
-            );
-        }
-        // Decisions has no note, so it keeps the template's own line; To Do
-        // has a tool; the third-party server is not a capability.
-        for (untouched, instructions) in infos[2..].iter().zip([
+        // Crew with no tool, Decisions with no tool, To Do and Crew with a tool,
+        // and the third-party server all keep what any other provider's chat
+        // reads.
+        for (untouched, instructions) in infos[1..].iter().zip([
+            "its own instructions",
+            "its own instructions",
             "its own instructions",
             "its own instructions",
             "a third-party server",
@@ -22291,67 +22264,38 @@ mod tests {
             assert_eq!(untouched.withheld_note, None, "{}", untouched.name);
             assert_eq!(untouched.instructions, instructions, "{}", untouched.name);
         }
-        assert_eq!(crew_with_a_tool.withheld_note, None);
-        assert_eq!(crew_with_a_tool.instructions, "its own instructions");
     }
 
-    /// Crew on the coding-agent bridge, measured end to end (owner ruling D3,
-    /// coordinator instruction S-1). Crew is bridged for its person tools alone:
-    /// `crew__connections` and `crew__request` answer from a Crew grant, which
-    /// Crew never admits for Claude Code or Codex, so neither is ever offered to
-    /// such a chat, while a roster that holds a person tool has it bridged. The
-    /// bridged prompt never carries Crew's own instructions, which describe the
-    /// grant tools. Code Execution, the one withheld capability, is told apart by
-    /// its note.
-    ///
-    /// Every control is one that holds before and after the person tools land
-    /// (#475), which narrows a chat's own Crew roster: the registry and the
-    /// capability's instructions, never "an ordinary chat is offered the grant
-    /// tools", which stops being true there.
+    /// Crew on the coding-agent bridge, measured end to end (coding-agent parity, CP-4). The
+    /// bridge row admits every Crew tool and the chat's own roster decides which cross: a chat
+    /// with no grant is never offered the grant's worker tools, which the registry lists for
+    /// every chat; a roster holding all four has all four bridged; and the Crew section of a
+    /// bridged chat's prompt is the one a chat on a provider with no bridge reads in the same
+    /// state. Nothing in it names the provider's kind.
     #[tokio::test]
     #[serial_test::serial]
-    async fn a_coding_agent_is_never_offered_crews_grant_tools() {
+    async fn a_coding_agent_is_offered_crew_by_its_chats_own_roster() {
         use std::collections::BTreeSet;
         let (agent, session_id) = agent_with_one_extension_for_tests().await;
-        let enable = |name: &'static str| {
-            let agent = &agent;
-            async move {
-                let target = resolve_bundled_extension(name).expect("a bundled capability");
-                agent
-                    .add_extension(target.into_config(format!("{name} on the bridge")))
-                    .await
-                    .unwrap_or_else(|error| panic!("enable {name}: {error}"));
-            }
-        };
-        enable("crew").await;
-        enable("code_execution").await;
-        let grant_tools = ["crew__connections", "crew__request"];
-        let person_tools: BTreeSet<&str> = CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS
+        let target = resolve_bundled_extension("crew").expect("a bundled capability");
+        agent
+            .add_extension(target.into_config("crew on the bridge".into()))
+            .await
+            .expect("enable Crew");
+        let all_crew: BTreeSet<&str> = CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS
             .iter()
             .copied()
             .collect();
-
-        // The allowlist: the grant tools are off it, the person tools are on it,
-        // and the two never meet.
-        for tool in grant_tools {
-            assert!(
-                !coding_agent_bridge_policy_allows_tool(tool),
-                "{tool} answers from a Crew grant, which Crew refuses these providers"
-            );
-            assert!(!person_tools.contains(tool), "{tool} is a grant tool");
-        }
-        assert!(
-            !person_tools.is_empty(),
-            "Crew's bridge policy admits nothing"
-        );
-        for tool in &person_tools {
+        for tool in &all_crew {
             assert!(tool.starts_with("crew__"), "{tool} is not a Crew tool");
             assert!(coding_agent_bridge_policy_allows_tool(tool), "{tool}");
         }
+        for tool in crate::crew::SCOPED_CREW_TOOLS {
+            assert!(all_crew.contains(tool), "{tool} may cross the bridge");
+        }
 
-        // The controls. The registry lists the grant tools, so the bridge had them
-        // to drop; and Crew's instructions are loaded, so their absence from the
-        // bridged prompt below is a choice, not a capability that never came up.
+        // The control: the registry lists the grant's worker tools, so the bridge had them to
+        // offer and the roster is what kept them back.
         let registry: BTreeSet<String> = agent
             .extension_manager
             .get_prefixed_tools(None)
@@ -22360,34 +22304,35 @@ mod tests {
             .iter()
             .map(|tool| tool.name.to_string())
             .collect();
-        for tool in grant_tools {
+        for tool in crate::crew::SCOPED_CREW_TOOLS {
             assert!(
                 registry.contains(tool),
                 "precondition: the registry lists {tool}"
             );
         }
-        // A distinctive sentence from Crew's own instructions.
-        let crew_instruction = "crew__connections lists authorized source_channel_ids.";
-        assert!(
-            agent
-                .extension_manager
-                .get_extensions_info()
-                .await
-                .iter()
-                .any(|info| info.name == "crew" && info.instructions.contains(crew_instruction)),
-            "precondition: Crew's instructions are loaded"
-        );
-        let code_execution_note = CODING_AGENT_BRIDGE_EXCLUSIONS
-            .iter()
-            .find(|exclusion| exclusion.target_name == "code_execution")
-            .expect("Code Execution is withheld")
-            .note;
         let session = agent
             .config
             .session_manager
             .get_session(&session_id, false)
             .await
             .expect("read the chat");
+        let crew_section = |prompt: &str| {
+            prompt
+                .split("\n## ")
+                .find(|section| section.starts_with("crew"))
+                .map(str::to_owned)
+        };
+        // The same chat on a provider with no bridge: what parity is measured against.
+        let direct: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "openai" });
+        let (_, _, direct_prompt, direct_plan) = agent
+            .prepare_tools_and_prompt_for_provider(&session_id, &session.working_dir, &direct)
+            .await
+            .expect("prepare a direct turn");
+        assert!(
+            direct_plan.is_none(),
+            "a provider with no bridge has no plan"
+        );
+        let direct_crew = crew_section(&direct_prompt).expect("the direct prompt names Crew");
 
         for provider_name in ["claude_code", "codex"] {
             let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider {
@@ -22404,55 +22349,30 @@ mod tests {
             );
             for surface in [&tools, &plan.tools] {
                 for tool in surface.iter() {
-                    let name = tool.name.as_ref();
                     assert!(
-                        !name.starts_with("crew__") || person_tools.contains(name),
-                        "{provider_name} was offered {name}, which only a Crew grant answers"
-                    );
-                    assert!(
-                        !name.starts_with("code_execution__"),
-                        "{provider_name} was offered withheld {name}"
+                        !crate::crew::SCOPED_CREW_TOOLS.contains(&tool.name.as_ref()),
+                        "{provider_name} was offered {}, which only a chat with a Crew grant \
+                         is offered",
+                        tool.name
                     );
                 }
             }
-            // The bridge is live for this chat, so what is absent was dropped.
             assert!(
                 tools
                     .iter()
                     .any(|tool| tool.name.as_ref() == "todo__todo_write"),
                 "{provider_name}: precondition, Todo is bridged"
             );
-            assert!(
-                !prompt.contains(crew_instruction),
-                "{provider_name}: Crew's instructions describe the grant tools this chat \
-                 cannot have: {prompt}"
-            );
-            // No Crew tool crossed, so the Crew entry says why rather than that
-            // Crew is loaded with nothing to call (`CODING_AGENT_BRIDGE_EMPTY_NOTES`).
-            let crew_section = prompt
-                .split("\n## ")
-                .find(|section| section.starts_with("crew"))
-                .unwrap_or_else(|| panic!("{provider_name}: the prompt names Crew: {prompt}"));
-            assert!(
-                !crew_section.contains("loaded but has no effective tools"),
-                "{provider_name}: the person would hear that Crew has nothing to call, and not \
-                 why: {crew_section}"
-            );
-            assert!(
-                prompt.contains(code_execution_note),
-                "{provider_name}: the prompt must say Code Execution is not used: {prompt}"
+            assert_eq!(
+                crew_section(&prompt).as_deref(),
+                Some(direct_crew.as_str()),
+                "{provider_name}: a bridged chat reads Crew as a chat with no bridge does"
             );
 
-            // The person tools cross wherever the chat's own roster holds them.
-            // They arrive with #475, so stand them in beside the grant tools: the
-            // bridge keeps the person tools and drops the grant's.
-            let roster: Vec<Tool> = grant_tools
-                .iter()
-                .chain(person_tools.iter())
-                .map(|name| bridge_test_tool(name))
-                .collect();
+            // A roster that holds all four Crew tools has all four bridged.
+            let roster: Vec<Tool> = all_crew.iter().map(|name| bridge_test_tool(name)).collect();
             let plan = agent
-                .prepare_coding_agent_bridge_plan(&provider, &roster)
+                .prepare_coding_agent_bridge_plan(&session_id, &provider, &roster)
                 .await
                 .unwrap_or_else(|| panic!("{provider_name} needs a bridge plan"));
             let bridged_crew: BTreeSet<&str> = plan
@@ -22462,10 +22382,190 @@ mod tests {
                 .filter(|name| name.starts_with("crew__"))
                 .collect();
             assert_eq!(
-                bridged_crew, person_tools,
-                "{provider_name}: a roster holding Crew's person tools has exactly those bridged"
+                bridged_crew, all_crew,
+                "{provider_name}: a roster holding every Crew tool has every one bridged"
             );
         }
+    }
+
+    /// CP-4, a grant's tool limit on the bridge: a chat that holds a Crew grant is offered over
+    /// the bridge exactly what its own roster offers it, the grant's worker tools and the
+    /// checklist, never a tool recovered from the registry; and a bridged call of any other tool
+    /// is still refused at dispatch (gate B-1). The control is the same chat before its grant,
+    /// which is bridged Decisions' tools from the registry.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_granted_coding_agent_chat_is_bridged_only_what_its_grant_allows() {
+        use std::collections::BTreeSet;
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        for name in ["crew", "decisions"] {
+            let target = resolve_bundled_extension(name).expect("a bundled capability");
+            agent
+                .add_extension(target.into_config(format!("{name} on the bridge")))
+                .await
+                .unwrap_or_else(|error| panic!("enable {name}: {error}"));
+        }
+        let providers: Vec<Arc<dyn Provider>> = ["claude_code", "codex"]
+            .into_iter()
+            .map(|name| Arc::new(BridgedChildProvider { name }) as Arc<dyn Provider>)
+            .collect();
+        for provider in &providers {
+            let roster = agent.list_tools(&session_id, None).await;
+            let plan = agent
+                .prepare_coding_agent_bridge_plan(&session_id, provider, &roster)
+                .await
+                .expect("a coding agent needs a bridge plan");
+            assert!(
+                plan.tools
+                    .iter()
+                    .any(|tool| tool.name.as_ref() == "decisions__decide"),
+                "{}: precondition, an ungranted chat is bridged decisions__decide",
+                provider.get_name()
+            );
+        }
+
+        crate::crew::install_test_scope(&session_id, Some(providers[0].as_ref())).await;
+        for provider in &providers {
+            let name = provider.get_name().to_owned();
+            let roster = agent.list_tools(&session_id, None).await;
+            let plan = agent
+                .prepare_coding_agent_bridge_plan(&session_id, provider, &roster)
+                .await
+                .expect("a coding agent needs a bridge plan");
+            let offered: BTreeSet<String> = plan
+                .tools
+                .iter()
+                .map(|tool| tool.name.to_string())
+                .collect();
+            for tool in &offered {
+                assert!(
+                    crate::crew::scoped_tool_allowed(tool),
+                    "{name}: a granted chat was bridged {tool}: {offered:?}"
+                );
+            }
+            for tool in crate::crew::SCOPED_CREW_TOOLS {
+                assert!(
+                    offered.contains(tool),
+                    "{name}: {tool} missing: {offered:?}"
+                );
+            }
+            assert!(!plan.delegation_available && !plan.bug_report, "{name}");
+
+            let dispatch = agent.chat_bridge_dispatch(provider, None, plan);
+            let refusal = match coding_agent_bridge::BridgeToolDispatch::dispatch(
+                &dispatch,
+                &session_id,
+                CallToolRequestParams {
+                    name: "decisions__decide".into(),
+                    arguments: Some(object!({"questions": {}, "chunks": []})),
+                    meta: None,
+                    task: None,
+                },
+                crate::privacy::CallCapability::for_test_restricted(),
+                CancellationToken::new(),
+            )
+            .await
+            {
+                Err(error) => error.to_string(),
+                Ok(result) => {
+                    assert_eq!(result.is_error, Some(true), "{name}: {result:?}");
+                    result
+                        .content
+                        .iter()
+                        .filter_map(|content| content.as_text().map(|text| text.text.clone()))
+                        .collect()
+                }
+            };
+            assert!(
+                refusal.contains("Crew-scoped conversations permit only Crew and checklist tools"),
+                "{name}: {refusal}"
+            );
+        }
+    }
+
+    /// CP-5: a bridged call carries the chat's tier, the provider slot's (DR-33: decision
+    /// models included), not the tier of the provider rebuilt for one iteration. Equal for
+    /// Claude Code and Codex, which are Public and cannot be lowered, so this stands in a
+    /// private bridged provider whose chat a public decision model made public: Crew's dispatch
+    /// check reads this capability, and must read the chat as public.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_bridge_plan_carries_the_chats_tier_not_the_iteration_providers() {
+        use crate::privacy::decision_axes::{DecisionAxes, HostLabel, LoweredBy, NameSource};
+        use crate::providers::decision_bound::DecisionBoundProvider;
+        struct PrivateBridged;
+        #[async_trait::async_trait]
+        impl Provider for PrivateBridged {
+            fn metadata() -> crate::providers::base::ProviderMetadata {
+                BridgedChildProvider::metadata()
+            }
+            fn get_name(&self) -> &str {
+                "codex"
+            }
+            fn get_model_config(&self) -> crate::model::ModelConfig {
+                crate::model::ModelConfig::new_or_fail("bridge-child-model")
+            }
+            fn tier(&self) -> ProviderTier {
+                ProviderTier::Private
+            }
+            async fn complete_with_model(
+                &self,
+                _model_config: &crate::model::ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[Tool],
+            ) -> Result<
+                (Message, crate::providers::base::ProviderUsage),
+                crate::providers::errors::ProviderError,
+            > {
+                unreachable!("no turn runs here")
+            }
+        }
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+        let inner: Arc<dyn Provider> = Arc::new(PrivateBridged);
+        let tools = agent.list_tools(&session_id, None).await;
+
+        // Nothing bound: the iteration provider is all there is.
+        *agent.provider.lock().await = None;
+        let plan = agent
+            .prepare_coding_agent_bridge_plan(&session_id, &inner, &tools)
+            .await
+            .expect("a bridge plan");
+        assert_eq!(plan.capability.tier(), ProviderTier::Private);
+
+        let joey = LoweredBy {
+            source: NameSource::Monitor,
+            label: "Done".to_string(),
+            model: "joey-1".to_string(),
+            host: HostLabel::Baseten,
+            others: 0,
+        };
+        *agent.provider.lock().await = Some(DecisionBoundProvider::bind(
+            Arc::clone(&inner),
+            DecisionAxes::public_for_test(joey),
+        ));
+        let plan = agent
+            .prepare_coding_agent_bridge_plan(&session_id, &inner, &tools)
+            .await
+            .expect("a bridge plan");
+        assert_eq!(
+            plan.capability.tier(),
+            ProviderTier::Public,
+            "the chat is public, by its decision model"
+        );
+
+        // A slot holding another provider (a model switched since the iteration began) is not
+        // what the child talks to: a public child keeps its own Public capability, never the
+        // private slot's.
+        *agent.provider.lock().await = Some(Arc::clone(&inner));
+        let public_child: Arc<dyn Provider> = Arc::new(BridgedChildProvider {
+            name: "claude_code",
+        });
+        let plan = agent
+            .prepare_coding_agent_bridge_plan(&session_id, &public_child, &tools)
+            .await
+            .expect("a bridge plan");
+        assert_eq!(plan.capability.tier(), ProviderTier::Public);
     }
 
     /// ⚠ The name still says "withholds arbitrary host tools", and that is
@@ -22497,9 +22597,6 @@ mod tests {
             // `render_figure{kind:"volcano"}`, never as a tool of its own.
             "autovisualiser__render_volcano",
             "autovisualiser__show_chart",
-            // A Crew grant's worker tools: a granted chat is not the person's (AO-12, D3).
-            "crew__connections",
-            "crew__request",
         ] {
             assert!(
                 !coding_agent_bridge_policy_allows_tool(blocked),
@@ -22532,9 +22629,13 @@ mod tests {
             "skills__setSkillEnabled",
             "extensionmanager__install_extension",
             "extensionmanager__manage_extensions",
-            // D3: the person tools, offered only where the chat's own roster offers them.
+            // D3 and coding-agent parity (CP-4): every Crew tool, each offered only where the
+            // chat's own roster offers it (the person tools in a person's own chat, the
+            // grant's worker tools in a chat that holds a grant).
             "crew__read",
             "crew__change",
+            "crew__connections",
+            "crew__request",
         ] {
             assert!(coding_agent_bridge_policy_allows_tool(allowed), "{allowed}");
         }
@@ -22833,7 +22934,7 @@ mod tests {
         let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
         let tools = agent.list_tools(&session_id, None).await;
         let plan = agent
-            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .prepare_coding_agent_bridge_plan(&session_id, &provider, &tools)
             .await
             .expect("Codex needs a bridge plan");
         let dispatch = agent.chat_bridge_dispatch(&provider, None, plan);
@@ -22886,7 +22987,7 @@ mod tests {
         let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
         let tools = agent.list_tools(&session_id, None).await;
         let plan = agent
-            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .prepare_coding_agent_bridge_plan(&session_id, &provider, &tools)
             .await
             .expect("Codex needs a bridge plan");
         assert!(
@@ -22960,7 +23061,7 @@ mod tests {
         let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
         let tools = agent.list_tools(&session_id, None).await;
         let mut plan = agent
-            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .prepare_coding_agent_bridge_plan(&session_id, &provider, &tools)
             .await
             .expect("Codex needs a bridge plan");
 
@@ -23075,7 +23176,7 @@ mod tests {
     ) -> Vec<String> {
         let tools = agent.list_tools(session_id, None).await;
         let plan = agent
-            .prepare_coding_agent_bridge_plan(provider, &tools)
+            .prepare_coding_agent_bridge_plan(session_id, provider, &tools)
             .await
             .expect("a coding agent needs a bridge plan");
         let mut names: Vec<String> = plan
@@ -23088,18 +23189,27 @@ mod tests {
         names
     }
 
-    /// Owner ruling D3: a Claude Code or Codex child is bridged Crew's two person tools in the
-    /// person's own chat, and no Crew tool anywhere else: not in an app's chat, a subagent or a
-    /// scheduled run, and not where no host is installed. The bridge takes them from the chat's
-    /// own roster, never from the registry, which lists every Crew tool whatever the chat is.
+    /// Owner ruling D3 and coding-agent parity (CP-4): a Claude Code or Codex child is bridged
+    /// Crew's two person tools in the person's own chat, the grant's two worker tools in a chat
+    /// that holds a Crew grant, and no Crew tool anywhere else: not in an app's chat, a subagent
+    /// or a scheduled run, and not where no host is installed. The bridge takes them from the
+    /// chat's own roster, never from the registry, which lists every Crew tool whatever the chat
+    /// is.
     #[tokio::test]
     #[serial_test::serial]
     async fn a_coding_agent_child_is_bridged_the_person_tools_only_in_a_persons_chat() {
         use crate::session::session_manager::SessionType;
+        let person_tools =
+            crate::crew::tool_host::PersonTool::ALL.map(crate::crew::tool_host::PersonTool::name);
         assert_eq!(
             CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS,
-            crate::crew::tool_host::PersonTool::ALL.map(crate::crew::tool_host::PersonTool::name),
-            "the bridge's Crew list is exactly the person tools"
+            [
+                person_tools[0],
+                person_tools[1],
+                crate::crew::SCOPED_CREW_TOOLS[0],
+                crate::crew::SCOPED_CREW_TOOLS[1],
+            ],
+            "the bridge's Crew list is the person tools and the grant's worker tools"
         );
         let host = Arc::new(CrewHostSpy::default());
         for provider_name in ["claude_code", "codex"] {
@@ -23131,6 +23241,20 @@ mod tests {
             )
             .await;
             assert!(without_a_host.is_empty(), "{without_a_host:?}");
+
+            // A chat that holds a grant: the worker tools, and no person tool.
+            let (agent, session_id) = crew_agent_for_tests(SessionType::User, "A chat").await;
+            crate::crew::install_test_scope(&session_id, Some(provider.as_ref())).await;
+            let granted = crate::crew::tool_host::with_host_for_tests(
+                host.installed(),
+                bridged_crew_tools(&agent, &session_id, &provider),
+            )
+            .await;
+            assert_eq!(
+                granted,
+                ["crew__connections", "crew__request"],
+                "{provider_name}, a granted chat"
+            );
         }
         assert!(host.calls.lock().unwrap().is_empty());
     }
@@ -23152,7 +23276,7 @@ mod tests {
             async move {
                 let tools = agent.list_tools(&session_id, None).await;
                 let plan = agent
-                    .prepare_coding_agent_bridge_plan(&provider, &tools)
+                    .prepare_coding_agent_bridge_plan(&session_id, &provider, &tools)
                     .await
                     .expect("a coding agent needs a bridge plan");
                 let capability = plan.capability;
@@ -23236,7 +23360,7 @@ mod tests {
         let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
         let tools = agent.list_tools(&session_id, None).await;
         let mut plan = agent
-            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .prepare_coding_agent_bridge_plan(&session_id, &provider, &tools)
             .await
             .expect("Codex needs a bridge plan");
         assert!(
@@ -23318,7 +23442,7 @@ mod tests {
         let provider: Arc<dyn Provider> = Arc::new(BridgedChildProvider { name: "codex" });
         let tools = agent.list_tools(&session_id, None).await;
         let plan = agent
-            .prepare_coding_agent_bridge_plan(&provider, &tools)
+            .prepare_coding_agent_bridge_plan(&session_id, &provider, &tools)
             .await
             .expect("Codex needs a bridge plan");
         let session = agent
@@ -24011,7 +24135,7 @@ mod tests {
             Arc::new(BridgedChildProvider { name: "codex" });
         let tools = agent.list_tools(&parent_id, None).await;
         let plan = agent
-            .prepare_coding_agent_bridge_plan(&iteration_provider, &tools)
+            .prepare_coding_agent_bridge_plan(&parent_id, &iteration_provider, &tools)
             .await
             .expect("Codex needs a bridge plan");
         assert!(

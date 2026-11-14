@@ -1,7 +1,7 @@
 # Agents and chat access
 
 > **What this is.** How to give an AI agent access to a Crew channel with **Ask my agent**, `@agent` or `/crew`, which model Crew tasks use, what an agent may do on the lab server, the workspace context it reads, how to follow, revoke and restore that access, and how any chat can do what the Crew view does with your approval.
-> **Status:** Current. Checked against the Crew code on 2026-11-07, after the account ownership change ([design](design/account-ownership.md)) and the second part of the chat-parity build. The chat tools of [Use Crew from a chat](#use-crew-from-a-chat) follow that design's AO-12.
+> **Status:** Current. Checked against the Crew code on 2026-11-07, after the account ownership change ([design](design/account-ownership.md)) and the second part of the chat-parity build. The chat tools of [Use Crew from a chat](#use-crew-from-a-chat) follow that design's AO-12. Updated on 2026-11-12 for coding-agent parity ([design](design/coding-agent-parity.md)): Claude Code and Codex are admitted by privacy, like every other model.
 > **Audience:** Lab members who use Crew in the Biorouter desktop app.
 
 A task is one job for your agent. A connected chat is a Biorouter conversation that reads a channel and posts there while you talk to it. Nothing reads or posts until you allow it, access lasts one hour at most, and everyone in the channel sees what your agent posts.
@@ -32,7 +32,7 @@ Crew tasks start on one model you choose for them, whichever way you start them.
 2. Under the default model, the **Crew tasks** row reads "Same as new chats" until you choose. Choose **Change…**.
 3. Choose a model in "Models for Crew tasks", or "Same as new chats".
 
-The row says "Ask my agent and @agent in Crew start on this model. A workspace can still refuse a model its institution has not approved." A model whose provider is no longer set up reads, for example, "GPT-5.5 · Versa isn’t set up for Crew, so tasks use the model for new chats." In **Ask my agent**, a model you picked for one task offers **Use for future tasks** under it, which makes it the model for Crew tasks. From a terminal, `biorouter crew defaults set --provider PROVIDER --model MODEL` does the same ([Run an agent task](command-line.md#run-an-agent-task)).
+The list offers every model you have set up, Claude Code and Codex included. The row says "Ask my agent and @agent in Crew start on this model. A private workspace refuses a public model, and a workspace can refuse a model its institution has not approved." A model whose provider is no longer set up reads, for example, "GPT-5.5 · Versa isn’t set up, so Crew tasks use the model for new chats." In **Ask my agent**, a model you picked for one task offers **Use for future tasks** under it, which makes it the model for Crew tasks. From a terminal, `biorouter crew defaults set --provider PROVIDER --model MODEL` does the same ([Run an agent task](command-line.md#run-an-agent-task)).
 
 The choice is a preference, not a permission: Crew still checks every start against the workspace's privacy and institution.
 
@@ -94,7 +94,7 @@ If the pane reads "No models are set up.", choose **Open Settings** and add one.
 | "Public" | Refused for Restricted channels and for Private workspaces or connections, and the pane says which before you start. With a remote work folder it can run, but cannot use the folder. |
 | "Not approved for UCSF" | Crew will not start with it |
 
-Claude Code and Codex appear in the list but are always refused.
+Claude Code and Codex are public models, so they carry the "Public" chip and follow its row: a Public workspace runs a task on them, and a Private workspace or connection, or a Restricted channel, refuses them with the same sentence as any other public model.
 
 ### Also read other channels
 
@@ -164,6 +164,8 @@ The chat needs a sent message (in a new chat, the `/crew` suggestion reads "Conn
 4. Optionally open **Advanced** and tick more channels under "Also read".
 5. Read what the pane lists under "“Plot review” will be able to" ("This chat will be able to" when the title is unknown), then choose **Allow**.
 6. The pane shows "Connected." and "Active · ends 4:40 PM". Choose **Back to chat**, and ask for what you need.
+
+A chat on Claude Code or Codex connects the same way. Its model is public, so a Public workspace admits it, with no access to the server and only Public-safe channels, and a Private workspace or connection refuses it with the sentence any public model gets, such as "Your connection to {workspace} is Private, so a public model can't read it. Choose a private model." A chat on a private model, such as Versa, connects to a Private workspace its institution owns, and to a Public one. If that chat is already Private (it has used a private model or read private data), a Public workspace admits it only when the host set the workspace's institution, and its posts there are Restricted ([Privacy and security](privacy-and-security.md)).
 
 ### Another channel or workspace
 
@@ -256,6 +258,8 @@ A chat gets the two tools when all of these hold:
 - The **Crew** switch in **Settings** > **Chat** > **Capabilities** was on when the chat started.
 
 A chat on Claude Code or Codex gets both tools too, through the coding agent's tool bridge, and its changes ask you on the same cards. A change the coding agent sends again under the same call is applied once. Those two models are public, so such a chat reads only what a public model may read ([Privacy](#privacy-for-a-chat-that-reads-as-you)). Their tool bridge gives one call at most 10 minutes to wait for you, so there every card of one Crew request has to be answered within 9 and a half minutes of the request. A card still waiting then ends as if its time had run out, and nothing changes.
+
+Such a chat can also be connected to a channel with `/crew` ([Connect a chat with /crew](#connect-a-chat-with-crew)), and Claude Code or Codex can be the model for a Crew task ([Choose a model](#choose-a-model)), in a Public workspace through a Public connection, like any public model. A Private workspace or connection refuses them. Once connected, the chat gets the channel tools and loses these two, like any connected chat.
 
 A workflow's chats get Crew too when the **Crew** switch is on, even when the workflow lists its own `extensions`: the capabilities you turned on for every chat stay on beside that list. A workflow that sets `capabilities: explicit` gets only its list, and its chat is told which capabilities are off there, so it can say so when you ask for one ([Workflow schema reference](../workflows/workflow-schema-reference.md#capabilities-turned-on-for-every-chat)). A chat that another chat opens with its own list of extensions keeps them too.
 
@@ -541,7 +545,6 @@ Most refusals say what to do. For these:
 |---|---|
 | "isn’t approved for", "public model", "Public models" | Choose a Private model approved for the institution, or a local model. |
 | "This connection is for {institution}, but {workspace} belongs to {institution}." | Your connection's institution differs from the workspace's. Set the workspace's in **Connection settings…**. |
-| "external tools" | Choose a provider other than Claude Code or Codex. |
 | "Task must contain between 1 and 32768 bytes." | Shorten the task. Share long data as a file. |
 | "Refresh the workspace to verify connection privacy" | Wait for "Connected" in the status row, or choose **Connect to {workspace}**. |
 | "Crew workspace policy changed", "couldn't confirm that channel" | The workspace changed since Crew last read it. In the app, choose the channel name at the top, then **Refresh channel**. From a terminal, run the command again. |

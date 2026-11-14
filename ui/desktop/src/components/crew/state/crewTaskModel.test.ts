@@ -40,10 +40,12 @@ describe('the model Crew tasks start on (OW-11)', () => {
       expect(parseTaskModel(value)).toBeNull();
   });
 
-  it('never offers Claude Code or Codex, which the daemon refuses for every Crew task', () => {
+  it('offers every configured provider, Claude Code and Codex included (coding-agent parity)', () => {
     expect(crewTaskModelUsable(versa)).toBe(true);
-    expect(crewTaskModelUsable(claudeCode)).toBe(false);
-    expect(crewTaskModelUsable(codex)).toBe(false);
+    expect(crewTaskModelUsable(claudeCode)).toBe(true);
+    expect(crewTaskModelUsable(codex)).toBe(true);
+    expect(crewTaskModelUsable(provider('claude_code', false))).toBe(false);
+    expect(crewTaskModelUsable(provider('codex', false))).toBe(false);
     expect(crewTaskModelUsable(unconfigured)).toBe(false);
     expect(crewTaskModelUsable(undefined)).toBe(false);
   });
@@ -63,10 +65,29 @@ describe('the model Crew tasks start on (OW-11)', () => {
     ).toEqual({ choice: { provider: 'versa_azure', model: 'gpt-5.5' }, source: 'app' });
   });
 
-  it('falls back to the app’s default when the Crew setting names an unconfigured or unusable provider', () => {
+  it('resolves Claude Code or Codex like any configured provider, from either source', () => {
+    expect(
+      resolveTaskModel({
+        crew: { provider: 'claude_code', model: 'opus' },
+        appProvider: 'versa_azure',
+        appModel: 'gpt-5.5',
+        configured: [versa, claudeCode],
+      })
+    ).toEqual({ choice: { provider: 'claude_code', model: 'opus' }, source: 'crew' });
+    expect(
+      resolveTaskModel({
+        crew: null,
+        appProvider: 'codex',
+        appModel: 'gpt-5.5-codex',
+        configured: [codex],
+      })
+    ).toEqual({ choice: { provider: 'codex', model: 'gpt-5.5-codex' }, source: 'app' });
+  });
+
+  it('falls back to the app’s default when the Crew setting names an unconfigured provider or no model', () => {
     for (const crew of [
       { provider: 'openai', model: 'gpt-6-sol' },
-      { provider: 'claude_code', model: 'opus' },
+      { provider: 'codex', model: 'gpt-5.5-codex' },
       { provider: 'versa_azure' },
     ])
       expect(
@@ -85,7 +106,7 @@ describe('the model Crew tasks start on (OW-11)', () => {
         crew: '',
         appProvider: 'claude_code',
         appModel: 'opus',
-        configured: [claudeCode, versa],
+        configured: [provider('claude_code', false), versa],
       })
     ).toBeNull();
     expect(

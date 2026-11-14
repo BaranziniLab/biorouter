@@ -95,39 +95,58 @@ Delegated children have a separate, narrower runtime profile. A parent's ordinar
 grant does not automatically transfer to a child. The source's child-grant policy, rather than
 the parent's requested extension names, determines what the child actually receives.
 
-## Crew's person tools cross the bridge, and nothing else of Crew does
+## Crew's tools cross the bridge, and the chat's roster decides which
 
 By the owner's D3 ruling (2026-11-06), a Claude Code or Codex chat that is the person's own may
 read and change Crew as the person, exactly as any other model in that chat can
 ([AO-12](../../crew/design/account-ownership.md#ao-12-a-chat-can-do-what-the-crew-view-does)).
-`CODING_AGENT_BRIDGE_POLICIES` has a `Crew` entry (target `crew`) whose allowlist,
-`CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS`, names `crew__read` and `crew__change` and nothing else.
-The grant's worker tools, `crew__connections` and `crew__request`, are left out on purpose: a chat
-holding a Crew grant never acts as the person, and its tools have no reason to reach a child.
+By the owner's ruling of 2026-11-12 ([coding-agent parity](../../crew/design/coding-agent-parity.md)),
+such a chat may also hold a Crew grant, and either provider may be a Crew task's model: Crew
+admits a model by its privacy, never by its provider, so both are admitted wherever a public
+model is. `CODING_AGENT_BRIDGE_POLICIES` has a `Crew` entry (target `crew`) whose allowlist,
+`CODING_AGENT_BRIDGE_ALLOWED_CREW_TOOLS`, names all four Crew tools: the person tools
+`crew__read` and `crew__change`, and the grant's worker tools `crew__connections` and
+`crew__request`. Until that ruling it named only the person tools, and a chat with no Crew tool
+read that a chat on Claude Code or Codex could not be connected to a Crew channel. Both are gone.
 
-The list says only what **may** cross. Whether a chat gets either tool is still
-`CrewToolStanding::offers`, the rule its own roster follows, and three things keep the two in step:
+The list says only what **may** cross. Which Crew tools a chat gets is still
+`CrewToolStanding::offers`, the rule its own roster follows on every provider: a person's own
+chat with no grant gets the person tools, a chat that holds a grant and a Crew task's chat get
+the two worker tools and nothing else of Crew, and an app's chat, a subagent and a scheduled run
+get none. Four things keep the bridge in step with it:
 
 - **Crew tools come from the chat's roster, never from the registry.**
   `prepare_coding_agent_bridge_plan` recovers audited capability tools from
   `get_prefixed_tools_for_capability`, and that registry lists every Crew tool whatever the chat
   is. So it drops Crew tools from what it recovers (`crew_extension::is_crew_tool`), and the
   bridge takes them only from `tools`, the roster the standing already narrowed. Without that, a
-  subagent, an app's chat or a scheduled run would be offered a person tool that dispatch then
+  subagent, an app's chat or a scheduled run would be offered a Crew tool that dispatch then
   refuses.
-- **Dispatch asks the same rule again.** Inside the bridged call, `is_persons_chat` keeps its
-  `SessionType::User`, app name and `appcontrol` checks. The `bridged_call_budget()` fence it used
-  to have, which refused every bridged call, is gone. A call from an app's chat, a subagent or a
-  scheduled run is refused there with `PERSON_TOOL_NOT_A_PERSONS_CHAT`.
+- **A granted chat keeps its grant's tool limit.** A chat that holds a Crew grant may call only
+  the worker tools and the checklist (`authorize_session_tool`, gate B-1). The bridge plan
+  applies that rule to every candidate, the tools it recovers from the registry included, so a
+  granted Claude Code chat with Developer enabled is offered the worker tools and `todo__*`,
+  never `developer__shell`: exactly what the same chat on another provider is offered.
+- **Dispatch asks the same rules again.** Gate B-1 refuses a bridged call of any tool outside
+  the grant, and the Crew tool asks its standing once more. For the person tools,
+  `is_persons_chat` keeps its `SessionType::User`, app name and `appcontrol` checks. The
+  `bridged_call_budget()` fence it used to have, which refused every bridged call, is gone. A
+  call from an app's chat, a subagent or a scheduled run is refused there with
+  `PERSON_TOOL_NOT_A_PERSONS_CHAT`.
 - **Every change still parks its own card,** proof-backed, with Allow once and Deny. The
-  permission inspector leaves both tools to that card, so a change shows one card, and
+  permission inspector leaves both person tools to that card, so a change shows one card, and
   `crew__change` is offered only where `user_proof_available()` is true.
 
-A read takes the bridge's sampled `CallCapability`, which is Public for both coding agents, so it
-returns only what a public model may read: a Public workspace through a Public connection, and its
-public-safe content. A bridged read of a Private workspace is withheld, as for any public model.
+A read takes the bridge's sampled `CallCapability`: the lesser of the chat's provider slot (its
+DR-33 tier) and the provider rebuilt for one iteration of the reply loop, which is Public for both
+coding agents. So a person tool returns only what a public model may read: a Public workspace
+through a Public connection, and its public-safe content. A bridged read of a Private workspace is
+withheld, as for any public model. A worker tool is judged the same way: Crew's dispatch check
+compares that capability with the chat's grant (`crew::model_match::check`), so a granted chat on
+either coding agent reads only the public-safe channels of a Public workspace and never gets a
+work folder or full access on the server.
 
-Two things are specific to the bridged path:
+Three things are specific to the bridged path:
 
 - **Every wait in one Crew call ends by one deadline.** A bridged call that parks must answer
   within `bridged_call_budget()`, the ten-minute `child_tool_call_budget()` every parking tool
@@ -140,15 +159,23 @@ Two things are specific to the bridged path:
   deadline per call rather than one per wait, so two cards in a row, such as the vault card and
   then the approval, both fit inside the bridge's window. A card that runs out ends as an expired
   approval, and nothing changes. Calls that are not bridged keep their own limits.
+- **A worker tool never outlasts a bridged call either.** Every request to the workspace is bounded
+  by the transport's 45-second exchange deadline, a command on the server (`remote.shell`,
+  `remote.execute`) and a file copy wait at most 20 seconds and then answer their job, which the
+  model checks later, and `tasks_watch` waits at most 20 seconds. So long Crew work returns a
+  handle and is polled, and the 570-second card limit is never what ends it.
 - **The child's call ID is the change's identity.** `BridgeGrant::call_for_child` scopes the
   child's own call ID as the tool call's ID for person tools
   (`crew_extension::with_bridged_call_id`), so a change's idempotency key is
   `chat-{child call id}-{step}` and a call the child sends again is applied once.
 
-Tests: `a_coding_agent_child_is_bridged_the_person_tools_only_in_a_persons_chat` and
-`a_bridged_crew_call_acts_as_the_person_only_in_their_own_chat` in `agents/agent.rs`, the
-bridged cases in `agents/crew_extension_tests.rs`, and `bridged_call_tests` in
-`crates/biorouter-server/src/routes/crew_tools/mod.rs`.
+Tests: `a_coding_agent_child_is_bridged_the_person_tools_only_in_a_persons_chat`,
+`a_bridged_crew_call_acts_as_the_person_only_in_their_own_chat` and
+`a_granted_coding_agent_chat_is_bridged_only_what_its_grant_allows` in `agents/agent.rs`, the bridged cases in
+`agents/crew_extension_tests.rs`, `bridged_call_tests` in
+`crates/biorouter-server/src/routes/crew_tools/mod.rs`, and
+`every_crew_wait_fits_inside_a_bridged_call`. The
+[coding-agent parity design](../../crew/design/coding-agent-parity.md#tests) lists the rest.
 
 ## Catalog changes within a user request
 

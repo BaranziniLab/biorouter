@@ -25,22 +25,30 @@ over the bridge. Knowledge, Workspace and Extension Manager reach it as audited
 subsets; see [the tool bridge](tool-bridge.md). A coding-agent chat is public, so
 the Dictionary's tools see and add only public terms there, as for any public model.
 
-Crew reaches the child in part. Its person tools, `crew__read` and `crew__change`,
-may cross, and only in a chat that is the person's own; every change still asks
-the person on its own card. Its grant tools, `crew__connections` and
-`crew__request`, never cross, because Crew refuses Claude Code and Codex
-everything a grant does: such a chat cannot be granted Crew access, a chat that
-has access cannot switch to one, and a Crew task cannot start on one, since the
-vendor's own agent runs tools Crew cannot isolate
-([Crew's own page](../../crew/agents-and-chat-access.md) says the same). To give
-a chat Crew access, or to start a Crew task, use a model from any other provider.
-Which chats get the person tools is described in [the tool bridge](tool-bridge.md).
-Wherever no Crew tool reaches
-such a chat, the model reads why in place of Crew's instructions
-(`CODING_AGENT_BRIDGE_EMPTY_NOTES`), so a person who asks it for Crew hears that
-Claude Code and Codex cannot be connected to a Crew channel, and that switching the
-chat to a model from any other provider, or starting a new chat with one, and then
-typing `/crew` connects it.
+Crew reaches the child on the same terms as any other provider. Crew admits a
+model by its privacy, never by its provider
+([coding-agent parity](../../crew/design/coding-agent-parity.md)), and both
+providers are Public. So a Claude Code or Codex chat can be connected to a channel
+of a Public workspace with `/crew`, either can be the model for a Crew task there,
+and a Private workspace or connection refuses them with the sentence any public
+model reads, such as "This chat's Crew context is private, so a public model
+can't read it.". Every Crew tool may cross the bridge, and the chat's own roster decides
+which do, by the rule every chat follows:
+
+- a person's own chat with no Crew access gets the person tools `crew__read` and
+  `crew__change`, and every change still asks the person on its own card;
+- a chat that holds a Crew grant, and a Crew task's chat, get the grant's worker
+  tools `crew__connections` and `crew__request` and nothing else of Crew;
+- an app's chat, a subagent and a scheduled run get none.
+
+A granted chat's bridge keeps the grant's tool limit too: it is offered the worker
+tools and the checklist, never Developer or another capability, exactly what the
+same chat on any other provider is offered. What keeps the vendor's own tools off
+is the isolation every bridged chat already relies on
+([what the child agent may not do](child-agent-isolation.md)); what keeps
+protected content away from the vendor is the tier.
+[Crew's own page](../../crew/agents-and-chat-access.md) says the same for users,
+and [the tool bridge](tool-bridge.md) describes how the roster is read.
 
 One built-in capability is withheld on purpose: **Code Execution**, because it
 only wraps other tools behind a script, and the child is given those tools

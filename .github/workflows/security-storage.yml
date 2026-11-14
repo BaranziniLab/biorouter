@@ -38,8 +38,11 @@ permissions:
   contents: read
 
 concurrency:
-  group: security-storage-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Same rule as rust.yml: a newer run of the same pull request, or a newer push
+  # to main (since 2026-11-14), cancels the older one; a manual dispatch is keyed
+  # by run_id and never cancelled.
+  group: security-storage-${{ github.event_name }}-${{ (github.event_name == 'pull_request' || github.event_name == 'push') && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
   rebuilt-linux-sqlite:

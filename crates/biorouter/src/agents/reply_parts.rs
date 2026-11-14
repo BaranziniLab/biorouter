@@ -821,7 +821,7 @@ impl Agent {
             .await;
         let available_tools = tools.clone();
         let bridge_plan = self
-            .prepare_coding_agent_bridge_plan(provider, &available_tools)
+            .prepare_coding_agent_bridge_plan(session_id, provider, &available_tools)
             .await;
         let bridge_replaces_tool_surface = provider.uses_tool_bridge_for_tool_surface();
         let active_bridge_plan = bridge_replaces_tool_surface.then(|| {

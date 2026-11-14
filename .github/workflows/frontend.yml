@@ -28,14 +28,15 @@ on:
 # free on a public repo and keeps the check safe to mark required.
 
 concurrency:
-  # A group holds at most ONE pending run by default: a newly queued run cancels
-  # the pending one, whatever cancel-in-progress says (that governs only the
-  # running one). Keyed by ref, a merge burst to main on 2026-09-09 thus lost 12
-  # of its 14 runs before they started, leaving those commits with no status.
-  # So only a PR's runs share a group, where the newest should win. Any other
-  # run is keyed by run_id, not sha, which repeat dispatches of a commit share.
-  group: frontend-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # A pull request's runs share a group and the newest wins, and since
+  # 2026-11-14 (the owner's ruling) so do pushes to main: a newer main push
+  # cancels the older main run, running or queued, so an intermediate main
+  # commit can end up with NO CI result of its own. rust.yml's concurrency
+  # comment says why and what that costs. A manual dispatch stays keyed by
+  # run_id and is never cancelled. The event name is in the key because a
+  # dispatch on main and a push to main share `github.ref`.
+  group: frontend-${{ github.event_name }}-${{ (github.event_name == 'pull_request' || github.event_name == 'push') && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 defaults:
   run:
@@ -58,7 +59,7 @@ jobs:
   static:
     name: Static checks
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -119,30 +120,19 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run check:tokens
 
-  # ── The BAAM registry generator ───────────────────────────────────────────
-  # landing/scripts/build-registry.mjs writes three copies of one catalog, and
-  # one of them is a compiled-in Rust security baseline
-  # (crates/biorouter/src/privacy/registry_private.rs). Its refusals are what
-  # keeps a mis-tagged card from silently classifying a private extension as
-  # Public, so they get a gate rather than a hand-run.
-  #
-  # Its own job, not a step in `static`: it needs no npm install (node:test
-  # ships with the runtime) and it runs from the repo root, not ui/desktop.
-  registry:
-    name: Registry generator
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    defaults:
-      run:
-        working-directory: .
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "24"
-
+      # ── The BAAM registry generator and the documentation checks ─────────
+      # landing/scripts/build-registry.mjs writes three copies of one catalog,
+      # and one of them is a compiled-in Rust security baseline
+      # (crates/biorouter/src/privacy/registry_private.rs). Its refusals are what
+      # keeps a mis-tagged card from silently classifying a private extension as
+      # Public, so they get a gate rather than a hand-run. They run from the
+      # repository root and need no npm install. They were a job of their own,
+      # `Registry generator`, until 2026-11-13; folded in here they take one of
+      # the organisation's 20 runner slots instead of two (see
+      # docs/testing/continuous-integration.md, "Runner slots").
       - name: Generator regression suite
+        working-directory: ${{ github.workspace }}
+        if: ${{ !cancelled() }}
         run: node --test landing/scripts/build-registry.test.mjs
 
       # The Baseten catalog feed deploy-landing.yml publishes. The suite's
@@ -152,6 +142,7 @@ jobs:
       # cannot drift apart unnoticed. `!cancelled()` like its neighbours, so a
       # failure in the registry suite above does not hide this one.
       - name: Provider catalog feed builder
+        working-directory: ${{ github.workspace }}
         if: ${{ !cancelled() }}
         run: node --test landing/scripts/build-provider-catalog.test.mjs
 
@@ -169,6 +160,7 @@ jobs:
       # tree/research-cites-repo joined on 2026-09-28, when Crew's own design and records left
       # docs/research/ (which holds studies of systems outside this repo) at zero findings.
       - name: Documents live where the rule says (placement only)
+        working-directory: ${{ github.workspace }}
         if: ${{ !cancelled() }}
         run: python3 scripts/docs-lint.py --only tree/loose-at-root,tree/no-index,status/folder-disagreement,tree/research-cites-repo
 
@@ -177,6 +169,7 @@ jobs:
       # reads the code it describes, and the suite first shows every rule
       # failing on the wording a 2026-09-27 audit found, then runs it on the tree.
       - name: The Crew manual agrees with the code it describes
+        working-directory: ${{ github.workspace }}
         if: ${{ !cancelled() }}
         run: node --test scripts/check-crew-manual.test.mjs
 
@@ -186,6 +179,7 @@ jobs:
       # hand edit or a rebase that took one side of a conflict all leave a
       # published catalog the app does not enforce.
       - name: The three generated outputs match baam.html
+        working-directory: ${{ github.workspace }}
         if: ${{ !cancelled() }}
         run: node landing/scripts/build-registry.mjs --check
 
@@ -195,14 +189,17 @@ jobs:
       # the mutant suite (a checker that cannot fail is not a gate) and then the
       # live join against registry.json.
       - name: The docs privacy checker still catches what it must
+        working-directory: ${{ github.workspace }}
         if: ${{ !cancelled() }}
         run: node --test landing/scripts/check-docs-privacy.test.mjs
 
       - name: docs.html's agents table agrees with the registry
+        working-directory: ${{ github.workspace }}
         if: ${{ !cancelled() }}
         run: node landing/scripts/check-consistency.mjs --check
 
       - name: The documentation matches its tracked sources
+        working-directory: ${{ github.workspace }}
         if: ${{ !cancelled() }}
         run: node landing/scripts/assemble-docs.mjs --check
 
@@ -211,11 +208,12 @@ jobs:
       # control heights. Pre-merge, like the docs privacy suite above; the Pages
       # deploy runs it again. Its mutants show each rule failing first.
       - name: Site stylesheets keep the look rules
+        working-directory: ${{ github.workspace }}
         if: ${{ !cancelled() }}
         run: node --test landing/scripts/look-rules.test.mjs
 
   # ── The BAAM shelf in a real browser ──────────────────────────────────────
-  # The generator job above proves the CATALOG is right. This proves the PAGE
+  # The generator steps in `static` prove the CATALOG is right. This proves the PAGE
   # is: that the privacy facet matches a card's declared tier rather than a
   # substring of its prose, that the 22px `overflow: hidden` tag row drops only
   # what does not fit and never the tier badge, that the no-JS fallback labels
@@ -268,19 +266,21 @@ jobs:
         run: node --test landing/scripts/layout-stability.browser.test.mjs
 
   # ── Unit tests ────────────────────────────────────────────────────────────
-  # Three shards at once (`--shard=i/3`, vitest's own file partition). One job
-  # took 22 minutes median running vitest alone on 2026-11-13, the longest job
-  # in this workflow; per-file setup dominates (see below), so files split
-  # across runners scale close to linearly. The required check is the gate job
-  # `Unit tests (vitest)` below, not these.
+  # On a pull request, three shards at once (`--shard=i/3`, vitest's own file
+  # partition). One job took 22 minutes median running vitest alone on
+  # 2026-11-13, the longest job in this workflow; per-file setup dominates (see
+  # below), so files split across runners scale close to linearly. On main,
+  # where nobody waits on the run, one job (shard 0, every file): three would
+  # hold three of the organisation's 20 runner slots while pull requests queue.
+  # The required check is the gate job `Unit tests (vitest)` below, not these.
   unit:
-    name: vitest (${{ matrix.shard }}/3)
+    name: ${{ matrix.shard == 0 && 'vitest (all files)' || format('vitest ({0}/3)', matrix.shard) }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: ${{ fromJSON(github.event_name == 'pull_request' && '[1, 2, 3]' || '[0]') }}
     steps:
       - uses: actions/checkout@v4
 
@@ -329,6 +329,14 @@ jobs:
       # One literal step per shard rather than `--shard=${{ matrix.shard }}/3`:
       # src/test/vitestIsolation.test.ts hands every vitest command in this file
       # to vitest's own parser, which rejects an unexpanded expression.
+      - name: Run vitest (all files)
+        if: matrix.shard == 0
+        run: |
+          npx vitest run \
+            --testTimeout=30000 \
+            --reporter=default \
+            --reporter=junit \
+            --outputFile.junit=./vitest-junit.xml
       - name: Run vitest (shard 1 of 3)
         if: matrix.shard == 1
         run: |
@@ -367,8 +375,9 @@ jobs:
           retention-days: 7
 
   # The required check `Unit tests (vitest)`. A gate: it fails unless every
-  # vitest shard, the static checks (typecheck, eslint, theme codegen,
-  # contrast, token mirrors) and the registry generator passed. Before
+  # vitest shard and the static checks (typecheck, eslint, theme codegen,
+  # contrast, token mirrors, the registry generator and the documentation
+  # checks) passed. Before
   # 2026-11-13 only vitest was required, so a pull request with a type error
   # could merge on auto-merge. The browser and native jobs (BAAM shelf,
   # Preview panel, Console windows) stay informational, as before.
@@ -376,7 +385,7 @@ jobs:
   # cancelled run can sit queued and hold a concurrency group.
   unit-gate:
     name: Unit tests (vitest)
-    needs: [unit, static, registry]
+    needs: [unit, static]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5

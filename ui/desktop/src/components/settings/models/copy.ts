@@ -30,7 +30,7 @@ export const defaultModelCopy = {
  */
 export const crewTaskModelCopy = {
   row: 'Crew tasks',
-  help: 'Ask my agent and @agent in Crew start on this model. A workspace can still refuse a model its institution has not approved.',
+  help: 'Ask my agent and @agent in Crew start on this model. A private workspace refuses a public model, and a workspace can refuse a model its institution has not approved.',
   /** The value while Crew tasks use the model new chats start on, and the picker's first row. */
   sameAsNewChats: 'Same as new chats',
   change: 'Change…',
@@ -38,9 +38,9 @@ export const crewTaskModelCopy = {
   changeName: 'Choose the model for Crew tasks',
   /** The picker's list. */
   listLabel: 'Models for Crew tasks',
-  /** The stored model names a provider that is not set up, or one Crew cannot use. */
+  /** The stored model names a provider that is not set up. */
   unavailable: (model: string) =>
-    `${model} isn’t set up for Crew, so tasks use the model for new chats.`,
+    `${model} isn’t set up, so Crew tasks use the model for new chats.`,
   saveFailed: (reason: string) => `Couldn’t save. ${reason}`,
 } as const;
 

@@ -1,7 +1,7 @@
 # Privacy and security
 
 > **What this is.** The Crew manual page on privacy and security: which AI models may read your work, what other people can see, your computers and how to remove one, and what full agent access and open workspaces risk.
-> **Status:** Current. Checked against the Crew code on 2026-11-07, after the account ownership change ([design](design/account-ownership.md)) and the second part of the chat-parity build.
+> **Status:** Current. Checked against the Crew code on 2026-11-07, after the account ownership change ([design](design/account-ownership.md)) and the second part of the chat-parity build. Updated on 2026-11-12 for coding-agent parity ([design](design/coding-agent-parity.md)).
 > **Audience:** Lab members who use Crew in the Biorouter desktop app, and workspace hosts.
 
 Privacy in Crew decides which AI models may read your lab's messages and files, never which people see them. Only people who were let in see a workspace, by the host or in an open workspace by any member, and only a channel's members see the channel. The host is the member who runs the workspace on the server. A word in braces, such as {workspace}, stands for a name Crew fills in.
@@ -9,6 +9,10 @@ Privacy in Crew decides which AI models may read your lab's messages and files, 
 ## What Private and Public allow
 
 A private model runs on your computer or at your institution. Biorouter lists it on the **Local** or **Institutional** tab of its model provider settings and marks it "Private", for example "Private · UCSF". A public model is a commercial service, on the **Public** tab. Local models, from Llama Server or Ollama, are approved for every institution.
+
+Crew decides by a model's privacy, never by its provider. Claude Code and Codex, which run on your own vendor subscription, are public models like any other on the **Public** tab: Crew admits them for a task, a connected chat or a chat that reads Crew as you wherever it admits a public model, and refuses them wherever it refuses one.
+
+A private model, such as Versa, may read a Public workspace too. A chat that is already Private, because it used a private model or read private data, keeps its privacy there: it connects only to a workspace whose host set its institution (unlabelled ones refuse it with "Confirm this workspace's institution before granting an agent"), and everything it posts there is Restricted, so public models never read it. A new chat that has not used a private model yet connects like any other.
 
 In each workspace, your connection is "Private" or "Public". You choose it, and this computer saves it. The workspace is "Private for everyone" or "Allows Public". Only the host changes it, and a new workspace starts "Private for everyone" with no institution. Your privacy is Public only when your connection is Public and the workspace allows it. A Public connection never changes what you can read.
 
