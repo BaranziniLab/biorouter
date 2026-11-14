@@ -1045,6 +1045,17 @@ async fn call_admitted_tool(
 /// running waits out the job's interval first, after every admission check and
 /// before the call, and its result says it was held. `call` is the chat's
 /// session id and the prefixed tool name the pacing keys on.
+/// Issue #56 and DR-33 for a private knowledge base: the knowledge server refuses in one sentence
+/// because it cannot see a call's capability. The words that say why come from the call's own
+/// sample (the `cap` its dispatch admitted it with, copied into the call's future) and replace
+/// only that sentence (Phase C, F-6).
+fn kb_refusal_words(cap: crate::privacy::CallCapability) -> Option<String> {
+    crate::privacy::refusal::kb_refusal_explained(
+        cap.private_from_next_turn(),
+        cap.lowered_by_decision(),
+    )
+}
+
 /// The knowledge server's private-base refusal in the words this call's capability can give
 /// ([`crate::privacy::refusal::kb_refusal_explained`]); every other error, and the refusal when
 /// there are no such words, unchanged.
@@ -1060,8 +1071,11 @@ fn explain_kb_refusal(mut error: ErrorData, words: Option<&str>) -> ErrorData {
     error
 }
 
+/// One admitted call, paced. `call` is the session, the prefixed tool name and the capability
+/// the dispatch admitted it with, whose words a private knowledge base's refusal takes
+/// ([`kb_refusal_words`]).
 async fn call_paced_tool(
-    call: (&str, &str),
+    call: (&str, &str, crate::privacy::CallCapability),
     client: &McpClientBox,
     tool_name: &str,
     arguments: Option<rmcp::model::JsonObject>,
@@ -1070,7 +1084,7 @@ async fn call_paced_tool(
     computer_permit: Option<crate::security::computer_use::ComputerUsePermit>,
 ) -> Result<rmcp::model::CallToolResult, ErrorData> {
     use crate::tool_monitor::poll_pacing;
-    let (session_id, prefixed_name) = call;
+    let (session_id, prefixed_name, cap) = call;
     let paced = poll_pacing::before_dispatch(
         session_id,
         prefixed_name,
@@ -1087,7 +1101,8 @@ async fn call_paced_tool(
         cancellation_token,
         computer_permit,
     )
-    .await?;
+    .await
+    .map_err(|error| explain_kb_refusal(error, kb_refusal_words(cap).as_deref()))?;
     poll_pacing::after_dispatch(paced, prefixed_name, arguments.as_ref(), &mut result);
     Ok(result)
 }
@@ -3861,13 +3876,6 @@ impl ExtensionManager {
         // DR-33, design §2.6. Decided here, at admission, off the same sample.
         let private_content =
             self.private_content_probe(&client_name, &tool_name, arguments.as_ref(), cap);
-        // Issue #56 and DR-33 for a private knowledge base: the knowledge server refuses in one
-        // sentence because it cannot see this call's capability. The words that say why are
-        // picked here, off the same sample, and replace only that sentence (Phase C, F-6).
-        let kb_refusal_words = crate::privacy::refusal::kb_refusal_explained(
-            cap.private_from_next_turn(),
-            cap.lowered_by_decision(),
-        );
 
         let fut = async move {
             let _file_authority = file_admission;
@@ -3886,7 +3894,7 @@ impl ExtensionManager {
             // where every path to a model converges. A repeated check of a
             // running job first waits out its interval (`call_paced_tool`).
             let mut result = call_paced_tool(
-                (&session_id, &prefixed_name),
+                (&session_id, &prefixed_name, cap),
                 &client,
                 &tool_name,
                 arguments.clone(),
@@ -3894,8 +3902,7 @@ impl ExtensionManager {
                 cancellation_token,
                 computer_permit,
             )
-            .await
-            .map_err(|error| explain_kb_refusal(error, kb_refusal_words.as_deref()))?;
+            .await?;
             seal_file_diagnostics(
                 &mut result,
                 diagnostics_enabled,

@@ -561,7 +561,7 @@ fn render_tool_response(resp: &ToolResponse, theme: Theme, debug: bool) {
             let shown = failed_call_text(e);
             let text = biorouter::agents::tool_errors::without_tool_error_header(&shown);
             print_markdown_source(text, theme);
-            if let Some(line) = spawn_refusal_person_line(was_spawn_call, &text) {
+            if let Some(line) = spawn_refusal_person_line(was_spawn_call, text) {
                 if !text.ends_with('\n') {
                     println!();
                 }
