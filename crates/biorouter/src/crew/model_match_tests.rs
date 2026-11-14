@@ -600,11 +600,13 @@ fn crew_code() -> Vec<(String, String)> {
         .map(|path| {
             let text = std::fs::read_to_string(&path).unwrap();
             let code = without_test_items(&text);
+            // With `/` on every platform: the checks below match paths by their suffix, and
+            // Windows joins the walked names with `\`.
             let relative = path
                 .strip_prefix(&root)
                 .unwrap()
                 .to_string_lossy()
-                .into_owned();
+                .replace('\\', "/");
             (relative, code)
         })
         .collect()
