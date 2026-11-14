@@ -558,8 +558,9 @@ fn render_tool_response(resp: &ToolResponse, theme: Theme, debug: bool) {
             }
         }
         Err(e) => {
-            let text = e.to_string();
-            print_markdown_source(&text, theme);
+            let shown = failed_call_text(e);
+            let text = biorouter::agents::tool_errors::without_tool_error_header(&shown);
+            print_markdown_source(text, theme);
             if let Some(line) = spawn_refusal_person_line(was_spawn_call, &text) {
                 if !text.ends_with('\n') {
                     println!();
@@ -567,6 +568,28 @@ fn render_tool_response(resp: &ToolResponse, theme: Theme, debug: bool) {
                 println!("{line}");
             }
         }
+    }
+}
+
+/// What the person reads of a failed call, as the desktop card shows it (`failedCallText` in
+/// `ToolCallWithResponse.tsx`). The error's display is `<code>: <message>(<data>)`, so a refused
+/// subagent printed "-32602: [tool_error …] …" (Phase C, the "Plain errors" item). The
+/// message alone is shown when the data holds only what Biorouter added. Otherwise the whole
+/// display is kept, because data a tool sent itself may explain the failure. The caller then
+/// takes the taxonomy's header off.
+fn failed_call_text(error: &rmcp::model::ErrorData) -> String {
+    const BIOROUTER_ERROR_DATA_KEYS: [&str; 2] = ["error", "biorouterToolExecution"];
+    let only_ours = match &error.data {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::Object(fields)) => fields
+            .keys()
+            .all(|key| BIOROUTER_ERROR_DATA_KEYS.contains(&key.as_str())),
+        Some(_) => false,
+    };
+    if only_ours && !error.message.trim().is_empty() {
+        error.message.to_string()
+    } else {
+        error.to_string()
     }
 }
 
@@ -2608,6 +2631,39 @@ mod tests {
             spawn_refusal_person_line(true, "-32600: the subagent cap was reached"),
             None
         );
+    }
+
+    /// The "Plain errors" item (Phase C): a refused subagent printed "-32602: [tool_error
+    /// kind=invalid_args …] The arguments were rejected. …" before its refusal. The person
+    /// reads the refusal alone, as the desktop card shows it: no protocol code and no header
+    /// with its advice to the agent. Data a tool sent itself keeps the whole display.
+    #[test]
+    fn a_failed_call_prints_its_words_without_the_code_or_the_header() {
+        use biorouter::agents::tool_errors::without_tool_error_header;
+        let refusal = biorouter::privacy::PrivacyRefusal::spawn_downgrade(
+            biorouter::privacy::ProviderTier::Public,
+        )
+        .to_string();
+        let annotated = format!(
+            "[tool_error kind=invalid_args retryable=false] The arguments were rejected. Fix \
+             the call itself; the same arguments will fail again.\n{refusal}"
+        );
+        let ours = rmcp::model::ErrorData::new(
+            rmcp::model::ErrorCode::INVALID_PARAMS,
+            annotated.clone(),
+            Some(serde_json::json!({ "biorouterToolExecution": { "kind": "invalid_args" } })),
+        );
+        let shown = failed_call_text(&ours);
+        assert_eq!(without_tool_error_header(&shown), refusal);
+        assert!(!without_tool_error_header(&shown).contains("-32602"));
+        assert!(spawn_refusal_person_line(true, without_tool_error_header(&shown)).is_some());
+
+        let theirs = rmcp::model::ErrorData::new(
+            rmcp::model::ErrorCode::INTERNAL_ERROR,
+            "the server failed",
+            Some(serde_json::json!({ "detail": "disk full" })),
+        );
+        assert!(failed_call_text(&theirs).contains("disk full"));
     }
 
     /// A tool response carries no tool name, so the terminal remembers which
