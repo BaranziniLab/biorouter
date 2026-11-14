@@ -11,6 +11,7 @@ import {
   contextWindowModelKey,
 } from './ContextWindowIndicator';
 import { CONTEXT_CARD_COPY, FOOTER_COPY } from './bottom_menu/copy';
+import { TOOL_COUNT_COPY, TOOLS_MAX_SUGGESTED } from './alerts/toolCountWarning';
 import {
   FooterCard,
   FooterCardGroup,
@@ -445,6 +446,45 @@ describe('the ring and its card', () => {
     await user.keyboard('{Escape}');
     expect(cardOpen()).toBe(false);
     expect(ringButton()).toHaveFocus();
+  });
+
+  /**
+   * Phase C F-11 (2026-11-14): "show this chat's extensions" had no caller once the composer's
+   * alerts went away. The tool-count line now lives here, with Review extensions beside Compact.
+   */
+  it('says a chat has too many tools in one line, and Review extensions opens its Extensions', async () => {
+    const user = userEvent.setup();
+    const opened = vi.fn();
+    window.addEventListener('current-chat-extensions:open', opened);
+    try {
+      render(ring({ toolCount: 74 }));
+      await user.click(ringButton());
+      expect(screen.getByTestId('context-card-tool-count')).toHaveTextContent(
+        TOOL_COUNT_COPY.line(74)
+      );
+      // Why it matters is the InfoTip, not more lines (no walls of text).
+      expect(
+        screen.getByRole('button', { name: `About ${TOOL_COUNT_COPY.helpLabel}` })
+      ).toBeInTheDocument();
+      await user.click(screen.getByRole('button', { name: TOOL_COUNT_COPY.review }));
+      // The card closes first; the `+` opens on Extensions in the next frame.
+      expect(cardOpen()).toBe(false);
+      await waitFor(() =>
+        expect(opened).toHaveBeenCalledWith(
+          expect.objectContaining({ detail: { sessionId: 'chat-a' } })
+        )
+      );
+    } finally {
+      window.removeEventListener('current-chat-extensions:open', opened);
+    }
+  });
+
+  it('says nothing about tools at or below the suggested count', async () => {
+    const user = userEvent.setup();
+    render(ring({ toolCount: TOOLS_MAX_SUGGESTED }));
+    await user.click(ringButton());
+    expect(screen.queryByTestId('context-card-tool-count')).toBeNull();
+    expect(screen.queryByRole('button', { name: TOOL_COUNT_COPY.review })).toBeNull();
   });
 
   it('runs Compact from the card, then closes it', async () => {

@@ -363,4 +363,5 @@ Tick these once per release run, after working through Sections B–H above.
 - [Cross-compiling locally with `cross`](local-cross-compilation.md) — sibling release-process guide for building binaries for other architectures.
 - [Installation and setup](../getting-started/installation.md) — the per-platform install paths an update has to replace cleanly.
 - [Environment variables](../configuration/environment-variables.md) — reference for `BIOROUTER_UPDATE_FEED_URL` and the other updater knobs used above.
+- [Updating `biorouter serve` from the page](../deployment/browser-access.md#updating-from-the-page) and [SD-19](../deployment/serve-decisions.md#sd-19-the-person-on-the-page-updates-serve-and-it-comes-back-on-the-same-address): the browser-served counterpart of this updater, which reads the same release assets and installs them on the server.
 - [Dashboard mode removal record](../history/dashboard-mode/README.md) — explains why the `DashboardProvider` and `App.test.tsx` names in Section A's baseline no longer exist.

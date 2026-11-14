@@ -6,6 +6,7 @@ import {
   type SessionUsageLimitResponse,
   type SetSessionUsageLimitRequest,
 } from '../../api';
+import { isBrowserSurface } from '../../utils/surface';
 import { userActionHeaders } from '../../utils/userAction';
 import {
   announceUsageLimitsChanged,
@@ -27,9 +28,12 @@ import {
  *
  * A composer with no chat yet (Home, a new tab) has no per-chat limit to read, but the monthly
  * limit already holds it: it reads the month from `GET /usage/summary` instead (`month`), so Send
- * is held there too rather than refused by the daemon after the person pressed it. Every call carries `userActionHeaders()`,
- * because a private chat's limit is refused without the proof. An answer for a chat the composer
- * no longer shows, or one a newer read has superseded, is dropped.
+ * is held there too rather than refused by the daemon after the person pressed it. On a
+ * `biorouter serve` browser it reads nothing (SD-8): that daemon refuses the month to everyone, so
+ * `month` stays `null` and Send is not held there; the daemon still refuses a request at the limit
+ * and stores the notice, as the Usage section and the Home card already assume. Every call carries
+ * `userActionHeaders()`, because a private chat's limit is refused without the proof. An answer
+ * for a chat the composer no longer shows, or one a newer read has superseded, is dropped.
  */
 export interface SessionUsageLimitController {
   /** The chat this controller reads, or `null` when there is none yet (Home, `#/pair`). */
@@ -106,6 +110,8 @@ export function useSessionUsageLimit(
   }, []);
 
   const loadMonth = useCallback(async () => {
+    // A request that can only be refused; `month` stays null, so no focus re-read is armed either.
+    if (isBrowserSurface()) return;
     const mine = ++monthSeq.current;
     const wanted = () => mounted.current && current.current === null && monthSeq.current === mine;
     try {

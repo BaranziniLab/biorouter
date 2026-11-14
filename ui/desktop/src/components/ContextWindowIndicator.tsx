@@ -13,6 +13,11 @@ import {
   FooterCardTrigger,
   FooterCardValue,
 } from './bottom_menu/FooterCard';
+import {
+  TOOL_COUNT_COPY,
+  toolCountWarning,
+  type ToolCountWarning,
+} from './alerts/toolCountWarning';
 import { useFooterCard } from './bottom_menu/useFooterCard';
 import { InfoTip } from './ui/info-tip';
 import {
@@ -23,6 +28,11 @@ import {
 import './bottom_menu/pickers.css';
 
 interface ContextWindowGaugeProps {
+  /**
+   * The chat's tool count once it is past what works well (`alerts/toolCountWarning.ts`): one
+   * line with an InfoTip, and "Review extensions" beside Compact chat. Absent below the limit.
+   */
+  tools?: ToolCountWarning | null;
   totalTokens: number | undefined;
   tokenLimit: number;
   isTokenLimitLoaded: boolean;
@@ -97,6 +107,7 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
   tokenLimit,
   isTokenLimitLoaded,
   onCompact,
+  tools,
 }) => {
   const current = totalTokens ?? 0;
   const total = tokenLimit || 0;
@@ -400,6 +411,12 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
           CONTEXT_CARD_COPY.autoCompactNote(compactsAt)
         )}
       </FooterCardNote>
+      {tools && (
+        <FooterCardNote>
+          <span data-testid="context-card-tool-count">{TOOL_COUNT_COPY.line(tools.count)}</span>
+          <InfoTip label={TOOL_COUNT_COPY.helpLabel} help={TOOL_COUNT_COPY.help} />
+        </FooterCardNote>
+      )}
       <FooterCardActions>
         <FooterCardAction
           disabled={empty}
@@ -408,6 +425,11 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
         >
           {CONTEXT_CARD_COPY.compact}
         </FooterCardAction>
+        {tools && (
+          <FooterCardAction onClick={tools.review} data-testid="context-card-review-extensions">
+            {TOOL_COUNT_COPY.review}
+          </FooterCardAction>
+        )}
       </FooterCardActions>
       {empty && (
         <FooterCardNote id={nothingToCompactId}>
@@ -459,6 +481,11 @@ interface ContextWindowIndicatorProps extends ContextWindowGaugeProps {
    * "remaining" arc would put two readings of one gauge side by side.
    */
   showRemainingPercent?: boolean;
+  /**
+   * The tools this chat can call (`useToolCount`). Past `TOOLS_MAX_SUGGESTED` the card says so
+   * and offers "Review extensions", which opens the composer's `+` on this chat's Extensions.
+   */
+  toolCount?: number | null;
 }
 
 /** Below this share of the window left, the footer prints the figure. */
@@ -629,8 +656,19 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   isTokenLimitLoaded,
   onCompact,
   showRemainingPercent = false,
+  toolCount,
 }) => {
   const card = useFooterCard();
+  const overTools = toolCountWarning(toolCount, sessionId);
+  // The card closes first, then the `+` popover opens on Extensions in the next frame, so the
+  // card's focus return to the ring never lands after the popover took focus for its search.
+  const tools: ToolCountWarning | null = overTools && {
+    count: overTools.count,
+    review: () => {
+      card.close();
+      requestAnimationFrame(() => overTools.review());
+    },
+  };
   const cardId = useId();
   const current = totalTokens ?? 0;
   // NO WINDOW LOADED FOR THIS CHAT'S MODEL, NO RING (V2-R4-1). A context window
@@ -732,6 +770,7 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
             onCompact();
             card.close();
           }}
+          tools={tools}
         />
       </FooterCard>
     </FooterCardRoot>

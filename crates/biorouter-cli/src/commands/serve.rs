@@ -55,14 +55,17 @@
 
 use crate::commands::apps::{launch_pages_dir, open_launch_link, open_page_in_browser};
 use crate::commands::exe_path::{biorouterd_for, current_exe_resolved, daemon_file_name};
+use crate::commands::serve_restart::{self, Carried, Restartable};
 use anyhow::{bail, Context, Result};
 use biorouter::dictation::catalog::CATALOG;
 use biorouter::dictation::paths::{self, Roots};
 use biorouter::dictation::service::{self, EngineState};
 use biorouter::managed::{DictationPolicy, ManagedPolicy, MANAGED_DICTATION_CAPTURE_OFF};
+use biorouter::serve_update::records::Resume;
 use std::net::{TcpListener, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::process::{Child, Command};
 
@@ -73,6 +76,10 @@ pub const DEFAULT_PORT: u16 = 8765;
 
 /// How long to wait for the daemon to answer before giving up.
 const READY_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// The same, for the first start of an update installed from the browser
+/// (SD-19), whose daemon may migrate its stores before it listens.
+const POST_UPDATE_READY_TIMEOUT: Duration = Duration::from_secs(300);
 
 const DICTATION_BROWSER_INSTALL_ENV: &str = "BIOROUTER_DICTATION_BROWSER_INSTALL";
 
@@ -105,9 +112,73 @@ pub async fn handle_serve(
     folder_access_approval: bool,
     allow_public_decision_models: bool,
 ) -> Result<()> {
-    let computer_use_digest =
-        configure_scoped_approval(computer_use_approval, "Biorouter Copilot")?;
-    let folder_access_digest = configure_scoped_approval(folder_access_approval, "Folder access")?;
+    // SD-19: before anything an update could change. A `serve` re-executed by an
+    // update carries its token and approvals in a resume record instead of
+    // minting or asking for them again.
+    let restartable = Restartable::capture();
+    let resume = serve_restart::take_resume();
+    let post_update = resume.as_ref().and_then(|r| r.post_update.clone());
+    // Until the update this start finishes is kept or undone, ANY failure (a web
+    // folder the new version moved, a port, the daemon) must undo it: the old
+    // daemon is gone, so returning the error would leave nothing running.
+    let settled = AtomicBool::new(post_update.is_none());
+    let result = serve_resumed(
+        host,
+        port,
+        token,
+        no_token,
+        no_dictation_install,
+        web_dir,
+        public_url,
+        open_browser,
+        computer_use_approval,
+        folder_access_approval,
+        allow_public_decision_models,
+        &restartable,
+        resume.as_ref(),
+        &settled,
+    )
+    .await;
+    match (result, &post_update) {
+        (Err(error), Some(plan)) if !settled.load(Ordering::SeqCst) => {
+            let carried = Carried::from_resume(resume.as_ref());
+            serve_restart::undo(plan, &carried, &restartable, format!("{error:#}")).await
+        }
+        (result, _) => result,
+    }
+}
+
+/// [`handle_serve`] after the resume record is read: `resume` is the record a
+/// restart for an update carried, and `settled` is set once that update is kept
+/// or undone.
+#[allow(clippy::too_many_arguments)]
+async fn serve_resumed(
+    host: String,
+    port: u16,
+    token: Option<String>,
+    no_token: bool,
+    no_dictation_install: bool,
+    web_dir: Option<PathBuf>,
+    public_url: Option<String>,
+    open_browser: bool,
+    computer_use_approval: bool,
+    folder_access_approval: bool,
+    allow_public_decision_models: bool,
+    restartable: &Restartable,
+    resume: Option<&Resume>,
+    settled: &AtomicBool,
+) -> Result<()> {
+    let post_update = resume.and_then(|r| r.post_update.clone());
+    let (computer_use_digest, folder_access_digest) = match resume {
+        Some(resume) => (
+            resume.computer_use_digest.clone(),
+            resume.folder_access_digest.clone(),
+        ),
+        None => (
+            configure_scoped_approval(computer_use_approval, "Biorouter Copilot")?,
+            configure_scoped_approval(folder_access_approval, "Folder access")?,
+        ),
+    };
     let bind_is_loopback = host_is_loopback(&host);
     // Before anything starts, so a typo is a message here rather than a daemon
     // that refuses to start.
@@ -126,12 +197,22 @@ pub async fn handle_serve(
 
     let web_dir = resolve_web_dir(web_dir)?;
 
+    let resumed_token = resume.and_then(|r| r.token.clone());
     let browser_token = choose_browser_token(
         token,
         no_token,
         std::env::var("BIOROUTER_BROWSER_TOKEN").ok(),
-        || random_hex(32),
+        // SD-19: the token a restart for an update carried over, so the page that
+        // asked for the update opens again with the cookie it already holds.
+        || resumed_token.unwrap_or_else(|| random_hex(32)),
     );
+    let carried = Carried {
+        minted_token: matches!(browser_token, BrowserToken::Minted(_))
+            .then(|| browser_token.value().map(str::to_string))
+            .flatten(),
+        computer_use_digest: computer_use_digest.clone(),
+        folder_access_digest: folder_access_digest.clone(),
+    };
     token_flag_warning(&browser_token).inspect(|note| eprintln!("{note}"));
     let secret_key = random_hex(32);
 
@@ -170,12 +251,36 @@ pub async fn handle_serve(
             stdin.write_all(format!("scoped-v1:{digests}\n").as_bytes()).await?;
             stdin.shutdown().await?;
         }
-        tokio::select! {
-            ready = wait_until_ready(&host, port, &mut child) => ready?,
+        // SD-19: the first start of an update gets longer to answer: a slow
+        // first start (a database migration) is not a reason to undo it. A daemon
+        // that exits is still caught at once.
+        let ready_within = if post_update.is_some() {
+            POST_UPDATE_READY_TIMEOUT
+        } else {
+            READY_TIMEOUT
+        };
+        let ready = tokio::select! {
+            ready = wait_until_ready(&host, port, &mut child, ready_within) => ready,
             _ = stop.recv() => {
                 println!("\nStopping.");
                 return Ok(());
             }
+        };
+        // SD-19: the first start of an update either keeps it, or puts the
+        // previous version back and restarts on that.
+        match (ready, &post_update) {
+            (Ok(()), Some(plan)) => {
+                settled.store(true, Ordering::SeqCst);
+                serve_restart::confirm(plan).await
+            }
+            (Ok(()), None) => {}
+            (Err(error), Some(plan)) => {
+                settled.store(true, Ordering::SeqCst);
+                stop_daemon(&mut child, &mut stop).await;
+                return serve_restart::undo(plan, &carried, restartable, format!("{error:#}"))
+                    .await;
+            }
+            (Err(error), None) => return Err(error),
         }
 
         let local_url = browser_url(&host, port, browser_token.value());
@@ -193,6 +298,12 @@ pub async fn handle_serve(
             proxied_to.as_deref(),
             &dictation_readiness(),
         );
+        if resume.is_some() {
+            println!(
+                "  Restarted on Biorouter {} after an update; the address above has not changed.\n",
+                biorouter::serve_update::running_version()
+            );
+        }
         if allow_public_decision_models {
             eprintln!("  {PUBLIC_DECISION_MODELS_BANNER}");
         }
@@ -203,7 +314,12 @@ pub async fn handle_serve(
         if folder_access_approval {
             eprintln!("  Folder approval is configured. Enter its separate key only in the browser folder-access approval field. The key does not authorize other protected actions.");
         }
-        if open_browser && (bind_is_loopback || public_url.is_some()) {
+        // Not again after a restart for an update: the page is already open.
+        if open_browser
+            && (bind_is_loopback || public_url.is_some())
+            && post_update.is_none()
+            && resume.is_none()
+        {
             launch_page = open_in_browser(&url);
         }
 
@@ -214,6 +330,13 @@ pub async fn handle_serve(
             }
             status = child.wait() => match status {
                 Ok(s) if s.success() => Ok(()),
+                // SD-19: the daemon installed an update and asks to be restarted on it.
+                Ok(s) if serve_restart::is_restart(&s) => {
+                    if let Some(page) = launch_page.take() {
+                        let _ = std::fs::remove_file(page);
+                    }
+                    serve_restart::restart_on_update(port, &carried, restartable).await
+                }
                 Ok(s) => bail!("biorouterd exited with {s}"),
                 Err(e) => bail!("could not wait on biorouterd: {e}"),
             },
@@ -295,7 +418,16 @@ fn serve_daemon_command(
     #[cfg(unix)]
     command
         .arg("--exit-with-parent")
-        .arg(std::process::id().to_string());
+        .arg(std::process::id().to_string())
+        // SD-19: this `serve` re-executes itself when its daemon exits with the
+        // code an update installed from the browser ends with, so the daemon may
+        // offer one. Unix only, because re-executing in place is.
+        .env(
+            biorouter::serve_update::SUPERVISOR_ENV,
+            biorouter::serve_update::SUPERVISOR_CONTRACT,
+        );
+    #[cfg(not(unix))]
+    command.env_remove(biorouter::serve_update::SUPERVISOR_ENV);
     match browser_token.value() {
         Some(token) => {
             command.env("BIOROUTER_BROWSER_TOKEN", token);
@@ -334,6 +466,7 @@ fn serve_daemon_command(
         .env("BIOROUTER_PORT", port.to_string())
         .env("BIOROUTER_SERVER__SECRET_KEY", secret_key)
         .env("BIOROUTER_SERVE_UI", web_dir)
+        .env_remove(biorouter::serve_update::records::RESUME_ENV)
         // The daemon's WebSocket gates admit, beside its own origin, the one
         // renderer its launcher declares — and for the packaged desktop app that
         // declaration is the literal `file://`, which `routes/workspace.rs`
@@ -955,13 +1088,18 @@ fn preflight_port(host: &str, port: u16) -> Result<()> {
 ///
 /// Asynchronous so that a request to stop can interrupt it: the wait can run
 /// for a minute, and the daemon is already running for all of it.
-async fn wait_until_ready(host: &str, port: u16, child: &mut Child) -> Result<()> {
+async fn wait_until_ready(
+    host: &str,
+    port: u16,
+    child: &mut Child,
+    within: Duration,
+) -> Result<()> {
     let connect_host = match host {
         "0.0.0.0" => "127.0.0.1",
         "::" | "[::]" => "::1",
         other => other,
     };
-    let deadline = Instant::now() + READY_TIMEOUT;
+    let deadline = Instant::now() + within;
     loop {
         if let Some(status) = child.try_wait().context("could not poll biorouterd")? {
             bail!("biorouterd exited during startup with {status}");
@@ -980,7 +1118,7 @@ async fn wait_until_ready(host: &str, port: u16, child: &mut Child) -> Result<()
         if Instant::now() >= deadline {
             bail!(
                 "biorouterd did not start listening on {connect_host}:{port} within {}s",
-                READY_TIMEOUT.as_secs()
+                within.as_secs()
             );
         }
         tokio::time::sleep(Duration::from_millis(100)).await;

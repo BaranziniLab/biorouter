@@ -505,6 +505,7 @@ export default function ChatInput({
   reloadCost,
   workflowAccepted,
   initialPrompt,
+  toolCount,
   append: _append,
   onWorkingDirChange,
   supportsVisionOverride,
@@ -3695,6 +3696,7 @@ export default function ChatInput({
         boundModel={chatState === ChatState.LoadingConversation ? null : contextModel}
         tokenLimitModel={tokenLimitModel}
         onCompact={compactNow}
+        toolCount={toolCount}
         inputTokens={accumulatedInputTokens}
         outputTokens={accumulatedOutputTokens}
         sessionCosts={sessionCosts}

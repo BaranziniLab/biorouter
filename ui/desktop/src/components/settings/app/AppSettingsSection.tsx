@@ -5,6 +5,7 @@ import { recall, useLastKnown, type LastKnownKey } from '../lastKnown';
 import { Button } from '../../ui/button';
 import { SettingRow, SettingSection } from '../../ui/setting-row';
 import UpdateSection from './UpdateSection';
+import { isBrowserSurface } from '../../../utils/surface';
 import UsageSection from '../usage/UsageSection';
 import ResetPanel from './ResetPanel';
 import FontSizeSelector from './FontSizeSelector';
@@ -60,7 +61,9 @@ export default function AppSettingsSection() {
   const [usageVersion, setUsageVersion] = useState(0);
 
   const pinnedVersion = window.appConfig.get('BIOROUTER_VERSION');
-  const shouldShowUpdates = !pinnedVersion;
+  // A `biorouter serve` page pins the placeholder "Headless" here, yet its daemon
+  // reports its own version and updates itself (SD-19), so it shows the updater.
+  const shouldShowUpdates = !pinnedVersion || isBrowserSurface();
 
   useEffect(() => {
     // A state that cannot be read leaves the setting at what the last read said and, with none, at
@@ -206,7 +209,7 @@ export default function AppSettingsSection() {
         {UPDATES_ENABLED && shouldShowUpdates ? (
           <UpdateSection />
         ) : (
-          // A build pinned to a version (or a browser-served page) has no updater.
+          // A build pinned to a version has no updater.
           <SettingRow
             label={aboutCopy.version}
             value={String(pinnedVersion || aboutCopy.development)}

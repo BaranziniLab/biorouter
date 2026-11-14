@@ -30,6 +30,8 @@ Under the card, the footer line (`bottom_menu/ComposerFooter.tsx`): the working 
 
 The segmented control never moves (R-25): it is the popover's last child, Radix pins a `side="top"` popover by its bottom edge, and collision handling is off, so a longer list grows the popover upward. The control's thumb slides on the spring like every segmented control. The counts the Tools chip used to carry (extensions, skills and knowledge bases on in this chat) are now the `+`'s tooltip and accessible name.
 
+Something elsewhere in the app can open the popover straight on this chat's Extensions (`openCurrentChatExtensions`, `utils/sessionToolEvents.ts`). Its one caller is the context card on the footer: when a chat can call more than 60 tools, the card says so in one line, with the reason in an InfoTip, and offers **Review extensions** beside **Compact chat** (`alerts/toolCountWarning.ts`). The tools' definitions are part of what fills the context window that card reports, and the card already follows the hover-peeks, click-pins rule. The line used to be a composer alert, which the October 2026 composer rework removed, leaving the opener with no caller (Phase C F-11).
+
 ## Built-in capabilities and contexts, per chat
 
 The shipped capabilities (Developer, Biorouter Copilot, Web & Documents, Auto Visualiser, Memory, Knowledge, Agent Drafter and the rest of Settings > Chat > Capabilities) and the shipped Contexts (Word, PowerPoint, Excel, PDF, Biorouter overview, the Develop Biorouter guides, Knowledge) follow Settings for every new chat. Each one can also be switched for one chat:
@@ -42,6 +44,8 @@ Both groups are collapsed by default (owner, 2026-11-13), so the lists show only
 Two capabilities have no per-chat switch, because the daemon would undo it: Workspace Control (in Completely Autonomous mode the agent re-adds a delegation copy every turn) and Crew (a `/crew` grant or a Crew task supplies its tools, and only Revoke ends that). A capability or Context with nothing to switch reads "Not available in this app".
 
 Per chat beats Settings in both directions: a chat can turn on a Context that Settings has off, and turn off one that Settings has on (`compose_state` in `crates/biorouter/src/agents/skill_catalog.rs`).
+
+The model sees a switch at once. The system prompt's skill list is rebuilt every turn, but the conversation above it may still say a skill is loadable, so the skills extension also writes this chat's own switches into the per-request block (`get_moim` in `skills_extension.rs`, anchored by `agents/moim.rs`): a new block is appended at the end of the conversation only when its content changes, so a mid-chat switch is the newest thing the model reads, and a chat that follows Settings adds nothing (Phase C F-11).
 
 A subagent the chat starts inherits both: the chat's capabilities as they are, and a copy of its Context choices on the subagent's own chat, so the subagent's `+` popover shows them. The chat's agent can change either for one subagent; see [Subagents](../agent-loop/subagents.md#extension-control). On Home, where there is no chat yet, a capability switch shapes the next chat and a Context switch is the Settings switch itself. Built-ins never join Enable all or Disable all, and they are not counted in the `+`'s tooltip.
 

@@ -12,6 +12,8 @@ import {
   type UpdaterState,
 } from '../../../utils/updaterState';
 import { aboutCopy } from './copy';
+import { isBrowserSurface } from '../../../utils/surface';
+import { ServeUpdateSection } from '../../serveUpdate/ServeUpdateEntryPoints';
 
 // Always point users at the official Biorouter download website (the same place
 // the startup update flow directs to) rather than the raw GitHub releases page.
@@ -73,6 +75,12 @@ function statusLine(state: UpdaterState, checkRequested: boolean): ReactNode {
  * to the About section's list.
  */
 export default function UpdateSection() {
+  // A `biorouter serve` page has no app version and no main-process updater: the
+  // daemon reports its own and updates itself (SD-19).
+  return isBrowserSurface() ? <ServeUpdateSection /> : <DesktopUpdateSection />;
+}
+
+function DesktopUpdateSection() {
   const [currentVersion, setCurrentVersion] = useState('');
   const [state, setState] = useState<UpdaterState>(initialUpdaterState);
   const [checkRequested, setCheckRequested] = useState(false);

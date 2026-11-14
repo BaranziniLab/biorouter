@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionUsageLimitResponse } from '../../api';
+import { USAGE_LIMITS_CHANGED_EVENT } from '../usage/usageLimits';
 import { useSessionUsageLimit } from './useSessionUsageLimit';
 
 /**
@@ -13,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   getSummary: vi.fn(),
   putLimit: vi.fn(),
   headers: vi.fn(async () => ({ 'X-User-Action': 'proof' })),
+  browser: false,
 }));
 vi.mock('../../api', () => ({
   getSessionUsageLimit: mocks.getLimit,
@@ -20,6 +22,7 @@ vi.mock('../../api', () => ({
   putSessionUsageLimit: mocks.putLimit,
 }));
 vi.mock('../../utils/userAction', () => ({ userActionHeaders: mocks.headers }));
+vi.mock('../../utils/surface', () => ({ isBrowserSurface: () => mocks.browser }));
 
 function limitState(paused: boolean): SessionUsageLimitResponse {
   return {
@@ -53,6 +56,8 @@ let visibility: Visibility = 'visible';
 beforeEach(() => {
   mocks.getLimit.mockReset();
   mocks.getSummary.mockReset();
+  mocks.headers.mockClear();
+  mocks.browser = false;
   visibility = 'visible';
   Object.defineProperty(document, 'visibilityState', {
     configurable: true,
@@ -125,5 +130,58 @@ describe('a composer held by a limit', () => {
     await waitFor(() => expect(result.current.month?.reached).toBe(false));
     expect(mocks.getSummary).toHaveBeenCalledTimes(2);
     expect(mocks.getLimit).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * SD-8: a `biorouter serve` daemon refuses `GET /usage/summary` to everyone (it holds no key to
+ * check the user-action proof against), so Home in a browser asks nothing about the month: no
+ * request that can only be refused, and nothing logged. Send is not held there; the daemon still
+ * refuses a request at the limit and stores the notice.
+ */
+describe('a composer with no chat on a browser surface', () => {
+  const flush = () =>
+    act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+  it('never reads the month, on mount, on a limits change, on focus or on reload, and logs nothing', async () => {
+    mocks.browser = true;
+    mocks.getSummary.mockResolvedValue({
+      error: { message: 'forbidden' },
+      response: { status: 403 },
+    });
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const { result } = renderHook(() => useSessionUsageLimit(null));
+      await flush();
+
+      window.dispatchEvent(new CustomEvent(USAGE_LIMITS_CHANGED_EVENT));
+      await focusWindow();
+      await becomeVisible('visible');
+      act(() => result.current.reload());
+      await flush();
+
+      expect(mocks.getSummary).not.toHaveBeenCalled();
+      expect(mocks.headers).not.toHaveBeenCalled();
+      expect(mocks.getLimit).not.toHaveBeenCalled();
+      expect(result.current.month).toBeNull();
+      expect(error).not.toHaveBeenCalled();
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      error.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
+  it('on the desktop still reads the month', async () => {
+    mocks.getSummary.mockResolvedValue({ data: { monthlyReached: false, monthlyNear: true } });
+    const { result } = renderHook(() => useSessionUsageLimit(null));
+    await waitFor(() => expect(result.current.month).toEqual({ reached: false, near: true }));
+    expect(mocks.getSummary).toHaveBeenCalledTimes(1);
+    expect(mocks.getSummary).toHaveBeenCalledWith(
+      expect.objectContaining({ headers: { 'X-User-Action': 'proof' } })
+    );
   });
 });

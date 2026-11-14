@@ -19,6 +19,7 @@ pub mod needs_terminal;
 pub mod project;
 pub mod schedule;
 pub mod serve;
+pub mod serve_restart;
 pub mod session;
 pub mod session_decisions;
 pub mod session_gates;

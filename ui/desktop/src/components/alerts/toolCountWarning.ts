@@ -1,24 +1,35 @@
 import { openCurrentChatExtensions } from '../../utils/sessionToolEvents';
-import { AlertType, type Alert } from './types';
 
-const TOOLS_MAX_SUGGESTED = 60;
+/** Above this many tools a model chooses worse and spends more context on their definitions. */
+export const TOOLS_MAX_SUGGESTED = 60;
 
-export function toolCountWarning(toolCount: number | null, sessionId: string | null): Alert | null {
-  if (toolCount === null || toolCount <= TOOLS_MAX_SUGGESTED || !sessionId) return null;
-  return {
-    type: AlertType.Warning,
-    // The count is the one visible line; why it matters and what the defaults reach are the
-    // info icon beside it (owner, 2026-11-13; design.md 9.16). "Review currently attached
-    // extensions here" restated the action under it and is gone.
-    message: `This chat can call ${toolCount} tools, including built-in capabilities (recommended: ${TOOLS_MAX_SUGGESTED} or fewer).`,
-    help: 'Too many tools can degrade performance. Capability defaults apply to a new chat.',
-    action: {
-      text: 'Review extensions',
-      onClick: () => {
-        window.dispatchEvent(new CustomEvent('hide-alert-popover'));
-        openCurrentChatExtensions(sessionId);
-      },
-    },
-    autoShow: false,
-  };
+/**
+ * The context card's tool-count line (Phase C F-11, 2026-11-14). It used to be a composer alert
+ * whose "Review extensions" opened this chat's extensions; the October composer rework removed
+ * the alerts, and the line with them, so nothing in the app opened that list any more. It now
+ * sits in the context card (`ContextWindowIndicator`): the tools' definitions are part of what
+ * fills the window the card reports, and the card already follows the app's one pointer rule
+ * (hover peeks, click pins). One line; why it matters is its InfoTip (no walls of text).
+ */
+export const TOOL_COUNT_COPY = {
+  line: (count: number) =>
+    `This chat can call ${count} tools; ${TOOLS_MAX_SUGGESTED} or fewer works best.`,
+  helpLabel: 'About the tool count',
+  help: 'Too many tools can slow the model and make it pick the wrong one. Switch off what this chat does not need, built-in capabilities included.',
+  review: 'Review extensions',
+} as const;
+
+/** What the context card says about the chat's tools, or `null` when there is nothing to say. */
+export interface ToolCountWarning {
+  count: number;
+  /** Opens the composer's `+` popover on this chat's Extensions list. */
+  review: () => void;
+}
+
+export function toolCountWarning(
+  toolCount: number | null | undefined,
+  sessionId: string | null | undefined
+): ToolCountWarning | null {
+  if (toolCount == null || toolCount <= TOOLS_MAX_SUGGESTED || !sessionId) return null;
+  return { count: toolCount, review: () => openCurrentChatExtensions(sessionId) };
 }

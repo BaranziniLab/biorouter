@@ -14,7 +14,9 @@
 //    switches main.ts adds (`utils/micPermissionSettings.ts`, bundled from source) and
 //    the permission handler main.ts installs (`utils/permissionPolicy.ts`).
 // 3. A 440 Hz tone at amplitude 0.5 comes out at 16 kHz with RMS 0.3535 +/- 0.005 and
-//    440 +/- 2 Hz, with samples for 98 % or more of the wall time; audio alone is
+//    440 +/- 2 Hz, with samples for 98 % or more of what the track delivered (90 % or
+//    more of the wall time, which a loaded runner's starved audio thread can miss), or of
+//    the wall time where the track gives no statistics; audio alone is
 //    granted; audio with video, and a document outside the renderer, are refused with
 //    NotAllowedError; a hidden window captures; after stop the tracks are ended and the
 //    context is closed.
@@ -256,6 +258,16 @@ const RealAudioWorkletNode = window.AudioWorkletNode;
 
 const now = () => performance.now();
 const run: any = { chunks: [] as Int16Array[], levels: [] as number[] };
+// What the microphone's track says it delivered (MediaStreamTrackAudioStats), in
+// milliseconds of audio, so coverage can be measured against what reached the page: a
+// loaded hosted runner starves the audio thread, and the track then delivers less than the
+// wall time (95.95 % of 4.08 s on one run, 94.6 % on another).
+const trackDeliveredMs = (): number | null => {
+  const stats = (streams.at(-1)?.getAudioTracks()[0] as any)?.stats;
+  return typeof stats?.deliveredFramesDuration === 'number'
+    ? stats.deliveredFramesDuration
+    : null;
+};
 let capture: any = null;
 
 document.getElementById('capture')!.addEventListener('click', (event) => {
@@ -263,7 +275,10 @@ document.getElementById('capture')!.addEventListener('click', (event) => {
   run.eventLagMs = run.pressAt - event.timeStamp;
   startCapture({
     noiseSuppression: false,
-    onLive: () => (run.liveAt ??= now()),
+    onLive: () => {
+      run.liveAt ??= now();
+      run.liveDeliveredMs ??= trackDeliveredMs();
+    },
     onChunk: (pcm, level) => {
       run.firstChunkAt ??= now();
       run.chunks.push(pcm);
@@ -313,12 +328,17 @@ function analyse(chunks: Int16Array[], rate: number) {
   captureState: () => ({ ...run, chunks: run.chunks.length, levels: run.levels.slice(0, 3) }),
   async stopCapture() {
     const stopAt = now();
+    const stopDeliveredMs = trackDeliveredMs();
     await capture.stop();
     const stopped = now();
     await capture.closed;
     const closed = now();
     const stats = analyse(run.chunks, run.sampleRate);
     const wallS = (stopAt - run.liveAt) / 1000;
+    const deliveredS =
+      run.liveDeliveredMs != null && stopDeliveredMs != null
+        ? (stopDeliveredMs - run.liveDeliveredMs) / 1000
+        : null;
     return {
       mode: run.mode,
       sampleRate: run.sampleRate,
@@ -326,6 +346,9 @@ function analyse(chunks: Int16Array[], rate: number) {
       ...stats,
       wallS,
       sampleCoverage: stats.samples / (wallS * run.sampleRate),
+      deliveredS,
+      trackCoverage:
+        deliveredS != null && deliveredS > 0 ? stats.samples / (deliveredS * run.sampleRate) : null,
       pressToGetUserMediaMs: run.timings?.streamMs ?? null,
       pressToModuleMs: run.timings?.moduleMs ?? null,
       pressToConnectedMs: run.timings?.connectedMs ?? null,
@@ -839,10 +862,25 @@ try {
       `RMS ${shown.rms} is not ${EXPECTED_RMS.toFixed(4)} +/- 0.005`
     );
     assert(Math.abs(shown.hz - TONE_HZ) <= 2, `frequency ${shown.hz} Hz is not 440 +/- 2`);
-    assert(
-      shown.sampleCoverage >= 0.98,
-      `samples cover ${(shown.sampleCoverage * 100).toFixed(1)} % of wall time`
-    );
+    // Every frame the track delivered after the first one reached the page: what capture.ts
+    // and its worklet could lose. The wall time is only a stall guard (the hidden window's
+    // floor), because a starved runner's track delivers less than the clock runs. Without
+    // track statistics the wall time rule stands as it was.
+    if (shown.trackCoverage != null) {
+      assert(
+        shown.trackCoverage >= 0.98,
+        `samples cover ${(shown.trackCoverage * 100).toFixed(1)} % of the ${shown.deliveredS.toFixed(2)} s the track delivered`
+      );
+      assert(
+        shown.sampleCoverage >= 0.9,
+        `samples cover ${(shown.sampleCoverage * 100).toFixed(1)} % of wall time`
+      );
+    } else {
+      assert(
+        shown.sampleCoverage >= 0.98,
+        `samples cover ${(shown.sampleCoverage * 100).toFixed(1)} % of wall time`
+      );
+    }
     assert(shown.tracksEnded, 'a track is still live after stop');
     assert(shown.contextsClosed, 'an AudioContext is still open after stop');
     // A loose bound that only a capture waiting on something it should not (the
@@ -1072,7 +1110,10 @@ if (results.capture) {
   const c = results.capture;
   console.log('capture (shown window, 16 kHz worklet from app.asar):');
   console.log(
-    `  RMS ${c.rms.toFixed(5)} (expected ${EXPECTED_RMS.toFixed(5)}), ${c.hz.toFixed(2)} Hz, samples cover ${(c.sampleCoverage * 100).toFixed(2)} % of ${c.wallS.toFixed(2)} s`
+    `  RMS ${c.rms.toFixed(5)} (expected ${EXPECTED_RMS.toFixed(5)}), ${c.hz.toFixed(2)} Hz, samples cover ${(c.sampleCoverage * 100).toFixed(2)} % of ${c.wallS.toFixed(2)} s` +
+      (c.trackCoverage != null
+        ? ` and ${(c.trackCoverage * 100).toFixed(2)} % of the ${c.deliveredS.toFixed(2)} s the track delivered`
+        : ', the track gave no statistics')
   );
   console.log(
     `  press to getUserMedia ${ms(c.pressToGetUserMediaMs)}, to worklet module ${ms(c.pressToModuleMs)}, to connected ${ms(c.pressToConnectedMs)}`
