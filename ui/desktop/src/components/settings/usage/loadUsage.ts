@@ -1,4 +1,5 @@
 import { getUsageReport, getUsageSummary } from '../../../api';
+import { isBrowserSurface } from '../../../utils/surface';
 import { userActionHeaders } from '../../../utils/userAction';
 import { fillCalendarDays } from './UsagePanel';
 import { readUsageSnapshot, rememberUsageSnapshot, type UsageSnapshot } from './usageSnapshot';
@@ -34,9 +35,10 @@ export async function loadUsage(): Promise<UsageRead> {
  * Ask for this month's usage while Settings opens, so the first visit to the App tab in a
  * process has a read waiting and draws the Usage row at rest too (vision V4-R7-3). Read-only and
  * never louder than the tab: a failed read is dropped, and the tab reads again and says what it
- * always said. Does nothing when this month has already been read.
+ * always said. Does nothing when this month has already been read, or on a `biorouter serve`
+ * browser, whose daemon refuses these reads to everyone (SD-8; the section says so instead).
  */
 export function warmUsageSnapshot(): void {
-  if (readUsageSnapshot()) return;
+  if (isBrowserSurface() || readUsageSnapshot()) return;
   void loadUsage().catch(() => {});
 }

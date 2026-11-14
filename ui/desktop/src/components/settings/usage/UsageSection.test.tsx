@@ -20,6 +20,8 @@ vi.mock('../../../api', () => ({
 vi.mock('../../../utils/userAction', () => ({
   userActionHeaders: async () => ({ 'X-User-Action': 'proof' }),
 }));
+const surface = vi.hoisted(() => ({ browser: false }));
+vi.mock('../../../utils/surface', () => ({ isBrowserSurface: () => surface.browser }));
 
 /** The month-to-date summary these tests serve; `turns` tells one answer from another. */
 const summaryBody = (turns: number): UsageSummaryResponse => {
@@ -49,6 +51,7 @@ const summaryBody = (turns: number): UsageSummaryResponse => {
 const summaryWith = (turns: number) => ({ data: summaryBody(turns) }) as never;
 
 beforeEach(() => {
+  surface.browser = false;
   // The module remembers the last read for the life of the process; each test starts as the
   // first read in one, unless it says otherwise.
   forgetUsageSnapshot();
@@ -319,5 +322,58 @@ describe('the Limits group under the month', () => {
     // The report's token budget gauge reads the same value.
     await user.click(screen.getByRole('button', { name: copy.detailsName }));
     expect(await screen.findByTestId('usage-gauge-tokens')).toBeInTheDocument();
+  });
+
+  /**
+   * SD-8: a `biorouter serve` daemon refuses `GET /usage/summary` and `GET /usage/report` to
+   * everyone (they take the person's proof, which it can never check), so the section says where
+   * usage is before anything is read, and offers no Retry that could only be refused again.
+   */
+  describe('on a biorouter serve browser (SD-8)', () => {
+    it('says where usage is in one line, with the reason behind an InfoTip, and reads nothing', async () => {
+      surface.browser = true;
+      const { container } = render(<UsageSection />);
+
+      const note = screen.getByTestId('usage-browser-note');
+      expect(note).toHaveTextContent(copy.browserNote);
+      expect(
+        screen.getByRole('button', { name: `About ${copy.browserNoteLabel}` })
+      ).toHaveAccessibleDescription(copy.browserNoteWhy);
+      // Still the deep-link target, under the same heading.
+      expect(container.querySelector(`#${SETTINGS_SECTION_IDS.usage}`)).toHaveAccessibleName(
+        'Usage'
+      );
+
+      // Give a request every chance to start: none does.
+      await act(async () => {
+        await new Promise((done) => setTimeout(done, 20));
+      });
+      expect(getUsageSummary).not.toHaveBeenCalled();
+      expect(getUsageReport).not.toHaveBeenCalled();
+      expect(screen.queryByRole('button', { name: copy.retry })).toBeNull();
+      expect(screen.queryByTestId('usage-load-error')).toBeNull();
+      expect(screen.queryByTestId('usage-loading')).toBeNull();
+      expect(screen.queryByTestId('usage-limits')).toBeNull();
+      expect(screen.queryByText(copy.loadError)).toBeNull();
+    });
+
+    it('names no price when costs are hidden', () => {
+      surface.browser = true;
+      render(<UsageSection showCosts={false} />);
+      expect(screen.getByTestId('usage-browser-note')).toHaveTextContent(copy.browserNote);
+      expect(`${copy.browserNote} ${copy.browserNoteWhy}`).not.toMatch(/cost|price|\$/i);
+      expect(screen.getByRole('button', { name: 'About Usage' })).toHaveAccessibleDescription(
+        copy.sectionHelpNoCost
+      );
+    });
+
+    it('is unchanged on the desktop: it reads the month and draws no browser note', async () => {
+      render(<UsageSection />);
+      await screen.findByTestId('usage-panel');
+      expect(getUsageSummary).toHaveBeenCalledTimes(1);
+      expect(getUsageReport).toHaveBeenCalledTimes(2);
+      expect(screen.queryByTestId('usage-browser-note')).toBeNull();
+      expect(screen.getByTestId('usage-limits')).toBeInTheDocument();
+    });
   });
 });

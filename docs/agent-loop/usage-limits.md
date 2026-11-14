@@ -222,6 +222,12 @@ holds a key, so a model cannot raise or lift its own limit over HTTP; the refusa
 to stop and ask. On a `biorouter serve` daemon, which can never check a proof, the reach
 gate is the whole gate, as for every other per-chat setting.
 
+The month's figures and the default and monthly limits are read only with the proof too
+(`GET /usage/summary`, `GET /usage/report`), so a browser opened with `biorouter serve`
+can never read them. There Settings > App > Usage reads nothing and says in one line that
+this month's usage and limits are in the Biorouter desktop app, with the reason in its
+info tip, rather than failing and offering a Retry that could only fail again (SD-8).
+
 The default and monthly limits live in the `usage:` section of `config.yaml`:
 
 ```yaml
