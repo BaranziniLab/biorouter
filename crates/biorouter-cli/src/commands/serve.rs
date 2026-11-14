@@ -169,16 +169,8 @@ async fn serve_resumed(
     settled: &AtomicBool,
 ) -> Result<()> {
     let post_update = resume.and_then(|r| r.post_update.clone());
-    let (computer_use_digest, folder_access_digest) = match resume {
-        Some(resume) => (
-            resume.computer_use_digest.clone(),
-            resume.folder_access_digest.clone(),
-        ),
-        None => (
-            configure_scoped_approval(computer_use_approval, "Biorouter Copilot")?,
-            configure_scoped_approval(folder_access_approval, "Folder access")?,
-        ),
-    };
+    let (computer_use_digest, folder_access_digest) =
+        scoped_digests(resume, computer_use_approval, folder_access_approval)?;
     let bind_is_loopback = host_is_loopback(&host);
     // Before anything starts, so a typo is a message here rather than a daemon
     // that refuses to start.
@@ -206,13 +198,7 @@ async fn serve_resumed(
         // asked for the update opens again with the cookie it already holds.
         || resumed_token.unwrap_or_else(|| random_hex(32)),
     );
-    let carried = Carried {
-        minted_token: matches!(browser_token, BrowserToken::Minted(_))
-            .then(|| browser_token.value().map(str::to_string))
-            .flatten(),
-        computer_use_digest: computer_use_digest.clone(),
-        folder_access_digest: folder_access_digest.clone(),
-    };
+    let carried = carried_over(&browser_token, &computer_use_digest, &folder_access_digest);
     token_flag_warning(&browser_token).inspect(|note| eprintln!("{note}"));
     let secret_key = random_hex(32);
 
@@ -244,21 +230,11 @@ async fn serve_resumed(
     // the address, token and all.
     let mut launch_page: Option<PathBuf> = None;
     let outcome: Result<()> = async {
-        if computer_use_digest.is_some() || folder_access_digest.is_some() {
-            use tokio::io::AsyncWriteExt;
-            let mut stdin = child.stdin.take().context("daemon approval pipe is unavailable")?;
-            let digests = serde_json::json!({"computer_use": computer_use_digest, "folder_access": folder_access_digest});
-            stdin.write_all(format!("scoped-v1:{digests}\n").as_bytes()).await?;
-            stdin.shutdown().await?;
-        }
+        send_scoped_digests(&mut child, &computer_use_digest, &folder_access_digest).await?;
         // SD-19: the first start of an update gets longer to answer: a slow
         // first start (a database migration) is not a reason to undo it. A daemon
         // that exits is still caught at once.
-        let ready_within = if post_update.is_some() {
-            POST_UPDATE_READY_TIMEOUT
-        } else {
-            READY_TIMEOUT
-        };
+        let ready_within = ready_timeout(post_update.is_some());
         let ready = tokio::select! {
             ready = wait_until_ready(&host, port, &mut child, ready_within) => ready,
             _ = stop.recv() => {
@@ -283,37 +259,17 @@ async fn serve_resumed(
             (Err(error), None) => return Err(error),
         }
 
-        let local_url = browser_url(&host, port, browser_token.value());
-        let url = match public_url.as_deref() {
-            Some(public) => with_token(public, browser_token.value()),
-            None => local_url.clone(),
-        };
-        let proxied_to = public_url.as_ref().map(|_| browser_url(&host, port, None));
-        print_banner(
-            &url,
-            &host,
+        let url = announce_started(&Started {
+            host: &host,
             port,
-            &browser_token,
+            browser_token: &browser_token,
+            public_url: public_url.as_deref(),
             bind_is_loopback,
-            proxied_to.as_deref(),
-            &dictation_readiness(),
-        );
-        if resume.is_some() {
-            println!(
-                "  Restarted on Biorouter {} after an update; the address above has not changed.\n",
-                biorouter::serve_update::running_version()
-            );
-        }
-        if allow_public_decision_models {
-            eprintln!("  {PUBLIC_DECISION_MODELS_BANNER}");
-        }
-        if computer_use_approval {
-            eprintln!("  Biorouter Copilot approval is configured. Enter your approval key in the browser when approving a task.");
-            eprintln!("  Biorouter Copilot controls this backend host's desktop, not a remote browser's device.");
-        }
-        if folder_access_approval {
-            eprintln!("  Folder approval is configured. Enter its separate key only in the browser folder-access approval field. The key does not authorize other protected actions.");
-        }
+            restarted: resume.is_some(),
+            allow_public_decision_models,
+            computer_use_approval,
+            folder_access_approval,
+        });
         // Not again after a restart for an update: the page is already open.
         if open_browser
             && (bind_is_loopback || public_url.is_some())
@@ -323,24 +279,15 @@ async fn serve_resumed(
             launch_page = open_in_browser(&url);
         }
 
-        tokio::select! {
-            _ = stop.recv() => {
-                println!("\nStopping.");
-                Ok(())
-            }
-            status = child.wait() => match status {
-                Ok(s) if s.success() => Ok(()),
-                // SD-19: the daemon installed an update and asks to be restarted on it.
-                Ok(s) if serve_restart::is_restart(&s) => {
-                    if let Some(page) = launch_page.take() {
-                        let _ = std::fs::remove_file(page);
-                    }
-                    serve_restart::restart_on_update(port, &carried, restartable).await
-                }
-                Ok(s) => bail!("biorouterd exited with {s}"),
-                Err(e) => bail!("could not wait on biorouterd: {e}"),
-            },
-        }
+        wait_for_stop_or_exit(
+            &mut stop,
+            &mut child,
+            &mut launch_page,
+            &carried,
+            restartable,
+            port,
+        )
+        .await
     }
     .await;
 
@@ -349,6 +296,155 @@ async fn serve_resumed(
         let _ = std::fs::remove_file(page);
     }
     outcome
+}
+
+/// How long the daemon has to answer: longer on the first start of an update (SD-19), since a slow
+/// first start (a database migration) is not a reason to undo it.
+fn ready_timeout(first_start_of_an_update: bool) -> Duration {
+    if first_start_of_an_update {
+        POST_UPDATE_READY_TIMEOUT
+    } else {
+        READY_TIMEOUT
+    }
+}
+
+/// What a restart for an update carries over (SD-19): a token minted here, and the scoped
+/// approval digests.
+fn carried_over(
+    browser_token: &BrowserToken,
+    computer_use_digest: &Option<String>,
+    folder_access_digest: &Option<String>,
+) -> Carried {
+    Carried {
+        minted_token: matches!(browser_token, BrowserToken::Minted(_))
+            .then(|| browser_token.value().map(str::to_string))
+            .flatten(),
+        computer_use_digest: computer_use_digest.clone(),
+        folder_access_digest: folder_access_digest.clone(),
+    }
+}
+
+/// [`serve_resumed`]'s scoped approval digests: the ones a restart for an update carried over, or
+/// new ones configured here. Split out only to keep that function under the line limit.
+fn scoped_digests(
+    resume: Option<&Resume>,
+    computer_use_approval: bool,
+    folder_access_approval: bool,
+) -> Result<(Option<String>, Option<String>)> {
+    Ok(match resume {
+        Some(resume) => (
+            resume.computer_use_digest.clone(),
+            resume.folder_access_digest.clone(),
+        ),
+        None => (
+            configure_scoped_approval(computer_use_approval, "Biorouter Copilot")?,
+            configure_scoped_approval(folder_access_approval, "Folder access")?,
+        ),
+    })
+}
+
+/// Hands the daemon its scoped approval digests on stdin, when there are any.
+async fn send_scoped_digests(
+    child: &mut Child,
+    computer_use_digest: &Option<String>,
+    folder_access_digest: &Option<String>,
+) -> Result<()> {
+    if computer_use_digest.is_none() && folder_access_digest.is_none() {
+        return Ok(());
+    }
+    use tokio::io::AsyncWriteExt;
+    let mut stdin = child
+        .stdin
+        .take()
+        .context("daemon approval pipe is unavailable")?;
+    let digests = serde_json::json!({"computer_use": computer_use_digest, "folder_access": folder_access_digest});
+    stdin
+        .write_all(format!("scoped-v1:{digests}\n").as_bytes())
+        .await?;
+    stdin.shutdown().await?;
+    Ok(())
+}
+
+/// What [`announce_started`] says once the daemon answers.
+struct Started<'a> {
+    host: &'a str,
+    port: u16,
+    browser_token: &'a BrowserToken,
+    public_url: Option<&'a str>,
+    bind_is_loopback: bool,
+    restarted: bool,
+    allow_public_decision_models: bool,
+    computer_use_approval: bool,
+    folder_access_approval: bool,
+}
+
+/// Prints the banner and the notes for a daemon that answered, and returns the address a
+/// browser opens.
+fn announce_started(started: &Started<'_>) -> String {
+    let local_url = browser_url(started.host, started.port, started.browser_token.value());
+    let url = match started.public_url {
+        Some(public) => with_token(public, started.browser_token.value()),
+        None => local_url.clone(),
+    };
+    let proxied_to = started
+        .public_url
+        .map(|_| browser_url(started.host, started.port, None));
+    print_banner(
+        &url,
+        started.host,
+        started.port,
+        started.browser_token,
+        started.bind_is_loopback,
+        proxied_to.as_deref(),
+        &dictation_readiness(),
+    );
+    if started.restarted {
+        println!(
+            "  Restarted on Biorouter {} after an update; the address above has not changed.\n",
+            biorouter::serve_update::running_version()
+        );
+    }
+    if started.allow_public_decision_models {
+        eprintln!("  {PUBLIC_DECISION_MODELS_BANNER}");
+    }
+    if started.computer_use_approval {
+        eprintln!("  Biorouter Copilot approval is configured. Enter your approval key in the browser when approving a task.");
+        eprintln!("  Biorouter Copilot controls this backend host's desktop, not a remote browser's device.");
+    }
+    if started.folder_access_approval {
+        eprintln!("  Folder approval is configured. Enter its separate key only in the browser folder-access approval field. The key does not authorize other protected actions.");
+    }
+    url
+}
+
+/// Waits for a stop signal or the daemon's exit; SD-19, a daemon that installed an update and
+/// asks to be restarted on it is restarted on the same address.
+async fn wait_for_stop_or_exit(
+    stop: &mut StopSignals,
+    child: &mut Child,
+    launch_page: &mut Option<PathBuf>,
+    carried: &Carried,
+    restartable: &Restartable,
+    port: u16,
+) -> Result<()> {
+    tokio::select! {
+        _ = stop.recv() => {
+            println!("\nStopping.");
+            Ok(())
+        }
+        status = child.wait() => match status {
+            Ok(s) if s.success() => Ok(()),
+            // SD-19: the daemon installed an update and asks to be restarted on it.
+            Ok(s) if serve_restart::is_restart(&s) => {
+                if let Some(page) = launch_page.take() {
+                    let _ = std::fs::remove_file(page);
+                }
+                serve_restart::restart_on_update(port, carried, restartable).await
+            }
+            Ok(s) => bail!("biorouterd exited with {s}"),
+            Err(e) => bail!("could not wait on biorouterd: {e}"),
+        },
+    }
 }
 
 /// SD-16: the variable `serve` hands its daemon when the operator passed
