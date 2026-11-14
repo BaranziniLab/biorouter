@@ -45,7 +45,10 @@
 //! (`token_events` and the chat's `accumulated_*` counters) through
 //! `SessionManager::apply_side_usage_event`, keyed `decision:<row id>`, so the
 //! Usage panel, `biorouter usage` and the chat's cost count it, as a decision
-//! request rather than a turn. That write never moves the context gauge, the
+//! request rather than a turn. A row whose model is under a chat provider's
+//! name is keyed `side:decision:<row id>` instead, a side call, because the
+//! usage report tells decision requests from turns by the provider's name
+//! (see `side_usage`). That write never moves the context gauge, the
 //! chat's `schedule_id` or its `updated_at` (R-30), and a deleted chat's
 //! decision spend stays counted with its other usage. A decision with no chat
 //! is billed by its provider and counted nowhere here; `biorouter decide`
@@ -57,7 +60,7 @@
 //! The service hands such an answer to [`DecisionSink::record_late`] under
 //! the request's id. That fills the tokens and the latency into the timeout
 //! row already written, or writes the row when none was, and then bills it
-//! under the same `decision:<row id>` key, so a request is billed once
+//! under the same key as the row, so a request is billed once
 //! however its answer arrived. A row that already holds tokens is left alone,
 //! and a chat deleted meanwhile stores and bills nothing. An answer that
 //! never arrives (a provider that bills a request it never answers, or a
@@ -84,6 +87,7 @@ use super::types::{
     Answer, ContextMessage, Decision, DecisionAdapter, DecisionContext, DecisionModelRef,
     DecisionOrigin, ProbabilitySource, YES,
 };
+use crate::session::session_manager::side_usage::{side_event_key, SideCall};
 use crate::session::{SessionManager, SideUsageEntry};
 
 /// Stored context is capped at this many bytes (the rest is cut and
@@ -478,30 +482,33 @@ impl SqliteDecisionSink {
     }
 }
 
-/// What the usage ledger takes for one stored decision row: its tokens, keyed
-/// `decision:<row id>` so a retried write bills once, under the provider and
-/// the model as requested (the price table is keyed by the requested Baseten
-/// slug, not the served model's name). `None` when there is nothing to bill: no
-/// model was reached (a refusal, no model), or the model reported no usage.
+/// What the usage ledger takes for one stored decision row: its tokens under
+/// the provider and the model as requested, which is what that provider's
+/// price table is keyed by (a Baseten slug, not the served model's name; for a
+/// chat provider, its own model name and rate). `None` when there is nothing
+/// to bill: no model was reached (a refusal, no model), or the model reported
+/// no usage.
 ///
-/// Only the decision providers are ledgered. The usage report tells decision
-/// requests from model turns by the provider's name
-/// (`is_decision_chat_provider`), so a decision recorded under a chat
-/// provider's name would be counted as a turn. No adapter does that today
-/// (every decision model opens under `baseten_decision` or `ollama_decision`);
-/// one that ever does needs its own discriminator before it is ledgered.
+/// The key is derived from the row id, so a retried or redelivered write of
+/// the same row bills once. A decision provider's row is keyed
+/// `decision:<row id>`: the usage report tells it from a model turn by the
+/// provider's name (`is_decision_chat_provider`) and counts it as a decision
+/// request. A row under a chat provider's name cannot be told apart that way
+/// (a `decision:` row there would read as a turn), so it is a side call keyed
+/// `side:decision:<row id>` ([`SideCall::Decision`]): billed to the chat and
+/// the month and counted by the usage limits, never a turn, and never the
+/// request the next one is estimated from.
 fn side_usage(id: &str, session_id: &str, entry: &DecisionLogEntry) -> Option<SideUsageEntry> {
     let model = entry.model.as_ref()?;
     entry.usage.billed_total()?;
-    if !crate::providers::decision::chat::is_decision_chat_provider(&model.provider) {
-        tracing::debug!(
-            provider = model.provider.as_str(),
-            "a decision under a chat provider's name is not added to the usage ledger"
-        );
-        return None;
-    }
+    let event_key = if crate::providers::decision::chat::is_decision_chat_provider(&model.provider)
+    {
+        format!("decision:{id}")
+    } else {
+        side_event_key(SideCall::Decision, id)
+    };
     Some(SideUsageEntry {
-        event_key: format!("decision:{id}"),
+        event_key,
         session_id: session_id.to_string(),
         provider: model.provider.clone(),
         model_id: model.model.clone(),
@@ -1294,7 +1301,8 @@ mod tests {
     use super::*;
     use crate::decision::types::{DecisionKind, DecisionUsage, Question, Threshold};
     use crate::privacy::ProviderTier;
-    use crate::session::session_manager::SessionType;
+    use crate::session::session_manager::side_usage::SIDE_EVENT_KEY_PREFIX;
+    use crate::session::session_manager::{SessionType, UsageGroup, UsageLedgerEntry};
     use indexmap::IndexMap;
     use tempfile::TempDir;
 
@@ -2531,6 +2539,184 @@ mod tests {
         assert_eq!(events[0].5, Some(122));
     }
 
+    /// A chat model `versa_azure` prices (the rate `side_usage.rs`'s own test
+    /// reads: $4 a million input tokens, $20 a million output tokens).
+    const SOL: &str = "gpt-5.6-sol-2026-07-09";
+
+    /// A decision whose model is under a chat provider's name, with the same
+    /// usage as [`baseten_entry`] (120 in, 2 out) and a fresh row id.
+    fn chat_provider_entry(session_id: &str) -> DecisionLogEntry {
+        let mut entry = baseten_entry(session_id, DecisionOutcome::Failed);
+        let model = DecisionModelRef::new("versa_azure", SOL);
+        entry.model = Some(model.clone());
+        entry.served_model = Some(SOL.to_string());
+        for decision in &mut entry.decisions {
+            decision.model = model.clone();
+        }
+        entry
+    }
+
+    /// A decision under a chat provider's name used to reach no ledger at all.
+    /// It is a side call now, `side:decision:<row id>`: billed once per row,
+    /// to the chat and the month at that provider's rate, without moving the
+    /// chat's gauge, schedule or activity, never counted as a turn, and never
+    /// the request the next one is estimated from. A decision provider's row
+    /// beside it keeps its `decision:<row id>` key and its decision count.
+    #[tokio::test]
+    async fn a_decision_under_a_chat_provider_is_billed_once_as_a_side_call() {
+        let (_dir, sm, id) = store().await;
+        mark_chat(&sm, &id).await;
+        let sink = SqliteDecisionSink {
+            session_manager: Arc::clone(&sm),
+        };
+        let entry = chat_provider_entry(&id);
+        let row = row_id(&entry);
+        sink.record(entry.clone()).await.unwrap();
+
+        let after = ledger(&sm, &id).await;
+        assert_eq!(
+            after.events,
+            vec![(
+                format!("side:decision:{row}"),
+                "versa_azure".to_string(),
+                SOL.to_string(),
+                Some(120),
+                Some(2),
+                Some(122),
+                "user".to_string(),
+            )],
+            "one side-call row under the chat provider and its model"
+        );
+        assert_eq!(after.accumulated, (Some(122), Some(120), Some(2)));
+        assert_eq!(
+            after.gauge,
+            (Some(5000), Some(4000), Some(1000)),
+            "a decision is not part of the chat's context window"
+        );
+        assert_eq!(after.schedule_id.as_deref(), Some("sched-1"));
+        assert_eq!(
+            after.updated_at, "2026-01-01 00:00:00",
+            "a decision's usage is not activity (R-30)"
+        );
+
+        // The same row again bills once: the log's primary key refuses a
+        // second record, and a redelivered answer, which does reach the
+        // ledger, carries the same key, which the ledger applies once.
+        assert!(sink.record_as(&row, entry.clone()).await.is_err());
+        sink.record_late(&row, entry.clone()).await.unwrap();
+        sink.record_late(&row, entry.clone()).await.unwrap();
+        let again = side_usage(&row, &id, &entry).expect("the same ledger entry");
+        assert!(!sm.apply_side_usage_event(again).await.unwrap());
+        assert_eq!(ledger(&sm, &id).await, after);
+
+        // The usage limits read it: the chat's and the month's billed tokens,
+        // priced at the chat provider's rate.
+        let spend = sm.spend_snapshot(&id, true).await.unwrap();
+        assert_eq!((spend.chat_tokens, spend.month_tokens), (122, 122));
+        let want = (120.0 * 4.0 + 2.0 * 20.0) / 1e6;
+        let chat_usd = spend.chat_usd.expect("priced at versa_azure's rate");
+        let month_usd = spend.month_usd.expect("priced at versa_azure's rate");
+        assert!((chat_usd - want).abs() < 1e-12, "{spend:?}");
+        assert!((month_usd - want).abs() < 1e-12, "{spend:?}");
+        assert!(spend.chat_usd_complete && spend.month_usd_complete);
+        assert_eq!(
+            sm.last_request_usage(&id).await.unwrap(),
+            None,
+            "a decision is not a request of the chat's turns"
+        );
+
+        // A turn, then a decision provider's row and another chat-provider row.
+        sm.apply_usage_event(UsageLedgerEntry {
+            event_key: "turn-1".into(),
+            session_id: id.clone(),
+            schedule_id: None,
+            current_total_tokens: Some(100),
+            current_input_tokens: Some(90),
+            current_output_tokens: Some(10),
+            billed_total_tokens: Some(100),
+            input_tokens: Some(90),
+            output_tokens: Some(10),
+            model_id: Some(SOL.into()),
+            provider: Some("versa_azure".into()),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+        })
+        .await
+        .unwrap();
+        let baseten = baseten_entry(&id, DecisionOutcome::Passed);
+        let baseten_row = row_id(&baseten);
+        sink.record(baseten).await.unwrap();
+        let second = chat_provider_entry(&id);
+        let second_row = row_id(&second);
+        sink.record(second).await.unwrap();
+        let keys: Vec<String> = ledger(&sm, &id)
+            .await
+            .events
+            .into_iter()
+            .map(|event| event.0)
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                format!("side:decision:{row}"),
+                "turn-1".to_string(),
+                format!("decision:{baseten_row}"),
+                format!("side:decision:{second_row}"),
+            ],
+            "a decision provider's row keeps its own key"
+        );
+
+        let basis = sm
+            .last_request_usage(&id)
+            .await
+            .unwrap()
+            .expect("the turn is the basis");
+        assert_eq!((basis.input_tokens, basis.output_tokens), (90, 10));
+
+        // One turn, one decision request: the chat-provider decisions add
+        // their tokens to the chat model's row and no turn.
+        let rows = sm.get_session_model_usage(&id).await.unwrap();
+        let sol = rows
+            .iter()
+            .find(|row| row.provider.as_deref() == Some("versa_azure"))
+            .expect("the chat model's row");
+        assert_eq!(sol.turns, 1, "{rows:?}");
+        assert_eq!(sol.total_tokens, Some(100 + 122 + 122));
+        let report = sm
+            .get_usage_report(0, i64::MAX, UsageGroup::Model)
+            .await
+            .unwrap();
+        let sol = report
+            .iter()
+            .find(|row| row.provider.as_deref() == Some("versa_azure"))
+            .expect("the chat model's bucket");
+        assert_eq!((sol.turns, sol.decision_requests), (1, 0), "{report:?}");
+        assert_eq!(sol.total_tokens, Some(344));
+        let summary = sm.get_usage_summary().await.unwrap();
+        assert_eq!(
+            (summary.all_time.turns, summary.all_time.decision_requests),
+            (1, 1)
+        );
+        assert_eq!(summary.all_time.total_tokens, Some(100 + 122 * 3));
+    }
+
+    /// Under a chat provider too, a row with no usage or no model bills nothing.
+    #[tokio::test]
+    async fn a_chat_provider_decision_with_no_usage_or_no_model_bills_nothing() {
+        let (_dir, sm, id) = store().await;
+        let mut no_usage = chat_provider_entry(&id);
+        no_usage.usage = DecisionUsage::default();
+        write(&sm, no_usage).await;
+        let mut no_model = chat_provider_entry(&id);
+        no_model.model = None;
+        write(&sm, no_model).await;
+        let page = list(&sm, &id, &DecisionQuery::default()).await.unwrap();
+        assert_eq!(page.records.len(), 2, "both rows are logged");
+        let after = ledger(&sm, &id).await;
+        assert!(after.events.is_empty(), "{:?}", after.events);
+        assert_eq!(after.accumulated, (None, None, None));
+    }
+
     /// What the service hands `record_late`: an error row with the tokens a
     /// late answer was billed for.
     fn late_entry(session_id: &str, text: &str) -> DecisionLogEntry {
@@ -2665,22 +2851,33 @@ mod tests {
     }
 
     #[test]
-    fn only_a_decision_provider_is_ledgered() {
+    fn a_decision_provider_keeps_its_key_and_a_chat_provider_is_a_side_call() {
         let mut entry = log_entry(Some("s"), Entry::default());
         assert_eq!(
             side_usage("r", "s", &entry).map(|usage| usage.event_key),
             Some("decision:r".to_string())
         );
-        // A decision recorded under a chat provider's name would read as a
-        // model turn in the usage report.
+        // Under a chat provider's name a `decision:` row would read as a model
+        // turn in the usage report, so it is a side call keyed by the row id,
+        // under the chat provider and its model, which its price table names.
         entry.model = Some(DecisionModelRef::new("openai", "gpt-4o-mini"));
-        assert!(side_usage("r", "s", &entry).is_none());
-        entry.model = Some(DecisionModelRef::new("ollama_decision", "tev1:0.8b"));
+        let usage = side_usage("r", "s", &entry).expect("a billed decision is ledgered");
+        assert_eq!(
+            (
+                usage.event_key.as_str(),
+                usage.provider.as_str(),
+                usage.model_id.as_str()
+            ),
+            ("side:decision:r", "openai", "gpt-4o-mini")
+        );
+        assert!(usage.event_key.starts_with(SIDE_EVENT_KEY_PREFIX));
         entry.usage = DecisionUsage::default();
         assert!(
             side_usage("r", "s", &entry).is_none(),
             "no usage, nothing to bill"
         );
+        entry.model = Some(DecisionModelRef::new("ollama_decision", "tev1:0.8b"));
+        assert!(side_usage("r", "s", &entry).is_none());
         entry.usage.output_tokens = Some(1);
         assert_eq!(
             side_usage("r", "s", &entry).map(|usage| (usage.input_tokens, usage.output_tokens)),
