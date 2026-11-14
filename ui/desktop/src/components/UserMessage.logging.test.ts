@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 
 /**
  * The message editor never writes message text to the log (DD-69, P-2 in
- * docs/dictation/implementation-plan.md).
+ * docs/history/local-dictation-2026-11/implementation-plan.md).
  *
  * `window.electron.logInfo` lands in the packaged app's log file. The editor
  * used to log the whole message when editing began and again on every change,

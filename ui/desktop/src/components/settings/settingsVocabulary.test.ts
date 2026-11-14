@@ -27,7 +27,8 @@ import { describe, expect, it } from 'vitest';
  * provider-configuration page, the extension rows) left it on 2026-10-10, once it
  * sat on ModalShell and SettingRow, and Knowledge and BAAM joined as roots of
  * their own. The inherited cloud dictation folder left it in 2026-11 by being
- * deleted (PR-01 of `docs/dictation/implementation-plan.md`), so a `dictation/`
+ * deleted (PR-01 of
+ * `docs/history/local-dictation-2026-11/implementation-plan.md`), so a `dictation/`
  * folder written here now is walked like any other. Adding a name back is how
  * the rules rot.
  */

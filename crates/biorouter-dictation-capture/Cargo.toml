@@ -11,7 +11,8 @@ build = "build.rs"
 [lints]
 workspace = true
 
-# The terminal's microphone (DD-5, DD-73 of docs/dictation/implementation-plan.md): the
+# The terminal's microphone (DD-5, DD-73 of
+# docs/history/local-dictation-2026-11/implementation-plan.md): the
 # child side of `biorouter __br-dictation-worker capture`, over miniaudio 0.11.24 from
 # the vendored `vendor/whisper.cpp/source/examples/miniaudio.h`, compiled by `build.rs`
 # with only CoreAudio, WASAPI, PulseAudio and ALSA (the Null backend, which records

@@ -13,7 +13,8 @@ workspace = true
 
 # The local dictation engine: whisper.cpp from `vendor/whisper.cpp`, built by
 # `build.rs` and driven through the C++ shim in `shim/`, plus the worker that runs
-# it in its own process (DD-2 to DD-13 of docs/dictation/implementation-plan.md).
+# it in its own process (DD-2 to DD-13 of
+# docs/history/local-dictation-2026-11/implementation-plan.md).
 # A leaf crate: it depends on no Biorouter crate and takes every path as an
 # argument, so the CLI, the daemon and the core library can all reach it.
 [features]

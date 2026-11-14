@@ -46,7 +46,8 @@ const nodePtyPrebuildDir = `/node_modules/node-pty/prebuilds/${nodePtyTargetPlat
 
 const isUnder = (file, dir) => file === dir || file.startsWith(`${dir}/`);
 
-// The microphone, for local dictation (DD-65 in docs/dictation/implementation-plan.md).
+// The microphone, for local dictation (DD-65 in
+// docs/history/local-dictation-2026-11/implementation-plan.md).
 //
 // What macOS shows when it asks a person for the microphone. Without this key
 // the prompt shows Electron's stock "This app needs access to the microphone".
