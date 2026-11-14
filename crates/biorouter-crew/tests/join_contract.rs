@@ -1260,7 +1260,22 @@ mod join {
         );
         assert_eq!(joins[0]["username"], "bob");
         assert_eq!(joins[0]["full_name"], "Bob Lee");
-        assert!(!joins[0].to_string().contains(&BOB.to_string()));
+        // The two timestamps are compared by value, and the substring check runs on
+        // everything else: a Unix time's digits can spell the uid by chance (an
+        // `expires_at` of 1794710019 contains "71001", BOB's uid, which failed CI on
+        // 2026-11-14 at 02:33:39Z).
+        let mut rest = joins[0].clone();
+        let rest_object = rest.as_object_mut().unwrap();
+        for stamp in ["created_at", "expires_at"] {
+            let value = rest_object.remove(stamp).unwrap();
+            assert!(value.is_u64(), "{stamp} is not a Unix time: {value}");
+            assert_ne!(
+                value.as_u64(),
+                Some(u64::from(BOB)),
+                "{stamp} carries the uid"
+            );
+        }
+        assert!(!rest.to_string().contains(&BOB.to_string()));
         assert!(!joins[0].to_string().contains(&join_id));
         // Only the host sees pending joins.
         let mut carol = ws.enroll(CAROL, "carol", 42);
