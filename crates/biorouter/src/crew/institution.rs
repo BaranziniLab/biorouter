@@ -273,6 +273,89 @@ pub(super) fn protected_sources(
     Ok(protected.iter().any(|id| selected.contains(id.as_str())))
 }
 
+/// Why an agent's work in a workspace is protected, the first reason that holds in this
+/// order, so the way out a refusal offers is one that works: a Private workspace, a Private
+/// connection, a chat that already holds private content, a Restricted channel, and last a
+/// private model's use of the remote work folder, the one reason turning off server access
+/// removes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Protected {
+    PrivateWorkspace,
+    PrivateConnection,
+    PrivateChat,
+    RestrictedChannel,
+    RemoteFolder,
+}
+
+impl Protected {
+    /// The reason, if any, for an agent on `model` through `connection` in a workspace of
+    /// `workspace_mode`, reading a Restricted channel when `restricted_channel`.
+    fn of(
+        connection: &Connection,
+        model: &ModelPrivacy,
+        policy: &RunPolicy,
+        workspace_mode: ClusterMode,
+        restricted_channel: bool,
+    ) -> Option<Self> {
+        if workspace_mode == ClusterMode::Private {
+            Some(Self::PrivateWorkspace)
+        } else if connection.mode == ClusterMode::Private {
+            Some(Self::PrivateConnection)
+        } else if policy.origin_restricted {
+            Some(Self::PrivateChat)
+        } else if restricted_channel {
+            Some(Self::RestrictedChannel)
+        } else if !model.is_public() && connection.remote_root.is_some() {
+            Some(Self::RemoteFolder)
+        } else {
+            None
+        }
+    }
+
+    /// Refuse the agent when the institutions its protected work needs are not set: the
+    /// workspace's (`workspace_institution_id`), and a Private connection's own.
+    fn require_institutions(
+        self,
+        workspace: &str,
+        workspace_institution_id: Option<&str>,
+        connection: &Connection,
+    ) -> Result<()> {
+        ensure!(
+            workspace_institution_id.is_some(),
+            self.without_institution(workspace)
+        );
+        ensure!(
+            connection.mode != ClusterMode::Private || connection.institution_id.is_some(),
+            "Set this private SSH connection's institution before granting an agent"
+        );
+        Ok(())
+    }
+
+    /// The refusal when `workspace` has no institution to keep the agent's protected work in
+    /// (Phase C T6 F1: a Public workspace used to read as an "unlabelled private" one).
+    fn without_institution(self, workspace: &str) -> String {
+        const LEAD: &str = "Confirm this workspace's institution before granting an agent";
+        let reason = match self {
+            Self::PrivateWorkspace => {
+                return format!(
+                    "{LEAD}: {workspace} is Private and has no institution, so people can chat and share files there, but no agent can work. Its host can set one."
+                );
+            }
+            Self::RemoteFolder => {
+                return format!(
+                    "{LEAD}: the agent would use your remote work folder on the server, which Crew protects, and {workspace} has no institution. Its host can set one, or you can turn off the agent's server access for this connection."
+                );
+            }
+            Self::PrivateConnection => "your connection is Private",
+            Self::PrivateChat => "this chat already holds private content",
+            Self::RestrictedChannel => "a channel the agent would read is Restricted",
+        };
+        format!(
+            "{LEAD}: {reason}, and {workspace} has no institution to keep the agent's work in. Its host can set one."
+        )
+    }
+}
+
 /// The workspace's answer to a run's admission (design CP-2): `model` is the privacy of the
 /// model the run would bind, `model_name` its name for a refusal's details.
 pub(super) fn admission(
@@ -281,7 +364,7 @@ pub(super) fn admission(
     model_name: &str,
     policy: &RunPolicy,
     snapshot: &Value,
-    protected_context: bool,
+    restricted: bool,
 ) -> Result<Admission> {
     let workspace = &snapshot["workspace"];
     ensure!(workspace.get("institution_id").is_some(), "Crew broker does not support institution policy; upgrade the broker before granting an agent");
@@ -340,11 +423,8 @@ pub(super) fn admission(
         &policy.origin_institution_ids,
         workspace_institution_id.as_deref(),
     )?;
-    let protected = connection.mode == ClusterMode::Private
-        || workspace_mode == ClusterMode::Private
-        || policy.origin_restricted
-        || protected_context
-        || (!model.is_public() && connection.remote_root.is_some());
+    let why = Protected::of(&connection, model, policy, workspace_mode, restricted);
+    let protected = why.is_some();
     model_match::check(
         model,
         CrewPlace::Workspace {
@@ -353,12 +433,8 @@ pub(super) fn admission(
             restricted: protected,
         },
     )?;
-    if protected {
-        ensure!(workspace_institution_id.is_some(), "Confirm this workspace's institution before granting an agent; unlabelled private workspaces allow human collaboration only");
-        ensure!(
-            connection.mode != ClusterMode::Private || connection.institution_id.is_some(),
-            "Set this private SSH connection's institution before granting an agent"
-        );
+    if let Some(why) = why {
+        why.require_institutions(&label, workspace_institution_id.as_deref(), &connection)?;
     }
     let mut institution_ids = policy.origin_institution_ids.clone();
     if protected {

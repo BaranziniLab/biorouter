@@ -1517,10 +1517,15 @@ fn outdated_line(entry: &Value, server: &str, login: &str, look_only: bool, rout
         || "an older Crew".to_owned(),
         |version| format!("Crew {}", safe_text(version)),
     );
-    let installed = str_field(entry, "installed_version").map_or_else(
-        || "the Crew installed there".to_owned(),
-        |version| format!("Crew {}", safe_text(version)),
-    );
+    // The same version number with other bytes (a rebuilt broker) is said as the installed
+    // one, never as "Crew 1.94.1, not Crew 1.94.1", as the desktop says it.
+    let installed = match str_field(entry, "installed_version") {
+        Some(version) if Some(version) != str_field(entry, "running_version") => {
+            format!("Crew {}", safe_text(version))
+        }
+        Some(_) => "the Crew installed in your account".to_owned(),
+        None => "the Crew installed there".to_owned(),
+    };
     let setup = format!(
         "biorouter crew setup --server {}{route}",
         safe_text(&super::shell_word(login.trim()))
@@ -1577,15 +1582,20 @@ fn others_connected(entry: &Value) -> Option<String> {
 fn looked_outdated_line(entry: &Value, name: &str, restart: &str) -> String {
     let running = str_field(entry, "running_version").map(safe_text);
     let installed = str_field(entry, "installed_version").map(safe_text);
+    let same = running.is_some() && running == installed;
     let runs = match (&running, &installed) {
+        (Some(running), Some(_)) if same => {
+            format!("runs Crew {running}, not the Crew installed in your account")
+        }
         (Some(running), Some(installed)) => format!("runs Crew {running}, not {installed}"),
         (Some(running), None) => format!("runs Crew {running}"),
         (None, _) => "runs an older Crew".to_owned(),
     };
-    let on = installed.map_or_else(
-        || "the Crew installed there".to_owned(),
-        |installed| format!("Crew {installed}"),
-    );
+    let on = match installed {
+        Some(_) if same => "the Crew installed in your account".to_owned(),
+        Some(installed) => format!("Crew {installed}"),
+        None => "the Crew installed there".to_owned(),
+    };
     match others_connected(entry) {
         Some(who) => format!(
             "{name} {runs}. To restart it on {on}, run {restart}; {who}, and their running agent commands stop."
@@ -7541,6 +7551,36 @@ mod tests {
         assert!(setup_summary_lines(&ran, "wanjun@leo", None, &asked_b).contains(
             &"busy lab still runs Crew 1.94.1, not Crew 1.94.2, and 3 other people are connected to it, so it wasn't restarted. To restart it anyway, run biorouter crew setup --server wanjun@leo --restart-workspace 'busy lab'; their running agent commands stop.".to_owned()
         ));
+        // The same version number with other bytes (a rebuilt broker, Phase C T6) is said as
+        // the Crew installed in the account, never as "Crew 1.94.1, not 1.94.1".
+        let mut rebuilt = check.clone();
+        rebuilt["outcome"]["outdated"] = json!([
+            {"workspace_id": "a", "name": "acct-lab", "running_version": "1.94.1",
+             "installed_version": "1.94.1", "others_connected": 0,
+             "reason": "not_running_installed"}
+        ]);
+        let looked = setup_summary_lines(&rebuilt, "wanjun@leo", None, &SetupAsked::default());
+        assert_eq!(
+            looked.last().map(String::as_str),
+            Some("acct-lab runs Crew 1.94.1, not the Crew installed in your account. To restart it on the Crew installed in your account, run biorouter crew setup --server wanjun@leo --restart-workspace acct-lab.")
+        );
+        let mut asked = rebuilt.clone();
+        asked["intent"] = json!("install");
+        let asked_a = SetupAsked::of(&json!({"restart_workspace_ids": ["a"]}), String::new());
+        let ran = setup_summary_lines(&asked, "wanjun@leo", None, &asked_a);
+        assert!(
+            ran.iter().any(|line| line.starts_with(
+                "acct-lab still runs Crew 1.94.1, not the Crew installed in your account."
+            )),
+            "{ran:?}"
+        );
+        assert!(
+            !ran.iter()
+                .chain(looked.iter())
+                .any(|line| line.contains("1.94.1, not 1.94.1")
+                    || line.contains("1.94.1, not Crew 1.94.1")),
+            "{ran:?}"
+        );
         // The reach sentences replace "Ready", so the progress lines leave it out.
         assert!(
             setup_progress_lines(&Value::Null, &check, "wanjun@leo", &SetupNamed::default())

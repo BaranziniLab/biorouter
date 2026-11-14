@@ -24,7 +24,7 @@ Crew protects what an agent reads when your privacy is Private, when a channel i
 | Local, or approved for the workspace's institution | Allowed | Allowed |
 | Private, approved elsewhere or stating no institution | Refused | Allowed |
 
-Protected content also needs a workspace institution that matches your connection's. In a Private workspace with no institution, people can chat and share files, but no agent can work.
+Protected content also needs a workspace institution that matches your connection's. In a Private workspace with no institution, people can chat and share files, but no agent can work. A Public workspace with no institution refuses a private model that would use your remote work folder, with a sentence naming the folder: the host can set the workspace's institution, or you can turn off the agent's server access for that connection.
 
 In **Ask my agent**, a model that is not approved shows "Not approved for {institution}", and **Start my agent and allow posting here** stays unavailable. A public model on a Restricted channel is refused when you start. A chat connected with `/crew` keeps its model. A chat that reads Crew as you, with your permission, follows the same rules channel by channel, and with a private model becomes Private once it reads workspace content ([Use Crew from a chat](agents-and-chat-access.md#use-crew-from-a-chat)). See [Agents and chat access](agents-and-chat-access.md).
 
