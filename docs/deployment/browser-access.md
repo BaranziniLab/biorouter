@@ -373,7 +373,8 @@ differs:
 | Artifacts and diagnostics bundles | The artifact side panel works as usual. Opening an artifact outside the panel opens a new tab; a diagnostics bundle downloads as a file. |
 | Sending a region of the preview to the chat, and the agent's screenshot of the panel | **Not available, and it says so before you try.** Both are a picture taken by the desktop application's window, the only thing that can see into the sandboxed frames most previews draw in, and a browser page has no such window. The camera button in the panel's header is disabled and its tooltip says why; an agent that asks for a screenshot is told to read the panel's text instead, which works ([SD-8](serve-decisions.md#sd-8--a-control-that-can-never-work-here-says-so-rather-than-failing-on-click)). |
 | The in-app terminal | Not available — it is an Electron capability. Use a shell on the serving machine. |
-| Application updates, installing the CLI, one-click dependency installs | Not available. Update by upgrading the installed packages on the serving machine. |
+| Updating Biorouter | Works from the page. See [Updating from the page](#updating-from-the-page). |
+| Installing the CLI, one-click dependency installs | Not available. |
 | Desktop niceties — system notifications, spellcheck, dock and menu-bar icons, keeping the machine awake | Not available. |
 | Opening a chat in its own window | There is no second window. A new chat opens in the current tab; branching a session into a separate window does nothing. |
 
@@ -413,6 +414,35 @@ loopback port could collect them that way and use them until the daemon stops. A
 each time the daemon starts (and deleting an app retires its cookie), and so does the interface's
 unless you fixed its token with `--token` or `BIOROUTER_BROWSER_TOKEN`; stopping `biorouter serve`
 revokes them all.
+
+## Updating from the page
+
+When a new release is out, an **Update to 1.95.0** row appears at the lower left of the page (and
+Settings › App › About › Version says so). Biorouter has already downloaded it in the background
+and checked it against the SHA-256 the release publishes. Click the row, then **Restart &
+update**: Biorouter installs it, restarts on the same address, and the page reloads by itself on
+the new version. Open pages in other tabs or browsers reload too. The address and its token do not
+change, and chats, settings and extensions are kept.
+
+| How Biorouter is installed | What the update takes |
+|---|---|
+| The `biorouter-cli` (or `biorouter`) deb or rpm, with `serve` running as root or with passwordless `sudo` | One click. The package manager installs the new package. |
+| The same package, with `serve` running as an ordinary user | The page shows **Updating needs administrator rights on this server** and one command behind a Copy button. An administrator runs it in a terminal on the server; it checks the downloaded file's SHA-256 as root before installing. Then click **Check again** and **Restart**. |
+| The macOS app, in a folder your account can write | One click, unless the Biorouter app is open from the same place: quit it first, or let it update itself. |
+| Built from source, or on Windows | The page says how to update in one line; nothing installs from the browser. |
+
+A chat that is still working stops when Biorouter restarts; the dialog says how many before you
+click. If the new version does not start, Biorouter puts the previous one back, restarts on it,
+and the page says "Biorouter 1.95.0 didn't start, so 1.94.1 was put back." with the reason under
+**What happened**.
+
+Only the person on the page can install an update. A request that carries the daemon's secret but
+not the page's access cookie (an agent's shell, for example) is refused. The decision record is
+[SD-19](serve-decisions.md#sd-19-the-person-on-the-page-updates-serve-and-it-comes-back-on-the-same-address).
+
+To update from a mirror instead of GitHub, set `BIOROUTER_SERVE_UPDATE_FEED_URL` in the
+environment `serve` starts in, to a URL serving `latest` and `tags/v<version>` documents in the
+shape of GitHub's release API. It must be `https`, or `http` on the serving machine itself.
 
 ## Troubleshooting
 

@@ -18,6 +18,7 @@ import { ExtensionInstallModal } from './components/ExtensionInstallModal';
 import { ToastContainer, cssTransition } from 'react-toastify';
 import AnnouncementModal from './components/AnnouncementModal';
 import UpdateAvailableModal from './components/UpdateAvailableModal';
+import ServeUpdateDialog from './components/serveUpdate/ServeUpdateDialog';
 import ProviderGuard from './components/ProviderGuard';
 import CrewApp from './components/crew/CrewApp';
 import { createSession } from './sessions';
@@ -840,6 +841,7 @@ export default function App() {
         </ImmediateHashRouter>
         <AnnouncementModal />
         <UpdateAvailableModal />
+        <ServeUpdateDialog />
         {/*
           Issue #56, DR-17 requirement 3 — the one-time disclosure of what a
           non-private model can reach, shown BEFORE the first turn.

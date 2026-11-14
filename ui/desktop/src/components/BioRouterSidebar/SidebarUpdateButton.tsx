@@ -11,9 +11,20 @@ import {
 } from '../../utils/updaterState';
 import { requestUpdateModal } from '../../utils/updateUiEvents';
 import { SidebarMenuItem } from '../ui/sidebar';
+import { isBrowserSurface } from '../../utils/surface';
+import { ServeSidebarUpdateRow } from '../serveUpdate/ServeUpdateEntryPoints';
 import { sidebarCopy } from './copy';
 
+/**
+ * The lower-left "Update to …" row. On a `biorouter serve` page the daemon
+ * updates itself (SD-19), so the row reads the browser's update store; in the
+ * desktop app it reads the Electron main process's updater.
+ */
 export default function SidebarUpdateButton() {
+  return isBrowserSurface() ? <ServeSidebarUpdateRow /> : <DesktopSidebarUpdateButton />;
+}
+
+function DesktopSidebarUpdateButton() {
   const [state, setState] = useState<UpdaterState>(initialUpdaterState);
 
   useEffect(() => {

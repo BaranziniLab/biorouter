@@ -2219,6 +2219,22 @@ replaced a standalone `biorouter-headless` binary and its Linux tarball, both de
   `getppid()` with the pid `serve` named, **not with 1**: an orphan is re-parented to the
   nearest subreaper (`systemd --user`, a container init), so `== 1` never fires there. Never
   pass it from the desktop.
+- **The person on the page updates `serve`, and it comes back on the same address** (SD-19,
+  owner 2026-11-14). `crates/biorouter/src/serve_update/` is shared by both processes: the daemon
+  (`routes/serve_update.rs`, `GET /headless/update`, `POST …/check`, `POST …/install`) checks the
+  release feed (GitHub, or `BIOROUTER_SERVE_UPDATE_FEED_URL`, https or loopback http), downloads the
+  asset for its install kind and verifies the release's published SHA-256 `digest`; on the click
+  it installs (a Linux package through its package manager as root or with `sudo -n`, a macOS
+  bundle by a same-team signed swap; anything else is one line for a person), writes a restart
+  plan and exits 75. `serve` (`commands/serve_restart.rs`) re-execs itself in place (same pid,
+  argv, address and token; a minted token rides a 0600 resume record), then keeps the update when
+  the new daemon answers or rolls it back and re-execs the old version. ⚠ The two POSTs need the
+  person in the served page (`auth::served_person_present`, SD-18's proof), not only `X-Secret-Key`: an agent
+  that recovers the secret with `ps eww` must not restart the server. ⚠ Only a daemon started with
+  `BIOROUTER_SERVE_SUPERVISOR=restart-v1` (Unix `serve`) offers it; never set it elsewhere, since
+  nothing would restart that daemon. ⚠ A package update refuses without the running version's own
+  package to roll back to, and a package is never updated by replacing its files. The page learns
+  the new daemon is up when its old secret answers 401, then reloads (`utils/serveUpdate.ts`).
 - ⚠ **Three traps.** The app uses a **HashRouter**, so its routes live in the fragment and
   never reach the daemon — that is the only reason `/sessions/{id}` (a real API route) does
   not collide with the app's own; a history router would break pages silently. The bundle is
@@ -2422,6 +2438,7 @@ Key environment variables:
 - `BIOROUTER_SERVER__SECRET_KEY` — Server auth key (default `test` in debug-server mode); uses `__` for nested config keys
 - `BIOROUTER_RECORD_MCP=1` — Re-record MCP integration test cassettes (VCR-style)
 - `BIOROUTER_UPDATE_FEED_URL` — Override the auto-update feed (GitHub by default) with a generic static-file feed (`latest-mac.yml` + per-arch app zips). For self-hosted/enterprise update mirrors and for the one-click-update swap test (`ui/desktop/scripts/notarized-swap-test.sh`). See `docs/releases/auto-update-test-checklist.md`.
+- `BIOROUTER_SERVE_UPDATE_FEED_URL` — Replace GitHub's release API as the feed a `biorouter serve` daemon updates from (SD-19): a mirror, or a live test's local feed. `https`, or `http` on loopback only.
 - `BIOROUTER_UPDATE_AUTO_INSTALL=1` — Test-only: auto-trigger `quitAndInstall` on download (gated behind `BIOROUTER_UPDATE_FEED_URL`, so it never fires in production).
 - `BIOROUTER_SKIP_NOTARIZE=1` — Build a signed-but-not-notarized macOS app (forge.config.ts), for fast local/test builds. Release builds leave it unset (fully notarized + stapled).
 
