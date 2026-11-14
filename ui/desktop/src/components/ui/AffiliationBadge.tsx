@@ -8,6 +8,7 @@ import { Badge } from './badge';
 import { InfoTip, useInsideAControl } from './info-tip';
 import { cn } from '../../utils';
 import {
+  affiliationExplanation,
   affiliationPresentation,
   type ProviderAffiliation,
   type ProviderAffiliationKind,
@@ -33,7 +34,7 @@ export interface AffiliationBadgeProps {
    */
   dense?: boolean;
   /**
-   * The badge's explanation (`affiliationPresentation(...).title`) is already
+   * The badge's explanation (`affiliationExplanation(...)`) is already
    * visible right beside it, as in Switch model's affiliation row, where the
    * badge leads the very sentence its InfoTip would say. Render the plain badge
    * then: no tab stop, no InfoTip, no `title=`. With the tip, the sentence
@@ -154,7 +155,9 @@ export function AffiliationBadge({
   return (
     <InfoTip
       label={accessibleName}
-      help={dense ? `${words.label}. ${words.title}` : words.title}
+      help={
+        dense ? `${words.label}. ${affiliationExplanation(words)}` : affiliationExplanation(words)
+      }
       asChild
     >
       {badge}

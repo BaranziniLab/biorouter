@@ -137,8 +137,19 @@ function joinAnd(parts: string[]): string {
 export interface AffiliationPresentation {
   /** The words on the chip. Short: it sits beside a tier badge. */
   label: string;
-  /** The sentence a hover or a screen reader gets. Carries the direction of the axis. */
+  /**
+   * The one line a surface shows at rest: the core of the explanation, which carries the
+   * direction of the axis. Owner rule "no walls of text" (2026-11-13; Phase C ruling F-13):
+   * a mandated disclosure keeps its core visible and folds the rest.
+   */
   title: string;
+  /** The rest of the explanation, at most two sentences, for an InfoTip beside the line. */
+  detail: string;
+}
+
+/** The whole explanation, line then detail, for a surface that shows it only in an InfoTip. */
+export function affiliationExplanation(words: AffiliationPresentation): string {
+  return `${words.title} ${words.detail}`;
 }
 
 /**
@@ -172,24 +183,25 @@ const PRESENTATION: Record<
 > = {
   local: () => ({
     label: 'On this machine',
-    title:
-      'Runs on this machine, so nothing leaves it and no institution’s agreements are needed. ' +
-      'This is the least restricted affiliation: it can reach every private extension.',
+    title: 'Runs on this machine, so nothing leaves it.',
+    detail:
+      'No institution’s agreements are needed, so this is the least restricted affiliation: ' +
+      'it can reach every private extension.',
   }),
   institutions: (institutions) => {
     const named = joinAnd(institutions.map(institutionLabel));
     return {
       label: named,
-      title:
-        `Covered by ${named}${institutions.length > 1 ? '’' : '’s'} agreements. ` +
+      title: `Covered by ${named}${institutions.length > 1 ? '’' : '’s'} agreements.`,
+      detail:
         'Reaching another institution’s private extension is a cross-institutional flow, ' +
         'and needs your approval first. Compliance does not transfer between institutions.',
     };
   },
   unstated: () => ({
     label: 'No stated institution',
-    title:
-      'This model is private but does not state whose agreements cover it. ' +
+    title: 'This model is private but does not state whose agreements cover it.',
+    detail:
       'It can reach private extensions that claim no institution, and every institutional ' +
       'one is a cross-institutional flow that needs your approval.',
   }),

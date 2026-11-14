@@ -32,6 +32,7 @@ import {
 } from '../../dictation/dictationStore';
 import { micErrorNotice, type MicErrorNotice } from '../../dictation/micErrors';
 import { SharedOriginNotice } from '../../dictation/SharedOriginNotice';
+import { DisclosureDetail } from '../../dictation/SetupPopover';
 import {
   acknowledgeSharedOriginNotice,
   needsSharedOriginNotice,
@@ -205,6 +206,7 @@ function SpeechModelRows({ status }: { status: DictationStatus }) {
     <>
       <Note tone="neutral" testId="speech-privacy-line" className="mb-2">
         {disclosure(status)}
+        <DisclosureDetail place={dictationDaemonPlace(status)} />
       </Note>
       {dictationDaemonPlace(status).kind === 'external-backend' &&
         status.install.reason === dictationMessage('MSG-INSTALL-AGENT') && (

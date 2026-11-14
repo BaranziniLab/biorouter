@@ -1385,8 +1385,14 @@ export const SwitchModelModal = ({
                     describedOnScreen
                     className="mt-0.5"
                   />
+                  {/* One line at rest; the rest of the disclosure is the InfoTip beside it
+                      (owner rule, Phase C ruling F-13). */}
                   <p className="min-w-0 flex-1 text-supporting text-text-muted [overflow-wrap:anywhere]">
-                    {selectedAffiliationWords.title}
+                    {selectedAffiliationWords.title}{' '}
+                    <InfoTip
+                      label={selectedAffiliationWords.label}
+                      help={selectedAffiliationWords.detail}
+                    />
                   </p>
                 </div>
               )}
