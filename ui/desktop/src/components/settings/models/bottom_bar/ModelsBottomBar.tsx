@@ -24,6 +24,10 @@ import {
 } from '../../../../store/reasoningEffort';
 import { useConfig } from '../../../ConfigContext';
 import { getProviderMetadata } from '../modelInterface';
+import type Model from '../modelInterface';
+import { ConfirmationModal } from '../../../ui/ConfirmationModal';
+import { DICTATION_ACTIONS, DICTATION_LABELS, dictationMessage } from '../../../dictation/copy';
+import { isPrivateDraft, privateDraftNeedsAsking } from '../../../dictation/privateDraft';
 import { Alert } from '../../../alerts';
 import BottomMenuAlertPopover from '../../../bottom_menu/BottomMenuAlertPopover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../../ui/Tooltip';
@@ -198,7 +202,23 @@ interface ModelsBottomBarProps {
    * a non-default level; omitted, the chip is a model picker only.
    */
   reasoningScope?: string;
+  /**
+   * The composer's dictation key (`ChatInput`): while its draft holds text
+   * dictated with private terms eligible (DD-71), moving this unsent chat to a
+   * model that is not known to be private asks MSG-PRIVATE-DRAFT-SWITCH first.
+   */
+  dictationDraftKey?: string;
+  /**
+   * The composer card the chip sits UNDER (the footer line, owner 2026-11-13).
+   * Given, the menu opens above that card rather than over it, the way every
+   * footer card hangs (`FooterCardGroup`'s `clearOf`), so it never covers the
+   * draft or Send.
+   */
+  menuClearOf?: React.RefObject<HTMLElement | null>;
 }
+
+/** The gap between the card's top edge and a menu hung above it. */
+const MENU_CLEARANCE_GAP = 6;
 
 export default function ModelsBottomBar({
   sessionId,
@@ -210,6 +230,8 @@ export default function ModelsBottomBar({
   privacyBasis = null,
   effectiveModel,
   reasoningScope,
+  dictationDraftKey,
+  menuClearOf,
 }: ModelsBottomBarProps) {
   const effort = useReasoningEffortValue(reasoningScope);
   const notesId = useInfoTipId();
@@ -234,13 +256,53 @@ export default function ModelsBottomBar({
    */
   const pendingChat = usePendingChatModel();
   const unsentChat = !sessionId && pendingChat !== null;
+  /**
+   * DD-71: an unsent chat's pick lands here, so a draft dictated with private
+   * terms eligible asks before it is moved to a model whose instance tier is
+   * not private. The person's say so proceeds. A chat that exists is switched
+   * inside `SwitchModelModal`, which has no hook before its switch; its send
+   * still asks MSG-PRIVATE-DRAFT before the text leaves (`ChatInput`).
+   */
+  const [switchAsk, setSwitchAsk] = useState<{ model: Model; choose: () => void } | null>(null);
+  const chooseForUnsentChat = (model: Model) => {
+    const choose = () => pendingChat?.choose(model);
+    if (!isPrivateDraft(dictationDraftKey)) return choose();
+    void (async () => {
+      let tier: ProviderTier | undefined;
+      try {
+        const rows = await getProviders(false);
+        tier = readResolvedProviderTier(rows.find((row) => row.name === model.provider));
+      } catch {
+        tier = undefined;
+      }
+      if (privateDraftNeedsAsking(dictationDraftKey, tier)) setSwitchAsk({ model, choose });
+      else choose();
+    })();
+  };
   const [displayProvider, setDisplayProvider] = useState<string | null>(null);
   const [displayModelName, setDisplayModelName] = useState<string>('Select Model');
   const [isAddModelModalOpen, setIsAddModelModalOpen] = useState(false);
   // The model menu, controlled for the chip's whole life so its hint can stay shut over it: the
   // chip's tooltip names the model on a hover and never comes back over the open menu (H2).
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [menuOpen, setMenuOpenState] = useState(false);
   const menuHint = useSurfaceTriggerHint(menuOpen);
+  // How far above the chip the menu opens: past the composer card when the chip
+  // sits under one (`menuClearOf`), else the menus' usual 6px. Measured as it
+  // opens, because the card grows with the draft.
+  const chipRef = useRef<HTMLButtonElement>(null);
+  const [menuSideOffset, setMenuSideOffset] = useState(MENU_CLEARANCE_GAP);
+  const setMenuOpen = (next: boolean) => {
+    if (next) {
+      const card = menuClearOf?.current?.getBoundingClientRect();
+      const chip = chipRef.current?.getBoundingClientRect();
+      setMenuSideOffset(
+        card && chip && card.top < chip.top
+          ? Math.round(chip.top - card.top) + MENU_CLEARANCE_GAP
+          : MENU_CLEARANCE_GAP
+      );
+    }
+    setMenuOpenState(next);
+  };
   const [providerDefaultModel, setProviderDefaultModel] = useState<string | null>(null);
   /**
    * V2-R8-1. What the catalog said about each provider, KEYED BY THE PROVIDER
@@ -602,6 +664,7 @@ export default function ModelsBottomBar({
                 // W2-5. The id the visible name stands for, in the tooltip's words.
                 localModelName && MODEL_COPY.fullIdTooltip(displayModel),
               ])}
+              ref={chipRef}
               data-testid="model-chip"
               data-kind="model"
               className="br-picker-chip"
@@ -639,6 +702,7 @@ export default function ModelsBottomBar({
         <DropdownMenuContent
           side="top"
           align="end"
+          sideOffset={menuSideOffset}
           className="w-72"
           aria-describedby={notes ? notesId : undefined}
           // The menu's arrow keys visit rows only, and Tab leaves the menu; this adds the selected
@@ -683,13 +747,19 @@ export default function ModelsBottomBar({
             )}
             {/* A decision model answers each message with a choice and its
                 probabilities, not with text; said here so the chip's menu names
-                what kind of model the chat runs on. */}
+                what kind of model the chat runs on. The state word is the line;
+                what it means sits in the InfoTip beside it (owner, 2026-11-13). */}
             {decisionChat && (
               <div
                 data-testid="model-decision-line"
-                className="text-supporting text-text-muted [overflow-wrap:anywhere]"
+                className="flex items-center gap-1 text-supporting text-text-muted"
               >
-                {`${switchModelCopy.decisionModel}: ${switchModelCopy.decisionDetail.toLowerCase()}`}
+                <span>{switchModelCopy.decisionModel}</span>
+                <InfoTip
+                  label={switchModelCopy.decisionModel.toLowerCase()}
+                  help={`${switchModelCopy.decisionDetail}.`}
+                  data-testid="model-decision-info"
+                />
               </div>
             )}
             {showPrivacyBlock && (
@@ -710,7 +780,9 @@ export default function ModelsBottomBar({
           {/*
             SD-1. Both items below write `BIOROUTER_PROVIDER`, and a browser-served
             daemon refuses them with a 409. The note says so inside the same block
-            as the items, so the reason is visible where they are grey.
+            as the items, so the reason is visible where they are grey. Its info
+            icon is an arrow-key stop like the menu's other InfoTips
+            (`moveFocusAcrossMenuStops`), so the full form stays reachable here.
           */}
           <HostManagedModelNote variant="inset" />
           {effort !== null && reasoningScope && !decisionChat && (
@@ -759,11 +831,27 @@ export default function ModelsBottomBar({
           initialProvider={effectiveModel?.provider}
           initialModel={effectiveModel?.model}
           setView={setView}
-          onChooseForUnsentChat={unsentChat ? pendingChat?.choose : undefined}
+          onChooseForUnsentChat={unsentChat ? chooseForUnsentChat : undefined}
           unsentChatTabId={unsentChat ? pendingChat?.tabId : undefined}
           onClose={() => setIsAddModelModalOpen(false)}
         />
       ) : null}
+
+      <ConfirmationModal
+        isOpen={switchAsk !== null}
+        title={DICTATION_LABELS.privateDraftSwitchTitle}
+        message={dictationMessage('MSG-PRIVATE-DRAFT-SWITCH', {
+          model: switchAsk?.model.alias || switchAsk?.model.name || '',
+        })}
+        confirmLabel={DICTATION_ACTIONS.switchAnyway}
+        cancelLabel={DICTATION_ACTIONS.cancel}
+        onConfirm={() => {
+          const ask = switchAsk;
+          setSwitchAsk(null);
+          ask?.choose();
+        }}
+        onCancel={() => setSwitchAsk(null)}
+      />
     </div>
   );
 }

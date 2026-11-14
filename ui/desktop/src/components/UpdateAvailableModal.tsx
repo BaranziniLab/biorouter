@@ -4,6 +4,8 @@ import { Progress } from './ui/progress';
 import { ModalShell } from './ModalShell';
 import { Download, ExternalLink, AlertCircle, Rocket } from './icons/app-icons';
 import { Spinner } from './ui/spinner';
+import { InfoTip } from './ui/info-tip';
+import { Disclosure } from './ui/disclosure';
 import { UPDATES_ENABLED } from '../updates';
 import {
   initialUpdaterState,
@@ -20,6 +22,56 @@ import { OPEN_UPDATE_MODAL_EVENT } from '../utils/updateUiEvents';
 
 const DOWNLOAD_WEBSITE_URL = 'https://biorouter.ucsf.edu/download';
 const DISMISS_STORAGE_KEY = 'biorouter:update-modal-dismissed-version';
+
+/**
+ * The dialog's words. Each state says one short line under a title that already names the state
+ * and a button that already names the action; the reason behind a line is its InfoTip (owner,
+ * 2026-11-13: one line up front, the detail on hover). They used to be two or three sentences that
+ * repeated the button ("Click Restart & update and ...").
+ */
+export const UPDATE_COPY = {
+  restartLine: 'Biorouter will reopen on the new version automatically.',
+  keptLine: 'Your settings, chats and extensions are kept.',
+  assistedLine: 'The installer shows the steps to finish.',
+  preparingLine: 'macOS is checking the update, which usually takes a few seconds.',
+  installingLine: 'Biorouter is closing to install the update and will reopen on the new version.',
+  awaitingLine: 'Biorouter will download it, then show you the installer.',
+  awaitingTipLabel: 'this download',
+  awaitingTip: "Biorouter can't replace itself while it's running on this platform.",
+  downloadingLine: 'The update is downloading in the background, so you can keep working.',
+  downloadingTipLabel: 'the download',
+  downloadingTip: 'Biorouter lets you know the moment the update is ready to install.',
+  errorFallback: 'Something went wrong while downloading the update.',
+  errorDetails: 'Error details',
+} as const;
+
+/**
+ * An updater error, said as its first line, with any further lines folded behind "Error details"
+ * in the code face: the first line is the sentence a person reads, the rest is a raw trace to copy
+ * or report. An error that just happened keeps its first line visible.
+ */
+function UpdateError({ message, tone }: { message: string; tone: 'danger' | 'muted' }) {
+  const [first, ...rest] = message.split('\n');
+  const more = rest.join('\n').trim();
+  return (
+    <div className="space-y-1">
+      <p
+        className={`rounded-inner bg-background-muted px-2 py-1 text-supporting [overflow-wrap:anywhere] ${
+          tone === 'danger' ? 'text-text-danger' : 'text-text-muted'
+        }`}
+      >
+        {first}
+      </p>
+      {more ? (
+        <Disclosure label={UPDATE_COPY.errorDetails}>
+          <pre className="max-h-28 overflow-auto whitespace-pre-wrap font-mono text-code text-text-muted [overflow-wrap:anywhere]">
+            {more}
+          </pre>
+        </Disclosure>
+      ) : null}
+    </div>
+  );
+}
 
 /**
  * One-click auto-update prompt.
@@ -282,6 +334,8 @@ export default function UpdateAvailableModal() {
       }
     >
       <div className="py-3 space-y-3">
+        {/* Versions stay in the code face: two numbers a person compares digit by digit, as the
+            AI agents rows set a CLI's version (design.md D-33). */}
         {(state.latestVersion || currentVersion) && (
           <div className="bg-background-muted rounded-element px-3 py-2 space-y-1">
             <div className="flex items-center justify-between">
@@ -299,56 +353,33 @@ export default function UpdateAvailableModal() {
           </div>
         )}
 
-        {downloaded && !assisted && (
+        {/* The title says the state and the button says the action, so each state adds one
+            line: what happens next, and that nothing of the person's is lost. */}
+        {downloaded && (
           <p className="text-body text-text-default">
-            The update has been downloaded. Click{' '}
-            <strong className="font-semibold">Restart &amp; update</strong> and Biorouter will
-            reopen on the new version automatically. Your settings, chats, and extensions are
-            preserved.
+            {assisted ? UPDATE_COPY.assistedLine : UPDATE_COPY.restartLine} {UPDATE_COPY.keptLine}
           </p>
         )}
 
-        {downloaded && assisted && (
-          <p className="text-body text-text-default">
-            The update has been downloaded. Click{' '}
-            <strong className="font-semibold">Install update</strong> to see the installer and the
-            steps to finish. Your settings, chats, and extensions are preserved.
-          </p>
-        )}
+        {preparing && <p className="text-body text-text-default">{UPDATE_COPY.preparingLine}</p>}
 
-        {preparing && (
-          <p className="text-body text-text-default">
-            The update has been downloaded and macOS is checking it before it can be installed. This
-            usually takes a few seconds.
-          </p>
-        )}
-
-        {installing && (
-          <p className="text-body text-text-default">
-            Biorouter is closing to install the update and will reopen on the new version.
-          </p>
-        )}
+        {installing && <p className="text-body text-text-default">{UPDATE_COPY.installingLine}</p>}
 
         {awaitingDownload && (
           <div className="space-y-2">
-            <p className="text-body text-text-default">
-              A new version is ready to download. Biorouter will fetch it and then show you the file
-              to finish installing: it can&apos;t replace itself while it&apos;s running on this
-              platform.
+            <p className="flex min-w-0 flex-wrap items-center text-body text-text-default">
+              <span className="min-w-0">{UPDATE_COPY.awaitingLine}</span>
+              <InfoTip label={UPDATE_COPY.awaitingTipLabel} help={UPDATE_COPY.awaitingTip} />
             </p>
-            {downloadError && (
-              <p className="text-supporting font-mono text-text-danger bg-background-muted rounded-inner px-2 py-1">
-                {downloadError}
-              </p>
-            )}
+            {downloadError && <UpdateError message={downloadError} tone="danger" />}
           </div>
         )}
 
         {state.phase === 'available' && !awaitingDownload && (
           <div className="space-y-2">
-            <p className="text-body text-text-default">
-              A new version is downloading in the background. You can keep working. We&apos;ll let
-              you know the moment it&apos;s ready to install.
+            <p className="flex min-w-0 flex-wrap items-center text-body text-text-default">
+              <span className="min-w-0">{UPDATE_COPY.downloadingLine}</span>
+              <InfoTip label={UPDATE_COPY.downloadingTipLabel} help={UPDATE_COPY.downloadingTip} />
             </p>
             <Progress
               label={`Downloading update${state.latestVersion ? ` ${state.latestVersion}` : ''}`}
@@ -363,11 +394,8 @@ export default function UpdateAvailableModal() {
           </div>
         )}
 
-        {isError && (
-          <p className="text-supporting font-mono text-text-muted bg-background-muted rounded-inner px-2 py-1">
-            {state.error || 'Something went wrong while downloading the update.'}
-          </p>
-        )}
+        {/* The error sentence in the sans face; only a raw trace after it is code. */}
+        {isError && <UpdateError message={state.error || UPDATE_COPY.errorFallback} tone="muted" />}
       </div>
     </ModalShell>
   );

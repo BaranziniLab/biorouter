@@ -413,6 +413,84 @@ this section is the ledger.
   worker model once at start, which is why `BIOROUTER_LEAD_MODEL` and `BIOROUTER_LEAD_PROVIDER` stay
   capability keys. A chat saved as a lead/worker pair still restores as one, with its `least` tier.
 
+- **Local dictation and the personal dictionary follow the tiers (added with local dictation on
+  `feat/local-dictation`, PR-14 to PR-30, after this ledger was written).** Design and record:
+  [the dictionary](../dictation/dictionary.md#privacy-tiers-and-the-bias-set). Whisper copies its
+  prompt into the transcript when it hears silence, so a dictionary term is data that can reach
+  the chat's model. Each term is a public or a private row, and a term seen in a private chat
+  lands in a private row and never changes a public one, so no row vanishes from public
+  dictation when a private chat uses the word.
+  - **One filtered set.** `bias_set` in `crates/biorouter/src/dictation/bias.rs` is the only
+    producer of the entries recognition may use, and that one value feeds the token prompt, the
+    decoder bonus and every correction step. A private row is eligible only when the target is
+    private capable AND the caller has private standing; the predicate asks `privacy::visible_to`,
+    and the census in `crates/biorouter/tests/privacy_guard_wiring.rs` counts `bias.rs` as a site.
+    `eligible_entries_are_built_only_by_bias_set` pins the constructor to that file.
+  - **The daemon decides the target, never the client.** A stream into a chat asks
+    `session_reach` first, then `chat_reach` (`crates/biorouter/src/dictation/target.rs`) over the
+    chat's stored classification and the live agent's bound provider; Home and a new tab take the
+    tier their bind would produce (`new_chat_bind_tier`), with the decision models the composer's
+    draft names folded in through the check `/agent/start` runs on them (`new_chat_target_tier`,
+    DR-33), so a draft naming a public decision model makes the target public before the chat
+    exists, as it will be after. That field can only make a target more public; without the
+    proof, or unreadable, it makes the target public. An unknown chat counts as public for a
+    target and as private for a stamp, each the safe side. A refused `session_id` degrades to
+    public with a byte identical response.
+  - **Standing.** `HttpCaller::dictation_standing` reads the user action proof and a stated
+    private `X-Caller-Provider` only, never `served_operator`, so SD-10 stays narrow; at a
+    terminal a person has standing, and an agent's shell (`BIOROUTER_TERMINAL` set) has none.
+    Crew's boxes, **Dictate to clipboard** and the app preview are public unless the person
+    includes private terms for one recording after MSG-PRIVATE-TERMS; ACP is public only,
+    because no proof of a person reaches its transcription.
+  - **No oracle.** The dictionary routes list by standing, ids are random, a refusal names no
+    term, no response counts eligible or withheld rows, and the decoder bonus tables are rebuilt
+    at every dictionary revision; `crates/biorouter-server/tests/dictionary_oracles.rs` holds
+    each rule byte for byte. A draft dictated with private terms asks MSG-PRIVATE-DRAFT before it
+    is sent to a public model, and MSG-PRIVATE-DRAFT-SWITCH before an unsent chat switches to one.
+  - **Stamps follow the real tier with the master switch off**; only the filters go inert, so
+    turning the switch back on restores them with correct rows.
+  - **The `dictionary` capability** (PR-23). It is off in a fresh configuration. The workspace
+    doors (`workspace_set_tools`, `workspace_open` and `WorkspaceServices::start_session`) refuse
+    it by name, and `manage_extensions` refuses it as it refuses every built in capability. It is
+    absent from Crew scoped, app, ACP `--ws`, SubAgent, Scheduled, Hidden and Terminal sessions.
+    Its writes stamp the call's admitted `McpMeta.capability`, never a tier the model names.
+    `/agent/call_tool` refuses `dictionary__add_terms` and `dictionary__remove_added_terms`,
+    because it dispatches as `public_enforced()` and a private chat's term would land public
+    there; an `execute_code` script refuses the same two tools from any chat (DD-42,
+    `crates/biorouter/src/security/dictionary_store.rs`).
+  - **The ACP residual of DD-57.** Over ACP stdio the capability, when the person turned it on,
+    only ever suggests. The Jupyter AI persona delivers other people's messages to Biorouter as
+    user messages, so an agent there can take a term from a colleague's words. That term lands
+    as a suggestion and shapes nothing until the person accepts it; the chat extractor (PR-24,
+    which ships off) skips every ACP session, stdio and `--ws` alike, so nothing is harvested from
+    them on its own.
+  - **Residuals, recorded rather than closed.** A shell can read `dictionary.json` (DR-17 left the
+    filesystem open); the path inspector stops a cooperative agent's file tools and named paths.
+    On a keyless `serve` daemon any holder of the daemon secret can install a pinned model and
+    make the dictionary writes a served browser may make (P-7, SD-17). An agent holding a
+    Biorouter Copilot grant on Biorouter's own window can press the microphone (O-15). Under the
+    default `on_request`, the store checks that a term occurs in the person's latest message or
+    in the offer it answers, not that the reply agreed (O-34).
+- **Private dictionary rows carry institutions (P-16, added with local dictation, after this
+  ledger was written).** Design: [private rows and institutions](../dictation/dictionary.md#private-rows-and-institutions).
+  A private row records the institutions whose data it may hold: the union of those behind the
+  bound model of the chat it was written in (lead and worker folded) and those whose connectors
+  that chat touched (`sessions.session_affiliations`, O-35), for a term the person adds inside a
+  private chat too (O-36). A row added with no chat carries none (`null`); a row whose chat
+  record or model could not be read, or whose union passes eight ids, stores
+  `{"institutions": []}`, which only a local model clears. `bias_set` asks one question per
+  institution through `affiliation::gate_cross_affiliation_warning`, the comparison
+  `POST /agent/add_extension` and the subagent spawn already use, so a row naming two
+  institutions shapes only dictation aimed at a local model; `dictionary__list_terms` applies the
+  same rule. A `Site` row in `crates/biorouter/tests/privacy_capability.rs` counts the one call in
+  `bias.rs`. Only the master switch off, the mixing policy `open` and the person including
+  private terms for one recording (O-37) lift it. A row keeps the institutions it was created
+  with. Three limits stay: content that reached a chat through `kb_search` or a `chatrecall` load
+  adds no institution, because only an admitted call to a private extension is recorded; dispatch
+  records nothing while the master switch is off; and a dictation into a chat whose agent is not
+  loaded yet has an unstated target model, so it leaves out every row that names an institution
+  (kept by the owner on 2026-11-10, O-43).
+
 ### Did not ship
 
 - **§9.5's general filesystem read-deny — both of DR-14's layers.** Descoped by

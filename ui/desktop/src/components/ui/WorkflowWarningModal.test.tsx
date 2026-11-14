@@ -4,7 +4,11 @@ import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseDecisionModelEntries } from '../../utils/sessionDecisions';
-import { WORKFLOW_SUPERVISION_COPY, WorkflowWarningModal } from './WorkflowWarningModal';
+import {
+  WORKFLOW_SUPERVISION_COPY,
+  WORKFLOW_WARNING_COPY,
+  WorkflowWarningModal,
+} from './WorkflowWarningModal';
 
 vi.mock('../MarkdownContent', () => ({
   default: ({ content }: { content: string }) => <div data-testid="markdown">{content}</div>,
@@ -129,9 +133,12 @@ describe('WorkflowWarningModal', () => {
     expect(header).toContainElement(screen.getByRole('heading', { name: 'New workflow warning' }));
     // The warning sentence is the description, in the body, not in the header.
     expect(dialog).toHaveAccessibleDescription(
-      "You are about to execute a workflow that you haven't run before. Only proceed if you trust the source of this workflow."
+      `${WORKFLOW_WARNING_COPY.notRunBefore} ${WORKFLOW_WARNING_COPY.trustSource}`
     );
-    expect(header).not.toHaveTextContent('Only proceed');
+    expect(dialog).toHaveAccessibleDescription(
+      "You haven't run this workflow before. Only run it if you trust its source."
+    );
+    expect(header).not.toHaveTextContent('Only run it');
     // Cancel, then the action at the trailing edge, in the footer row.
     const buttons = screen.getAllByRole('button').map((b) => b.textContent);
     expect(buttons).toEqual(['Cancel', 'Trust and execute']);
@@ -157,7 +164,13 @@ describe('WorkflowWarningModal', () => {
       />
     );
     expect(screen.getByRole('heading', { name: 'Security warning' })).toBeInTheDocument();
-    expect(screen.getByText(/hidden characters that will be ignored/)).toBeInTheDocument();
+    // The warning stays visible; why the characters are dropped is its InfoTip (owner, 2026-11-13).
+    expect(screen.getByText(WORKFLOW_WARNING_COPY.hiddenCharacters)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', {
+        name: `About ${WORKFLOW_WARNING_COPY.hiddenCharactersTipLabel}`,
+      })
+    ).toHaveAccessibleDescription(WORKFLOW_WARNING_COPY.hiddenCharactersTip);
   });
 
   it('makes the person answer: Escape does nothing, the two buttons decide', async () => {

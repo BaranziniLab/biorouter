@@ -12,6 +12,8 @@
 //! Together these mean two models that differ in context window are always
 //! treated as two models, never reconciled into one number.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::model::ModelConfig;
 use biorouter::providers::live_catalog;
 use biorouter::providers::providers;

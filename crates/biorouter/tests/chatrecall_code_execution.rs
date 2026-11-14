@@ -23,6 +23,8 @@
 //! so they fail if any layer between the JS binding and the SQLite FTS index is
 //! wrong — not just the binding.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::path::PathBuf;
 use std::sync::Arc;
 

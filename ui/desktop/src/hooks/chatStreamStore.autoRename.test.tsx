@@ -41,7 +41,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...mocks };
 });
 
-import { ChatStreamRegistry } from './chatStreamStore';
+import { ChatStreamRegistry, withRecordedLifetimeCounters } from './chatStreamStore';
 import {
   AUTO_RENAME_USER_MESSAGE_LIMIT,
   subscribeSessionNameChanges,
@@ -228,5 +228,84 @@ describe('the post-turn auto-rename poll', () => {
     const reads = readsOf(sid);
     expect(reads.length).toBeGreaterThan(1);
     for (const read of reads) expect(read.query?.metadata_only).toBe(true);
+  });
+});
+
+/**
+ * 2026-11-13, a Claude Haiku 5.5 chat on Versa Bedrock: the title's naming call is billed to the
+ * chat (`side:session_name`) and lands after the turn's `Finish`. The footer's cost re-reads the
+ * ledger only when the live counters move, and nothing moved them, so "Cost of this chat" kept
+ * the turn's $0.0769 while the Limit line counted the title's 92,745 tokens. The poll already reads
+ * the row the side call moved; it now carries the row's lifetime counters into the live ones.
+ */
+describe('the post-turn poll carries a side call into the live counters', () => {
+  const recorded = (sid: string, name: string) =>
+    ({
+      ...autoNamedSession(sid, name, 2),
+      accumulated_input_tokens: 185_745,
+      accumulated_output_tokens: 40,
+      accumulated_total_tokens: 185_785,
+    }) as Session;
+
+  it('takes the counters the title moved, and leaves the context gauge alone', async () => {
+    const sid = `rename-usage-${++sessionSeq}`;
+    mocks.getSession.mockResolvedValue({ data: recorded(sid, 'Penguin prompt test') });
+
+    const controller = await runOneTurn(sid, 'New chat', 1);
+    await settle(PAST_FIRST_POLL);
+
+    expect(controller.getSnapshot().tokenState).toEqual({
+      ...tokenState,
+      accumulatedInputTokens: 185_745,
+      accumulatedOutputTokens: 40,
+      accumulatedTotalTokens: 185_785,
+    });
+  });
+
+  it('takes them when a later turn regenerated the same title', async () => {
+    const sid = `rename-usage-same-${++sessionSeq}`;
+    mocks.getSession.mockResolvedValue({ data: recorded(sid, 'BRAVO instruction test') });
+
+    const controller = await runOneTurn(sid, 'BRAVO instruction test', 1);
+    await settle(PAST_FIRST_POLL);
+
+    expect(controller.getSnapshot().tokenState.accumulatedInputTokens).toBe(185_745);
+  });
+});
+
+describe('withRecordedLifetimeCounters', () => {
+  const live: TokenState = {
+    accumulatedInputTokens: 100,
+    accumulatedOutputTokens: 20,
+    accumulatedTotalTokens: 120,
+    inputTokens: 90,
+    outputTokens: 10,
+    totalTokens: 100,
+  };
+
+  it('never lowers a counter, and answers the same object when nothing moved', () => {
+    const older = {
+      accumulated_input_tokens: 50,
+      accumulated_output_tokens: null,
+      accumulated_total_tokens: undefined,
+    };
+    expect(withRecordedLifetimeCounters(live, older)).toBe(live);
+    expect(
+      withRecordedLifetimeCounters(live, {
+        accumulated_input_tokens: 100,
+        accumulated_output_tokens: 20,
+        accumulated_total_tokens: 120,
+      })
+    ).toBe(live);
+  });
+
+  it('takes each higher lifetime counter on its own', () => {
+    expect(
+      withRecordedLifetimeCounters(live, {
+        accumulated_input_tokens: 1_100,
+        accumulated_output_tokens: 10,
+        accumulated_total_tokens: 1_120,
+      })
+    ).toEqual({ ...live, accumulatedInputTokens: 1_100, accumulatedTotalTokens: 1_120 });
   });
 });

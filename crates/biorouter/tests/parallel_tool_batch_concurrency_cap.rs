@@ -14,6 +14,8 @@
 //! Its own test binary: it asserts against the compiled default, so it must not
 //! share a process with the `BIOROUTER_TOOL_MAX_CONCURRENT` override test.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 mod parallel_batch_support;
 
 use parallel_batch_support::{agent_with_batch, drain, tool_responses};

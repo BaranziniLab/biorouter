@@ -23,6 +23,8 @@
 //! breaking the entire product, and no assertion in (a) alone can tell the
 //! difference.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 

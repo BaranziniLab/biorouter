@@ -251,7 +251,11 @@ describe('the chip where there is no chat yet', () => {
 
     fireEvent.click(await screen.findByText(MODEL_COPY.changeModel));
     await waitFor(() => expect(switchModal.props).not.toBeNull());
-    expect(lastSwitchProps()?.onChooseForUnsentChat).toBe(choose);
+    // The chip's own door to `choose` (it asks MSG-PRIVATE-DRAFT-SWITCH first for a draft
+    // dictated with private terms; `ModelsBottomBar.privateDraft.test.tsx`): a pick lands there.
+    const pick = { name: 'gpt-5.2', provider: 'versa_azure' };
+    (lastSwitchProps()?.onChooseForUnsentChat as (model: unknown) => void)(pick);
+    expect(choose).toHaveBeenCalledWith(pick);
     // T3-SH-2: and the tab that names it, for "Use other provider".
     expect(lastSwitchProps()?.unsentChatTabId).toBe('tab-3');
   });

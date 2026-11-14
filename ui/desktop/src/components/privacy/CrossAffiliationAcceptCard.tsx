@@ -1,11 +1,31 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button } from '../ui/button';
+import { Disclosure } from '../ui/disclosure';
+import { InfoTip } from '../ui/info-tip';
 import {
   acceptCrossAffiliationFlow,
   GRANT_SCOPE_COPY,
   readMixingMode,
   type MixingMode,
 } from '../../utils/crossAffiliation';
+import { splitFirstSentence } from '../../utils/proseFold';
+
+/**
+ * {@link GRANT_SCOPE_COPY} as the card shows it before the press (owner, 2026-11-13: one line up
+ * front, the detail on hover). Its first sentence, byte for byte, is the line: how far a yes
+ * reaches, which is part of what is being decided. The two sentences after it, what the yes does
+ * NOT reach, are the info icon beside it and still its accessible description, so the mirrored
+ * bytes reach the page whole and in order.
+ */
+const GRANT_SCOPE = splitFirstSentence(GRANT_SCOPE_COPY);
+
+/** The card's own words around the daemon's: what happens next, and what was recorded. */
+const CROSS_AFFILIATION_ACCEPTED_COPY = {
+  done: 'Approval recorded. Ask the assistant to try that step again.',
+  doneName: 'trying the step again',
+  doneHelp: 'It was told not to retry on its own.',
+  record: 'What was recorded',
+};
 
 export interface CrossAffiliationAcceptCardProps {
   /**
@@ -133,23 +153,32 @@ export function CrossAffiliationAcceptCard({
         className="mt-3 rounded-element border border-transparent bg-background-default px-3 py-3 text-body text-text-default"
       >
         {/*
-          The daemon's own composition (`grant::accepted_statement`), echoed
-          back and printed verbatim. The sentence recorded and the sentence read
-          must not differ by a word — a paraphrase here would leave the audit
-          row saying one thing and the user remembering another.
-        */}
-        <p className="min-w-0 [overflow-wrap:anywhere]">{accepted}</p>
-        {/*
           ⚠ The one thing the daemon's sentence cannot say: what happens next.
           The refusal told the model *do not retry — the same call will be
           refused again*, and it was right when it said it, so the model will
           not try on its own. Without this line the user is left holding a
           recorded acceptance and a conversation that has stopped, which is the
-          same dead end one press further along.
+          same dead end one press further along. It is the card's one visible
+          line now (owner, 2026-11-13); why the assistant waits is its info icon.
         */}
-        <p className="min-w-0 [overflow-wrap:anywhere] mt-2 text-text-muted">
-          Ask the assistant to try that step again. It was told not to retry on its own.
+        <p className="min-w-0 [overflow-wrap:anywhere]">
+          {CROSS_AFFILIATION_ACCEPTED_COPY.done}{' '}
+          <InfoTip
+            label={CROSS_AFFILIATION_ACCEPTED_COPY.doneName}
+            help={CROSS_AFFILIATION_ACCEPTED_COPY.doneHelp}
+          />
         </p>
+        {/*
+          The daemon's own composition (`grant::accepted_statement`), echoed
+          back and printed verbatim. The sentence recorded and the sentence read
+          must not differ by a word — a paraphrase here would leave the audit
+          row saying one thing and the user remembering another. It restates
+          the refusal above and the scope the person read before the press, so
+          it folds, whole, under one click rather than standing as a paragraph.
+        */}
+        <Disclosure label={CROSS_AFFILIATION_ACCEPTED_COPY.record} className="mt-1">
+          <p className="min-w-0 [overflow-wrap:anywhere] text-text-muted">{accepted}</p>
+        </Disclosure>
       </div>
     );
   }
@@ -197,9 +226,20 @@ export function CrossAffiliationAcceptCard({
         The scope, BEFORE the press. "How far does my yes reach" is part of what
         is being decided: a user who believes they are approving one call behaves
         differently from one who knows they are approving this connector for the
-        rest of the chat. It is also what makes the narrowness legible.
+        rest of the chat. It is also what makes the narrowness legible. Its first
+        sentence is the line; what the yes does not reach is the info icon's
+        (`GRANT_SCOPE`), and the strict sentence above stays whole, because it
+        is the press's cost and carries its own emphasis.
       */}
-      <p className="min-w-0 [overflow-wrap:anywhere]">{GRANT_SCOPE_COPY}</p>
+      <p className="min-w-0 [overflow-wrap:anywhere]" data-testid="cross-affiliation-scope">
+        {GRANT_SCOPE.first}
+        {GRANT_SCOPE.rest ? (
+          <>
+            {' '}
+            <InfoTip label="what approving covers" help={GRANT_SCOPE.rest} />
+          </>
+        ) : null}
+      </p>
       {error && (
         <p role="alert" className="min-w-0 [overflow-wrap:anywhere] text-text-muted">
           Nothing was recorded. {error}

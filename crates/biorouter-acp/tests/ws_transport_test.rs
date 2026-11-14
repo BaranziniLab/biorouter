@@ -4,13 +4,15 @@
 //! adapter round-trips initialize -> new session -> prompt and streams the
 //! agent's reply back over the socket.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 mod common;
 
 use biorouter::config::BioRouterMode;
 use biorouter::model::ModelConfig;
 use biorouter::providers::api_client::{ApiClient, AuthMethod};
 use biorouter::providers::openai::OpenAiProvider;
-use biorouter_acp::server::{serve_ws, BioRouterAcpAgent, BioRouterAcpConfig};
+use biorouter_acp::server::{run_ws, serve_ws, BioRouterAcpAgent, BioRouterAcpConfig};
 use common::setup_mock_openai;
 use futures::{SinkExt, StreamExt};
 use sacp::schema::{
@@ -35,6 +37,21 @@ fn run_async_test(future: impl Future<Output = ()>) {
 
 fn io_err<E: std::fmt::Display>(e: E) -> std::io::Error {
     std::io::Error::other(e.to_string())
+}
+
+#[test]
+fn ws_rejects_the_dictionary_builtin_before_binding() {
+    run_async_test(async {
+        let error = run_ws(vec!["dictionary".into()], "127.0.0.1:0".into())
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Dictionary capability is unavailable"),
+            "{error}"
+        );
+    });
 }
 
 #[test]
@@ -64,7 +81,12 @@ fn ws_acp_basic_completion() {
             biorouter_mode: BioRouterMode::Auto,
             extensions: vec![],
         };
-        let agent = Arc::new(BioRouterAcpAgent::with_config(config).await.unwrap());
+        let agent = Arc::new(
+            BioRouterAcpAgent::with_config(config)
+                .await
+                .unwrap()
+                .deny_stdio_mcp(),
+        );
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
@@ -110,10 +132,12 @@ fn ws_acp_basic_completion() {
                 let updates = updates.clone();
                 let work_dir = temp_dir.path().to_path_buf();
                 move |cx: JrConnectionCx<ClientToAgent>| async move {
-                    cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST))
+                    let initialized = cx
+                        .send_request(InitializeRequest::new(ProtocolVersion::LATEST))
                         .block_task()
                         .await
                         .unwrap();
+                    assert!(!initialized.agent_capabilities.prompt_capabilities.audio);
                     let session = cx
                         .send_request(NewSessionRequest::new(work_dir))
                         .block_task()
@@ -153,6 +177,12 @@ fn ws_acp_basic_completion() {
                         }
                         tokio::task::yield_now().await;
                     }
+                    assert!(!updates.lock().unwrap().iter().any(|notification| {
+                        matches!(
+                            &notification.update,
+                            SessionUpdate::AvailableCommandsUpdate(_)
+                        )
+                    }));
                     Ok(())
                 }
             })

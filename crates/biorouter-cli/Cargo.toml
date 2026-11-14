@@ -16,6 +16,32 @@ path = "src/main.rs"
 
 [dependencies]
 biorouter = { path = "../biorouter" }
+# The dictation worker's entry point (DD-4); the engine runs in a worker process.
+biorouter-dictation = { path = "../biorouter-dictation", optional = true, features = ["engine"] }
+# `biorouter transcribe` reads recordings (DD-78): WAV of any rate, channel count and
+# depth, AIFF, FLAC and MP3. In this crate only: the engine and the daemon take 16 kHz
+# PCM and never parse a file. No SIMD features.
+#
+# `biorouter transcribe` reads WAV, AIFF, FLAC, MP3, M4A and MP4 (AAC), raw AAC (ADTS) and
+# Ogg (Vorbis or FLAC), so a phone's or a Mac's voice memo transcribes without `ffmpeg`
+# (DD-78 as O-39 changed it). DD-78's own rule left out the AAC decoder, the MP4 reader, the
+# Vorbis decoder and the Ogg reader when symphonia passed 1.5 MB with them; the owner lifted
+# that gate on 2026-11-06. With them the stripped release `biorouter` on macOS arm64 grew
+# by 949,904 to 1,097,360 B (three PR-12b builds against the commit before it, 2026-11-07),
+# and they add 1,115,736 B to a stripped Linux x86_64 probe built in the release image and
+# 1,081,624 B to a macOS x86_64 one [M]; the size ceilings that hold `biorouter` are
+# `dictation_size_ceiling` in scripts/smoke-test-release-artifacts.sh.
+# Apple Lossless (ALAC) in an M4A, which Voice Memos writes when set to Lossless, joined on
+# 2026-11-13 (O-41, decided by the owner), adding 11,924 B of code and data to the stripped
+# release `biorouter` on macOS arm64, 96 B of file size because it fit in the segments' page
+# padding [M].
+# Opus (symphonia 0.5 has no decoder) and WebM are refused with an `ffmpeg` line that
+# converts them.
+symphonia = { version = "0.5.5", optional = true, default-features = false, features = ["wav", "pcm", "aiff", "flac", "mp3", "aac", "isomp4", "vorbis", "ogg", "alac"] }
+# The terminal's microphone (PR-25, DD-5, DD-73): the child side of
+# `biorouter __br-dictation-worker capture`, over the vendored miniaudio. Only this crate
+# depends on it, so `biorouterd` never links capture code (P-10).
+biorouter-dictation-capture = { path = "../biorouter-dictation-capture", optional = true }
 biorouter-acp = { path = "../biorouter-acp" }
 biorouter-bench = { path = "../biorouter-bench" }
 biorouter-mcp = { path = "../biorouter-mcp" }
@@ -92,9 +118,16 @@ winapi = { version = "0.3", features = ["wincred"] }
 libc = "0.2"
 
 [features]
-default = ["jemalloc"]
+default = ["jemalloc", "local-dictation", "dictation"]
 # Use tuned jemalloc as the global allocator (returns freed pages to the OS).
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
+# The local dictation engine (DD-5). The direct dependency is for `main()`'s
+# `biorouter_dictation::worker::run_if_invoked()`.
+local-dictation = ["biorouter/local-dictation", "dep:biorouter-dictation"]
+# The terminal's dictation commands: `biorouter transcribe` and its file decoders
+# (PR-12), and `biorouter dictate` with the capture child (PR-25). Without it
+# `transcribe` and `dictate` answer MSG-NO-ENGINE.
+dictation = ["local-dictation", "dep:symphonia", "dep:biorouter-dictation-capture"]
 
 [dev-dependencies]
 tempfile = "3"

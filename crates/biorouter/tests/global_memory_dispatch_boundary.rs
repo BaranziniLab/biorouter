@@ -22,6 +22,8 @@
 //!
 //! Run with `cargo test -p biorouter --test global_memory_dispatch_boundary`.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::Arc;
 
 use rmcp::model::{CallToolRequestParams, RawContent};

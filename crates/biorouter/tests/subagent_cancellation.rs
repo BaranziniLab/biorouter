@@ -5,6 +5,8 @@
 //! the only test running. That is the same reason the parallel-tool-batch kill
 //! switches each got a binary of their own.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 mod subagent_support;
 
 use std::time::{Duration, Instant};

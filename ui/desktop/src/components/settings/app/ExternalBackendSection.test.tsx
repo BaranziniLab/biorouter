@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import ExternalBackendSection from './ExternalBackendSection';
+import ExternalBackendSection, { externalBackendCopy } from './ExternalBackendSection';
 
 /**
  * An external backend needs three secrets, and the component knew about two.
@@ -36,8 +36,11 @@ describe('ExternalBackendSection', () => {
     });
 
     render(<ExternalBackendSection />);
-    const field = await screen.findByLabelText('User Action Key');
+    const field = await screen.findByLabelText(externalBackendCopy.userActionKey);
     expect(field).toBeVisible();
+    // What the key is for is the label's InfoTip, heard with the field.
+    expect(field).toHaveAccessibleDescription(externalBackendCopy.userActionKeyHelp);
+    expect(externalBackendCopy.userActionKeyHelp).toMatch(/private chats can’t be opened/);
 
     fireEvent.change(field, { target: { value: 'proof-of-user' } });
     fireEvent.blur(field);
@@ -51,16 +54,22 @@ describe('ExternalBackendSection', () => {
     });
   });
 
-  it('draws the restart note’s lead word at 600, not preflight’s 700 (V4-R7-6)', async () => {
+  it('says the restart once, in the switch’s help, and draws no bare 700 run (V4-R7-6)', async () => {
     getSettings.mockResolvedValue({
       externalBiorouterd: { enabled: true, url: 'http://localhost:3000', secret: 's' },
     });
 
-    render(<ExternalBackendSection />);
-    await screen.findByLabelText('User Action Key');
-    // jsdom runs no cascade, so this pins the class; the weight itself is measured for every other
-    // settings surface in Chromium and a bare `<strong>` there reads 700.
-    expect(screen.getByText('Note:')).toHaveClass('font-semibold');
+    const { container } = render(<ExternalBackendSection />);
+    await screen.findByLabelText(externalBackendCopy.userActionKey);
+    // The restart note is the switch's help now (owner, 2026-11-13), heard with the switch.
+    expect(
+      screen.getByRole('switch', { name: externalBackendCopy.useExternal })
+    ).toHaveAccessibleDescription(externalBackendCopy.useExternalHelp);
+    expect(externalBackendCopy.useExternalHelp).toMatch(/restart Biorouter/);
+    // jsdom runs no cascade, so this pins the class; a bare `<strong>` reads 700 in Chromium.
+    for (const strong of container.querySelectorAll('strong')) {
+      expect(strong).toHaveClass('font-semibold');
+    }
   });
 
   it('carries an existing key through a save of some other field', async () => {
@@ -74,7 +83,7 @@ describe('ExternalBackendSection', () => {
     });
 
     render(<ExternalBackendSection />);
-    const secret = await screen.findByLabelText('Secret Key');
+    const secret = await screen.findByLabelText(externalBackendCopy.secret);
     fireEvent.change(secret, { target: { value: 'a-new-secret' } });
     fireEvent.blur(secret);
 
@@ -87,5 +96,31 @@ describe('ExternalBackendSection', () => {
     };
     expect(written.externalBiorouterd.secret).toBe('a-new-secret');
     expect(written.externalBiorouterd.userActionKey).toBe('set-by-hand');
+  });
+});
+
+describe('S17 remote disclosure', () => {
+  it('names the backend host when external mode is on', async () => {
+    getSettings.mockResolvedValue({
+      externalBiorouterd: {
+        enabled: true,
+        url: 'https://lab.example:8443',
+        secret: '',
+        userActionKey: '',
+      },
+    });
+    render(<ExternalBackendSection />);
+    expect(await screen.findByTestId('external-dictation-disclosure')).toHaveTextContent(
+      'Audio is transcribed on lab.example:8443'
+    );
+  });
+
+  it('does not claim remote transcription when external mode is off', async () => {
+    getSettings.mockResolvedValue({
+      externalBiorouterd: { enabled: false, url: 'https://lab.example' },
+    });
+    render(<ExternalBackendSection />);
+    await screen.findByLabelText('Use external server');
+    expect(screen.queryByTestId('external-dictation-disclosure')).toBeNull();
   });
 });

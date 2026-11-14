@@ -120,6 +120,9 @@ describe('ConfigSettings and the privacy settings', () => {
     const dialog = await openEditor();
     const value = within(dialog).getByTestId('config-readonly-SOME_REPORT');
     expect(value).toHaveTextContent('"a": 1');
+    // JSON is code: mono at the code role, the line height every other code surface uses.
+    expect(value).toHaveClass('font-mono', 'text-code');
+    expect(value).not.toHaveClass('text-supporting');
     const row = value.closest('div.grid') as HTMLElement;
     expect(within(row).getByRole('button')).toBeDisabled();
   });
@@ -234,7 +237,8 @@ describe('ConfigSettings editor', async () => {
     await user.hover(label);
     const tip = await screen.findByRole('tooltip');
     expect(tip).toHaveTextContent('BIOROUTER_MODE');
-    expect(tip.querySelector('.font-mono')).not.toBeNull();
+    // An identifier: mono at the code role (12/20), as every code surface sets it.
+    expect(tip.querySelector('.font-mono.text-code')).not.toBeNull();
   });
 
   // V4-13: the labels were Title Case beside lower-case runs ("computer use capabilities

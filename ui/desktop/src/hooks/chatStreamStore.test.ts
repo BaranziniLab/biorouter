@@ -3418,3 +3418,45 @@ describe('isRunningState', () => {
     expect(isRunningState(ChatState.RestartingAgent)).toBe(true);
   });
 });
+
+describe('message editor acceptance for dictionary observations', () => {
+  it.each([true, false])('returns the actual submit acceptance (%s)', async (accepted) => {
+    const registry = new ChatStreamRegistry();
+    const user: Message = {
+      id: 'edited-user',
+      role: 'user',
+      created: 10,
+      content: [{ type: 'text', text: 'before' }],
+      metadata: { userVisible: true, agentVisible: true },
+    };
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: { ...session('editor-acceptance'), conversation: [user] } },
+    } as never);
+    vi.mocked(editMessage).mockResolvedValue({ data: { sessionId: 'editor-acceptance' } } as never);
+    vi.mocked(getSession).mockResolvedValue({ data: { conversation: [] } } as never);
+    const controller = registry.getController('editor-acceptance');
+    await controller.loadSession();
+    vi.spyOn(controller, 'handleSubmit').mockResolvedValueOnce(accepted);
+    expect(await controller.onMessageUpdate(user.id!, 'after', 'edit')).toBe(accepted);
+  });
+
+  it('returns false after an edit request fails', async () => {
+    const registry = new ChatStreamRegistry();
+    const user: Message = {
+      id: 'edited-user',
+      role: 'user',
+      created: 10,
+      content: [{ type: 'text', text: 'before' }],
+      metadata: { userVisible: true, agentVisible: true },
+    };
+    vi.mocked(resumeAgent).mockResolvedValue({
+      data: { session: { ...session('editor-failure'), conversation: [user] } },
+    } as never);
+    vi.mocked(editMessage).mockRejectedValueOnce(new Error('edit refused'));
+    const controller = registry.getController('editor-failure');
+    await controller.loadSession();
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    expect(await controller.onMessageUpdate(user.id!, 'after', 'edit')).toBe(false);
+    error.mockRestore();
+  });
+});

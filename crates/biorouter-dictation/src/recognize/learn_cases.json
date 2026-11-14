@@ -1,0 +1,92 @@
+[
+  {
+    "from": "Epas one",
+    "to": "EPAS1",
+    "accepted": true
+  },
+  {
+    "from": "a pass one",
+    "to": "EPAS1",
+    "accepted": true
+  },
+  {
+    "from": "hiff two alpha",
+    "to": "HIF2-alpha",
+    "accepted": true
+  },
+  {
+    "from": "ventilin",
+    "to": "Ventolin",
+    "accepted": true
+  },
+  {
+    "from": "bio router",
+    "to": "Biorouter",
+    "accepted": true
+  },
+  {
+    "from": "gonna",
+    "to": "going to",
+    "accepted": false
+  },
+  {
+    "from": "the",
+    "to": "a",
+    "accepted": false
+  },
+  {
+    "from": "gene",
+    "to": "genes",
+    "accepted": false
+  },
+  {
+    "from": "coding",
+    "to": "Coding",
+    "accepted": false
+  },
+  {
+    "from": "read the link",
+    "to": "https://example.org",
+    "accepted": false
+  },
+  {
+    "from": "use the key",
+    "to": "AKIAIOSFODNN7EXAMPLE",
+    "accepted": false
+  },
+  {
+    "from": "the record",
+    "to": "MRN 12345678",
+    "accepted": false
+  },
+  {
+    "from": "user",
+    "to": "someone@example.org",
+    "accepted": false
+  },
+  {
+    "from": "the path",
+    "to": "/Users/me/private",
+    "accepted": false
+  },
+  {
+    "from": "some digits",
+    "to": "12345678",
+    "accepted": false
+  },
+  {
+    "from": "the hash",
+    "to": "deadbeefdeadbeef",
+    "accepted": false
+  },
+  {
+    "from": "Epas one",
+    "to": "EPAS1\n",
+    "accepted": false
+  },
+  {
+    "from": "patient",
+    "to": "Patient123456",
+    "accepted": false
+  }
+]

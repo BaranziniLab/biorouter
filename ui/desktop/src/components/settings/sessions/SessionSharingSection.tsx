@@ -227,7 +227,7 @@ export default function SessionSharingSection() {
                         className={`flex items-start gap-2 p-3 rounded-element text-sm ${
                           testResult.status === 'success'
                             ? 'bg-background-success/10 text-text-success border border-border-success/40'
-                            : 'bg-background-danger/10 text-text-danger border border-border-danger/40'
+                            : 'bg-background-danger/10 text-text-danger border border-transparent'
                         }`}
                       >
                         {testResult.status === 'success' ? (

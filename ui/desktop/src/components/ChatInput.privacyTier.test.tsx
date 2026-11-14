@@ -50,13 +50,20 @@ vi.mock('../hooks/useDiverge', () => ({
 }));
 // The pickers and the footer are WS-PICKERS' modules, mocked by path. The
 // model chip reports the tier it was handed, which is what this suite reads.
-vi.mock('./bottom_menu/ToolsChip', () => ({ ToolsChip: () => null }));
+// The chip sits on the footer line now (owner, 2026-11-13), handed in as the
+// footer's `model` slot, so the footer stub renders that slot and nothing else.
+vi.mock('./bottom_menu/toolsLists', () => ({
+  useToolsLists: () => ({ shown: null, clearQueries: () => {} }),
+  ToolsListPanel: () => null,
+}));
 vi.mock('./bottom_menu/ModelEffortChip', () => ({
   ModelEffortChip: ({ privacyTier }: { privacyTier?: string }) => (
     <div data-testid="tier-probe">{privacyTier ?? 'unresolved'}</div>
   ),
 }));
-vi.mock('./bottom_menu/ComposerFooter', () => ({ ComposerFooter: () => null }));
+vi.mock('./bottom_menu/ComposerFooter', () => ({
+  ComposerFooter: ({ model }: { model?: React.ReactNode }) => <>{model}</>,
+}));
 vi.mock('./MessageQueue', () => ({
   default: () => null,
 }));

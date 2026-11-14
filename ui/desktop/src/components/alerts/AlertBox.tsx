@@ -4,6 +4,7 @@ import { cn } from '../../utils';
 import { Alert, AlertType } from './types';
 import { NotificationSurface, type NotificationStatus } from './NotificationSurface';
 import { useConfig } from '../ConfigContext';
+import { InfoTip } from '../ui/info-tip';
 import { toastError } from '../../toasts';
 import {
   AUTO_COMPACT_MAX_TOKENS_KEY,
@@ -25,11 +26,20 @@ const ALERT_STATUS: Record<AlertType, NotificationStatus> = {
   [AlertType.Info]: 'info',
 };
 
+/** What an alert's info icon is about: its glyph reads "About this warning". */
+const ALERT_HELP_LABEL: Record<AlertType, string> = {
+  [AlertType.Error]: 'this error',
+  [AlertType.Warning]: 'this warning',
+  [AlertType.Info]: 'this notice',
+};
+
 // Progress-mode (context-window meter) keeps its solid-fill container — it is a
 // distinct indicator widget, not a status notification. The simple message mode
 // below renders through the shared NotificationSurface.
 const alertStyles: Record<AlertType, string> = {
-  [AlertType.Error]: 'bg-background-danger text-white',
+  // The danger fill is the secondary ink (design.md 9.14, red is rare), light
+  // grey in dark mode, so the ink on it is `--text-on-status`, never white.
+  [AlertType.Error]: 'bg-background-danger text-text-on-status',
   [AlertType.Warning]: 'bg-background-warning text-neutral-900',
   [AlertType.Info]: 'dark:bg-white dark:text-black bg-black text-white',
 };
@@ -140,7 +150,19 @@ export const AlertBox = ({ alert, className }: AlertBoxProps) => {
       <NotificationSurface
         status={ALERT_STATUS[alert.type]}
         className={cn('rounded-none border-0 bg-background-default px-3 py-3', className)}
-        message={<span className="whitespace-pre-line">{alert.message}</span>}
+        message={
+          // The message is the one visible line; why it matters is the info icon beside it
+          // (owner, 2026-11-13; design.md 9.16).
+          <span className="whitespace-pre-line">
+            {alert.message}
+            {alert.help ? (
+              <>
+                {' '}
+                <InfoTip label={ALERT_HELP_LABEL[alert.type]} help={alert.help} />
+              </>
+            ) : null}
+          </span>
+        }
         actions={
           alert.action ? (
             <a

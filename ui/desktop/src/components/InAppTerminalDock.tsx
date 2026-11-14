@@ -14,6 +14,7 @@ import { GENERATED_THEMES } from '../styles/themes.generated';
 import { folderName, homeFolder } from '../utils/folderPath';
 import { TerminalCwd } from './TerminalCwd';
 import { TAB_CLOSE_CLASS, TAB_NEW_CLASS } from './chatGroups/tabClasses';
+import { isSystemMonoFontReady, loadSystemMonoFont } from '../utils/systemMonoFont';
 
 interface InAppTerminalDockProps {
   open: boolean;
@@ -80,12 +81,13 @@ function makePaneTitle(workingDir: string | undefined, index: number) {
 }
 
 // xterm measures glyph widths itself, so it cannot read `var(--font-mono)`.
-// This stack must stay byte-identical to --font-mono in styles/main.css, so a
-// command pasted from a chat code block renders in exactly the same face.
+// This stack must stay the same list as --font-mono in styles/main.css, family
+// for family and in order, so a command pasted from a chat code block renders in
+// exactly the same face. `styles/fontStacks.test.ts` holds the two together.
 const TERMINAL_FONT =
-  'ui-monospace, "SF Mono", SFMono-Regular, "Cascadia Mono", Menlo, Consolas, "Liberation Mono", monospace';
-const TERMINAL_FONT_SIZE = 13;
-const TERMINAL_LINE_HEIGHT = 20 / 13; // design.md §3.2 — code/terminal is 13/20
+  'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace';
+const TERMINAL_FONT_SIZE = 12;
+const TERMINAL_LINE_HEIGHT = 20 / 12; // design.md 9.15: code and terminal are 12/20, as Codex sets code
 
 /**
  * Terminal palettes, keyed by family then resolved mode — GENERATED.
@@ -315,6 +317,7 @@ const TerminalPaneView: React.FC<{
     terminalRef.current = term;
     fitAddonRef.current = fitAddon;
     term.loadAddon(fitAddon);
+    const measuredBeforeCodeFace = !isSystemMonoFontReady();
     term.open(host);
 
     const flushResize = () => {
@@ -330,6 +333,22 @@ const TerminalPaneView: React.FC<{
         /* ignored while hidden */
       }
     };
+
+    // The code face registers in the background (utils/systemMonoFont.ts). A terminal
+    // opened before it lands measured the fallback's cells, so once it is ready the
+    // family is set again, which makes xterm measure SF Mono's cells, and the grid refits.
+    if (measuredBeforeCodeFace) {
+      void loadSystemMonoFont().then((registered) => {
+        if (!registered || disposed) return;
+        // Deliberate, never rendered: xterm's options service fires a change (and re-measures
+        // its cells) only when the value differs, so setting TERMINAL_FONT again alone would do
+        // nothing. The bare `monospace` lasts until the next line, inside one task, so no frame
+        // is ever painted in it.
+        term.options.fontFamily = 'monospace';
+        term.options.fontFamily = TERMINAL_FONT;
+        flushResize();
+      });
+    }
 
     const dataDisposer = window.electron.onTerminalData((event) => {
       if (event.sessionId !== backendSessionIdRef.current) return;

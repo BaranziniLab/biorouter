@@ -83,6 +83,16 @@ describe('PinnedModelNote', () => {
     // the user is being told something new.
     expect(note.textContent).not.toContain('versa_azure');
     expect(note.textContent).not.toContain('claude_code');
+    // Owner, 2026-11-13: the line is where the chat stays; which selection is not used is the
+    // info icon beside it, and still that icon's accessible description.
+    expect(
+      screen.getByText(
+        'This chat is marked private, so it stays on Versa API Azure / gpt-5.2-2025-12-11.'
+      )
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'About the selected model' })
+    ).toHaveAccessibleDescription('Claude Code / claude-opus-5 is not used here.');
   });
 
   it('says nothing when the chat already runs on the selected model', () => {

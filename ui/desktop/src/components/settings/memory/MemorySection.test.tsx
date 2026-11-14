@@ -280,6 +280,63 @@ describe('MemorySection', () => {
 // as an InfoTip and Refresh as a glyph; each store is a heading with a right-aligned count and an
 // InfoTip (who can read it, where it lives); an empty store is one muted row; an open category's
 // entries are sibling rows; and nothing is red until the person points at it.
+/**
+ * A memory can run to paragraphs, so an open category shows each one's first three lines and a
+ * "Show more" that opens the rest in place (owner, 2026-11-13). Whether the text runs past three
+ * lines is measured; jsdom has no layout, so this gives the paragraph a 20px line and a height.
+ */
+describe('a long memory', () => {
+  it('shows its first three lines and opens the rest in place', async () => {
+    const realGetComputedStyle = window.getComputedStyle.bind(window);
+    const style = vi
+      .spyOn(window, 'getComputedStyle')
+      .mockImplementation((element: Element, pseudo?: string | null) => {
+        const computed = realGetComputedStyle(element, pseudo);
+        if (element.tagName !== 'P') return computed;
+        return new Proxy(computed, {
+          get: (target, prop) => {
+            if (prop === 'lineHeight') return '20px';
+            const value = Reflect.get(target, prop);
+            return typeof value === 'function' ? value.bind(target) : value;
+          },
+        });
+      });
+    const height = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollHeight');
+    Object.defineProperty(Element.prototype, 'scrollHeight', {
+      configurable: true,
+      get(this: Element) {
+        return this.textContent === 'exclusions are documented in the protocol' ? 120 : 20;
+      },
+    });
+    try {
+      const user = userEvent.setup();
+      render(<MemorySection />);
+      await screen.findByText('clinical');
+      await user.click(screen.getByRole('button', { name: /show the 2 memories in clinical/i }));
+
+      const long = await screen.findByText('exclusions are documented in the protocol');
+      const short = screen.getByText('the cohort has 812 patients');
+      expect(long).toHaveClass('br-memory-entry-clamp');
+      // A memory that fits carries no clamp and no control.
+      expect(short).not.toHaveClass('br-memory-entry-clamp');
+      const more = screen.getByRole('button', { name: 'Show more' });
+      expect(screen.getAllByRole('button', { name: 'Show more' })).toHaveLength(1);
+      expect(more).toHaveAttribute('aria-expanded', 'false');
+      expect(more).toHaveAttribute('aria-controls', long.id);
+
+      await user.click(more);
+      expect(long).not.toHaveClass('br-memory-entry-clamp');
+      expect(screen.getByRole('button', { name: 'Show less' })).toHaveAttribute(
+        'aria-expanded',
+        'true'
+      );
+    } finally {
+      style.mockRestore();
+      if (height) Object.defineProperty(Element.prototype, 'scrollHeight', height);
+    }
+  });
+});
+
 describe('MemorySection layout', () => {
   it('is a section named Memory, reachable by its deep-link id, with its help as a tip', async () => {
     const { container } = render(<MemorySection />);

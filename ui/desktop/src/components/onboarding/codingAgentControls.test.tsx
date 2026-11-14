@@ -315,6 +315,7 @@ describe('the coding-agent controls', () => {
       const version = screen.getByTestId('coding-agent-version-claude_code');
       expect(version).toHaveTextContent(/^Version 2\.1\.4$/);
       expect(version.querySelector('.font-mono')).toHaveTextContent(/^2\.1\.4$/);
+      expect(version.querySelector('.font-mono')).toHaveClass('text-code');
       expect(version.closest('p')).toHaveTextContent(
         /^Version 2\.1\.4 · Max plan · ada@example\.edu$/
       );
@@ -338,9 +339,12 @@ describe('the coding-agent controls', () => {
       const user = userEvent.setup();
       for (let i = 0; i < 6 && document.activeElement !== version; i += 1) await user.tab();
       expect(version).toHaveFocus();
-      expect(
-        await screen.findByRole('tooltip', { name: /\/opt\/homebrew\/bin\/claude/ })
-      ).toBeInTheDocument();
+      const tooltip = await screen.findByRole('tooltip', { name: /\/opt\/homebrew\/bin\/claude/ });
+      expect(tooltip).toBeInTheDocument();
+      // Where the CLI lives is a place, not code (design.md D-42): no mono anywhere in the tip.
+      const content = document.querySelector('[data-path="/opt/homebrew/bin/claude"]');
+      expect(content).not.toBeNull();
+      expect(content?.closest('.font-mono')).toBeNull();
     });
 
     it('says the CLI was found when the probe read a path and no version', async () => {

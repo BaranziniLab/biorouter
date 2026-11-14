@@ -2,6 +2,7 @@ import * as React from 'react';
 import { ModalShell } from '../ModalShell';
 import { Button } from './button';
 import { Note } from './note';
+import { InfoTip } from './info-tip';
 import MarkdownContent from '../MarkdownContent';
 import {
   decisionModelLabel,
@@ -268,6 +269,16 @@ export function WorkflowSupervisionSummary({
   );
 }
 
+/** The dialog's words, so a test reads what the dialog says. */
+export const WORKFLOW_WARNING_COPY = {
+  notRunBefore: "You haven't run this workflow before.",
+  trustSource: 'Only run it if you trust its source.',
+  hiddenCharacters: 'Hidden characters in this workflow will be ignored.',
+  hiddenCharactersTipLabel: 'hidden characters',
+  hiddenCharactersTip:
+    'They could be used for malicious purposes, so Biorouter ignores them for your safety.',
+} as const;
+
 interface WorkflowWarningModalProps {
   isOpen: boolean;
   onConfirm: () => void;
@@ -327,16 +338,23 @@ export function WorkflowWarningModal({
         </>
       }
     >
+      {/* Two short sentences: why it asks, and the decision (owner, 2026-11-13). The title
+          already says the workflow is new. */}
       <p id={descriptionId} className="text-body text-text-muted">
-        {!hasSecurityWarnings &&
-          "You are about to execute a workflow that you haven't run before. "}
-        Only proceed if you trust the source of this workflow.
+        {!hasSecurityWarnings && `${WORKFLOW_WARNING_COPY.notRunBefore} `}
+        {WORKFLOW_WARNING_COPY.trustSource}
       </p>
 
+      {/* The warning stays visible; why hidden characters are dropped is its InfoTip. */}
       {hasSecurityWarnings && (
         <Note tone="warning">
-          This workflow contains hidden characters that will be ignored for your safety, as they
-          could be used for malicious purposes.
+          <span className="inline-flex flex-wrap items-center">
+            <span>{WORKFLOW_WARNING_COPY.hiddenCharacters}</span>
+            <InfoTip
+              label={WORKFLOW_WARNING_COPY.hiddenCharactersTipLabel}
+              help={WORKFLOW_WARNING_COPY.hiddenCharactersTip}
+            />
+          </span>
         </Note>
       )}
 

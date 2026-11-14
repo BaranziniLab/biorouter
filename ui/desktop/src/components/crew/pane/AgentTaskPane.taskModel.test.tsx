@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -13,7 +13,12 @@ import {
   renderCrew,
   stateFrame,
 } from '../channel/crewTestHarness';
-import { FULL_ACCESS_IS_YOU, fullAccessHost } from '../onboarding/copy';
+import {
+  FULL_ACCESS_IS_YOU,
+  FULL_ACCESS_REACH,
+  fullAccessHost,
+  fullAccessLead,
+} from '../onboarding/copy';
 import { useCrew } from '../state/CrewControllerContext';
 import { agentCopy } from './copy';
 import { DetailsPane } from './DetailsPane';
@@ -369,13 +374,27 @@ describe('what the agent may do on the server (OW-6)', () => {
     await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
     await screen.findByLabelText(agentCopy.task);
     const warning = screen.getByTestId('crew-agent-full-access');
-    // In the footer, with Advanced closed: the consent is read before Start.
-    expect(warning).toHaveTextContent(`${FULL_ACCESS_IS_YOU} ${fullAccessHost('lab')}`);
+    // In the footer, with Advanced closed: the consent sentence is read before Start, and it is
+    // what Start's description points at (design.md 9.16).
+    expect(warning.textContent).toBe(
+      'Your agent will run commands as alice on leo: it can read and change anything your account can.'
+    );
+    expect(warning.textContent).toBe(fullAccessLead('alice', 'leo'));
     expect(screen.getByRole('button', { name: 'Advanced' })).toHaveAttribute(
       'aria-expanded',
       'false'
     );
     expect(startButton().getAttribute('aria-describedby')?.split(' ')).toContain(warning.id);
+    // The rest of the warning is folded at rest, and every word of it is behind Details.
+    expect(screen.queryByText(FULL_ACCESS_IS_YOU, { exact: false })).toBeNull();
+    expect(screen.queryByTestId('crew-agent-full-access-details')).toBeNull();
+    await user.click(within(warning.parentElement!).getByRole('button', { name: 'Details' }));
+    const details = screen.getByTestId('crew-agent-full-access-details');
+    expect(Array.from(details.querySelectorAll('p'), (p) => p.textContent)).toEqual([
+      FULL_ACCESS_REACH,
+      FULL_ACCESS_IS_YOU,
+      fullAccessHost('lab'),
+    ]);
   });
 
   it('says only what running as the account means to a member who does not host it (W1)', async () => {
@@ -387,7 +406,15 @@ describe('what the agent may do on the server (OW-6)', () => {
     await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
     await screen.findByLabelText(agentCopy.task);
     const warning = screen.getByTestId('crew-agent-full-access');
-    expect(warning.textContent).toBe(FULL_ACCESS_IS_YOU);
+    expect(warning.textContent).toBe(fullAccessLead('alice', 'leo'));
+    await user.click(within(warning.parentElement!).getByRole('button', { name: 'Details' }));
+    // No host sentence for a member.
+    expect(
+      Array.from(
+        screen.getByTestId('crew-agent-full-access-details').querySelectorAll('p'),
+        (p) => p.textContent
+      )
+    ).toEqual([FULL_ACCESS_REACH, FULL_ACCESS_IS_YOU]);
   });
 
   it('says nothing of the kind for a confined folder', async () => {

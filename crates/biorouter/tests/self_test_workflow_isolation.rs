@@ -1,3 +1,5 @@
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::workflow::{build_workflow::build_workflow_from_template, Workflow};
 use serde_json::Value;
 use std::path::Path;

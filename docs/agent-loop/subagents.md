@@ -380,7 +380,8 @@ Subagents use the following pre-configured settings, but you can override any de
 |-----------|---------|------------------|
 | **Max turns** | 25 | Use natural language or set `BIOROUTER_SUBAGENT_MAX_TURNS` |
 | **Timeout** | 5 minutes | Request longer timeout in your prompt |
-| **Extensions** | Inherited from parent | Specify which extensions to use in your prompt |
+| **Extensions and capabilities** | The chat's own, as they are when the subagent starts | Ask for one to be added or left out (see [Extension control](#extension-control)) |
+| **Skills and Contexts** | The chat's own, as they are when the subagent starts | Ask for one to be turned on or off for the subagent (see [Skills and Contexts](#skills-and-contexts)) |
 | **Model** | The default worker model, or the parent's model when none is set | Choose a default worker model in Settings, or name another chat model in your prompt (see [Model control](#model-control)) |
 | **Return mode** | All subagent information provided in main session | Specify how much detail you want in your prompt |
 
@@ -400,7 +401,9 @@ You can override any default by including the setting in your natural language r
 
 ### Extension control
 
-Control which tools and capabilities subagents can access. By default, subagents inherit all extensions from your main session, but you can restrict access for security, focus or performance. For example:
+A subagent starts with the extensions and built-in capabilities its chat has at that moment, including the ones you switched for that chat alone from the composer's `+` popover (Built-in capabilities). A capability you switched off in the chat, such as Auto Visualiser, is off in its subagents too, and one you switched on is on.
+
+The agent can change that for one subagent when the task calls for it, and you can ask it to. For example:
 
 ```text
 "Create a subagent to write a summary, but don't give it file access"
@@ -409,6 +412,26 @@ Control which tools and capabilities subagents can access. By default, subagents
 ```text
 "Use a subagent with only code editing tools to refactor main.py"
 ```
+
+```text
+"Start a subagent to draw the charts, and give it Auto Visualiser even though this chat has it off"
+```
+
+The spawn tool has three fields for this, and the agent names an extension by the name you see (Auto Visualiser) or by its key (`autovisualiser`):
+
+- `remove_extensions` takes an extension or capability away from that subagent. It is always allowed.
+- `add_extensions` gives that subagent one this chat does not have, for example one you switched off for the chat. It must be installed and not turned off in Settings: an extension you turned off in Settings stays yours to turn back on, and the agent is told to ask you. A private extension is never given to a public chat's subagent, and the refusal reads the same whether or not the extension is installed.
+- `extensions` restricts the subagent to a list. An empty list leaves it with no tools at all.
+
+The changes apply to that one subagent; the chat and its other subagents keep their own setup. Workspace Control and Crew are never added or removed this way: a subagent is never given Workspace Control, and Crew comes only from a Crew grant or a Crew task. A name that matches nothing refuses the spawn, nothing is started, and the agent is told the names it can use.
+
+Whatever is added or inherited, the subagent's own privacy tier is checked last (see [A child cannot change the privacy tier](#a-child-cannot-change-the-privacy-tier)).
+
+### Skills and Contexts
+
+A subagent also starts with its chat's own skill and Context choices: the skills and Contexts (Word, PowerPoint, Excel, PDF, Biorouter overview, the Develop Biorouter guides, Knowledge) you switched on or off for that chat from the composer's `+` popover. They are copied onto the subagent's own chat when it is created, so its Skills list shows them, and changing them later in either chat does not change the other.
+
+The agent can change them for one subagent with `add_skills` and `remove_skills`, naming a skill or a bundle (`office-pdf`, `knowledge-bases`). An unknown name refuses the spawn and lists the names it can use. If the chat's own choices cannot be read, the spawn is refused rather than started on the Settings defaults, which could hand the subagent a Context the chat had switched off.
 
 ### Model control
 
@@ -463,7 +486,7 @@ Subagents have access to these safe operations:
 
 - **Extension discovery**: Search for available extensions to understand what tools are available
 - **Resource access**: Read and list resources from enabled extensions for context
-- **Extension tools**: Use tools from extensions specified in workflows or inherited from the parent session
+- **Extension tools**: Use tools from the extensions it inherited from the chat that started it, or that the chat's agent added for it
 
 ### Restricted operations
 
@@ -500,6 +523,10 @@ Two consequences worth knowing before you write a prompt that delegates:
   A child you asked for `extensions: []` loses nothing and is told nothing — silence there would
   read as a claim that something was removed. The same applies to an extension belonging to a
   different institution than the child's model.
+- **Adding an extension cannot cross the tier either.** A public chat that asks for a private
+  extension in `add_extensions` is refused before anything is started, with the same sentence an
+  agent gets when it tries to turn that extension on anywhere else, and an added extension is then
+  checked against the subagent's tier like an inherited one.
 
 If a spawn is refused, the fix is not to retry: switch the chat you are delegating *from*, or start
 a new chat on the model you want the work done on.

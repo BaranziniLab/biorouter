@@ -5,9 +5,9 @@
  * description and the footer is the real one.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { act, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { DependencyEvent, DependencyInfo } from '../utils/dependencyChecker';
-import DependencySetupModal from './DependencySetupModal';
+import DependencySetupModal, { DEPENDENCY_COPY, splitInstallNote } from './DependencySetupModal';
 
 type CliStatus = Awaited<ReturnType<typeof window.electron.cliStatus>>;
 
@@ -45,6 +45,9 @@ beforeEach(() => {
   sessionStorage.clear();
   localStorage.clear();
 });
+
+/** What a text query skips to see only what is drawn: an InfoTip's hidden description. */
+const HIDDEN_HELP = 'script, style, [data-slot="info-tip-description"]';
 
 const isCoral = (button: HTMLElement) => button.classList.contains('bg-background-accent');
 const coralButtons = () => screen.getAllByRole('button').filter(isCoral);
@@ -154,7 +157,8 @@ describe('DependencySetupModal: a row with no installer offers no Install', () =
     expect(note).not.toHaveClass('font-mono');
     // The row with a real command still prints it as code, with its Install.
     const node = rowOf('node');
-    expect(within(node).getByText('brew install node')).toHaveClass('font-mono');
+    // Code at the code role, 12/20, as every code surface in the app.
+    expect(within(node).getByText('brew install node')).toHaveClass('font-mono', 'text-code');
     expect(within(node).getByRole('button', { name: 'Install' })).toBeInTheDocument();
   });
 
@@ -224,10 +228,73 @@ describe('DependencySetupModal: names, glyphs and words', () => {
 
   it('says why once: the subtitle is the description and the footer does not repeat it', async () => {
     const dialog = await show([dep('node')]);
-    expect(dialog).toHaveAccessibleDescription(
-      'The following tools are required for Biorouter features. Install them to continue.'
-    );
+    // One clause under the title; what to do about it is the title's InfoTip (owner, 2026-11-13).
+    expect(dialog).toHaveAccessibleDescription(DEPENDENCY_COPY.requiredSubtitle);
+    expect(
+      within(dialog).getByRole('button', { name: `About ${DEPENDENCY_COPY.tipLabel}` })
+    ).toHaveAccessibleDescription(DEPENDENCY_COPY.requiredTip);
     expect(screen.queryByText(/may be limited until these are installed/)).toBeNull();
+  });
+
+  it('keeps the sudo note in the Install button’s InfoTip, as the button’s description', async () => {
+    await show([dep('node'), dep('git', { requiresSudo: true })]);
+    const row = screen
+      .getByText('git', { selector: 'p' })
+      .closest('.br-fill-surface') as HTMLElement;
+    // No warning line under the row any more: the words live only in the InfoTip's hidden
+    // description (and its floating copy while it is open).
+    expect(within(row).queryByText(DEPENDENCY_COPY.sudoTip, { ignore: HIDDEN_HELP })).toBeNull();
+    const tip = within(row).getByRole('button', { name: `About ${DEPENDENCY_COPY.sudoTipLabel}` });
+    expect(tip).toHaveAccessibleDescription(DEPENDENCY_COPY.sudoTip);
+    expect(within(row).getByRole('button', { name: 'Install' })).toHaveAccessibleDescription(
+      DEPENDENCY_COPY.sudoTip
+    );
+    // A row that needs no sudo carries no such tip.
+    const node = screen
+      .getByText('node', { selector: 'p' })
+      .closest('.br-fill-surface') as HTMLElement;
+    expect(within(node).queryByRole('button', { name: /About/ })).toBeNull();
+  });
+
+  it('keeps a note’s first sentence on the row and the rest in its InfoTip', async () => {
+    const note =
+      'Install Java 21 from your vendor. Set JAVA_HOME afterwards so Biorouter can find it.';
+    await show([dep('node'), dep('java', { displayName: 'Java', installCmd: `# ${note}` })]);
+    const row = screen
+      .getByText('Java', { selector: 'p' })
+      .closest('.br-fill-surface') as HTMLElement;
+    expect(within(row).getByText('Install Java 21 from your vendor.')).toBeInTheDocument();
+    expect(within(row).queryByText(/Set JAVA_HOME afterwards/, { ignore: HIDDEN_HELP })).toBeNull();
+    expect(
+      within(row).getByRole('button', { name: 'About installing Java' })
+    ).toHaveAccessibleDescription('Set JAVA_HOME afterwards so Biorouter can find it.');
+    expect(splitInstallNote('One sentence only')).toEqual({
+      lead: 'One sentence only',
+      tip: null,
+      details: null,
+    });
+  });
+
+  // An InfoTip holds two sentences at most (design.md 9.16); a longer rest folds under the row.
+  it('folds a note longer than an InfoTip holds into a disclosure under the row', async () => {
+    const rest =
+      'Set JAVA_HOME afterwards so Biorouter can find it. Restart the app once it is set. ' +
+      'On Linux, your package manager may name it openjdk-21-jdk.';
+    const note = `Install Java 21 from your vendor. ${rest}`;
+    expect(splitInstallNote(note)).toEqual({
+      lead: 'Install Java 21 from your vendor.',
+      tip: null,
+      details: rest,
+    });
+    await show([dep('node'), dep('java', { displayName: 'Java', installCmd: `# ${note}` })]);
+    const row = screen
+      .getByText('Java', { selector: 'p' })
+      .closest('.br-fill-surface') as HTMLElement;
+    expect(within(row).getByText('Install Java 21 from your vendor.')).toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: 'About installing Java' })).toBeNull();
+    expect(within(row).queryByText(/Restart the app once it is set/)).toBeNull();
+    fireEvent.click(within(row).getByRole('button', { name: 'How to install Java' }));
+    expect(await within(row).findByText(rest)).toBeVisible();
   });
 
   it('draws a command as code instead of printing Markdown backticks', async () => {

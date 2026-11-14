@@ -1,18 +1,18 @@
-# Building and Running BioRouter with Docker
+# Building and running Biorouter with Docker
 
-This guide covers building Docker images for BioRouter CLI for production use, CI/CD pipelines, and local development.
+This guide covers the Biorouter CLI, browser server and local dictation in the Docker image.
 
 ## Quick Start
 
 ### No Pre-built Image — Build Locally
 
-There is **no** published BioRouter container image: no registry hosts one and no CI workflow builds or pushes it. Build the image yourself from source (see [Building from Source](#building-from-source)) and refer to it by its local tag `biorouter:local`:
+There is **no** published Biorouter container image. The nightly and manual Docker workflow builds and checks an image, but does not push it to a registry. Build from source and use a local tag:
 
 ```bash
 # Build the image from the repo root
 docker build -t biorouter:local .
 
-# Run BioRouter CLI
+# Run Biorouter CLI
 docker run --rm biorouter:local --version
 
 # Run with LLM configuration
@@ -46,17 +46,49 @@ docker build -t biorouter:local .
 
 The build process:
 - Uses a multi-stage build to minimize final image size
-- Compiles with optimizations (LTO, stripping, size optimization)
-- Results in a `debian:bookworm-slim`-based image containing the `biorouter` CLI binary and the native Biorouter Copilot helper (the `biorouterd` daemon is not included)
+- Compiles the CLI and daemon with optimizations and the dictation engine
+- Builds the browser bundle in a separate Node 24 stage with `npm ci` and `npm run build:web`
+- Copies `biorouter`, `biorouterd`, the browser bundle at `/usr/share/biorouter/web`, and the Biorouter Copilot helper into a Debian runtime image
+- Includes no speech model; the person installs one in a persistent data volume
 
 ### Build Options
 
-For multi-platform builds:
+For multi-platform builds, use Buildx. The nightly workflow builds each architecture on a native runner:
 ```bash
-docker buildx build --platform linux/amd64,linux/arm64 -t biorouter:multi .
+docker buildx build --platform linux/amd64,linux/arm64 \
+  --output type=oci,dest=biorouter-multi.tar .
 ```
 
-## Running BioRouter in Docker
+## Running Biorouter in Docker
+
+### Browser dictation through `serve`
+
+The container has no microphone. Its `biorouterd` worker transcribes audio recorded by the browser on the computer publishing the port. Keep the port on host loopback so the page is a secure browser context. Open the tokened address printed by the container banner, replacing the host port placeholder with `8765` in this example.
+
+```bash
+docker run --rm -p 127.0.0.1:8765:8765 \
+  -v biorouter-data:/home/biorouter/.local/share/biorouter \
+  -v biorouter-config:/home/biorouter/.config/biorouter \
+  biorouter:local serve --host 0.0.0.0
+```
+
+Install the Light model and voice detector into the data volume, then restart `serve` with the same volumes. The image stays unchanged:
+
+```bash
+docker run --rm \
+  -v biorouter-data:/home/biorouter/.local/share/biorouter \
+  -v biorouter-config:/home/biorouter/.config/biorouter \
+  biorouter:local dictation install --yes whisper-small.en-q8_0
+```
+
+For an offline install, mount a folder holding the two files from the pinned Biorouter model releases read only and use `dictation install --yes --from /model-cache`. An administrator can also mount a system model folder read only at `/var/lib/biorouter/dictation/models`. `biorouter transcribe /data/memo.wav` works with a recording mounted at `/data` and the same data volume.
+
+To check a local image with an existing model cache, run the same image checks as CI. The cache folder must hold `ggml-small.en-q8_0.bin` and `ggml-silero-v6.2.0.bin`; the script checks their SHA-256 pins before using them. `--browser` needs the desktop's Playwright package and Chromium on the host. Choose a fresh run folder. The script retains its evidence and named data volumes for inspection.
+
+```bash
+bash scripts/check-docker-dictation.sh --image biorouter:local \
+  --model-cache /path/to/model-cache --run-root /path/to/new-pr31-run --browser
+```
 
 ### CLI Mode
 
@@ -167,47 +199,20 @@ RUN apt-get update && apt-get install -y \
 USER biorouter
 ```
 
-## CI/CD Integration
+## CI/CD integration
 
-### GitHub Actions
+`.github/workflows/docker-image.yml` runs nightly and on manual dispatch. It builds amd64 and arm64 images, checks the offline engine self test and empty model state, installs the SHA-256 pinned Light model into a volume, checks file transcription and `serve`, and drives a fake microphone in Chromium on host loopback. It caches only the model and voice detector after a successful default branch run. The workflow does not publish an image.
 
-```yaml
-jobs:
-  analyze:
-    runs-on: ubuntu-latest
-    container:
-      image: biorouter:local
-      env:
-        BIOROUTER_PROVIDER: openai
-        BIOROUTER_MODEL: gpt-5.6
-        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Run BioRouter analysis
-        run: |
-          biorouter run -t "Run the QC checks on the sequencing results in this repo and summarize any flagged samples"
-```
-
-### GitLab CI
-
-```yaml
-analyze:
-  image: biorouter:local
-  variables:
-    BIOROUTER_PROVIDER: openai
-    BIOROUTER_MODEL: gpt-5.6
-  script:
-    - biorouter run -t "Generate a methods writeup for the analysis pipeline in this project"
-```
+A local tag exists only on the Docker host that built it. A separate CI job must build the image from source or load an image artifact before it can run `biorouter:local`. The repository's Docker workflow builds and checks the source in its own jobs. It does not make the tag available to other jobs or registries.
 
 ## Image Details
 
 ### Size and Optimization
 
-- **Multi-stage build**: two builder stages are discarded (`golang:1.26.8-bookworm`, which builds the native Biorouter Copilot helper, and `rust:1.92-bookworm`, which builds the CLI); only the compiled artifacts are copied forward
+- **Multi-stage build**: the Go, Rust and Node builder stages are discarded; only the compiled artifacts are copied forward
 - **Base image**: `debian:bookworm-slim`, pinned by digest, plus eleven runtime packages (`ca-certificates`, `libssl3`, `libdbus-1-3`, `libxcb1`, `python3`, `python3-gi`, `gir1.2-atspi-2.0`, `gir1.2-gtk-3.0`, `at-spi2-core`, `curl`, `git`). The five in the middle are the Biorouter Copilot helper's AT-SPI runtime
 - **Optimizations**: the `Dockerfile` overrides the release profile with LTO, one codegen unit, `opt-level=z`, and stripping
-- **Contents**: the CLI (`/usr/local/bin/biorouter`) and the Biorouter Copilot helper (`/usr/libexec/biorouter/computer-use`) — it builds `--package biorouter-cli`, so the `biorouterd` daemon is **not** in the image
+- **Contents**: the CLI (`/usr/local/bin/biorouter`), its sibling daemon (`/usr/local/bin/biorouterd`), the web bundle (`/usr/share/biorouter/web`), and the Biorouter Copilot helper (`/usr/libexec/biorouter/computer-use`). No model is stored in the image
 
 Image and binary sizes are not stated here on purpose: they move with the profile settings and the dependency tree, and a stale number is worse than none. Measure your own build with `docker images biorouter:local`.
 
@@ -215,11 +220,11 @@ Image and binary sizes are not stated here on purpose: they move with the profil
 
 - Runs as non-root user `biorouter` (UID 1000)
 - Minimal attack surface with only essential runtime dependencies
-- **No automated rebuilds.** Nothing builds or publishes this image on a schedule, so its base-image CVE exposure is whatever `debian:bookworm-slim` carried at the digest pinned in the `Dockerfile`. Rebuild the image yourself to pick up base-image updates.
+- **Scheduled checks.** The nightly workflow rebuilds and checks the image. It does not publish or replace a local image
 
 ### Included Tools
 
-The image includes essential tools for BioRouter operation:
+The image includes tools for Biorouter operation:
 - `git` - Version control operations
 - `curl` - HTTP requests
 - `ca-certificates` - SSL/TLS support

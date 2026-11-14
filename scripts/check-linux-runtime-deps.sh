@@ -70,21 +70,53 @@ BASE_LIBS="ld-linux-x86-64.so.2 libc.so.6 libdl.so.2 libgcc_s.so.1 libm.so.6 lib
 PACKAGE_MAP="libxcb.so.1:libxcb1:libxcb
 libz.so.1:zlib1g:zlib"
 
+# Libraries that must never become a package dependency, whatever row someone would add.
+# The dictation engine is C++ with ggml's threads (DD-10 rules 3 and 4): the C++ runtime is
+# linked statically and OpenMP is off, so libstdc++ (whose GLIBCXX versions would also lift
+# the glibc floor) and libgomp in DT_NEEDED mean a build rule was lost. The audio libraries
+# belong to capture, which opens them at run time when a microphone is used; linked, they
+# would stop `biorouterd` starting on a server with no sound system (P-10).
+NAMED_REFUSALS="libstdc++.so.6 libgomp.so.1 libasound.so.2 libpulse.so.0 libjack.so.0"
+
 # readelf, not objdump: readelf parses any ELF regardless of the architecture it
 # was built for, so this works when the pinned image resolves to arm64 (a
 # developer's Mac) as well as on the amd64 CI runner. objdump is single-target
 # and would answer "File format not recognized" on the first of those.
-if ! dynamic=$(docker run --rm -v "$PWD":/w -w /w "$LINUX_RUST_IMG" sh -ec '
+#
+# BIN_DIR is mounted on its own, so it may be absolute or outside the checkout
+# (scripts/check-dictation-isa.sh passes an absolute path).
+BIN_DIR_ABS="$(cd "$BIN_DIR" && pwd)"
+if ! dynamic=$(docker run --rm -v "$BIN_DIR_ABS":/bin-under-test:ro -w /bin-under-test "$LINUX_RUST_IMG" sh -ec '
     for binary do
+      echo "== $binary"
       readelf -d "$binary" || exit 2
     done
-  ' sh "$BIN_DIR/biorouter" "$BIN_DIR/biorouterd" "$BIN_DIR/biorouter-crew"); then
+  ' sh biorouter biorouterd biorouter-crew); then
   echo "::error::could not inspect every Linux binary's runtime dependencies" >&2
   exit 2
 fi
 needed=$(printf '%s\n' "$dynamic" | sed -n 's/.*(NEEDED).*\[\(.*\)\]/\1/p' | sort -u)
 
 [ -n "$needed" ] || { echo "::error::could not read DT_NEEDED entries from $BIN_DIR"; exit 2; }
+
+# The named refusals come first, before the advice to declare a new package: for these the
+# answer is never a PACKAGE_MAP row.
+refused=0
+for lib in $needed; do
+  case " $NAMED_REFUSALS " in *" $lib "*) ;; *) continue ;; esac
+  for binary in $(printf '%s\n' "$dynamic" | awk -v lib="$lib" '
+      /^== / { name = $2 }
+      index($0, "(NEEDED)") && index($0, "[" lib "]") { print name }'); do
+    echo "::error::$binary needs $lib; link it statically or dlopen it"
+    refused=1
+  done
+done
+if [ "$refused" -ne 0 ]; then
+  echo "  These libraries are never added to the packages. libstdc++ and libgomp mean the" >&2
+  echo "  dictation engine lost a build rule (static C++ runtime, GGML_OPENMP=OFF; DD-10)." >&2
+  echo "  The audio libraries are opened at run time by capture, never linked (P-10)." >&2
+  exit 1
+fi
 
 deb_pkgs=""
 rpm_pkgs=""

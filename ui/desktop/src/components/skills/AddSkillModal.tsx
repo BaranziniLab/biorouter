@@ -1,6 +1,8 @@
 import './skills.css';
 import { useState, useRef, DragEvent } from 'react';
 import { Button } from '../ui/button';
+import { CopyField } from '../ui/copy-field';
+import { Disclosure } from '../ui/disclosure';
 import { Input } from '../ui/input';
 import { Note } from '../ui/note';
 import { InfoTip, useInfoTipId } from '../ui/info-tip';
@@ -16,6 +18,13 @@ interface Props {
   onClose: () => void;
   onSaved: () => void;
 }
+
+/** The ambiguity note's line: what the daemon found, said once. */
+const AMBIGUITY_LINE = (count: number) =>
+  `This source holds ${count} skills side by side and declares no package manifest.`;
+/** Why the dialog asks, behind the line's InfoTip. The two answers are the footer's buttons. */
+const AMBIGUITY_HELP =
+  'Without a manifest, Biorouter cannot tell whether they belong together, so you choose how to install them.';
 
 /**
  * Add skill.
@@ -259,16 +268,40 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
         onChange={handleBrowse}
       />
 
-      {/* One note (V4). Tone is a `--wash-*`, derived per family and per mode. */}
+      {/* One note (V4). Tone is a `--wash-*`, derived per family and per mode. A file this
+          surface cannot read is a refusal: its reason stays the note, and how to install the
+          skill on the daemon's machine folds under it (design.md 9.16). */}
       {error && (
         <Note tone="danger" role="alert">
           {error}
         </Note>
       )}
+      {error === ADD_SKILL_COPY.remoteDaemon && (
+        <Disclosure label={ADD_SKILL_COPY.remoteDaemonHow}>
+          <div className="flex flex-col gap-2">
+            <p className="text-supporting text-text-muted">{ADD_SKILL_COPY.remoteDaemonSteps}</p>
+            <CopyField
+              value={ADD_SKILL_COPY.remoteDaemonCommand}
+              label={ADD_SKILL_COPY.remoteDaemonCommandLabel}
+            />
+            <p className="text-supporting text-text-muted">{ADD_SKILL_COPY.remoteDaemonUrl}</p>
+          </div>
+        </Disclosure>
+      )}
 
       {preview && <PreviewSummary preview={preview} sourceLabel={sourceLabel} />}
 
-      {ambiguity && <Note tone="info">{ambiguity.reason}</Note>}
+      {/* One line up front (owner, 2026-11-13). The daemon's reason is two sentences: why it
+          asks goes to the InfoTip, and "install them as one bundle, or pick the ones you want"
+          is what the footer's two buttons already say. */}
+      {ambiguity && (
+        <Note tone="info">
+          <div className="flex min-w-0 items-center">
+            <p className="min-w-0">{AMBIGUITY_LINE(ambiguity.components.length)}</p>
+            <InfoTip label="this choice" help={AMBIGUITY_HELP} />
+          </div>
+        </Note>
+      )}
     </ModalShell>
   );
 }

@@ -441,6 +441,16 @@ has superseded never lands. The footer's cost card lists every token bucket the 
 (input, output, cache read and cache write), so on the ledger its figures add up to the Tokens
 value here and to Settings > App > Usage.
 
+A side call made after the turn's last frame moves no live counter: the chat's title is the
+common one (`side:session_name`, which the daemon writes in a task it starts as the turn ends).
+Two reads catch it. The post-turn naming poll in `hooks/chatStreamStore.tsx` reads the chat's
+row, and whenever the row's lifetime counters are past the live ones it takes them
+(`withRecordedLifetimeCounters`, never the context gauge's), which re-reads the ledger and the
+limit. And the cost card reads the ledger again each time it opens (`useCostTracking`'s `reload`),
+beside its Limit section's own read, so the card's cost and its limit line always count the same
+requests. Until 2026-11-13 neither happened: a Claude Haiku 5.5 chat's card read $0.0769, its one
+turn, while the Limit line counted the title's 92,745 tokens.
+
 The subagents come from `GET /sessions/{session_id}/subagents` (`hooks/useSessionSubagents.ts`,
 parsed by `utils/sessionSubagents.ts`), read with the user-action headers because the daemon
 omits a private child from a caller without the proof. The hook reads on the to-do list's gate
@@ -564,7 +574,9 @@ or the pointer is over the summary.
 | `hooks/useSessionTodos.test.tsx` | Fetches with the user proof only while shown, refreshes after to-do writes, keeps the last list with an error and Retry |
 | `components/summary/useLoadingChatRow.test.ts` | A loading chat's row from a warm listing in the first render, from the row read (with the proof, preferred to the listing), from a listing that arrives later; nothing for another chat, a failed read, a chat that is not loading or a new chat |
 | `components/summary/useLoadingChat.test.tsx` | The loading look (`chat`, `new`, `pending`) and the commit before the load; a cold first open paints nothing, then the chat with its rail at rest and its own model, and never the new-chat placeholder or default model; a warm listing gives the chat in the first commit; Home's cargo keeps the new-chat composer; a Workflows chat never draws the rail; nothing pending once loaded, for a new chat or after a failed load |
-| `hooks/useCostTracking.ledger.test.tsx` | `ledgerSettled` false with no rows while the usage request is pending, settled on rows, on none and on a failure, never one chat's ledger for another's, and a refresh of the same chat keeps its answer. A live chat's counters refresh it: a re-read after each turn with the chat's row unchanged and nothing remounted, nothing asked by frames that only copy the counters it has, no superseded read landing, and a failed refresh keeping the answer while a failed first read settles |
+| `hooks/useCostTracking.ledger.test.tsx` | `ledgerSettled` false with no rows while the usage request is pending, settled on rows, on none and on a failure, never one chat's ledger for another's, and a refresh of the same chat keeps its answer. A live chat's counters refresh it: a re-read after each turn with the chat's row unchanged and nothing remounted, nothing asked by frames that only copy the counters it has, no superseded read landing, and a failed refresh keeping the answer while a failed first read settles. `reload` reads it again with nothing moved, keeping the rows it has while it asks, and is stable |
+| `hooks/chatStreamStore.autoRename.test.tsx` | The post-turn naming poll announces each rename, polls only while the daemon may still rename, and reads metadata only. It carries the row's lifetime counters into the live ones when a title's side call moved them, whether or not the title changed, and never lowers a counter or touches the context gauge (`withRecordedLifetimeCounters`) |
+| `components/bottom_menu/CostTracker.sideCalls.test.tsx` | The cost card reads the ledger again when it opens, with its Limit section, so a title's side call made after the turn is in both the cost ($0.0769 to $0.0862) and the limit line |
 | `components/BaseChat.liveCost.test.tsx` | On the real stream store (`useChatStream`), the usage hook, `footerCostInputs` and the footer `CostTracker`, wired as BaseChat wires them: By model after a new chat's first reply and the new total after every turn, two provider calls in one turn included, with no reload and one mount; a chat opened with a total moving on from it; and one ledger read per change of the counters, never one per streamed token, each with the user proof |
 | `components/BaseChat.costLedger.test.tsx` | On the real hook and the real footer `CostTracker`: no Tokens value and no cost while the ledger is pending, then exactly one reading ("N/A" and no cost for an uncertified row; "2.2M" and the priced counters for a ledger with no rows) |
 | `components/ChatSummary.test.tsx` | The content, the status words, the code delta in words and its muted zeros, empty values (and `aria-busy`) for figures not known yet, the statistics in a closed This chat whose heading carries the token figure as its description (none while Tokens is not known), To do collapsed by default with a plan and open without one, a person's close holding, a decision chat's This chat holding Tokens only with no Make workflow, the row entrances (kept through the re-renders that follow), the glyph crossfade, the thin progress bar, the scrolling body |

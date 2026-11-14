@@ -190,9 +190,11 @@ describe('JoinStatusCard', () => {
     ).toBeInTheDocument();
     // F3: a member whose computer was removed reads as not invited too; the card names the
     // invitation that works for them, and so does the prepared message.
-    expect(screen.getByTestId('crew-join-not-invited-before')).toHaveTextContent(
+    expect(screen.getByTestId('crew-join-not-invited-before')).toHaveAccessibleDescription(
       'If you were in lab before, ask Alice Chen (@alice) to use Add another computer for @bob.'
     );
+    // The prepared message is folded behind its own disclosure (owner, 2026-11-13).
+    fireEvent.click(screen.getByRole('button', { name: joinStateCopy.notInvitedMessageToggle }));
     expect(
       screen.getByText(
         'Hi Alice, please invite @bob to lab in Crew. If I’m already a member there, please use Add another computer for @bob instead.'
@@ -352,8 +354,13 @@ describe('JoinStatusCard', () => {
       minute: '2-digit',
     }).format(new Date(expiresAt * 1000));
     expect(screen.getByTestId('crew-join-wait-note')).toHaveTextContent(
-      `${joinStateCopy.expires(when)} ${joinStateCopy.closeNote('Alice', 'lab')}`
+      joinStateCopy.expires(when)
     );
+    // That nothing needs the app open is the wait's info tip (owner, 2026-11-13).
+    expect(screen.getByTestId('crew-join-close-note')).toHaveAccessibleDescription(
+      joinStateCopy.closeNote('Alice', 'lab')
+    );
+    expect(within(waiting).getByTestId('crew-join-close-note')).toBeInTheDocument();
     // The still clock is authored CSS that never animates.
     const css = readFileSync(join(__dirname, 'onboarding.css'), 'utf8');
     const rules = css.match(/\.crew-onboard-wait[^{]*\{[^}]*\}/g) ?? [];
@@ -379,10 +386,11 @@ describe('JoinStatusCard', () => {
   it('leaves out the expiry when the status names none', async () => {
     answerJoin({ status: 'invited', code: LOCAL_CODE, inviter: ALICE, workspace_name: 'lab' });
     renderCard();
-    expect(await screen.findByTestId('crew-join-wait-note')).toHaveTextContent(
+    expect(await screen.findByTestId('crew-join-close-note')).toHaveAccessibleDescription(
       joinStateCopy.closeNote('Alice', 'lab')
     );
-    expect(screen.getByTestId('crew-join-wait-note')).not.toHaveTextContent(/expire/);
+    expect(screen.queryByTestId('crew-join-wait-note')).toBeNull();
+    expect(document.body.textContent).not.toMatch(/expire/);
   });
 
   it('opens straight on the token path when the probe already found it', () => {

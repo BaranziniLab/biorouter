@@ -13,6 +13,8 @@
 //! deserializes an export written by the shipping code, including the
 //! provider-metadata and `_meta` fields the in-memory constructors leave unset.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::agents::bug_report::evidence::{conversation_from_export, failures_in};
 use biorouter::agents::tool_errors::ToolErrorKind;
 

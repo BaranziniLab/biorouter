@@ -4481,6 +4481,9 @@ impl WorkspaceClient {
     ) -> Result<Vec<crate::agents::ExtensionConfig>, String> {
         let mut add_configs = Vec::new();
         for name in names {
+            if crate::dictation::activation::is_dictionary_name(name) {
+                return Err(crate::dictation::activation::ENABLE_REFUSAL.to_string());
+            }
             // ⚠ **BEFORE the lookup, and that ordering is the point.** A
             // private extension the machine has not installed would otherwise
             // come back "unknown extension 'ucsfomopagent'" while an installed
@@ -4528,6 +4531,9 @@ impl WorkspaceClient {
         extensions: Option<&Vec<String>>,
     ) -> Result<(), String> {
         for name in extensions.into_iter().flatten() {
+            if crate::dictation::activation::is_dictionary_name(name) {
+                return Err(crate::dictation::activation::ENABLE_REFUSAL.to_string());
+            }
             let entry = crate::config::get_extension_entry_by_name(name);
             Self::refuse_gated_extension_enable(cap, name, entry.as_ref())?;
         }
@@ -17895,6 +17901,155 @@ pub(crate) mod tests {
             "{hushed}"
         );
         assert!(!hushed.contains("s-x opened"), "{hushed}");
+    }
+
+    /// DD-51: the Dictionary capability is turned on by the person, never by an agent.
+    /// `workspace_set_tools {add_extensions}`, `workspace_open {new:{extensions}}` and
+    /// `manage_extensions {enable}` all refuse `dictionary` by name, for a public and a
+    /// private caller alike, and leave nothing behind: no conversation is started and the
+    /// capability is not attached. `WorkspaceServices::start_session`'s own refusal lives
+    /// in `biorouter-server` and is tested there.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn an_agent_cannot_enable_the_dictionary_capability_in_any_chat() {
+        const CONTRAST_KEY: &str = "dictionarycontrastfixture";
+        const CONTRAST_NAME: &str = "dictionary-contrast-fixture";
+        let recorder = FakeServices::with_gui(true).install();
+        let c = client();
+        let target = seeded_target(&c, "dictionary-enable").await;
+        let refusal = crate::dictation::activation::ENABLE_REFUSAL;
+
+        let dir = tempfile::tempdir().unwrap();
+        let em = std::sync::Arc::new(
+            crate::agents::extension_manager::ExtensionManager::new_without_provider(
+                dir.path().to_path_buf(),
+            ),
+        );
+        let manager_chat = em
+            .get_context()
+            .session_manager
+            .create_session(
+                dir.path().to_path_buf(),
+                "dictionary enable fixture".to_owned(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let extension_manager =
+            crate::agents::extension_manager_extension::ExtensionManagerClient::new(
+                PlatformExtensionContext {
+                    extension_manager: Some(std::sync::Arc::downgrade(&em)),
+                    session_manager: em.get_context().session_manager.clone(),
+                },
+            )
+            .unwrap();
+
+        for caller in [public_caller(), private_caller()] {
+            let tier = caller.capability.tier();
+            for name in ["dictionary", "Dictionary", " DICTIONARY "] {
+                let set_tools = call_as(
+                    &c,
+                    "workspace_set_tools",
+                    serde_json::json!({ "session_id": target, "add_extensions": [name] }),
+                    caller.clone(),
+                )
+                .await;
+                assert_eq!(set_tools.is_error, Some(true), "{tier:?} {name:?}");
+                assert!(
+                    text_of(&set_tools).contains(refusal),
+                    "workspace_set_tools, {tier:?}, {name:?}: {}",
+                    text_of(&set_tools)
+                );
+
+                let open = call_as(
+                    &c,
+                    "workspace_open",
+                    serde_json::json!({ "new": {
+                        "kind": "user",
+                        "working_dir": std::env::temp_dir().to_string_lossy(),
+                        "extensions": [name],
+                    }}),
+                    caller.clone(),
+                )
+                .await;
+                assert_eq!(open.is_error, Some(true), "{tier:?} {name:?}");
+                assert!(
+                    text_of(&open).contains(refusal),
+                    "workspace_open, {tier:?}, {name:?}: {}",
+                    text_of(&open)
+                );
+                assert!(
+                    recorder.sessions_started().is_empty(),
+                    "a conversation was started holding the Dictionary capability"
+                );
+
+                let enable = extension_manager
+                    .call_tool(
+                        crate::agents::extension_manager_extension::MANAGE_EXTENSIONS_TOOL_NAME,
+                        Some(
+                            serde_json::json!({ "action": "enable", "extension_name": name })
+                                .as_object()
+                                .unwrap()
+                                .clone(),
+                        ),
+                        crate::agents::mcp_client::McpMeta::new(
+                            &manager_chat.id,
+                            caller.capability,
+                        ),
+                        CancellationToken::new(),
+                    )
+                    .await
+                    .unwrap();
+                let enable_text = text_of(&enable);
+                assert_eq!(
+                    enable.is_error,
+                    Some(true),
+                    "{tier:?} {name:?}: {enable_text}"
+                );
+                assert!(
+                    enable_text.contains("built-in Biorouter capability"),
+                    "manage_extensions, {tier:?}, {name:?}: {enable_text}"
+                );
+                assert!(
+                    !em.is_extension_enabled("dictionary").await,
+                    "manage_extensions attached the Dictionary capability"
+                );
+            }
+        }
+
+        // The refusal is the name: another name on the same doors gets a different answer.
+        let unknown = call_as(
+            &c,
+            "workspace_set_tools",
+            serde_json::json!({
+                "session_id": target, "add_extensions": ["definitely-not-an-extension"]
+            }),
+            private_caller(),
+        )
+        .await;
+        assert!(
+            text_of(&unknown).contains("unknown extension") && !text_of(&unknown).contains(refusal),
+            "{}",
+            text_of(&unknown)
+        );
+        let opened = crate::config::with_config_overrides(
+            extensions_override(CONTRAST_KEY, CONTRAST_NAME, true),
+            call_as(
+                &c,
+                "workspace_open",
+                serde_json::json!({ "new": {
+                    "kind": "user",
+                    "working_dir": std::env::temp_dir().to_string_lossy(),
+                    "extensions": [CONTRAST_NAME],
+                }}),
+                private_caller(),
+            ),
+        )
+        .await;
+        assert_ne!(opened.is_error, Some(true), "{}", text_of(&opened));
+        assert_eq!(recorder.sessions_started().len(), 1);
+
+        crate::workspace_services::clear_test_override();
     }
 
     /// D-14 / E-1 (live QA 2026-11-10): the same "Do not tell the user ..."

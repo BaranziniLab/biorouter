@@ -983,8 +983,13 @@ describe('Azure OpenAI saved with the retired default endpoint', () => {
     );
     renderCatalog();
     const notice = await screen.findByTestId('azure-retired-endpoint-notice');
-    expect(notice).toHaveTextContent("This endpoint is UCSF's gateway");
-    expect(notice).toHaveTextContent('use Versa API Azure for UCSF');
+    // One visible line; how it got there and the UCSF alternative are its InfoTip (design.md 9.16).
+    expect(notice).toHaveTextContent("This endpoint is UCSF's gateway, not your Azure resource.");
+    expect(
+      within(notice).getByRole('button', { name: 'About this endpoint' })
+    ).toHaveAccessibleDescription(
+      "Older versions filled it in by mistake. Enter your own Azure resource's endpoint, or use Versa API Azure for UCSF."
+    );
     expect(within(notice).getByRole('button', { name: 'Configure' })).toBeInTheDocument();
     expect(mocks.upsert).not.toHaveBeenCalled();
   });

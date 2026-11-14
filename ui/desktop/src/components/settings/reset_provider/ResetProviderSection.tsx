@@ -52,7 +52,7 @@ export default function ResetProviderSection(_props: ResetProviderSectionProps) 
       <SettingRow label={modelsDangerCopy.row} help={modelsDangerCopy.rowHelp}>
         <Button
           type="button"
-          variant="destructive"
+          variant="critical"
           size="sm"
           onClick={() => setConfirming(true)}
           disabled={hostManaged}
@@ -74,7 +74,7 @@ export default function ResetProviderSection(_props: ResetProviderSectionProps) 
         message={modelsDangerCopy.confirmMessage}
         confirmLabel={modelsDangerCopy.confirm}
         cancelLabel={modelsDangerCopy.cancel}
-        confirmVariant="destructive"
+        confirmVariant="critical"
         onConfirm={handleResetProvider}
         onCancel={() => setConfirming(false)}
       />

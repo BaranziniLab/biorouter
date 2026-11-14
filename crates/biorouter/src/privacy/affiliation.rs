@@ -1103,6 +1103,106 @@ fn compose_unstated(extension: &str, owners: &BTreeSet<InstitutionId>) -> CrossA
     }
 }
 
+/// What the writer of a private dictionary row knows about the model of the chat it
+/// writes from (O-35).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriterModel {
+    /// The chat's model was read: `Some` with its affiliation, or `None` for a private
+    /// model that states none, which contributes no institution, as `Local` does.
+    Known(Option<ModelAffiliation>),
+    /// No live agent and no provider in process: the model could not be read.
+    Unknown,
+}
+
+/// The institutions a private dictionary row records (`dictionary.md`, "Private rows
+/// and institutions"): `null`, `{"institutions": []}` or the owners' ids.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RowInstitutions {
+    /// `null`: no institution claims the row, so it may shape every private target.
+    Unclaimed,
+    /// `{"institutions": []}`: the chat's record or model could not be read, or the
+    /// union named more than [`DICTIONARY_ROW_MAX_INSTITUTIONS`]; only local models
+    /// clear it.
+    Unknown,
+    /// 1 to 8 institutions whose data the row may hold.
+    Owners(BTreeSet<InstitutionId>),
+}
+
+/// The most institutions a dictionary row names; a larger union is stored as unknown,
+/// which reaches the same targets as any row that names two or more (local models).
+pub const DICTIONARY_ROW_MAX_INSTITUTIONS: usize = 8;
+
+impl RowInstitutions {
+    /// The ids the store writes: `None` for `null`, an empty list for unknown.
+    pub fn stored_ids(&self) -> Option<Vec<String>> {
+        match self {
+            Self::Unclaimed => None,
+            Self::Unknown => Some(Vec::new()),
+            Self::Owners(owners) => Some(owners.iter().map(|id| id.as_str().to_string()).collect()),
+        }
+    }
+}
+
+/// The institutions a private dictionary row written from a chat records (O-35, P-16):
+/// the union of the institutions behind the chat's model (a lead and worker pair is
+/// already folded into one [`ModelAffiliation`]) and those whose connectors the chat
+/// touched (`SessionManager::session_affiliations`).
+///
+/// `Local`, or a private model that states no affiliation, contributes none: the term
+/// never left the machine, or no agreement can be named for it, the rule a knowledge
+/// base follows for the same two callers (`contributed_owners`). A model covered by two
+/// institutions contributes both. An empty union is [`RowInstitutions::Unclaimed`].
+///
+/// ⚠ **Unknown fails toward the stricter value.** A model that could not be read, or a
+/// touched record that answers `Err` (its column could not be read or parsed, which is
+/// not "no institutions": chat recall and conversation ingest refuse on it), gives
+/// [`RowInstitutions::Unknown`], never `Unclaimed`, which would reach every private
+/// target. So does a union of more than 8 ids.
+///
+/// It compares nothing: which targets a row then reaches is asked of
+/// [`gate_cross_affiliation_warning`], one institution at a time, by the bias set
+/// (PR-14).
+pub fn dictionary_row_institutions(
+    model: WriterModel,
+    touched: anyhow::Result<BTreeSet<InstitutionId>>,
+) -> RowInstitutions {
+    let (WriterModel::Known(model), Ok(mut owners)) = (model, touched) else {
+        return RowInstitutions::Unknown;
+    };
+    if let Some(ModelAffiliation::Institutions(set)) = model {
+        owners.extend(set.iter());
+    }
+    match owners.len() {
+        0 => RowInstitutions::Unclaimed,
+        n if n <= DICTIONARY_ROW_MAX_INSTITUTIONS => RowInstitutions::Owners(owners),
+        _ => RowInstitutions::Unknown,
+    }
+}
+
+/// The allowlists a private dictionary row's stored institutions stand for when the bias
+/// set asks whether a target's model may use the row (PR-14, O-35, P-16): one single
+/// institution allowlist per stored id, one empty allowlist for `[]` (unknown), and none
+/// for `null` (no institution claims the row).
+///
+/// ⚠ **One allowlist per institution, never one allowlist of the union.** A row's
+/// institutions are the owners of what its chat held, so every one of them must admit the
+/// target, which is the union of owners rule chat recall and conversation ingest apply to
+/// the same column (`affiliation_clause`). Read as one allowlist, the union would widen a
+/// row each time its chat touched another institution. The caller asks
+/// [`gate_cross_affiliation_warning`] once per allowlist, so the extension gate's own
+/// lifts (the master switch, the mixing policy `open`) apply unchanged; this function
+/// compares nothing.
+pub fn dictionary_row_allowlists(stored: Option<&[String]>) -> Vec<ExtensionAffiliation> {
+    match stored {
+        None => Vec::new(),
+        Some([]) => vec![ExtensionAffiliation::Institutions(BTreeSet::new())],
+        Some(ids) => ids
+            .iter()
+            .map(|id| ExtensionAffiliation::institution(InstitutionId::new(id)))
+            .collect(),
+    }
+}
+
 /// Whether a model with this affiliation runs on this computer
 /// ([`ModelAffiliation::Local`]), so nothing it reads leaves the device.
 ///
@@ -2385,5 +2485,108 @@ mod tests {
         fn pick<'a>(&mut self, xs: &'a [String]) -> &'a str {
             &xs[(self.next() % xs.len() as u64) as usize]
         }
+    }
+
+    /// The stamp table of `dictionary_row_institutions` (P-16, O-35): every model
+    /// against every touched set gives the union, `null` when it is empty, and `[]`
+    /// when either side cannot be read or the union names more than 8 institutions.
+    #[test]
+    fn dictionary_rows_record_the_union_of_model_and_connectors() {
+        let set =
+            |ids: &[&str]| -> BTreeSet<InstitutionId> { ids.iter().map(|s| inst(s)).collect() };
+        let owners = |ids: &[&str]| RowInstitutions::Owners(set(ids));
+        let pair = ModelAffiliation::institutions([inst("stanford"), inst("ucsf")]).unwrap();
+        let models = [
+            ("{ucsf}", Some(bound("ucsf"))),
+            ("Local", Some(ModelAffiliation::Local)),
+            ("unstated", None),
+            ("{stanford, ucsf}", Some(pair)),
+        ];
+        let touched: [&[&str]; 3] = [&[], &["ucsf"], &["stanford"]];
+        let want: [[RowInstitutions; 3]; 4] = [
+            [
+                owners(&["ucsf"]),
+                owners(&["ucsf"]),
+                owners(&["stanford", "ucsf"]),
+            ],
+            [
+                RowInstitutions::Unclaimed,
+                owners(&["ucsf"]),
+                owners(&["stanford"]),
+            ],
+            [
+                RowInstitutions::Unclaimed,
+                owners(&["ucsf"]),
+                owners(&["stanford"]),
+            ],
+            [
+                owners(&["stanford", "ucsf"]),
+                owners(&["stanford", "ucsf"]),
+                owners(&["stanford", "ucsf"]),
+            ],
+        ];
+        for (row, (label, model)) in models.iter().enumerate() {
+            for (column, ids) in touched.iter().enumerate() {
+                assert_eq!(
+                    dictionary_row_institutions(WriterModel::Known(*model), Ok(set(ids))),
+                    want[row][column],
+                    "model {label}, touched {ids:?}"
+                );
+            }
+        }
+
+        for model in [
+            WriterModel::Unknown,
+            WriterModel::Known(Some(bound("ucsf"))),
+        ] {
+            let unknown = dictionary_row_institutions(model, Err(anyhow::anyhow!("not-json")));
+            assert_eq!(
+                unknown,
+                RowInstitutions::Unknown,
+                "a record that cannot be read"
+            );
+        }
+        assert_eq!(
+            dictionary_row_institutions(WriterModel::Unknown, Ok(BTreeSet::new())),
+            RowInstitutions::Unknown,
+            "a model that cannot be read"
+        );
+        let nine: Vec<String> = (0..9).map(|i| format!("inst{i}")).collect();
+        let nine: Vec<&str> = nine.iter().map(String::as_str).collect();
+        assert_eq!(
+            dictionary_row_institutions(WriterModel::Known(None), Ok(set(&nine))),
+            RowInstitutions::Unknown,
+            "a union of nine ids"
+        );
+        assert_eq!(
+            dictionary_row_institutions(WriterModel::Known(None), Ok(set(&nine[..8]))),
+            owners(&nine[..8])
+        );
+
+        assert_eq!(RowInstitutions::Unclaimed.stored_ids(), None);
+        assert_eq!(RowInstitutions::Unknown.stored_ids(), Some(vec![]));
+        assert_eq!(
+            owners(&["UCSF", "stanford"]).stored_ids(),
+            Some(vec!["stanford".to_string(), "ucsf".to_string()])
+        );
+    }
+
+    /// PR-14: `null` asks nothing, `[]` asks once with an empty allowlist, and each stored
+    /// id is its own one institution allowlist, normalized as every institution id is.
+    #[test]
+    fn dictionary_row_allowlists_are_one_per_institution() {
+        assert_eq!(dictionary_row_allowlists(None), Vec::new());
+        assert_eq!(
+            dictionary_row_allowlists(Some(&[])),
+            vec![ExtensionAffiliation::Institutions(BTreeSet::new())]
+        );
+        let stored = ["ucsf".to_string(), "Stanford".to_string()];
+        assert_eq!(
+            dictionary_row_allowlists(Some(&stored)),
+            vec![
+                ExtensionAffiliation::institution(inst("ucsf")),
+                ExtensionAffiliation::institution(inst("stanford")),
+            ]
+        );
     }
 }

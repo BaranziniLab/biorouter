@@ -15,6 +15,12 @@ const mocks = vi.hoisted(() => ({
   setSessionSkills: vi.fn(),
   toastError: vi.fn(),
   toastSuccess: vi.fn(),
+  /** Home's Context switches write config keys, as Settings → Contexts does. */
+  upsert: vi.fn(async (): Promise<void> => undefined),
+}));
+
+vi.mock('../ConfigContext', () => ({
+  useConfig: () => ({ config: {}, upsert: mocks.upsert }),
 }));
 
 vi.mock('../../store/skillOverrides', () => ({
@@ -715,5 +721,150 @@ describe('BottomMenuSkillSelection search', () => {
     search('R');
 
     expect(await screen.findByRole('button', { name: 'Enable all (1)' })).toBeInTheDocument();
+  });
+});
+
+/**
+ * Owner, 2026-11-13: the shipped Contexts get a switch per chat, behind a
+ * "Built-in contexts" disclosure after the installed skills. In a chat the
+ * switch is the per-chat override; on Home it is the Context's config key, as
+ * Settings → Contexts writes it. Neither ever joins Enable all or the count.
+ */
+describe('BottomMenuSkillSelection built-in contexts', () => {
+  const effective = (on: boolean, extras: Partial<CatalogSkill['state']> = {}) => ({
+    machineEnabled: true,
+    session: 'default' as const,
+    sessionViaBundle: false,
+    hiddenContext: false,
+    effective: on,
+    ...extras,
+  });
+  // Word on; the overview switched off in Settings; Knowledge, a bundle, on.
+  // The other six Contexts are not in this catalog.
+  const withContexts = () =>
+    view({
+      skills: [
+        skill('example-skill'),
+        skill('office-word', { builtin: true }),
+        skill('about-biorouter', {
+          builtin: true,
+          state: effective(false, { hiddenContext: true }),
+        }),
+        skill('knowledge-lint', { bundle: 'knowledge-bases', builtin: true }),
+      ],
+      bundles: [bundle('knowledge-bases', ['knowledge-lint'], { builtin: true })],
+    });
+  const disclosure = () => screen.getByRole('button', { name: SKILLS_COPY.contextsLabel });
+
+  beforeEach(() => {
+    mocks.overrides.clear();
+    vi.clearAllMocks();
+    mocks.setSessionSkills.mockReset();
+    mocks.setSessionSkills.mockResolvedValue({
+      data: { catalog: withContexts(), sessionAdd: [], sessionRemove: [] },
+    });
+    serve(withContexts());
+  });
+
+  it('keeps them out of the list until the disclosure is opened', async () => {
+    render(<BottomMenuSkillSelection sessionId="20260824_1" />);
+    // The chip counts the installed skill alone.
+    expect(await screen.findByLabelText('Manage skills (1 enabled)')).toBeInTheDocument();
+    const rows = await openMenu();
+    expect(rows).toHaveLength(1);
+    await waitFor(() =>
+      expect(disclosure()).toHaveAccessibleDescription(SKILLS_COPY.contextsSummary(2))
+    );
+
+    fireEvent.click(disclosure());
+    expect(screen.getByRole('option', { name: 'Word documents' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    );
+    // Off in Settings, and this chat has no opinion of its own.
+    expect(screen.getByRole('option', { name: 'Biorouter overview' })).toHaveAttribute(
+      'aria-selected',
+      'false'
+    );
+    expect(screen.getByRole('option', { name: 'Knowledge' })).toHaveAttribute(
+      'aria-selected',
+      'true'
+    );
+    // Not in this chat's catalog: a switch would name nothing.
+    const powerpoint = screen.getByRole('option', {
+      name: `PowerPoint ${SKILLS_COPY.contextUnavailable}`,
+    });
+    expect(powerpoint).toHaveAttribute('aria-disabled', 'true');
+  });
+
+  it('switches one for this chat by its skill name, or by the bundle’s name for Knowledge', async () => {
+    render(<BottomMenuSkillSelection sessionId="20260824_1" />);
+    await openMenu();
+    await waitFor(() => expect(disclosure()).toBeInTheDocument());
+    fireEvent.click(disclosure());
+
+    // On here although Settings has it off: a per-chat add (compose_state).
+    fireEvent.click(screen.getByRole('option', { name: 'Biorouter overview' }));
+    await waitFor(() => expect(mocks.setSessionSkills).toHaveBeenCalledTimes(1));
+    expect(mocks.setSessionSkills.mock.calls[0][0].body).toEqual({
+      sessionId: '20260824_1',
+      add: ['about-biorouter'],
+      remove: [],
+    });
+
+    fireEvent.click(screen.getByRole('option', { name: 'Knowledge' }));
+    await waitFor(() => expect(mocks.setSessionSkills).toHaveBeenCalledTimes(2));
+    expect(mocks.setSessionSkills.mock.calls[1][0].body).toEqual({
+      sessionId: '20260824_1',
+      add: [],
+      remove: ['knowledge-bases'],
+    });
+    // Never the machine-wide file, and never the config.
+    expect(mocks.saveSkillOverrides).not.toHaveBeenCalled();
+    expect(mocks.upsert).not.toHaveBeenCalled();
+  });
+
+  it('on Home, writes the Context’s config key as Settings does, and never skills-config.json', async () => {
+    render(<BottomMenuSkillSelection sessionId={null} />);
+    await openMenu();
+    fireEvent.click(disclosure());
+
+    const word = screen.getByRole('option', { name: 'Word documents' });
+    fireEvent.click(word);
+    await waitFor(() =>
+      expect(mocks.upsert).toHaveBeenCalledWith('context_office_word', false, false)
+    );
+    expect(mocks.saveSkillOverrides).not.toHaveBeenCalled();
+    expect(mocks.overrides.size).toBe(0);
+    expect(mocks.setSessionSkills).not.toHaveBeenCalled();
+    // A Context the catalog lacks is still a key on Home: Settings writes it too.
+    expect(screen.getByRole('option', { name: 'PowerPoint' })).not.toHaveAttribute('aria-disabled');
+  });
+
+  it('never joins Disable all, which writes only the installed skills', async () => {
+    render(<BottomMenuSkillSelection sessionId="20260824_1" />);
+    await openMenu();
+    await waitFor(() => expect(disclosure()).toBeInTheDocument());
+    fireEvent.click(disclosure());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Disable all (1)' }));
+    await waitFor(() => expect(mocks.setSessionSkills).toHaveBeenCalledTimes(1));
+    expect(mocks.setSessionSkills.mock.calls[0][0].body).toEqual({
+      sessionId: '20260824_1',
+      add: [],
+      remove: ['example-skill'],
+    });
+  });
+
+  it('opens itself for a search that matches one, and says nothing was not found', async () => {
+    render(<BottomMenuSkillSelection sessionId="20260824_1" />);
+    await openMenu();
+    fireEvent.change(screen.getByPlaceholderText(SKILLS_COPY.search), {
+      target: { value: 'word documents' },
+    });
+
+    expect(await screen.findByRole('option', { name: 'Word documents' })).toBeInTheDocument();
+    expect(screen.queryByText(SKILLS_COPY.noMatch)).toBeNull();
+    expect(screen.queryByRole('option', { name: /^example-skill/ })).toBeNull();
   });
 });

@@ -99,8 +99,21 @@
 //! environment read, two `join`s, a read of `BIOROUTER_DISABLE_KEYRING` and
 //! some `Mutex::new`s — no file, no keyring (the `biorouter` lib ctor's
 //! comment lists them) — which is what makes it safe before `main`. What it
-//! does freeze is the secret backend, read now from the outer environment
-//! rather than by whichever test got there first.
+//! does freeze is the secret backend, read now rather than by whichever test
+//! got there first. The ctor sets `BIOROUTER_DISABLE_KEYRING=true` when the
+//! outer environment leaves it unset, so secrets live in this sandbox's
+//! `secrets.yaml`, as in every `rust.yml` test step, and a child this binary
+//! starts inherits it.
+//!
+//! ## …and no test binary here reaches the OS credential store
+//!
+//! This module invokes `biorouter::keep_this_test_binary_off_the_os_credential_store!`,
+//! so every test binary that declares it (the lib's, `biorouterd`'s and each
+//! `tests/*.rs`) builds every `keyring::Entry` on process memory, never the
+//! macOS Keychain, Windows Credential Manager or Secret Service. A test binary
+//! is re-signed on every build, so a Keychain read from one raised a password
+//! dialog on every run (2026-11-12). See
+//! `biorouter::config::test_binary_credentials`.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -108,6 +121,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Set only when *we* created the sandbox, so the destructor can never delete a
 /// root that was handed to us from outside.
 static OWNED: AtomicBool = AtomicBool::new(false);
+
+// Every `keyring::Entry` this binary builds uses process memory (module docs).
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
 
 /// Per-process sandbox root. Derived from the pid so the destructor can
 /// recompute it without shared state, and so parallel test binaries never
@@ -148,7 +164,11 @@ fn redirect_biorouter_dirs_into_a_sandbox() {
     // …and the global manager's config root, for the same reason (module docs).
     let _ = biorouter::execution::manager::AgentManager::shared_config_root();
     // …and `Config::global()` (module docs). Its secret backend is decided by
-    // this same read of the environment, so it is recorded beside the freeze.
+    // this same read of the environment, so it is recorded beside the freeze:
+    // the sandbox's `secrets.yaml` unless the outer environment chose otherwise.
+    if std::env::var_os("BIOROUTER_DISABLE_KEYRING").is_none() {
+        std::env::set_var("BIOROUTER_DISABLE_KEYRING", "true");
+    }
     let secrets_from_a_file = std::env::var("BIOROUTER_DISABLE_KEYRING").is_ok();
     let _ = biorouter::config::Config::global();
 

@@ -12,6 +12,7 @@ import {
 } from 'react';
 import CustomRadio from '../../ui/CustomRadio';
 import { Disclosure } from '../../ui/disclosure';
+import { InfoTip, plainTextOf } from '../../ui/info-tip';
 import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
 import { Switch } from '../../ui/switch';
@@ -42,10 +43,15 @@ export const FieldErrorsProvider = FieldErrorsContext.Provider;
  * form's own validation recorded for it. `required` marks the field visibly ("Required", beside
  * the label and outside it, so the control's name stays the label's words) and sets
  * `aria-required` on the control.
+ *
+ * `info` is help the person may want but needn't read to fill the field in (owner, 2026-11-13):
+ * an InfoTip beside the label rather than a line under the control, and still the control's
+ * accessible description, so a screen reader hears it on reaching the field.
  */
 export function Field({
   label,
   helper,
+  info,
   invalid = false,
   required = false,
   requiredMessage,
@@ -55,6 +61,8 @@ export function Field({
 }: {
   label: ReactNode;
   helper?: ReactNode;
+  /** Help behind an info icon beside the label: plain text, two sentences at most. */
+  info?: string;
   invalid?: boolean;
   required?: boolean;
   /** Said under the field when it is required and empty. Defaults to "Fill this in to continue." */
@@ -68,17 +76,29 @@ export function Field({
   const id = useId();
   const helperId = `${id}-helper`;
   const errorId = `${id}-error`;
+  const infoId = `${id}-info`;
   const error = useContext(FieldErrorsContext)[id];
   const hasHelper = helper !== undefined && helper !== null && helper !== false && helper !== '';
-  const describedBy = [hasHelper ? helperId : null, error ? errorId : null]
+  const describedBy = [hasHelper ? helperId : null, info ? infoId : null, error ? errorId : null]
     .filter(Boolean)
     .join(' ');
   return (
     <div className="crew-onboard-field">
       <div className="crew-onboard-label-row">
-        <label htmlFor={id} className="text-label text-text-default">
-          {label}
-        </label>
+        {info ? (
+          // The InfoTip sits beside the label, never inside it: a <label> would forward its
+          // click to the control.
+          <span className="inline-flex items-center gap-1">
+            <label htmlFor={id} className="text-label text-text-default">
+              {label}
+            </label>
+            <InfoTip label={plainTextOf(label)} help={info} id={infoId} />
+          </span>
+        ) : (
+          <label htmlFor={id} className="text-label text-text-default">
+            {label}
+          </label>
+        )}
         {required ? (
           <span className="text-supporting text-text-muted" aria-hidden="true">
             {joinCopy.required}
@@ -399,13 +419,17 @@ export function AgentAccessFields({
   const folder = remoteRoot.trim();
   const serverName = server || hostCopy.theServer;
   const name = useId();
-  const levels: { value: AgentAccess; label: string; hint: string; unavailable?: boolean }[] = [
-    { value: 'off', label: joinCopy.accessOff, hint: joinCopy.accessOffHint },
-    { value: 'folder', label: joinCopy.accessFolder, hint: joinCopy.accessFolderHint },
+  const legendId = useId();
+  const levelsHelpId = useId();
+  // What each level means is behind the legend's info icon; only a level that can't be chosen
+  // says why under its label, since that is a refusal (owner, 2026-11-13).
+  const levels: { value: AgentAccess; label: string; hint?: string; unavailable?: boolean }[] = [
+    { value: 'off', label: joinCopy.accessOff },
+    { value: 'folder', label: joinCopy.accessFolder },
     {
       value: 'full',
       label: joinCopy.accessFull,
-      hint: fullAvailable ? joinCopy.accessFullHint(user) : joinCopy.accessFullUnavailable,
+      hint: fullAvailable ? undefined : joinCopy.accessFullUnavailable,
       unavailable: !fullAvailable,
     },
   ];
@@ -418,9 +442,21 @@ export function AgentAccessFields({
         summary={joinCopy.agentSummary(access, folder, Boolean(folder) && remoteExecution)}
       >
         <div className="crew-onboard-form" data-testid="crew-onboard-agent">
-          <fieldset className="crew-onboard-radios">
+          {/* Named by the legend's words alone, so the info icon's own name stays out of it. */}
+          <fieldset
+            className="crew-onboard-radios"
+            aria-labelledby={legendId}
+            aria-describedby={levelsHelpId}
+          >
             <legend className="text-label text-text-default">
-              {joinCopy.agentLegend(serverName)}
+              <span className="inline-flex items-center gap-1">
+                <span id={legendId}>{joinCopy.agentLegend(serverName)}</span>
+                <InfoTip
+                  label={joinCopy.agentLevelsLabel}
+                  help={joinCopy.agentLevelsHelp(user)}
+                  id={levelsHelpId}
+                />
+              </span>
             </legend>
             {levels.map((level) => (
               <CustomRadio
@@ -440,7 +476,7 @@ export function AgentAccessFields({
             <>
               <Field
                 label={joinCopy.remoteFolder}
-                helper={joinCopy.remoteFolderHelper(serverName)}
+                info={joinCopy.remoteFolderHelper(serverName)}
                 invalidMessage={joinCopy.remoteFolderInvalid}
               >
                 {(props) => (
@@ -470,7 +506,7 @@ export function AgentAccessFields({
             <>
               <Field
                 label={joinCopy.remoteFolder}
-                helper={joinCopy.fullFolderHelper(serverName)}
+                info={joinCopy.fullFolderHelper(serverName)}
                 invalidMessage={joinCopy.remoteFolderInvalid}
               >
                 {(props) => (
@@ -489,14 +525,48 @@ export function AgentAccessFields({
         </div>
       </Disclosure>
       {access === 'full' ? (
-        // Its whole text, always, folded row or not: it is the one warning the level has (OW-6),
-        // and As me on the server is the default, so a person who never opens the row reads it too.
-        <Note tone="warning" role="status" unclamped testId="crew-onboard-full-warning">
-          {joinCopy.fullWarning(user, serverName)}
-          {hostWorkspace ? ` ${joinCopy.fullWarningHost(hostWorkspace)}` : null}
-        </Note>
+        // Always, folded row or not: it is the one warning the level has (OW-6), and As me on the
+        // server is the default, so a person who never opens the row reads it too.
+        <FullAccessWarning user={user} server={serverName} hostWorkspace={hostWorkspace} />
       ) : null}
     </>
+  );
+}
+
+/**
+ * The one warning As me on the server has (OW-6, privacy constraints 4.1), wherever onboarding
+ * grants or offers it: the Join and Host dialogs and Not set up's member setup. Its consent
+ * sentence stays in view, never behind "Show more" (`unclamped`); what else the agent reaches, that
+ * others' words can try to steer it, that Crew takes it for the person, and for the host the
+ * workspace's own files, are one click away behind Details, word for word (design.md 9.16).
+ */
+export function FullAccessWarning({
+  user,
+  server,
+  hostWorkspace = null,
+}: {
+  /** The server account the agent would act as; `null` says "you". */
+  user: string | null;
+  server: string;
+  /** The workspace this account hosts, for the host's extra sentence. */
+  hostWorkspace?: string | null;
+}) {
+  return (
+    <Note
+      tone="warning"
+      role="status"
+      unclamped
+      testId="crew-onboard-full-warning"
+      details={
+        <div className="flex flex-col gap-1" data-testid="crew-onboard-full-warning-details">
+          {joinCopy.fullWarningDetails(hostWorkspace).map((paragraph) => (
+            <p key={paragraph}>{paragraph}</p>
+          ))}
+        </div>
+      }
+    >
+      {joinCopy.fullWarning(user, server)}
+    </Note>
   );
 }
 

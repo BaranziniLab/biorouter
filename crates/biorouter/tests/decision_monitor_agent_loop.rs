@@ -30,6 +30,8 @@
 //! only so long; and a stop made by a copy of a person's monitor in a subagent
 //! stops its siblings and the chat that started it.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};

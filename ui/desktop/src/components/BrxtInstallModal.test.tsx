@@ -245,6 +245,7 @@ describe('BrxtInstallModal — the dialog', () => {
   });
 
   it('summarises the bundle flat: facts, the description, and the skills it carries', async () => {
+    const user = userEvent.setup({ delay: null });
     withManifest([ENV({})]);
     open();
 
@@ -252,8 +253,61 @@ describe('BrxtInstallModal — the dialog', () => {
     const facts = screen.getByText(/^v0\.1\.0/);
     expect(facts).toHaveTextContent('v0.1.0 · 23 tools · 2 skills · 1 required env var');
     expect(screen.getByText('Browser automation via Playwright.')).toBeVisible();
-    expect(screen.getByText(COPY.skillsIncluded)).toBeVisible();
+    // A one-sentence description has nothing to fold.
+    expect(screen.queryByRole('button', { name: COPY.readMore })).toBeNull();
+    // The skills fold under one line that counts them; each skill and its words are a click away.
+    const skills = screen.getByRole('button', { name: COPY.skillsIncluded(2) });
+    expect(screen.queryByText('pw-skill')).toBeNull();
+    await user.click(skills);
     expect(screen.getByText('pw-skill')).toBeVisible();
+    expect(screen.getByText('pw-skill').parentElement).toHaveTextContent(
+      'pw-skill: Drives the browser'
+    );
+  });
+
+  it('shows a long description by its first sentence and folds the rest under Read more', async () => {
+    const user = userEvent.setup({ delay: null });
+    (window as unknown as { electron: unknown }).electron = {
+      validateBrxtBundle: vi.fn(async () => ({
+        manifest: {
+          ...MANIFEST,
+          description:
+            'Browser automation via Playwright. It drives Chromium, Firefox and WebKit, e.g. for forms. Needs Node.',
+        },
+        skillsPreview: [],
+      })),
+    };
+    open();
+
+    expect(await screen.findByText('Browser automation via Playwright.')).toBeVisible();
+    expect(screen.queryByText(/drives Chromium/)).toBeNull();
+    await user.click(screen.getByRole('button', { name: COPY.readMore }));
+    // The rest, whole: "e.g. for" is not a sentence boundary.
+    expect(
+      screen.getByText('It drives Chromium, Firefox and WebKit, e.g. for forms. Needs Node.')
+    ).toBeVisible();
+  });
+
+  it('refuses a dropped file it cannot reach, and folds how to install it on that machine', async () => {
+    const user = userEvent.setup({ delay: null });
+    (window as unknown as { electron: unknown }).electron = {
+      validateBrxtBundle: vi.fn(),
+      getPathForFile: () => '',
+    };
+    render(<BrxtInstallModal onClose={() => {}} onInstalled={() => {}} />);
+
+    const zone = screen.getByRole('button', { name: COPY.dropZoneName });
+    fireEvent.drop(zone, {
+      dataTransfer: { files: [new File(['x'], 'playwright.brxt')] },
+    });
+
+    // The refusal's reason stays on screen; no debugging chat is offered for it.
+    expect(await screen.findByText(COPY.noLocalPath)).toBeVisible();
+    expect(screen.queryByRole('button', { name: 'Debug with Biorouter' })).toBeNull();
+    expect(screen.queryByText(COPY.noLocalPathCommand)).toBeNull();
+    await user.click(screen.getByRole('button', { name: COPY.noLocalPathHow }));
+    expect(screen.getByText(COPY.noLocalPathSteps)).toBeVisible();
+    expect(screen.getByText(COPY.noLocalPathCommand)).toBeVisible();
   });
 
   it('opens the native picker from the drop zone and reads the file it returns', async () => {
@@ -510,6 +564,8 @@ describe('BrxtInstallModal — the dialog', () => {
       COPY.tierPublicMarketplace,
       COPY.tierPublicFile,
       COPY.noLocalPath,
+      COPY.noLocalPathHow,
+      COPY.noLocalPathSteps,
       COPY.registerFailed,
       COPY.optionalHelp('X', 3),
     ];

@@ -10,9 +10,14 @@
  *
  *  - the text field is one line (32px) when empty, grows with what is typed,
  *    and stops at 40% of the window, then scrolls (Crew's field);
- *  - the controls row is 32px and sits directly under the field (Crew's card),
- *    the `+` glyph sits on the text's left edge, and Send ends the row at the
- *    card's inner right edge;
+ *  - the card is ONE ROW under whatever goes with the message (owner,
+ *    2026-11-13): `+`, the text, the microphone and Send, 32px with one line of
+ *    text, every control on that line's centre, and the controls keep to the
+ *    LAST line as the text grows. The card is 8px all round; the `+` glyph sits
+ *    on the stack's 16px edge, the text 4px past the `+`, and Send ends the row
+ *    at the card's inner right edge, with the 28px microphone immediately left
+ *    of it (DD-60) and its recording pill 28px high in the same place. With no
+ *    `+` (a decision chat) the text itself starts on the stack's edge;
  *  - a queue row is 28px, reads `↳ text` at rest, and its actions (and its
  *    grip, in place of the arrow) appear on hover and on keyboard focus;
  *  - an image thumbnail is 48px, its loading scrim is translucent, and its
@@ -68,9 +73,14 @@ button { font: inherit; padding: 0; border: 0; background: none; }
 textarea { font: inherit; margin: 0; }
 p { margin: 0; }`;
 
-/** The card at `ChatInput`'s values: 1px border, padding 10px 12px 10px 16px. */
-const CARD = `display: flex; flex-direction: column; width: 640px; border: 1px solid #ddd;
-  padding: 10px 12px 10px 16px; border-radius: 12px;`;
+/**
+ * The card at `ChatInput`'s values: `relative flex flex-col`, a 1px border, and
+ * its 8px padding authored in `composer.css` (`.br-composer-chat-card`), so it
+ * is not written here.
+ */
+const CARD = `position: relative; display: flex; flex-direction: column; width: 640px;
+  border: 1px solid #ddd; border-radius: 12px;`;
+const CARD_CLASS = 'br-composer-chat-card biorouter-composer-card';
 /** A ghost round `sm` button (28px) and the round default one (32px), with a 16px glyph. */
 const BUTTON = (size: number) =>
   `display: inline-flex; align-items: center; justify-content: center; width: ${size}px; height: ${size}px; flex: none;`;
@@ -82,8 +92,23 @@ const QUOTE = (id: string, words: string) =>
   `<span id="${id}-text" class="br-quote-chip__text" style="font-size: 13px; line-height: 18px">${words}</span>` +
   `</span></span>`;
 
+/** The text field as `ChatInput` draws it: `py-1.5` on a 20px line, inside the row's form. */
+const TEXTAREA = (id: string) =>
+  `<textarea id="${id}" rows="1" class="br-composer-input" ` +
+  'style="display: block; width: 100%; resize: none; border: 0; padding: 6px 0; line-height: 20px; font-size: 14px;"></textarea>';
+/** The microphone's slot: `DictationButton`'s own `br-dictation-slot` inside the row's slot. */
+const MIC =
+  `<span class="br-composer-row__slot"><span class="br-dictation-slot">` +
+  `<button id="mic" class="br-dictation-button" data-dictation-phase="idle" style="${BUTTON(28)}"><i id="mic-glyph" style="${GLYPH}"></i></button>` +
+  '</span></span>';
+/** Send, always the row's last child: the tooltip trigger's span, then the 32px round button. */
+const SEND = (id: string) =>
+  `<span class="br-composer-row__slot"><span style="flex-shrink: 0">` +
+  `<button id="${id}" class="br-composer-send" style="${BUTTON(32)}"><span class="br-composer-send__glyph"><i style="${GLYPH}"></i></span></button>` +
+  '</span></span>';
+
 const MARKUP = `
-<div id="card" style="${CARD}">
+<div id="card" class="${CARD_CLASS}" style="${CARD}">
   <div class="br-queue">
     <ul class="br-queue-list">
       <li id="queue-row" class="br-queue-row">
@@ -115,14 +140,19 @@ const MARKUP = `
     </li>
     <li>${QUOTE('quote', Array.from({ length: 6 }, (_, i) => `line ${i}`).join('\n'))}</li>
   </ul>
-  <textarea id="text" rows="1" class="br-composer-input"
-    style="display: block; width: 100%; resize: none; border: 0; padding: 6px 0; line-height: 20px; font-size: 14px;"></textarea>
-  <div id="controls" class="br-composer-controls">
-    <button id="plus" style="${BUTTON(28)}"><i id="plus-glyph" style="${GLYPH}"></i></button>
-    <button style="height: 28px; padding: 0 8px;">Tools 15</button>
-    <span class="br-composer-controls__spacer"></span>
-    <div class="br-composer-controls__model"><button style="height: 28px; padding: 0 8px;">gpt-5.6-sol</button></div>
-    <button id="send" style="${BUTTON(32)}"><i style="${GLYPH}"></i></button>
+  <div id="controls" class="br-composer-row">
+    <span class="br-composer-row__slot">
+      <button id="plus" class="br-composer-plus" style="${BUTTON(32)}"><i id="plus-glyph" class="br-composer-plus__glyph" style="${GLYPH}"></i></button>
+    </span>
+    <form id="field" class="br-composer-row__field">${TEXTAREA('text')}</form>
+    ${MIC}
+    ${SEND('send')}
+  </div>
+</div>
+<div id="decision-card" class="${CARD_CLASS}" style="${CARD}; margin-top: 24px">
+  <div id="decision-row" class="br-composer-row" data-plus="none">
+    <form class="br-composer-row__field">${TEXTAREA('decision-text')}</form>
+    ${SEND('decision-send')}
   </div>
 </div>
 <div id="mention" class="br-mention-menu" style="position: fixed; left: 40px; top: 860px; width: 320px; height: 64px; transform: translateY(-100%)"></div>`;
@@ -138,13 +168,10 @@ const launchChromium = async (): Promise<Browser | null> => {
   return null;
 };
 
-/** The field and controls row as `ChatInput` draws them, for the list placement cases. */
-const FIELD =
-  '<textarea id="text" rows="1" class="br-composer-input" ' +
-  'style="display: block; width: 100%; resize: none; border: 0; padding: 6px 0; line-height: 20px; font-size: 14px;"></textarea>';
-const CONTROLS =
-  `<div class="br-composer-controls"><button style="${BUTTON(28)}">+</button>` +
-  `<span class="br-composer-controls__spacer"></span><button style="${BUTTON(32)}">s</button></div>`;
+/** The one row as `ChatInput` draws it (`+`, the text, Send), for the list placement cases. */
+const ROW =
+  `<div class="br-composer-row"><span class="br-composer-row__slot"><button style="${BUTTON(32)}">+</button></span>` +
+  `<form class="br-composer-row__field">${TEXTAREA('text')}</form>${SEND('row-send')}</div>`;
 /** A chips row (one thumbnail) and a queue row, the things that push the field down the card. */
 const CARD_TOP_ROWS =
   '<div class="br-queue"><ul class="br-queue-list"><li class="br-queue-row">' +
@@ -199,17 +226,25 @@ describe('the composer recipes in a real layout engine', () => {
     const source = [
       read('../ChatInput.tsx'),
       read('composerCard.ts'),
+      read('ComposerPlusMenu.tsx'),
       read('ComposerChips.tsx'),
       read('../MessageQueue.tsx'),
       read('../QuotedTextChip.tsx'),
       read('../MentionPopover.tsx'),
+      read('../dictation/DictationButton.tsx'),
     ].join('\n');
     for (const name of [
       'br-composer-card',
+      'br-composer-chat-card',
       'br-composer-input',
-      'br-composer-controls',
-      'br-composer-controls__spacer',
-      'br-composer-controls__model',
+      'br-composer-row',
+      'br-composer-row__slot',
+      'br-composer-row__field',
+      "data-plus={decisionChat ? 'none' : undefined}",
+      'br-composer-plus',
+      'br-composer-plus__glyph',
+      'br-composer-send',
+      'br-composer-send__glyph',
       'br-composer-chips',
       'br-composer-thumb',
       'br-composer-thumb__scrim',
@@ -223,8 +258,21 @@ describe('the composer recipes in a real layout engine', () => {
       'br-quote-chip__text',
       'br-mention-menu',
       'biorouter-composer-card',
+      'br-dictation-slot',
+      'br-dictation-button',
+      'br-dictation-pill',
+      'br-dictation-bar',
+      'br-dictation-timer',
     ]) {
       expect(source, name).toContain(name);
+    }
+    // The second row of controls is gone: the model chip is on the footer line.
+    for (const name of [
+      'br-composer-controls',
+      'br-composer-controls__spacer',
+      'br-composer-controls__model',
+    ]) {
+      expect(source, name).not.toContain(name);
     }
     // The list is placed by the module the placement cases below lay out.
     expect(read('../ChatInput.tsx')).toContain('position: mentionMenuAnchor(textArea)');
@@ -253,24 +301,115 @@ describe('the composer recipes in a real layout engine', () => {
     await page.fill('#text', '');
   });
 
-  it('lays the controls row out at 32px with the + glyph on the text edge', async (ctx) => {
+  const centre = (rect: { y: number; height: number }) => rect.y + rect.height / 2;
+
+  it('lays + , the text, the microphone and Send out on ONE 32px row', async (ctx) => {
+    if (!page) return ctx.skip();
+    await page.fill('#text', '');
+    const card = await box('#card');
+    const row = await box('#controls');
+    const text = await box('#text');
+    expect(row.height).toBe(32);
+    // The text IS the row's line: no second row under it.
+    expect(text.y).toBe(row.y);
+    expect(text.height).toBe(32);
+    // 8px all round: the row ends 1px border plus 8px of padding above the card's bottom.
+    expect(card.y + card.height - (row.y + row.height)).toBe(1 + 8);
+    // Every control on the text line's centre, the 28px microphone included.
+    for (const control of ['#plus', '#plus-glyph', '#mic', '#send']) {
+      expect(centre(await box(control)), control).toBe(centre(text));
+    }
+  });
+
+  it('puts the + glyph on the stack edge and the text 4px past the +', async (ctx) => {
     if (!page) return ctx.skip();
     const card = await box('#card');
-    expect((await box('#controls')).height).toBe(32);
-    // Directly under the field, as in Crew's card: no gap between them.
+    const plus = await box('#plus');
+    expect([plus.width, plus.height]).toEqual([32, 32]);
+    // The card's 1px border, its 8px padding and the 32px button's 8px inset:
+    // the glyph sits on the 16px edge the stack above the row starts on.
+    expect((await box('#plus-glyph')).x - card.x).toBe(1 + 8 + 8);
+    expect((await box('.br-composer-chips')).x - card.x).toBe(1 + 8 + 8);
+    expect((await box('.br-queue')).x - card.x).toBe(1 + 8 + 8);
+    // The row's 4px gap and the field's own 4px, so the caret has air.
+    expect((await box('#text')).x - (plus.x + plus.width)).toBe(4 + 4);
+  });
+
+  it('starts the text on the stack edge when there is no + (a decision chat)', async (ctx) => {
+    if (!page) return ctx.skip();
+    const card = await box('#decision-card');
+    const text = await box('#decision-text');
+    expect(text.x - card.x).toBe(1 + 8 + 8);
+    // Send still ends the row at the card's inner right edge.
+    const send = await box('#decision-send');
+    expect(card.x + card.width - (send.x + send.width)).toBe(1 + 8);
+    expect((await box('#decision-row')).height).toBe(32);
+  });
+
+  it('keeps the controls on the last line as the text grows', async (ctx) => {
+    if (!page) return ctx.skip();
+    await page.fill('#text', 'one\ntwo\nthree');
     const text = await box('#text');
-    expect((await box('#controls')).y).toBe(text.y + text.height);
-    // The card's text edge: its 1px border plus 16px of padding.
-    expect((await box('#plus-glyph')).x - card.x).toBe(17);
-    expect((await box('#text')).x - card.x).toBe(17);
+    const row = await box('#controls');
+    expect(text.height).toBe(3 * 20 + 12);
+    expect(row.height).toBe(text.height);
+    const lastLineCentre = text.y + text.height - 16;
+    for (const control of ['#plus', '#mic', '#send']) {
+      const rect = await box(control);
+      expect(rect.y + rect.height, `${control} keeps to the bottom`).toBe(
+        control === '#mic' ? text.y + text.height - 2 : text.y + text.height
+      );
+      expect(centre(rect), `${control} on the last line`).toBe(lastLineCentre);
+    }
+    await page.fill('#text', '');
   });
 
   it('ends the row with Send on the card inner right edge', async (ctx) => {
     if (!page) return ctx.skip();
     const card = await box('#card');
     const send = await box('#send');
-    expect(send.width).toBe(32);
-    expect(card.x + card.width - (send.x + send.width)).toBe(1 + 12);
+    expect([send.width, send.height]).toEqual([32, 32]);
+    // The card's 1px border and its 8px padding.
+    expect(card.x + card.width - (send.x + send.width)).toBe(1 + 8);
+    // Send is the row's last child.
+    expect(
+      await page.$eval('#controls', (row) =>
+        row.lastElementChild?.contains(document.getElementById('send'))
+      )
+    ).toBe(true);
+  });
+
+  it('puts the 28px microphone immediately left of Send, and keeps its pill there', async (ctx) => {
+    if (!page) return ctx.skip();
+    const mic = await box('#mic');
+    const send = await box('#send');
+    expect([mic.width, mic.height]).toEqual([28, 28]);
+    // The row's 4px gap, and nothing between them.
+    expect(send.x - (mic.x + mic.width)).toBe(4);
+    expect(centre(mic)).toBe(centre(send));
+    await page.$eval('#mic', (el) => {
+      el.setAttribute('data-dictation-phase', 'recording');
+      el.style.width = '';
+      el.innerHTML =
+        '<span class="br-dictation-pill"><span class="br-dictation-bars">' +
+        '<span class="br-dictation-bar" data-bar="0"></span><span class="br-dictation-bar" data-bar="1"></span>' +
+        '<span class="br-dictation-bar" data-bar="2"></span><span class="br-dictation-bar" data-bar="3"></span>' +
+        '<span class="br-dictation-bar" data-bar="4"></span></span>' +
+        '<span class="br-dictation-timer">0:07</span></span>';
+    });
+    const pill = await box('#mic');
+    const card = await box('#card');
+    expect(pill.height).toBe(28);
+    expect(pill.width).toBeGreaterThan(28);
+    expect((await box('#send')).x - (pill.x + pill.width)).toBe(4);
+    expect(centre(pill)).toBe(centre(await box('#send')));
+    expect(card.x + card.width - ((await box('#send')).x + 32)).toBe(1 + 8);
+    expect((await box('#controls')).height).toBe(32);
+    await page.$eval('#mic', (el) => {
+      el.setAttribute('data-dictation-phase', 'idle');
+      el.style.width = '28px';
+      el.innerHTML = '<i id="mic-glyph"></i>';
+    });
   });
 
   it('keeps a queue row at 28px and shows its actions only on hover', async (ctx) => {
@@ -385,8 +524,8 @@ describe('the composer recipes in a real layout engine', () => {
     const list = Array.from({ length: rows }, () => '<div style="height: 32px"></div>').join('');
     await placementPage!.setContent(
       `<!doctype html><html><head><style>${TOKENS}${read('composer.css')}</style></head><body>` +
-        `<div id="card" class="biorouter-composer-card" style="position: fixed; left: 400px; ${where}; ${CARD}">` +
-        `${inside}${FIELD}${CONTROLS}</div>` +
+        `<div id="card" class="${CARD_CLASS}" style="${CARD}; position: fixed; left: 400px; ${where}">` +
+        `${inside}${ROW}</div>` +
         '<div id="list" class="br-mention-menu" style="position: fixed; display: flex; flex-direction: column; overflow: hidden; padding: 4px;">' +
         `<div id="list-body" style="flex: 1; min-height: 0; overflow-y: auto">${list}</div></div>` +
         `<script>${placementScript}</script>` +
@@ -413,9 +552,9 @@ describe('the composer recipes in a real layout engine', () => {
   it('opens the Commands and @ lists 8px above the card, clear of its focus edge', async (ctx) => {
     if (!placementPage) return ctx.skip();
     const { card, text, list } = await placeList('bottom', '', 3);
-    // The instrument: the field's top sits 11px inside the card (1px border,
-    // 10px padding), so a list hung from the field would cover the card's edge.
-    expect(text.y - card.y).toBe(11);
+    // The instrument: the field's top sits 9px inside the card (1px border,
+    // 8px padding), so a list hung from the field would cover the card's edge.
+    expect(text.y - card.y).toBe(9);
     expect(list.height).toBe(3 * 32 + 8);
     expect(list.y + list.height).toBe(card.y - 8);
     // From the text's left edge, as before.
@@ -427,7 +566,7 @@ describe('the composer recipes in a real layout engine', () => {
     const { card, text, list, on } = await placeList('bottom', CARD_TOP_ROWS, 3);
     const chips = await on('#chips');
     // The field is pushed well down the card here.
-    expect(text.y - card.y).toBeGreaterThan(11 + 48);
+    expect(text.y - card.y).toBeGreaterThan(9 + 48);
     expect(list.y + list.height).toBe(card.y - 8);
     expect(list.y + list.height).toBeLessThan(chips.y);
   });

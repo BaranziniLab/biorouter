@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -202,6 +202,8 @@ describe('FirstRunPrivacyNotice', () => {
     mocks.listSessions.mockResolvedValue(served(FIXTURE));
     render(<FirstRunPrivacyNotice open onDismiss={vi.fn()} />);
 
+    // The breakdown folds under the count (owner, 2026-11-13); it is one click away.
+    fireEvent.click(await screen.findByRole('button', { name: 'Marked private by model' }));
     const list = await screen.findByTestId('notice-by-provider');
     expect(within(list).getByText(/Versa \(Azure\): 2/)).toBeTruthy();
   });
@@ -210,6 +212,9 @@ describe('FirstRunPrivacyNotice', () => {
     render(
       <FirstRunPrivacyNotice open onDismiss={vi.fn()} counts={computeNoticeCounts(FIXTURE)} />
     );
+    // What the marking means folds under one disclosure (owner, 2026-11-13).
+    expect(screen.queryByTestId('notice-last-model-caveat')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'What this means' }));
     const caveat = screen.getByTestId('notice-last-model-caveat').textContent ?? '';
     expect(caveat).toContain('last using');
     expect(caveat).toContain('switch it to a private model');
@@ -219,6 +224,7 @@ describe('FirstRunPrivacyNotice', () => {
     render(
       <FirstRunPrivacyNotice open onDismiss={vi.fn()} counts={computeNoticeCounts(FIXTURE)} />
     );
+    fireEvent.click(screen.getByRole('button', { name: 'What this means' }));
     const kb = screen.getByTestId('notice-knowledge-bases').textContent ?? '';
     expect(kb).toContain('start public');
     expect(kb).toContain('mark it private yourself');
@@ -266,6 +272,10 @@ describe('FirstRunPrivacyNotice', () => {
     // the user looking for a setting that moved.
     expect(paragraph).toMatch(/commercial models hosted outside your institution/i);
     expect(paragraph).toMatch(/nothing about it has changed/i);
+    // Who can call it stays on the page; only the reassurance is the info icon's.
+    expect(
+      screen.getByRole('button', { name: 'About this extension notice' })
+    ).toHaveAccessibleDescription('Nothing about it has changed. This notice is so you know.');
   });
 
   // FR-S-14, class only (privacy UI, ruling 15): the one disclosure no refusal will ever teach is

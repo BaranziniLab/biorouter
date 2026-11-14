@@ -803,6 +803,44 @@ export function isRunningState(chatState: ChatState): boolean {
 }
 
 /**
+ * The live counters with every lifetime counter the chat's row has moved past taken from the row.
+ *
+ * The chat's title is a billed side call (`side:session_name`) the daemon makes AFTER the turn's
+ * last frame, so it reaches the row's lifetime counters and the usage ledger while the stream says
+ * nothing. The footer's cost re-reads the ledger only when these counters move
+ * (`useCostTracking`), so without this the card kept the turn's cost and left the title's dollars
+ * out, while its Limit section, read on every open, counted the title's tokens (2026-11-13). The
+ * lifetime counters only grow, so a higher one is the newer. The context gauge's counters are not
+ * touched: a side call never moves the window. The same object when nothing moved.
+ */
+export function withRecordedLifetimeCounters(
+  live: TokenState,
+  row: Pick<
+    Session,
+    'accumulated_input_tokens' | 'accumulated_output_tokens' | 'accumulated_total_tokens'
+  >
+): TokenState {
+  const later = (current: number, recorded: number | null | undefined): number =>
+    typeof recorded === 'number' && Number.isFinite(recorded) && recorded > current
+      ? recorded
+      : current;
+  const accumulatedInputTokens = later(live.accumulatedInputTokens, row.accumulated_input_tokens);
+  const accumulatedOutputTokens = later(
+    live.accumulatedOutputTokens,
+    row.accumulated_output_tokens
+  );
+  const accumulatedTotalTokens = later(live.accumulatedTotalTokens, row.accumulated_total_tokens);
+  if (
+    accumulatedInputTokens === live.accumulatedInputTokens &&
+    accumulatedOutputTokens === live.accumulatedOutputTokens &&
+    accumulatedTotalTokens === live.accumulatedTotalTokens
+  ) {
+    return live;
+  }
+  return { ...live, accumulatedInputTokens, accumulatedOutputTokens, accumulatedTotalTokens };
+}
+
+/**
  * #22 — delay of the setTimeout fallback armed alongside every scheduled rAF
  * flush (see `scheduleNotify`). ~Two frames at 60 Hz: long enough that a live
  * rAF (~16 ms) always wins the race, so visible windows keep frame-aligned
@@ -2662,6 +2700,13 @@ class ChatStreamController {
             });
             const data = response.data;
             if (!data) continue;
+            // The naming call is billed to this chat and lands after the turn's last frame, so
+            // its tokens reach the row before its name does: carry them into the live counters,
+            // which is what makes the footer's cost and the Limit line read the ledger again.
+            this.updateSnapshot((prev) => {
+              const tokenState = withRecordedLifetimeCounters(prev.tokenState, data);
+              return tokenState === prev.tokenState ? prev : { ...prev, tokenState };
+            });
             const proposedName = data.name;
             if (data.user_set_name) break;
             if (proposedName && proposedName !== knownName && !isDefaultSessionName(proposedName)) {
@@ -5145,7 +5190,7 @@ class ChatStreamController {
     messageId: string,
     newContent: string,
     editType: 'diverge' | 'edit' = 'diverge'
-  ): Promise<void> => {
+  ): Promise<boolean> => {
     try {
       const { editMessage } = await import('../api');
       const message = this.messagesRef.find((m) => m.id === messageId);
@@ -5244,8 +5289,9 @@ class ChatStreamController {
           // conversation we just read back is again provably the whole store.
           this.viewNamesEveryStoredRow = true;
         }
-        await this.handleSubmit(newContent);
+        return await this.handleSubmit(newContent);
       }
+      return true;
     } catch (error) {
       const errorMsg = errorMessage(error);
       console.error('Failed to edit message:', error);
@@ -5254,6 +5300,7 @@ class ChatStreamController {
         title: 'Failed to edit message',
         msg: errorMsg,
       });
+      return false;
     }
   };
 }

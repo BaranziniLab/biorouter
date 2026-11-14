@@ -126,6 +126,63 @@ describe('ComposerFooter (spec 3.7)', () => {
     expect(screen.queryByText('$0.00')).toBeNull();
   });
 
+  // Owner, 2026-11-13: the model chip left the card for the footer line. It is
+  // handed in as a slot and drawn first on the right, before the ring and the
+  // cost, in a chat and on Home alike.
+  describe('the model slot', () => {
+    const model = (
+      <div className="br-footline__model">
+        <button type="button" data-testid="model-slot">
+          gpt-5.6-sol
+        </button>
+      </div>
+    );
+
+    it('is first on the right, before the context ring and the cost', async () => {
+      render(<ComposerFooter {...BASE} model={model} />);
+      await settle();
+      const end = screen.getByTestId('composer-footer').querySelector('[data-side="end"]');
+      expect(end).not.toBeNull();
+      const items = [
+        screen.getByTestId('model-slot'),
+        screen.getByTestId('context-window-indicator'),
+        screen.getByTestId('chat-cost'),
+      ];
+      for (const item of items) expect(end!.contains(item)).toBe(true);
+      expect(end!.firstElementChild?.contains(items[0])).toBe(true);
+      for (let i = 1; i < items.length; i++) {
+        expect(
+          items[i - 1].compareDocumentPosition(items[i]) & Node.DOCUMENT_POSITION_FOLLOWING
+        ).toBeTruthy();
+      }
+      // The folder stays alone on the left.
+      const start = screen.getByTestId('composer-footer').firstElementChild as HTMLElement;
+      expect(within(start).getByText('Desktop')).toBeInTheDocument();
+      expect(start.contains(items[0])).toBe(false);
+    });
+
+    it('shows the folder and the model on Home, and no ring or cost', async () => {
+      render(<ComposerFooter {...BASE} sessionId={null} workingDirLocked={false} model={model} />);
+      await settle();
+      const footer = screen.getByTestId('composer-footer');
+      expect(within(footer).getByText('Desktop')).toBeInTheDocument();
+      expect(within(footer).getByTestId('model-slot')).toBeInTheDocument();
+      expect(
+        footer.querySelector('[data-side="end"]')?.contains(screen.getByTestId('model-slot'))
+      ).toBe(true);
+      expect(screen.queryByTestId('context-window-indicator')).toBeNull();
+      expect(screen.queryByTestId('chat-cost')).toBeNull();
+    });
+
+    it('keeps the model in a decision chat, which has no ring', async () => {
+      render(<ComposerFooter {...BASE} showContext={false} model={model} />);
+      await settle();
+      expect(screen.getByTestId('model-slot')).toBeInTheDocument();
+      expect(screen.queryByTestId('context-window-indicator')).toBeNull();
+      expect(screen.getByTestId('chat-cost')).toHaveTextContent('$0.42');
+    });
+  });
+
   // V2-R7-3: an existing chat whose folder is not known yet names no folder,
   // rather than the app's default it does not use. The rest of the line is the
   // chat's own and stays, and the folder's arrival changes nothing beside it.

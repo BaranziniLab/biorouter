@@ -17,6 +17,7 @@ import {
 } from './llamaServerStore';
 import { Button } from '../../ui/button';
 import { ConfirmationModal } from '../../ui/ConfirmationModal';
+import { InfoTip } from '../../ui/info-tip';
 import { ModalShell } from '../../ModalShell';
 import { Note } from '../../ui/note';
 import { RowActions, RowContextMenu, type RowActionItem } from '../../ui/row-actions';
@@ -29,7 +30,14 @@ import { AlertTriangle, ExternalLink, RefreshCw } from '../../icons/app-icons';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { localModelsCopy } from './copy';
 import { factsLine, isInstalled, speedDetail, stateWord } from './localModelFacts';
-import { detectedMemoryText, fitVerdict, fitWarning, llamaMemoryWarning } from './localModelMemory';
+import {
+  acceleratorMemoryExplanation,
+  detectedMemoryText,
+  fitVerdict,
+  fitWarning,
+  llamaMemoryWarning,
+} from './localModelMemory';
+import { homeFolder, tildePath } from '../../../utils/folderPath';
 import './models.css';
 
 const formatContext = (value: number | null | undefined) =>
@@ -54,22 +62,71 @@ const terminalErrorTitle = (kind: 'install' | 'start' | 'warmup') =>
       : 'Could not start Llama Server';
 
 /**
- * One row of the info dialog's fact list. A MACHINE value (a model id, a Hugging Face spec, a path)
- * is set in one face for all of them: mono at the supporting size, the scale's mono size for IDs
- * (spec 5.3), so a path reads like the id above it (vision round 2, V4-R2-8). It was mono for the
- * paths alone, at the 13px code role, while the two ids beside it were sans, and one list used two
- * families for one kind of string. Prose values (a size, a speed, a sentence) stay in the body face.
- * The grid aligns on the first baseline, because the value's 12px mono and the label's 13px sans do
- * not share a line height.
+ * The catalog's description split at its first clause break outside parentheses: the lead names
+ * the model ("Default local model: Alibaba's Qwen3.8 27B (August 2026, Apache 2.0)") and is the
+ * dialog's subtitle; the rest describes it and sits in the InfoTip beside the title (owner,
+ * 2026-11-13: one line up front, the detail on hover). The Family, Context and Download rows
+ * below already restate the size and the window. A description with no break is all lead.
+ */
+function splitDescription(description: string | null | undefined): {
+  lead: string;
+  rest: string | null;
+} {
+  const text = (description ?? '').trim();
+  let depth = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === '(') depth += 1;
+    else if (char === ')') depth = Math.max(0, depth - 1);
+    else if (depth === 0 && (char === ',' || char === ';')) {
+      const lead = text.slice(0, index).trim();
+      const tail = text.slice(index + 1).trim();
+      if (!lead || !tail) break;
+      const rest = `${tail.charAt(0).toUpperCase()}${tail.slice(1)}`;
+      return { lead, rest: /[.!?]$/.test(rest) ? rest : `${rest}.` };
+    }
+  }
+  return { lead: text, rest: null };
+}
+
+/**
+ * The resource confirmation's words: the consequence stays the dialog's message, and the sentence
+ * that says what the memory figure means on this kind of machine (`acceleratorMemoryExplanation`,
+ * which `llamaMemoryWarning` folds into its warning) moves behind a "Why" disclosure. The numbers
+ * are the info dialog's memory rows. A warning that does not carry the sentence stays whole.
+ */
+function splitMemoryWarning(
+  message: string,
+  kind: string | undefined
+): { consequence: string; meaning: string | null } {
+  const meaning = acceleratorMemoryExplanation(kind);
+  if (!meaning || !message.includes(meaning)) return { consequence: message, meaning: null };
+  const consequence = message
+    .replace(meaning, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  return consequence ? { consequence, meaning } : { consequence: message, meaning: null };
+}
+
+/**
+ * One row of the info dialog's fact list, in one of three kinds (design.md D-42):
+ * - `id`: a value read character by character (the Ollama tag, the Hugging Face spec), in mono at
+ *   the code role, 12/20, which every code surface in the app uses;
+ * - `path`: a folder or file shown as where the model lives (the model store, the model file), in
+ *   the body face, written with `~` for the home folder like every other folder in the app;
+ * - prose (the default): a size, a speed, a sentence, in the body face.
+ * The grid aligns on the first baseline, because the value's 12px mono and the label's 13px sans
+ * differ in size. It was one mono face for ids and paths alike (V4-R2-8) until D-42 put a folder
+ * that says where something lives back in sans.
  */
 function DetailRow({
   label,
   children,
-  machine = false,
+  kind = 'prose',
 }: {
   label: string;
   children: React.ReactNode;
-  machine?: boolean;
+  kind?: 'prose' | 'id' | 'path';
 }) {
   return (
     <div className="grid grid-cols-[minmax(8rem,auto)_minmax(0,1fr)] items-baseline gap-3 text-secondary">
@@ -77,7 +134,11 @@ function DetailRow({
       <span
         className={[
           'min-w-0 text-right text-text-default',
-          machine ? 'break-all font-mono text-supporting' : 'break-words',
+          kind === 'id'
+            ? 'break-all font-mono text-code'
+            : kind === 'path'
+              ? 'break-all'
+              : 'break-words',
         ]
           .filter(Boolean)
           .join(' ')}
@@ -129,6 +190,8 @@ export default function LocalModelInventory() {
   // must now await the user rather than a synchronous return.
   const [pendingResourceConfirm, setPendingResourceConfirm] = useState<{
     message: string;
+    /** What the memory figure means on this machine, folded behind "Why" in the dialog. */
+    meaning: string | null;
     confirmLabel: string;
     resolve: (proceed: boolean) => void;
   } | null>(null);
@@ -180,6 +243,8 @@ export default function LocalModelInventory() {
 
   const catalog = useMemo(() => snapshot?.catalog ?? [], [snapshot]);
   const installedCount = useMemo(() => catalog.filter(isInstalled).length, [catalog]);
+  // The info dialog's subtitle is the description's lead; the rest is its title's InfoTip.
+  const selectedDescription = splitDescription(selectedModel?.description);
 
   const confirmResources = useCallback(
     (model: LlamaCppModel, confirmLabel: string) =>
@@ -190,7 +255,11 @@ export default function LocalModelInventory() {
           resolve(true);
           return;
         }
-        setPendingResourceConfirm({ confirmLabel, message, resolve });
+        const { consequence, meaning } = splitMemoryWarning(
+          message,
+          system?.accelerator_memory_kind
+        );
+        setPendingResourceConfirm({ confirmLabel, message: consequence, meaning, resolve });
       }),
     [snapshot?.system]
   );
@@ -566,7 +635,12 @@ export default function LocalModelInventory() {
           infoBodyRef.current?.focus({ preventScroll: true });
         }}
         title={selectedModel?.display_name ?? ''}
-        subtitle={selectedModel?.description}
+        titleInfo={
+          selectedDescription.rest && selectedModel ? (
+            <InfoTip label={selectedModel.display_name} help={selectedDescription.rest} />
+          ) : undefined
+        }
+        subtitle={selectedDescription.lead || undefined}
         footer={
           selectedModel ? (
             <>
@@ -614,13 +688,12 @@ export default function LocalModelInventory() {
             <DetailRow label={detail.recommendation}>
               {fitVerdict(selectedModel, snapshot?.system)}
             </DetailRow>
-            {/* Three machine values, one face: the model id and the GGUF spec are as much
-                identifiers as the path below (V4-R2-8; this said "NOT mono" when the list row
-                behind the dialog still printed them, and the row no longer does). */}
-            <DetailRow label={detail.ollamaModel} machine>
+            {/* Two identifiers in mono at the code role; the two paths below say where the
+                model lives, so they are names with a place, in sans (design.md D-42). */}
+            <DetailRow label={detail.ollamaModel} kind="id">
               {selectedModel.ollama_name ?? 'none'}
             </DetailRow>
-            <DetailRow label={detail.fallbackDownload} machine>
+            <DetailRow label={detail.fallbackDownload} kind="id">
               {selectedModel.hf_spec}
             </DetailRow>
             <DetailRow label={detail.officialUrl}>
@@ -635,12 +708,14 @@ export default function LocalModelInventory() {
                 <ExternalLink className="h-3.5 w-3.5 shrink-0" />
               </button>
             </DetailRow>
-            <DetailRow label={detail.modelStore} machine>
-              {snapshot?.system.model_cache_dir ?? 'unknown'}
+            <DetailRow label={detail.modelStore} kind="path">
+              {snapshot?.system.model_cache_dir
+                ? tildePath(snapshot.system.model_cache_dir, homeFolder())
+                : 'unknown'}
             </DetailRow>
             {selectedModel.model_path && (
-              <DetailRow label={detail.modelBlob} machine>
-                {selectedModel.model_path}
+              <DetailRow label={detail.modelBlob} kind="path">
+                {tildePath(selectedModel.model_path, homeFolder())}
               </DetailRow>
             )}
           </InfoDialogBody>
@@ -666,6 +741,8 @@ export default function LocalModelInventory() {
           pendingResourceConfirm?.resolve(false);
           setPendingResourceConfirm(null);
         }}
+        details={pendingResourceConfirm?.meaning ?? undefined}
+        detailsLabel={localModelsCopy.confirmResources.why}
       />
 
       {/* `deleteAction` is the IN-FLIGHT state, not the pending one — hence the

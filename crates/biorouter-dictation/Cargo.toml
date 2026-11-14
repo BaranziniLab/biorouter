@@ -1,0 +1,92 @@
+[package]
+name = "biorouter-dictation"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description.workspace = true
+build = "build.rs"
+
+[lints]
+workspace = true
+
+# The local dictation engine: whisper.cpp from `vendor/whisper.cpp`, built by
+# `build.rs` and driven through the C++ shim in `shim/`, plus the worker that runs
+# it in its own process (DD-2 to DD-13 of docs/dictation/implementation-plan.md).
+# A leaf crate: it depends on no Biorouter crate and takes every path as an
+# argument, so the CLI, the daemon and the core library can all reach it.
+[features]
+default = []
+# whisper.cpp, the shim and the worker (DD-5). The only feature. Without it the
+# crate still builds the CPU gate and the build facts, and `ENGINE_COMPILED` is
+# false.
+engine = ["dep:cmake", "dep:cc"]
+
+[build-dependencies]
+# Both already in Cargo.lock. No bindgen (build rule 8): the shim is compiled with
+# `cc` and `src/engine/ffi.rs` declares its functions by hand.
+cmake = { version = "0.1.58", optional = true }
+cc = { version = "1.2.64", optional = true }
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { workspace = true }
+# The self test refuses a model or detector whose SHA-256 is not pinned (P-11), and
+# the installer verifies every file against the catalog's pins (PR-11). 0.11, not
+# 0.10: 0.10 uses the ARMv8 SHA-2 instructions only with its `asm` feature, so on
+# Apple Silicon it hashed in software at about 320 MB/s [M]; 0.11 detects them, and
+# x86's SHA extensions, at run time. Already in Cargo.lock through lzma-rust2.
+sha2 = "0.11.0"
+# The supervisor (PR-10) runs on the host process's runtime. The worker never
+# starts one: it reads and writes frames on two plain threads.
+tokio = { workspace = true }
+# The installer (PR-11, DD-21): ranged downloads from GitHub's release assets with
+# the environment's proxies, a per model lock, the free space check and the
+# timestamps of `installed.json`. All four are already in Cargo.lock.
+reqwest = { version = "0.12.9", default-features = false, features = ["rustls-tls-native-roots"] }
+# Only for its error type: a download that failed in TLS stops at once (DD-21), and the
+# installer tells that from a dropped connection by type, never by the message's words.
+# The same rustls reqwest already links; no feature of its own.
+rustls = { version = "0.23", default-features = false }
+fs2 = "0.4.3"
+# `serde` for the dictionary store's timestamps (PR-13), written as RFC 3339.
+chrono = { version = "0.4.38", default-features = false, features = ["clock", "std", "serde"] }
+# The dictionary store (PR-13, DD-33 to DD-43): terms are NFC before they are compared,
+# entry ids are `dct_` plus a random UUID v4, and `import` reads CSV and TSV with quoted
+# fields. All three are already in Cargo.lock.
+unicode-normalization = "0.1.25"
+uuid = { version = "1.19.0", features = ["v4"] }
+csv = "1.3"
+# Recognition with the dictionary (PR-14, DD-49): the alias automaton, the fuzzy
+# matcher's edit distance, and the embedded English word list, which is zstd compressed.
+# All three are already in Cargo.lock (zstd 0.13 and zstd-sys through reqwest's
+# decompression); no default features, so nothing beyond decoding is built.
+aho-corasick = "1.1.4"
+strsim = "0.11.1"
+zstd = { version = "0.13.3", default-features = false }
+
+# `sysctlbyname` for the Rosetta and macOS version checks of the CPU gate,
+# `dup`/`dup2` so the self test's one stdout line and the worker's frames cannot
+# be joined by a stray write from C or C++ code, and `getrusage` for the
+# worker's peak resident size.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# The worker's peak working set on Windows (`K32GetProcessMemoryInfo`), and no
+# crash report holding its memory (`SetErrorMode`, `WerSetFlags`; P-1).
+[target.'cfg(windows)'.dependencies]
+# Total memory and physical cores for the suitability rules, and the elevation that
+# `install --system` needs (PR-11). `Win32_Storage_FileSystem` for the dictionary store's
+# cache key (PR-13): `GetFileInformationByHandle` gives the NTFS file index, which a
+# write's rename changes, where the creation time does not.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Diagnostics_Debug", "Win32_System_ErrorReporting", "Win32_Security", "Win32_System_ProcessStatus", "Win32_System_SystemInformation", "Win32_System_Threading"] }
+
+[dev-dependencies]
+tempfile = "3"
+# The supervisor's deadlines are tested on tokio's paused clock.
+tokio = { workspace = true, features = ["test-util"] }
+
+[[test]]
+name = "dictation_engine_offline"
+required-features = ["engine"]

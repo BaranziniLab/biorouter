@@ -379,8 +379,11 @@ describe('BaseChat: no figure the usage ledger then withdraws (V2-R5-5)', () => 
     // moves (a decision chat's reply moves it before the chat record is read
     // again), so keyed on the row alone the ledger went stale until a reload.
     expect(code).toMatch(
-      /const \{ sessionCosts, modelRows, ledgerSettled \} = useCostTracking\(\{\s*session,\s*liveTokens: tokenState,\s*\}\);/
+      /const \{\s*sessionCosts,\s*modelRows,\s*ledgerSettled,\s*reload: reloadCost,?\s*\} = useCostTracking\(\{\s*session,\s*liveTokens: tokenState,\s*\}\);/
     );
+    // The cost card re-reads the ledger when it opens, so a side call billed
+    // after the turn (the chat title) is in its cost (#493).
+    expect(chatInputElement()).toContain('reloadCost={reloadCost}');
     expect(summaryPropsBlock()).toMatch(/\.\.\.summaryFigures\(\{[\s\S]*?ledgerSettled,/);
     expect(summaryPropsBlock()).not.toContain('summaryTokensValue(');
   });

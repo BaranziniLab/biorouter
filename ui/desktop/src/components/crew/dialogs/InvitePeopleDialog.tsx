@@ -3,11 +3,13 @@ import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
+import { InfoTip } from '../../ui/info-tip';
 import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
 import { Skeleton } from '../../ui/skeleton';
 import { Switch } from '../../ui/switch';
 import { AlertTriangle } from '../../icons/app-icons';
+import { splitFirstSentence } from '../../../utils/proseFold';
 import { getInvitation, type CrewEnrollmentInvite } from '../api/join';
 import { ACCOUNT_IDENTITY_CAPABILITY } from '../crewApi';
 import { joinerPerson, PersonName } from '../identity';
@@ -179,7 +181,17 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
             </span>
           </p>
           <div className="flex flex-col gap-1.5">
-            <p className="text-label text-text-default">{copy.sendInvitation(first)}</p>
+            {/* What the joiner's Biorouter does is the heading's info tip (owner, 2026-11-13).
+                The server fingerprint to pass on stays a line under the invitation: the manual
+                asks hosts to send it, and the dialog says so in view (F7). */}
+            <p className="text-label text-text-default">
+              {copy.sendInvitation(first)}{' '}
+              <InfoTip
+                label={copy.invitationLabel}
+                help={copy.setsUp(first)}
+                data-testid="crew-invite-sets-up"
+              />
+            </p>
             {invitation.state === 'ready' ? (
               <CopyField value={invitation.message} label={copy.invitationLabel} multiline />
             ) : invitation.state === 'loading' ? (
@@ -203,9 +215,6 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
               </Note>
             )}
             <p className="text-supporting text-text-muted">{copy.serverFingerprint(first)}</p>
-            <p className="text-supporting text-text-muted" data-testid="crew-invite-sets-up">
-              {copy.setsUp(first)}
-            </p>
           </div>
           {/* What to do if the joiner's Crew says it isn't set up: collapsed, in the joiner's own
               words, and handed to whoever runs the server (QA Q4-37). */}
@@ -224,10 +233,28 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
               />
             </div>
           </Disclosure>
-          <p className="text-supporting text-text-muted">
-            {accountBroker ? copy.nextStepAccount(first) : copy.nextStep(first)}
-            {expires ? ` ${copy.expires(expires)}` : null}
-          </p>
+          <div className="flex flex-col gap-1">
+            <p className="text-supporting text-text-muted" data-testid="crew-invite-next-step">
+              {accountBroker ? (
+                // How the joiner gets in, in view; an older Biorouter's code behind its info icon
+                // (owner, 2026-11-13).
+                <FirstSentenceWithHelp
+                  text={copy.nextStepAccount(first)}
+                  helpLabel={copy.nextStepAccountHelpLabel}
+                />
+              ) : (
+                copy.nextStep(first)
+              )}
+            </p>
+            {/* When the invitation runs out stays in view (QA Q4-36), as its own short meta line
+                under what to do next rather than a second sentence in the same block
+                (design.md 9.16). */}
+            {expires ? (
+              <p className="text-supporting text-text-muted" data-testid="crew-invite-expires">
+                {copy.expires(expires)}
+              </p>
+            ) : null}
+          </div>
         </div>
       </ModalShell>
     );
@@ -270,7 +297,15 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
               placeholder={copy.loginPlaceholder(server)}
               aria-invalid={refusal ? true : undefined}
               // The refusal first, then the reminder of what a username is here (QA T-23).
-              aria-describedby={refusal ? `${refusalId} ${helpId(usernameId)}` : helpId(usernameId)}
+              // A member's refusal describes the field with its reason and, word for word, what its
+              // info icon holds, not with the icon's own name.
+              aria-describedby={
+                refusal?.alreadyMember
+                  ? `${refusalId}-reason ${refusalId}-help ${helpId(usernameId)}`
+                  : refusal
+                    ? `${refusalId} ${helpId(usernameId)}`
+                    : helpId(usernameId)
+              }
               value={username}
               onChange={(event) => {
                 setUsername(withoutLeadingAt(event.target.value));
@@ -287,16 +322,25 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
             </div>
           ) : null}
           <div id={refusalId}>
-            <DialogErrorNote
-              source={SOURCE}
-              render={(message) => {
-                if (lastAction !== 'invite') return refusalText(message);
-                const answer = inviteRefusal(message, typedUsername(username), workspace);
-                return accountBroker && answer.alreadyMember
-                  ? copy.refusal.alreadyMemberAccount(typedUsername(username), workspace)
-                  : answer.text;
-              }}
-            />
+            {refusal?.alreadyMember ? (
+              // The refusal's reason in view; what to do about it behind its info icon (owner,
+              // 2026-11-13).
+              <AlreadyMemberNote
+                id={refusalId}
+                text={
+                  accountBroker ? copy.refusal.alreadyMemberAccount(typed, workspace) : refusal.text
+                }
+              />
+            ) : (
+              <DialogErrorNote
+                source={SOURCE}
+                render={(message) =>
+                  lastAction === 'invite'
+                    ? inviteRefusal(message, typedUsername(username), workspace).text
+                    : refusalText(message)
+                }
+              />
+            )}
           </div>
         </form>
         <LegacyInvite
@@ -306,6 +350,57 @@ export function InvitePeopleDialog({ onClose }: InvitePeopleDialogProps) {
         />
       </div>
     </ModalShell>
+  );
+}
+
+/**
+ * A sentence's first sentence in view and the rest behind an info icon beside it (design.md 9.16):
+ * the words are the copy's own, cut where `splitFirstSentence` cuts them.
+ */
+function FirstSentenceWithHelp({
+  text,
+  helpLabel,
+  id,
+}: {
+  text: string;
+  helpLabel: string;
+  /** When given, the first sentence is `{id}-reason` and the help's hidden node `{id}-help`. */
+  id?: string;
+}) {
+  const { first, rest } = splitFirstSentence(text);
+  return (
+    <>
+      <span id={id ? `${id}-reason` : undefined}>{first}</span>
+      {rest ? (
+        <>
+          {' '}
+          <InfoTip label={helpLabel} help={rest} id={id ? `${id}-help` : undefined} />
+        </>
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * The broker's refusal of a member (F3, AO-1), as `DialogErrorNote` draws a refusal: the reason in
+ * view, and what to do about it behind the info icon beside it. Brought into view as it appears, so
+ * Invite does not look like it did nothing.
+ */
+function AlreadyMemberNote({ text, id }: { text: string; id: string }) {
+  const note = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    note.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [text]);
+  return (
+    <div ref={note}>
+      <Note tone="danger" role="alert" icon={AlertTriangle} testId="crew-invite-already-member">
+        <FirstSentenceWithHelp
+          text={text}
+          helpLabel={copy.refusal.alreadyMemberHelpLabel}
+          id={id}
+        />
+      </Note>
+    </div>
   );
 }
 
@@ -391,7 +486,7 @@ function LegacyInvite({
               rows={3}
               spellCheck={false}
               placeholder={copy.legacy.joinRequestPlaceholder}
-              className="min-w-0 rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 font-mono text-supporting placeholder:text-text-muted"
+              className="min-w-0 rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 font-mono text-code placeholder:text-text-muted"
               value={request}
               onChange={(event) => setRequest(event.target.value)}
             />

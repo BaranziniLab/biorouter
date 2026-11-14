@@ -12,6 +12,8 @@ workspace = true
 
 [dependencies]
 biorouter = { path = "../biorouter" }
+# The dictation worker's entry point (DD-4); the engine runs in a worker process.
+biorouter-dictation = { path = "../biorouter-dictation", optional = true, features = ["engine"] }
 # The Crew naming rules (name keys, the confusable skeleton, UUID-shaped IDs) the broker also
 # applies, so the daemon's resolver and labels agree with it byte for byte.
 biorouter-crew = { path = "../biorouter-crew" }
@@ -38,7 +40,7 @@ thiserror = "1.0"
 clap = { version = "4.4", features = ["derive"] }
 serde_yaml = "0.9.34"
 utoipa = { version = "4.1", features = ["axum_extras", "chrono"] }
-reqwest = { version = "0.12.9", features = ["json", "rustls-tls", "blocking", "multipart"], default-features = false }
+reqwest = { version = "0.12.9", features = ["json", "rustls-tls", "blocking"], default-features = false }
 tokio-util = "0.7.15"
 serde_path_to_error = "0.1.20"
 tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-native-roots"] }
@@ -79,9 +81,12 @@ tikv-jemalloc-ctl = { workspace = true, optional = true }
 libc = "0.2"
 
 [features]
-default = ["jemalloc"]
+default = ["jemalloc", "local-dictation"]
 # Use tuned jemalloc as the global allocator for the long-running daemon.
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
+# The local dictation engine (DD-5). The direct dependency is for `main()`'s
+# `biorouter_dictation::worker::run_if_invoked()`.
+local-dictation = ["biorouter/local-dictation", "dep:biorouter-dictation"]
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Threading"] }

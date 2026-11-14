@@ -84,8 +84,17 @@ describe('Keys: removing a device (AO-5)', () => {
     const devices = await screen.findByRole('region', { name: keysCopy.devices });
     fireEvent.click(within(devices).getByRole('button', { name: deviceCopy.removeLabel(OTHER) }));
     const ask = within(devices).getByRole('group', { name: deviceCopy.confirm(OTHER) });
-    expect(ask).toHaveTextContent(deviceCopy.sshWarning);
-    expect(ask).toHaveTextContent(/authorized_keys/);
+    // The consequence stays in view; the steps that come first fold behind Details (design.md
+    // 9.16), word for word the command line's warning.
+    const lead =
+      'A lost computer can still sign in as you while it has an SSH key or password for your account.';
+    const steps =
+      'First remove its key from ~/.ssh/authorized_keys on the server, or change your password. Then remove it here.';
+    expect(deviceCopy.sshWarning).toBe(`${lead} ${steps}`);
+    expect(within(ask).getByText(lead)).toBeVisible();
+    expect(ask).not.toHaveTextContent(/authorized_keys/);
+    fireEvent.click(within(ask).getByRole('button', { name: 'Details' }));
+    expect(within(ask).getByText(steps)).toBeVisible();
     expect(requestsFor(crew, 'device.revoke')).toEqual([]);
     await act(async () => {
       fireEvent.click(within(ask).getByRole('button', { name: deviceCopy.confirmAction }));
@@ -120,9 +129,13 @@ describe('Keys: removing a device (AO-5)', () => {
       expect(requestsFor(crew, 'device.revoke')).toEqual([{ fingerprint: MINE }])
     );
     expect(needsRejoin(connection.id)).toBe(true);
-    expect(await screen.findByTestId('crew-device-removed')).toHaveTextContent(
-      deviceCopy.removedThis
-    );
+    // "Removed this computer." in view, and where to go next behind its info icon.
+    const removed = await screen.findByTestId('crew-device-removed');
+    expect(within(removed).getByText('Removed this computer.')).toBeVisible();
+    expect(
+      within(removed).getByRole('button', { name: `About ${deviceCopy.removedThisHelpLabel}` })
+    ).toHaveAccessibleDescription('Choose Add this computer again to use the workspace here.');
+    expect(removed).toHaveTextContent(deviceCopy.removedThis);
     // The view can no longer be read with this computer's key: nothing reads it again.
     expect(crew.refresh).not.toHaveBeenCalled();
   });
@@ -206,6 +219,10 @@ describe('removing a connection by account_identity (AO-9, AO-11)', () => {
     const dialog = await screen.findByRole('alertdialog', {
       name: confirmCopy.removeConnection.title('lab'),
     });
+    // The consequence is the message; the way back folds under Details (design.md 9.16).
+    expect(dialog).toHaveTextContent(confirmCopy.removeConnection.accountDescription);
+    expect(dialog).not.toHaveTextContent(/You can open lab again/);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Details' }));
     expect(dialog).toHaveTextContent(
       'You can open lab again from any computer that signs in to hpc.example.edu as @alice.'
     );
@@ -232,6 +249,7 @@ describe('removing a connection by account_identity (AO-9, AO-11)', () => {
     const dialog = await screen.findByRole('alertdialog', {
       name: confirmCopy.removeConnection.title('lab'),
     });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Details' }));
     expect(dialog).toHaveTextContent(
       confirmCopy.removeConnection.onlyHostUpdateFirst('alice@hpc.example.edu')
     );
@@ -248,9 +266,14 @@ describe('removing a connection by account_identity (AO-9, AO-11)', () => {
     const dialog = await screen.findByRole('alertdialog', {
       name: confirmCopy.removePerson.title('Bob Lee (@bob)', 'lab'),
     });
+    // The consequence is the description; the rest folds behind Details (design.md 9.16).
+    expect(dialog).toHaveTextContent(confirmCopy.removePerson.description);
+    expect(dialog).not.toHaveTextContent(/Signing in to the server as them/);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Details' }));
     expect(dialog).toHaveTextContent(
       /Signing in to the server as them no longer opens the workspace/
     );
+    expect(dialog).toHaveTextContent(confirmCopy.removePerson.details);
   });
 });
 
@@ -275,9 +298,17 @@ describe('inviting on a workspace that belongs to accounts', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Invite' }));
     });
+    // The reason in view; how a new computer of theirs gets in behind its info icon.
+    const note = await screen.findByTestId('crew-invite-already-member');
+    expect(within(note).getByText('@bob is already in lab.')).toBeVisible();
     expect(
-      await screen.findByText(inviteCopy.refusal.alreadyMemberAccount('bob', 'lab'))
-    ).toBeInTheDocument();
+      within(note).getByRole('button', {
+        name: `About ${inviteCopy.refusal.alreadyMemberHelpLabel}`,
+      })
+    ).toHaveAccessibleDescription(
+      'A new computer of theirs gets in when they open lab on it, signed in to the server as @bob.'
+    );
+    expect(note).toHaveTextContent(inviteCopy.refusal.alreadyMemberAccount('bob', 'lab'));
     expect(screen.queryByRole('switch')).toBeNull();
     expect(document.body.textContent).not.toMatch(/Add another (computer|device)/);
   });
@@ -288,9 +319,9 @@ describe('inviting on a workspace that belongs to accounts', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Invite' }));
     });
-    expect(
-      await screen.findByText(inviteCopy.refusal.alreadyMember('bob', 'lab'))
-    ).toBeInTheDocument();
+    const note = await screen.findByTestId('crew-invite-already-member');
+    expect(within(note).getByText('@bob is already in lab.')).toBeVisible();
+    expect(note).toHaveTextContent(inviteCopy.refusal.alreadyMember('bob', 'lab'));
     expect(screen.getByRole('switch')).toBeChecked();
   });
 });

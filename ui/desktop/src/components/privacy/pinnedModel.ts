@@ -147,6 +147,21 @@ export function pinnedModelNotice(effectiveLabel: string, selectedLabel?: string
   return selectedLabel ? `${stays} ${selectedLabel} is not used here.` : stays;
 }
 
+/** {@link pinnedModelNotice}'s two sentences, as the note draws them. */
+const PINNED_NOTICE_PARTS =
+  /^(This chat is marked private, so it stays on .+?\.) (.+ is not used here\.)$/;
+
+/**
+ * The notice as the note shows it (owner, 2026-11-13: one line up front, the detail on hover):
+ * `lead`, where the chat stays and why, is the line; `detail`, which selection is not used here,
+ * is the info icon beside it. A notice of one sentence has no detail, and text this does not
+ * recognise stays whole as the lead, so nothing is ever dropped.
+ */
+export function pinnedModelNoticeParts(notice: string): { lead: string; detail: string } {
+  const match = PINNED_NOTICE_PARTS.exec(notice);
+  return match ? { lead: match[1], detail: match[2] } : { lead: notice, detail: '' };
+}
+
 /** `Versa API Azure / gpt-5.5-2026-04-24`, falling back to the raw id. */
 export function bindingLabel(
   providerDisplayName: string | undefined | null,

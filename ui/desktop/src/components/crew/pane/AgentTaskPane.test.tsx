@@ -23,6 +23,18 @@ import { useCrew } from '../state/CrewControllerContext';
 import { agentCopy, LONG_TASK_LINES } from './copy';
 import { DetailsPane } from './DetailsPane';
 import { mentionedFileNames, sameNamedFiles, sharedWhen, unsharedFileNames } from './presentation';
+import type { CaptureOptions } from '../../dictation/capture';
+import type { StreamRequest } from '../../dictation/dictationApi';
+import { resetDictationSessionForTests } from '../../dictation/dictationSession';
+import { resetDictationStoreForTests } from '../../dictation/dictationStore';
+import {
+  FakeCapture,
+  FakeStream,
+  fakeStatusApi,
+  secureMediaPage,
+  speechStatus,
+  transcript,
+} from '../../dictation/dictationTestKit';
 
 const mocks = vi.hoisted(() => ({
   crewHttp: vi.fn(),
@@ -353,6 +365,10 @@ describe('AgentTaskPane', () => {
       renderCrew(Layout);
       const task = await openAgent(user);
       expect(task).toHaveAccessibleDescription(agentCopy.taskPosted('#general'));
+      // Seen through the Task label's info tip (owner, 2026-11-13).
+      expect(
+        screen.getByRole('button', { name: `About ${agentCopy.task}` })
+      ).toHaveAccessibleDescription(agentCopy.taskPosted('#general'));
       expect(agentCopy.taskPosted('#general')).toBe(
         'Your task is posted in #general so everyone there can see what your agent was asked.'
       );
@@ -368,10 +384,14 @@ describe('AgentTaskPane', () => {
       fireEvent.change(task, { target: { value: rows(LONG_TASK_LINES) } });
       expect(task).toHaveAccessibleDescription(agentCopy.taskPosted('#general'));
 
+      expect(screen.queryByText(agentCopy.taskLong)).toBeNull();
+
       fireEvent.change(task, { target: { value: rows(LONG_TASK_LINES + 1) } });
       expect(task).toHaveAccessibleDescription(
         `${agentCopy.taskPosted('#general')} ${agentCopy.taskLong}`
       );
+      // The warning about pasted data is in view once it applies.
+      expect(screen.getByText(agentCopy.taskLong)).toBeVisible();
     });
 
     it('is at least six lines, grows with its text, and shows focus with the accent edge (T-16)', async () => {
@@ -1457,5 +1477,53 @@ describe('AgentTaskPane', () => {
     await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
     await screen.findByLabelText(agentCopy.task);
     expect(startButton()).toBeDisabled();
+  });
+});
+
+describe('Ask my agent dictation', () => {
+  afterEach(() => {
+    resetDictationSessionForTests();
+    resetDictationStoreForTests();
+  });
+
+  it('inserts into Task without starting an agent', async () => {
+    secureMediaPage();
+    Object.assign(window, { electron: { platform: 'darwin' } });
+    const captures: FakeCapture[] = [];
+    const streams: FakeStream[] = [];
+    resetDictationStoreForTests(fakeStatusApi(() => speechStatus()).api);
+    resetDictationSessionForTests({
+      startCapture: (options: CaptureOptions) => {
+        const capture = new FakeCapture(options);
+        captures.push(capture);
+        return Promise.resolve(capture);
+      },
+      createStream: (request: StreamRequest) => {
+        const stream = new FakeStream(request);
+        streams.push(stream);
+        return stream;
+      },
+    });
+
+    const user = userEvent.setup();
+    renderCrew(Layout);
+    const task = (await openAgent(user)) as HTMLTextAreaElement;
+    fireEvent.change(task, { target: { value: 'Review ' } });
+    task.focus();
+    task.setSelectionRange(7, 7);
+    fireEvent.pointerDown(screen.getByTestId('dictation-button'), { button: 0 });
+    for (let i = 0; i < 6; i++) await act(async () => {});
+    expect(streams[0].request.target_kind).toBe('crew');
+    expect(streams[0].request.include_private_terms).toBeUndefined();
+    act(() => captures[0].live());
+    act(() => captures[0].speak(1));
+    fireEvent.keyDown(task, { key: 'Enter' });
+    expect(runPosts()).toHaveLength(0);
+    await act(async () => streams[0].finishDeferred.resolve(transcript('@agent summarize')));
+    for (let i = 0; i < 6; i++) await act(async () => {});
+    expect(task.value).toBe('Review @agent summarize');
+    expect(task.selectionStart).toBe(task.value.length);
+    expect(task.selectionEnd).toBe(task.value.length);
+    expect(runPosts()).toHaveLength(0);
   });
 });

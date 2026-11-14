@@ -6,6 +6,8 @@
 //! `dispatch_tool_call`, the same path the agent loop uses. Each test models a
 //! realistic use case, from trivial arithmetic up to multi-tool data-flow chains.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::Arc;
 
 use rmcp::model::{CallToolRequestParams, RawContent};

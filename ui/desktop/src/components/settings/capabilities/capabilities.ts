@@ -63,7 +63,7 @@ export const CAPABILITIES: CapabilityMeta[] = [
     key: 'extensionmanager',
     label: 'Extension Manager',
     description:
-      'Lets Biorouter find and install extensions from the marketplace, attach and detach them on its own, and permanently delete an installed package once you approve it.',
+      'Lets Biorouter find, install, attach and detach marketplace extensions on its own, and permanently delete one once you approve.',
     defaultEnabled: true,
   },
   {
@@ -97,6 +97,12 @@ export const CAPABILITIES: CapabilityMeta[] = [
     description:
       'Build interactive artifacts, static pages or apps with an embedded Biorouter agent, and export them as standalone projects.',
     defaultEnabled: true,
+  },
+  {
+    key: 'dictionary',
+    label: 'Dictionary',
+    description: 'Suggest words from chats and add the terms you ask for.',
+    defaultEnabled: false,
   },
   {
     key: 'chatrecall',

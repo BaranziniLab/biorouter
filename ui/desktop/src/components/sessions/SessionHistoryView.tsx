@@ -344,10 +344,11 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
         (declassifyOnHost !== null ? (
           /* SD-8's second entry point: a line of text, not a disabled control,
              because this surface can never declassify (the browser has no proof
-             of a person). The short line stays visible, and the full reason is
-             an InfoTip on it: reachable by Tab and read out as its description,
-             which a `title` was not (help never goes in `title=`, spec 2.6).
-             A refusal is never hover-only. */
+             of a person). The short line stays visible, and why and where to go
+             instead is an InfoTip on it (two sentences, `DECLASSIFY_NEEDS_HOST_HELP`):
+             reachable by Tab and read out as its description, which a `title`
+             was not (help never goes in `title=`, spec 2.6). A refusal is never
+             hover-only. */
           <InfoTip
             label={MAKE_CHAT_PUBLIC}
             help={declassifyOnHost}
@@ -486,7 +487,9 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
         {/* The link is a machine string: mono, in a well (the fill, no outline; its transparent
             1px edge is what forced colours draw), with one Copy action. */}
         <div className="br-history-share-link">
-          <code className="min-w-0 flex-1 truncate text-code text-text-default">{shareLink}</code>
+          <code className="min-w-0 flex-1 truncate font-mono text-code text-text-default">
+            {shareLink}
+          </code>
           <Tooltip>
             <TooltipTrigger asChild>
               <Button

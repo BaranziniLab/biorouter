@@ -91,7 +91,7 @@ describe('the type roles', () => {
     ['chip', '12px', '16px', '500'],
     ['caps', '12px', '16px', '500'],
     ['secondary', '13px', '18px', '400'],
-    ['code', '13px', '20px', '400'],
+    ['code', '12px', '20px', '400'],
     ['body', '14px', '20px', '400'],
     ['label', '14px', '20px', '500'],
     ['prose', '14px', '21px', '400'],
@@ -174,7 +174,7 @@ describe('tailwind-merge knows every role', () => {
  * `crewCss.sourceGuard.test.ts`), the frozen files no workstream may restyle
  * (`components/privacy/**`, `context_management/**` except
  * `SystemNotificationInline.tsx`, `LauncherView`, `Pair`, the unmounted
- * `settings/{dictation,tunnel,sessions}/**`, `ModelAndProviderContext.tsx`), the
+ * `settings/{tunnel,sessions}/**`, `ModelAndProviderContext.tsx`), the
  * generated `api/`, the gitignored build output under `bin/` and `web/`, and tests.
  * `onboarding/**` and `ProviderGuard` were out of scope until their P2 sweep landed
  * (df9186abf); they are guarded now.
@@ -187,7 +187,7 @@ const OUT_OF_SCOPE = [
   /^components\/context_management\/(?!SystemNotificationInline)/,
   /^components\/LauncherView\./,
   /^components\/Pair\./,
-  /^components\/settings\/(dictation|tunnel|sessions)\//,
+  /^components\/settings\/(tunnel|sessions)\//,
   /^components\/ModelAndProviderContext\./,
   /^api\//,
   // Build output that is gitignored but sits under src/: the staged binaries and the

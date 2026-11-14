@@ -12,8 +12,15 @@
  */
 export const RETIRED_AZURE_DEFAULT_ENDPOINT = 'https://unified-api.ucsf.edu/general';
 
+/**
+ * The row's one visible line (design.md 9.16): what the endpoint is. How it got there and what to
+ * do instead are the InfoTip beside it; Configure is the note's action.
+ */
 export const RETIRED_AZURE_ENDPOINT_NOTICE =
-  "This endpoint is UCSF's gateway, which older versions filled in by mistake. Enter your own Azure resource's endpoint, or use Versa API Azure for UCSF.";
+  "This endpoint is UCSF's gateway, not your Azure resource.";
+export const RETIRED_AZURE_ENDPOINT_HELP_LABEL = 'this endpoint';
+export const RETIRED_AZURE_ENDPOINT_HELP =
+  "Older versions filled it in by mistake. Enter your own Azure resource's endpoint, or use Versa API Azure for UCSF.";
 
 /** Whether a saved endpoint is exactly the retired default (a trailing `/` aside). */
 export function isRetiredAzureDefaultEndpoint(value: unknown): boolean {

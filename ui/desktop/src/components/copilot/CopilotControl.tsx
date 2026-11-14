@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useRef, useState } from 'react';
 import { ChevronDown, ChevronUp, Copilot, X } from '../icons/app-icons';
 import { CopilotRuntimeDetails, runtimeVerdict } from './CopilotSetup';
 import { PermissionCheckButton } from './PermissionCheckButton';
 import { Button } from '../ui/button';
+import { InfoTip, useInfoTipId } from '../ui/info-tip';
 import { Input } from '../ui/input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { isBrowserSurface } from '../../utils/surface';
@@ -34,6 +35,35 @@ const PANEL_SHELL =
   'br-fill-surface mx-3 mb-2 rounded-container border border-transparent bg-background-fill px-3 py-2.5 text-supporting';
 
 const DISMISS_WHILE_ACTIVE = 'Hide details; control remains active and Stop stays available';
+
+/*
+ * The panel shows the lines a decision needs: what it is, the computer, the model and where data
+ * goes, the consent, and the controls. What explains them waits in an InfoTip beside the line it
+ * is about (owner, 2026-11-13: one line up front, the detail on hover or on click). The consent
+ * itself, the daemon's disclosure or the fallback below, and the warning about content another
+ * task left open are never folded: they are what the person agrees to.
+ */
+
+/** The title's InfoTip while nothing is asked or running. */
+const IDLE_HELP =
+  'Ask Biorouter to use the computer. Approval appears before it starts and lasts through that request.';
+
+/**
+ * Under the consent, what Stop cannot do stays in view: one line of consequence for an action
+ * that cannot be taken back (design.md 9.16). What Stop does do, and what stays shared, is the
+ * InfoTip beside it.
+ */
+const STOP_CONSEQUENCE = 'Stop cannot undo changes already made.';
+const STOP_LIMITS_HELP =
+  'Stop prevents further actions, but a change already delivered to an app stays. Desktop apps and files remain shared with other tasks.';
+
+/** The Computer line's InfoTip in a browser: which computer is controlled. */
+const BROWSER_TARGET_HELP =
+  'This controls the computer running Biorouter, which may be different from the computer displaying this browser.';
+
+/** The approval key's InfoTip in a browser, and the field's accessible description. */
+const APPROVAL_KEY_HELP =
+  'Enter the passphrase you chose when starting biorouter serve --computer-use-approval. It stays only in this chat view and is cleared after approval.';
 
 const dismissedActivities = new Map<string, string>();
 
@@ -87,6 +117,8 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
   const generation = useRef(0);
   const polling = useRef(false);
   const browser = isBrowserSurface();
+  const approvalKeyId = useId();
+  const approvalKeyHelpId = useInfoTipId();
 
   const refresh = useCallback(async () => {
     if (polling.current || mutation.current || probing.current) return;
@@ -210,6 +242,8 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
   const active = status.state === 'active';
   const busy = status.state === 'busy';
   const requested = status.requested && !active;
+  // Nothing asked, nothing running and nothing in the way: the title's InfoTip says how to start.
+  const idle = !requested && !busy && !active;
   const detailsVisible = expanded || requested;
   const sharing = status.public_model !== false;
   const detailsId = `copilot-details-${sessionId}`;
@@ -257,16 +291,21 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
     <section aria-label="Biorouter Copilot" className={`${PANEL_SHELL} text-text-default`}>
       <div className="flex min-w-0 items-center gap-2">
         <Copilot className="size-4 shrink-0" aria-hidden="true" />
-        <span className="min-w-0 flex-1 break-words" role="status">
-          {active
-            ? 'Biorouter Copilot active'
-            : busy
-              ? 'Biorouter Copilot busy'
-              : status.state === 'stopped'
-                ? 'Biorouter Copilot stopped'
-                : 'Biorouter Copilot'}
-          {active && <span className="text-text-muted"> · {status.target}</span>}
-        </span>
+        {/* The InfoTip sits beside the status, never inside it, so a status change does not read
+            its help aloud. */}
+        <div className="flex min-w-0 flex-1 items-center">
+          <span className="min-w-0 break-words" role="status">
+            {active
+              ? 'Biorouter Copilot active'
+              : busy
+                ? 'Biorouter Copilot busy'
+                : status.state === 'stopped'
+                  ? 'Biorouter Copilot stopped'
+                  : 'Biorouter Copilot'}
+            {active && <span className="text-text-muted"> · {status.target}</span>}
+          </span>
+          {idle && <InfoTip label="Biorouter Copilot" help={IDLE_HELP} />}
+        </div>
         {collapsible && (
           <Button
             size="sm"
@@ -332,24 +371,24 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
       <div id={detailsId} hidden={!detailsVisible} className="mt-2 space-y-2">
         <p className="break-words">
           Computer: <strong className="font-semibold">{status.target}</strong>
+          {browser && <InfoTip label="the computer it controls" help={BROWSER_TARGET_HELP} />}
         </p>
-        {browser && (
-          <p className="text-text-muted">
-            This controls the computer running Biorouter, which may be different from the computer
-            displaying this browser.
-          </p>
-        )}
         <p className="break-words">
           Model: {status.model} · {status.provider}
         </p>
         <p className="break-words">Data destination: {status.destination}</p>
         {requested && !busy ? (
           <>
+            {/* The consent stays whole and in view: it is what the person agrees to. */}
             <p className="whitespace-pre-line">
               {status.disclosure ||
                 (sharing
                   ? 'Allow Biorouter Copilot to view and control this computer for this request? Screenshots, app text, and open-window information may be sent to the provider above, including sensitive information. It can type, click, use the cursor and change focus, and make changes until its reply finishes or you stop it.'
                   : 'Allow Biorouter to view and control this computer for this request? It can read app content, type, click, use the cursor and change focus, and make changes until its reply finishes or you stop it. Private classification does not mean processing happens on this computer.')}
+            </p>
+            <p className="text-text-muted">
+              {STOP_CONSEQUENCE}{' '}
+              <InfoTip label="stopping Biorouter Copilot" help={STOP_LIMITS_HELP} />
             </p>
             {status.handoff_required && !status.disclosure && (
               <p className="text-text-warning">
@@ -357,18 +396,9 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
                 want shared before continuing.
               </p>
             )}
-            <p className="text-text-muted">
-              Stop prevents further actions; it cannot undo changes already delivered to an app.
-              Desktop apps and files remain shared with other tasks.
-            </p>
           </>
         ) : busy ? (
           <p>Another task is using this desktop. Stop that task before starting here.</p>
-        ) : !active ? (
-          <p>
-            Ask Biorouter to use the computer. Approval appears before it starts and lasts through
-            that request.
-          </p>
         ) : null}
         {status.runtime && <CopilotRuntimeDetails runtime={status.runtime} />}
         <PermissionCheckButton
@@ -381,25 +411,31 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
         {requested && !busy && (
           <>
             {browser && (
-              <label className="block">
-                Biorouter Copilot approval key
+              <div>
+                {/* Where the key comes from is the InfoTip beside the label, never inside the
+                    <label>, and stays the field's accessible description. */}
+                <div className="flex min-w-0 items-center">
+                  <label htmlFor={approvalKeyId}>Biorouter Copilot approval key</label>
+                  <InfoTip
+                    id={approvalKeyHelpId}
+                    label="the approval key"
+                    help={APPROVAL_KEY_HELP}
+                  />
+                </div>
                 {/* The app's one text field (`ui/input.tsx`): it rests on the page
                     ground inside this filled panel and draws its edge only while
                     focused. Attributes and handlers are unchanged. */}
                 <Input
+                  id={approvalKeyId}
                   type="password"
                   autoComplete="off"
                   spellCheck={false}
                   value={approvalKey}
                   onChange={(event) => setApprovalKey(event.target.value)}
+                  aria-describedby={approvalKeyHelpId}
                   className="mt-1"
                 />
-                <span className="mt-1 block text-text-muted">
-                  Enter the passphrase you chose when starting biorouter serve
-                  --computer-use-approval. It stays only in this chat view and is cleared after
-                  approval.
-                </span>
-              </label>
+              </div>
             )}
             <div className="flex flex-wrap gap-2">
               <Button

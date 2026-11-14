@@ -1,0 +1,23 @@
+# Cargo configuration read by every build of this workspace: developer builds,
+# the Justfile, scripts/release.sh, CI and the Docker cross builds (which mount
+# the checkout, so they read this file too).
+
+[env]
+# The oldest macOS that `biorouter` and `biorouterd` start on: 12.0, the same
+# floor as the desktop app's own LSMinimumSystemVersion (DD-11 in
+# docs/dictation/implementation-plan.md).
+#
+# rustc reads this variable to stamp the minimum OS into every macOS binary it
+# links, and the `cc` crate passes it to clang as `-mmacosx-version-min` for
+# every C and C++ object a build script compiles. Unset, rustc stamps 11.0 on
+# arm64 (10.12 on x86_64) while `cc` compiles at the SDK's own version, so a C
+# library can strongly import an API newer than the stamp, and dyld then refuses
+# to start the whole binary on an older macOS. Targets other than Apple's ignore
+# the variable.
+#
+# A value already set in the environment wins over this one (Cargo's rule for
+# `[env]`). `scripts/check-macos-deployment.sh` fails on any binary whose
+# minimum is not 12.0; the macOS leg of rust.yml's `test` job and
+# `scripts/release.sh` (`build_mac_backends`, `verify`) run it, so a stray
+# export fails the build instead of shipping.
+MACOSX_DEPLOYMENT_TARGET = "12.0"

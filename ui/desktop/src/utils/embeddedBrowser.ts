@@ -747,3 +747,51 @@ export function registerEmbeddedBrowserOwnerTeardown(window: BrowserWindow): voi
   window.webContents.on('render-process-gone', () => destroyEmbeddedBrowsersForWindow(window));
   window.webContents.on('destroyed', () => destroyEmbeddedBrowsersForWindow(window));
 }
+
+const FOCUSED_EDITABLE_EXPRESSION = `(() => {
+  const active = document.activeElement;
+  if (!active) return false;
+  if (active instanceof HTMLInputElement) return !active.disabled && !active.readOnly;
+  if (active instanceof HTMLTextAreaElement) return !active.disabled && !active.readOnly;
+  return active instanceof HTMLElement && active.isContentEditable;
+})()`;
+
+/**
+ * The isolated world the **Dictate into this app** focus check runs in (S15). World 0 is the
+ * page's own main world, where the app's script can replace `document.activeElement`, the
+ * element constructors or `instanceof` itself and so decide the answer; 999 is the world
+ * Electron gives a preload under context isolation. This id is used for nothing else, so the
+ * check sees the shared DOM through globals the page cannot reach.
+ */
+export const DICTATION_FOCUS_WORLD_ID = 1907;
+
+export async function managedAppHasFocusedField(
+  window: BrowserWindow,
+  viewId: string
+): Promise<boolean> {
+  const entry = entryFor(window, viewId);
+  if (!entry?.managed?.isActive() || entry.view.webContents.isDestroyed()) return false;
+  try {
+    return (
+      (await entry.view.webContents.executeJavaScriptInIsolatedWorld(DICTATION_FOCUS_WORLD_ID, [
+        { code: FOCUSED_EDITABLE_EXPRESSION },
+      ])) === true
+    );
+  } catch {
+    return false;
+  }
+}
+
+export async function insertIntoManagedAppFocusedField(
+  window: BrowserWindow,
+  viewId: string,
+  text: string
+): Promise<boolean> {
+  if (!text || text.length > 32_000 || !(await managedAppHasFocusedField(window, viewId)))
+    return false;
+  const entry = entryFor(window, viewId);
+  if (!entry?.managed?.isActive() || entry.view.webContents.isDestroyed()) return false;
+  entry.view.webContents.focus();
+  entry.view.webContents.insertText(text);
+  return true;
+}

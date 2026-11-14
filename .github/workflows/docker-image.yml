@@ -1,0 +1,100 @@
+name: Docker image
+
+on:
+  schedule:
+    - cron: "19 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docker-image-${{ github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: Build and check linux/${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check build inputs and available disk
+        run: |
+          set -euo pipefail
+          ./scripts/check-dictation-build-prereqs.sh
+          df -h .
+          docker system df
+      - name: Build the native image
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          { time docker build --progress plain --platform "linux/$ARCH" --tag "biorouter:pr31-$ARCH" .; } 2>&1 | tee "$RUNNER_TEMP/docker-build.log"
+          docker image inspect "biorouter:pr31-$ARCH" --format '{{.Size}}' | tee "$RUNNER_TEMP/image-size-bytes.txt"
+          grep -q 'CMAKE_BUILD_TYPE=Release' "$RUNNER_TEMP/docker-build.log"
+
+      - name: Restore the pinned Light model and voice detector
+        id: speech-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/speech-models
+          key: docker-speech-${{ matrix.arch }}-67a179f608ea6114bd3fdb9060e762b588a3fb3bd00c4387971be4d177958067-2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987
+      - name: Fetch missing models and verify both pins
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/speech-models"
+          cd "$RUNNER_TEMP/speech-models"
+          if [ ! -f ggml-small.en-q8_0.bin ]; then
+            curl -fsSL --retry 3 -o ggml-small.en-q8_0.bin \
+              https://github.com/BaranziniLab/biorouter-models/releases/download/stt-whisper-small.en-q8_0-r1/ggml-small.en-q8_0.bin
+          fi
+          if [ ! -f ggml-silero-v6.2.0.bin ]; then
+            curl -fsSL --retry 3 -o ggml-silero-v6.2.0.bin \
+              https://github.com/BaranziniLab/biorouter-models/releases/download/stt-silero-vad-v6.2.0-r1/ggml-silero-v6.2.0.bin
+          fi
+          printf '%s\n' \
+            '67a179f608ea6114bd3fdb9060e762b588a3fb3bd00c4387971be4d177958067  ggml-small.en-q8_0.bin' \
+            '2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987  ggml-silero-v6.2.0.bin' \
+            | sha256sum --check
+      - name: Install Chromium for the loopback microphone check
+        if: matrix.arch == 'amd64'
+        working-directory: ui/desktop
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Check the image, installed volume, serve and browser
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          args=()
+          if [ "$ARCH" = amd64 ]; then args+=(--browser); fi
+          bash scripts/check-docker-dictation.sh \
+            --image "biorouter:pr31-$ARCH" \
+            --model-cache "$RUNNER_TEMP/speech-models" \
+            --run-root "$RUNNER_TEMP/pr31-$ARCH" "${args[@]}"
+      - name: Save verified speech files on main
+        if: success() && github.ref == 'refs/heads/main' && steps.speech-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/speech-models
+          key: docker-speech-${{ matrix.arch }}-67a179f608ea6114bd3fdb9060e762b588a3fb3bd00c4387971be4d177958067-2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987
+      - name: Keep the check evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-image-${{ matrix.arch }}
+          path: |
+            ${{ runner.temp }}/docker-build.log
+            ${{ runner.temp }}/image-size-bytes.txt
+            ${{ runner.temp }}/pr31-${{ matrix.arch }}
+          if-no-files-found: warn

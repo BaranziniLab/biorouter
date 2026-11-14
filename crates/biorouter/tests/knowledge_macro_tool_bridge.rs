@@ -23,6 +23,8 @@
 //! version — a real `claude` and a real `codex` driving a real ingest — is
 //! `--ignored` in `crates/biorouter-server/tests/tool_bridge_routes.rs`.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::Arc;
 
 use async_trait::async_trait;

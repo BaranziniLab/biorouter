@@ -639,7 +639,11 @@ This is also why `subagent` works in a terminal `biorouter session` with no `wor
 | `instructions` | string | — | Ad-hoc task. Required unless `subworkflow` is given. |
 | `subworkflow` | string | — | Name of a predefined subworkflow. |
 | `parameters` | object | — | Only valid with `subworkflow`. |
-| `extensions` | string[] | — | Omit to inherit all; `[]` for none. |
+| `extensions` | string[] | — | Omit to inherit the chat's live roster (its per-chat capability switches included); a list restricts the child to those; `[]` for none. |
+| `add_extensions` | string[] | — | Extensions or capabilities to give this child on top of what it inherits, by label or key, applied after `extensions`. One the chat does not hold is an enable, judged by `extension_enable_refusal` on the spawning call's capability (tier and affiliation by name before the lookup, then the operator pin), so a public chat cannot add a private extension and nobody adds one turned off in Settings. Workspace Control and Crew are refused. An unknown name refuses the spawn and lists what can be added. |
+| `remove_extensions` | string[] | — | Extensions or capabilities to take away from this child. Always allowed; a name the child would not hold and Biorouter does not ship refuses the spawn and lists what it would hold. |
+| `add_skills` | string[] | — | Skills or Contexts (skill or bundle names) to turn on for this child. The child's `workspace_skills/v1` starts as a copy of the chat's, and these merge into it (an add beats a remove). |
+| `remove_skills` | string[] | — | Skills or Contexts to turn off for this child. An unknown skill name in either field refuses the spawn and lists the names that work. |
 | `settings` | object | — | `{ provider, model, temperature }` overrides. |
 | `summary` | bool | `true` | Return only the child's final summary. |
 | `visible` | bool | unset | `true` asks for a tab. Unset means no tab: the child is listed in the chat's side panel, unless "Open subagent tabs automatically" (`BIOROUTER_WORKSPACE_OPEN_SUBAGENT_TABS`) is on. `false` runs it with no tab and no badge. With "Never open tabs automatically" on, no tab opens even for `true`: the user gets a notification instead. |

@@ -7,6 +7,8 @@
 //! read the environment is a data race. Every variable is set in the
 //! constructor, before `main` and before any client exists.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::net::TcpListener;
 use std::sync::{Mutex, OnceLock};
 

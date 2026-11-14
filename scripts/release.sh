@@ -427,6 +427,18 @@ run_cross_release() { # <cross function> <target volume> <cargo command> <post c
   return "$rc"
 }
 
+# ── minimum macOS (dictation, DD-11) ──
+# .cargo/config.toml sets MACOSX_DEPLOYMENT_TARGET=12.0 for every cargo build, but
+# a value already in the environment wins over it, and dyld refuses to start a
+# backend whose minimum (or a strong import) is newer than the Mac it runs on. The
+# release binaries are stripped; the check reads their imports with nm when
+# dyld_info cannot, and --require-imports makes an unread import table a failure,
+# so the binaries that ship get both checks.
+assert_mac_deployment_target() { # <binary>...
+  "$ROOT/scripts/check-macos-deployment.sh" --require-imports "$@"
+}
+# ── end minimum macOS ──
+
 build_mac_backends() {
   local v="$1" helper_target
   activate_hermit
@@ -434,6 +446,12 @@ build_mac_backends() {
   cargo build --release
   log "compiling mac x64 release backend"
   cargo build --release --target x86_64-apple-darwin
+  # ── minimum macOS (dictation, DD-11): checked minutes into a release, not on a user's macOS 12 ──
+  assert_mac_deployment_target \
+    "$ROOT/target/release/biorouter" "$ROOT/target/release/biorouterd" \
+    "$ROOT/target/x86_64-apple-darwin/release/biorouter" "$ROOT/target/x86_64-apple-darwin/release/biorouterd" \
+    || die "a macOS backend does not declare macOS 12.0, or imports a newer symbol strongly (see above); unset any MACOSX_DEPLOYMENT_TARGET in this shell and rebuild"
+  # ── end minimum macOS ──
   for helper_target in darwin-arm64 darwin-x64; do
     build_computer_use_helper "$helper_target"
   done
@@ -848,6 +866,112 @@ check_bundled_crew_broker() { # <resources bin dir> <version>
   fi
 }
 
+# ── microphone (dictation, DD-65) ──────────────────────────────────────────────
+# Reads the signed app back, not forge.config.ts: under the hardened runtime a
+# file without `com.apple.security.device.audio-input` gets no prompt and every
+# microphone request is denied, and nothing else fails. The four files are the
+# ones `macSignOptionsForFile` in ui/desktop/forge.config.ts signs with it; the
+# sentence is its `NSMicrophoneUsageDescription`. `mac_microphone_problems` in
+# scripts/smoke-test-release-artifacts.sh runs the same check on the app inside
+# each dmg, and ui/desktop/src/styles/forgeMacUsage.test.ts holds all three to
+# the same sentence and entitlement.
+MAC_MICROPHONE_USAGE="Biorouter uses the microphone only while you dictate, and does not save the recording."
+check_mac_microphone() { # <Biorouter.app>
+  local app="$1" target usage bad=0
+  for target in "$app" \
+                "$app/Contents/Frameworks/Biorouter Helper.app" \
+                "$app/Contents/Resources/bin/biorouter" \
+                "$app/Contents/Resources/bin/biorouterd"; do
+    if ! codesign -d --entitlements - --xml "$target" 2>/dev/null | python3 -c '
+import plistlib, sys
+try:
+    entitlements = plistlib.loads(sys.stdin.buffer.read())
+except Exception:
+    sys.exit(1)
+sys.exit(0 if entitlements.get("com.apple.security.device.audio-input") is True else 1)'; then
+      printf 'com.apple.security.device.audio-input is not in the signed entitlements of %s\n' "$target"
+      bad=1
+    fi
+  done
+  usage="$(plutil -extract NSMicrophoneUsageDescription raw "$app/Contents/Info.plist" 2>/dev/null || true)"
+  if [ "$usage" != "$MAC_MICROPHONE_USAGE" ]; then
+    printf 'NSMicrophoneUsageDescription of %s is "%s", expected "%s"\n' "$app" "$usage" "$MAC_MICROPHONE_USAGE"
+    bad=1
+  fi
+  [ "$bad" = 0 ] || return 1
+  log "microphone entitlement on the app, its helper and both backends, and the usage sentence ✓ (${app#"$DESK"/})"
+}
+
+# ── capture absent from the daemon (dictation, P-10) ──────────────────────────
+# The terminal's microphone code lives in crates/biorouter-dictation-capture, which only
+# biorouter-cli depends on (DD-5). The release builds compile biorouterd and biorouter in
+# one Cargo invocation, which unifies features across them, so the daemon is checked as
+# this release built it, not as `cargo test -p biorouter-server` sees it: no PulseAudio
+# library name in its bytes, no audio framework in its macOS load commands, the hidden
+# capture role refused with exit 2, and no capture crate in its dependency tree.
+check_capture_not_in_daemon() {
+  local bad=0 checked=0 daemon count code tree
+  if ! tree="$(cd "$ROOT" && cargo tree --locked -p biorouter-server --features local-dictation -e normal,build --prefix none --color never 2>/dev/null)"; then
+    printf 'cargo tree -p biorouter-server failed, so its dependency tree was not checked for capture\n'
+    bad=1
+  elif ! grep -q '^biorouter-dictation ' <<< "$tree"; then
+    printf 'cargo tree -p biorouter-server listed no biorouter-dictation, so the capture check read nothing\n'
+    bad=1
+  elif grep -q '^biorouter-dictation-capture ' <<< "$tree"; then
+    printf 'biorouter-server depends on biorouter-dictation-capture: capture code would reach biorouterd\n'
+    bad=1
+  fi
+  for daemon in "$ROOT/target/release/biorouterd" \
+                "$ROOT/target/x86_64-apple-darwin/release/biorouterd" \
+                "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouterd" \
+                "$ROOT/target/x86_64-pc-windows-gnu/release/biorouterd.exe" \
+                "$DESK/out/Biorouter-darwin-arm64/Biorouter.app/Contents/Resources/bin/biorouterd" \
+                "$DESK/out/Biorouter-darwin-x64/Biorouter.app/Contents/Resources/bin/biorouterd"; do
+    [ -f "$daemon" ] || continue
+    checked=$((checked + 1))
+    count="$(strings -a "$daemon" 2>/dev/null | grep -c libpulse || true)"
+    if [ "$count" != 0 ]; then
+      printf '%s names libpulse %s times: capture code reached the daemon\n' "${daemon#"$ROOT"/}" "$count"
+      bad=1
+    fi
+    if [ "$(uname -s)" = Darwin ] && otool -L "$daemon" >/dev/null 2>&1 \
+         && otool -L "$daemon" | grep -qE '/(CoreAudio|AudioToolbox)\.framework/'; then
+      printf '%s links an audio framework: capture code reached the daemon\n' "${daemon#"$ROOT"/}"
+      bad=1
+    fi
+  done
+  # The role itself, on the daemons this host can run.
+  for daemon in "$ROOT/target/release/biorouterd" \
+                "$DESK/out/Biorouter-darwin-arm64/Biorouter.app/Contents/Resources/bin/biorouterd"; do
+    [ -x "$daemon" ] || continue
+    code=0
+    "$daemon" __br-dictation-worker capture </dev/null >/dev/null 2>&1 || code=$?
+    if [ "$code" != 2 ]; then
+      printf '%s __br-dictation-worker capture exited %s, expected 2\n' "${daemon#"$ROOT"/}" "$code"
+      bad=1
+    fi
+  done
+  # The Linux daemon on the oldest supported distro, with the packages the shipped specs
+  # declare, as cross-build-nightly boots it.
+  local linux="$ROOT/target/x86_64-unknown-linux-gnu/release/biorouterd" packages
+  if [ -x "$linux" ]; then
+    packages="$("$ROOT/scripts/check-linux-runtime-deps.sh" --print-deb-packages 2>/dev/null || true)"
+    code="$(docker run --rm -e PACKAGES="$packages" -v "$linux":/biorouterd:ro debian:bullseye sh -c '
+      apt-get update -q >/dev/null 2>&1
+      [ -z "$PACKAGES" ] || apt-get install -y --no-install-recommends $PACKAGES >/dev/null 2>&1
+      /biorouterd __br-dictation-worker capture </dev/null >/dev/null 2>&1
+      echo $?' 2>/dev/null | tail -1)"
+    if [ "$code" != 2 ]; then
+      printf 'the linux biorouterd __br-dictation-worker capture exited %s, expected 2\n' "${code:-nothing}"
+      bad=1
+    fi
+  fi
+  [ "$checked" -gt 0 ] || { printf 'no biorouterd was found to check for capture code\n'; return 1; }
+  [ "$bad" = 0 ] || return 1
+  log "capture is absent from every daemon this release built ($checked checked) ✓"
+}
+# ── end capture block ──
+
 cmd_verify() {
   local v="$1" ok=1
   assert_release_source "$v"
@@ -887,6 +1011,31 @@ cmd_verify() {
       check_bundled_crew_broker "$app/Contents/Resources/bin" "$v" || ok=0
     fi
   done
+  # ── microphone (dictation, DD-65): its own block; see check_mac_microphone ──
+  for app in "$DESK/out/Biorouter-darwin-arm64/Biorouter.app" \
+             "$DESK/out/Biorouter-darwin-x64/Biorouter.app"; do
+    if [ -d "$app" ]; then
+      check_mac_microphone "$app" || ok=0
+    fi
+  done
+  # ── end microphone block ──
+  # ── minimum macOS (dictation, DD-11): the backends inside the signed apps ──
+  # Read from the packaged bin/ rather than target/: these are the bytes users
+  # get, after staging, signing and notarization.
+  for app in "$DESK/out/Biorouter-darwin-arm64/Biorouter.app" \
+             "$DESK/out/Biorouter-darwin-x64/Biorouter.app"; do
+    if [ -d "$app" ]; then
+      if assert_mac_deployment_target \
+           "$app/Contents/Resources/bin/biorouter" "$app/Contents/Resources/bin/biorouterd"; then
+        log "bundled backends declare macOS 12.0 and import nothing newer strongly ✓ (${app#"$DESK"/})"
+      else
+        ok=0
+      fi
+    fi
+  done
+  # ── end minimum macOS block ──
+  # ── capture absent from the daemon (dictation, P-10): see check_capture_not_in_daemon ──
+  check_capture_not_in_daemon || ok=0
   # The electron-updater manifest is generated at publish time; verify it if
   # already present (and that it references both arch zips).
   local yml="$DESK/out/make/latest-mac.yml"
@@ -1105,6 +1254,67 @@ PY
   log "native Windows smoke is newer than every draft asset upload"
 }
 
+# The dictation accuracy gate (O-22; docs/dictation/testing-and-release.md, "Release
+# guards and packaging checks"): a release is published only when a successful
+# `dictation-accuracy.yml` run named `Dictation accuracy v<version>` exists at its source
+# commit. Dispatch it on main once the draft is up:
+# `gh workflow run dictation-accuracy.yml --ref main -f version=<v>`.
+#
+# ⚠ Inert, with a warning, until the workflow has had its first green run. Before that no
+# run can vouch for a release, and the gate would only block; the workflow fails only on
+# a default model's floor, so its first success is the first green Tier 1 run on a
+# default model, and from then on a missing or red run blocks publication.
+#
+# ⚠ Both questions are asked of GitHub with its own filters, never of a window of recent
+# runs. "Armed" is "has this workflow EVER succeeded" (`--status success --limit 1`), so a
+# long red or cancelled streak, the moment accuracy has been broken longest, can never
+# disarm the gate again; and the release's run is looked up by its commit
+# (`--commit <source>`), so it is found however many runs came after it. An earlier
+# version read the 200 newest runs for both and failed open on exactly that streak.
+require_dictation_accuracy() {
+  local v="$1" manifest source_sha green_json runs_json verdict=0
+  manifest="$(release_provenance_file "$v")"
+  source_sha="$(release_provenance_value "$manifest" source_sha)"
+  green_json="$(mktemp)"
+  runs_json="$(mktemp)"
+  if ! gh run list --workflow dictation-accuracy.yml --status success --limit 1 \
+      --json databaseId >"$green_json" \
+    || ! gh run list --workflow dictation-accuracy.yml --status success --commit "$source_sha" \
+      --limit 100 --json displayTitle,conclusion,headSha,event,url >"$runs_json"; then
+    rm -f "$green_json" "$runs_json"
+    die "could not read the dictation accuracy workflow runs"
+  fi
+  python3 - "$green_json" "$runs_json" "$v" "$source_sha" <<'PY' || verdict=$?
+import json
+import sys
+
+green_path, runs_path, version, source_sha = sys.argv[1:]
+with open(green_path, encoding="utf-8") as handle:
+    green = json.load(handle)
+with open(runs_path, encoding="utf-8") as handle:
+    runs = json.load(handle)
+if not isinstance(green, list) or not isinstance(runs, list):
+    raise SystemExit("gh did not answer with a list of runs")
+if not green:
+    sys.exit(3)
+title = f"Dictation accuracy v{version}"
+if not any(
+    run.get("displayTitle") == title
+    and run.get("conclusion") == "success"
+    and run.get("headSha") == source_sha
+    and run.get("event") == "workflow_dispatch"
+    for run in runs
+):
+    raise SystemExit(f"no successful dispatched '{title}' run at source {source_sha}")
+PY
+  rm -f "$green_json" "$runs_json"
+  case "$verdict" in
+    0) log "dictation accuracy passed for v$v at the source commit" ;;
+    3) log "WARNING: the dictation accuracy gate is inert: dictation-accuracy.yml has had no green run yet, so nothing vouches for v$v's dictation accuracy" ;;
+    *) die "dictation accuracy has not passed for v$v at its source commit. Run: gh workflow run dictation-accuracy.yml --ref main -f version=$v, wait for it to pass, then publish again" ;;
+  esac
+}
+
 cmd_draft() {
   local v="$1"
   local notes="$ROOT/docs/releases/notes/v$v.md"
@@ -1154,6 +1364,7 @@ cmd_publish() {
   log "draft target is the source commit ($draft_target)"
   verify_remote_release_assets "$v"
   require_fresh_windows_smoke "$v" "$LATEST_DRAFT_ASSET_UPDATED_AT"
+  require_dictation_accuracy "$v"
   gh release edit "v$v" --draft=false
   log "published: $(gh release view "v$v" --json url --jq .url)"
   log "next: scripts/release.sh landing $v   (the public site still cites the previous release)"

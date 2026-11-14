@@ -42,6 +42,11 @@ class BioRouterAcpPersona(BaseAcpPersona):
             **kwargs,
         )
 
+    async def _init_agent_subprocess(self, env=None):
+        child_env = os.environ.copy() if env is None else dict(env)
+        child_env["BIOROUTER_ACP_CLIENT"] = "jupyter-ai"
+        return await super()._init_agent_subprocess(env=child_env)
+
     @property
     def defaults(self) -> PersonaDefaults:
         avatar_path = Path(__file__).parent / "static" / "biorouter.svg"

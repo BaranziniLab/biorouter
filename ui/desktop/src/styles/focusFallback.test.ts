@@ -651,6 +651,7 @@ describe('a radio’s ring and a link-style button hold their edges (Q3-58, Q3-5
     expect(entries.map((e) => e.name)).toEqual([
       'default',
       'destructive',
+      'critical',
       'outline',
       'secondary',
       'ghost',

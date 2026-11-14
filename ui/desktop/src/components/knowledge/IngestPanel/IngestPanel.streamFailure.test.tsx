@@ -12,6 +12,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ModelRef } from '../../../api/types.gen';
 import { IngestPanel } from './IngestPanel';
 import { knowledgeCopy } from '../copy';
+import { STREAM_ENDED_DETAIL, STREAM_ENDED_WITHOUT_TERMINAL } from '../hooks/useIngestStream';
 
 const mocks = vi.hoisted(() => ({
   knowledge: {
@@ -107,6 +108,8 @@ describe('IngestPanel surfaces a failed digest', () => {
     await waitFor(() =>
       expect(screen.getByText(/Digest error/i)).toHaveTextContent(/no knowledge pages/i)
     );
+    // The header's line is cut to the row; the whole error closes the log under it.
+    expect(screen.getByText('ingest wrote no knowledge pages for source hrv-note')).toBeVisible();
     expect(screen.queryByText(/Digest complete/i)).not.toBeInTheDocument();
 
     // The source must still be on the staged list, carrying its error — a
@@ -133,6 +136,11 @@ describe('IngestPanel surfaces a failed digest', () => {
 
     await waitFor(() => expect(screen.getByText(/Digest error/i)).toBeInTheDocument());
     expect(screen.queryByText(/Digest complete/i)).not.toBeInTheDocument();
+    // One line in the header; what it means and what to do closes the log under it.
+    expect(screen.getByText(/Digest error/i)).toHaveTextContent(
+      `Digest error: ${STREAM_ENDED_WITHOUT_TERMINAL}`
+    );
+    expect(screen.getByText(STREAM_ENDED_DETAIL)).toBeVisible();
 
     const staged = screen.getAllByTestId('knowledge-staged-item');
     expect(staged).toHaveLength(1);

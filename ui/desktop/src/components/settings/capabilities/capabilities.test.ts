@@ -17,6 +17,7 @@ const expectedDefaults = {
   knowledge: true,
   agent_drafter: true,
   chatrecall: false,
+  dictionary: false,
   workspace: true,
   crew: true,
   decisions: true,
@@ -39,6 +40,7 @@ describe('capabilities', () => {
       'extensionmanager',
       'skills',
       'code_execution',
+      'dictionary',
       'crew',
     ]) {
       expect(isCapabilityExtension({ name }), name).toBe(true);

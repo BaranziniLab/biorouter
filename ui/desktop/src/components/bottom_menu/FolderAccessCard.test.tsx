@@ -37,6 +37,7 @@ vi.mock('../../toasts', () => ({ toastError: vi.fn() }));
 
 import { DirSwitcher } from './DirSwitcher';
 import { FOLDER_ACCESS_COPY, FOOTER_COPY } from './copy';
+import { folderAccessLifetime } from '../../utils/folderAccessLifetime';
 import { FOOTER_CARD_CLOSE_GRACE_MS, FOOTER_CARD_OPEN_DELAY_MS } from './useFooterCard';
 
 const WORKING_DIR = '/Users/wgu/Projects/kdps';
@@ -105,6 +106,15 @@ const chooseButton = () => screen.queryByRole('button', { name: FOLDER_ACCESS_CO
 
 /** Let the grant read (a resolved mock) land inside act. */
 const flush = () => act(async () => {});
+
+/**
+ * An InfoTip's glyph in the card, by what it is about: the card draws its readings and keeps what
+ * explains them behind these (owner, 2026-11-13), so a sentence is asserted where it now lives, as
+ * the glyph's accessible description, not as card text (the hidden description is text too).
+ */
+const aboutTip = (about: string) => within(card()!).getByRole('button', { name: `About ${about}` });
+const workingFolderTip = () => aboutTip(FOLDER_ACCESS_COPY.aboutWorkingFolder);
+const otherFoldersTip = () => aboutTip(FOLDER_ACCESS_COPY.aboutOtherFolders);
 
 /**
  * A folder the card writes (`FooterCardPath`), found by the absolute path it stands for. Its names
@@ -274,6 +284,9 @@ describe('choosing a folder (only from the card, only while the chat is empty)',
     act(() => chip().focus());
     await user.keyboard('{Enter}');
     await waitFor(() => expect(card()).toHaveFocus());
+    // The Working folder label's InfoTip comes first, as it is drawn; then Choose folder….
+    await user.tab();
+    expect(workingFolderTip()).toHaveFocus();
     await user.tab();
     expect(chooseButton()).toHaveFocus();
     await user.keyboard('{Enter}');
@@ -527,22 +540,31 @@ describe('what the card says', () => {
     expect(path.textContent).toBe('~/מסמכים/نتائج 2026');
   });
 
-  it('builds the card from the shared pieces: labelled sections, then the note last', async () => {
+  it('builds the card from the shared pieces: labelled sections, their help beside the labels', async () => {
     const user = userEvent.setup();
     render(<Page />);
     await user.click(chip());
     await findPath(RESULTS.folder);
     const surface = card()!;
     expect(surface).toHaveClass('br-footer-card');
-    const labels = [
-      ...surface.querySelectorAll('.br-footer-card__section > .br-footer-card__label'),
-    ];
-    expect(labels.map((label) => label.textContent)).toEqual([
+    const sections = [...surface.children];
+    expect(sections.every((section) => section.matches('.br-footer-card__section'))).toBe(true);
+    const labels = sections.map((section) =>
+      section.querySelector(
+        ':scope > .br-footer-card__label, :scope > [data-slot="footer-card-head"] > .br-footer-card__label'
+      )
+    );
+    expect(labels.map((label) => label?.textContent)).toEqual([
       FOLDER_ACCESS_COPY.workingFolder,
       FOLDER_ACCESS_COPY.otherFolders,
     ]);
-    expect(surface.lastElementChild).toHaveTextContent(FOLDER_ACCESS_COPY.whoAsks);
-    expect(surface.lastElementChild).toHaveClass('br-footer-card__note');
+    // Each label's help is the InfoTip right after it, never a block of muted prose under the
+    // readings: the one note left is the locked folder's one-line state.
+    expect(labels[0]?.nextElementSibling).toBe(workingFolderTip());
+    expect(labels[1]?.nextElementSibling).toBe(otherFoldersTip());
+    expect(
+      [...surface.querySelectorAll('.br-footer-card__note')].map((note) => note.textContent)
+    ).toEqual([FOLDER_ACCESS_COPY.lockedNote]);
   });
 
   it('says exactly which tools ask for folder approval, and never that everything asks', async () => {
@@ -557,7 +579,7 @@ describe('what the card says', () => {
     render(<Page />);
     await user.click(chip());
     expect(await screen.findByText(FOLDER_ACCESS_COPY.none)).toBeInTheDocument();
-    expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.whoAsks);
+    expect(workingFolderTip()).toHaveAccessibleDescription(FOLDER_ACCESS_COPY.whoAsks);
   });
 
   it('reads nothing on Home, lists no other folders there, and still says which tools ask', async () => {
@@ -567,7 +589,7 @@ describe('what the card says', () => {
     await flush();
     expect(isOpen()).toBe(true);
     expect(getPath(WORKING_DIR, card()!)).toHaveTextContent(WORKING_DIR);
-    expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.whoAsks);
+    expect(workingFolderTip()).toHaveAccessibleDescription(FOLDER_ACCESS_COPY.whoAsks);
     expect(card()).not.toHaveTextContent(FOLDER_ACCESS_COPY.otherFolders);
     expect(mocks.list).not.toHaveBeenCalled();
   });
@@ -583,7 +605,7 @@ describe('what the card says', () => {
     expect(isOpen()).toBe(true);
     expect(getPath(WORKING_DIR, card()!)).toHaveTextContent(WORKING_DIR);
     expect(chooseButton()).toBeInTheDocument();
-    expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.whoAsks);
+    expect(workingFolderTip()).toHaveAccessibleDescription(FOLDER_ACCESS_COPY.whoAsks);
     expect(card()).not.toHaveTextContent(FOLDER_ACCESS_COPY.loading);
     expect(card()).not.toHaveTextContent(FOLDER_ACCESS_COPY.otherFolders);
     expect(mocks.list).not.toHaveBeenCalled();
@@ -640,7 +662,12 @@ describe('what the card says', () => {
     expect(
       within(rows[1]).getByRole('button', { name: 'Revoke access to /synthetic/notes' })
     ).toHaveTextContent(FOLDER_ACCESS_COPY.revoke);
-    expect(card()).toHaveTextContent(FOLDER_ACCESS_COPY.onceNotListed);
+    // When a grant ends, and that one-time grants are not listed, is the label's InfoTip: two
+    // sentences, the InfoTip's limit.
+    expect(otherFoldersTip()).toHaveAccessibleDescription(
+      `${folderAccessLifetime()} ${FOLDER_ACCESS_COPY.onceNotListed}`
+    );
+    expect(otherFoldersTip()).toHaveAccessibleDescription(/backend restarts/);
   });
 
   it('says "Checking…" on the first read only, and keeps the last list during a refresh', async () => {
@@ -701,7 +728,7 @@ describe('what the card says', () => {
     render(<Page />);
     await user.click(chip());
     await findPath(RESULTS.folder);
-    expect(card()).toHaveTextContent('desktop app quits');
+    expect(otherFoldersTip()).toHaveAccessibleDescription(/desktop app quits/);
   });
 });
 
@@ -782,7 +809,7 @@ describe('revoking (the only revoke control in the interface)', () => {
     await user.click(chip());
     await findPath(RESULTS.folder);
     // A browser's grants live as long as the backend, not the tab.
-    expect(card()).toHaveTextContent('backend restarts');
+    expect(otherFoldersTip()).toHaveAccessibleDescription(/backend restarts/);
     expect(card()).not.toHaveTextContent('desktop app quits');
     const key = screen.getByLabelText(FOLDER_ACCESS_COPY.approvalKey);
     // Labelled like every other line that names something in the card: muted, 12/16.
@@ -790,7 +817,14 @@ describe('revoking (the only revoke control in the interface)', () => {
     expect(key).toHaveAttribute('type', 'password');
     expect(key).toHaveAttribute('autocomplete', 'off');
     expect(key).toHaveAccessibleName(FOLDER_ACCESS_COPY.approvalKey);
-    expect(key).toHaveAccessibleDescription(/Use the separate key configured with/);
+    // The help is the InfoTip beside the label, and still the field's own description.
+    expect(key).toHaveAccessibleDescription(FOLDER_ACCESS_COPY.approvalKeyHelp);
+    expect(aboutTip(FOLDER_ACCESS_COPY.aboutApprovalKey)).toHaveAccessibleDescription(
+      FOLDER_ACCESS_COPY.approvalKeyHelp
+    );
+    expect(
+      screen.queryByText(FOLDER_ACCESS_COPY.approvalKeyHelp, { selector: ':not(.sr-only)' })
+    ).toBeNull();
     const revoke = screen.getByRole('button', {
       name: FOLDER_ACCESS_COPY.revokeLabel(RESULTS.folder),
     });

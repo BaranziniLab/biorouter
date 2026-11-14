@@ -90,6 +90,13 @@ const UTILITIES: Record<string, string> = {
   'text-supporting': 'font-size: 12px; line-height: 16px; font-weight: 400',
   'text-label': 'font-size: 14px; line-height: 20px; font-weight: 500',
   'text-body': 'font-size: 14px; line-height: 20px; font-weight: 400',
+  'text-code': 'font-size: 12px; line-height: 20px; font-weight: 400',
+  // The InfoTip's glyph button (main.css `.br-info-tip`): a 24px hit box that adds 14px to its line,
+  // and the visually hidden node that carries its words.
+  'br-info-tip':
+    'position: relative; display: inline-flex; flex: none; align-items: center; justify-content: center; width: 24px; height: 24px; margin-block: -5px; margin-inline: -1px -5px; padding: 0; border: 0',
+  'sr-only':
+    'position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border-width: 0',
   // The checkbox's own parts: absolutely placed inside its 24px box, so only the box lays out.
   relative: 'position: relative',
   absolute: 'position: absolute',

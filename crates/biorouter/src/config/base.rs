@@ -1991,6 +1991,21 @@ impl Config {
         self.save_values(values)
     }
 
+    /// Mutate related non-secret values under one read and one atomic save.
+    /// `None` leaves the loaded values untouched and skips the write.
+    pub(crate) fn update_values<R, F>(&self, update: F) -> Result<Option<R>, ConfigError>
+    where
+        F: FnOnce(&mut Mapping) -> Result<Option<R>, ConfigError>,
+    {
+        let _guard = self.guard.lock().unwrap();
+        let mut values = self.load()?;
+        let result = update(&mut values)?;
+        if result.is_some() {
+            self.save_values(values)?;
+        }
+        Ok(result)
+    }
+
     /// Read the config file's own values (never the environment), let `edit`
     /// change them, and write the result as **one** config write, under the
     /// same guard and through the same [`Self::save_values`] as
@@ -2508,6 +2523,60 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use tempfile::NamedTempFile;
+
+    #[test]
+    fn dictionary_activation_write_failure_keeps_marker_and_extension_together() {
+        let dir = tempfile::tempdir().unwrap();
+        let config =
+            Config::new(dir.path().join("config.yaml"), "dictionary-activation-test").unwrap();
+        let marker = crate::dictation::activation::ACTIVATION_VERSION_KEY;
+        crate::config::extensions::set_dictionary_activation_in(&config, false, marker, true)
+            .unwrap();
+        config.delete(marker).unwrap();
+        let before = std::fs::read(config.path()).unwrap();
+
+        config
+            .io_faults
+            .failing_stage_attempts
+            .store(TRANSIENT_IO_ATTEMPTS, std::sync::atomic::Ordering::SeqCst);
+        assert!(crate::config::extensions::set_dictionary_activation_in(
+            &config, true, marker, true
+        )
+        .is_err());
+        assert_eq!(std::fs::read(config.path()).unwrap(), before);
+        assert!(matches!(
+            config.get_param::<u8>(marker),
+            Err(ConfigError::NotFound(_))
+        ));
+        let extensions: serde_yaml::Mapping = config.get_param("extensions").unwrap();
+        let dictionary = extensions.get("dictionary").unwrap().clone();
+        let entry: crate::config::extensions::ExtensionEntry =
+            serde_yaml::from_value(dictionary).unwrap();
+        assert!(!entry.enabled);
+    }
+
+    #[test]
+    fn duplicate_activation_cannot_turn_a_saved_off_choice_back_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let config =
+            Config::new(dir.path().join("config.yaml"), "dictionary-activation-test").unwrap();
+        let marker = crate::dictation::activation::ACTIVATION_VERSION_KEY;
+        crate::config::extensions::set_dictionary_activation_in(&config, false, marker, true)
+            .unwrap();
+        let before = std::fs::read(config.path()).unwrap();
+        config
+            .io_faults
+            .failing_stage_attempts
+            .store(TRANSIENT_IO_ATTEMPTS, std::sync::atomic::Ordering::SeqCst);
+        crate::config::extensions::set_dictionary_activation_in(&config, true, marker, true)
+            .unwrap();
+        assert_eq!(std::fs::read(config.path()).unwrap(), before);
+        assert_eq!(config.get_param::<u8>(marker).unwrap(), 1);
+        let extensions: serde_yaml::Mapping = config.get_param("extensions").unwrap();
+        let entry: crate::config::extensions::ExtensionEntry =
+            serde_yaml::from_value(extensions.get("dictionary").unwrap().clone()).unwrap();
+        assert!(!entry.enabled);
+    }
 
     /// The config file every config write follows is the one the diagnostics
     /// bundle redacts and ships. The bundle's own tests hand it a directory of

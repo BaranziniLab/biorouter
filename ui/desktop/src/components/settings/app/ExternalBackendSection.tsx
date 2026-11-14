@@ -2,7 +2,16 @@ import { useState, useEffect } from 'react';
 import { Switch } from '../../ui/switch';
 import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
-import { AlertCircle } from '../../icons/app-icons';
+import { SettingRow, SettingSection } from '../../ui/setting-row';
+import { dictationMessage } from '../../dictation/copy';
+import { serverCopy } from './copy';
+
+/**
+ * The section's words, under the name its own tests and #488's read them by. The same object as
+ * `serverCopy` (`./copy`), so Settings > App and this section can never name a field two ways.
+ * The restart is said once, in the switch's help (owner, 2026-11-13).
+ */
+export const externalBackendCopy = serverCopy;
 
 interface ExternalBiorouterdConfig {
   enabled: boolean;
@@ -49,6 +58,24 @@ function parseConfig(
   };
 }
 
+/** The host a person typed, for the remote disclosure; the text as typed when it is no URL. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+/**
+ * Settings > App > Server (PR-29, S17): whether this app starts its own `biorouterd` or
+ * connects to one running elsewhere. It sits after About and before the Danger zone, so the
+ * App tab's order up to About stays the one spec §3.13 records. One `SettingRow` per field,
+ * with each explanation behind its row's InfoTip; the sentences live in `serverCopy`.
+ *
+ * The two keys stay plain password fields rather than `SecretInput`: these fields load the
+ * stored value back, and `SecretInput`'s reveal toggle is only for a value typed in this session.
+ */
 export default function ExternalBackendSection() {
   const [config, setConfig] = useState<ExternalBiorouterdConfig>(DEFAULT_CONFIG);
   const [isSaving, setIsSaving] = useState(false);
@@ -70,13 +97,13 @@ export default function ExternalBackendSection() {
     try {
       const parsed = new URL(value);
       if (!['http:', 'https:'].includes(parsed.protocol)) {
-        setUrlError('URL must use http or https protocol');
+        setUrlError(serverCopy.urlWrongScheme);
         return false;
       }
       setUrlError(null);
       return true;
     } catch {
-      setUrlError('Invalid URL format');
+      setUrlError(serverCopy.urlInvalid);
       return false;
     }
   };
@@ -116,107 +143,82 @@ export default function ExternalBackendSection() {
     }
   };
 
-  // ⚠ **Nothing mounts this today**, and it is rebuilt rather than deleted
-  // because it is the only UI that can set `userActionKey` (see the field's own
-  // comment above: without it an external backend cannot reach its own private
-  // chats at all). It was the last `Card`-based settings block; on the shell it
-  // now lands right the day it is wired in, rather than arriving as the one
-  // section on the tab with a card, a title style and a row spec of its own.
   return (
-    <section id="external-backend" className="biorouter-settings-section">
-      <div className="biorouter-settings-section-header">
-        <h2 className="text-caps text-text-muted mb-1">Biorouter Server</h2>
-        <p className="text-supporting text-text-muted">
-          By default Biorouter launches a server for you, use this to connect to an external
-          Biorouter server
-        </p>
-      </div>
-
-      <div className="biorouter-settings-list">
-        <div className="biorouter-settings-row flex min-w-0 items-center justify-between gap-3 px-3 py-2.5">
-          <div className="min-w-0 flex-1">
-            <h3 className="text-label text-text-default">Use external server</h3>
-            <p className="mt-0.5 max-w-md text-supporting text-text-muted">
-              Connect to a Biorouter server running elsewhere (requires app restart)
-            </p>
-          </div>
-          <Switch
-            checked={config.enabled}
-            onCheckedChange={(checked) => saveConfig(updateField('enabled', checked))}
-            disabled={isSaving}
-            aria-label="Use external server"
-          />
-        </div>
-      </div>
+    <SettingSection id="external-backend" title={serverCopy.section} help={serverCopy.sectionHelp}>
+      <SettingRow label={serverCopy.useExternal} help={serverCopy.useExternalHelp}>
+        <Switch
+          checked={config.enabled}
+          onCheckedChange={(checked) => saveConfig(updateField('enabled', checked))}
+          disabled={isSaving}
+        />
+      </SettingRow>
 
       {config.enabled && (
-        <div className="mt-3 space-y-4 px-3">
-          <div className="space-y-2">
-            <label htmlFor="external-url" className="text-label text-text-default">
-              Server URL
-            </label>
+        <>
+          <SettingRow
+            label={serverCopy.url}
+            controlId="external-url"
+            status={
+              urlError ? (
+                <span role="alert" className="text-text-danger">
+                  {urlError}
+                </span>
+              ) : undefined
+            }
+          >
             <Input
-              id="external-url"
+              machine
               type="url"
-              placeholder="http://127.0.0.1:3000"
+              placeholder={serverCopy.urlPlaceholder}
               value={config.url}
               onChange={(e) => handleUrlChange(e.target.value)}
               onBlur={handleUrlBlur}
               disabled={isSaving}
-              className={urlError ? 'border-border-danger' : ''}
+              aria-invalid={urlError ? true : undefined}
             />
-            {urlError && (
-              <p className="flex items-center gap-1 text-supporting text-text-danger">
-                <AlertCircle size={16} />
-                {urlError}
-              </p>
-            )}
-          </div>
+          </SettingRow>
 
-          <div className="space-y-2">
-            <label htmlFor="external-secret" className="text-label text-text-default">
-              Secret Key
-            </label>
+          <SettingRow
+            label={serverCopy.secret}
+            help={serverCopy.secretHelp}
+            controlId="external-secret"
+          >
             <Input
-              id="external-secret"
+              machine
               type="password"
-              placeholder="Enter the server's secret key"
+              autoComplete="off"
+              placeholder={serverCopy.secretPlaceholder}
               value={config.secret}
               onChange={(e) => updateField('secret', e.target.value)}
               onBlur={() => saveConfig(config)}
               disabled={isSaving}
             />
-            <p className="text-supporting text-text-muted">
-              The secret key configured on the biorouterd server (BIOROUTER_SERVER__SECRET_KEY)
-            </p>
-          </div>
+          </SettingRow>
 
-          <div className="space-y-2">
-            <label htmlFor="external-user-action-key" className="text-label text-text-default">
-              User Action Key
-            </label>
+          <SettingRow
+            label={serverCopy.userActionKey}
+            help={serverCopy.userActionKeyHelp}
+            controlId="external-user-action-key"
+          >
             <Input
-              id="external-user-action-key"
+              machine
               type="password"
-              placeholder="Enter the key the server was started with"
+              autoComplete="off"
+              placeholder={serverCopy.userActionKeyPlaceholder}
               value={config.userActionKey}
               onChange={(e) => updateField('userActionKey', e.target.value)}
               onBlur={() => saveConfig(config)}
               disabled={isSaving}
             />
-            <p className="text-supporting text-text-muted">
-              Proves a request came from you rather than from the model. The server is given the
-              SHA-256 of this key on stdin when it starts. Without it, private chats cannot be
-              opened, branched, or reported through this backend.
-            </p>
-          </div>
+          </SettingRow>
 
-          <Note tone="warning">
-            <strong className="font-semibold">Note:</strong> Changes require restarting Biorouter to
-            take effect. New chat windows will connect to the external server.
-          </Note>
-        </div>
+          {config.url && (
+            <Note tone="neutral" testId="external-dictation-disclosure">
+              {dictationMessage('MSG-DISCLOSE-REMOTE', { host: hostOf(config.url) })}
+            </Note>
+          )}
+        </>
       )}
-    </section>
+    </SettingSection>
   );
 }

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Check } from '../icons/app-icons';
 import { Button } from '../ui/button';
+import { InfoTip } from '../ui/info-tip';
 import { Note } from '../ui/note';
 import { Spinner } from '../ui/spinner';
 import { PermissionCheckButton } from './PermissionCheckButton';
@@ -33,6 +34,29 @@ export function runtimeVerdict(runtime: CopilotRuntime): RuntimeVerdict {
   return runtime.status === 'ready' ? 'ready' : 'unverified';
 }
 
+/**
+ * Which runtime answered, for the state line's InfoTip: the backend computer and the runtime's
+ * version and target. Facts a person rarely needs, so they wait behind the glyph rather than take
+ * two lines of the panel. Empty when the runtime reported none.
+ */
+export function runtimeFacts(runtime: CopilotRuntime): string {
+  const facts: string[] = [];
+  if (runtime.host) facts.push(`Backend computer: ${runtime.host}.`);
+  if (runtime.runtime_version) {
+    facts.push(
+      `Runtime version: ${runtime.runtime_version}${runtime.target ? ` · ${runtime.target}` : ''}.`
+    );
+  }
+  return facts.join(' ');
+}
+
+/**
+ * What a runtime check found, in layers (owner, 2026-11-13: the answer up front, the detail on
+ * hover or on click). In view: the state, an error that just happened, the OS permissions, the
+ * exact copy to grant, the backend's own message, and one line of what to do next, with the
+ * buttons that do it. Behind an InfoTip beside the line it explains: which runtime answered, and
+ * the second sentence of each remedy.
+ */
 export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) {
   const [settingsError, setSettingsError] = useState('');
   const localMac =
@@ -65,21 +89,17 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
           .join(' · ');
   const target = runtime.target ?? '';
   const verdict = runtimeVerdict(runtime);
+  const facts = runtimeFacts(runtime);
   return (
     <div className="space-y-1 text-supporting text-text-muted">
       {/* The state is the answer; everything under it is detail. It takes the default ink so the
-          block is read from its first line, where the muted lines under it are the how and why. */}
+          block is read from its first line, where the muted lines under it are the how and why.
+          Which runtime answered is its InfoTip. */}
       <p className="text-text-default">
         {copilotSetupCopy.runtimeStates[runtime.status] ?? runtime.status}
+        {facts && <InfoTip label="this runtime" help={facts} />}
       </p>
       {runtime.error && <p className="break-words">{runtime.error}</p>}
-      {runtime.host && <p>Backend computer: {runtime.host}</p>}
-      {runtime.runtime_version && (
-        <p>
-          Runtime version: {runtime.runtime_version}
-          {runtime.target ? ` · ${runtime.target}` : ''}
-        </p>
-      )}
       <p>OS permissions: {permissionSummary || 'Not reported by this environment.'}</p>
       {/* ⚠ NAME THE BINARY. macOS keys Screen Recording to a particular executable
           PATH, not to the signing identity, so a machine holding more than one copy
@@ -90,9 +110,12 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
           screen to tell them so. Measured 2026-09-23: three copies on one machine,
           two reporting `screen_recording: true` and the source build reporting
           false, with an identical bundle id and the same Developer ID. */}
+      {/* The path is data, read character by character against what System Settings lists, so
+          it is set as code (design.md D-42), not as a folder's place. */}
       {runtime.executable && verdict !== 'ready' && (
         <p className="break-all">
-          Grant these to this exact copy: <code>{runtime.executable}</code>
+          Grant these to this exact copy:{' '}
+          <code className="font-mono text-code">{runtime.executable}</code>
         </p>
       )}
       {runtime.message && <p>{runtime.message}</p>}
@@ -107,9 +130,11 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
       )}
       {runtime.status === 'probe_failed' && (
         <p>
-          The permission check failed; this does not mean access was denied. Restart Biorouter on
-          the backend computer and check again. If it still fails, repair the matching Biorouter
-          package.
+          The permission check failed; this does not mean access was denied.
+          <InfoTip
+            label="recovering from a failed check"
+            help="Restart Biorouter on the backend computer and check again. If it still fails, repair the matching Biorouter package."
+          />
         </p>
       )}
       {/* The remediation below used to render unconditionally, on `target` alone.
@@ -139,7 +164,11 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
       ) : /linux/.test(target) ? (
         <p>
           Enable accessibility in the backend desktop session and install the system dependencies
-          reported above. Desktop portals may request additional permissions.
+          reported above.
+          <InfoTip
+            label="Linux desktop permissions"
+            help="Desktop portals may request additional permissions."
+          />
         </p>
       ) : (
         <p>
@@ -154,9 +183,11 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
             <p>
               {runtime.message?.includes('System Settings')
                 ? 'Use the app names in the permission details above.'
-                : 'For the bundled app, enable Accessibility for BioRouter Computer Use and Screen Recording for Biorouter.'}{' '}
-              If macOS asks you to quit and reopen it, do so, then use Check again. Checking
-              permissions does not grant them.
+                : 'For the bundled app, enable Accessibility for BioRouter Computer Use and Screen Recording for Biorouter.'}
+              <InfoTip
+                label="allowing permissions on macOS"
+                help="If macOS asks you to quit and reopen it, do so, then use Check again. Checking permissions does not grant them."
+              />
             </p>
             {localMac ? (
               <div className="flex flex-wrap gap-2">
@@ -177,8 +208,11 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
               </div>
             ) : (
               <p>
-                Make these changes on the backend computer. If it is remote, changing permissions on
-                this device will not change the backend's access.
+                Make these changes on the backend computer.
+                <InfoTip
+                  label="a remote backend"
+                  help="If it is remote, changing permissions on this device will not change the backend's access."
+                />
               </p>
             )}
             {settingsError && <p role="alert">{settingsError}</p>}
@@ -186,8 +220,11 @@ export function CopilotRuntimeDetails({ runtime }: { runtime: CopilotRuntime }) 
         )}
       {runtime.development_override && (
         <p>
-          Using an explicitly configured development runtime (BIOROUTER_COMPUTER_USE_DIR). Its
-          operating-system permissions are separate from the installed app&apos;s.
+          Using an explicitly configured development runtime (BIOROUTER_COMPUTER_USE_DIR).
+          <InfoTip
+            label="the development runtime"
+            help="Its operating-system permissions are separate from the installed app's."
+          />
         </p>
       )}
     </div>

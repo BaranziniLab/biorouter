@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { ModalShell } from '../ModalShell';
 import { DialogDescription } from '../ui/dialog';
 import { Button } from '../ui/button';
+import { Disclosure } from '../ui/disclosure';
+import { InfoTip } from '../ui/info-tip';
 import { listSessions, type Session } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 import {
@@ -227,17 +229,18 @@ export function FirstRunPrivacyNotice({
               History are now marked private, because that is the model each of them was last using.
             </DialogDescription>
 
+            {/* The breakdown behind the count folds (owner, 2026-11-13: one line up
+                front, the detail on click). */}
             {resolved.privateByProvider.length > 0 && (
-              <div>
-                <p className="text-text-muted">Marked private by model:</p>
-                <ul data-testid="notice-by-provider" className="mt-1 space-y-0.5">
+              <Disclosure label="Marked private by model">
+                <ul data-testid="notice-by-provider" className="space-y-0.5">
                   {resolved.privateByProvider.map(({ provider, count }) => (
                     <li key={provider} data-provider={provider}>
                       {providerLabel(provider)}: {count}
                     </li>
                   ))}
                 </ul>
-              </div>
+              </Disclosure>
             )}
 
             {resolved.unknownProviderVisible > 0 && (
@@ -250,21 +253,12 @@ export function FirstRunPrivacyNotice({
           </>
         )}
 
-        <p data-testid="notice-last-model-caveat">
-          Chats from before this version are marked by the model they were last using. If an older
-          chat contains work you want kept private, switch it to a private model. It will be marked
-          private from its next turn on.
-        </p>
-
-        <p data-testid="notice-knowledge-bases" className="text-text-muted">
-          Knowledge bases that already existed start public, whatever fed them. If one holds private
-          material you can mark it private yourself from the Knowledge view.
-        </p>
-
         {/*
           §13.5's day-one extension disclosure. Rendered only when there is
           something to name — a paragraph that says "no extensions are
-          affected" is noise on every machine that reads it.
+          affected" is noise on every machine that reads it. The one disclosure
+          no refusal will ever teach, so who can call the extension stays on the
+          page; only the reassurance after it is the info icon's.
         */}
         {publicClinicalExtensions.length > 0 && (
           <p data-testid="notice-public-clinical-extensions">
@@ -273,11 +267,32 @@ export function FirstRunPrivacyNotice({
               : 'Some extensions you have enabled are set up for clinical data and are not marked private: '}
             <strong className="font-semibold">{publicClinicalExtensions.join(', ')}</strong>. Any
             model, including commercial models hosted outside your institution, can still call{' '}
-            {publicClinicalExtensions.length === 1 ? 'it' : 'them'}. Nothing about{' '}
-            {publicClinicalExtensions.length === 1 ? 'it' : 'them'} has changed. This notice is so
-            you know.
+            {publicClinicalExtensions.length === 1 ? 'it' : 'them'}.{' '}
+            <InfoTip
+              label="this extension notice"
+              help={`Nothing about ${
+                publicClinicalExtensions.length === 1 ? 'it' : 'them'
+              } has changed. This notice is so you know.`}
+            />
           </p>
         )}
+
+        {/* What the marking means for older chats and knowledge bases, and how to
+            change it, folds under one disclosure (owner, 2026-11-13). */}
+        <Disclosure label="What this means">
+          <div className="space-y-4">
+            <p data-testid="notice-last-model-caveat">
+              Chats from before this version are marked by the model they were last using. If an
+              older chat contains work you want kept private, switch it to a private model. It will
+              be marked private from its next turn on.
+            </p>
+
+            <p data-testid="notice-knowledge-bases" className="text-text-muted">
+              Knowledge bases that already existed start public, whatever fed them. If one holds
+              private material you can mark it private yourself from the Knowledge view.
+            </p>
+          </div>
+        </Disclosure>
       </div>
     </ModalShell>
   );

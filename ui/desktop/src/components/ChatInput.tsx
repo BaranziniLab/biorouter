@@ -8,7 +8,6 @@ import type { View, ViewOptions } from '../utils/navigationUtils';
 import Stop from './ui/Stop';
 import { ChatState } from '../types/chatState';
 import { LocalMessageStorage } from '../utils/localMessageStorage';
-import { ToolsChip } from './bottom_menu/ToolsChip';
 import { useSessionWorkingDir } from './bottom_menu/useSessionWorkingDir';
 import { ModelEffortChip } from './bottom_menu/ModelEffortChip';
 import { ComposerFooter } from './bottom_menu/ComposerFooter';
@@ -22,6 +21,8 @@ import { ComposerChips } from './composer/ComposerChips';
 import { composerCardClassName } from './composer/composerCard';
 import { mentionMenuAnchor } from './composer/mentionMenuPlacement';
 import { ComposerPlusMenu, type ComposerTrigger } from './composer/ComposerPlusMenu';
+import { useFieldGrowth } from './composer/useFieldGrowth';
+import { useSendMotion } from './composer/useSendMotion';
 import { useConfig } from './ConfigContext';
 import { useModelAndProvider } from './ModelAndProviderContext';
 import {
@@ -44,6 +45,22 @@ import type { ProviderDetails, SessionClassification } from '../api/types.gen';
 import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUtils';
 import { getSteerShortcutText } from '../utils/keyboardShortcuts';
 import { COMPOSER_COPY } from './composer/copy';
+import {
+  DictationButton,
+  DictationHoldReason,
+  DictationNotices,
+} from './dictation/DictationButton';
+import { DICTATION_ACTIONS, DICTATION_LABELS, dictationMessage } from './dictation/copy';
+import { streamDecisionModels } from './dictation/dictationApi';
+import {
+  isDictationInserting,
+  noteDictationEdit,
+  type DictationTarget,
+} from './dictation/dictationSession';
+import { clearPrivateDraft, isPrivateDraft, markPrivateDraft } from './dictation/privateDraft';
+import { dictationContext, useDictationComposer } from './dictation/useDictationComposer';
+import { readResolvedProviderTier } from './privacy/useBoundProviderTier';
+import { ConfirmationModal } from './ui/ConfirmationModal';
 import type { UserAttachment } from '../types/message';
 import { useStopAcknowledgement } from '../hooks/useStopAcknowledgement';
 import { isRunningState, type PinnedModelView } from '../hooks/chatStreamStore';
@@ -72,11 +89,20 @@ import {
   giveBackToComposer,
   mergeComposerDraft,
   readComposerDraft,
+  recordComposerDictation,
   saveComposerDraft,
   subscribeComposerGiveBack,
   type ComposerDraft,
   type DraftImage,
 } from '../utils/composerDrafts';
+import {
+  mapComposerDictation,
+  mapDictatedSpans,
+  keepQueuedDictation,
+  readQueuedDictation,
+  postCorrectionObservations,
+  type DictatedSpan,
+} from '../utils/dictationLedger';
 import {
   beginQueuedOffer,
   claimComposerQueue,
@@ -95,7 +121,8 @@ import {
   settleDecisionQuestion,
 } from './decisions/DecisionComposer';
 import { isDecisionProvider } from './decisions/decisionWire';
-import type { PrivacyBasis } from '../utils/sessionDecisions';
+import type { DecisionSettings, PrivacyBasis } from '../utils/sessionDecisions';
+import { draftDecisionModels } from './decisions/draftDecisionSettings';
 
 /**
  * Queued messages as a draft, for a composer with no chat to keep a queue for.
@@ -105,23 +132,36 @@ import type { PrivacyBasis } from '../utils/sessionDecisions';
  * back (`composerTextOfSent`) so it returns as the chip: a give-back stored
  * while no composer is mounted is adopted later without passing `takeBack`.
  */
+function submitComposer(
+  submit: (event: React.FormEvent) => void | Promise<boolean | void>,
+  event: React.FormEvent
+): void | Promise<boolean | void> {
+  try {
+    return submit(event);
+  } catch {
+    return Promise.resolve(false);
+  }
+}
+
 function draftOfQueuedMessages(messages: readonly QueuedMessage[]): ComposerDraft {
-  return {
-    text: messages
-      .map((message) => composerTextOfSent(message.content.trim()))
-      .filter(Boolean)
-      .join('\n\n'),
-    images: messages.flatMap((message) =>
-      (message.attachments ?? [])
-        .filter((attachment) => attachment.kind === 'image')
-        .map((attachment, index) => ({
-          id: `queued-${message.id}-${index}`,
-          filePath: attachment.path,
-          dataUrl: '',
-        }))
-    ),
-    files: [],
-  };
+  return messages.reduce<ComposerDraft>((draft, message) => {
+    const text = composerTextOfSent(message.content.trim());
+    return mergeComposerDraft(
+      {
+        text,
+        images: (message.attachments ?? [])
+          .filter((attachment) => attachment.kind === 'image')
+          .map((attachment, index) => ({
+            id: `queued-${message.id}-${index}`,
+            filePath: attachment.path,
+            dataUrl: '',
+          })),
+        files: [],
+        dictation: mapDictatedSpans(readQueuedDictation(message), message.content, text),
+      },
+      draft
+    );
+  }, EMPTY_COMPOSER_DRAFT);
 }
 
 /**
@@ -383,6 +423,8 @@ interface ChatInputProps {
   };
   /** Real per-model usage rows from the token ledger (Issue #1 breakdown). */
   modelCostRows?: ModelCostRow[];
+  /** Reads the chat's usage ledger again: the cost card calls it each time it opens. */
+  reloadCost?: () => void;
   workflow?: Workflow | null;
   workflowAccepted?: boolean;
   initialPrompt?: string;
@@ -426,6 +468,12 @@ interface ChatInputProps {
    * `privacyBasis`, read by `BaseChat`), for the model chip's tip and its switch.
    */
   privacyBasis?: PrivacyBasis | null;
+  /**
+   * DR-33: the decision settings drafted for a chat that does not exist yet, which its
+   * start will carry. A new chat's dictation names their models, so the daemon judges
+   * the chat as the start will make it.
+   */
+  draftDecisionSettings?: DecisionSettings | null;
 }
 
 export default function ChatInput({
@@ -454,6 +502,7 @@ export default function ChatInput({
   workingDirLocked,
   sessionCosts,
   modelCostRows,
+  reloadCost,
   workflowAccepted,
   initialPrompt,
   append: _append,
@@ -464,6 +513,7 @@ export default function ChatInput({
   onOpenDecisionMonitors,
   usageLimitNoticeKey,
   privacyBasis,
+  draftDecisionSettings,
 }: ChatInputProps) {
   const [anonymousReasoningDraftKey] = useState(() => crypto.randomUUID());
   // A new chat's unsent message, as its tab last held it. Read ONCE, in the
@@ -498,6 +548,35 @@ export default function ChatInput({
   // followed renders would save the box as it was BEFORE the send cleared it.
   const displayValueRef = useRef(displayValue);
   displayValueRef.current = displayValue;
+  const dictatedSpansRef = useRef<DictatedSpan[]>(seedDraft?.dictation ?? []);
+  const ledgerTextRef = useRef(displayValue);
+  const fieldEditRef = useRef<{ text: string; caret: number } | null>(null);
+  const mapLedger = useCallback((after: string) => {
+    const edit = fieldEditRef.current;
+    dictatedSpansRef.current = mapComposerDictation(
+      dictatedSpansRef.current,
+      ledgerTextRef.current,
+      after,
+      edit?.text === after,
+      edit?.caret
+    );
+    ledgerTextRef.current = after;
+    fieldEditRef.current = null;
+  }, []);
+  // This effect precedes draft saves, including a replacement composer's seed read.
+  useLayoutEffect(() => {
+    mapLedger(displayValue);
+  }, [displayValue, mapLedger]);
+  const releaseComposerText = useCallback(
+    (reason: 'send' | 'queue' | 'steer' | 'drop'): DictatedSpan[] => {
+      mapLedger(displayValueRef.current);
+      const spans = reason === 'drop' ? [] : dictatedSpansRef.current;
+      dictatedSpansRef.current = [];
+      ledgerTextRef.current = '';
+      return spans;
+    },
+    [mapLedger]
+  );
 
   // Loading gates composer operations; live work drives the visual activity
   // indicator. LoadingConversation is intentionally only in the former.
@@ -518,7 +597,8 @@ export default function ChatInput({
     wasLoadingForLimitRef.current = isLoading;
   }, [isLoading]);
   // Read again whenever the chat's recorded usage moves, not only when a turn ends: a title's
-  // side call lands after the turn, and the near-limit mark must not wait for the next one.
+  // side call lands after the turn (the store's post-turn naming poll carries it into the live
+  // counters), and the near-limit mark must not wait for the next one.
   const usageSignature =
     (accumulatedInputTokens ?? 0) +
     (accumulatedOutputTokens ?? 0) +
@@ -959,53 +1039,67 @@ export default function ChatInput({
         retryingQueuedOffersRef.current.delete(message.id);
         pendingQueuedOfferIdsRef.current.add(message.id);
         if (key) beginQueuedOffer(key, message.id);
-        const submitted = handleSubmit(
+        let acceptedSessionId = sessionId;
+        const submitted = submitComposer(
+          handleSubmit,
           new CustomEvent('submit', {
-            detail: { value: message.content, attachments: message.attachments ?? [] },
+            detail: {
+              value: message.content,
+              attachments: message.attachments ?? [],
+              onAcceptedSession: (id: string) => {
+                acceptedSessionId = id;
+              },
+            },
           }) as unknown as React.FormEvent
         );
-        void Promise.resolve(submitted).then((accepted) => {
-          pendingQueuedOfferIdsRef.current.delete(message.id);
-          if (key) endQueuedOffer(key, message.id);
-          // Only an explicit `false` is a refusal: a handler predating the
-          // contract resolves `undefined` and must not be read as one.
-          if (accepted !== false) {
-            if (continuationQueuedMessageIdRef.current === message.id) {
-              continuationQueuedMessageIdRef.current = null;
+        void Promise.resolve(submitted)
+          .catch(() => false)
+          .then((accepted) => {
+            pendingQueuedOfferIdsRef.current.delete(message.id);
+            if (key) endQueuedOffer(key, message.id);
+            // Only an explicit `false` is a refusal: a handler predating the
+            // contract resolves `undefined` and must not be read as one.
+            if (accepted !== false) {
+              postCorrectionObservations(
+                readQueuedDictation(message),
+                acceptedSessionId ?? undefined
+              );
+              if (continuationQueuedMessageIdRef.current === message.id) {
+                continuationQueuedMessageIdRef.current = null;
+              }
+              return;
             }
-            return;
-          }
-          // Not taken, and the composer that offered it is gone: no timer, no
-          // state on a component that no longer exists. The message goes back
-          // to whatever holds this chat's queue now.
-          if (queueDisposedRef.current) {
-            handBackQueuedMessage(key, draftKeyAtOffer, message);
-            return;
-          }
-          if (attempt < QUEUE_DRAIN_ATTEMPTS) {
-            // Next macrotask, which is all the in-flight submit's promise chain
-            // needs to unwind and release its latch. Deliberately not a poll:
-            // the attempt count is the whole retry budget.
-            retryingQueuedOffersRef.current.set(message.id, message);
-            const timer = setTimeout(() => {
-              queueRetryTimersRef.current.delete(timer);
-              offer(attempt + 1);
-            }, 0);
-            queueRetryTimersRef.current.add(timer);
-            return;
-          }
-          setQueuedMessages((prev) =>
-            prev.some((queued) => queued.id === message.id) ? prev : [message, ...prev]
-          );
-          toastWarning({
-            title: COMPOSER_COPY.toasts.queued.title,
-            msg: COMPOSER_COPY.toasts.queued.busy,
+            // Not taken, and the composer that offered it is gone: no timer, no
+            // state on a component that no longer exists. The message goes back
+            // to whatever holds this chat's queue now.
+            if (queueDisposedRef.current) {
+              handBackQueuedMessage(key, draftKeyAtOffer, message);
+              return;
+            }
+            if (attempt < QUEUE_DRAIN_ATTEMPTS) {
+              // Next macrotask, which is all the in-flight submit's promise chain
+              // needs to unwind and release its latch. Deliberately not a poll:
+              // the attempt count is the whole retry budget.
+              retryingQueuedOffersRef.current.set(message.id, message);
+              const timer = setTimeout(() => {
+                queueRetryTimersRef.current.delete(timer);
+                offer(attempt + 1);
+              }, 0);
+              queueRetryTimersRef.current.add(timer);
+              return;
+            }
+            setQueuedMessages((prev) =>
+              prev.some((queued) => queued.id === message.id) ? prev : [message, ...prev]
+            );
+            toastWarning({
+              title: COMPOSER_COPY.toasts.queued.title,
+              msg: COMPOSER_COPY.toasts.queued.busy,
+            });
           });
-        });
       };
       offer(1);
     },
-    [handleSubmit]
+    [handleSubmit, sessionId]
   );
 
   // Queue processing
@@ -1115,6 +1209,12 @@ export default function ChatInput({
   const [isInGlobalHistory, setIsInGlobalHistory] = useState(false);
   const [hasUserTyped, setHasUserTyped] = useState(() => Boolean(seedDraft?.text));
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
+  // The send motion: the sent text lifts from the field and Send's arrow answers
+  // the press (`composer/useSendMotion.ts`).
+  const sendMotion = useSendMotion();
+  const playSendMotion = sendMotion.play;
+  // Lines come and go smoothly as the draft grows and shrinks.
+  useFieldGrowth(textAreaRef);
   const timeoutRefsRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
 
   // A region the user selected in the preview panel arrives here as an already
@@ -1224,6 +1324,7 @@ export default function ChatInput({
   const heldDraft = useCallback(
     (): ComposerDraft => ({
       text: displayValueRef.current,
+      ...(dictatedSpansRef.current.length ? { dictation: dictatedSpansRef.current } : {}),
       images: draftImagesOf(pastedImagesRef.current),
       files: draftFilesOf([...parentDroppedFilesRef.current, ...localDroppedFilesRef.current]),
     }),
@@ -1239,6 +1340,9 @@ export default function ChatInput({
   const showDraft = useCallback(
     (next: ComposerDraft, { focus = true }: { focus?: boolean } = {}) => {
       displayValueRef.current = next.text;
+      dictatedSpansRef.current = next.dictation ?? [];
+      ledgerTextRef.current = next.text;
+      fieldEditRef.current = null;
       setDisplayValue(next.text);
       setValue(next.text);
       const images = pastedImagesOf(next.images);
@@ -1761,6 +1865,155 @@ export default function ChatInput({
     [displayValue, setComposerText]
   );
 
+  // ---- Dictation (DD-60 to DD-63, DD-71) ------------------------------------
+  //
+  // The microphone left of Send, the chord in the field, and the three submit
+  // gates. Its key is the draft key, so text that arrives after this composer
+  // unmounts goes into the stored draft; a composer without one gets a key of
+  // its own and drops it. This component renders only when the composer's
+  // dictation activity changes, never per chunk or per second.
+  const dictationKey = draftKey ?? `composer:${anonymousReasoningDraftKey}`;
+  const composerProseRef = useRef(composerProse);
+  composerProseRef.current = composerProse;
+  const setComposerProseRef = useRef(setComposerProse);
+  setComposerProseRef.current = setComposerProse;
+  const composerCommandRef = useRef(composerCommand);
+  composerCommandRef.current = composerCommand;
+  const isComposingRef = useRef(isComposing);
+  isComposingRef.current = isComposing;
+  const draftDecisionSettingsRef = useRef(draftDecisionSettings);
+  draftDecisionSettingsRef.current = draftDecisionSettings;
+  const dictationTarget = (): DictationTarget => {
+    const field = textAreaRef.current;
+    const prose = composerProseRef.current;
+    const at = Math.min(field?.selectionStart ?? prose.length, prose.length);
+    const context = dictationContext(prose.slice(0, at));
+    const withContext = context ? { context } : {};
+    if (sessionId) return { target_kind: 'chat', session_id: sessionId, ...withContext };
+    // Home and a new tab: the daemon judges the tier the new chat's bind would
+    // produce, from the tab's own pick when it has one (DD-30), with the decision
+    // models its draft names, which the start will carry (DR-33).
+    const draftModels = draftDecisionModels(draftDecisionSettingsRef.current);
+    return {
+      target_kind: 'new_chat',
+      ...(effectiveModel
+        ? { new_chat_provider: effectiveModel.provider, new_chat_model: effectiveModel.model }
+        : {}),
+      ...(draftModels.length > 0
+        ? { new_chat_decision_models: streamDecisionModels(draftModels) }
+        : {}),
+      ...withContext,
+    };
+  };
+  const dictation = useDictationComposer({
+    key: dictationKey,
+    textAreaRef,
+    storesDraft: !!draftKey,
+    target: dictationTarget,
+    setByState: (value, caret) => {
+      setComposerProseRef.current(value);
+      setHasUserTyped(true);
+      requestAnimationFrame(() => {
+        const field = textAreaRef.current;
+        if (field && document.activeElement === field) field.setSelectionRange(caret, caret);
+      });
+    },
+    isComposing: () => isComposingRef.current,
+    draftPrefix: () => joinLeadingCommand(composerCommandRef.current, '').length,
+    onInserted: (event) => {
+      if (event.path !== 'draft') {
+        const prefix = joinLeadingCommand(composerCommandRef.current, '').length;
+        const before = joinComposerText(
+          joinLeadingCommand(composerCommandRef.current, event.before),
+          splitComposerText(displayValueRef.current).refs
+        );
+        const recorded = recordComposerDictation(
+          dictatedSpansRef.current,
+          before,
+          { start: event.anchor.start + prefix, end: event.anchor.end + prefix },
+          event.transcript.text,
+          {
+            recordId: event.streamId ?? crypto.randomUUID(),
+            raw: event.transcript.raw_text,
+            changes: event.transcript.changes,
+            model: event.transcript.model,
+            biasScope: event.transcript.bias_scope,
+          }
+        );
+        dictatedSpansRef.current = recorded.dictation;
+        ledgerTextRef.current = recorded.text;
+      }
+      setHasUserTyped(true);
+      if (event.transcript.bias_scope === 'private') markPrivateDraft(dictationKey);
+    },
+    isEmpty: () => !composerProseRef.current,
+  });
+  const dictationHoldsComposer = dictation.available && dictation.holdsComposer;
+  // Every change to the prose moves the anchor of a dictation that will still
+  // put text here (typing while recording, a recalled message, a give-back).
+  const lastDictatedProseRef = useRef(composerProse);
+  useLayoutEffect(() => {
+    const before = lastDictatedProseRef.current;
+    lastDictatedProseRef.current = composerProse;
+    if (before === composerProse || isDictationInserting(dictationKey)) return;
+    const field = textAreaRef.current;
+    const caret = field && document.activeElement === field ? field.selectionEnd : undefined;
+    noteDictationEdit(dictationKey, before, composerProse, caret);
+  }, [composerProse, dictationKey]);
+  // The private draft flag goes when the draft is sent or emptied: the box and
+  // the stored draft both empty. The box alone is not enough on a remount. Text
+  // dictated while no composer was mounted is written to the stored draft, and
+  // flagged there (`dictationSession.ts`); a box that has not adopted that copy
+  // yet (a write between this composer's render and its commit) shows the older,
+  // emptier seed for one render, and must not clear the flag for it. Every
+  // change the box makes is saved before this runs (the layout effects above).
+  useEffect(() => {
+    if (displayValue.trim()) return;
+    if (draftKey && readComposerDraft(draftKey)?.text.trim()) return;
+    clearPrivateDraft(dictationKey);
+  }, [displayValue, dictationKey, draftKey]);
+  // The first focus that follows the mount is a sign of interest; the mount's
+  // own autofocus is not, so mounting a composer sends no status request.
+  const dictationFocusArmedRef = useRef(false);
+  useEffect(() => {
+    dictationFocusArmedRef.current = true;
+  }, []);
+
+  // MSG-PRIVATE-DRAFT (DD-71): a draft holding text dictated with private terms
+  // eligible asks before it leaves for a chat whose model is not known to be
+  // private, judged by the bound provider's instance tier, never a declared one.
+  // The three exits that hand text to a model (send, queue, steer) all pass here.
+  const [privateDraftAsk, setPrivateDraftAsk] = useState<{
+    model: string;
+    proceed: () => void;
+  } | null>(null);
+  const privateDraftBypassRef = useRef(false);
+  const runPastPrivateDraft = (proceed: () => void) => {
+    privateDraftBypassRef.current = true;
+    try {
+      proceed();
+    } finally {
+      privateDraftBypassRef.current = false;
+    }
+  };
+  const askPrivateDraftFirst = (proceed: () => void): boolean => {
+    if (privateDraftBypassRef.current || !isPrivateDraft(dictationKey)) return false;
+    const provider = effectiveModel?.provider ?? currentProvider;
+    const model = effectiveModel?.model ?? currentModel ?? provider ?? '';
+    void (async () => {
+      let tier: 'public' | 'private' | undefined;
+      try {
+        const rows = await getProviders(false);
+        tier = readResolvedProviderTier(rows.find((row) => row.name === provider));
+      } catch {
+        tier = undefined;
+      }
+      if (tier === 'private') runPastPrivateDraft(proceed);
+      else setPrivateDraftAsk({ model, proceed });
+    })();
+    return true;
+  };
+
   const handleChange = (evt: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = evt.target.value;
     let cursorPosition = evt.target.selectionStart;
@@ -1776,8 +2029,17 @@ export default function ChatInput({
       setTimeout(() => textAreaRef.current?.setSelectionRange(caret, caret), 0);
     }
 
+    if (!isDictationInserting(dictationKey)) {
+      const next = joinComposerText(joinLeadingCommand(composerCommand, val), composerRefs);
+      fieldEditRef.current = {
+        text: next,
+        caret: cursorPosition + joinLeadingCommand(composerCommand, '').length,
+      };
+    }
     setComposerProse(val);
     setHasUserTyped(true);
+    // Dictated text opens no menu: a spoken "@" is a word (DD-63 step 5).
+    if (isDictationInserting(dictationKey)) return;
     // The textarea's offsets are prose offsets, and so is everything the mention
     // popover computes from them.
     checkForMentionOrSlash(shown, cursorPosition, evt.target);
@@ -2147,6 +2409,10 @@ export default function ChatInput({
         timestamp: Date.now(),
       };
 
+      keepQueuedDictation(
+        interruptionMessage,
+        mapDictatedSpans(releaseComposerText('queue'), displayValue, contentToQueue)
+      );
       // Add the interruption message to the front of the queue so it gets sent first
       setQueuedMessages((prev) => [interruptionMessage, ...prev]);
 
@@ -2169,6 +2435,10 @@ export default function ChatInput({
       ownedTempAttachmentPaths,
       timestamp: Date.now(),
     };
+    keepQueuedDictation(
+      newMessage,
+      mapDictatedSpans(releaseComposerText('queue'), displayValue, contentToQueue)
+    );
     setQueuedMessages((prev) => {
       const newQueue = [...prev, newMessage];
       // If adding to an empty queue, reset the paused state
@@ -2235,13 +2505,14 @@ export default function ChatInput({
   // Never drop the user's words: if the steer was refused (the turn ended in the
   // meantime) send the text now, or re-queue it if a turn is somehow running.
   const sendOrQueueText = useCallback(
-    (content: string) => {
+    (content: string, spans: DictatedSpan[] = []) => {
       const message = {
         id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
         content,
         attachments: [],
         timestamp: Date.now(),
       };
+      keepQueuedDictation(message, spans);
       if (queueDisposedRef.current) {
         // The steer was answered after this composer went away.
         handBackQueuedMessage(queueKeyRef.current, queueDraftKeyRef.current, message);
@@ -2260,19 +2531,20 @@ export default function ChatInput({
   );
 
   const steerText = useCallback(
-    (content: string, putBack?: () => boolean) => {
+    (content: string, putBack?: () => boolean, spans: DictatedSpan[] = []) => {
       if (!onSteer) return;
       void onSteer(content).then((accepted) => {
         if (accepted) {
           // The agent echoes the steer back as a user message on the live stream
           // once it consumes it, so nothing is appended to the transcript here.
           LocalMessageStorage.addMessage(content);
+          postCorrectionObservations(spans, sessionId ?? undefined);
         } else if (!putBack?.()) {
-          sendOrQueueText(content);
+          sendOrQueueText(content, spans);
         }
       });
     },
-    [onSteer, sendOrQueueText]
+    [onSteer, sendOrQueueText, sessionId]
   );
 
   /** Cmd/Ctrl+Enter while a turn runs: steer with whatever is in the composer. */
@@ -2282,11 +2554,18 @@ export default function ChatInput({
     if (!text || pastedImages.length > 0 || allDroppedFiles.length > 0) {
       return false;
     }
-    steerText(text);
+    steerText(text, undefined, mapDictatedSpans(releaseComposerText('steer'), displayValue, text));
     setDisplayValue('');
     setValue('');
     return true;
-  }, [canSteer, displayValue, pastedImages.length, allDroppedFiles.length, steerText]);
+  }, [
+    canSteer,
+    displayValue,
+    pastedImages.length,
+    allDroppedFiles.length,
+    steerText,
+    releaseComposerText,
+  ]);
 
   /** BR-61: send a queued message into the running turn without stopping it. */
   const handleSteerMessage = (messageId: string) => {
@@ -2298,16 +2577,20 @@ export default function ChatInput({
     // D5: a steer the daemon refuses while a turn is still running goes back
     // where it was in the queue, not to the back of it — "Add now" on the
     // first of three rows must not quietly make it the last.
-    steerText(messageToSteer.content, () => {
-      if (!isLoadingRef.current) return false;
-      setQueuedMessages((prev) => {
-        if (prev.some((msg) => msg.id === messageToSteer.id)) return prev;
-        const next = [...prev];
-        next.splice(Math.min(index, next.length), 0, messageToSteer);
-        return next;
-      });
-      return true;
-    });
+    steerText(
+      messageToSteer.content,
+      () => {
+        if (!isLoadingRef.current) return false;
+        setQueuedMessages((prev) => {
+          if (prev.some((msg) => msg.id === messageToSteer.id)) return prev;
+          const next = [...prev];
+          next.splice(Math.min(index, next.length), 0, messageToSteer);
+          return next;
+        });
+        return true;
+      },
+      readQueuedDictation(messageToSteer)
+    );
   };
 
   /**
@@ -2374,13 +2657,14 @@ export default function ChatInput({
       setMentionPopover((prev) => ({ ...prev, isOpen: false }));
       return;
     }
+    releaseComposerText('drop');
     displayValueRef.current = '';
     setView('crew', { resumeSessionId: sessionId });
     setDisplayValue('');
     setValue('');
     setHasUserTyped(false);
     setMentionPopover((prev) => ({ ...prev, isOpen: false }));
-  }, [hasCrewCommandExtras, sessionId, setView, setValue]);
+  }, [hasCrewCommandExtras, sessionId, setView, setValue, releaseComposerText]);
 
   const canSubmit =
     !isLoading &&
@@ -2435,6 +2719,7 @@ export default function ChatInput({
           });
           return;
         }
+        releaseComposerText('drop');
         void diverge(sessionId);
         setDisplayValue('');
         setValue('');
@@ -2457,15 +2742,24 @@ export default function ChatInput({
           LocalMessageStorage.addMessage(nonImageFilePaths.join(' '));
         }
 
+        const released = releaseComposerText('send');
+        const sentSpans = mapDictatedSpans(released, displayValue, textToSend);
+        let acceptedSessionId = sessionId;
         const submitEvent = new CustomEvent('submit', {
-          detail: { value: textToSend, attachments: imageAttachments },
+          detail: {
+            value: textToSend,
+            attachments: imageAttachments,
+            onAcceptedSession: (id: string) => {
+              acceptedSessionId = id;
+            },
+          },
         }) as unknown as React.FormEvent;
         // R1-6: in a decision chat the message waits for the question typed just
         // before it to be stored, or the daemon gets a message with no question.
         // The composer still clears at once; a refusal hands the text back below.
         const submitted = decisionChat
-          ? settleDecisionQuestion(sessionId).then(() => handleSubmit(submitEvent))
-          : handleSubmit(submitEvent);
+          ? settleDecisionQuestion(sessionId).then(() => submitComposer(handleSubmit, submitEvent))
+          : submitComposer(handleSubmit, submitEvent);
 
         // The composer wipes itself a few lines below, synchronously, before the
         // submit has said whether it took the message. When it did NOT — a
@@ -2483,6 +2777,7 @@ export default function ChatInput({
         // and nothing else; any other composer hands it back to itself.
         const unsent: ComposerDraft = {
           text: displayValue,
+          ...(released.length ? { dictation: released } : {}),
           images: draftImagesOf(pastedImages),
           files: draftFilesOf(allDroppedFiles),
         };
@@ -2493,13 +2788,15 @@ export default function ChatInput({
         const inFlight = draftKey ? beginComposerSend(draftKey) : null;
         void Promise.resolve(submitted).then(
           (accepted) => {
-            if (accepted !== false) inFlight?.settle();
-            else if (inFlight) inFlight.giveBack(unsent);
+            if (accepted !== false) {
+              inFlight?.settle();
+              postCorrectionObservations(sentSpans, acceptedSessionId ?? undefined);
+            } else if (inFlight) inFlight.giveBack(unsent);
             else takeBack(unsent);
           },
-          (error: unknown) => {
-            inFlight?.settle();
-            throw error;
+          () => {
+            if (inFlight) inFlight.giveBack(unsent);
+            else takeBack(unsent);
           }
         );
 
@@ -2514,6 +2811,8 @@ export default function ChatInput({
           setLastInterruption(null);
         }
 
+        // Read before the field empties: the ghost is drawn where the text was.
+        playSendMotion(textAreaRef.current, splitComposerText(displayValue).body);
         setDisplayValue('');
         setValue('');
         setPastedImages([]);
@@ -2554,6 +2853,8 @@ export default function ChatInput({
       droppedImageAttachmentPath,
       droppedFiles.length,
       handleSubmit,
+      releaseComposerText,
+      playSendMotion,
       lastInterruption,
       localDroppedFiles.length,
       onFilesProcessed,
@@ -2566,6 +2867,9 @@ export default function ChatInput({
   );
 
   const handleKeyDown = (evt: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Dictation's gestures come first: Enter while recording stops and inserts
+    // and never sends, Escape cancels, and the chord toggles or holds (DD-62).
+    if (dictation.handleKeyDown(evt)) return;
     // Navigation does not submit content, start a model, or grant access.
     if (
       evt.key === 'Enter' &&
@@ -2655,33 +2959,43 @@ export default function ChatInput({
 
       evt.preventDefault();
 
-      // BR-61: Cmd/Ctrl+Enter while a turn is running steers it — the message
-      // reaches the model on its next step instead of waiting for the turn to end.
-      if (evt.metaKey || evt.ctrlKey) {
-        if (handleSteerFromComposer()) {
-          return;
-        }
-        // ...and with an EMPTY composer it steers the front of the queue: the
-        // keyboard equivalent of the queue's own "Add now" button. One meaning
-        // for one key — "send what I have into the running turn" — rather than
-        // a second meaning that would depend on invisible state.
-        if (handleSteerNextQueuedMessage()) {
-          return;
-        }
-      }
-
-      // Handle interruption and queue logic
-      if (handleInterruptionAndQueue()) {
-        return;
-      }
-
-      if (canSubmit && !submissionBlocked) {
-        performSubmit();
-      } else if (canSubmit && submissionBlockedByOwner && crewHold) {
-        toastWarning({ title: crewHold.title, msg: crewHold.message });
-      }
+      const steering = evt.metaKey || evt.ctrlKey;
+      if (askPrivateDraftFirst(() => latestEnterRef.current(steering))) return;
+      sendFromEnter(steering);
     }
   };
+
+  /** What Enter does once the private draft question, if any, has been answered. */
+  const sendFromEnter = (steering: boolean) => {
+    // BR-61: Cmd/Ctrl+Enter while a turn is running steers it — the message
+    // reaches the model on its next step instead of waiting for the turn to end.
+    if (steering) {
+      if (handleSteerFromComposer()) {
+        return;
+      }
+      // ...and with an EMPTY composer it steers the front of the queue: the
+      // keyboard equivalent of the queue's own "Add now" button. One meaning
+      // for one key — "send what I have into the running turn" — rather than
+      // a second meaning that would depend on invisible state.
+      if (handleSteerNextQueuedMessage()) {
+        return;
+      }
+    }
+
+    // Handle interruption and queue logic
+    if (handleInterruptionAndQueue()) {
+      return;
+    }
+
+    if (canSubmit && !submissionBlocked) {
+      performSubmit();
+    } else if (canSubmit && submissionBlockedByOwner && crewHold) {
+      toastWarning({ title: crewHold.title, msg: crewHold.message });
+    }
+  };
+  // The newest closures, for a send the private draft question let through later.
+  const latestEnterRef = useRef(sendFromEnter);
+  latestEnterRef.current = sendFromEnter;
 
   // THE FORM SEND SUBMITS, named for THIS composer. Send sits outside the form
   // (it is the input line's sibling, not its child) and reaches it through the
@@ -2696,10 +3010,19 @@ export default function ChatInput({
 
   const onFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    // Send is disabled while dictation holds the composer; a submit that reaches
+    // the form anyway (an implicit submit, a stale click) is refused too.
+    if (dictationHoldsComposer) return;
     if (isCrewNavigationCommand) {
       openCrew();
       return;
     }
+    if (askPrivateDraftFirst(() => latestFormSubmitRef.current())) return;
+    submitFromForm();
+  };
+
+  /** What the form's submit does once the private draft question has been answered. */
+  const submitFromForm = () => {
     if (isLoading && hasSubmittableContent) {
       handleInterruptionAndQueue();
       return;
@@ -2715,6 +3038,8 @@ export default function ChatInput({
       performSubmit();
     }
   };
+  const latestFormSubmitRef = useRef(submitFromForm);
+  latestFormSubmitRef.current = submitFromForm;
 
   const handleMentionItemSelect = (itemText: string) => {
     // Prose offsets: the popover's `mentionStart` was measured in the textarea.
@@ -2801,7 +3126,8 @@ export default function ChatInput({
       isAnyDroppedFileLoading ||
       chatState === ChatState.RestartingAgent ||
       submissionBlocked ||
-      visionMismatch);
+      visionMismatch ||
+      dictationHoldsComposer);
 
   // Queue management functions - no storage persistence, only in-memory
   const handleRemoveQueuedMessage = (messageId: string) => {
@@ -2831,7 +3157,15 @@ export default function ChatInput({
 
   const handleEditMessage = (messageId: string, newContent: string) => {
     setQueuedMessages((prev) =>
-      prev.map((msg) => (msg.id === messageId ? { ...msg, content: newContent } : msg))
+      prev.map((msg) => {
+        if (msg.id !== messageId) return msg;
+        const next = { ...msg, content: newContent };
+        keepQueuedDictation(
+          next,
+          mapComposerDictation(readQueuedDictation(msg), msg.content, newContent, true)
+        );
+        return next;
+      })
     );
   };
 
@@ -2988,7 +3322,10 @@ export default function ChatInput({
   // chat that is still being created or loaded shows Send with a spinner.
   const isStarting = chatState === ChatState.LoadingConversation && !hasSubmittableContent;
   const showStop = isLoading && !hasSubmittableContent && !isStarting;
-  const sendTooltip = isStarting
+  // While dictation holds the composer, the reason is the microphone's own
+  // ("Finish dictating first" or "Transcribing…"), read by a component of its own
+  // so the stop renders nothing here.
+  const sendTooltipText = isStarting
     ? sessionId
       ? COMPOSER_COPY.send.loading
       : COMPOSER_COPY.send.starting
@@ -3001,6 +3338,11 @@ export default function ChatInput({
           : usagePaused
             ? USAGE_LIMIT_COPY.sendPaused
             : COMPOSER_COPY.send.tooltip;
+  const sendTooltip: React.ReactNode = dictationHoldsComposer ? (
+    <DictationHoldReason dictationKey={dictationKey} />
+  ) : (
+    sendTooltipText
+  );
 
   const sendOrStop = showStop ? (
     <Tooltip>
@@ -3042,11 +3384,21 @@ export default function ChatInput({
             disabled={isSubmitButtonDisabled || isStarting}
             aria-label={COMPOSER_COPY.send.label}
             aria-busy={isStarting || undefined}
+            // `data-armed` is the empty-to-written change: the arrow settles in
+            // on the spring as Send turns accent (`.br-composer-send`, composer.css).
+            data-armed={!isSubmitButtonDisabled && !isStarting ? 'true' : undefined}
             className={cn(
+              'br-composer-send',
               (isSubmitButtonDisabled || isStarting) && 'cursor-not-allowed disabled:opacity-100'
             )}
           >
-            {isStarting ? <Spinner size={16} /> : <ArrowUp className="size-4" />}
+            {isStarting ? (
+              <Spinner size={16} />
+            ) : (
+              <span ref={sendMotion.glyphRef} className="br-composer-send__glyph">
+                <ArrowUp className="size-4" />
+              </span>
+            )}
           </Button>
         </span>
       </TooltipTrigger>
@@ -3063,11 +3415,11 @@ export default function ChatInput({
   );
 
   return (
-    // ONE CARD AND ONE LINE (spec 3.7, Crew's composer recipe plus Codex's
-    // footer). The card holds what is being written and every control that
-    // shapes it: the queue ahead of it, its notices, its chips, the text, and a
-    // controls row ending in Send. Under it, one muted footer line says where
-    // the agent works and what the chat has used.
+    // A ONE-LINE CARD AND ONE FOOTER LINE (owner, 2026-11-13). The card holds
+    // what is being written: the queue ahead of it, its notices, its chips, and
+    // then ONE row, `+` (attach, mention, commands and the tool lists), the text,
+    // the microphone and Send. Under it, one muted footer line says where the
+    // agent works, which model answers and what the chat has used.
     //
     // The drop target is the WRAPPER, so a file dropped on the footer still
     // attaches.
@@ -3088,6 +3440,8 @@ export default function ChatInput({
         // THE WORKING EDGE: an attribute, not a class, so the hook is something
         // Tailwind never had to generate. Absent when idle.
         data-working={isWorking ? 'true' : undefined}
+        // Empty or written: the hook the empty-to-written motion keys off.
+        data-composer-empty={hasSubmittableContent ? undefined : 'true'}
       >
         {queuedMessages.length > 0 && (
           <MessageQueue
@@ -3179,6 +3533,10 @@ export default function ChatInput({
           </div>
         )}
 
+        {/* Dictation's notice row: MSG-WAIT, the muted partial line, a result or
+            a failure with its one action; never a toast. */}
+        {dictation.available && <DictationNotices dictationKey={dictationKey} />}
+
         {/* What goes with the message, in one row above the text: the `/bug`
             command chip first, then references (issue #65), images and files. */}
         <ComposerChips
@@ -3195,72 +3553,115 @@ export default function ChatInput({
 
         {decisionChat && <DecisionComposer sessionId={sessionId} />}
 
-        <form id={composerFormId} onSubmit={onFormSubmit} className="relative flex min-w-0">
-          {/* The field grows with what is typed by itself (`field-sizing:
-              content` in `composer.css`, as Crew's fields do), up to ten lines,
-              then scrolls. `py-1.5` makes its box 32px around a 20px line, so
-              the text sits centred however it grows; `px-0` keeps the text on
-              the card's 16px edge. */}
-          <textarea
-            data-testid="chat-input"
-            autoFocus={autoFocusAtMountRef.current}
-            id="dynamic-textarea"
-            aria-label={COMPOSER_COPY.inputLabel}
-            // An invitation, never an instruction: "Ask a follow-up" once the
-            // chat has messages, the open question before that. `followUp` is
-            // the caller's word for a message it already shows.
-            // With the `/bug` chip in the row above, the empty prose says what
-            // goes after it.
-            placeholder={
-              crewHold?.placeholder ??
-              (composerCommand
-                ? CHIP_COMMANDS[composerCommand].placeholder
-                : decisionChat
-                  ? DECISION_CHAT_PLACEHOLDER
-                  : (followUp ?? (messagesLength ?? 0) > 0)
-                    ? COMPOSER_COPY.placeholderFollowUp
-                    : COMPOSER_COPY.placeholderEmpty)
-            }
-            // The prose after the command chip: every textarea offset is a
-            // prose offset (`utils/composerCommand.ts`).
-            value={composerProse}
-            onChange={handleChange}
-            onCompositionStart={handleCompositionStart}
-            onCompositionEnd={handleCompositionEnd}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            ref={textAreaRef}
-            rows={1}
-            className={cn(
-              'br-composer-input block w-full resize-none border-none bg-transparent px-0 py-1.5',
-              COMPOSER_INPUT_TYPE_CLASS,
-              'text-text-default placeholder:text-text-muted'
-            )}
-          />
-        </form>
-
-        {/* THE CONTROLS ROW: what to add, what the agent can reach, which model
-            answers, and Send at the end, Crew's `.crew-compose-controls`. */}
-        <div data-testid="chat-input-toolbar" className="br-composer-controls">
+        {/* THE ONE LINE (owner, 2026-11-13): `+`, the text, the microphone and
+            Send, side by side. The text grows upward with what is typed; the
+            controls keep to the last line (`.br-composer-row`, composer.css). */}
+        <div
+          data-testid="chat-input-toolbar"
+          className="br-composer-row"
+          data-plus={decisionChat ? 'none' : undefined}
+        >
           {/* A decision chat has nothing to attach, insert or switch on: its model
               reads the chat and answers, and calls no tools (B-3). The monitors
               stay reachable from an ordinary chat's `+`. */}
           {!decisionChat && (
-            <>
+            <span className="br-composer-row__slot">
               <ComposerPlusMenu
+                sessionId={sessionId}
+                privacyTier={sessionPrivacyTier}
+                handOffKey={handOffKey}
                 onAttachFiles={attachPickedFiles}
                 onInsertTrigger={insertTrigger}
                 onOpenDecisionMonitors={onOpenDecisionMonitors}
               />
-              <ToolsChip
-                sessionId={sessionId}
-                privacyTier={sessionPrivacyTier}
-                handOffKey={handOffKey}
-              />
-            </>
+            </span>
           )}
-          <span className="br-composer-controls__spacer" />
-          <div ref={modelSlotRef} className="br-composer-controls__model">
+          <form id={composerFormId} onSubmit={onFormSubmit} className="br-composer-row__field">
+            {/* The field grows with what is typed by itself (`field-sizing:
+              content` in `composer.css`, as Crew's fields do), then scrolls.
+              `py-1.5` makes its box 32px around a 20px line, so a single line
+              sits on the controls' centre line however the row is drawn. */}
+            <textarea
+              data-testid="chat-input"
+              autoFocus={autoFocusAtMountRef.current}
+              id="dynamic-textarea"
+              aria-label={COMPOSER_COPY.inputLabel}
+              // An invitation, never an instruction: "Ask a follow-up" once the
+              // chat has messages, the open question before that. `followUp` is
+              // the caller's word for a message it already shows.
+              // With the `/bug` chip in the row above, the empty prose says what
+              // goes after it.
+              placeholder={
+                crewHold?.placeholder ??
+                (dictation.listening ? DICTATION_LABELS.listening : null) ??
+                (composerCommand
+                  ? CHIP_COMMANDS[composerCommand].placeholder
+                  : decisionChat
+                    ? DECISION_CHAT_PLACEHOLDER
+                    : (followUp ?? (messagesLength ?? 0) > 0)
+                      ? COMPOSER_COPY.placeholderFollowUp
+                      : COMPOSER_COPY.placeholderEmpty)
+              }
+              // The prose after the command chip: every textarea offset is a
+              // prose offset (`utils/composerCommand.ts`).
+              value={composerProse}
+              onChange={handleChange}
+              onCompositionStart={handleCompositionStart}
+              onCompositionEnd={handleCompositionEnd}
+              onFocus={() => {
+                if (dictationFocusArmedRef.current) dictation.noteInterest();
+              }}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              ref={textAreaRef}
+              rows={1}
+              className={cn(
+                'br-composer-input block w-full resize-none border-none bg-transparent px-0 py-1.5',
+                COMPOSER_INPUT_TYPE_CLASS,
+                'text-text-default placeholder:text-text-muted'
+              )}
+            />
+          </form>
+          {/* The microphone, immediately left of Send, which stays the row's last
+              child: the footer inset and the geometry tests are derived from its
+              edge (DD-60). */}
+          {dictation.available && (
+            <span className="br-composer-row__slot">
+              <DictationButton control={dictation} setView={setView} />
+            </span>
+          )}
+          <span className="br-composer-row__slot">{sendOrStop}</span>
+        </div>
+
+        {/* The text just sent, lifting away from where it was typed. */}
+        {sendMotion.ghost && (
+          <div
+            key={sendMotion.ghost.id}
+            aria-hidden="true"
+            data-testid="composer-send-ghost"
+            className={cn('br-composer-send-ghost', COMPOSER_INPUT_TYPE_CLASS)}
+            style={{
+              bottom: sendMotion.ghost.bottom,
+              left: sendMotion.ghost.left,
+              width: sendMotion.ghost.width,
+              height: sendMotion.ghost.height,
+            }}
+            onAnimationEnd={sendMotion.clearGhost}
+          >
+            <div style={{ marginTop: -sendMotion.ghost.scrollTop }}>{sendMotion.ghost.text}</div>
+          </div>
+        )}
+      </div>
+
+      {/* THE FOOTER LINE: the folder on the left; the model, the context ring and
+          the cost on the right, 12px muted, on the canvas under the card. The
+          ring and the cost show only inside a chat, and a decision chat has no
+          ring. */}
+      <ComposerFooter
+        className="br-composer-footer"
+        composerRef={composerCardRef}
+        model={
+          <div ref={modelSlotRef} className="br-footline__model">
             <ModelEffortChip
               sessionId={sessionId}
               reasoningScope={
@@ -3272,18 +3673,11 @@ export default function ChatInput({
               privacyTier={sessionPrivacyTier}
               privacyBasis={privacyBasis}
               setView={setView}
+              dictationDraftKey={dictationKey}
+              menuClearOf={composerCardRef}
             />
           </div>
-          {sendOrStop}
-        </div>
-      </div>
-
-      {/* THE FOOTER LINE: the folder on the left, the context ring and the cost
-          on the right, 12px muted, on the canvas under the card. The ring and
-          the cost show only inside a chat, and a decision chat has no ring. */}
-      <ComposerFooter
-        className="br-composer-footer"
-        composerRef={composerCardRef}
+        }
         sessionId={sessionId}
         workingDir={composerWorkingDir}
         workingDirLocked={workingDirIsLocked}
@@ -3305,8 +3699,26 @@ export default function ChatInput({
         outputTokens={accumulatedOutputTokens}
         sessionCosts={sessionCosts}
         modelCostRows={modelCostRows}
+        reloadCost={reloadCost}
         usageLimit={usageLimit}
         onOpenUsageSettings={openUsageSettings}
+      />
+
+      <ConfirmationModal
+        isOpen={privateDraftAsk !== null}
+        title={DICTATION_LABELS.privateDraftTitle}
+        message={dictationMessage('MSG-PRIVATE-DRAFT', { model: privateDraftAsk?.model ?? '' })}
+        confirmLabel={DICTATION_ACTIONS.sendAnyway}
+        cancelLabel={DICTATION_ACTIONS.cancel}
+        onConfirm={() => {
+          const ask = privateDraftAsk;
+          setPrivateDraftAsk(null);
+          if (ask) runPastPrivateDraft(ask.proceed);
+        }}
+        onCancel={() => {
+          setPrivateDraftAsk(null);
+          textAreaRef.current?.focus();
+        }}
       />
 
       <MentionPopover

@@ -224,6 +224,8 @@ describe('the Add provider form (V4-R4-5)', () => {
           'About This is a local model',
           'About Available models',
           'About Provider supports streaming responses',
+          // Where keys are kept: one line under the form and this tip (owner, 2026-11-13).
+          'About where keys are kept',
         ]);
         await shot(tab, `add-provider-dialog-${mode}-1048x700`);
 

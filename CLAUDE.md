@@ -78,6 +78,14 @@ cd ui/desktop && npm run test-e2e               # Run Playwright E2E tests
   nothing about the rest of `tests/`; before 2026-11-13, one `test` job per OS ran everything in
   sequence and a pull request took 60 to 90 minutes.
 
+**Tests never touch the OS credential store**, and need no `BIOROUTER_DISABLE_KEYRING` for it.
+Every test binary that links `biorouter` swaps `keyring`'s default store for process memory before
+`main` (`biorouter::keep_this_test_binary_off_the_os_credential_store!()`, invoked by each crate's
+`src/test_sandbox.rs` and by every `tests/*.rs` of `biorouter` and `biorouter-acp`), because a
+re-signed test binary raised a Keychain password dialog on every run. A new `tests/*.rs` without
+it fails the census in `crates/biorouter/src/config/test_binary_credentials.rs`; see
+[`docs/security/secret-storage.md`](docs/security/secret-storage.md#tests-never-use-the-credential-store).
+
 ### Code Quality
 
 ```bash
@@ -136,6 +144,8 @@ just make-ui-linux      # Package for Linux (requires Docker)
 just make-ui-windows    # Package for Windows (requires Docker)
 just generate-openapi   # Regenerate OpenAPI spec from server routes
 ```
+
+**macOS deployment target:** `.cargo/config.toml` sets `MACOSX_DEPLOYMENT_TARGET = "12.0"` for every cargo build, so the C and C++ code `cc` and CMake build (whisper.cpp for dictation among them) cannot strongly import an API newer than the binaries' declared minimum. `scripts/check-macos-deployment.sh` is the guard. Changing that file rebuilds every crate that reads the variable.
 
 **Cargo build profiles** (defined in the root `Cargo.toml`):
 - `release` — the default for `cargo build --release`, the Justfile, and the whole
@@ -516,7 +526,7 @@ The Knowledge feature (built across Plans 1-6 in `docs/history/knowledge-base-bu
 
 - **Backend module:** `crates/biorouter-mcp/src/knowledge/` (types, store, git, graph, credibility, convert/, macros/, subagent/loop_, MCP server).
 - **HTTP routes:** `crates/biorouter-server/src/routes/knowledge.rs` covers `/knowledge/bases`, `/ingest` (SSE), `/graph`, `/history`, `/preview`, `/restore`, `/page`, `/active`, `/export`, `/import`.
-- **Frontend:** `ui/desktop/src/components/knowledge/` (view shell, KB selector, ingest panel, force-graph + change-log drawer). There is no chat-side KB chip any more: a chat's knowledge bases are the Knowledge list of the composer's Tools popover (`KnowledgePanel` and `useKnowledgePicker` in `ui/desktop/src/components/bottom_menu/BottomMenuKnowledgeSelection.tsx`, mounted by `bottom_menu/ToolsChip.tsx`; see "Desktop shell geometry").
+- **Frontend:** `ui/desktop/src/components/knowledge/` (view shell, KB selector, ingest panel, force-graph + change-log drawer). There is no chat-side KB chip any more: a chat's knowledge bases are the Knowledge list of the composer's `+` popover (`KnowledgePanel` and `useKnowledgePicker` in `ui/desktop/src/components/bottom_menu/BottomMenuKnowledgeSelection.tsx`, mounted by `composer/ComposerPlusMenu.tsx`; see "Desktop shell geometry").
 - **Storage layout:** `~/.config/biorouter/knowledge/<kb-id>/` with `raw/`, `knowledge/`, `index.md`, `log.md`, `schema.md`, and a hidden `.git/`.
 - **One axis, one pointer.** A session's knowledge bases are the *visible* set — everything not in `.hidden-kbs` (machine-wide) or `.hidden-kb-sessions/<sha256(session_id)>` (per session; an empty `[]` means "hide nothing", not "inherit"). KB-less search spans this set with per-hit `kb_id` attribution. Its **primary** is the write target, default single-base read target and Knowledge view's subject. Soul is the product default when the user has expressed no preference. A missing `.active-kb` / `.active-kb-sessions/<digest>` inherits; a bare id pins a choice; a blank file explicitly chooses no primary and must not fall back to Soul. KB-less writes with that explicit no-primary state fail with the candidate list. The primary must remain visible; the daemon repairs selection when its base is hidden or deleted — and the two repairs differ (D2): hiding *promotes* to the first remaining base, deleting *clears* every pointer that named the base to that explicit blank, and a chat that only inherited the pointer is left inheriting. A blank `.active-kb` after a delete is the repair, not its absence. ⚠ The renderer adopts these repairs by re-reading; it never writes one (no `clear_primary` after a delete, no prune against its own base list), and every selection read from the desktop carries `userActionHeaders()`, because the gate refuses a private chat's selection without it. `kb_set_active` changes the primary without narrowing search. Set-only edits send neither `primary_kb` nor `clear_primary`; see [`docs/knowledge-base/multi-kb-implementation-plan.md`](docs/knowledge-base/multi-kb-implementation-plan.md).
 - **Sub-agent loop:** `crates/biorouter-mcp/src/knowledge/subagent/loop_.rs` drives ingest / query / lint macros. Mutating tools accept an optional `txn` so a macro's tool calls commit as one logical change.
@@ -1211,6 +1221,22 @@ Key invariants, each learned from a real bug:
   in Parchment), so a nav icon is one ink with its label and the accent is held
   for the active row's rail and the lock badge; it still differs per family
   because the ink does.
+- **Red is rare** ([design.md](design.md) 9.14; owner, 2026-11-12). The danger
+  tone is drawn in INK at the token layer: `--text-danger` is the primary ink,
+  `--background-danger` the secondary ink and `--wash-danger` that ink at 8%, in
+  every family and mode, so a failure, a risk chip, a destructive button or an
+  error note reads calm and is identified by its words and glyph (`FAILED_GLYPH`,
+  a circled ✕, for a failed transcript line; the Destructive risk grade is the
+  `strong` neutral Badge). Red is left for real danger only: `--border-danger`,
+  the edge of an invalid field or a refusing drop zone, and Button `critical`
+  (`--background-critical`, `--text-critical`), the danger zones' buttons in
+  Settings › Models, Settings › App and a Crew channel's About. Never bring red
+  back with a hex or a `--color-red-*` utility; `styles/redIsRare.test.ts` holds it.
+- **Code is set in SF Mono on macOS** (design.md 9.15). `--font-mono` is Codex's
+  code stack verbatim, but Chromium resolves none of `ui-monospace`,
+  `SFMono-Regular` or `"SF Mono"`, so code used to render in Menlo. The main
+  process reads the installed `SFNSMono.ttf` (`get-system-mono-font`, macOS only)
+  and `utils/systemMonoFont.ts` registers it as "SF Mono" with the FontFace API.
 - **`terminalGround` is now the same token in all three** — `--background-muted`,
   in both modes. The warning that used to sit here was right and still is, aimed
   at a changed fact: Parchment dark really did paint `--background-code`, and
@@ -1419,12 +1445,21 @@ value's *location* is as load-bearing as the number.
   primitives Crew renders take the fill like everywhere else (ruling 12). The
   composer card (a chat's, Home's and the message editor's) is the one exception
   (R-32, next bullet).
-- **The composer is one card and one muted footer line** (`ChatInput.tsx`, spec
-  3.7; `ChatInput.structure.test.tsx` pins the shape). The card holds the queue,
-  notices, chips and the text, then one 32px controls row: `+`, the Tools chip,
-  the model and effort chip, and Send (a decision chat draws no `+` and no Tools chip). Under the card, a 12px muted footer
-  (`bottom_menu/ComposerFooter.tsx`): the working folder on the left, the context
-  ring and the chat's cost on the right, only the folder on Home. The three
+- **The composer is a ONE-LINE card and one muted footer line** (owner,
+  2026-11-13; `ChatInput.tsx`, `ChatInput.structure.test.tsx` pins the shape).
+  The card holds the queue, notices and chips, then ONE row
+  (`.br-composer-row`, `composer/composer.css`): `+`, the text, the microphone
+  and Send/Stop. The text grows upward with what is typed and the controls keep
+  to its last line; a decision chat draws no `+`. The `+` is the only way to
+  attach, mention, run a command and switch tools: one popover
+  (`composer/ComposerPlusMenu.tsx`, next bullet but three). Under the card, a 12px muted footer
+  (`bottom_menu/ComposerFooter.tsx`): the working folder on the left; the model
+  and effort chip (moved out of the card, its menu opening ABOVE the card through
+  `ModelsBottomBar`'s `menuClearOf`), the context ring and the chat's cost on the
+  right; the folder and the model on Home. Sending plays a short lift of the sent
+  text and Send's arrow (`composer/useSendMotion.ts`, transform and opacity only,
+  none under reduced motion), and Send's arrow settles in on the spring when the
+  field goes from empty to written (`data-armed`). The three readout
   footer items open the same light hover card (`bottom_menu/useFooterCard.ts`,
   `bottom_menu/FooterCard.tsx`) with one behaviour: a hover previews it after
   300ms and a Tab at once (its trigger holds nothing), a click, tap, Enter or Space keeps it
@@ -1468,20 +1503,23 @@ value's *location* is as load-bearing as the number.
     `:has()`, so a component test that focuses the textarea and reads
     `borderColor` sees the resting value and passes whether the rule exists or
     not.
-  - **The Tools popover's switcher never moves** (R-25, owner message 13).
-    `bottom_menu/ToolsChip.tsx` opens one popover above the chip holding one list
-    at a time (a search field, a scope line saying where a change applies with
-    Enable all or Disable all, the switch rows) and the Extensions | Skills |
-    Knowledge `SegmentedControl` as its LAST child, so the control rides the
-    popover's bottom edge, 6px above the chip (`sideOffset`): Radix places a `side="top"` popover by its bottom, so a
+  - **The `+` popover's switcher never moves** (R-25, owner message 13).
+    `composer/ComposerPlusMenu.tsx` (which replaced the `+` menu AND the Tools
+    chip, owner 2026-11-13) opens one popover above the `+` holding one list at a
+    time and the Add | Extensions | Skills | Knowledge `SegmentedControl` as its
+    LAST child. A click on `+` always opens on Add (attach files, mention,
+    commands, decision monitors: the menu recipe's rows); the other three are the
+    tool lists (a search field, a scope line saying where a change applies with
+    Enable all or Disable all, the switch rows). The control rides the
+    popover's bottom edge, 6px above the `+` (`sideOffset`): Radix places a `side="top"` popover by its bottom, so a
     longer or shorter list grows or shrinks it upward. ⚠ `avoidCollisions={false}`
     is load-bearing (collision handling would flip the popover below the chip or
     slide it along it); the room above caps the height instead, through Radix's
     available-height variable in `.br-picker-popover`'s `max-height`
     (`pickers.css`) and `TOOLS_POPOVER_COLLISION_PADDING`, whose 52px top keeps
     the search field off the 44px drag band. DOM order is the visual order, so
-    Tab walks top to bottom. `toolsPopover.browser.test.tsx` measures the control
-    14px above the chip in every list at two window heights.
+    Tab walks top to bottom. `composer/plusPopover.browser.test.tsx` measures the
+    control 14px above the `+` in every list at two window heights.
   - **Effort is a three-stop slider** (R-26): `bottom_menu/EffortSection.tsx` in
     the model menu (`settings/models/bottom_bar/ModelsBottomBar.tsx`, opened from
     `bottom_menu/ModelEffortChip.tsx`), Quick, Normal and Deep, applying at once
@@ -1920,6 +1958,13 @@ and the capability itself by [`docs/extensions/built-in/workspace.md`](docs/exte
   saved setup across at the start of `biorouterd` and the CLI (lead becomes the chat model, worker
   becomes the default worker), and only a chat SAVED as a pair still restores as
   `LeadWorkerProvider`.
+- **What a subagent starts with** (owner, 2026-11-13): its chat's live roster
+  (`Agent::get_extension_configs`, so a per-chat capability switch carries over) and a copy of the
+  chat's `workspace_skills/v1`, stamped on the child's row at birth. The spawn's `add_extensions`,
+  `remove_extensions`, `add_skills` and `remove_skills` change that for one child
+  (`subagent_tool::resolve_child_extension_changes`, `resolve_child_skills`). An add the chat does
+  not hold takes the one agent enable gate, `extension_enable_refusal`, on the spawning call's
+  admitted capability, and every add still passes `judge_child`'s tier filter.
 - **GUI tab/pane layer:** `ui/desktop/src/components/chatGroups/`.
 
 **The delegation gate** (`Agent::subagents_enabled`, `agents/agent.rs`) has
@@ -1958,12 +2003,22 @@ each for a different reason, and each looked like a working probe:
   Its presence is not evidence the model was offered it.
 - `POST /agent/call_tool` goes straight to `ExtensionManager::dispatch_tool_call`
   and never passes the `is_spawn_tool_call` check at `agent.rs:3847`, so a spawn
-  invoked that way is not refused whatever the mode. That route is user-initiated
-  (secret key + `X-User-Action`) and privacy **Gate C still applies** to it, so
-  the privacy barrier is intact — what is bypassed is the model-facing capability
-  gate, not a privacy one. Do not "fix" this by duplicating the gate into the
-  route without first deciding whether a user calling the tool deliberately
-  should be bound by a gate that exists to constrain the *model*.
+  invoked that way is not refused whatever the mode. That route asks only the
+  daemon secret, not `X-User-Action`; this line said it needed both until PR-33
+  of local dictation corrected it. A Crew-scoped chat is the one case that also
+  asks `session_reach` and Crew's tool grant (`call_tool` in `routes/agent.rs`).
+  It dispatches as `CallCapability::public_enforced()`, so privacy **Gate C still
+  applies** to it and the privacy barrier is intact, and
+  `call_tool_boundary_refusal` refuses managed-denied tools, tool access to global
+  memory and the session store, knowledge base deletes, and
+  `dictionary__add_terms` and `dictionary__remove_added_terms` before dispatch.
+  Crew's person tools (`crew__read`, `crew__change`) are refused there in every
+  chat (`direct_person_tool_refusal`), because their approval cards need a turn,
+  and any `crew__` tool on a Crew-scoped chat (`direct_crew_tool_refusal`).
+  What is bypassed is the model-facing capability gate, not a privacy one. Do not
+  "fix" this by duplicating the gate into the route without first deciding
+  whether a caller who holds the secret and calls the tool deliberately should be
+  bound by a gate that exists to constrain the *model*.
 - Condition 2 reads `self.config.biorouter_mode`, a **snapshot taken when the
   Agent was constructed**. Flipping `BIOROUTER_MODE` through `/config/upsert` on
   a running daemon does not reach an agent that already exists, so a live-toggle
@@ -2213,6 +2268,103 @@ setup, open governance, deletion and full-access contract in
   `node --test scripts/check-crew-manual.test.mjs`). A new `crew_*` code, quoted string or data path needs
   its line in `docs/crew/`.
 
+### Local dictation
+
+whisper.cpp, vendored at `vendor/whisper.cpp/source/` (pin `4da27c41cebadb3cbbcd2563e9c7cbc8d84bdcad`),
+is compiled into every default `biorouter` and `biorouterd` by `crates/biorouter-dictation/build.rs`.
+Design and the record of what was built: [`docs/dictation/`](docs/dictation/README.md). The manual
+pass per surface and the dated measurement log:
+[`docs/releases/dictation-test-checklist.md`](docs/releases/dictation-test-checklist.md). No speech
+model ships in any artifact; a person installs one, checked against a SHA-256 pin compiled into the
+binary, from `BaranziniLab/biorouter-models`.
+
+- **The engine runs in a worker, never inside the daemon or an interactive CLI.** The running binary
+  starts itself again with the hidden first argument `__br-dictation-worker` (`WORKER_MARKER` in
+  `crates/biorouter-dictation/src/worker/mod.rs`) and a role: `engine`, `self-test`, or `capture`,
+  the terminal's microphone child, which only `biorouter` links (through
+  `crates/biorouter-dictation-capture`), so `biorouterd __br-dictation-worker capture` exits 2 (P-10).
+  `run_if_invoked()` sits in both `main()`s right after `complete_libnotify_init()` and before the
+  runtime, logging and configuration, so a worker never writes a log file, never reads `config.yaml`
+  and never moves the Windows legacy folder. The marker is not a clap subcommand and never shows in
+  `--help`. Exit codes: 2 a role this binary lacks, 20 an unsupported processor, 21 an unpinned file
+  handed to the self test, 22 a failed self test check, 65 a frame it cannot parse, 70 a panic.
+- **Build traps.** Rules that look optional and are not; most were found by a failure in the build
+  spike.
+  - `build.rs` panics on an Apple target when `MACOSX_DEPLOYMENT_TARGET` is unset. Unset, `cc`
+    compiled at the SDK version and the binary strongly imported a macOS 15 class, so dyld would
+    refuse the whole `biorouterd` on macOS 12 to 14, which no worker can isolate because it is the
+    same binary. The minimum OS guard is `.cargo/config.toml` (12.0) plus
+    `scripts/check-macos-deployment.sh` in `release.sh` and the macOS leg of `rust.yml`.
+  - CMake builds `Release` whatever the Cargo profile (`cmake::Config::profile("Release")`): the
+    `cmake` crate maps opt level 0 to Debug and `z` to MinSizeRel, so `just run-dev` and the
+    Dockerfile's `CARGO_PROFILE_RELEASE_OPT_LEVEL=z` would otherwise get an unoptimised engine.
+    `GGML_NATIVE=OFF` always, OpenMP off, static libstdc++ on Linux and mingw, no bindgen (the shim
+    is built with `cc`), and the vendored tree must be unchanged after the build (a metadata
+    snapshot in `build.rs`; `scripts/check-vendored-whisper-cpp.sh` checks the content hashes), so
+    a build step that writes into it fails. `scripts/check-dictation-build-prereqs.sh` (in `guards`) checks that the Docker
+    builder and hermit carry `cmake`, that the `Release` profile is set, and that `bindgen` arrives
+    only through `aws-lc-sys`.
+  - No pull request job links the Linux or Windows binaries: `cross-check` runs `cargo check`,
+    which compiles the C and C++ in both cross images but never links. A change to the engine, its
+    build or `vendor/whisper.cpp/` dispatches `rust.yml` before merge, which also runs
+    `cross-build-nightly` and `windows-native-dictation`, and links the green run.
+  - **The MSVC `test` leg builds the engine, not the `no_engine` stub (M-3).** The constant
+    `MSVC_NATIVE = true` in that `build.rs` decides it; `false` would make every `*-windows-msvc`
+    build answer `no_engine`. The `windows-latest` leg of `rust.yml`'s `test` job runs the engine's
+    lib tests in "cargo test (workspace, lib + bins)" and the real `biorouterd` self test in "cargo
+    test (dictation engine and worker roles)". Shipped Windows binaries are mingw, which
+    `cross-build-nightly` and `windows-native-dictation` cover. PR-09 chose this before any
+    dispatched run had built it (2026-11-05), as the plan prefers; flip the constant only when a
+    dispatched run shows the MSVC build cannot be fixed, and record that here with the run id.
+- **The `?no-inline` trap.** Vite inlines assets under 4,096 B as `data:` URLs, the PCM worklet
+  included, and the renderer's CSP blocks a `data:` or `blob:` worklet, so dictation dies on the
+  first click everywhere with `AbortError: Unable to load a worklet's module`. The import is
+  `./pcmCapture.worklet.js?url&no-inline`, and `vite.renderer.config.mts` also sets
+  `build.assetsInlineLimit` to a function that refuses `*.worklet.js`. Keep both: `frontend.yml`'s
+  `dictation-capture-electron` job builds with Vite's default limit as well and turns red when
+  `no-inline` is taken off the import.
+- **The fake permission switch trap.** Never pass `--use-fake-ui-for-media-stream` anywhere under
+  `ui/desktop/`; a source guard refuses it. With it, Electron skips the permission handler entirely
+  (zero handler calls, audio and video granted under a deny-all policy), so every permission test
+  passes while testing nothing. Fake audio is `BIOROUTER_TEST_FAKE_MIC_WAV` in an unpackaged app,
+  which adds `--use-fake-device-for-media-stream --use-file-for-fake-audio-capture=<wav>%noloop`,
+  plus `--disable-features=AudioServiceSandbox` on macOS, where the sandboxed audio service
+  otherwise cannot read the WAV and the track is silence (RMS 0). Fake audio is not a physical
+  microphone, and the checklist records the two apart.
+- **The dictionary tier rule.** `bias_set` in `crates/biorouter/src/dictation/bias.rs` is the only
+  producer of the entries recognition may use, and one value feeds the token prompt, the decoder
+  bonus and every correction step (DD-36); `eligible_entries_are_built_only_by_bias_set` pins its
+  constructor to that file. A private row shapes dictation only for a private target AND a caller
+  with private standing (the user action proof, a stated private `X-Caller-Provider`, or a person at
+  an interactive terminal), because Whisper copies its prompt into the transcript on silence. A
+  private row also carries the institutions of the chat it was written in, those behind the chat's
+  model and those whose connectors it touched (`sessions.session_affiliations`, O-35), and each one
+  is asked through `affiliation::gate_cross_affiliation_warning`, never by a hand comparison (P-16).
+  An unreadable record stores `{"institutions": []}`, which only a local model clears; a target
+  whose model is unstated (no live agent yet) gets only the private rows with no institution, which
+  the owner kept on 2026-11-10 (O-43). Crew, the clipboard and the app preview use public terms
+  unless the person includes private terms for one recording; ACP is public only. The `dictionary`
+  capability is off in a fresh configuration, and the workspace doors refuse it by name. The chat
+  extractor ships off (`LEARN_FROM_CHATS_DEFAULT = false` in
+  `crates/biorouter-dictation/src/store/schema.rs`), because its precision gate M-21 waits for the
+  owner's own labels (O-44). A row left out changes no field of a response. All of it is accident
+  prevention for cooperative actors: a shell can still read `dictionary.json`.
+- **Where the tests run.** Every dictation integration binary runs in `rust.yml`'s offline step,
+  with no line in its exclusion table; a test that needs a real model or the network is `#[ignore]`
+  in the same binary (`dictation_accuracy`, `model_download_live`, `dictation_extractor_precision`),
+  run by `dictation-accuracy.yml` or by hand. Keyless cases live in their own `*_no_user_key.rs`
+  binaries, because the user action digest is a process-global `OnceLock`. Engine tests in CI use
+  the CPU only; Metal is proved by `smoke_mac` and the checklist. The `serve` job drives Playwright
+  Chromium and Firefox with fake audio, the nginx prefix and the 413 halving;
+  `dictation-capture-electron` loads the worklet from `app.asar`; `cross-build-nightly` runs
+  `check-dictation-isa.sh` under `qemu-x86_64 -cpu Nehalem` and the glibc floor;
+  `windows-native-dictation` runs the shipped mingw binaries natively under a folder name with a
+  character outside ASCII (M-1). ⚠ The Jupyter AI persona's Python tests
+  (`integrations/jupyter-ai/tests/test_persona.py`, which pin the `BIOROUTER_ACP_CLIENT=jupyter-ai`
+  that keeps `/dictate` out of Jupyter AI) run in no workflow; checklist row S12.7 is their only
+  check. No accuracy figure about dictation goes into user documentation, release notes, the
+  announcement or the interface (DD-95).
+
 ### Communication Flow
 
 ```
@@ -2245,7 +2397,7 @@ After changing server routes, always run `just generate-openapi` to regenerate t
 - User config: `~/.config/biorouter/config.yaml` (providers, API keys, extensions)
 - Session history: `~/.config/biorouter/sessions/` (SQLite)
 - Workflows/skills: `~/.config/biorouter/workflows/` and `~/.config/biorouter/skills/`
-- Windows: everything above sits under `%APPDATA%\UCSF\biorouter` (`config\`, and `data\`, which also holds state and logs because etcetera's Windows strategy has no state dir), the cache under `%LOCALAPPDATA%\UCSF\biorouter`. The author segment is `APP_AUTHOR = "UCSF"` in `crates/biorouter-mcp/src/app_folder/mod.rs`, deliberately not the product name, because Electron's own user-data folder on Windows is `%APPDATA%\Biorouter` and the two must stay apart; macOS and Linux use XDG, which never reads the author. Earlier releases used another author folder, **the legacy folder**, whose name is spelled only by `LEGACY_APP_AUTHOR` (once in Rust, once in `ui/desktop/src/utils/appFolder.ts`; never write it anywhere else, see the retired-name guard).
+- Windows: everything above sits under `%APPDATA%\UCSF\biorouter` (`config\`, and `data\`, which also holds state and logs because etcetera's Windows strategy has no state dir), the cache under `%LOCALAPPDATA%\UCSF\biorouter`, and the non-roaming local data folder (speech models for dictation, `Paths::in_local_data_dir`) under `%LOCALAPPDATA%\UCSF\biorouter\data`; elsewhere the local data folder is the data folder, and under `BIOROUTER_PATH_ROOT` it is `<root>/data`. The author segment is `APP_AUTHOR = "UCSF"` in `crates/biorouter-mcp/src/app_folder/mod.rs`, deliberately not the product name, because Electron's own user-data folder on Windows is `%APPDATA%\Biorouter` and the two must stay apart; macOS and Linux use XDG, which never reads the author. Earlier releases used another author folder, **the legacy folder**, whose name is spelled only by `LEGACY_APP_AUTHOR` (once in Rust, once in `ui/desktop/src/utils/appFolder.ts`; never write it anywhere else, see the retired-name guard).
   - **Resolution, on every call, in every process:** the legacy folder while it is present (a check that fails counts as present) and the current one is known absent; otherwise the current one, which wins when both exist (the legacy one is then left alone and the desktop app says so at start).
   - ⚠ **Only the daemon moves it.** `biorouterd agent` calls `app_folder::move_for_this_process()` before logging (`biorouter-server/src/main.rs`); the CLI, `biorouterd mcp` children and the desktop main process never move anything. It moves only when the legacy folder is present, the current one absent (both known) and no other Biorouter process holds the legacy folder's `.biorouter-folder.lock` (`MOVE_LOCK`): every process that resolves the legacy folder holds that lock shared for life (through `platform_dirs`), because `Config::global`, the session store and the log directory freeze the path. The move drops `.folder-move-pending` (`MOVE_MARKER`) into the legacy folder first, then makes one rename inside one base, so it is atomic and never a copy.
   - **The rewrite** (`app_folder/rewrite.rs`) then fixes stored absolute paths that pointed into the legacy folder, the ones that break silently otherwise: the per-chat `uv run --directory` snapshots of `.brxt` extensions, the knowledge base list, Crew's `daemon-profile.json` and a marketplace extension's provenance `install_dir`. It edits each file's text, matching both the environment's and `fs::canonicalize`'s spelling of the base, and writes only when re-parsing the new text equals rewriting the old parse; transcripts, logs, `*.bak*` and venvs are left alone. The marker travels with the tree, so a crash between the rename and the rewrite is finished on the next start.

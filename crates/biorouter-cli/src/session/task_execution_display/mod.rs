@@ -29,7 +29,9 @@ fn status_badge(status: &TaskStatus) -> String {
         TaskStatus::Pending => ("○", "pending", Color::Color256(244)),
         TaskStatus::Running => ("◐", "running", Color::Yellow),
         TaskStatus::Completed => ("●", "completed", Color::Green),
-        TaskStatus::Failed => ("✗", "failed", Color::Red),
+        // Red is rare (design.md 9.14): a failed task keeps its ✗ and its word, in
+        // the terminal's own ink and bold, so it reads as failed without an alarm.
+        TaskStatus::Failed => return format!("{} {}", style("✗").bold(), style("failed").bold()),
     };
     format!("{} {}", style(glyph).fg(color), style(word).fg(color))
 }

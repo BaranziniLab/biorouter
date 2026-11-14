@@ -180,16 +180,18 @@ describe('ExtensionModal', () => {
       />
     );
 
-    // §13.5: the Add form's tier line is on screen as text, not behind a glyph.
+    // §13.5: the Add form's tier line is on screen as text, not behind a glyph. What the tier
+    // lets a model do is the InfoTip beside it (owner, 2026-11-13).
     expect(screen.getByText(COPY.tierPublic)).toBeVisible();
-    expect(
-      screen.getByText(/including commercial models hosted outside your institution/i)
-    ).toBeInTheDocument();
+    const tierInfo = () => screen.getByRole('button', { name: `About ${COPY.tierLabel}` });
+    expect(tierInfo()).toHaveAccessibleDescription(
+      /including commercial models hosted outside your institution/i
+    );
 
     await user.type(screen.getByLabelText(COPY.nameLabel), 'ucsfomopagent');
 
-    expect(await screen.findByText(/only private models/i)).toBeInTheDocument();
-    expect(screen.getByText(COPY.tierPrivate)).toBeVisible();
+    expect(await screen.findByText(COPY.tierPrivate)).toBeVisible();
+    expect(tierInfo()).toHaveAccessibleDescription(/only private models/i);
     expect(screen.queryByText(/always Public/i)).toBeNull();
   });
 });
@@ -217,9 +219,13 @@ it('discloses retained credentials and offers separate review before extension r
     />
   );
   await userEvent.click(screen.getByRole('button', { name: 'Remove extension' }));
+  // The consequence is the question's description; reuse on reinstall is the InfoTip beside
+  // Review saved credentials.
+  expect(screen.getByRole('dialog')).toHaveAccessibleDescription(COPY.removeDescription);
+  expect(COPY.removeDescription).toMatch(/Saved credentials are kept/);
   expect(
-    screen.getByText(/Saved credentials are retained and may be reused automatically/)
-  ).toBeInTheDocument();
+    screen.getByRole('button', { name: `About ${COPY.reviewCredentials}` })
+  ).toHaveAccessibleDescription(/may be reused automatically if you reinstall/);
   expect(screen.getByRole('button', { name: 'Review saved credentials' })).toBeInTheDocument();
   expect(onDelete).not.toHaveBeenCalled();
   await userEvent.click(screen.getByRole('button', { name: 'Confirm removal' }));
@@ -315,6 +321,84 @@ describe('ExtensionModal — the dialog and its form', () => {
     expect(title).toBeVisible();
     expect(title.closest('[class*="bg-wash-info"]')).not.toBeNull();
     expect(screen.getByText(/uv sync/)).toBeVisible();
+    // One sentence has nothing to fold.
+    expect(screen.queryByRole('button', { name: COPY.installationNotesRest })).toBeNull();
+  });
+
+  it('shows the first sentence of long installation notes and folds the rest', async () => {
+    const user = userEvent.setup({ delay: null });
+    render(
+      <ExtensionModal
+        title="Add custom extension"
+        initialData={stdio({
+          installation_notes:
+            'Run `uv sync` once before the first start. Then set the API key in the environment. Restart the extension afterwards.',
+        })}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        submitLabel="Add extension"
+        modalType="add"
+      />
+    );
+
+    const note = screen
+      .getByText(COPY.installationNotes)
+      .closest<HTMLElement>('[class*="bg-wash-info"]')!;
+    expect(note).toHaveTextContent('Run `uv sync` once before the first start.');
+    expect(note).not.toHaveTextContent(/set the API key/);
+
+    await user.click(within(note).getByRole('button', { name: COPY.installationNotesRest }));
+    expect(note).toHaveTextContent(
+      'Then set the API key in the environment. Restart the extension afterwards.'
+    );
+  });
+
+  // A list marker or a leading abbreviation is not a sentence end: the cut at "1." showed a Note
+  // that read "Installation notes / 1." with every step folded away.
+  it.each([
+    {
+      notes: '1. Install uv\n2. Run uv sync\n3. Set the API key',
+      lead: '1. Install uv',
+      rest: '2. Run uv sync 3. Set the API key',
+    },
+    {
+      notes: '1. Run it\n2. Sync it\n3. Set the API key',
+      lead: '1. Run it 2. Sync it',
+      rest: '3. Set the API key',
+    },
+    {
+      notes: 'Step 1. Install uv with Homebrew. Step 2. Run uv sync once.',
+      lead: 'Step 1. Install uv with Homebrew.',
+      rest: 'Step 2. Run uv sync once.',
+    },
+    {
+      notes: 'e.g. on macOS, install uv with Homebrew. Then run uv sync once.',
+      lead: 'e.g. on macOS, install uv with Homebrew.',
+      rest: 'Then run uv sync once.',
+    },
+  ])('never leads numbered or abbreviated notes with a bare marker: $lead', async (c) => {
+    const user = userEvent.setup({ delay: null });
+    render(
+      <ExtensionModal
+        title="Add custom extension"
+        initialData={stdio({ installation_notes: c.notes })}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        submitLabel="Add extension"
+        modalType="add"
+      />
+    );
+
+    const title = screen.getByText(COPY.installationNotes);
+    const note = title.closest<HTMLElement>('[class*="bg-wash-info"]')!;
+    const shown = title.nextElementSibling!.textContent!.replace(/\s+/g, ' ');
+    expect(shown).toBe(c.lead);
+    expect(note).not.toHaveTextContent(c.rest);
+
+    // Every folded word is one click away, in order.
+    await user.click(within(note).getByRole('button', { name: COPY.installationNotesRest }));
+    expect(note).toHaveTextContent(c.rest);
+    expect(`${shown} ${c.rest}`).toBe(c.notes.replace(/\s+/g, ' '));
   });
 
   it('opens at the removal question from the row, and Cancel closes instead of showing a form', async () => {

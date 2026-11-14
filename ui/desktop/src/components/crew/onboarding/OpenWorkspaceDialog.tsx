@@ -3,6 +3,7 @@ import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
+import { InfoTip, useInfoTipId } from '../../ui/info-tip';
 import { Input } from '../../ui/input';
 import { Note } from '../../ui/note';
 import { saveFromInvitation } from '../api/join';
@@ -343,7 +344,7 @@ function OpenWorkspaceView({
     const saved = await crew.act(SOURCE, 'connection.save', async () => {
       let id = entry.savedConnectionId;
       if (!id) {
-        if (!entry.invitation) throw new Error(openCopy.cantOpen);
+        if (!entry.invitation) throw new Error(`${openCopy.cantOpen} ${openCopy.cantOpenMore}`);
         const connection = await saveFromInvitation(entry.invitation, {
           ...(username ? { username } : {}),
           ...(entry.mode ? { mode: entry.mode } : {}),
@@ -449,20 +450,16 @@ function OpenWorkspaceView({
     const buttons = [];
     if (updatable(entry)) {
       buttons.push(
-        <Button
+        <UpdateCrewButton
           key="update"
-          type="button"
-          variant="secondary"
-          size="sm"
+          label={openCopy.updateLabel(sanitizeDisplayText(entry.name) || name)}
+          help={openCopy.restartsOnUpdate(othersOf(entry))}
           disabled={busy}
-          aria-label={openCopy.updateLabel(sanitizeDisplayText(entry.name) || name)}
           onClick={() => {
             if (othersOf(entry) === 0) update(entry);
             else setConfirmUpdate(key);
           }}
-        >
-          {openCopy.update}
-        </Button>
+        />
       );
     }
     if (canStartWorkspace(entry) && !restartedNow(entry)) {
@@ -555,9 +552,9 @@ function OpenWorkspaceView({
           </p>
         );
       // Why the last update left it. Only a row the last job was asked to restart can say a
-      // restart was left undone; every other row Update Crew can still help (a look, or Update
-      // Crew or Start for another row, whatever the daemon's reason) says what Update Crew would
-      // do instead: nobody tried to restart it.
+      // restart was left undone; on every other row nobody tried to restart it, and what Update
+      // Crew would do is behind the info icon beside it (`UpdateCrewButton`), not a line under
+      // the row (design.md 9.16).
       const reason =
         left?.reason === 'running_newer'
           ? openCopy.leftRunning.running_newer(left.runningVersion ?? entry.version)
@@ -565,9 +562,7 @@ function OpenWorkspaceView({
             ? openCopy.leftRunning.custom_state_dir(server)
             : left?.reason === 'others_connected' && askedToRestart(foundScope, entry)
               ? openCopy.leftRunning.others_connected(othersOf(entry))
-              : updatable(entry)
-                ? openCopy.restartsOnUpdate(othersOf(entry))
-                : null;
+              : null;
       if (reason)
         lines.push(
           <p key="left" className="text-supporting text-text-muted" role="status">
@@ -602,9 +597,11 @@ function OpenWorkspaceView({
       !entry.invitation &&
       !entry.savedConnectionId
     ) {
+      // Why it can't be opened stays in view; the way on is behind its info icon.
       lines.push(
         <p key="cant" className="text-supporting text-text-muted">
-          {openCopy.cantOpen}
+          <span>{openCopy.cantOpen}</span>{' '}
+          <InfoTip label={openCopy.cantOpenMoreLabel(name)} help={openCopy.cantOpenMore} />
         </p>
       );
     }
@@ -646,7 +643,12 @@ function OpenWorkspaceView({
           aria-busy={busy}
           data-testid="crew-open-workspace"
         >
-          <p className="text-body text-text-muted">{openCopy.intro}</p>
+          {/* One line; that the workspaces found need no invitation is behind its info icon, right
+              after the line its "those" points back to (design.md 9.16). */}
+          <p className="text-body text-text-muted" data-testid="crew-open-intro">
+            <span>{openCopy.intro}</span>{' '}
+            <InfoTip label={openCopy.introMoreLabel} help={openCopy.introMore} />
+          </p>
           <Field
             label={openCopy.login}
             helper={openCopy.loginHelper}
@@ -746,12 +748,15 @@ function OpenWorkspaceView({
           ) : null}
           {found && workspaces.length === 0 && !workspacesNoteText(found.workspacesNote ?? null) ? (
             <p className="text-body text-text-default" role="status">
-              {openCopy.none(server)}
+              <span>{openCopy.none(server)}</span>{' '}
+              <InfoTip label={openCopy.noneMoreLabel} help={openCopy.noneMore} />
             </p>
           ) : null}
+          {/* The fact stays in view; the advice is behind its info icon (design.md 9.16). */}
           {shared.map((name) => (
             <Note key={name} tone="warning">
-              {openCopy.sameName(name)}
+              <span>{openCopy.sameName(name)}</span>{' '}
+              <InfoTip label={openCopy.sameNameMoreLabel} help={openCopy.sameNameMore} />
             </Note>
           ))}
           <div ref={foundRef} className="contents">
@@ -771,5 +776,42 @@ function OpenWorkspaceView({
         </form>
       </FieldErrorsProvider>
     </ModalShell>
+  );
+}
+
+/**
+ * A row's Update Crew, with what it would do behind the info icon beside it (`restartsOnUpdate`):
+ * the restart and who is connected, which used to be a line under every outdated row (design.md
+ * 9.16). The help is also the button's description, so a screen reader hears it on the button. The
+ * caution is said again, in view, by the question Update Crew asks before a restart others are
+ * connected to.
+ */
+function UpdateCrewButton({
+  label,
+  help,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  help: string;
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  const helpId = useInfoTipId();
+  return (
+    <span className="inline-flex items-center gap-1">
+      <Button
+        type="button"
+        variant="secondary"
+        size="sm"
+        disabled={disabled}
+        aria-label={label}
+        aria-describedby={helpId}
+        onClick={onClick}
+      >
+        {openCopy.update}
+      </Button>
+      <InfoTip label={label} help={help} id={helpId} />
+    </span>
   );
 }

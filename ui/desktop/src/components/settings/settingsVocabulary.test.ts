@@ -20,13 +20,16 @@ import { describe, expect, it } from 'vitest';
  * The vocabulary itself is written up in
  * `docs/desktop-ui/settings-visual-vocabulary.md`; this file is its teeth.
  *
- * ⚠ **The exclusions are a stated scope, not an amnesty.** Dictation, the tunnel
- * and session sharing are the only folders still left out, and only because they
- * are unmounted: no route renders them, so there is no surface to hold to the
- * rules. Everything else that was ever on the list (the permission modals, the
+ * ⚠ **The exclusions are a stated scope, not an amnesty.** The tunnel and session
+ * sharing are the only folders still left out, and only because they are
+ * unmounted: no route renders them, so there is no surface to hold to the rules.
+ * Everything else that was ever on the list (the permission modals, the
  * provider-configuration page, the extension rows) left it on 2026-10-10, once it
  * sat on ModalShell and SettingRow, and Knowledge and BAAM joined as roots of
- * their own. Adding a name back is how the rules rot.
+ * their own. The inherited cloud dictation folder left it in 2026-11 by being
+ * deleted (PR-01 of `docs/dictation/implementation-plan.md`), so a `dictation/`
+ * folder written here now is walked like any other. Adding a name back is how
+ * the rules rot.
  */
 const SETTINGS_DIR = __dirname;
 /**
@@ -56,7 +59,7 @@ const ROOTS: { dir: string; outOfScope: string[] }[] = [
   {
     dir: SETTINGS_DIR,
     // Unmounted (spec 3.13 leaves them alone): `sessions/` here is session SHARING.
-    outOfScope: ['dictation/', 'tunnel/', 'sessions/'],
+    outOfScope: ['tunnel/', 'sessions/'],
   },
   // Home's usage surfaces (SessionsInsights, HomeUsageCard, UsageHeatmap) sit in
   // this directory too and follow the vocabulary since the 2026-10 redesign.
@@ -77,6 +80,8 @@ const ROOTS: { dir: string; outOfScope: string[] }[] = [
   { dir: join(SETTINGS_DIR, '../applications'), outOfScope: [] },
   // Knowledge, 2026-10-10 (spec wave 2), once its owner's sweep had cleared the rules' offenders.
   { dir: join(SETTINGS_DIR, '../knowledge'), outOfScope: [] },
+  // The Dictionary page and its dialogs (DD-67, PR-20), swept from the day they landed.
+  { dir: join(SETTINGS_DIR, '../dictionary'), outOfScope: [] },
 ];
 
 function sourceFiles(): { path: string; rel: string; text: string }[] {
@@ -235,12 +240,14 @@ describe('the settings vocabulary', () => {
       'settings/permission/PermissionModal.tsx',
       'baam/MarketplaceDialog.tsx',
       'knowledge/KnowledgeView.tsx',
+      'dictionary/DictionaryView.tsx',
+      'dictionary/TermDialog.tsx',
     ]) {
       expect(covered).toContain(file);
     }
-    // The three unmounted folders stay out, and nothing else in the settings tree does.
+    // The two unmounted folders stay out, and nothing else in the settings tree does.
     for (const rel of covered) {
-      expect(rel).not.toMatch(/^settings\/(dictation|tunnel|sessions)\//);
+      expect(rel).not.toMatch(/^settings\/(tunnel|sessions)\//);
     }
   });
 
@@ -351,10 +358,8 @@ describe('the settings vocabulary', () => {
    * (rule 9) are not on it because none of them is a row description.
    */
   it('puts no description paragraph in a row', () => {
-    const NOT_YET_CONVERTED = new Set([
-      // Unmounted (spec §3.13 leaves it); it renders for nobody.
-      'settings/app/ExternalBackendSection.tsx',
-    ]);
+    // Empty since PR-29 mounted `settings/app/ExternalBackendSection.tsx` on `SettingRow`.
+    const NOT_YET_CONVERTED = new Set<string>([]);
     const paragraphs: string[] = [];
     for (const { rel, text } of FILES) {
       if (NOT_YET_CONVERTED.has(rel)) continue;

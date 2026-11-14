@@ -1,7 +1,7 @@
 import './transcript-row.css';
 import * as React from 'react';
 import { cn } from '../utils';
-import { ChevronRight } from './icons/app-icons';
+import { ChevronRight, CircleX } from './icons/app-icons';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible';
 
 /** Any 16px glyph component: a tool glyph, `Brain`, `Check`, `AlertTriangle`. */
@@ -24,12 +24,21 @@ export interface TranscriptRowProps {
    * InfoTip explaining the meta). Never inside the button.
    */
   trailing?: React.ReactNode;
+  /**
+   * `inline` (default) sets `trailing` after the head on the row's line. `below` gives it a
+   * line of its own under the head, starting at the label's left edge, so a trailing part that
+   * holds several controls never squeezes the label (a `dictionary__add_terms` row's terms,
+   * each beside its own Keep and Undo).
+   */
+  trailingPlacement?: 'inline' | 'below';
   /** Work in progress: the label breathes until the row is hovered or focused. */
   running?: boolean;
   /**
-   * `danger` draws the line in danger ink: a call that failed, or a row that
-   * failed to render. Only the row's own line; rows nested in its body keep
-   * their own tone.
+   * `danger` marks a call that failed, or a row that failed to render. It is
+   * drawn calm, not red (design.md 9.14, red is rare): the line keeps the muted
+   * ink and the leading glyph becomes the failure glyph ({@link FAILED_GLYPH}),
+   * so the words and that one shape say "failed". Only the row's own line; rows
+   * nested in its body keep their own tone.
    */
   tone?: 'muted' | 'danger';
   /** A screen-reader status beside the glyph ("Tool status: success"). */
@@ -55,6 +64,13 @@ export interface TranscriptRowProps {
 }
 
 /**
+ * The glyph every failed line wears in place of its tool's own: a circled ✕, in
+ * the primary ink while the line itself stays muted. With the "Failed to …" verb
+ * it identifies a failure at a glance without colour (design.md 9.14).
+ */
+export const FAILED_GLYPH = CircleX;
+
+/**
  * The one transcript line (D-17: a tool call is a line, not a card).
  *
  * `[glyph 16] Verb summary · meta ›` at 28px in `text-secondary` muted ink,
@@ -75,6 +91,7 @@ export function TranscriptRow({
   label,
   meta,
   trailing,
+  trailingPlacement = 'inline',
   running = false,
   tone = 'muted',
   statusLabel,
@@ -99,7 +116,7 @@ export function TranscriptRow({
   const head = (
     <>
       <span className="br-transcript-row-glyph" data-tool-glyph={glyph} aria-hidden="true">
-        <Icon />
+        {tone === 'danger' ? <FAILED_GLYPH /> : <Icon />}
       </span>
       {statusLabel ? <span role="img" className="sr-only" aria-label={statusLabel} /> : null}
       <span className="br-transcript-row-label">{label}</span>
@@ -113,6 +130,17 @@ export function TranscriptRow({
     </>
   );
 
+  // Below the head, the trailing part is still inside the row's line, which wraps: the line is
+  // the element `message-meta.css` ends short under a message's hover actions, so the trailing
+  // line ends short with it.
+  const below = trailingPlacement === 'below' && trailing !== undefined && trailing !== null;
+  const lineProps = { 'data-trailing': below ? 'below' : undefined };
+  const trailingPart = below ? (
+    <div className="br-transcript-row-trailing">{trailing}</div>
+  ) : (
+    trailing
+  );
+
   const rootProps = {
     'data-testid': testId,
     'data-tone': tone,
@@ -122,9 +150,9 @@ export function TranscriptRow({
   if (!expandable) {
     return (
       <div {...rootProps} className={cn('br-transcript-row', className)}>
-        <div className="br-transcript-row-line">
+        <div className="br-transcript-row-line" {...lineProps}>
           <div className={cn('br-transcript-row-head', triggerClassName)}>{head}</div>
-          {trailing}
+          {trailingPart}
         </div>
       </div>
     );
@@ -137,14 +165,14 @@ export function TranscriptRow({
       onOpenChange={handleOpenChange}
       className={cn('br-transcript-row', className)}
     >
-      <div className="br-transcript-row-line">
+      <div className="br-transcript-row-line" {...lineProps}>
         <CollapsibleTrigger asChild>
           <button type="button" className={cn('br-transcript-row-head', triggerClassName)}>
             {head}
             <ChevronRight aria-hidden="true" className="br-transcript-row-chevron" />
           </button>
         </CollapsibleTrigger>
-        {trailing}
+        {trailingPart}
       </div>
       <CollapsibleContent className="biorouter-disclosure-panel">
         <div className="br-transcript-row-body">

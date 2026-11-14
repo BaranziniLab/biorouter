@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HostManagedModelPanel } from './HostManagedModelPanel';
 import {
   HOST_CONFIGURE_COMMAND,
-  HOST_MANAGED_ONBOARDING_REASON,
+  HOST_MANAGED_ONBOARDING_HELP,
+  HOST_MANAGED_ONBOARDING_STEP,
   HOST_MANAGED_ONBOARDING_TITLE,
 } from './hostManagedModelCopy';
 
@@ -39,15 +40,20 @@ describe('HostManagedModelPanel', () => {
     expect(writeText).toHaveBeenCalledWith(HOST_CONFIGURE_COMMAND);
   });
 
-  it('keeps the title, the reason and the reload line', () => {
+  // Owner, 2026-11-13: one step up front, the reason on hover. The step still says to reload
+  // the page, so the separate reload line it replaced says nothing new.
+  it('keeps the title and the step, and the reason behind the title’s info icon', () => {
     render(<HostManagedModelPanel />);
     const panel = screen.getByTestId('host-managed-model-panel');
+    // The heading is named by the title alone: the info icon sits beside it, not inside.
     expect(within(panel).getByRole('heading', { level: 2 })).toHaveTextContent(
-      HOST_MANAGED_ONBOARDING_TITLE
+      new RegExp(`^${HOST_MANAGED_ONBOARDING_TITLE}$`)
     );
-    expect(panel).toHaveTextContent(HOST_MANAGED_ONBOARDING_REASON);
-    expect(panel).toHaveTextContent('Reload this page once that command has finished.');
-    // The copy field is the only control the panel holds.
-    expect(within(panel).getAllByRole('button')).toHaveLength(1);
+    expect(within(panel).getByText(HOST_MANAGED_ONBOARDING_STEP)).toBeInTheDocument();
+    expect(HOST_MANAGED_ONBOARDING_STEP).toMatch(/then reload this page\.$/);
+    const about = within(panel).getByRole('button', { name: 'About choosing a model on the host' });
+    expect(about).toHaveAccessibleDescription(HOST_MANAGED_ONBOARDING_HELP);
+    // The copy field and that info icon are the only controls the panel holds.
+    expect(within(panel).getAllByRole('button')).toHaveLength(2);
   });
 });

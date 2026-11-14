@@ -4,7 +4,9 @@ import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
+import { InfoTip } from '../../ui/info-tip';
 import { FileText, KeyRound, Lock } from '../../icons/app-icons';
+import { splitFirstSentence } from '../../../utils/proseFold';
 import { InlineConfirm } from '../access/RevokeControls';
 import { deviceCopy } from '../account/copy';
 import { markNeedsRejoin } from '../account/rejoinMarks';
@@ -126,12 +128,16 @@ function DeviceRemoval({
   onCancel(): void;
   onConfirm(): void;
 }) {
-  if (confirming)
+  if (confirming) {
+    // Another computer's warning keeps its consequence in view and folds the steps that come
+    // first behind Details (owner, 2026-11-13), in the command line's words.
+    const warning = splitFirstSentence(deviceCopy.sshWarning);
     return (
       <InlineConfirm
         className="w-full pt-1"
         question={isThis ? deviceCopy.confirmThis : deviceCopy.confirm(device.fingerprint)}
-        detail={isThis ? deviceCopy.thisFollows : deviceCopy.sshWarning}
+        detail={isThis ? deviceCopy.thisFollows : warning.first}
+        details={isThis ? undefined : warning.rest}
         confirmLabel={isThis ? deviceCopy.confirmThisAction : deviceCopy.confirmAction}
         cancelLabel={deviceCopy.keep}
         pending={pending}
@@ -139,6 +145,7 @@ function DeviceRemoval({
         onCancel={onCancel}
       />
     );
+  }
   return (
     <Button
       ref={buttonRef}
@@ -151,6 +158,29 @@ function DeviceRemoval({
     >
       {deviceCopy.remove}
     </Button>
+  );
+}
+
+/**
+ * What a removal came to, in one line: "Removed this computer." keeps where to go next behind its
+ * info icon (owner, 2026-11-13), since the dialog stands over the bar that offers it.
+ */
+function RemovedStatus({ text }: { text: string }) {
+  const { first, rest } = splitFirstSentence(text);
+  return (
+    <p
+      role="status"
+      className="text-supporting text-text-default"
+      data-testid="crew-device-removed"
+    >
+      <span>{first}</span>
+      {rest ? (
+        <>
+          {' '}
+          <InfoTip label={deviceCopy.removedThisHelpLabel} help={rest} />
+        </>
+      ) : null}
+    </p>
   );
 }
 
@@ -446,15 +476,7 @@ export function KeysDialog({ onClose }: KeysDialogProps) {
           </section>
         ) : null}
 
-        {removed ? (
-          <p
-            role="status"
-            className="text-supporting text-text-default"
-            data-testid="crew-device-removed"
-          >
-            {removed}
-          </p>
-        ) : null}
+        {removed ? <RemovedStatus text={removed} /> : null}
 
         {status?.backend === 'keyring' ? (
           <Disclosure label={copy.vaultToggle}>

@@ -3,6 +3,7 @@ import type { CrewStepRequest } from '../../../api';
 import { Button } from '../../ui/button';
 import { CopyField } from '../../ui/copy-field';
 import { Disclosure } from '../../ui/disclosure';
+import { InfoTip } from '../../ui/info-tip';
 import { sanitizeDisplayText } from '../identity/displayText';
 import { TrustHostKey } from '../hostKeys/TrustHostKey';
 import { trustCopy } from '../onboarding/copy';
@@ -100,7 +101,18 @@ function UnknownHostKey({
   return (
     <CrewStepFrame kind="hostKey" title={crewHostKeyStepCopy.unknownTitle(host)}>
       <div className="crew-onboard-stack" data-testid="crew-setup-host-key-unknown">
-        <p className="text-body text-text-default">{trustCopy.unknownBody}</p>
+        {/* The card's one line of explanation. What happens once the key is in waits behind its
+            info icon, so the fingerprint and the warning by Trust this key are all else in view
+            (owner, 2026-11-13). It goes once the chat stops waiting, which it would contradict. */}
+        <p className="text-body text-text-default">
+          <span>{trustCopy.unknownBody}</span>
+          {ended ? null : (
+            <>
+              {' '}
+              <InfoTip label={crewHostKeyStepCopy.goesOnLabel} help={crewHostKeyStepCopy.goesOn} />
+            </>
+          )}
+        </p>
         {offered ? (
           <div className="crew-onboard-field">
             <span className="text-supporting text-text-muted">{crewHostKeyStepCopy.read}</span>
@@ -122,11 +134,20 @@ function UnknownHostKey({
       </div>
       {ended ? (
         <p className="text-supporting text-text-muted">
-          {ended === 'dismissed' ? crewHostKeyStepCopy.dismissed : crewHostKeyStepCopy.ended}
+          {ended === 'dismissed' ? (
+            <>
+              <span>{crewHostKeyStepCopy.dismissed}</span>{' '}
+              <InfoTip
+                label={crewHostKeyStepCopy.dismissedHelpLabel}
+                help={crewHostKeyStepCopy.dismissedHelp}
+              />
+            </>
+          ) : (
+            crewHostKeyStepCopy.ended
+          )}
         </p>
       ) : (
         <>
-          <p className="text-supporting text-text-muted">{crewHostKeyStepCopy.goesOn}</p>
           <div className="crew-onboard-row">
             <TerminalToggle open={terminal} onToggle={() => setTerminal((open) => !open)} />
             <Button type="button" variant="ghost" size="sm" onClick={() => void notNow()}>
@@ -157,7 +178,10 @@ function ChangedHostKey({
   return (
     <CrewStepFrame kind="hostKey" title={crewHostKeyStepCopy.changedTitle(host)}>
       <div className="crew-onboard-stack" data-testid="crew-step-host-key-changed">
-        <p className="text-body text-text-default">{trustCopy.changedBody}</p>
+        <p className="text-body text-text-default">
+          <span>{trustCopy.changedBody}</span>{' '}
+          <InfoTip label={trustCopy.changedWhyLabel} help={trustCopy.changedWhy} />
+        </p>
         {/* Shown to read and compare, not handed on one by one: the one action is the
             details for IT, which carry both. */}
         {known ? <Fingerprint label={trustCopy.previous} value={known} /> : null}

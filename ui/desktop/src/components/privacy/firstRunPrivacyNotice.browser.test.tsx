@@ -184,6 +184,12 @@ describe('The privacy notice is the shared dialog (FR-R1-14)', () => {
     await tab.waitForSelector('[role="dialog"]');
     // The open motion (250ms) settles before anything is read.
     await tab.waitForTimeout(400);
+    // The by-model breakdown and "What this means" fold (owner, 2026-11-13). They are opened, so
+    // the dialog measured holds the longest text it is ever asked to, as these cases require.
+    await tab.$$eval('[role="dialog"] .biorouter-disclosure-trigger', (triggers) =>
+      triggers.forEach((trigger) => (trigger as HTMLElement).click())
+    );
+    await tab.waitForTimeout(400);
     return tab;
   }
 

@@ -2059,6 +2059,9 @@ mod tests {
             dropped_private_extensions: Vec::new(),
             dropped_cross_affiliation_extensions: Vec::new(),
             decision_service: None,
+            spawn_capability: None,
+            extension_changes: Default::default(),
+            skill_override: Default::default(),
         };
 
         // The sentinel: an agent nobody else owns, parked under the child's id.
@@ -2853,6 +2856,9 @@ mod tests {
             dropped_private_extensions: Vec::new(),
             dropped_cross_affiliation_extensions: Vec::new(),
             decision_service: None,
+            spawn_capability: None,
+            extension_changes: Default::default(),
+            skill_override: Default::default(),
         };
 
         let _result =
@@ -3056,6 +3062,9 @@ mod tests {
             dropped_private_extensions: Vec::new(),
             dropped_cross_affiliation_extensions: Vec::new(),
             decision_service: None,
+            spawn_capability: None,
+            extension_changes: Default::default(),
+            skill_override: Default::default(),
         };
         (config, workflow, task_config)
     }

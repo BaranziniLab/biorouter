@@ -1,5 +1,7 @@
 //! Issue #435: long tasks are bounded by progress and explicit user limits.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

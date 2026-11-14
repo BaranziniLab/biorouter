@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import ImagePreview from './ImagePreview';
 import { InlineImage } from './InlineImage';
 import { extractImagePaths, removeImagePathsFromText } from '../utils/imageUtils';
@@ -24,6 +24,16 @@ import {
 } from '../utils/composerCommand';
 import { CLAMP_EXPAND_MS, CLAMP_MAX_HEIGHT_PX, describeMessageLength } from '../utils/messageClamp';
 import { cn } from '../utils';
+import { DictationButton, DictationNotices } from './dictation/DictationButton';
+import { isDictationInserting, noteDictationEdit } from './dictation/dictationSession';
+import { dictationContext, useDictationComposer } from './dictation/useDictationComposer';
+import { recordComposerDictation } from '../utils/composerDrafts';
+import {
+  mapComposerDictation,
+  postCorrectionObservations,
+  type DictatedSpan,
+} from '../utils/dictationLedger';
+import type { View, ViewOptions } from '../utils/navigationUtils';
 
 /**
  * The long-message clamp has three states, not two, because the expansion has
@@ -50,6 +60,15 @@ type ClampState = 'collapsed' | 'expanding' | 'open';
  */
 const editableText = (text: string): string => composerTextOfSent(text);
 
+/**
+ * **More in Settings** from the editor's setup popover when no `setView` was
+ * given: the app uses a hash router, so this lands on the same Speech models
+ * section `setView('settings', { section: 'dictation' })` does.
+ */
+const openSettingsByRoute = (): void => {
+  window.location.hash = '#/settings?section=dictation';
+};
+
 interface UserMessageProps {
   message: Message;
   /**
@@ -68,6 +87,14 @@ interface UserMessageProps {
    */
   onSendAgain?: (text: string) => void;
   deliveryUnconfirmed?: boolean;
+  /**
+   * The chat this message belongs to, which the editor's microphone names as its
+   * target (`editor` with `session_id`, DD-30). Without it the editor dictates
+   * with public terms only.
+   */
+  sessionId?: string;
+  /** Where the microphone's **More in Settings** goes; without it the link opens Settings by route. */
+  setView?: (view: View, options?: ViewOptions) => void;
 }
 
 export default function UserMessage({
@@ -75,6 +102,8 @@ export default function UserMessage({
   onMessageUpdate,
   onSendAgain,
   deliveryUnconfirmed = false,
+  sessionId,
+  setView,
 }: UserMessageProps) {
   const contentRef = useRef<HTMLDivElement | null>(null);
   const bubbleRef = useRef<HTMLDivElement | null>(null);
@@ -85,6 +114,23 @@ export default function UserMessage({
   const restoreEditFocus = useRef(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState('');
+  const editSpansRef = useRef<DictatedSpan[]>([]);
+  const ledgerTextRef = useRef('');
+  const fieldEditRef = useRef<{ text: string; caret: number } | null>(null);
+  const editGenerationRef = useRef(0);
+  const savingRef = useRef(false);
+  useLayoutEffect(() => {
+    const edit = fieldEditRef.current;
+    editSpansRef.current = mapComposerDictation(
+      editSpansRef.current,
+      ledgerTextRef.current,
+      editContent,
+      edit?.text === editContent,
+      edit?.caret
+    );
+    ledgerTextRef.current = editContent;
+    fieldEditRef.current = null;
+  }, [editContent]);
   const [hasBeenEdited, setHasBeenEdited] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Sticky per message, and component-local on purpose. The transcript keys
@@ -132,6 +178,77 @@ export default function UserMessage({
     () => splitLeadingCommand(editBody),
     [editBody]
   );
+
+  // The editor's microphone (DD-60), immediately left of Save, so Save stays
+  // last. Editing a message is writing in a composer; its text goes in at the
+  // caret as one undo step, and nothing is saved by itself (DD-70).
+  const editRefsRef = useRef(editRefs);
+  editRefsRef.current = editRefs;
+  const editCommandRef = useRef(editCommand);
+  editCommandRef.current = editCommand;
+  const editProseRef = useRef(editProse);
+  editProseRef.current = editProse;
+  const dictationKey = `editor:${message.id}`;
+  const dictation = useDictationComposer({
+    key: dictationKey,
+    textAreaRef: textareaRef,
+    storesDraft: false,
+    target: () => {
+      const field = textareaRef.current;
+      const prose = editProseRef.current;
+      const at = Math.min(field?.selectionStart ?? prose.length, prose.length);
+      // At most 2 KiB of UTF-8, cut on a character boundary, as the chat composer's:
+      // `POST /dictation/streams` answers 413 above it.
+      const context = dictationContext(prose.slice(0, at));
+      return {
+        target_kind: 'editor',
+        ...(sessionId ? { session_id: sessionId } : {}),
+        ...(context ? { context } : {}),
+      };
+    },
+    setByState: (value, caret) => {
+      setEditContent(
+        joinComposerText(joinLeadingCommand(editCommandRef.current, value), editRefsRef.current)
+      );
+      setError(null);
+      requestAnimationFrame(() => {
+        const field = textareaRef.current;
+        if (field && document.activeElement === field) field.setSelectionRange(caret, caret);
+      });
+    },
+    onInserted: (event) => {
+      const prefix = joinLeadingCommand(editCommandRef.current, '').length;
+      const before = joinComposerText(
+        joinLeadingCommand(editCommandRef.current, event.before),
+        editRefsRef.current
+      );
+      const recorded = recordComposerDictation(
+        editSpansRef.current,
+        before,
+        { start: event.anchor.start + prefix, end: event.anchor.end + prefix },
+        event.transcript.text,
+        {
+          recordId: event.streamId ?? crypto.randomUUID(),
+          raw: event.transcript.raw_text,
+          changes: event.transcript.changes,
+          model: event.transcript.model,
+          biasScope: event.transcript.bias_scope,
+        }
+      );
+      editSpansRef.current = recorded.dictation;
+      ledgerTextRef.current = recorded.text;
+    },
+  });
+  const lastEditProseRef = useRef(editProse);
+  useLayoutEffect(() => {
+    const before = lastEditProseRef.current;
+    lastEditProseRef.current = editProse;
+    if (before === editProse || isDictationInserting(dictationKey)) return;
+    const field = textareaRef.current;
+    const caret = field && document.activeElement === field ? field.selectionEnd : undefined;
+    noteDictationEdit(dictationKey, before, editProse, caret);
+  }, [editProse, dictationKey]);
+  const dictating = dictation.available && dictation.holdsComposer;
 
   // Memoize the timestamp
   const timestamp = useMemo(() => formatMessageTimestamp(message.created), [message.created]);
@@ -203,9 +320,11 @@ export default function UserMessage({
 
   // Initialize edit mode with current message content
   const initializeEditMode = useCallback(() => {
+    editSpansRef.current = [];
+    editGenerationRef.current += 1;
+    ledgerTextRef.current = editableText(displayText);
     setEditContent(editableText(displayText));
     setError(null);
-    window.electron.logInfo(`Entering edit mode with content: ${displayText}`);
   }, [displayText]);
 
   // Handle edit button click
@@ -251,11 +370,16 @@ export default function UserMessage({
         }
       }
       const newContent = joinComposerText(joinLeadingCommand(editCommand, value), editRefs);
+      if (!isDictationInserting(dictationKey)) {
+        fieldEditRef.current = {
+          text: newContent,
+          caret: e.target.selectionEnd + joinLeadingCommand(editCommand, '').length,
+        };
+      }
       setEditContent(newContent);
       setError(null); // Clear any previous errors
-      window.electron.logInfo(`Content changed: ${newContent}`);
     },
-    [editCommand, editRefs]
+    [editCommand, editRefs, dictationKey]
   );
 
   const handleRemoveEditReference = useCallback((index: number) => {
@@ -284,20 +408,41 @@ export default function UserMessage({
         return;
       }
 
-      if (onMessageUpdate && message.id) {
-        // Refused before anything changed: keep the editor, and the words, where they are.
-        if (onMessageUpdate(message.id, editContent, editType) === false) return;
-        setHasBeenEdited(true);
+      if (!onMessageUpdate || !message.id || savingRef.current) return;
+      const generation = editGenerationRef.current;
+      const spans = editType === 'edit' ? editSpansRef.current : [];
+      savingRef.current = true;
+      let submitted: unknown;
+      try {
+        submitted = onMessageUpdate(message.id, editContent, editType);
+      } catch {
+        savingRef.current = false;
+        return;
       }
-      restoreEditFocus.current = true;
-      setIsEditing(false);
+      const complete = (accepted: unknown) => {
+        savingRef.current = false;
+        if (generation !== editGenerationRef.current || accepted === false) return;
+        editSpansRef.current = [];
+        if (accepted === true) postCorrectionObservations(spans, sessionId);
+        setHasBeenEdited(true);
+        restoreEditFocus.current = true;
+        setIsEditing(false);
+      };
+      if (submitted && typeof (submitted as PromiseLike<unknown>).then === 'function') {
+        void Promise.resolve(submitted).then(complete, () => {
+          savingRef.current = false;
+        });
+      } else complete(submitted);
     },
-    [editContent, displayText, onMessageUpdate, message.id]
+    [editContent, displayText, onMessageUpdate, message.id, sessionId]
   );
 
   // Handle cancel action
   const handleCancel = useCallback(() => {
-    window.electron.logInfo('Cancel clicked - reverting to original content');
+    editGenerationRef.current += 1;
+    editSpansRef.current = [];
+    ledgerTextRef.current = editableText(displayText);
+    fieldEditRef.current = null;
     restoreEditFocus.current = true;
     setIsEditing(false);
     setEditContent(editableText(displayText)); // Reset to original content
@@ -306,10 +451,14 @@ export default function UserMessage({
 
   // Handle keyboard events for accessibility
   const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
+    (e: React.KeyboardEvent<HTMLElement>) => {
       window.electron.logInfo(
         `Key pressed: ${e.key}, metaKey: ${e.metaKey}, ctrlKey: ${e.ctrlKey}`
       );
+
+      // Dictation first: the chord, Enter (stops, never saves) and Escape (cancels
+      // the dictation, not the edit) while it holds the editor.
+      if (dictation.handleKeyDown(e)) return;
 
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -331,7 +480,7 @@ export default function UserMessage({
         handleSave('edit');
       }
     },
-    [editCommand, handleCancel, handleRemoveEditCommand, handleSave]
+    [dictation, editCommand, handleCancel, handleRemoveEditCommand, handleSave]
   );
 
   // Auto-resize textarea based on content
@@ -443,6 +592,7 @@ export default function UserMessage({
               value={editProse}
               onChange={handleContentChange}
               onKeyDown={handleKeyDown}
+              onFocus={dictation.noteInterest}
               rows={3}
               className="block w-full resize-none border-0 bg-transparent p-0 text-body text-text-default outline-none placeholder:text-text-muted"
               style={{
@@ -455,6 +605,7 @@ export default function UserMessage({
               aria-label={transcriptCopy.edit.textbox}
               aria-describedby={error ? `error-${message.id}` : undefined}
             />
+            {dictation.available && <DictationNotices dictationKey={dictationKey} />}
             {error && (
               <div
                 id={`error-${message.id}`}
@@ -476,15 +627,23 @@ export default function UserMessage({
               </Button>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button onClick={() => handleSave('diverge')} variant="secondary" size="sm">
+                  <Button
+                    onClick={() => handleSave('diverge')}
+                    variant="secondary"
+                    size="sm"
+                    disabled={dictating}
+                  >
                     {transcriptCopy.edit.saveAsNew}
                   </Button>
                 </TooltipTrigger>
                 <TooltipContent>{transcriptCopy.edit.saveAsNewHelp}</TooltipContent>
               </Tooltip>
+              {dictation.available && (
+                <DictationButton control={dictation} setView={setView ?? openSettingsByRoute} />
+              )}
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <Button onClick={() => handleSave('edit')} size="sm">
+                  <Button onClick={() => handleSave('edit')} size="sm" disabled={dictating}>
                     {transcriptCopy.edit.save}
                   </Button>
                 </TooltipTrigger>

@@ -2252,16 +2252,142 @@ async fn deliver(
 /// Not `tokio::io::stdin`: its read is not cancellation-safe inside a `select!`,
 /// and a partial line lost to a cancelled read is a steer the user typed and
 /// never sent.
-fn spawn_stdin_reader(tx: tokio::sync::mpsc::Sender<String>) {
+fn spawn_stdin_reader(tx: tokio::sync::mpsc::Sender<String>, session_id: String) {
+    #[cfg(feature = "dictation")]
+    let runtime = tokio::runtime::Handle::current();
+    #[cfg(not(feature = "dictation"))]
+    let _ = session_id;
     std::thread::spawn(move || {
         use std::io::BufRead;
-        for line in std::io::stdin().lock().lines() {
-            let Ok(line) = line else { break };
+        #[cfg(feature = "dictation")]
+        {
+            read_attach_lines(
+                || {
+                    let mut line = String::new();
+                    std::io::stdin()
+                        .lock()
+                        .read_line(&mut line)
+                        .ok()
+                        .filter(|&n| n > 0)
+                        .map(|_| line)
+                },
+                || {
+                    runtime.block_on(crate::dictation::frontend::capture_in_terminal(
+                        Some(session_id.clone()),
+                        None,
+                        Default::default(),
+                    ))
+                },
+                |line| tx.blocking_send(line).is_ok(),
+                |note| eprintln!("{note}"),
+            );
+        }
+        #[cfg(not(feature = "dictation"))]
+        loop {
+            let mut line = String::new();
+            if std::io::stdin()
+                .lock()
+                .read_line(&mut line)
+                .ok()
+                .filter(|&n| n > 0)
+                .is_none()
+            {
+                break;
+            }
+            let line = line.trim_end_matches(['\r', '\n']).to_string();
             if tx.blocking_send(line).is_err() {
                 break;
             }
         }
     });
+}
+
+#[cfg(feature = "dictation")]
+fn read_attach_lines(
+    mut next_line: impl FnMut() -> Option<String>,
+    mut capture: impl FnMut() -> Result<Option<String>, String>,
+    mut send: impl FnMut(String) -> bool,
+    mut note: impl FnMut(&str),
+) {
+    while let Some(line) = next_line() {
+        let line = line.trim_end_matches(['\r', '\n']);
+        if line == "/dictate" {
+            match capture() {
+                Ok(Some(text)) => {
+                    note(&format!("{text}\nSend? [y/N]"));
+                    let Some(answer) = next_line() else { break };
+                    if attach_send_confirmed(&answer) && !send(text) {
+                        break;
+                    }
+                }
+                Ok(None) => {}
+                Err(reason) => note(&reason),
+            }
+            continue;
+        }
+        if !send(line.to_string()) {
+            break;
+        }
+    }
+}
+
+#[cfg(feature = "dictation")]
+fn attach_send_confirmed(answer: &str) -> bool {
+    matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes")
+}
+
+#[cfg(all(test, feature = "dictation"))]
+#[test]
+fn attach_dictation_requires_explicit_yes() {
+    assert!(!attach_send_confirmed(""));
+    assert!(!attach_send_confirmed("n"));
+    assert!(!attach_send_confirmed("maybe"));
+    assert!(attach_send_confirmed("y\n"));
+    assert!(attach_send_confirmed("YES"));
+}
+
+#[cfg(all(test, feature = "dictation"))]
+#[test]
+fn attach_intercepts_exact_dictate_before_steer_and_blank_confirmation_posts_nothing() {
+    use std::collections::VecDeque;
+    let mut lines = VecDeque::from(["/dictate\n".to_string(), "\n".to_string()]);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(2);
+    let mut captures = 0;
+    let mut notices = Vec::new();
+    read_attach_lines(
+        || lines.pop_front(),
+        || {
+            captures += 1;
+            Ok(Some("EPAS1 levels rose".into()))
+        },
+        |line| tx.blocking_send(line).is_ok(),
+        |notice| notices.push(notice.to_string()),
+    );
+    assert_eq!(captures, 1);
+    assert_eq!(notices, vec!["EPAS1 levels rose\nSend? [y/N]".to_string()]);
+    assert!(
+        rx.try_recv().is_err(),
+        "neither /dictate nor the transcript was sent"
+    );
+}
+
+#[cfg(all(test, feature = "dictation"))]
+#[test]
+fn attach_yes_posts_only_captured_text_and_never_the_dictate_command() {
+    use std::collections::VecDeque;
+    let mut lines = VecDeque::from(["/dictate\n".to_string(), "yes\n".to_string()]);
+    let (tx, mut rx) = tokio::sync::mpsc::channel(2);
+    read_attach_lines(
+        || lines.pop_front(),
+        || Ok(Some("EPAS1 levels rose".into())),
+        |line| tx.blocking_send(line).is_ok(),
+        |_| {},
+    );
+    assert_eq!(rx.try_recv().unwrap(), "EPAS1 levels rose");
+    assert!(
+        rx.try_recv().is_err(),
+        "the command never reaches the steer channel"
+    );
 }
 
 /// The one running subagent of `parent`, or an error naming the candidates.
@@ -2586,7 +2712,7 @@ pub async fn handle_session_attach(
 
     let (line_tx, mut line_rx) = tokio::sync::mpsc::channel::<String>(16);
     if !read_only {
-        spawn_stdin_reader(line_tx.clone());
+        spawn_stdin_reader(line_tx.clone(), session_id.clone());
     }
     // `line_tx` is deliberately held for the whole loop: with `--read-only` (and
     // after stdin reaches EOF) the receiver then parks forever instead of

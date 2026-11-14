@@ -22,6 +22,8 @@
 //! output makes the *deterministic* half — the enrichment, which is the half
 //! that actually diverged — the only thing that can move the result.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::Arc;
 
 use anyhow::Result;

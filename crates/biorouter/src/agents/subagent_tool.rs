@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::LazyLock;
@@ -13,10 +13,11 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::agents::default_worker;
+use crate::agents::session_skills::{self, SessionSkillOverride};
 use crate::agents::subagent_handle::{self, BackgroundSubagent};
 use crate::agents::subagent_handler::{run_complete_subagent_task_outcome, SubagentRunOutcome};
 use crate::agents::subagent_result::SubagentResult;
-use crate::agents::subagent_task_config::TaskConfig;
+use crate::agents::subagent_task_config::{ChildExtensionChanges, TaskConfig};
 use crate::agents::tool_execution::ToolCallResult;
 use crate::agents::AgentConfig;
 use crate::decision::settings::{
@@ -928,7 +929,25 @@ pub struct SubagentParams {
     pub instructions: Option<String>,
     pub subworkflow: Option<String>,
     pub parameters: Option<HashMap<String, Value>>,
+    /// Restrict the child to these of the extensions it inherits. Unset keeps
+    /// them all; `[]` keeps none. Applied before `remove_extensions` and
+    /// `add_extensions`.
     pub extensions: Option<Vec<String>>,
+    /// Capabilities or extensions to give the child on top of what it
+    /// inherits from this chat's live roster, by the label a person sees or by
+    /// key. Resolved and gated by [`resolve_child_extension_changes`].
+    #[serde(default)]
+    pub add_extensions: Vec<String>,
+    /// Capabilities or extensions to take away from what the child inherits.
+    #[serde(default)]
+    pub remove_extensions: Vec<String>,
+    /// Skills or Contexts (skill or bundle names) to turn on for the child
+    /// alone, on top of this chat's own skill choices, which it inherits.
+    #[serde(default)]
+    pub add_skills: Vec<String>,
+    /// Skills or Contexts to turn off for the child alone.
+    #[serde(default)]
+    pub remove_skills: Vec<String>,
     pub settings: Option<SubagentSettings>,
     #[serde(default = "default_summary")]
     pub summary: bool,
@@ -1183,7 +1202,27 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
             "extensions": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "OMIT this to give the subagent the same extensions you have, which is almost always right. Naming a subset restricts it to those. An empty array leaves it with NO tools at all: it can only think and write text, so use that only for a pure reasoning or writing task."
+                "description": "OMIT this to give the subagent the extensions this chat has right now, which is almost always right: it starts with the same capabilities on and off as this chat. Naming a subset restricts it to those. An empty array leaves it with NO tools at all: it can only think and write text, so use that only for a pure reasoning or writing task. To change one or two, use add_extensions or remove_extensions instead."
+            },
+            "add_extensions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional. Capabilities or extensions to give this subagent on top of what it inherits from this chat, by the name a person sees (\"Auto Visualiser\") or by key (\"autovisualiser\"): for example one this chat has switched off. It must be installed and not turned off in Settings, and a private extension is never given to a public chat's subagent. Workspace Control and Crew cannot be added. An unknown name refuses the spawn and lists the names you can use."
+            },
+            "remove_extensions": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional. Capabilities or extensions to take away from this subagent, by the name a person sees or by key. It keeps everything else this chat has. An unknown name refuses the spawn and lists what the subagent would have."
+            },
+            "add_skills": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional. Skills or Contexts to turn on for this subagent only, by skill or bundle name (\"office-pdf\", \"knowledge-bases\"). It already starts with this chat's own skill and Context choices, so name only what should differ."
+            },
+            "remove_skills": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional. Skills or Contexts to turn off for this subagent only, by skill or bundle name."
             },
             "settings": {
                 "type": "object",
@@ -1330,8 +1369,11 @@ pub(crate) fn build_tool_description(sub_workflows: &[SubWorkflow]) -> String {
          1. Ad-hoc: Provide `instructions` for a custom task\n\
          2. Predefined: Provide `subworkflow` name to run a predefined task\n\
          3. Augmented: Provide both `subworkflow` and `instructions` to add context\n\n\
-         The subagent has access to the same tools as you by default. \
-         Use `extensions` to limit which extensions the subagent can use.\n\n\
+         A subagent starts with this chat's setup as it is now: the same extensions and \
+         built-in capabilities on and off, and the same skills and Contexts. To change that \
+         for one subagent, pass `add_extensions` or `remove_extensions` (capabilities and \
+         extensions) and `add_skills` or `remove_skills` (skills and Contexts); `extensions` \
+         restricts it to a list.\n\n\
          With no provider and no model named in `settings`, a subagent runs on the \
          user's default worker model when one is set, and otherwise on this chat's model.\n\n\
          Subagents run in the BACKGROUND by default and open no tab. Each one is \
@@ -1496,7 +1538,8 @@ pub(crate) fn handle_bridged_subagent_tool(
             message: Cow::from(format!(
                 "Subscription-backed coding-agent subagents cannot inherit non-bridge \
                  capability or extension(s): {}. Nothing was started. This child may inherit \
-                 only: {available}. Omit `extensions` to use that audited subset. For a skill \
+                 only: {available}. Omit `extensions` and `add_extensions` to use that audited \
+                 subset. For a skill \
                  repository URL, call `skills__importSkillPackage` in the parent chat or \
                  delegate with `extensions:[\"skills\"]`; do not retry with Developer, Code \
                  Execution, or native shell/editor tools.",
@@ -1524,15 +1567,19 @@ fn unsupported_bridged_extension_names(
     params: &Value,
     available: &[crate::agents::ExtensionConfig],
 ) -> Vec<String> {
-    let Some(requested) = params.get("extensions").and_then(Value::as_array) else {
-        return Vec::new();
-    };
+    // `add_extensions` too: a coding-agent child may be given only what its
+    // audited subset already holds, whichever field names it.
+    let requested: Vec<&Value> = ["extensions", "add_extensions"]
+        .into_iter()
+        .filter_map(|field| params.get(field).and_then(Value::as_array))
+        .flatten()
+        .collect();
     let available: std::collections::HashSet<String> = available
         .iter()
         .map(|extension| crate::agents::extension_manager::normalize(&extension.key()))
         .collect();
     requested
-        .iter()
+        .into_iter()
         .filter_map(Value::as_str)
         .filter(|name| !available.contains(&extension_request_key(name)))
         .map(str::to_string)
@@ -1543,7 +1590,7 @@ fn unsupported_bridged_extension_names(
 fn handle_subagent_tool_inner(
     config: &AgentConfig,
     params: Value,
-    task_config: TaskConfig,
+    mut task_config: TaskConfig,
     sub_workflows: HashMap<String, SubWorkflow>,
     working_dir: PathBuf,
     cancellation_token: Option<CancellationToken>,
@@ -1608,6 +1655,15 @@ fn handle_subagent_tool_inner(
             message: Cow::from(refusal),
             data: None,
         }));
+    }
+
+    // Here for the same reason as the placement: what this spawn asked to
+    // change about the extensions its child inherits is resolved and gated
+    // before a session, an in-flight slot or a provider exists, so a refused
+    // add leaves nothing behind. It is applied in `judge_child`.
+    match child_extension_changes(&parsed_params, &task_config) {
+        Ok(changes) => task_config.extension_changes = changes,
+        Err(refusal) => return ToolCallResult::from(Err(refusal)),
     }
 
     let workflow = match build_workflow(&parsed_params, &sub_workflows) {
@@ -2258,6 +2314,7 @@ async fn start_background_child(
         task_config.provider.as_ref(),
         &child_privacy,
         monitors.as_ref(),
+        &task_config.skill_override,
     )
     .await?;
     // Stored before anything can run it: the handle registered below makes
@@ -2293,7 +2350,7 @@ async fn start_background_child(
 async fn execute_subagent(
     config: AgentConfig,
     mut workflow: Workflow,
-    task_config: TaskConfig,
+    mut task_config: TaskConfig,
     params: SubagentParams,
     working_dir: PathBuf,
     cancellation_token: Option<CancellationToken>,
@@ -2349,6 +2406,16 @@ async fn execute_subagent(
     // spawn before any row exists, and the settings are written on the row as
     // soon as it does (`write_child_monitors`).
     let monitors = resolve_child_monitors(&config, &task_config, &params, &workflow).await?;
+    // And its skill and Context choices: its parent chat's own, with this
+    // spawn's changes. Read here, before any row, because an unreadable
+    // override refuses the spawn rather than starting a child on the
+    // machine-wide set, which would hand it skills its chat had switched off.
+    task_config.skill_override = resolve_child_skills(
+        &config.session_manager,
+        &task_config.parent_session_id,
+        &params,
+    )
+    .await?;
 
     // Fork-bomb guard: count this spawn, refuse if too many are already in
     // flight, then throttle concurrency — and, if every concurrency slot is
@@ -2447,6 +2514,7 @@ async fn run_blocking_child(
         task_config.provider.as_ref(),
         &child_privacy,
         monitors.as_ref(),
+        &task_config.skill_override,
     )
     .await?;
 
@@ -2610,6 +2678,7 @@ async fn create_subagent_session(
         provider,
         &ChildPrivacy::default(),
         None,
+        &SessionSkillOverride::default(),
     )
     .await
 }
@@ -2630,6 +2699,33 @@ async fn create_subagent_session(
 /// classification at birth, before any row exists: a copy whose model is
 /// public would be stranded on a Private child, where every one of its checks
 /// is refused (design §3.4 item 1).
+/// What a child's row is born with in its extension data, written in the same
+/// statement as its parent link: its privacy ceiling (DR-33), and the skill and
+/// Context choices it starts with (its parent chat's, plus the spawn's own
+/// changes), so no reader ever sees the child on the machine-wide set first. An
+/// empty override IS the machine-wide set, so nothing is written for it.
+/// `true` when anything was stamped.
+fn stamp_child_birth_data(
+    data: &mut crate::session::ExtensionData,
+    ceiling: Option<&crate::privacy::decision_axes::PrivacyCeiling>,
+    skills: &SessionSkillOverride,
+) -> anyhow::Result<bool> {
+    let mut stamped = false;
+    if let Some(ceiling) = ceiling {
+        ceiling.stamp(data)?;
+        stamped = true;
+    }
+    if !skills.is_empty() {
+        data.set_extension_state(
+            session_skills::STATE_KEY,
+            session_skills::STATE_VERSION,
+            serde_json::to_value(skills)?,
+        );
+        stamped = true;
+    }
+    Ok(stamped)
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn create_subagent_session_under(
     config: &AgentConfig,
@@ -2640,6 +2736,7 @@ async fn create_subagent_session_under(
     provider: &dyn crate::providers::base::Provider,
     child_privacy: &ChildPrivacy,
     monitors: Option<&DecisionSettings>,
+    skills: &SessionSkillOverride,
 ) -> Result<crate::session::Session, ErrorData> {
     let internal = |e: &dyn std::fmt::Display| ErrorData {
         code: ErrorCode::INTERNAL_ERROR,
@@ -2673,10 +2770,9 @@ async fn create_subagent_session_under(
         .map_err(|e| internal(&e))?;
 
     let mut update = config.session_manager.update(&session.id);
-    if let Some(ceiling) = ceiling {
-        ceiling
-            .stamp(&mut session.extension_data)
-            .map_err(|e| internal(&e))?;
+    if stamp_child_birth_data(&mut session.extension_data, ceiling, skills)
+        .map_err(|e| internal(&e))?
+    {
         update = update.extension_data(session.extension_data.clone());
     }
     update
@@ -3449,6 +3545,317 @@ fn narrow_child_extensions_by_name(task_config: &mut TaskConfig, params: &Subage
     }
 }
 
+/// Whether `requested` names `config`: by its manager key, the rule
+/// `extensions` uses ([`extension_request_key`]), or, for a capability
+/// Biorouter ships, by any spelling
+/// [`crate::agents::extension_manager::resolve_bundled_extension`] accepts,
+/// the label a person sees included ("Auto Visualiser", "Biorouter Copilot").
+fn names_extension(requested: &str, config: &crate::agents::ExtensionConfig) -> bool {
+    extension_request_key(requested) == crate::agents::extension_manager::normalize(&config.key())
+        || crate::agents::extension_manager::resolve_bundled_extension(requested)
+            .is_some_and(|target| target.matches_config(config))
+}
+
+/// How a list of extensions is named back to the model: each one's key, with
+/// the label a person sees when Biorouter ships it under another name.
+fn extension_labels<'a>(
+    configs: impl IntoIterator<Item = &'a crate::agents::ExtensionConfig>,
+) -> String {
+    let mut labels: Vec<String> = configs
+        .into_iter()
+        .map(|config| {
+            let key = crate::agents::extension_manager::normalize(&config.key());
+            match crate::agents::extension_manager::resolve_bundled_extension(&config.name())
+                .filter(|target| target.matches_config(config))
+            {
+                Some(target) if !target.display_name().eq_ignore_ascii_case(&key) => {
+                    format!("{key} ({})", target.display_name())
+                }
+                _ => key,
+            }
+        })
+        .collect();
+    labels.sort();
+    labels.dedup();
+    if labels.is_empty() {
+        "none".to_string()
+    } else {
+        labels.join(", ")
+    }
+}
+
+/// Workspace Control and Crew, which a spawn may neither add nor remove,
+/// because something else owns their lifecycle: a subagent is never given
+/// Workspace Control (`subagent_handler`'s strip, and dispatch refuses its
+/// tools to a subagent), and Crew reaches a chat only through a Crew grant or
+/// a Crew task. Returns why, for the refusal.
+fn self_managed_capability(requested: &str) -> Option<&'static str> {
+    let key = crate::agents::extension_manager::resolve_bundled_extension(requested)
+        .map(|target| target.key())
+        .unwrap_or_else(|| extension_request_key(requested));
+    match key.as_str() {
+        "workspace" => Some("Workspace Control is never given to a subagent"),
+        "crew" => Some("Crew comes to a chat only from a Crew grant or a Crew task"),
+        _ => None,
+    }
+}
+
+/// [`resolve_child_extension_changes`] with what this machine has installed,
+/// or nothing to resolve when the spawn changes nothing.
+fn child_extension_changes(
+    params: &SubagentParams,
+    task_config: &TaskConfig,
+) -> Result<ChildExtensionChanges, ErrorData> {
+    if params.add_extensions.is_empty() && params.remove_extensions.is_empty() {
+        return Ok(ChildExtensionChanges::default());
+    }
+    resolve_child_extension_changes(
+        params,
+        &task_config.extensions,
+        task_config.spawn_capability,
+        &crate::config::get_all_extensions(),
+        &crate::config::persisted_extension_names(),
+    )
+}
+
+/// Resolve this spawn's `remove_extensions` and `add_extensions` against what
+/// the child inherits (`inherited`, its parent chat's live roster, so a
+/// capability the chat switched off is already absent) and what is installed
+/// here (`installed`; `persisted` names the entries an operator wrote), before
+/// anything exists.
+///
+/// Removing is always allowed. A name must be one the child would hold, or a
+/// capability Biorouter ships (removing one the child does not hold changes
+/// nothing); anything else is refused with the list of what the child would
+/// hold, because it is a typo or a misunderstanding either way.
+///
+/// Adding one the child already inherits is recorded as an add, so it
+/// survives an `extensions` restriction. Adding anything else is an ENABLE,
+/// so it takes the agent's one enable gate,
+/// [`crate::privacy::refusal::extension_enable_refusal`], with the capability
+/// the spawning call was admitted on, in the order `workspace_set_tools` asks
+/// it: the tier and affiliation arms by NAME first, before the lookup, so an
+/// installed private extension and an unknown name answer a public chat the
+/// same way; then, with the entry, issue #42's operator pin (an extension
+/// turned off in Settings is the person's to turn back on, never the agent's).
+/// Without a capability ([`TaskConfig::spawn_capability`] is `None`) only an
+/// extension the parent holds may be added.
+///
+/// None of this replaces [`judge_child`]'s filter: an added extension joins
+/// the inherited set before the filter, which judges it against the child's
+/// own tier and affiliation exactly as it judges an inherited one.
+pub(crate) fn resolve_child_extension_changes(
+    params: &SubagentParams,
+    inherited: &[crate::agents::ExtensionConfig],
+    capability: Option<crate::privacy::CallCapability>,
+    installed: &[crate::config::ExtensionEntry],
+    persisted: &HashSet<String>,
+) -> Result<ChildExtensionChanges, ErrorData> {
+    // ONE call of the shared enable gate, asked by name (no entry) or with
+    // the entry; the census in `privacy_guard_wiring.rs` counts it.
+    let enable_refusal = |capability, name: &str, entry: Option<&crate::config::ExtensionEntry>| {
+        let persisted = entry.is_some_and(|entry| persisted.contains(&entry.config.name()));
+        crate::privacy::refusal::extension_enable_refusal(capability, name, entry, persisted)
+    };
+    let self_managed = |field: &str, name: &str, why: &str| {
+        spawn_refusal(format!(
+            "{field} names '{name}', which is not switched per subagent: {why}. Leave it out \
+             of add_extensions and remove_extensions. Nothing was started."
+        ))
+    };
+    let mut changes = ChildExtensionChanges::default();
+
+    for requested in &params.remove_extensions {
+        let name = requested.trim();
+        if let Some(why) = self_managed_capability(name) {
+            return Err(self_managed("remove_extensions", name, why));
+        }
+        let held: Vec<_> = inherited
+            .iter()
+            .filter(|config| names_extension(name, config))
+            .collect();
+        if held.is_empty() {
+            if crate::agents::extension_manager::resolve_bundled_extension(name).is_some() {
+                continue;
+            }
+            return Err(spawn_refusal(format!(
+                "remove_extensions names '{name}', which is not one of the extensions this \
+                 subagent would start with: {}. Nothing was started.",
+                extension_labels(inherited)
+            )));
+        }
+        for config in held {
+            let key = crate::agents::extension_manager::normalize(&config.key());
+            if !changes.remove.contains(&key) {
+                changes.remove.push(key);
+            }
+        }
+    }
+
+    for requested in &params.add_extensions {
+        let name = requested.trim();
+        if let Some(why) = self_managed_capability(name) {
+            return Err(self_managed("add_extensions", name, why));
+        }
+        if let Some(config) = inherited
+            .iter()
+            .find(|config| names_extension(name, config))
+        {
+            changes.add.push(config.clone());
+            continue;
+        }
+        if crate::dictation::activation::is_dictionary_name(name) {
+            return Err(spawn_refusal(format!(
+                "{} Nothing was started.",
+                crate::dictation::activation::ENABLE_REFUSAL
+            )));
+        }
+        let Some(capability) = capability else {
+            return Err(spawn_refusal(format!(
+                "add_extensions names '{name}', which this chat does not have, and this \
+                 subagent can be given only what this chat has: {}. Nothing was started.",
+                extension_labels(inherited)
+            )));
+        };
+        // The tier and affiliation arms, BEFORE the lookup (see above).
+        if let Some(refusal) = enable_refusal(capability, name, None) {
+            return Err(refusal);
+        }
+        let Some(entry) = installed
+            .iter()
+            .find(|entry| names_extension(name, &entry.config))
+        else {
+            let addable = installed.iter().filter(|entry| {
+                let entry_name = entry.config.name();
+                self_managed_capability(&entry_name).is_none()
+                    && !crate::dictation::activation::is_dictionary_name(&entry_name)
+                    && enable_refusal(capability, &entry_name, Some(*entry)).is_none()
+            });
+            return Err(spawn_refusal(format!(
+                "add_extensions names '{name}', which is not an extension installed here. This \
+                 subagent can be given: {}. Nothing was started.",
+                extension_labels(addable.map(|entry| &entry.config).chain(inherited))
+            )));
+        };
+        // Asked again with the entry, which can only raise the answer, and
+        // which is where the operator pin is read.
+        if let Some(refusal) = enable_refusal(capability, &entry.config.name(), Some(entry)) {
+            return Err(refusal);
+        }
+        changes.add.push(entry.config.clone());
+    }
+    Ok(changes)
+}
+
+/// Apply [`TaskConfig::extension_changes`] to the already name-narrowed set:
+/// removes first, then adds, so a name in both ends up present.
+fn apply_child_extension_changes(task_config: &mut TaskConfig) {
+    if task_config.extension_changes.is_empty() {
+        return;
+    }
+    let ChildExtensionChanges { add, remove } = task_config.extension_changes.clone();
+    let key_of = |config: &crate::agents::ExtensionConfig| {
+        crate::agents::extension_manager::normalize(&config.key())
+    };
+    task_config
+        .extensions
+        .retain(|config| !remove.contains(&key_of(config)));
+    for config in add {
+        let key = key_of(&config);
+        if !task_config
+            .extensions
+            .iter()
+            .any(|held| key_of(held) == key)
+        {
+            task_config.extensions.push(config);
+        }
+    }
+}
+
+/// The skill and Context choices a child starts with: its parent chat's own
+/// override (`workspace_skills/v1`), copied, with this spawn's `add_skills`
+/// and `remove_skills` merged in by [`SessionSkillOverride::merge`]'s rule.
+///
+/// The parent's override fails CLOSED here as everywhere
+/// ([`session_skills::for_session`]): an unreadable one refuses the spawn,
+/// because the alternative, a child on the machine-wide set, hands it every
+/// skill and Context its chat switched off.
+async fn resolve_child_skills(
+    session_manager: &crate::session::SessionManager,
+    parent_session_id: &str,
+    params: &SubagentParams,
+) -> Result<SessionSkillOverride, ErrorData> {
+    let parent = session_skills::for_session(session_manager, parent_session_id)
+        .await
+        .map_err(|e| {
+            spawn_refusal(format!(
+                "The subagent could not be given this chat's skill and Context choices: {e:#}. \
+                 Nothing was started."
+            ))
+        })?;
+    if params.add_skills.is_empty() && params.remove_skills.is_empty() {
+        return Ok(parent);
+    }
+    let view = crate::agents::skill_catalog::current().view(&parent);
+    child_skill_override(parent, params, &known_skill_names(&view)).map_err(spawn_refusal)
+}
+
+/// Every name a skill or Context answers to in `add_skills` and
+/// `remove_skills`, lowercased, mapped to the name the override stores: each
+/// skill's own name, each bundle's directory name, and a bundle's display
+/// name.
+fn known_skill_names(view: &crate::agents::skill_catalog::CatalogView) -> BTreeMap<String, String> {
+    let mut known = BTreeMap::new();
+    for skill in &view.skills {
+        known
+            .entry(skill.name.to_lowercase())
+            .or_insert_with(|| skill.name.clone());
+    }
+    for bundle in &view.bundles {
+        for spelling in [&bundle.name, &bundle.display_name] {
+            known
+                .entry(spelling.to_lowercase())
+                .or_insert_with(|| bundle.name.clone());
+        }
+    }
+    known
+}
+
+/// `parent` with `params.add_skills` and `params.remove_skills` merged in, each
+/// name resolved through `known` ([`known_skill_names`]). An unknown name is
+/// refused with the names that can be used.
+fn child_skill_override(
+    parent: SessionSkillOverride,
+    params: &SubagentParams,
+    known: &BTreeMap<String, String>,
+) -> Result<SessionSkillOverride, String> {
+    let resolve = |field: &str, names: &[String]| -> Result<Vec<String>, String> {
+        names
+            .iter()
+            .map(|requested| {
+                let name = requested.trim();
+                known.get(&name.to_lowercase()).cloned().ok_or_else(|| {
+                    let mut valid: Vec<&str> = known.values().map(String::as_str).collect();
+                    valid.sort_unstable();
+                    valid.dedup();
+                    format!(
+                        "{field} names '{name}', which is not a skill or Context installed \
+                         here. The names you can use: {}. Nothing was started.",
+                        if valid.is_empty() {
+                            "none".to_string()
+                        } else {
+                            valid.join(", ")
+                        }
+                    )
+                })
+            })
+            .collect()
+    };
+    let add = resolve("add_skills", &params.add_skills)?;
+    let remove = resolve("remove_skills", &params.remove_skills)?;
+    Ok(parent.merge(&add, &remove))
+}
+
 /// Apply the tier and affiliation partitions to the already name-narrowed set.
 /// Both decisions consume the same resolved classification for each extension;
 /// resolving twice could partition one entry on inconsistent metadata.
@@ -3748,6 +4155,10 @@ fn judge_child(
     // CLASSIFICATION its row is born with.
     task_config.privacy_tier = crate::privacy::floor(child_tier);
     narrow_child_extensions_by_name(&mut task_config, params);
+    // `remove_extensions` and `add_extensions`, after the narrowing (so an add
+    // survives an `extensions` list) and before the filter (so an added
+    // extension is judged against the child's tier exactly as an inherited one).
+    apply_child_extension_changes(&mut task_config);
     filter_child_extensions(
         &mut task_config,
         child_tier,
@@ -6184,6 +6595,10 @@ mod tests {
             subworkflow: None,
             parameters: None,
             extensions: None,
+            add_extensions: Vec::new(),
+            remove_extensions: Vec::new(),
+            add_skills: Vec::new(),
+            remove_skills: Vec::new(),
             settings: None,
             summary: false,
             background: false,
@@ -10538,6 +10953,577 @@ decision_settings:
         assert!(!rendered.contains("$schema"), "{rendered}");
         let description = tool.description.as_deref().unwrap_or_default();
         assert!(description.contains("`monitors`"), "{description}");
+    }
+
+    /// Owner, 2026-11-13: a subagent starts with its chat's per-chat setup
+    /// (the capabilities and Contexts the person switched for that chat), and
+    /// the chat's agent may change it for one child with `add_extensions`,
+    /// `remove_extensions`, `add_skills` and `remove_skills`.
+    mod per_chat_setup {
+        use super::*;
+        use crate::config::ExtensionEntry;
+        use crate::privacy::CallCapability;
+
+        /// A capability Biorouter ships, as the registry spells its config.
+        fn bundled(name: &str) -> crate::agents::ExtensionConfig {
+            crate::agents::extension_manager::resolve_bundled_extension(name)
+                .unwrap_or_else(|| panic!("{name} is a bundled capability"))
+                .into_config(String::new())
+        }
+
+        fn installed(config: crate::agents::ExtensionConfig, enabled: bool) -> ExtensionEntry {
+            ExtensionEntry { enabled, config }
+        }
+
+        fn params(body: Value) -> SubagentParams {
+            serde_json::from_value(body).unwrap()
+        }
+
+        fn names(configs: &[crate::agents::ExtensionConfig]) -> Vec<String> {
+            let mut names: Vec<String> = configs
+                .iter()
+                .map(|config| crate::agents::extension_manager::normalize(&config.key()))
+                .collect();
+            names.sort();
+            names
+        }
+
+        fn public_call() -> Option<CallCapability> {
+            Some(CallCapability::for_test(ProviderTier::Public, true))
+        }
+
+        fn private_call() -> Option<CallCapability> {
+            Some(CallCapability::for_test(ProviderTier::Private, true))
+        }
+
+        /// Resolve a spawn's changes and run the child through the real
+        /// resolver, as the spawn tool does.
+        async fn resolve_spawn(
+            parent: ProviderTier,
+            inherited: Vec<crate::agents::ExtensionConfig>,
+            body: Value,
+            capability: Option<CallCapability>,
+            installed: &[ExtensionEntry],
+        ) -> std::result::Result<TaskConfig, String> {
+            let params = params(body);
+            let mut task_config =
+                parent_task_config(parent, inherited).with_spawn_capability(capability);
+            task_config.extension_changes = resolve_child_extension_changes(
+                &params,
+                &task_config.extensions,
+                task_config.spawn_capability,
+                installed,
+                &HashSet::new(),
+            )
+            .map_err(|refusal| refusal.message.to_string())?;
+            apply_settings_overrides(task_config, &params)
+                .await
+                .map_err(|e| e.to_string())
+        }
+
+        /// Default = inherit. The child's extensions are the chat's live
+        /// roster, which a per-chat switch edits (`/agent/remove_extension`),
+        /// so a capability the person switched off for this chat is absent from
+        /// the child too, with no field asked for.
+        #[tokio::test]
+        async fn a_child_inherits_the_capabilities_its_chat_has_on_and_off_now() {
+            let temp = tempfile::tempdir().unwrap();
+            let agent = crate::agents::Agent::with_config(AgentConfig::new(
+                std::sync::Arc::new(crate::session::SessionManager::new(
+                    temp.path().to_path_buf(),
+                )),
+                std::sync::Arc::new(crate::config::permission::PermissionManager::new(
+                    temp.path().to_path_buf(),
+                )),
+                None,
+                crate::config::BioRouterMode::Auto,
+            ));
+            for name in ["todo", "chatrecall"] {
+                agent.add_extension(bundled(name)).await.unwrap();
+            }
+            // The person switches Chat Recall off for this chat.
+            agent.remove_extension("chatrecall").await.unwrap();
+
+            let roster = agent.get_extension_configs().await;
+            assert_eq!(names(&roster), ["todo"]);
+            let child = resolve_spawn(
+                ProviderTier::Public,
+                roster,
+                json!({ "instructions": "x" }),
+                public_call(),
+                &[],
+            )
+            .await
+            .unwrap();
+            assert_eq!(names(&child.extensions), ["todo"]);
+        }
+
+        #[tokio::test]
+        async fn remove_extensions_takes_a_capability_away_by_label_or_key() {
+            for spelling in ["Auto Visualiser", "autovisualiser", "AUTOVISUALIZER"] {
+                let child = resolve_spawn(
+                    ProviderTier::Public,
+                    vec![builtin_extension("developer"), bundled("autovisualiser")],
+                    json!({ "instructions": "x", "remove_extensions": [spelling] }),
+                    public_call(),
+                    &[],
+                )
+                .await
+                .unwrap_or_else(|e| panic!("{spelling}: {e}"));
+                assert_eq!(names(&child.extensions), ["developer"], "{spelling}");
+            }
+        }
+
+        /// Removing a capability Biorouter ships that the chat does not have
+        /// changes nothing, and is not an error: the child does not have it.
+        #[tokio::test]
+        async fn removing_a_shipped_capability_the_chat_lacks_changes_nothing() {
+            let child = resolve_spawn(
+                ProviderTier::Public,
+                vec![builtin_extension("developer")],
+                json!({ "instructions": "x", "remove_extensions": ["Memory"] }),
+                public_call(),
+                &[],
+            )
+            .await
+            .unwrap();
+            assert_eq!(names(&child.extensions), ["developer"]);
+        }
+
+        /// The chat switched Auto Visualiser off; its agent gives one child
+        /// Auto Visualiser back. Installed and on in Settings, so the agent may.
+        #[tokio::test]
+        async fn add_extensions_gives_a_child_a_capability_its_chat_switched_off() {
+            let child = resolve_spawn(
+                ProviderTier::Public,
+                vec![builtin_extension("developer")],
+                json!({ "instructions": "x", "add_extensions": ["Auto Visualiser"] }),
+                public_call(),
+                &[installed(bundled("autovisualiser"), true)],
+            )
+            .await
+            .unwrap();
+            assert_eq!(names(&child.extensions), ["autovisualiser", "developer"]);
+        }
+
+        /// An add survives an `extensions` list (it is applied after the
+        /// narrowing), and a name in both lists ends up present, the rule the
+        /// per-chat skill override uses.
+        #[tokio::test]
+        async fn an_add_survives_an_extensions_list_and_beats_a_remove() {
+            let child = resolve_spawn(
+                ProviderTier::Public,
+                vec![builtin_extension("developer"), bundled("autovisualiser")],
+                json!({
+                    "instructions": "x",
+                    "extensions": ["developer"],
+                    "add_extensions": ["autovisualiser"],
+                }),
+                public_call(),
+                &[],
+            )
+            .await
+            .unwrap();
+            assert_eq!(names(&child.extensions), ["autovisualiser", "developer"]);
+
+            let child = resolve_spawn(
+                ProviderTier::Public,
+                vec![bundled("autovisualiser")],
+                json!({
+                    "instructions": "x",
+                    "remove_extensions": ["autovisualiser"],
+                    "add_extensions": ["autovisualiser"],
+                }),
+                public_call(),
+                &[],
+            )
+            .await
+            .unwrap();
+            assert_eq!(names(&child.extensions), ["autovisualiser"]);
+        }
+
+        /// An unknown name is a plain refusal that says what is valid.
+        #[tokio::test]
+        async fn an_unknown_name_is_refused_with_the_names_that_work() {
+            let refused = resolve_spawn(
+                ProviderTier::Public,
+                vec![builtin_extension("developer")],
+                json!({ "instructions": "x", "remove_extensions": ["nonesuch"] }),
+                public_call(),
+                &[],
+            )
+            .await
+            .unwrap_err();
+            assert!(refused.contains("'nonesuch'"), "{refused}");
+            assert!(refused.contains(": developer."), "{refused}");
+            assert!(refused.ends_with("Nothing was started."), "{refused}");
+
+            let refused = resolve_spawn(
+                ProviderTier::Public,
+                vec![builtin_extension("developer")],
+                json!({ "instructions": "x", "add_extensions": ["nonesuch"] }),
+                public_call(),
+                &[
+                    installed(bundled("autovisualiser"), true),
+                    installed(builtin_extension("ucsfomopagent"), true),
+                ],
+            )
+            .await
+            .unwrap_err();
+            assert!(refused.contains("'nonesuch'"), "{refused}");
+            assert!(
+                refused.contains("autovisualiser (Auto Visualiser)"),
+                "an installed capability the chat may add is listed: {refused}"
+            );
+            assert!(refused.contains("developer"), "{refused}");
+            assert!(
+                !refused.contains("ucsfomopagent"),
+                "a private extension is never named to a public chat: {refused}"
+            );
+        }
+
+        /// Workspace Control and Crew keep their own lifecycles.
+        #[tokio::test]
+        async fn workspace_control_and_crew_are_not_switched_per_subagent() {
+            for (field, name) in [
+                ("add_extensions", "Workspace Control"),
+                ("remove_extensions", "workspace"),
+                ("add_extensions", "crew"),
+                ("remove_extensions", "Crew"),
+            ] {
+                let refused = resolve_spawn(
+                    ProviderTier::Public,
+                    vec![builtin_extension("developer")],
+                    json!({ "instructions": "x", field: [name] }),
+                    public_call(),
+                    &[],
+                )
+                .await
+                .unwrap_err();
+                assert!(
+                    refused.contains("not switched per subagent"),
+                    "{field} {name}: {refused}"
+                );
+            }
+        }
+
+        /// Issue #42: an extension turned off in Settings (a persisted
+        /// `enabled: false`) is the person's to turn back on, never the agent's,
+        /// and a spawn is an agent door.
+        #[test]
+        fn an_extension_turned_off_in_settings_is_not_added_by_the_agent() {
+            let refused = resolve_child_extension_changes(
+                &params(json!({ "instructions": "x", "add_extensions": ["autovisualiser"] })),
+                &[builtin_extension("developer")],
+                public_call(),
+                &[installed(bundled("autovisualiser"), false)],
+                &HashSet::from(["autovisualiser".to_string()]),
+            )
+            .unwrap_err();
+            assert!(
+                refused.message.contains("enabled: false"),
+                "{}",
+                refused.message
+            );
+
+            // A default-off entry the operator never wrote stays addable.
+            let added = resolve_child_extension_changes(
+                &params(json!({ "instructions": "x", "add_extensions": ["autovisualiser"] })),
+                &[builtin_extension("developer")],
+                public_call(),
+                &[installed(bundled("autovisualiser"), false)],
+                &HashSet::new(),
+            )
+            .unwrap();
+            assert_eq!(names(&added.add), ["autovisualiser"]);
+        }
+
+        /// Without the spawning call's capability (a coding-agent bridge
+        /// spawn, an embedder) only what the chat holds may be added.
+        #[test]
+        fn without_a_spawn_capability_only_what_the_chat_holds_is_added() {
+            let held = resolve_child_extension_changes(
+                &params(json!({ "instructions": "x", "add_extensions": ["developer"] })),
+                &[builtin_extension("developer")],
+                None,
+                &[installed(bundled("autovisualiser"), true)],
+                &HashSet::new(),
+            )
+            .unwrap();
+            assert_eq!(names(&held.add), ["developer"]);
+
+            let refused = resolve_child_extension_changes(
+                &params(json!({ "instructions": "x", "add_extensions": ["autovisualiser"] })),
+                &[builtin_extension("developer")],
+                None,
+                &[installed(bundled("autovisualiser"), true)],
+                &HashSet::new(),
+            )
+            .unwrap_err();
+            assert!(
+                refused.message.contains("does not have"),
+                "{}",
+                refused.message
+            );
+        }
+
+        /// The privacy interaction, unchanged. A public chat asking to give
+        /// its child a private extension is refused by the agent's one enable
+        /// gate, with the SAME sentence whether or not the extension is
+        /// installed here (no install oracle), and a private chat may.
+        #[test]
+        fn a_public_chat_cannot_add_a_private_extension_to_its_child() {
+            let ask = params(json!({ "instructions": "x", "add_extensions": ["ucsfomopagent"] }));
+            let installed_here = resolve_child_extension_changes(
+                &ask,
+                &[builtin_extension("developer")],
+                public_call(),
+                &[installed(builtin_extension("ucsfomopagent"), true)],
+                &HashSet::new(),
+            )
+            .unwrap_err();
+            let not_installed = resolve_child_extension_changes(
+                &ask,
+                &[builtin_extension("developer")],
+                public_call(),
+                &[],
+                &HashSet::new(),
+            )
+            .unwrap_err();
+            assert_eq!(installed_here.message, not_installed.message);
+            assert_eq!(
+                installed_here.message,
+                crate::privacy::refusal::extension_enable_refusal(
+                    public_call().unwrap(),
+                    "ucsfomopagent",
+                    None,
+                    false
+                )
+                .expect("the gate refuses a public caller")
+                .message,
+                "the spawn speaks with the shared enable gate's own words"
+            );
+
+            let added = resolve_child_extension_changes(
+                &ask,
+                &[builtin_extension("developer")],
+                private_call(),
+                &[installed(builtin_extension("ucsfomopagent"), true)],
+                &HashSet::new(),
+            )
+            .unwrap();
+            assert_eq!(names(&added.add), ["ucsfomopagent"]);
+        }
+
+        /// Defence in depth: an added extension joins the inherited set BEFORE
+        /// `judge_child`'s filter, so a public child drops a private one exactly
+        /// as it drops an inherited one, and the parent is told.
+        #[tokio::test]
+        async fn an_added_extension_still_passes_the_childs_tier_filter() {
+            let mut task_config =
+                parent_task_config(ProviderTier::Public, vec![builtin_extension("developer")]);
+            task_config.extension_changes.add = vec![builtin_extension("ucsfomopagent")];
+            let child = apply_settings_overrides(task_config, &ask_params(Ask::Inherit))
+                .await
+                .unwrap();
+            assert_eq!(names(&child.extensions), ["developer"]);
+            assert_eq!(child.dropped_private_extensions, ["ucsfomopagent"]);
+        }
+
+        /// A coding-agent child may be given only its audited subset, whichever
+        /// field names an extension.
+        #[test]
+        fn a_bridged_spawn_refuses_an_add_outside_its_audited_subset() {
+            let available = vec![bundled("skills")];
+            assert_eq!(
+                unsupported_bridged_extension_names(
+                    &json!({ "add_extensions": ["skills", "developer"] }),
+                    &available
+                ),
+                ["developer"]
+            );
+        }
+
+        #[test]
+        fn the_schema_offers_the_four_per_child_fields() {
+            let tool = create_subagent_tool(&[]);
+            let properties = tool.input_schema.get("properties").unwrap();
+            for field in [
+                "add_extensions",
+                "remove_extensions",
+                "add_skills",
+                "remove_skills",
+            ] {
+                let property = properties.get(field).unwrap_or_else(|| panic!("{field}"));
+                assert_eq!(property["type"], "array", "{field}");
+            }
+            let description = tool.description.as_deref().unwrap_or_default();
+            assert!(
+                description.contains("starts with this chat's setup"),
+                "{description}"
+            );
+        }
+
+        fn known(names: &[&str]) -> BTreeMap<String, String> {
+            names
+                .iter()
+                .map(|name| (name.to_lowercase(), (*name).to_string()))
+                .collect()
+        }
+
+        /// The child's skill override is its chat's, with the spawn's changes
+        /// merged in by the per-chat rule (an add beats a remove), names
+        /// matched without case and stored as the catalog spells them.
+        #[test]
+        fn a_childs_skills_are_its_chats_with_the_spawns_changes() {
+            let parent = SessionSkillOverride {
+                add: vec!["office-pdf".into()],
+                remove: vec!["about-biorouter".into()],
+            };
+            let known = known(&["office-pdf", "about-biorouter", "knowledge-bases"]);
+
+            let unchanged = child_skill_override(
+                parent.clone(),
+                &params(json!({"instructions": "x"})),
+                &known,
+            )
+            .unwrap();
+            assert_eq!(unchanged, parent);
+
+            let changed = child_skill_override(
+                parent,
+                &params(json!({
+                    "instructions": "x",
+                    "add_skills": ["About-Biorouter"],
+                    "remove_skills": ["office-pdf", "knowledge-bases"],
+                })),
+                &known,
+            )
+            .unwrap();
+            assert_eq!(changed.add, ["about-biorouter"]);
+            assert_eq!(changed.remove, ["office-pdf", "knowledge-bases"]);
+
+            let refused = child_skill_override(
+                SessionSkillOverride::default(),
+                &params(json!({ "instructions": "x", "add_skills": ["nonesuch"] })),
+                &known,
+            )
+            .unwrap_err();
+            assert!(refused.contains("'nonesuch'"), "{refused}");
+            assert!(
+                refused.contains("about-biorouter, knowledge-bases, office-pdf"),
+                "{refused}"
+            );
+        }
+
+        /// End to end through the spawn tool: the chat's own skill and Context
+        /// choices are on the child's row before its first turn (it is still
+        /// queued for a concurrency slot here).
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        #[serial_test::serial(workspace_services)]
+        async fn a_spawned_child_starts_with_its_chats_skill_choices() {
+            crate::workspace_services::set_for_tests(None);
+            let _services = ClearServices;
+            let _serialised = QUEUE_DEPTH_TESTS.lock().await;
+            let held = hold_every_subagent_permit().await;
+            let fx = spawn_fixture(SessionClassification::Public).await;
+            let parent = session_skills::apply(
+                &fx.sm,
+                &fx.parent,
+                &["office-pdf".to_string()],
+                &["about-biorouter".to_string()],
+            )
+            .await
+            .unwrap();
+
+            let started = fx
+                .spawn(
+                    json!({ "instructions": "Summarise the PDF.", "visible": false }),
+                    HashMap::new(),
+                )
+                .await
+                .expect("the spawn starts");
+            let child = child_of(&started);
+            let handle = fx.handle(&child);
+            assert!(handle.is_initializing(), "still queued, so before any turn");
+
+            let inherited = session_skills::for_session(&fx.sm, &child).await.unwrap();
+            assert_eq!(inherited, parent);
+
+            cancel_and_wait(&handle).await;
+            drop(held);
+            wait_until(|| pending_subagent_count() == 0, "the queue to empty").await;
+        }
+
+        /// An unreadable override on the chat refuses the spawn before any row
+        /// exists, rather than starting a child on the machine-wide set, and
+        /// an unknown skill name is refused the same way.
+        #[tokio::test]
+        async fn a_spawn_that_cannot_settle_its_childs_skills_creates_nothing() {
+            let fx = spawn_fixture(SessionClassification::Public).await;
+            let refused = fx
+                .spawn(
+                    json!({
+                        "instructions": "x",
+                        "visible": false,
+                        "add_skills": ["no-such-skill-anywhere-3f9c"],
+                    }),
+                    HashMap::new(),
+                )
+                .await
+                .expect_err("an unknown skill refuses the spawn");
+            assert!(
+                refused.message.contains("'no-such-skill-anywhere-3f9c'"),
+                "{}",
+                refused.message
+            );
+            assert_eq!(fx.subagent_rows().await, 0);
+
+            fx.sm
+                .update_extension_state(
+                    &fx.parent,
+                    session_skills::STATE_KEY,
+                    session_skills::STATE_VERSION,
+                    |_| Ok(json!("not an override")),
+                )
+                .await
+                .unwrap();
+            let refused = fx
+                .spawn(
+                    json!({ "instructions": "x", "visible": false }),
+                    HashMap::new(),
+                )
+                .await
+                .expect_err("an unreadable override refuses the spawn");
+            assert!(
+                refused
+                    .message
+                    .starts_with("The subagent could not be given this chat's skill"),
+                "{}",
+                refused.message
+            );
+            assert_eq!(fx.subagent_rows().await, 0, "no SubAgent row");
+        }
+
+        /// The spawn tool's own entry refuses a bad `add_extensions` before
+        /// anything is created.
+        #[tokio::test]
+        async fn a_refused_add_creates_nothing() {
+            let fx = spawn_fixture(SessionClassification::Public).await;
+            let refused = fx
+                .spawn(
+                    json!({
+                        "instructions": "x",
+                        "visible": false,
+                        "add_extensions": ["Workspace Control"],
+                    }),
+                    HashMap::new(),
+                )
+                .await
+                .expect_err("Workspace Control is never added");
+            assert!(refused.message.contains("not switched per subagent"));
+            assert_eq!(fx.subagent_rows().await, 0);
+        }
     }
 }
 

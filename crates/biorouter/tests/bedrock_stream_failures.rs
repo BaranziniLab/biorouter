@@ -1,5 +1,7 @@
 #![cfg(feature = "aws-providers")]
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use aws_sdk_bedrockruntime::types::{
     ContentBlockDelta, ContentBlockDeltaEvent, ContentBlockStart, ContentBlockStartEvent,
     ContentBlockStopEvent, ConverseStreamOutput, ToolUseBlockDelta, ToolUseBlockStart,

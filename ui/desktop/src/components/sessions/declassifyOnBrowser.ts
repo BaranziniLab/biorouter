@@ -42,24 +42,40 @@ import { isBrowserSurface } from '../../utils/surface';
  * runs, so that is what this says.
  */
 
-/** The full reason, for the note that takes the control's place. */
-export const DECLASSIFY_NEEDS_HOST_REASON =
-  'This page is served to a browser, which has no way to prove a request came from you rather ' +
-  'than from a model. Marking a chat public is the one change that lowers its privacy, so it ' +
-  'needs that proof. On the machine running biorouter serve, mark it public in the Biorouter ' +
-  'app there, or run `biorouter session declassify <chat id>`.';
-
-/** The line for a row that has space for no more, and for a `title`. */
+/**
+ * The line that takes the control's place, on every surface: the refusal and its reason in one
+ * line (a refusal is never hover-only, spec 2.6).
+ */
 export const DECLASSIFY_NEEDS_HOST_SHORT = 'Marking a chat public needs the host';
 
 /**
- * Why this surface does not offer declassification, or `null` where it does —
- * the desktop, whose daemon holds the key.
+ * The help behind {@link DECLASSIFY_NEEDS_HOST_SHORT}, for an InfoTip beside it: why the host,
+ * and where to go. Two sentences, as an InfoTip allows (owner, 2026-11-13: one line up front, the
+ * detail on hover). History's band shows it this way.
+ */
+export const DECLASSIFY_NEEDS_HOST_HELP =
+  "This lowers the chat's privacy, and a browser cannot prove the request is yours. " +
+  'On the host running biorouter serve, use the Biorouter app or biorouter session declassify.';
+
+/**
+ * The note a row menu shows under its disabled item. A menu row cannot hold an InfoTip (spec
+ * 2.6: never inside a menu row, and a menu takes no Tab stop of its own), so the note says the
+ * short line, its reason and the way out in two sentences rather than three. It used to be the
+ * whole explanation, 330 characters drawn as a block inside the menu.
+ */
+export const DECLASSIFY_NEEDS_HOST_REASON =
+  `${DECLASSIFY_NEEDS_HOST_SHORT}, because a browser cannot prove a request came from you. ` +
+  'On the machine running biorouter serve, use the Biorouter app there or run ' +
+  '`biorouter session declassify <chat id>`.';
+
+/**
+ * Why this surface does not offer declassification, as the help for the short line, or `null`
+ * where it does: the desktop, whose daemon holds the key.
  *
  * `null` rather than `''`, for the reason `hostManagedModelReason` gives: a
  * caller that spreads this into a `title` wants the attribute absent on the
  * desktop, not present and empty.
  */
 export function declassifyBrowserReason(): string | null {
-  return isBrowserSurface() ? DECLASSIFY_NEEDS_HOST_REASON : null;
+  return isBrowserSurface() ? DECLASSIFY_NEEDS_HOST_HELP : null;
 }

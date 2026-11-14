@@ -2541,7 +2541,7 @@ describe('the Tab order through a channel (Q2-12)', () => {
     return stops;
   }
 
-  it('goes from the header to the composer in at most five stops past three tables that fit', async () => {
+  it('goes from the header to the composer in at most six stops past three tables that fit', async () => {
     renderWithController(
       <>
         <ChannelHeader />
@@ -2552,9 +2552,10 @@ describe('the Tab order through a channel (Q2-12)', () => {
     );
     const user = userEvent.setup(pointerAnywhere);
     // From the header's first stop, the channel's name: its badge, the member stack, the details
-    // toggle, the log, then the composer. Every table used to add a stop of its own.
+    // toggle, the log, the composer's `+` (one line since 2026-11-13, as the chat's), then the
+    // message. Every table used to add a stop of its own.
     act(() => channelTitle().focus());
-    expect(await tabsToComposer(user)).toBeLessThanOrEqual(5);
+    expect(await tabsToComposer(user)).toBeLessThanOrEqual(6);
     // A table that fits is not a stop of its own.
     expect(document.querySelectorAll('.crew-md-table-scroll[tabindex]')).toHaveLength(0);
   });
@@ -2578,8 +2579,9 @@ describe('the Tab order through a channel (Q2-12)', () => {
     // …and focus moves on, out of the log.
     act(() => channelTitle().focus());
     expect(copyButtons().every((button) => button.tabIndex === -1)).toBe(true);
-    // So a Tab and some typing can never land on Copy text again.
-    expect(await tabsToComposer(user)).toBeLessThanOrEqual(5);
+    // So a Tab and some typing can never land on Copy text again (the header's stops, the log,
+    // the composer's `+`, the message).
+    expect(await tabsToComposer(user)).toBeLessThanOrEqual(6);
   });
 
   it('keeps the row’s actions in the Tab order while focus moves among them', () => {

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { ConfigData } from '../../../types/config';
+import { configFieldLabel } from './configLabels';
 
 // #50 — Settings → App named a stale provider ("current settings for ollama"
 // while the active provider was versa_azure). ConfigContext's `config` is only
@@ -14,6 +15,9 @@ const configSnapshot: ConfigData = {
   BIOROUTER_MODEL: 'qwen3.8:27b',
   OLLAMA_HOST: 'localhost',
 };
+
+/** Set by a test to serve a different cached config; `null` serves `configSnapshot`. */
+let configOverride: ConfigData | null = null;
 
 const modelAndProvider = {
   currentProvider: null as string | null,
@@ -48,7 +52,7 @@ const refreshConfigStub = () => {
 
 vi.mock('../../ConfigContext', () => ({
   useConfig: () => ({
-    config: configSnapshot,
+    config: configOverride ?? configSnapshot,
     upsert: vi.fn(),
     refreshConfig: refreshConfigStub,
     getProviders,
@@ -69,6 +73,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   modelAndProvider.currentProvider = 'versa_azure';
   refreshConfigRejection = null;
+  configOverride = null;
   providerList = [
     { name: 'versa_azure', metadata: { display_name: 'Versa API Azure' } },
     { name: 'databricks', metadata: { display_name: 'Databricks' } },
@@ -209,5 +214,56 @@ describe('ConfigSettings provider label (#50)', () => {
 
     await waitFor(() => expect(refreshConfig).toHaveBeenCalledTimes(1));
     expect(await within(configRow()).findByText('Versa API Azure')).toBeInTheDocument();
+  });
+});
+
+// PR-23 (DD-56): after the first verified speech model install the daemon writes
+// `dictation_dictionary_activation_version: 1` into config.yaml. It records that the
+// "Suggest dictionary words from my chats" choice was already offered, so no later install offers
+// it again. It is not a setting a person edits, and the dictionary spec keeps it out of this editor.
+describe('ConfigSettings and the dictionary activation marker (PR-23)', () => {
+  const MARKER_KEY = 'dictation_dictionary_activation_version';
+
+  async function openEditor() {
+    render(<ConfigSettings />);
+    // The provider name arrives after the first paint; wait for it so the update lands in the test.
+    await within(configRow()).findByText('Versa API Azure');
+    fireEvent.click(screen.getByRole('button', { name: configCopy.editName }));
+    return screen.getByRole('dialog');
+  }
+
+  it('leaves the marker out of the editor while ordinary keys beside it are shown', async () => {
+    configOverride = {
+      ...configSnapshot,
+      BIOROUTER_MODE: 'auto',
+      BIOROUTER_DICTATION_MODEL: 'base.en',
+      [MARKER_KEY]: 1,
+    };
+
+    const dialog = await openEditor();
+
+    // The ordinary keys are rows with their values, including another dictation key, so the marker
+    // is hidden by name and not because every dictation key is.
+    expect(within(dialog).getByLabelText(configFieldLabel('BIOROUTER_MODE'))).toHaveValue('auto');
+    expect(
+      within(dialog).getByLabelText(configFieldLabel('BIOROUTER_DICTATION_MODEL'))
+    ).toHaveValue('base.en');
+
+    // The marker has no row: no field by its label or id, no label text, no value.
+    expect(configFieldLabel(MARKER_KEY)).toBe('Dictation dictionary activation version');
+    expect(within(dialog).queryByLabelText(configFieldLabel(MARKER_KEY))).toBeNull();
+    expect(dialog.querySelector(`#config-field-${MARKER_KEY}`)).toBeNull();
+    expect(within(dialog).queryByText(/dictionary activation/i)).toBeNull();
+    expect(within(dialog).queryByDisplayValue('1')).toBeNull();
+    expect(dialog).not.toHaveTextContent(MARKER_KEY);
+  });
+
+  it('shows the empty message when the marker is the only key the editor could list', async () => {
+    configOverride = { [MARKER_KEY]: 1 };
+
+    const dialog = await openEditor();
+
+    expect(within(dialog).queryAllByRole('textbox')).toHaveLength(0);
+    expect(within(dialog).getByText(configCopy.empty)).toBeInTheDocument();
   });
 });

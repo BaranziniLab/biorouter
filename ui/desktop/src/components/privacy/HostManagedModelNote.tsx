@@ -1,10 +1,11 @@
 import { cn } from '../../utils';
+import { InfoTip } from '../ui/info-tip';
 import { Note } from '../ui/note';
 import { isBrowserSurface } from '../../utils/surface';
 import {
-  HOST_MANAGED_DESTINATION_REASON,
+  HOST_MANAGED_DESTINATION_HELP,
   HOST_MANAGED_DESTINATION_SHORT,
-  HOST_MANAGED_MODEL_REASON,
+  HOST_MANAGED_MODEL_HELP,
   HOST_MANAGED_MODEL_SHORT,
 } from './hostManagedModelCopy';
 
@@ -31,6 +32,12 @@ import {
  * constants and that choice is a decision recorded at each call site, not a
  * style — see the placement comments in `ModelSettingsButtons`,
  * `ResetProviderSection`, `ProviderGrid` and `ModelsBottomBar`.
+ *
+ * Both forms show the same one line, the refusal's reason (owner, 2026-11-13:
+ * one line up front, the detail on hover). The full form adds the info icon
+ * beside it, which carries what to run on the host and why a browser tab cannot
+ * switch, and stays that icon's accessible description; the short form is for a
+ * place with no room for even the icon.
  */
 export type HostManagedModelNoteVariant = 'note' | 'inset';
 
@@ -41,9 +48,17 @@ export type HostManagedModelNoteVariant = 'note' | 'inset';
  */
 export type HostManagedTopic = 'model' | 'destination';
 
-const COPY: Record<HostManagedTopic, { short: string; reason: string }> = {
-  model: { short: HOST_MANAGED_MODEL_SHORT, reason: HOST_MANAGED_MODEL_REASON },
-  destination: { short: HOST_MANAGED_DESTINATION_SHORT, reason: HOST_MANAGED_DESTINATION_REASON },
+const COPY: Record<HostManagedTopic, { short: string; help: string; name: string }> = {
+  model: {
+    short: HOST_MANAGED_MODEL_SHORT,
+    help: HOST_MANAGED_MODEL_HELP,
+    name: 'choosing the model on the host',
+  },
+  destination: {
+    short: HOST_MANAGED_DESTINATION_SHORT,
+    help: HOST_MANAGED_DESTINATION_HELP,
+    name: 'changing this on the host',
+  },
 };
 
 export function HostManagedModelNote({
@@ -72,7 +87,18 @@ export function HostManagedModelNote({
 }) {
   if (!isBrowserSurface()) return null;
 
-  const text = short ? COPY[topic].short : COPY[topic].reason;
+  const copy = COPY[topic];
+  const text = (
+    <>
+      {copy.short}
+      {short ? null : (
+        <>
+          {' '}
+          <InfoTip label={copy.name} help={copy.help} />
+        </>
+      )}
+    </>
+  );
 
   if (variant === 'inset') {
     return (

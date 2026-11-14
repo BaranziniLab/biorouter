@@ -14,6 +14,39 @@ require_file() {
   [ -f "$1" ] || die "missing artifact: $1"
 }
 
+# The microphone (dictation, DD-65), read back out of the signed app: the four
+# files `macSignOptionsForFile` in ui/desktop/forge.config.ts signs with
+# `com.apple.security.device.audio-input`, and its `NSMicrophoneUsageDescription`.
+# Under the hardened runtime a missing entitlement means no prompt and every
+# request denied, with nothing else failing. The same check as
+# `check_mac_microphone` in scripts/release.sh; prints each problem, returns 1
+# if there is one.
+MAC_MICROPHONE_USAGE="Biorouter uses the microphone only while you dictate, and does not save the recording."
+mac_microphone_problems() { # <Biorouter.app>
+  local app="$1" target usage bad=0
+  for target in "$app" \
+                "$app/Contents/Frameworks/Biorouter Helper.app" \
+                "$app/Contents/Resources/bin/biorouter" \
+                "$app/Contents/Resources/bin/biorouterd"; do
+    if ! codesign -d --entitlements - --xml "$target" 2>/dev/null | python3 -c '
+import plistlib, sys
+try:
+    entitlements = plistlib.loads(sys.stdin.buffer.read())
+except Exception:
+    sys.exit(1)
+sys.exit(0 if entitlements.get("com.apple.security.device.audio-input") is True else 1)'; then
+      printf 'com.apple.security.device.audio-input is not in the signed entitlements of %s\n' "$target"
+      bad=1
+    fi
+  done
+  usage="$(plutil -extract NSMicrophoneUsageDescription raw "$app/Contents/Info.plist" 2>/dev/null || true)"
+  if [ "$usage" != "$MAC_MICROPHONE_USAGE" ]; then
+    printf 'NSMicrophoneUsageDescription is "%s", expected "%s"\n' "$usage" "$MAC_MICROPHONE_USAGE"
+    bad=1
+  fi
+  return "$bad"
+}
+
 smoke_mac() (
   local arch="$1" dmg="$2" mount="" tmp="" runner=(/usr/bin/env)
   local pid="" daemon_pid="" failure="" mounted=false
@@ -96,6 +129,8 @@ smoke_mac() (
   codesign --verify --deep --strict --verbose=2 "$app"
   spctl --assess --type execute --verbose "$app"
   xcrun stapler validate "$app"
+  local microphone=""
+  microphone="$(mac_microphone_problems "$app")" || die "$arch microphone: $microphone"
   if [ "$arch" = x64 ]; then
     arch -x86_64 /usr/bin/true >/dev/null 2>&1 || die "Rosetta is required for Intel runtime verification"
     runner=(arch -x86_64)
@@ -104,6 +139,25 @@ smoke_mac() (
     || die "$arch CLI architecture mismatch"
   "${runner[@]}" "$app/Contents/Resources/bin/biorouter" --version | grep -q "$VERSION"
   "${runner[@]}" "$app/Contents/Resources/bin/biorouterd" --version | grep -q "$VERSION"
+  check_dictation_size "darwin-$arch" "$app/Contents/Resources/bin/biorouter"
+  check_dictation_size "darwin-$arch" "$app/Contents/Resources/bin/biorouterd"
+  scan_ggml "$app" || die "$arch app bundle carries a speech model"
+  # The local dictation engine loads and decodes in both shipped binaries (DD-12): Metal on
+  # arm64. The Intel build runs under Rosetta, which hides AVX2 from CPUID unless
+  # ROSETTA_ADVERTISE_AVX=1 asks it not to, and honours that only on macOS 15 or later.
+  if [ "$arch" = arm64 ]; then
+    bash "$ROOT/scripts/dictation-self-test.sh" --expect-backend metal \
+      "$app/Contents/Resources/bin/biorouter" "$app/Contents/Resources/bin/biorouterd" \
+      || die "$arch dictation self test failed"
+  else
+    local macos_major
+    macos_major="$(sw_vers -productVersion | cut -d. -f1)"
+    [ "$macos_major" -ge 15 ] || die "the Intel dictation self test needs macOS 15 or later on this Mac"
+    bash "$ROOT/scripts/dictation-self-test.sh" --prefix "env ROSETTA_ADVERTISE_AVX=1 arch -x86_64" \
+      --expect-backend cpu \
+      "$app/Contents/Resources/bin/biorouter" "$app/Contents/Resources/bin/biorouterd" \
+      || die "$arch dictation self test failed"
+  fi
   # ⚠ **`--user-data-dir`, because HOME does not move it.** On macOS Electron resolves userData
   # through the system (~/Library/Application Support/Biorouter), not through $HOME, so without
   # it the smoke run wrote into the operator's real profile, beside an app they may be using.
@@ -129,13 +183,17 @@ smoke_mac() (
   if [ -f "$runtime" ]; then
     daemon_pid="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["pid"])' "$runtime")"
   fi
-  if ! kill -0 "$pid" 2>/dev/null; then
+  # A startup prompt found above is the failure to report: the checks below would read the
+  # same blocked start as "did not become ready" and hide the prompt that caused it.
+  if [ -n "$failure" ]; then
+    :
+  elif ! kill -0 "$pid" 2>/dev/null; then
     failure="$arch desktop exited during startup"
   elif grep -qs 'Fatal error during startup' "$main_log"; then
     failure="$arch desktop failed during startup"
   elif ! grep -qs 'React ready event received' "$main_log"; then
     failure="$arch desktop did not become ready within 30 s"
-  elif [ -z "$failure" ]; then
+  else
     if ! python3 - "$runtime" "$key" <<'PYKEY'
 import json, os, stat, sys
 runtime_path, key_path = sys.argv[1:]
@@ -155,44 +213,192 @@ PYKEY
   cleanup_mac
   trap - EXIT
   [ -z "$failure" ] || die "$failure"
-  log "macOS $arch DMG, CLI, daemon, silent shared startup, and desktop shutdown passed"
+  log "macOS $arch DMG, microphone entitlement and prompt sentence, CLI, daemon, dictation self test, silent shared startup, and desktop shutdown passed"
 )
 
 # Both packages use the same bounded silent-startup, replacement, fatal-error shutdown,
 # and per-window checks. `timeout` also bounds the whole container run.
 LINUX_DESKTOP_SMOKE="$ROOT/scripts/smoke-linux-desktop.sh"
 
+# No speech model ships in any artifact (R6, PR-11). Two guards here, because each misses
+# what the other catches:
+#
+# * a scan of every packaged file for the legacy ggml magic (`lmgg` on disk), which finds
+#   a model file however it is named: on Linux every file the installed package lists
+#   (`dpkg -L`, `rpm -ql`), on macOS the whole app bundle;
+# * a size ceiling for `biorouter` and `biorouterd`, which finds a speech model compiled
+#   into a binary with `include_bytes!`. A scan of the binaries cannot: the loader itself
+#   holds the magic. The smallest speech model is 264 MB, so any of them blows the
+#   ceiling. The 885,098 B voice detector does not, and is left to the source test
+#   `no_model_is_embedded` in crates/biorouter-dictation, which finds it by its path.
+#
+# Each ceiling is the binary's shipped size in v1.94.1 (before the engine), plus the growth
+# since, plus slack. On macOS arm64 the growth is measured [M]: this branch's stripped
+# release build against v1.94.1 with its signature removed (164,049,820 B and 154,454,440
+# B unsigned), +12,711,092 B for biorouter and +11,023,544 B for biorouterd at PR-12b
+# (2026-11-07). That is PR-09's spike figure of 6.69 MB plus what the engine's spike left
+# out, PR-10's supervisor, PR-11's installer and 352,078 B bench clip (+9,613,412 B and
+# +8,306,152 B at PR-11), PR-12 to PERF-1's transcribe, dictionary and routes, which took
+# biorouter to +11,613,732 B and biorouterd to +11,107,928 B without raising these lines
+# (4ba336a3a, measured 2026-11-07: over the PR-11 ceilings by 611,804 B and 1,431,976 B
+# before signing, so a release from it would have failed here), and PR-12b's AAC decoder,
+# MP4 reader, Vorbis decoder and Ogg reader (O-39), +949,904 to +1,097,360 B to biorouter
+# over three release builds as PR-12b grew (the first had neither the MPEG-2 ADTS reader
+# nor the M4A trim, the last both, +982,992 B: builds of nearly the same tree differ by
+# about 150 KB here, so the ceiling takes the largest), while
+# biorouterd, which reads no file, moved by -84,384 B. Its slack is 1 MiB, which also
+# holds the code signature's growth with the binary (339,940 B on v1.94.1's biorouter
+# [M]). No Linux or Intel macOS build of this branch was measured, so their growth is
+# inferred [I]: PR-09's figure for the target (Linux 2.17 MB, macOS x86_64 1.69 MB) plus
+# the same non-spike growth as arm64 (biorouter 6,021,092 B, biorouterd 4,333,544 B), with
+# 32 MiB of slack so an estimate off by a few MB does not fail the release; 32 MiB still
+# hides no speech model. The four codecs alone add 1,115,736 B to a stripped Linux x86_64
+# probe built in the release image [M, PR-12], 1,081,624 B to a macOS x86_64 probe and
+# 1,048,096 B to a macOS arm64 one [M, PR-12b], so arm64's growth, which the inferred legs
+# take, already holds them. Replace an inferred leg with a measured one, and its slack with
+# 1 MiB, from the first CI cross build of these binaries. A pull request that grows other
+# code raises its ceiling here, in the same change, and says why.
+#
+# Re-measured 2026-11-13, before #485 merged, on main through #486 merged into this branch
+# with O-41's Apple Lossless decoder: the stripped release builds on macOS arm64 were
+# 183,819,696 B (biorouter) and 173,710,224 B (biorouterd), +19,769,876 B and +19,255,784 B
+# over v1.94.1 unsigned [M]. The PR-12b lines above had been passed by about 5.7 MB and
+# 6.9 MB, by this branch's later pull requests (PR-13 to PR-33) and by main's own growth
+# since v1.94.1, so a release would have failed here; the arm64 lines take the new growth,
+# and the inferred legs its part outside PR-09's spike (more_cli, more_daemon). The ALAC
+# decoder itself adds 11,924 B of sections to biorouter, 96 B of file size because it fit
+# in the segments' page padding.
+dictation_size_ceiling() { # <platform> <binary>
+  local slack=1048576 inferred=$((32 << 20)) more_cli=13079876 more_daemon=12565784
+  case "$1/$2" in
+    linux-x64/biorouter) echo $((187413248 + 2170000 + more_cli + inferred)) ;;
+    linux-x64/biorouterd) echo $((176920720 + 2170000 + more_daemon + inferred)) ;;
+    darwin-arm64/biorouter) echo $((164389760 + 19769876 + slack)) ;;
+    darwin-arm64/biorouterd) echo $((154775664 + 19255784 + slack)) ;;
+    darwin-x64/biorouter) echo $((176538336 + 1690000 + more_cli + inferred)) ;;
+    darwin-x64/biorouterd) echo $((166285184 + 1690000 + more_daemon + inferred)) ;;
+    *) die "no dictation size ceiling for $1/$2" ;;
+  esac
+}
+
+check_dictation_size() { # <platform> <binary path>
+  local name size ceiling
+  name="$(basename "$2")"
+  size="$(wc -c <"$2" | tr -d ' ')"
+  ceiling="$(dictation_size_ceiling "$1" "$name")"
+  [ "$size" -le "$ceiling" ] \
+    || die "$1 $name is $size bytes, over its ceiling of $ceiling: is a speech model compiled in?"
+}
+
+# Defined as text so the Linux containers run the same functions (eval "$GGML_SCAN").
+# `scan_ggml <path>...` reads every file under the given paths and fails on a path that
+# does not exist, so a renamed folder cannot make it scan nothing. `scan_ggml_list` reads
+# a package's own file list on stdin (`dpkg -L <package>`, `rpm -ql <package>`), checks
+# each regular file in it, and fails on an empty list. Both fail on the first file that
+# starts with the ggml magic, and turn off `set -x` while they read, so a bundle of
+# thousands of files does not flood the log.
+GGML_SCAN='ggml_magic_at() {
+  [ "$(head -c 4 "$1" | tr -d "\000")" = lmgg ]
+}
+scan_ggml() {
+  local f p trace=$-
+  set +x
+  for p in "$@"; do
+    if [ ! -e "$p" ]; then
+      echo "scan_ggml: $p does not exist" >&2
+      return 1
+    fi
+  done
+  while IFS= read -r f; do
+    if ggml_magic_at "$f"; then
+      echo "a speech model file ships in the package: $f" >&2
+      return 1
+    fi
+  done < <(find "$@" -type f)
+  case $trace in *x*) set -x ;; esac
+}
+scan_ggml_list() {
+  local f n=0 trace=$-
+  set +x
+  while IFS= read -r f; do
+    [ -f "$f" ] && [ ! -L "$f" ] || continue
+    n=$((n + 1))
+    if ggml_magic_at "$f"; then
+      echo "a speech model file ships in the package: $f" >&2
+      return 1
+    fi
+  done
+  if [ "$n" -eq 0 ]; then
+    echo "scan_ggml_list: the package lists no files" >&2
+    return 1
+  fi
+  case $trace in *x*) set -x ;; esac
+}'
+eval "$GGML_SCAN"
+
+# The dictation self test inside a Linux container: the helper and the vendored fixtures
+# mounted read only, and ROSETTA_ADVERTISE_AVX=1 for Docker Desktop's amd64 emulation on an
+# Apple Silicon Mac (an x86 host ignores it). Run in the container as
+#   bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu BIN...
+DICTATION_SELF_TEST="$ROOT/scripts/dictation-self-test.sh"
+dictation_container_args() {
+  require_file "$DICTATION_SELF_TEST"
+  require_file "$ROOT/vendor/whisper.cpp/source/samples/jfk.wav"
+  DICTATION_DOCKER_ARGS=(-e ROSETTA_ADVERTISE_AVX=1
+    -e "CEIL_BIOROUTER=$(dictation_size_ceiling linux-x64 biorouter)"
+    -e "CEIL_BIOROUTERD=$(dictation_size_ceiling linux-x64 biorouterd)"
+    -e "GGML_SCAN=$GGML_SCAN"
+    -v "$ROOT/vendor/whisper.cpp":/whisper.cpp:ro
+    -v "$DICTATION_SELF_TEST":/smoke/dictation-self-test.sh:ro)
+}
+
 smoke_deb() {
   local deb="$DESK/out/make/deb/x64/biorouter_${VERSION}_amd64.deb"
   require_file "$deb"
   require_file "$LINUX_DESKTOP_SMOKE"
+  dictation_container_args
   docker run --rm --platform linux/amd64 -e VERSION="$VERSION" \
     -v "$deb":/pkg/biorouter.deb:ro \
     -v "$LINUX_DESKTOP_SMOKE":/smoke/linux-desktop.sh:ro \
+    "${DICTATION_DOCKER_ARGS[@]}" \
     debian:bookworm-slim bash -euxc '
       apt-get update -qq
       apt-get install -y -qq /pkg/biorouter.deb xvfb >/dev/null
       /usr/lib/biorouter/resources/bin/biorouter --version | grep -q "$VERSION"
       /usr/lib/biorouter/resources/bin/biorouterd --version | grep -q "$VERSION"
+      test "$(stat -c %s /usr/lib/biorouter/resources/bin/biorouter)" -le "$CEIL_BIOROUTER"
+      test "$(stat -c %s /usr/lib/biorouter/resources/bin/biorouterd)" -le "$CEIL_BIOROUTERD"
+      eval "$GGML_SCAN"
+      dpkg -L "$(dpkg-deb -f /pkg/biorouter.deb Package)" | scan_ggml_list
+      bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu \
+        /usr/lib/biorouter/resources/bin/biorouter /usr/lib/biorouter/resources/bin/biorouterd
       timeout -k 10 600 bash /smoke/linux-desktop.sh /usr/bin/biorouter
     '
-  log "Linux desktop DEB, CLI, daemon, silent shared startup, replacement, fatal-error shutdown, and per-window startup passed"
+  log "Linux desktop DEB, CLI, daemon, dictation self test, silent shared startup, replacement, fatal-error shutdown, and per-window startup passed"
 }
 
 smoke_rpm() {
   local rpm="$DESK/out/make/rpm/x64/Biorouter-${VERSION}-1.x86_64.rpm"
   require_file "$rpm"
   require_file "$LINUX_DESKTOP_SMOKE"
+  dictation_container_args
   docker run --rm --platform linux/amd64 -e VERSION="$VERSION" \
     -v "$rpm":/pkg/biorouter.rpm:ro \
     -v "$LINUX_DESKTOP_SMOKE":/smoke/linux-desktop.sh:ro \
+    "${DICTATION_DOCKER_ARGS[@]}" \
     rockylinux:9 bash -euxc '
       dnf install -y -q /pkg/biorouter.rpm xorg-x11-server-Xvfb >/dev/null
       /usr/lib/Biorouter/resources/bin/biorouter --version | grep -q "$VERSION"
       /usr/lib/Biorouter/resources/bin/biorouterd --version | grep -q "$VERSION"
+      test "$(stat -c %s /usr/lib/Biorouter/resources/bin/biorouter)" -le "$CEIL_BIOROUTER"
+      test "$(stat -c %s /usr/lib/Biorouter/resources/bin/biorouterd)" -le "$CEIL_BIOROUTERD"
+      eval "$GGML_SCAN"
+      rpm -ql "$(rpm -qp --qf "%{NAME}" /pkg/biorouter.rpm)" | scan_ggml_list
+      bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu \
+        /usr/lib/Biorouter/resources/bin/biorouter /usr/lib/Biorouter/resources/bin/biorouterd
       timeout -k 10 600 bash /smoke/linux-desktop.sh /usr/bin/Biorouter
     '
-  log "Linux desktop RPM, CLI, daemon, silent shared startup, replacement, fatal-error shutdown, and per-window startup passed"
+  log "Linux desktop RPM, CLI, daemon, dictation self test, silent shared startup, replacement, fatal-error shutdown, and per-window startup passed"
 }
 
 smoke_cli_packages() {
@@ -200,22 +406,50 @@ smoke_cli_packages() {
   local rpm="$ROOT/dist/cli/biorouter-cli-${VERSION}-1.x86_64.rpm"
   require_file "$deb"
   require_file "$rpm"
+  dictation_container_args
+  # `biorouter dictation status --format json` from each container lands here and is
+  # checked against schema 1 on this machine (PR-10).
+  local status_dir
+  status_dir="$(mktemp -d)"
   docker run --rm --platform linux/amd64 -e VERSION="$VERSION" \
+    "${DICTATION_DOCKER_ARGS[@]}" -v "$status_dir":/status \
     -v "$deb":/pkg/biorouter-cli.deb:ro debian:bookworm-slim bash -euxc '
       apt-get update -qq
       apt-get install -y -qq /pkg/biorouter-cli.deb >/dev/null
       biorouter --version | grep -q "$VERSION"
       biorouterd --version | grep -q "$VERSION"
+      test "$(stat -c %s /usr/bin/biorouter)" -le "$CEIL_BIOROUTER"
+      test "$(stat -c %s /usr/bin/biorouterd)" -le "$CEIL_BIOROUTERD"
+      eval "$GGML_SCAN"
+      dpkg -L "$(dpkg-deb -f /pkg/biorouter-cli.deb Package)" | scan_ggml_list
+      bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu \
+        "$(command -v biorouter)" "$(command -v biorouterd)"
+      HOME=$(mktemp -d) biorouter dictation status --format json >/status/debian.json
       biorouter term --help >/dev/null
     '
   docker run --rm --platform linux/amd64 -e VERSION="$VERSION" \
+    "${DICTATION_DOCKER_ARGS[@]}" -v "$status_dir":/status \
     -v "$rpm":/pkg/biorouter-cli.rpm:ro rockylinux:9 bash -euxc '
       dnf install -y -q /pkg/biorouter-cli.rpm >/dev/null
       biorouter --version | grep -q "$VERSION"
       biorouterd --version | grep -q "$VERSION"
+      test "$(stat -c %s /usr/bin/biorouter)" -le "$CEIL_BIOROUTER"
+      test "$(stat -c %s /usr/bin/biorouterd)" -le "$CEIL_BIOROUTERD"
+      eval "$GGML_SCAN"
+      rpm -ql "$(rpm -qp --qf "%{NAME}" /pkg/biorouter-cli.rpm)" | scan_ggml_list
+      bash /smoke/dictation-self-test.sh --fixtures /whisper.cpp/source --expect-backend cpu \
+        "$(command -v biorouter)" "$(command -v biorouterd)"
+      HOME=$(mktemp -d) biorouter dictation status --format json >/status/rocky.json
       biorouter term --help >/dev/null
     '
-  log "CLI-only DEB/RPM version and terminal entry points passed"
+  local distro
+  for distro in debian rocky; do
+    python3 -I "$ROOT/scripts/check-dictation-status-json.py" --expect-capture-reason no_audio_system \
+      --expect-no-models "$status_dir/$distro.json" \
+      || die "dictation status in the $distro CLI package is not schema 1"
+  done
+  rm -rf "$status_dir"
+  log "CLI-only DEB/RPM version, dictation self test and status, binary size ceilings, no speech model, and terminal entry points passed"
 }
 
 smoke_serve() {

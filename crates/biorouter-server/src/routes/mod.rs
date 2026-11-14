@@ -1012,7 +1012,6 @@ pub mod action_required;
 pub mod active_work;
 pub mod agent;
 pub mod apps;
-pub mod audio;
 pub mod catalog;
 pub mod coding_agents;
 pub mod config_management;
@@ -1026,6 +1025,8 @@ pub mod crew_setup;
 pub mod crew_tools;
 pub mod crew_transfers;
 pub mod decisions;
+pub mod dictation;
+pub mod dictionary;
 pub mod errors;
 pub mod folder_access;
 pub mod knowledge;
@@ -1072,7 +1073,6 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(agent::routes(state.clone()))
         .merge(computer_use::routes(state.clone()))
         .merge(apps::routes(state.clone()))
-        .merge(audio::routes(state.clone()))
         .merge(config_management::routes(state.clone()))
         .merge(workflow::routes(state.clone()))
         .merge(session::routes(state.clone()))
@@ -1102,6 +1102,8 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(biorouter_server::native_client::routes())
         .merge(llamacpp::routes(state.clone()))
         .merge(ollama::routes(state.clone()))
+        .merge(dictation::routes(state.clone()))
+        .merge(dictionary::routes(state.clone()))
         .merge(memory::routes(state.clone()))
         // The interface's own endpoints -- the filesystem browser, settings,
         // extension installation. They stood in front of the daemon with no

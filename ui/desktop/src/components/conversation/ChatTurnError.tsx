@@ -3,6 +3,7 @@ import { AlertTriangle, Info } from '../icons/app-icons';
 import { Button } from '../ui/button';
 import { Disclosure } from '../ui/disclosure';
 import { TranscriptRow } from '../TranscriptRow';
+import { InfoTip } from '../ui/info-tip';
 import { transcriptCopy } from '../transcript/copy';
 import type { Message } from '../../api';
 import type { ChatTurnErrorData } from '../../types/turnError';
@@ -16,6 +17,10 @@ import {
   TOOL_LOOP_CODE,
   repetitionStopNotice,
 } from '../../utils/repetitionStop';
+import { foldForHelp } from '../../utils/proseFold';
+
+/** The info icon's name beside a folded error message: "About this error". */
+const ERROR_TIP_NAME = 'this error';
 
 export interface ChatTurnErrorPresentation {
   title: string;
@@ -346,6 +351,12 @@ export function ChatTurnError({
  * message in muted `text-secondary`, Retry as the one secondary button, and the
  * raw provider payload behind the shared Disclosure.
  *
+ * The message shows its first sentence, the error itself; advice after it
+ * ("Your chat is safe. Retry in a moment…") is the info icon beside it, and a
+ * longer tail joins the raw payload under Details (owner, 2026-11-13: no solid
+ * chunk of text, every word one hover or one click away). A message that fits
+ * one line stays whole.
+ *
  * `alert` announces it: only for a failure that happens while the person
  * watches, never for one read back from history.
  */
@@ -362,6 +373,7 @@ export function TurnErrorRow({
   testId?: string;
   onRetry?: () => void;
 }) {
+  const { lead, tip, details: moreText } = foldForHelp(presentation.message);
   return (
     <div
       data-testid={testId}
@@ -371,13 +383,28 @@ export function TurnErrorRow({
       <AlertTriangle aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-text-danger" />
       <div className="min-w-0 flex-1">
         <div className="text-label text-text-default">{presentation.title}</div>
-        <div className="text-secondary text-text-muted break-words">{presentation.message}</div>
-        {presentation.details && (
+        <div className="text-secondary text-text-muted break-words">
+          {lead}
+          {tip ? (
+            <>
+              {' '}
+              <InfoTip label={ERROR_TIP_NAME} help={tip} />
+            </>
+          ) : null}
+        </div>
+        {(moreText || presentation.details) && (
           <Disclosure label={transcriptCopy.turn.details} className="mt-1">
-            {/* One well, as a tool call's expanded body is: the raw payload is
-                machine text, and the fill keeps it apart from the rows below. */}
-            <div className="whitespace-pre-wrap break-words rounded-element bg-background-well p-3 font-mono text-code text-text-muted [overflow-wrap:anywhere]">
-              {presentation.details}
+            <div className="flex flex-col gap-2">
+              {moreText ? (
+                <p className="text-secondary text-text-muted break-words">{moreText}</p>
+              ) : null}
+              {/* One well, as a tool call's expanded body is: the raw payload is
+                  machine text, and the fill keeps it apart from the rows below. */}
+              {presentation.details ? (
+                <div className="whitespace-pre-wrap break-words rounded-element bg-background-well p-3 font-mono text-code text-text-muted [overflow-wrap:anywhere]">
+                  {presentation.details}
+                </div>
+              ) : null}
             </div>
           </Disclosure>
         )}

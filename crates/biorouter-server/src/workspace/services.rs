@@ -171,7 +171,13 @@ fn requested_extensions(
     };
     let mut configs = names
         .iter()
-        .map(|name| lookup(name).ok_or_else(|| format!("unknown extension '{name}'")))
+        .map(|name| {
+            // DD-51: naming the Dictionary never turns it on; only the person does.
+            if biorouter::dictation::activation::is_dictionary_name(name) {
+                return Err(biorouter::dictation::activation::ENABLE_REFUSAL.to_string());
+            }
+            lookup(name).ok_or_else(|| format!("unknown extension '{name}'"))
+        })
         .collect::<Result<Vec<_>, _>>()?;
     biorouter::workflow::runtime::keep_machine_wide_capabilities(&mut configs, &machine_wide());
     Ok(configs)
@@ -807,6 +813,79 @@ mod tests {
                 .map(|e| e.name().to_string())
                 .collect::<Vec<_>>()
         );
+    }
+
+    /// The ids of the User chats, empty ones included, whose working directory is
+    /// `dir`. A fresh temporary directory names no other test's chats, so this answers
+    /// "did a chat start here" without counting rows in the shared store.
+    async fn user_chats_in(
+        state: &Arc<crate::state::AppState>,
+        dir: &std::path::Path,
+    ) -> Vec<String> {
+        state
+            .session_manager()
+            .list_sessions_by_types_including_empty(&[SessionType::User])
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|session| session.working_dir.canonicalize().ok().as_deref() == Some(dir))
+            .map(|session| session.id)
+            .collect()
+    }
+
+    /// PR-23, DD-51: `WorkspaceServices::start_session` is the fourth door of
+    /// `an_agent_cannot_enable_the_dictionary_capability_in_any_chat`, next to
+    /// `workspace_set_tools`, `workspace_open` and `manage_extensions`. A new chat that
+    /// names the `dictionary` capability, in any spelling its key folds to, is refused
+    /// with the sentence that says the person turns it on, and no chat is started.
+    ///
+    /// The refusal is compared whole: without it this configuration has no `dictionary`
+    /// entry, so the answer would be "unknown extension 'dictionary'" instead, and with
+    /// the capability turned on it would be a new chat holding it.
+    #[tokio::test]
+    async fn start_session_refuses_a_new_chat_that_names_the_dictionary_capability() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let services = ServerWorkspaceServices::new(state.clone());
+        let temp = tempfile::TempDir::new().unwrap();
+        let dir = temp.path().canonicalize().unwrap();
+
+        for spelling in ["dictionary", "Dictionary", "DICTIONARY", " dictionary "] {
+            let err = services
+                .start_session(
+                    temp.path().to_path_buf(),
+                    Some(vec![spelling.to_string()]),
+                    Vec::new(),
+                    KbPrimaryChoice::Auto,
+                )
+                .await
+                .unwrap_err();
+            assert_eq!(
+                err,
+                biorouter::dictation::activation::ENABLE_REFUSAL,
+                "{spelling:?} was not refused as the dictionary capability"
+            );
+        }
+        assert!(
+            user_chats_in(&state, &dir).await.is_empty(),
+            "a refused start still created a chat"
+        );
+
+        // The listing above sees a chat this door starts in that directory, so its
+        // emptiness is evidence rather than a listing that never finds anything.
+        let started = services
+            .start_session(
+                temp.path().to_path_buf(),
+                Some(Vec::new()),
+                Vec::new(),
+                KbPrimaryChoice::Auto,
+            )
+            .await
+            .unwrap();
+        assert_eq!(user_chats_in(&state, &dir).await, vec![started.clone()]);
+
+        let _ = state.take_extension_loading_task(&started).await;
+        let _ = state.agent_manager.remove_session(&started).await;
+        let _ = state.session_manager().delete_session(&started).await;
     }
 
     /// `start_session` kicks off an EAGER extension load in a background task

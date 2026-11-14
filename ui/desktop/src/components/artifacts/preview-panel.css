@@ -223,12 +223,15 @@
   display: none;
 }
 
-/* A git ref: the one machine string the bar shows, so it is mono. */
+/* A git ref: the one machine string the bar shows, so it is mono, at the code role's size
+   (`text-code`, 12/20) like every other code surface rather than the bar's 13px. */
 .br-preview-bar__ident {
   min-width: 0;
   max-width: 160px;
   overflow: hidden;
   font-family: var(--font-mono);
+  font-size: var(--text-code);
+  line-height: var(--text-code--line-height);
   text-overflow: ellipsis;
 }
 

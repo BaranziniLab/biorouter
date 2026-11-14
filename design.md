@@ -504,7 +504,7 @@ The values below are the Standard baseline. Settings → App → Appearance offe
 | Caption | 12 / 16 | 400 | 0 |
 | Section label (all-caps) | 11 / 14 | 500 | +0.08em |
 | Metric readout | 30 / 34 | 300, mono | −0.02em |
-| Code / terminal | 13 / 20 | 400, mono | 0 |
+| Code / terminal | 12 / 20 *(13 / 20 until 2026-11-12, 9.15)* | 400, mono | 0 |
 
 **Rules.** Prose (chat messages, docs) is capped at **68ch** measure. Anywhere digits align in a column — token counts, durations, table cells, metric tiles — use `font-variant-numeric: tabular-nums`.
 
@@ -1897,6 +1897,7 @@ stay at `--row-height` 40px, because A-03's 36px is not part of this pass.
 2. **Say it once, then hide the explanation.** A visible line is a label, a value or a state word.
    Explanations live in an `InfoTip`. These always stay visible: errors, refusals, privacy disclosures,
    the consequence of a destructive action at the moment of decision, and empty-state one-liners.
+   No solid block of text anywhere (owner, 2026-11-13; 9.16): one visible line, the rest folded.
 3. **Five sizes, two visible weights, two families.** Regular (400) and strong (600). 500 never carries
    a state alone. Mono is for machine strings read as data only: code, IDs, versions, terminal text, a
    tool's argument, a decision's exact folder. A folder shown as where something lives is a name with a
@@ -1938,6 +1939,9 @@ stay at `--row-height` 40px, because A-03's 36px is not part of this pass.
     Never borrow a `crew-*` class outside `crew/`.
 12. **Simplicity never costs accessibility.** Everything hidden stays reachable by keyboard and by screen
     reader, and the contrast gates pass, including the 3:1 control assertions in 9.5.
+13. **Red is rare** (owner, 2026-11-12; 9.14). Red never marks a failure, a risk or a permission. Words and
+    a glyph do that, in ink. Red is left for real danger only: the danger zone's button and the edge of an
+    invalid field.
 
 Copy rules: sentence case, the noun is "chat", "Biorouter" and "BAAM", the typographic ellipsis, American
 spelling, no em or en dashes as punctuation, no marketing words. A one-line menu label takes no trailing
@@ -1951,7 +1955,7 @@ period. InfoTip text is full sentences, at most two (about 160 characters).
 | `text-chip` | 12 / 16 | 500 | 0 | Badges and chips, sentence case |
 | `text-caps` | 12 / 16 | 500 | +0.04em, uppercase | Page section labels only |
 | `text-secondary` | 13 / 18 | 400 | 0 | Sidebar rows, menu rows, tab labels, segmented labels, dense controls in strips of 36px or less, tool-call rows, table cells, composer controls |
-| `text-code` | 13 / 20 mono | 400 | 0 | Code and terminal text |
+| `text-code` | 12 / 20 mono | 400 | 0 | Code and terminal text (13 / 20 until 2026-11-12; 9.15) |
 | `text-body` | 14 / 20 | 400 | 0 | UI prose and values |
 | `text-label` | 14 / 20 | 500 | 0 | Control text, row titles, band titles, field labels |
 | `text-prose` | 14 / 21 | 400 | 0 | Chat markdown, document prose, Crew messages |
@@ -2309,3 +2313,95 @@ hard to find. The rule applies to all of Biorouter, not only those surfaces.
 | ID | Decision | Resolved value |
 |---|---|---|
 | D-44 | **Simplicity first** | **A general principle, P9.** Up front only the most important information and the primary action; secondary operations in a dropdown, a `⋯` menu or a quiet button; complexity hidden by default behind a disclosure or an InfoTip, every option still reachable. It sits beside D-43 (hover peeks, click pins) and the owner's standing rule of one format across sibling surfaces. **First applied** to the Monitors dialog (each change applies as made; a row is a name, a switch and one line, with a peek and a `⋯`; the rest under More options), the decision history (Source and Outcome up front, the rest under Filters and Details), the `decide` card and turn marker (counts, not ids or thresholds), the phase gate dialog (one primary action only when the person is needed), the decision chat's composer and card, the Chat summary (Details, collapsed sections, one line per monitor) and the subagent roster (a row is a role, a status and one line; the rest in a peek). Records: `docs/desktop-ui/decision-models.md`, `docs/desktop-ui/chat-summary-rail.md`. |
+
+### 9.14 · Red is rare
+
+The owner, 2026-11-12: failed tool calls were "glaring red", permission prompts showed big red badges such
+as "Destructive", and red is not the way Biorouter should mark a critical or risky operation. Tool calls fail
+all the time, usually from a model's misstep, and are rarely a big deal. A permission prompt already asks for
+attention. Red on either one turns something routine into an alarm, and a person who sees alarms all day
+stops reading them.
+
+**The rule of thumb.** Before reaching for red, name the one thing it would tell the person that the words
+and the glyph do not. If there is none, and there almost never is, do not use red.
+
+| The case | How it is drawn | Never |
+|---|---|---|
+| A failed tool call, run, agent or task; an error note, toast or inline error message | The row's muted ink or the primary ink, a failure glyph (a failed transcript line draws `FAILED_GLYPH`, a circled ✕, in the primary ink) and words that say what failed ("Failed to read …", "Couldn't connect"). The details stay one click away. | A red line, icon, wash or dot |
+| Something that needs the person: a permission prompt, its risk grade, a decision | The card itself asks. Its risk chip is neutral, and the riskiest grade is the same chip in the primary ink (Badge `strong`), read first without a colour. A warning line keeps only its triangle in the warning hue; the sentence is ink. | A red badge, a red card edge, a paragraph set in a status hue |
+| A destructive action: Delete chat, Remove, Revoke | Its verb, its glyph (trash, reset) and, where it cannot be undone, a confirmation that names what goes. The button and the menu item are the ordinary ones. | A red button or menu item |
+| A danger zone: Settings › Models and Settings › App, a Crew channel's About | The one control still drawn in red (owner, 2026-11-12): its button and the confirm that follows are Button `critical`, the family's translucent pink, because what they do is real, irreversible danger. | Red anywhere else on the page |
+| A field whose value is invalid, a drop zone that refused a file | The 1px edge in `--border-danger`, beside a message in ink that says how to fix it | Red text, a red box round the form |
+| Data whose meaning is a colour | Terminal ANSI red, a chart series, an avatar hue. These are content, not chrome | |
+
+**How it is built, so new work follows by default.** The danger tone is a role, not a hue. In every family
+and mode `--text-danger` is the primary ink, `--background-danger` is the secondary ink, and `--wash-danger`
+is that ink at 8%, about the strong fill step. Every `danger` Badge, Note, StatusDot and Progress fill, every
+destructive Button and menu item, the error toast chip and every `text-text-danger` therefore reads as calm
+ink with no change at its call site, and UI written later that reaches for "danger" stays calm.
+`--border-danger` keeps each family's red because it marks exactly one thing, the invalid edge: never use it
+for a card, a banner or a status. The family's red also lives on as `--background-critical` and
+`--text-critical` (the old danger fill and ink), which only Button `critical`, the danger zone's button, may
+wear. Do not bring red back through a hex, a `--color-red-*` utility or a status token borrowed for its hue;
+`styles/redIsRare.test.ts` holds all of this.
+
+- **Failed tool calls.** A failed row (`TranscriptRow`, `tone="danger"`) keeps the muted ink its neighbours
+  wear and draws `FAILED_GLYPH`, a circled ✕ in the primary ink, in place of its tool's glyph; its label
+  already opens with "Failed to". The ✕ is what makes a failure findable in a long group. The well's failure
+  notice titles in ink.
+- **Permission risk.** `ToolRiskBadge` (`ToolCallPreview.tsx`): Read-only, Modifies data and Unverified are
+  neutral chips, Destructive is the `strong` neutral chip (the primary ink) with the warning triangle, so it
+  reads apart by word, ink and shape. The accent was tried first and dropped: Parchment's coral wash read as a
+  pinkish red.
+- **Gauges.** A context or usage bar past its limit fills with the danger tone, the secondary ink: full, not
+  alarmed. The label says what happens next.
+
+### 9.15 · Code reads like text
+
+The owner, 2026-11-12: code was set in a face that looked distinct from the text, with spacing that seemed off
+beside it. Code should read like the text around it, the way Codex's does, while a person can still tell it is
+code. That covers every code surface: markdown code in chat, tool arguments and output, the artifact panel, the
+Crew timeline and the terminal. Syntax colours are unchanged.
+
+- **The stack is Codex's, verbatim** (`openai/codex`, `codex-rs/tui/assets/inline_visualization/visualize.css`):
+  `ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace`. `--font-mono`, the
+  terminal's `TERMINAL_FONT` and the knowledge graph's `CANVAS_MONO_FALLBACK` carry it, and
+  `styles/fontStacks.test.ts` keeps them one stack.
+- **SF Mono on macOS.** Under WebKit `ui-monospace` is SF Mono, Apple's system monospace, drawn to sit beside
+  the system text. Under Chromium none of the first three names resolves (measured with
+  `CSS.getPlatformFontsForNode`), so every code surface fell back to Menlo, the wider, heavier face the owner
+  saw. The desktop main process hands the renderer the installed `SFNSMono.ttf` and its italic
+  (`get-system-mono-font`), and `utils/systemMonoFont.ts` registers them under "SF Mono" with the FontFace API,
+  declared over the variable font's whole weight range. Nothing is bundled: it is the font macOS ships. Windows
+  (Consolas), Linux (Liberation Mono) and a `biorouter serve` browser follow the stack as Codex's does, and
+  Safari reaches SF Mono on its own.
+- **12 / 20, Codex's code size.** SF Mono at 13px read wide beside the 13 to 14px text, so code blocks, inline
+  code, tool arguments and output, the terminal and Crew's sign-in terminal moved to 12px on the same 20px line
+  (`--text-code`, `CODE_FONT_SIZE`, `TERMINAL_FONT_SIZE`), still byte-identical to each other.
+- **Nothing waits for it.** The face registers in the background after launch; code draws in the fallback for
+  the moment the local file takes. A terminal opened before then re-measures its cells once the face is ready.
+
+### 9.16 · One line, then helper text
+
+The owner, 2026-11-13: large, solid chunks of text impede reading. This is 9.13 (Simplicity first, D-44) applied to
+prose: 9.13 decides which controls and numbers come first, this section decides how much text sits beside them. A surface shows the one line a person needs, a
+label, a question or a state word, and everything else is helper text that waits until it is asked for. There is
+almost always a way to fold a paragraph; finding it is part of designing the surface.
+
+- **The layers.** The visible line; then an `InfoTip` right beside it (the small circled icon, at most two full
+  sentences, about 160 characters); then a Details disclosure (`ui/disclosure.tsx`) for anything longer or for a
+  list; then a page or dialog of its own. A hover card that already exists on a surface may carry the same detail.
+- **The example.** The folder access card asks one question, "Allow this chat to read ~/notes?" (or names the
+  subagent that asks), with an info icon beside it for what a grant covers and how long it lasts, and the exact
+  paths and terms under Details (9.13's R2-1 gave it the question and the Details). The daemon's long prompt,
+  which only restated the preview, is not drawn.
+- **What stays visible**, as principle 2 already says: the first line of an error that just happened, a refusal's
+  reason, a privacy disclosure whose full text is mandated (`Note` with `unclamped`, DR-17), and one line of
+  consequence for an irreversible action. Their extra sentences may still fold.
+- **Move, never lose.** Folded text is still reachable by pointer, keyboard and screen reader: the InfoTip trigger
+  is focusable and, where it explains a control, it stays that control's accessible description.
+- **The primitives carry it.** A `Note` clamps at three lines (`--note-max-height` 68px, was eight) and takes a
+  `details` slot that folds extra text behind a closed Details disclosure; `ConfirmationModal` and
+  `DangerousConfirmDialog` take `details` too; an `Alert` takes `help` for its info icon. Reach for these before
+  writing a second paragraph.
+

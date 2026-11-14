@@ -138,7 +138,41 @@ export const PUBLIC_MODEL_IN_PRIVATE_CHAT =
  * direction.
  */
 export const PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP =
-  "After your next message this chat becomes private. Public models can't be used in it again unless you make it public from History.";
+  'This chat becomes private after your next message.';
+
+/** What going private means for this chat: the InfoTip beside the line above (owner, 2026-11-13). */
+export const PRIVATE_MODEL_IN_PUBLIC_CHAT_HELP =
+  "Public models can't be used in it again unless you make it public from History.";
+
+/** The InfoTip's name: "About this chat going private". */
+const PRIVATE_MODEL_IN_PUBLIC_CHAT_LABEL = 'this chat going private';
+
+/**
+ * The line under the model list when a public chat picks a private model, in both layouts. When
+ * the chat really goes private, the line says so and its info icon says what that rules out;
+ * when a decision model or a public parent keeps it public (DR-33), the line says that instead
+ * and needs no icon.
+ */
+function BecomesPrivateLine({ tip }: { tip: string }) {
+  const goesPrivate = tip === PRIVATE_MODEL_IN_PUBLIC_CHAT_TIP;
+  return (
+    <p
+      data-testid="switch-model-becomes-private"
+      className="text-supporting text-text-muted [overflow-wrap:anywhere]"
+    >
+      {tip}
+      {goesPrivate ? (
+        <>
+          {' '}
+          <InfoTip
+            label={PRIVATE_MODEL_IN_PUBLIC_CHAT_LABEL}
+            help={PRIVATE_MODEL_IN_PUBLIC_CHAT_HELP}
+          />
+        </>
+      ) : null}
+    </p>
+  );
+}
 
 /**
  * DR-33 (design §5): the switch's tip on a chat a decision model keeps public,
@@ -1248,14 +1282,7 @@ export const SwitchModelModal = ({
             </div>
 
             {modelMessageNode}
-            {becomesPrivate && (
-              <p
-                data-testid="switch-model-becomes-private"
-                className="text-supporting text-text-muted [overflow-wrap:anywhere]"
-              >
-                {becomesPrivateTip}
-              </p>
-            )}
+            {becomesPrivate && <BecomesPrivateLine tip={becomesPrivateTip} />}
           </div>
         ) : (
           /* Manual Provider/Model Selection */
@@ -1363,14 +1390,7 @@ export const SwitchModelModal = ({
                   </p>
                 </div>
               )}
-              {becomesPrivate && (
-                <p
-                  data-testid="switch-model-becomes-private"
-                  className="text-supporting text-text-muted [overflow-wrap:anywhere]"
-                >
-                  {becomesPrivateTip}
-                </p>
-              )}
+              {becomesPrivate && <BecomesPrivateLine tip={becomesPrivateTip} />}
             </div>
 
             {provider && (

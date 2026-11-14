@@ -11,6 +11,7 @@ pub mod budget;
 // file it on the public issue tracker.
 pub mod bug_report;
 pub(crate) mod chatrecall_extension;
+pub(crate) mod dictionary_extension;
 // The Chat summary's Code figure for a script's file edits, measured from the
 // sub-calls' full arguments (their records are truncated).
 pub(crate) mod code_delta;
@@ -156,7 +157,7 @@ pub use skills_extension::{count_user_skills, reset_to_builtin_skills};
 pub use subagent_handle::{BackgroundSubagent, HandleSnapshot, HandleState};
 pub use subagent_result::{SubagentResult, SubagentStatus, SubagentTokens};
 pub use subagent_runtime_profile::persisted_subagent_extension_projection;
-pub use subagent_task_config::TaskConfig;
+pub use subagent_task_config::{ChildExtensionChanges, TaskConfig};
 pub use turn_abort::{exit, TurnAbortCode};
 pub use types::{FrontendTool, RetryConfig, SessionConfig, SuccessCheck};
 pub use vault_refs::VaultRefs;

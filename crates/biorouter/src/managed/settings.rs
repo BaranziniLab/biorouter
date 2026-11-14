@@ -40,6 +40,30 @@ pub struct ManagedPolicyFile {
     /// Managed permission rules over tool names.
     #[serde(default)]
     pub permissions: ManagedPermissions,
+
+    /// The administrator's `dictation:` block (DD-90), kept as raw YAML and
+    /// parsed apart by [`super::dictation::DictationPolicy`]. Any YAML value
+    /// deserializes here, so a block an older binary does not understand cannot
+    /// fail the file and lift every `permissions.deny`; the block fails closed
+    /// for dictation alone.
+    ///
+    /// `None` only when the key is absent. A key with an empty value
+    /// (`dictation:`, `dictation: ~`, `dictation: null`) is
+    /// `Some(Value::Null)`, which turns dictation off: the likeliest way to
+    /// write one is a block whose keys lost their indentation, and those keys
+    /// then land at the top level, where unknown keys are ignored.
+    #[serde(default, deserialize_with = "present")]
+    pub dictation: Option<serde_yaml::Value>,
+}
+
+/// Keep a present key as `Some`, even when its value is null. A plain
+/// `Option<Value>` reads a null value as `None`, the same as an absent key;
+/// `#[serde(default)]` still gives `None` when the key is missing.
+fn present<'de, D>(deserializer: D) -> Result<Option<serde_yaml::Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    serde_yaml::Value::deserialize(deserializer).map(Some)
 }
 
 impl ManagedPolicyFile {
@@ -188,6 +212,60 @@ permissions:
             Some(ManagedVerdict::Deny)
         );
         assert!(file.permission_for("developer__text_editor").is_none());
+    }
+
+    /// A `dictation:` block whose contents no binary understands still parses,
+    /// so the rest of the file keeps its force. The block itself is judged by
+    /// `managed::dictation`, which turns dictation off for it.
+    #[test]
+    fn a_malformed_dictation_block_does_not_fail_the_file() {
+        for block in [
+            "dictation: [not, a, map]\n",
+            "dictation: 42\n",
+            "dictation:\n  enabled: maybe\n  future_key: { nested: true }\n",
+        ] {
+            let yaml = format!("{block}permissions:\n  deny: [\"developer__shell\"]\n");
+            let file: ManagedPolicyFile = serde_yaml::from_str(&yaml)
+                .unwrap_or_else(|e| panic!("{block:?} failed the whole file: {e}"));
+            assert!(file.dictation.is_some(), "{block:?}");
+            assert_eq!(
+                file.permission_for("developer__shell"),
+                Some(ManagedVerdict::Deny),
+                "{block:?} lifted permissions.deny"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_without_a_dictation_key_has_no_block() {
+        let file: ManagedPolicyFile =
+            serde_yaml::from_str("permissions:\n  deny: [\"x\"]\n").unwrap();
+        assert!(file.dictation.is_none());
+    }
+
+    /// A `dictation:` key with an empty value is present, not absent, so it
+    /// reaches `managed::dictation` (which turns dictation off for it) instead
+    /// of reading as a file that says nothing about dictation.
+    #[test]
+    fn an_empty_dictation_key_is_kept_as_null() {
+        for yaml in [
+            "dictation:\n",
+            "dictation: ~\n",
+            "dictation: null\n",
+            // A block whose keys lost their indentation: `enabled` lands at the
+            // top level, where unknown keys are ignored.
+            "dictation:\nenabled: false\n",
+        ] {
+            let yaml = format!("{yaml}permissions:\n  deny: [developer__shell]\n");
+            let file: ManagedPolicyFile = serde_yaml::from_str(&yaml)
+                .unwrap_or_else(|e| panic!("{yaml:?} failed the whole file: {e}"));
+            assert_eq!(file.dictation, Some(serde_yaml::Value::Null), "{yaml:?}");
+            assert_eq!(
+                file.permission_for("developer__shell"),
+                Some(ManagedVerdict::Deny),
+                "{yaml:?} lifted permissions.deny"
+            );
+        }
     }
 
     #[test]

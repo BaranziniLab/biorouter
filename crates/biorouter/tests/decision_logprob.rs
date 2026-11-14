@@ -7,6 +7,8 @@
 //! (`docs.ollama.com/api/chat`): a top-level `logprobs` array of
 //! `{token, logprob, bytes, top_logprobs}`.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;

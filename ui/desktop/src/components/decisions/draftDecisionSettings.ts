@@ -1,5 +1,9 @@
 import { useCallback, useState, useSyncExternalStore } from 'react';
-import type { DecisionModelEntry, DecisionSettings } from '../../utils/sessionDecisions';
+import type {
+  DecisionModelEntry,
+  DecisionModelRef,
+  DecisionSettings,
+} from '../../utils/sessionDecisions';
 
 /**
  * DR-33 (design §4) — the decision settings a chat that has not been sent yet will
@@ -66,6 +70,34 @@ export function loweringModels(
   for (const monitor of settings.monitors) {
     if (monitor.enabled) consider(monitor.model ?? settings.defaultModel);
   }
+  return found;
+}
+
+/**
+ * Every decision model a draft names, once each: its default and each monitor's, a
+ * monitor that is off included. A new chat's dictation sends these
+ * (`new_chat_decision_models`), so the daemon judges the chat as the start will make it
+ * (DR-33). Which of them make the chat public is the daemon's decision, made with the
+ * same check the start runs; a monitor that is off counts there too, which can only
+ * make the dictation more public. Empty for no draft.
+ */
+export function draftDecisionModels(
+  settings: DecisionSettings | null | undefined
+): DecisionModelRef[] {
+  if (isEmptyDraft(settings) || !settings) return [];
+  const found: DecisionModelRef[] = [];
+  const add = (ref: DecisionModelRef | null) => {
+    if (!ref) return;
+    const seen = found.some(
+      (known) =>
+        known.provider === ref.provider &&
+        known.model === ref.model &&
+        known.adapter === ref.adapter
+    );
+    if (!seen) found.push(ref);
+  };
+  add(settings.defaultModel);
+  for (const monitor of settings.monitors) add(monitor.model);
   return found;
 }
 

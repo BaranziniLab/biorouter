@@ -1,6 +1,7 @@
+use crate::agents::session_skills::SessionSkillOverride;
 use crate::agents::ExtensionConfig;
 use crate::decision::DecisionService;
-use crate::privacy::SessionClassification;
+use crate::privacy::{CallCapability, SessionClassification};
 use crate::providers::base::Provider;
 use std::env;
 use std::fmt;
@@ -75,6 +76,42 @@ pub struct TaskConfig {
     /// calls go where the parent's go. `None` means the process's service,
     /// which is what a child asks without being told.
     pub decision_service: Option<Arc<DecisionService>>,
+    /// The capability the spawning call was admitted on (the parent turn's,
+    /// `Agent::sample_turn_call`), which judges `add_extensions` with the one
+    /// agent enable gate (`privacy::refusal::extension_enable_refusal`), the
+    /// way `workspace_set_tools` judges its own adds. `None` (a coding-agent
+    /// bridge spawn, a test, an embedder that built the config itself) means
+    /// the child may be given only extensions the parent already holds.
+    pub spawn_capability: Option<CallCapability>,
+    /// What this spawn asked to change about the extensions the child
+    /// inherits (`add_extensions`, `remove_extensions`), resolved and gated at
+    /// the spawn tool's entry and applied in `subagent_tool::judge_child`
+    /// after the `extensions` narrowing and BEFORE the tier and affiliation
+    /// filter, so an added extension is filtered exactly like an inherited one.
+    pub extension_changes: ChildExtensionChanges,
+    /// The child's own skill and Context choices (`workspace_skills/v1`):
+    /// the parent chat's, copied, with this spawn's `add_skills` and
+    /// `remove_skills` merged in. Stamped on the child's row at birth, in the
+    /// statement that links it to its parent, so its first read of its skills
+    /// finds them. Empty means the machine-wide answer, as for any chat.
+    pub skill_override: SessionSkillOverride,
+}
+
+/// One spawn's changes to the extensions a child inherits from its parent's
+/// live roster. See [`TaskConfig::extension_changes`].
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ChildExtensionChanges {
+    /// Configs to give the child on top of what it inherits.
+    pub add: Vec<ExtensionConfig>,
+    /// Manager keys (`extension_manager::normalize(&config.key())`) to take
+    /// away. Applied before `add`, so a name in both ends up present.
+    pub remove: Vec<String>,
+}
+
+impl ChildExtensionChanges {
+    pub fn is_empty(&self) -> bool {
+        self.add.is_empty() && self.remove.is_empty()
+    }
 }
 
 impl fmt::Debug for TaskConfig {
@@ -101,6 +138,9 @@ impl fmt::Debug for TaskConfig {
                     .as_ref()
                     .map(|_| "<custom DecisionService>"),
             )
+            .field("spawn_capability", &self.spawn_capability)
+            .field("extension_changes", &self.extension_changes)
+            .field("skill_override", &self.skill_override)
             .finish()
     }
 }
@@ -133,6 +173,9 @@ impl TaskConfig {
             dropped_private_extensions: Vec::new(),
             dropped_cross_affiliation_extensions: Vec::new(),
             decision_service: None,
+            spawn_capability: None,
+            extension_changes: ChildExtensionChanges::default(),
+            skill_override: SessionSkillOverride::default(),
         }
     }
 
@@ -140,6 +183,13 @@ impl TaskConfig {
     /// monitors and its `decide` calls). `None` keeps the process's service.
     pub fn with_decision_service(mut self, service: Option<Arc<DecisionService>>) -> Self {
         self.decision_service = service;
+        self
+    }
+
+    /// The same config, judging `add_extensions` with `capability`: the
+    /// capability the spawning call was admitted on.
+    pub fn with_spawn_capability(mut self, capability: Option<CallCapability>) -> Self {
+        self.spawn_capability = capability;
         self
     }
 }

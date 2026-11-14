@@ -33,6 +33,8 @@
 //! | 15 | archive, `kb_export` | `biorouter-mcp/tests/privacy_toggle_export.rs` | Inside `biorouter-mcp`; its only cheap fixture is a `KnowledgeServer` built by that crate's own `#[cfg(test)]` helpers. |
 //! | — | `/config/upsert`'s gated arm | `biorouter-server/tests/privacy_toggle_config.rs` | Inside `biorouter-server`, which this crate cannot depend on. |
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::path::PathBuf;
 use std::sync::Arc;
 

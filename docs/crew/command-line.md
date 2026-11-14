@@ -505,6 +505,7 @@ A channel invitation needs the person in its team first. `invites accept` exits 
 ## Post and read messages
 
 - `send methods --text 'Ready.'` posts under your name. `--input FILE` reads the text from a file, or `-` for standard input. `--attachment ID` and `--reference ID` add files and can repeat.
+- To dictate a message, run `biorouter dictate | biorouter crew send methods --input -` at your own terminal. The text is shown on the terminal first: Enter sends it on, `e` edits it, Escape discards it, and nothing is posted before you decide. Dictation uses only your public dictionary terms unless you add `--private-terms` to `dictate`, because the text goes to colleagues. The same works for a task: `biorouter crew ask methods "$(biorouter dictate)"`. See [dictate](../cli/command-reference.md#dictate-options).
 - A message is at most 64 KB. A longer one is refused before anything is sent, with ``Messages can be up to 64 KB. Save the text to a file and share it with biorouter crew files upload.`` (exit `2`, code `crew_message_too_long`).
 - `history methods --latest` shows the newest 100 messages. Without `--latest`, it starts from the oldest. `--limit` takes 1 to 200. With `--show-ids`, it ends with a `Cursor:` line to pass to `--before` or `--after`.
 - `search methods 'qPCR'` finds messages in one channel, in any case.

@@ -1,8 +1,9 @@
 import * as React from 'react';
 import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
+import { InfoTip } from '../../ui/info-tip';
 import { Note } from '../../ui/note';
-import { AlertTriangle, Check } from '../../icons/app-icons';
+import { AlertTriangle, Check, Info } from '../../icons/app-icons';
 import type { Team } from '../crewApi';
 import {
   displayNameIsUsername,
@@ -443,7 +444,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
                   </Button>
                 }
               >
-                <span>{copy.mismatch(username)}</span>
+                <MismatchWarning username={username} />
               </Note>
             ) : (
               // Someone adding a device is a member already: no "joined" is coming to make room
@@ -535,7 +536,7 @@ export function LetInDialog({ username, onClose }: LetInDialogProps) {
         <form id={formId} onSubmit={submit} className="crew-steady-item flex flex-col gap-3 pb-1">
           {mismatches > 0 ? (
             <Note tone="warning" role="status" icon={AlertTriangle}>
-              <span>{copy.mismatch(username)}</span>
+              <MismatchWarning username={username} />
             </Note>
           ) : null}
           {fingerprintCheck}
@@ -901,24 +902,41 @@ export function FingerprintCheck({
       <div className="flex min-w-0 flex-col gap-0.5">
         <p className="text-supporting text-text-default">
           <span className="crew-say" data-say={`${copy.fingerprintFor(who)} `} />
-          <span className="crew-say whitespace-nowrap font-mono" data-say={fingerprint} />
+          <span className="crew-say whitespace-nowrap font-mono text-code" data-say={fingerprint} />
+          {/* The space and the info icon's box, drawn by the same rule and holding nothing to
+              reach or read, so the line keeps the saved view's height. */}
+          <span className="crew-say" data-say=" " />
+          <span className="br-info-tip" aria-hidden="true">
+            <Info aria-hidden="true" focusable="false" size={14} />
+          </span>
         </p>
-        <p
-          className="crew-say text-supporting text-text-muted"
-          data-say={copy.fingerprintHelper(who)}
-        />
       </div>
     );
   }
+  // When to read it out is the line's info tip (owner, 2026-11-13). Its name leaves out the word
+  // "fingerprint": nothing here is a control for the fingerprint itself.
   return (
     <div className="flex min-w-0 flex-col gap-0.5">
       <p className="text-supporting text-text-default">
         {copy.fingerprintFor(who)}{' '}
-        <span className="whitespace-nowrap font-mono" translate="no">
+        <span className="whitespace-nowrap font-mono text-code" translate="no">
           {fingerprint}
-        </span>
+        </span>{' '}
+        <InfoTip label={copy.fingerprintHelpLabel} help={copy.fingerprintHelper(who)} />
       </p>
-      <p className="text-supporting text-text-muted">{copy.fingerprintHelper(who)}</p>
     </div>
+  );
+}
+
+/**
+ * A different-code attempt (QA T-13): what happened in view, and what to do about it behind the
+ * info icon beside it (owner, 2026-11-13).
+ */
+function MismatchWarning({ username }: { username: string }) {
+  return (
+    <span data-testid="crew-let-in-mismatch">
+      <span>{copy.mismatch(username)}</span>{' '}
+      <InfoTip label={copy.mismatchLabel} help={copy.mismatchHelp(username)} />
+    </span>
   );
 }

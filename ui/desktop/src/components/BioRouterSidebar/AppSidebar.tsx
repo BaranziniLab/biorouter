@@ -32,6 +32,10 @@ import { sidebarCopy } from './copy';
 import { isDefaultSidebarChatView } from './sidebarChatView';
 import { useSidebarChatView } from './useSidebarChatView';
 import { isBrowserSurface } from '../../utils/surface';
+import { hasUsableModel, useDictationStatus } from '../dictation/dictationStore';
+import { DICTIONARY_LABELS } from '../dictionary/copy';
+import { useDictionaryWaitingCount } from '../dictionary/useDictionary';
+import { StatusDot } from '../ui/status-dot';
 import { homeFolder } from '../../utils/folderPath';
 import './sidebar.css';
 
@@ -99,8 +103,12 @@ const primaryItems: NavigationItem[] = [
   },
 ];
 
+const DICTIONARY_PATH = '/dictionary';
+
 /**
- * The six destinations behind the `Components` disclosure.
+ * The seven destinations behind the `Components` disclosure. **Dictionary**
+ * (DD-67) sits after Knowledge and before Built apps; it is hidden on a `serve`
+ * browser until PR-21 and wherever managed policy turns the dictionary off.
  *
  * ⚠ `/applications` is labelled "Built apps", by its SOURCE rather than by a
  * bare noun. It used to read "Applications" and sit one word away from a
@@ -143,6 +151,12 @@ const componentItems: NavigationItem[] = [
   },
   {
     type: 'item' as const,
+    path: DICTIONARY_PATH,
+    label: 'Dictionary',
+    icon: ENTITY_ICONS.dictionary,
+  },
+  {
+    type: 'item' as const,
     path: '/applications',
     label: 'Built apps',
     icon: ENTITY_ICONS.application,
@@ -152,8 +166,24 @@ const componentItems: NavigationItem[] = [
 const COMPONENTS_EXPANDED_STORAGE_KEY = 'biorouter:sidebar-components-expanded';
 
 /**
+ * Set once, the first time this profile sees a verified speech model, when the
+ * disclosure opens itself so **Dictionary** can be found (DD-67). A later
+ * collapse sticks, because the reveal never runs again.
+ */
+const DICTIONARY_REVEALED_STORAGE_KEY = 'biorouter:dictionary-revealed';
+
+function readDictionaryRevealed(): boolean {
+  try {
+    return window.localStorage.getItem(DICTIONARY_REVEALED_STORAGE_KEY) === 'true';
+  } catch {
+    // Blocked storage: never reveal, rather than reveal on every launch.
+    return true;
+  }
+}
+
+/**
  * Collapsed by DEFAULT — that is where the 192px comes from (nine 32px nav rows
- * become three). Remembered, so a user who wants the six open never reopens
+ * become three). Remembered, so a user who wants the seven open never reopens
  * them. Storage failures (private mode, a sandboxed frame) fall back to
  * collapsed rather than throwing, matching what the Chats list already does one file
  * over.
@@ -194,6 +224,23 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   const homeDir = homeFolder();
   const isMac = window.electron?.platform === 'darwin';
   const showShortcutHint = !isBrowserSurface();
+
+  // Dictionary (DD-67). The status store is only read here, never loaded: it loads on the
+  // first sign of dictation (a composer's focus, a microphone), so the sidebar sends nothing
+  // when it mounts. Until it has loaded the row shows; managed `dictionary: false` hides it.
+  const { status: dictationStatus } = useDictationStatus();
+  const dictionaryAllowed = dictationStatus?.policy.dictionary.allowed !== false;
+  const showDictionary = dictionaryAllowed;
+  // The count reads `GET /dictionary/entries?status=suggested` only once the store says the
+  // dictionary is allowed, on focus and every 60 s while the window is visible.
+  const dictionaryWaiting = useDictionaryWaitingCount(
+    showDictionary && dictationStatus?.policy.dictionary.allowed === true
+  );
+  const modelReady = !!dictationStatus && hasUsableModel(dictationStatus);
+  const visibleComponentItems = useMemo(
+    () => componentItems.filter((entry) => entry.path !== DICTIONARY_PATH || showDictionary),
+    [showDictionary]
+  );
 
   useEffect(() => {
     const currentItem = [...primaryItems, ...componentItems, settingsItem].find(
@@ -310,7 +357,12 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
     const IconComponent = entry.icon;
     const isActive = isDestinationActive(entry);
     const isAction = entry.path === '/pair';
-    const unread = entry.path === '/crew' ? crewUnread : 0;
+    const unread =
+      entry.path === '/crew' ? crewUnread : entry.path === DICTIONARY_PATH ? dictionaryWaiting : 0;
+    const unreadLabel =
+      entry.path === DICTIONARY_PATH
+        ? `${entry.label}, ${DICTIONARY_LABELS.waiting(unread)}`
+        : `${entry.label}, ${unread} unread`;
 
     return (
       <SidebarMenuItem key={entry.path}>
@@ -320,7 +372,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
             handleNavigation(entry.path);
             if (isAction) blurAfterPointerActivation(event);
           }}
-          aria-label={unread > 0 ? `${entry.label}, ${unread} unread` : undefined}
+          aria-label={unread > 0 ? unreadLabel : undefined}
           aria-current={isActive ? 'page' : undefined}
           onFocus={entry.path === '/' ? preloadHome : undefined}
           onPointerEnter={entry.path === '/' ? preloadHome : undefined}
@@ -375,8 +427,25 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   // on one of these destinations the group opens regardless of the stored
   // preference — and does NOT overwrite it, so navigating away collapses back to
   // whatever they chose.
-  const isOnComponentRoute = componentItems.some((entry) => entry.path === currentPath);
+  const isOnComponentRoute = visibleComponentItems.some((entry) => entry.path === currentPath);
   const showComponentChildren = isComponentsExpanded || isOnComponentRoute;
+
+  // The reveal (DD-67): the first time this profile sees a verified speech model, the
+  // disclosure opens once and remembers it, so the person finds Dictionary right after the
+  // install that makes it useful. The marker is written in the same step, so a later collapse
+  // sticks.
+  useEffect(() => {
+    if (!modelReady || !showDictionary || readDictionaryRevealed()) return;
+    try {
+      window.localStorage.setItem(DICTIONARY_REVEALED_STORAGE_KEY, 'true');
+      window.localStorage.setItem(COMPONENTS_EXPANDED_STORAGE_KEY, 'true');
+    } catch {
+      // Best effort: the disclosure still opens for this window.
+    }
+    setIsComponentsExpanded(true);
+  }, [modelReady, showDictionary]);
+  // Suggestions waiting behind a collapsed group show as a dot on the disclosure.
+  const componentsDot = !showComponentChildren && dictionaryWaiting > 0;
 
   return (
     <>
@@ -426,11 +495,17 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
                   data-testid="sidebar-components-disclosure"
                   aria-expanded={showComponentChildren}
                   aria-controls="sidebar-components-group"
+                  aria-label={
+                    componentsDot
+                      ? `${sidebarCopy.components}, ${DICTIONARY_LABELS.waiting(dictionaryWaiting)}`
+                      : undefined
+                  }
                   onClick={toggleComponents}
                   className="br-nav-row no-drag"
                 >
                   <ChevronRight aria-hidden="true" className="br-nav-chevron" />
                   <span className="br-nav-row-label">{sidebarCopy.components}</span>
+                  {componentsDot ? <StatusDot tone="warning" className="mr-1 shrink-0" /> : null}
                 </SidebarMenuButton>
               </SidebarMenuItem>
 
@@ -444,7 +519,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
                     data-testid="sidebar-components-group"
                     className="br-nav-list"
                   >
-                    {componentItems.map((entry) => renderMenuItem(entry))}
+                    {visibleComponentItems.map((entry) => renderMenuItem(entry))}
                   </ul>
                 </SidebarMenuItem>
               )}

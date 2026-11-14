@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
 import ToolCallWithResponse from './ToolCallWithResponse';
+import { FAILED_GLYPH } from './TranscriptRow';
 import type { ToolRequestMessageContent, ToolResponseMessageContent } from '../types/message';
 
 /**
@@ -55,9 +56,16 @@ describe('a legacy developer capture row draws the Copilot glyph', () => {
     });
   }
 
-  it('a failed capture draws it too', () => {
+  // A failed line draws the failure glyph in place of its tool's own (design.md
+  // 9.14, red is rare: the shape and the words say "failed", not a red ink), and
+  // still names its tool family on the slot, so a probe reads both facts.
+  it('a failed capture keeps its family and draws the failure glyph', () => {
     const { container } = row('developer__screen_capture', {}, true);
-    expect(leadingGlyph(container).classList.contains('br-icon-copilot')).toBe(true);
+    const slot = container.querySelector('.br-transcript-row-glyph');
+    expect(slot?.getAttribute('data-tool-glyph')).toBe('copilot');
+    const failed = render(<FAILED_GLYPH />).container.querySelector('svg');
+    expect(leadingGlyph(container).innerHTML).toBe(failed?.innerHTML);
+    expect(leadingGlyph(container).classList.contains('br-icon-copilot')).toBe(false);
   });
 
   it('sits beside a computer control row with the same figure', () => {

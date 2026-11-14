@@ -92,7 +92,15 @@ describe('an unknown host key in a chat', () => {
     expect(screen.getByText(crewHostKeyStepCopy.read)).toBeInTheDocument();
     expect(crewHostKeyStepCopy.read).toBe('Fingerprint this computer read from the server');
     expect(card.textContent).not.toMatch(/the server offered/i);
-    expect(screen.getByText(crewHostKeyStepCopy.goesOn)).toBeInTheDocument();
+    // One line of explanation sits at rest besides the fingerprint and the warning by Trust this
+    // key; what happens once the key is in is that line's info tip, and only there (owner,
+    // 2026-11-13; design.md 9.16).
+    expect(
+      within(card).getByRole('button', { name: `About ${crewHostKeyStepCopy.goesOnLabel}` })
+    ).toHaveAccessibleDescription(
+      'Once the key is in your known hosts file, this chat goes on by itself.'
+    );
+    expect(screen.getByText(crewHostKeyStepCopy.goesOn)).toHaveClass('sr-only');
     expect(screen.getByText(trustHostKeyCopy.warning)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: trustHostKeyCopy.trust })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: hostCopy.openTerminal })).toBeInTheDocument();
@@ -118,7 +126,9 @@ describe('an unknown host key in a chat', () => {
     // The daemon takes the card down once it sees the key, and the chat retries the step: the
     // card never answers itself.
     expect(mocks.dismissCrewStep).not.toHaveBeenCalled();
-    expect(screen.getByText(crewHostKeyStepCopy.goesOn)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: `About ${crewHostKeyStepCopy.goesOnLabel}` })
+    ).toHaveAccessibleDescription(crewHostKeyStepCopy.goesOn);
   });
 
   it('offers no Trust this key where the card shows no fingerprint', () => {
@@ -181,6 +191,13 @@ describe('an unknown host key in a chat', () => {
     await waitFor(() =>
       expect(screen.getByText(crewHostKeyStepCopy.dismissed)).toBeInTheDocument()
     );
+    // The line says the chat stopped; how to go on is its info tip, word for word.
+    expect(crewHostKeyStepCopy.dismissed).toBe('This chat stopped waiting for the key.');
+    expect(
+      screen.getByRole('button', { name: `About ${crewHostKeyStepCopy.dismissedHelpLabel}` })
+    ).toHaveAccessibleDescription('Ask it to try again when the key is added.');
+    // The card no longer says the chat goes on by itself: it stopped waiting.
+    expect(screen.queryByText(crewHostKeyStepCopy.goesOn)).toBeNull();
     // The headers are the person's proof (CrewStepFrame.test.tsx pins them); the body
     // names the card and its chat, and nothing else.
     expect(mocks.dismissCrewStep).toHaveBeenCalledWith({
@@ -204,8 +221,14 @@ describe('a changed host key in a chat', () => {
     const card = screen.getByTestId('crew-step-card');
     expect(screen.getByText(trustCopy.changedTitle('hpc.example.edu'))).toBeInTheDocument();
     expect(screen.getByText(trustCopy.changedBody)).toBeInTheDocument();
-    const buttons = within(card).getAllByRole('button');
+    // Its one action; the info icon beside the refusal only explains it (design.md 9.16).
+    const buttons = within(card)
+      .getAllByRole('button')
+      .filter((button) => !button.getAttribute('aria-label')?.startsWith('About '));
     expect(buttons.map((button) => button.textContent)).toEqual([trustCopy.copyForIt]);
+    expect(
+      within(card).getByRole('button', { name: `About ${trustCopy.changedWhyLabel}` })
+    ).toHaveAccessibleDescription(trustCopy.changedWhy);
     // A changed key is never trusted: no Trust this key, and no warning that would sit by one.
     expect(screen.queryByRole('button', { name: trustHostKeyCopy.trust })).toBeNull();
     expect(screen.queryByText(trustHostKeyCopy.warning)).toBeNull();
@@ -230,9 +253,12 @@ describe('the host-key card copy', () => {
       crewHostKeyStepCopy.changedTitle('x'),
       ...crewHostKeyStepCopy.steps('x'),
       crewHostKeyStepCopy.read,
+      crewHostKeyStepCopy.goesOnLabel,
       crewHostKeyStepCopy.goesOn,
       crewHostKeyStepCopy.notNow,
       crewHostKeyStepCopy.dismissed,
+      crewHostKeyStepCopy.dismissedHelpLabel,
+      crewHostKeyStepCopy.dismissedHelp,
       crewHostKeyStepCopy.ended,
       trustCopy.changedBody,
     ]) {

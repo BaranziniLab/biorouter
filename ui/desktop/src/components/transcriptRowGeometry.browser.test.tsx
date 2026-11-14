@@ -306,6 +306,9 @@ describe('TranscriptRow in a real layout engine', () => {
         heads: [...document.querySelectorAll('.br-transcript-row-head')].map(
           (node) => getComputedStyle(node).color
         ),
+        glyphs: [...document.querySelectorAll('.br-transcript-row-glyph')].map(
+          (node) => node.innerHTML
+        ),
       }));
     } finally {
       await tab.close();
@@ -347,8 +350,12 @@ describe('TranscriptRow in a real layout engine', () => {
         </TranscriptRow>
       </TranscriptRow>
     );
-    expect(danger.heads[0]).toBe('rgb(165, 26, 20)');
-    expect(danger.heads[1]).toBe('rgb(99, 92, 84)');
+    // A failed row is not red (design.md 9.14, red is rare): it keeps the row's
+    // muted ink, and only its OWN glyph becomes the failure glyph. Neither the
+    // ink nor the glyph reaches the row nested in its body.
+    expect(danger.heads).toEqual(['rgb(99, 92, 84)', 'rgb(99, 92, 84)']);
+    expect(danger.glyphs[0]).not.toBe(danger.glyphs[1]);
+    expect(danger.glyphs[1]).toBe(running.glyphs[1]);
   });
 
   it("sets a tool's markdown output in the code role inside the well, and prose elsewhere", async () => {

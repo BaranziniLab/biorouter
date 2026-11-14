@@ -36,7 +36,9 @@ export const BRXT_INSTALL_COPY = {
 
   // What the bundle says it is
   detectedFromBundle: 'Detected from bundle',
-  skillsIncluded: 'Skills included',
+  /** The trigger that unfolds the rest of a description longer than its first sentence. */
+  readMore: 'Read more',
+  skillsIncluded: (count: number) => `Skills included (${count})`,
   tools: (count: number) => `${count} tools`,
   skills: (count: number) => `${count} skill${count === 1 ? '' : 's'}`,
   requiredVars: (required: number, optional: number) =>
@@ -61,8 +63,12 @@ export const BRXT_INSTALL_COPY = {
   installExtension: 'Install extension',
 
   // Failures and results
-  noLocalPath:
-    'Biorouter is running on another machine, so it cannot read a file you drop here. Copy the file onto that machine and install it with `biorouter extension install <path>`.',
+  /** A refusal, so this line stays visible; how to install it there folds under it. */
+  noLocalPath: 'Biorouter is running on another machine, so it cannot read a file you drop here.',
+  noLocalPathHow: 'How to install it on that machine',
+  noLocalPathSteps: 'Copy the file onto that machine, then run this command there:',
+  noLocalPathCommand: 'biorouter extension install <path>',
+  noLocalPathCommandLabel: 'install command',
   readFailed: 'Could not read the extension bundle',
   installFailed: 'Could not install the extension bundle',
   registerFailed:

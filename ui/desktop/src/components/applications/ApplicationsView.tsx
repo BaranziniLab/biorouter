@@ -9,6 +9,7 @@ import { ConfirmationModal } from '../ui/ConfirmationModal';
 import { EmptyState } from '../ui/empty-state';
 import { FilterInput } from '../ui/filter-input';
 import { InfoTip } from '../ui/info-tip';
+import { TruncatedLine } from '../ui/truncated-line';
 import { Note } from '../ui/note';
 import { ScrollArea } from '../ui/scroll-area';
 import { Skeleton } from '../ui/skeleton';
@@ -578,7 +579,8 @@ export function ApplicationItem({
               className="flex min-w-0 overflow-hidden whitespace-nowrap text-supporting text-text-muted"
               data-testid="app-row-meta"
             >
-              {meta ? <span className="min-w-0 truncate">{meta}</span> : null}
+              {/* The clipped end of a long description is a hover away (`TruncatedLine`). */}
+              {meta ? <TruncatedLine text={meta} /> : null}
               {/* Visible at rest: the menu is out of sight until the row is hovered, so an
                   unavailable item alone would not tell anyone the chat is gone. `whitespace-pre`
                   keeps the separator's spaces, which a flex item's edges would otherwise drop. */}
@@ -656,7 +658,10 @@ function BrokenApplicationItem({
           </div>
           {/* `break-all`: the reason is usually a path or a parser message with no break
               opportunity, which would otherwise push past the row. Mono: it is the parser's
-              machine string, not a sentence written for the row. */}
+              machine string, read character by character, not a sentence written for the row
+              (design.md D-33). It stays visible, since it is why the app is broken. Supporting,
+              not `text-code`: both are 12px, and the code role's 20px leading would make this row
+              4px taller than its neighbours (builtAppsExport.browser.test.tsx). */}
           {reason && (
             <p
               className="min-w-0 break-all font-mono text-supporting text-text-muted"

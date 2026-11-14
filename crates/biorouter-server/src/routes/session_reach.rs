@@ -272,6 +272,7 @@
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use biorouter::privacy::{ProviderTier, SessionClassification};
+use biorouter::security::dictionary_store::{self, store::EntryTier};
 use biorouter::session::session_manager::SessionManager;
 use biorouter_mcp::knowledge::service::KnowledgeService;
 // Issue #56 DR-16. `src/routes/` is compiled into the `biorouterd` binary as
@@ -1049,6 +1050,26 @@ impl HttpCaller {
         self.admits(target)
     }
 
+    /// Whether private dictionary entries may shape this caller's dictation (DD-29,
+    /// DD-30): the user-action proof, or a private provider stated in
+    /// [`CALLER_PROVIDER_HEADER`].
+    ///
+    /// ⚠ **Never the served-operator standing**, for the reason [`session_reach`]
+    /// never reads it: SD-10 gives a `biorouter serve` browser its operator's reach
+    /// on listings and knowledge bases and nothing else, and biasing a transcript
+    /// is neither (decided by the owner on 2026-11-05). A `serve` page on a private
+    /// host keeps private standing anyway, because `userActionHeaders()` states the
+    /// host's provider in [`CALLER_PROVIDER_HEADER`] on a browser surface (SD-12).
+    ///
+    /// Standing alone admits nothing: `bias_set` also needs a private capable
+    /// target, which the stream route decides from the target chat, never from the
+    /// caller. With tiers switched off every entry is eligible whatever this says.
+    pub fn dictation_standing(&self) -> biorouter::dictation::Standing {
+        biorouter::dictation::Standing::from_checked(
+            self.proof == UserActionProof::Proven || self.stated.is_private(),
+        )
+    }
+
     /// The one spelling of this caller's listing decision, which both
     /// listing predicates above are.
     fn admits(&self, target: TargetTier) -> bool {
@@ -1113,6 +1134,173 @@ impl HttpCaller {
             self.proof,
         )
         .map_err(SessionOutOfReach::for_knowledge_base)
+    }
+
+    /// May this caller be shown a dictionary row of this tier (PR-16, DD-37)?
+    ///
+    /// Exactly the listing decision a chat of that classification gets
+    /// ([`Self::lists_session`]): public rows to every holder of the secret, private rows
+    /// to the proof, to a stated private capability, and to a `biorouter serve` page on a
+    /// private host (SD-10), and every row with tiers switched off. The rule is
+    /// `reach_knowledge_base`'s, not `routes::memory`'s, whose inventory lists both
+    /// stores to any secret holder. **Omission, not redaction, and never a count**: a
+    /// row is a term, which is content, and a count of rows withheld would say how many
+    /// private terms there are.
+    pub fn lists_dictionary_entry(&self, tier: EntryTier) -> bool {
+        self.admits(match tier {
+            EntryTier::Public => TargetTier::Public,
+            EntryTier::Private => TargetTier::Private,
+        })
+    }
+
+    /// Whether this caller may make a dictionary write (PR-16, DD-37, DD-38), judged from
+    /// the request alone, before any row is read, so the answer cannot tell which terms
+    /// exist.
+    ///
+    /// * **A daemon that holds a key** (the desktop's): every write, and the export,
+    ///   needs the user action proof, and a caller without it is refused with
+    ///   MSG-DICTIONARY-AGENT. The agent's terms go through the capability's tool.
+    /// * **A daemon that holds none** (`biorouter serve`, SD-7): a write is admitted for
+    ///   a row the caller can list (`row`, when the write names one), as a `serve`
+    ///   browser may make (O-4). A tier change is refused with MSG-DICTIONARY-HOST-TIER,
+    ///   a raise of the settings with MSG-DICTIONARY-HOST-SETTINGS, and a private add or
+    ///   import from a caller without private standing with MSG-DICTIONARY-HOST-PRIVATE,
+    ///   one constant sentence (oracle rule 1). Private standing is
+    ///   [`Self::dictation_standing`]'s: the proof or a stated private capability, never
+    ///   the served operator's tier, which lists rows and never stamps a write.
+    ///
+    /// The managed policy is the route's to add: it refuses the same way on both.
+    pub fn authorizes_dictionary_write(
+        &self,
+        write: &DictionaryWrite,
+        row: Option<EntryTier>,
+    ) -> Result<(), DictionaryRefusal> {
+        match self.proof {
+            UserActionProof::Proven => Ok(()),
+            UserActionProof::Unproven => Err(DictionaryRefusal::agent()),
+            UserActionProof::NoKeyInstalled => match write {
+                DictionaryWrite::TierChange { to } => Err(DictionaryRefusal::host_tier(*to)),
+                DictionaryWrite::Settings {
+                    raising: Some(option),
+                } => Err(DictionaryRefusal::host_settings(option)),
+                DictionaryWrite::Settings { raising: None } | DictionaryWrite::Export => Ok(()),
+                DictionaryWrite::Entries { private: true }
+                    if !self.dictation_standing().is_private() =>
+                {
+                    Err(DictionaryRefusal::host_private())
+                }
+                DictionaryWrite::Entries { .. } => match row {
+                    Some(tier) if !self.lists_dictionary_entry(tier) => {
+                        Err(super::dictionary::not_found())
+                    }
+                    _ => Ok(()),
+                },
+            },
+        }
+    }
+
+    /// The tier a write admitted by [`Self::authorizes_dictionary_write`] is stamped with
+    /// ("Who stamps the tier"): never a tier a client sends that the daemon trusts.
+    ///
+    /// * **A daemon that holds a key**, for the person, whose proof admitted the write:
+    ///   `chosen` for an add or an import (**Only in private chats**), and an edit keeps
+    ///   the row's own tier (`existing`).
+    /// * **A daemon that holds none**: the caller's standing, for an add and an edit
+    ///   alike. An edit's stamp is `max(existing, standing)`, so a caller with private
+    ///   standing who edits a public row writes into its private twin and the public row
+    ///   stays as it was (DD-35). A caller without private standing never creates a
+    ///   private row or moves a public row into the private tier; it may change private
+    ///   rows it can list, which only the served operator's tier on a private host allows
+    ///   (SD-10, the residual P-7 records). A chosen private tier above the standing never
+    ///   reaches here, because the write was refused.
+    pub fn dictionary_write_stamp(
+        &self,
+        chosen: EntryTier,
+        existing: Option<EntryTier>,
+    ) -> EntryTier {
+        match self.proof {
+            UserActionProof::NoKeyInstalled => {
+                let standing = if self.dictation_standing().is_private() {
+                    EntryTier::Private
+                } else {
+                    EntryTier::Public
+                };
+                existing.map_or(standing, |tier| tier.max(standing))
+            }
+            UserActionProof::Proven | UserActionProof::Unproven => existing.unwrap_or(chosen),
+        }
+    }
+}
+
+/// A dictionary write, as [`HttpCaller::authorizes_dictionary_write`] judges it. Each
+/// variant carries only what the request itself states.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DictionaryWrite {
+    /// An add, an edit, a delete, a keep, an accept, a dismiss, an import or an
+    /// observation. `private` is a requested private tier: an add's or an import's
+    /// `private: true`, or an imported row marked `"tier": "private"`.
+    Entries { private: bool },
+    /// `POST /dictionary/entries/{id}/tier`.
+    TierChange { to: EntryTier },
+    /// `POST /dictionary/settings`. `raising` is the option a raise asks for, as the
+    /// terminal spells it (`--agent-writes add`, `--learn-from-chats on`), or `None` when
+    /// the request only lowers.
+    Settings { raising: Option<String> },
+    /// `GET /dictionary/export`: a read, but one whose file leaves Biorouter, so a keyed
+    /// daemon asks for the person.
+    Export,
+}
+
+/// A refused dictionary request: its status, its code and its one sentence, which names
+/// no term (oracle rule 7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DictionaryRefusal {
+    pub status: StatusCode,
+    pub code: &'static str,
+    pub message: String,
+}
+
+impl DictionaryRefusal {
+    fn agent() -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: "agent",
+            message: super::dictionary::MSG_DICTIONARY_AGENT.to_string(),
+        }
+    }
+
+    fn host_tier(to: EntryTier) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: "host_tier",
+            message: super::dictionary::msg_dictionary_host_tier(to),
+        }
+    }
+
+    fn host_settings(option: &str) -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: "host_settings",
+            message: super::dictionary::msg_dictionary_host_settings(option),
+        }
+    }
+
+    fn host_private() -> Self {
+        Self {
+            status: StatusCode::FORBIDDEN,
+            code: "host_private",
+            message: super::dictionary::MSG_DICTIONARY_HOST_PRIVATE.to_string(),
+        }
+    }
+}
+
+impl IntoResponse for DictionaryRefusal {
+    fn into_response(self) -> Response {
+        (
+            self.status,
+            axum::Json(serde_json::json!({ "code": self.code, "message": self.message })),
+        )
+            .into_response()
     }
 }
 
@@ -1272,6 +1460,99 @@ pub async fn gate_knowledge_base(
     let caller = http_caller(request.headers()).await;
     if let Err(refusal) = caller.reach_knowledge_base(svc.root(), &kb_id) {
         return refusal.into_response();
+    }
+    next.run(request).await
+}
+
+/// Every `/dictionary/entries/{id}…` route, behind ONE layer (PR-16, DD-37, oracle
+/// rule 2): parse the id, read the store's view, and answer 404 with MSG-NOT-FOUND for an
+/// id that names no row, names an `auto` row seen once (never listed by any route), or
+/// names a row this caller may not list, before the handler runs. The three are one
+/// answer, byte for byte, so a probe cannot tell a private term's id from a made up one.
+///
+/// ⚠ **The tier route is decided before the id is read.** A tier change needs the proof
+/// on a daemon that holds a key and is refused on one that holds none
+/// (MSG-DICTIONARY-HOST-TIER), and both answers come from the request alone, here, ahead
+/// of the lookup, so they too are the same for every id. The body is read for its `tier`
+/// only, to name the verb the terminal command takes, and handed on unchanged.
+///
+/// A route layer on the router of exactly the routes that name an entry, applied at its
+/// single call site in `routes::dictionary`, the shape `gate_knowledge_base` takes and for
+/// its reason: `route_layer` wraps the routes present when it is called.
+pub async fn gate_dictionary_entry(
+    params: axum::extract::RawPathParams,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let id = params
+        .iter()
+        .find(|(key, _)| *key == "id")
+        .map(|(_, value)| value.to_owned());
+    let caller = http_caller(request.headers()).await;
+    let request = if request.uri().path().ends_with("/tier") {
+        let (parts, body) = request.into_parts();
+        let Ok(bytes) = axum::body::to_bytes(body, super::dictionary::MAX_JSON_BYTES).await else {
+            // The shape of every other dictionary refusal, `too_large`'s.
+            return DictionaryRefusal {
+                status: StatusCode::PAYLOAD_TOO_LARGE,
+                code: "too_large",
+                message: String::new(),
+            }
+            .into_response();
+        };
+        let to = serde_json::from_slice::<serde_json::Value>(&bytes)
+            .ok()
+            .and_then(
+                |body| match body.get("tier").and_then(serde_json::Value::as_str) {
+                    Some("public") => Some(EntryTier::Public),
+                    Some("private") => Some(EntryTier::Private),
+                    _ => None,
+                },
+            );
+        if let Err(refusal) = caller.authorizes_dictionary_write(
+            &DictionaryWrite::TierChange {
+                to: to.unwrap_or(EntryTier::Public),
+            },
+            None,
+        ) {
+            // A body with no readable tier names no verb: the sentence keeps `<verb>`.
+            let refusal = match (to, refusal.code) {
+                (None, "host_tier") => DictionaryRefusal {
+                    message: super::dictionary::MSG_DICTIONARY_HOST_TIER.to_string(),
+                    ..refusal
+                },
+                _ => refusal,
+            };
+            return refusal.into_response();
+        }
+        axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes))
+    } else {
+        request
+    };
+    // Unreachable through `routes::dictionary`, where every route this layer wraps
+    // captures `{id}`; refused as a missing row so a route moved here without the
+    // capture fails closed.
+    let Some(id) = id
+        .as_deref()
+        .and_then(dictionary_store::store::EntryId::parse)
+    else {
+        return super::dictionary::not_found().into_response();
+    };
+    // The routes' one cached handle: an unchanged store costs two `stat` calls here, not a
+    // parse, and the gate and the handler read the same copy.
+    let view = match tokio::task::spawn_blocking(|| super::dictionary::shared_store().view()).await
+    {
+        Ok(Ok(view)) => view,
+        Ok(Err(dictionary_store::store::StoreError::Unreadable { path })) => {
+            return super::dictionary::unreadable(&path).into_response();
+        }
+        _ => return super::dictionary::write_failed().into_response(),
+    };
+    let listed = view.find(&id).is_some_and(|entry| {
+        caller.lists_dictionary_entry(entry.tier) && super::dictionary::ever_listed(entry)
+    });
+    if !listed {
+        return super::dictionary::not_found().into_response();
     }
     next.run(request).await
 }
@@ -1793,9 +2074,57 @@ mod tests {
         let knowledge_rs = include_str!("knowledge.rs");
         let active_work_rs = include_str!("active_work.rs");
         let schedule_rs = include_str!("schedule.rs");
+        let dictation_rs = include_str!("dictation.rs");
+        let dictionary_rs = include_str!("dictionary.rs");
         let subagents_rs = include_str!("session_subagents.rs");
         let usage_limit_rs = include_str!("usage_limit.rs");
         for (src, func, gate_call, first_touch, what) in [
+            // ── PR-16: a dictionary stamp read from a chat (O-35, O-36) ──
+            //
+            // An add's origin chat and an observation's chat are read only to stamp a
+            // row: the tier the observation lands in and the institutions a private row
+            // records. A read before the gate would let an add's or an observation's
+            // effects say whether a chat exists and what it touched.
+            (
+                dictionary_rs,
+                "async fn read_chat(",
+                "session_reach(",
+                "target_tier(",
+                "the chat's stored tier, which says whether it exists and is private",
+            ),
+            (
+                dictionary_rs,
+                "async fn read_chat(",
+                "session_reach(",
+                "live_model(",
+                "the live agent's bound model, which says whether the chat is private",
+            ),
+            (
+                dictionary_rs,
+                "async fn read_chat(",
+                "session_reach(",
+                "session_affiliations(",
+                "the institutions whose connectors the chat touched",
+            ),
+            // ── PR-15: a dictation stream into a chat (DD-29, DD-30) ──
+            //
+            // The stream reads the chat only to decide its bias scope, and a refusal
+            // degrades to public terms with a byte identical answer; a tier or agent
+            // read before the gate would make that answer an existence oracle.
+            (
+                dictation_rs,
+                "async fn stream_target(",
+                "session_reach(",
+                "target_tier(",
+                "the chat's stored tier, which says whether it exists and is private",
+            ),
+            (
+                dictation_rs,
+                "async fn stream_target(",
+                "session_reach(",
+                "peek_agent(",
+                "the live agent's bound model, which says whether the chat is private",
+            ),
             (
                 reply_rs,
                 "pub async fn reply",
@@ -2187,6 +2516,32 @@ mod tests {
             stated,
             served_operator,
             proof,
+        }
+    }
+
+    /// DD-30: dictation standing is the proof or a stated private provider, and
+    /// never a `serve` daemon's operator tier, which SD-10 keeps to listings and
+    /// knowledge bases.
+    #[test]
+    fn dictation_standing_reads_the_proof_and_the_stated_provider_only() {
+        use ProviderTier::{Private, Public};
+        use UserActionProof::{NoKeyInstalled, Proven, Unproven};
+        for (stated, served, proof, want) in [
+            (Public, Public, Proven, true),
+            (Private, Public, Unproven, true),
+            (Private, Public, NoKeyInstalled, true),
+            (Public, Private, Unproven, false),
+            (Public, Private, NoKeyInstalled, false),
+            (Public, Public, Unproven, false),
+            (Public, Public, NoKeyInstalled, false),
+        ] {
+            assert_eq!(
+                caller(stated, served, proof)
+                    .dictation_standing()
+                    .is_private(),
+                want,
+                "{stated:?} {served:?} {proof:?}"
+            );
         }
     }
 

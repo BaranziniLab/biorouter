@@ -1729,18 +1729,18 @@ test("account-sentences: the first pass's words, written from the design, are re
   assertCaught(
     {
       [ACCOUNT_COPY]: swap(
-        'Choose Add this computer again to make a new one.',
-        'Choose Add this computer again to get a new key.'
+        'This computer no longer has its key for ${workspace}.',
+        'This computer has lost its key for ${workspace}.'
       ),
     },
     'account-sentences',
-    /joining-a-workspace\.md quotes "This computer no longer has its key for \{workspace\}\. Choose Add this computer again to make a new one\.", which is not how the Add this computer again notes/
+    /joining-a-workspace\.md quotes "This computer no longer has its key for \{workspace\}\.", which is not how the Add this computer again notes/
   );
   // A page a reader is sent to drops a sentence it must quote.
   assertCaught(
     {
       [JOINING_PAGE]: swap(
-        ' Crew says "Two people host a workspace named chen-lab here. Check the host before you open one.", and names each host in the list.',
+        ' Crew says "Two people host a workspace named chen-lab here.", with "Check the host before you open one." behind its info icon, and names each host in the list.',
         ' Crew names each host in the list.'
       ),
     },

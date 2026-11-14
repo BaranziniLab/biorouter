@@ -7,6 +7,8 @@
 //! `needs_approval`. An over-broad remembered approval is worse than no feature,
 //! so the MUST-NOT cases outnumber the MUST cases here on purpose.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};

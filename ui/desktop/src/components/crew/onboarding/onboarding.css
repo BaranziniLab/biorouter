@@ -59,7 +59,9 @@
 }
 
 .crew-onboard-card[data-tone='danger'] {
-  border-color: var(--border-danger);
+  /* A stronger neutral edge, not red (design.md 9.14, red is rare): the icon,
+     the title and the words say the setup failed. */
+  border-color: var(--border-strong);
 }
 
 .crew-onboard-card-head {
@@ -536,5 +538,7 @@
 }
 
 .crew-setup-step[data-state='failed'] .crew-setup-step-mark {
-  border-color: var(--border-danger);
+  /* The step's ring in the muted ink, not red (design.md 9.14); the step's
+     words say it failed. */
+  border-color: var(--text-muted);
 }

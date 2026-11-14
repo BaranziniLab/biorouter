@@ -1245,6 +1245,28 @@ async fn start_new_chat(
         }
     }
 
+    // DD-56 at the new-chat door (owner decision 2026-11-13, found by review): a chat that
+    // starts with the Dictionary attached lets it learn from that chat, so a request that
+    // names it, in the overrides or in a workflow's own extension list, is asked the same
+    // person's-choice rule as `POST /agent/add_extension`, before any chat exists. The
+    // capabilities the person enabled machine-wide are theirs and are not asked again.
+    let names_dictionary = extension_overrides
+        .iter()
+        .flatten()
+        .chain(
+            original_workflow
+                .as_ref()
+                .and_then(|workflow| workflow.extensions.as_deref())
+                .into_iter()
+                .flatten(),
+        )
+        .any(|config| biorouter::dictation::activation::is_dictionary_name(&config.name()));
+    if names_dictionary {
+        crate::routes::dictionary::admit_dictionary_attach(&headers)
+            .await
+            .map_err(|(status, message)| ErrorResponse { status, message })?;
+    }
+
     // Always create new sessions with the same human-friendly placeholder.
     // The numbered variant ("New session 154") leaked process-internal counter
     // state into the UI and made it hard for the frontend to recognize a name
@@ -2415,7 +2437,8 @@ fn add_extension_tier_refusal(
         (status = 401, description = "Unauthorized - invalid secret key"),
         (status = 403, description = "Refused by a privacy or subagent-control boundary: the named \
                                       chat is private/absent, or is a subagent, and the request \
-                                      carried no proof it came from the user"),
+                                      carried no proof it came from the user; or the extension is \
+                                      the Dictionary and the person did not ask (DD-56)"),
         (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): a \
                                       private extension cannot be attached to a chat running on \
                                       a public model"),
@@ -2449,6 +2472,17 @@ async fn agent_add_extension(
             status: StatusCode::CONFLICT,
             message: "A subagent's delegated extension grants are fixed for its lifetime. Steer the running child with a prompt, or start a new child with different tools.".into(),
         });
+    }
+    // DD-56 (owner decision 2026-11-13): the Dictionary learns from the chat it is attached
+    // to, so attaching it is the person's choice, asked exactly as turning on suggestions
+    // from chats is (`routes::dictionary::admit_dictionary_attach`). The desktop's per chat
+    // switch carries the proof; a caller holding only the daemon secret, which an agent's
+    // shell can read, is refused on a keyed daemon, and a keyless daemon sends the person to
+    // the server. The workspace doors refuse the name outright: there the caller is an agent.
+    if biorouter::dictation::activation::is_dictionary_name(&request.config.name()) {
+        crate::routes::dictionary::admit_dictionary_attach(&headers)
+            .await
+            .map_err(|(status, message)| ErrorResponse { status, message })?;
     }
     let agent = state.get_agent(request.session_id.clone()).await?;
 
@@ -3713,7 +3747,7 @@ fn dispatch_failure_response(error: &anyhow::Error) -> Result<CallToolResponse, 
 /// straight to the extension manager — bypassing the agent loop and therefore
 /// every [`ToolInspector`](biorouter::tool_inspection::ToolInspector).
 ///
-/// The three share one shape: an inspector would have refused or asked, nothing
+/// The five share one shape: an inspector would have refused or asked, nothing
 /// in an HTTP handler can put an operation to the user and wait, so the call is
 /// refused here rather than performed unasked. Each returns a tool ERROR rather
 /// than a status code, because the caller is a tool caller and the remedy is in
@@ -3730,6 +3764,20 @@ fn dispatch_failure_response(error: &anyhow::Error) -> Result<CallToolResponse, 
 ///   refusal names `DELETE /knowledge/bases/{id}`, the route the Knowledge
 ///   view's own delete button calls, so a person who means to delete a base
 ///   still has a door.
+/// * **A managed deny** (DD-90). `ManagedPolicyInspector` runs only in the
+///   agent loop too, so a tool the administrator's policy denies, including a
+///   `dictionary__*` tool while managed dictation policy keeps the agent out of
+///   the dictionary, ran here. The policy file is read for each request, so an
+///   administrator's change applies at the next call. Only a deny refuses: a
+///   managed ask is left to the person's own action that this route carries.
+///   This judges the outer tool name only. The calls inside a
+///   `code_execution__execute_code` script sent here are judged at the script
+///   door (`CodeExecution::uninspected_boundary_refusal`), which has no managed
+///   arm yet, so a managed-denied tool a person's script calls still runs.
+/// * **The dictionary** (DD-42). This route dispatches as
+///   `CallCapability::public_enforced()` on the secret alone, so
+///   `dictionary__add_terms` from a private chat's model would land a public row.
+///   Both writing tools are refused whatever the tier, and so is the store's path.
 ///
 /// Extracted from [`call_tool`] rather than inlined: the third gate pushed that
 /// handler past the `clippy::too_many_lines` baseline, and a list of boundary
@@ -3740,10 +3788,32 @@ fn call_tool_boundary_refusal(
     tool_name: &str,
     arguments: Option<&serde_json::Map<String, Value>>,
 ) -> Option<String> {
+    call_tool_boundary_refusal_under(
+        &biorouter::managed::ManagedPolicy::load(),
+        tool_name,
+        arguments,
+    )
+}
+
+/// [`call_tool_boundary_refusal`] under a given managed policy, so a test can
+/// judge a policy without staging one at the path every test in the binary
+/// reads.
+fn call_tool_boundary_refusal_under(
+    managed: &biorouter::managed::ManagedPolicy,
+    tool_name: &str,
+    arguments: Option<&serde_json::Map<String, Value>>,
+) -> Option<String> {
     const BOUNDARY: biorouter::security::UninspectedBoundary =
         biorouter::security::UninspectedBoundary::AgentCallToolRoute;
 
-    biorouter::security::global_memory::uninspected_boundary_refusal(tool_name, arguments, BOUNDARY)
+    managed
+        .uninspected_boundary_refusal(tool_name)
+        .map(str::to_string)
+        .or_else(|| {
+            biorouter::security::global_memory::uninspected_boundary_refusal(
+                tool_name, arguments, BOUNDARY,
+            )
+        })
         .or_else(|| {
             biorouter::security::session_store::uninspected_boundary_refusal(
                 tool_name, arguments, BOUNDARY,
@@ -3754,6 +3824,132 @@ fn call_tool_boundary_refusal(
                 tool_name, arguments, BOUNDARY,
             )
         })
+        .or_else(|| {
+            biorouter::security::dictionary_store::uninspected_boundary_refusal(
+                tool_name, arguments, BOUNDARY,
+            )
+        })
+}
+
+#[cfg(test)]
+mod managed_call_tool_tests {
+    //! DD-90: a managed deny holds at `POST /agent/call_tool`, which dispatches
+    //! without the inspector chain that enforces it everywhere else.
+    //!
+    //! ⚠ This module sits above the route handler, and other tests find the
+    //! handler by the first occurrence of its signature in this file, so the
+    //! needle below is assembled with `concat!` rather than written out.
+
+    use super::call_tool_boundary_refusal_under;
+    use biorouter::managed::{ManagedPolicy, ManagedPolicyFile};
+    use biorouter::permission::managed_inspector::MANAGED_DENY_REASON;
+
+    fn policy(yaml: &str) -> ManagedPolicy {
+        let file: ManagedPolicyFile = serde_yaml::from_str(yaml).unwrap();
+        ManagedPolicy::from_file(file)
+    }
+
+    fn refusal(managed: &ManagedPolicy, tool: &str) -> Option<String> {
+        call_tool_boundary_refusal_under(managed, tool, None)
+    }
+
+    #[test]
+    fn call_tool_refuses_a_managed_denied_tool() {
+        let managed = policy(
+            "permissions:\n  deny: [\"developer__shell\", \"memory__.*\"]\n  ask: [\"todo__write\"]\n",
+        );
+        assert_eq!(
+            refusal(&managed, "developer__shell").as_deref(),
+            Some(MANAGED_DENY_REASON)
+        );
+        assert_eq!(
+            refusal(&managed, "memory__retrieve_memories").as_deref(),
+            Some(MANAGED_DENY_REASON)
+        );
+        assert_eq!(refusal(&managed, "developer__text_editor"), None);
+        assert_eq!(
+            refusal(&managed, "todo__write"),
+            None,
+            "a managed ask is not refused here"
+        );
+        assert_eq!(refusal(&ManagedPolicy::empty(), "developer__shell"), None);
+    }
+
+    #[test]
+    fn call_tool_refuses_dictionary_tools_while_policy_keeps_the_agent_out() {
+        for yaml in [
+            "dictation:\n  enabled: false\n",
+            "dictation:\n  dictionary: false\n",
+            "dictation:\n  dictionary_agent_writes: false\n",
+            "dictation:\n  a_key_from_a_newer_release: true\n",
+            "dictation: [not, a, map]\n",
+        ] {
+            let managed = policy(yaml);
+            for tool in [
+                "dictionary__add_terms",
+                "dictionary__list_terms",
+                "dictionary__remove_added_terms",
+            ] {
+                assert_eq!(
+                    refusal(&managed, tool).as_deref(),
+                    Some(MANAGED_DENY_REASON),
+                    "{yaml:?} {tool}"
+                );
+            }
+            assert_eq!(refusal(&managed, "developer__shell"), None, "{yaml:?}");
+        }
+        for yaml in ["dictation:\n  capture: false\n", "dictation: {}\n"] {
+            assert_eq!(
+                refusal(&policy(yaml), "dictionary__list_terms"),
+                None,
+                "{yaml:?}"
+            );
+            // The writing tools are refused here whatever the policy (DD-42), and not
+            // with the managed sentence.
+            assert_ne!(
+                refusal(&policy(yaml), "dictionary__add_terms").as_deref(),
+                Some(MANAGED_DENY_REASON),
+                "{yaml:?}"
+            );
+        }
+    }
+
+    /// DD-42: this route dispatches as public on the secret alone, so a private chat's
+    /// term written through it would land public. Both writing tools are refused with
+    /// no policy at all, the listing tool is not, and neither is an ordinary tool.
+    #[test]
+    fn call_tool_refuses_the_dictionary_writing_tools() {
+        let managed = ManagedPolicy::empty();
+        for tool in ["dictionary__add_terms", "dictionary__remove_added_terms"] {
+            let refused = refusal(&managed, tool).unwrap_or_else(|| panic!("{tool} ran"));
+            assert!(refused.contains(tool), "{refused}");
+        }
+        assert_eq!(refusal(&managed, "dictionary__list_terms"), None);
+        assert_eq!(refusal(&managed, "developer__text_editor"), None);
+    }
+
+    /// The route reads the policy file for each request, and decides before it
+    /// resolves an agent or dispatches anything.
+    #[test]
+    fn the_route_reads_the_policy_per_request_before_dispatch() {
+        let source = include_str!("agent.rs");
+        let gate = crate::routes::body_of(source, "fn call_tool_boundary_refusal(");
+        assert!(
+            gate.contains("ManagedPolicy::load()"),
+            "the managed arm must read the file at each call: {gate}"
+        );
+        let handler = crate::routes::body_of(source, concat!("async fn call", "_tool("));
+        let decided = handler
+            .find("call_tool_boundary_refusal(")
+            .expect("the handler asks the boundary gates");
+        let agent = handler
+            .find("get_agent_for_route(")
+            .expect("the handler resolves an agent");
+        let dispatch = handler
+            .find("dispatch_direct_tool(")
+            .expect("the handler dispatches");
+        assert!(decided < agent && agent < dispatch);
+    }
 }
 
 /// What a direct call to a Crew tool on a Crew-scoped chat answers (W2-DMN-9).
@@ -8131,6 +8327,226 @@ mod opening_is_not_activity_route_tests {
             sidebar_order(&state, &ids).await,
             vec![toggled, switched, newest]
         );
+    }
+}
+
+#[cfg(test)]
+mod dictionary_script_route_tests {
+    //! PR-23, DD-42, at the script door a person reaches through `POST /agent/call_tool`.
+    //! The route judges only the outer tool name, so a `code_execution__execute_code` call
+    //! passes it and runs its script with the route's public capability. The script's own
+    //! calls of `dictionary__add_terms` and `dictionary__remove_added_terms` are refused
+    //! before dispatch and change nothing in the store, while `dictionary__list_terms` from
+    //! the same kind of script still runs and sees the store.
+    //!
+    //! Driven through the real router, agent and extensions, on the sandboxed store
+    //! `src/test_sandbox.rs` points the configuration folder at.
+
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use biorouter::security::dictionary_store::{open_store, store};
+    use tower::ServiceExt;
+
+    /// The code execution result's record of each call its script made.
+    const TOOL_CALLS: &str = "biorouter/tool-calls";
+    const ADD_PROBE: &str = "Scriptadd Probe";
+    const REMOVE_PROBE: &str = "Scriptremove Probe";
+
+    /// One `code_execution__execute_code` call through the route, with no proof, as a
+    /// person's script or a client would send it.
+    async fn run_script(
+        state: &Arc<AppState>,
+        session_id: &str,
+        code: &str,
+    ) -> (StatusCode, Value) {
+        let body = serde_json::json!({
+            "session_id": session_id,
+            "name": "code_execution__execute_code",
+            "arguments": { "code": code },
+        });
+        let response = routes(Arc::clone(state))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/agent/call_tool")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+        )
+    }
+
+    fn text_of(body: &Value) -> String {
+        body["content"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| item["text"].as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            })
+            .unwrap_or_default()
+    }
+
+    /// The one call the script made, from the result's record of its calls.
+    fn only_call(body: &Value) -> Value {
+        let calls = body["_meta"][TOOL_CALLS]
+            .as_array()
+            .unwrap_or_else(|| panic!("the result records no script calls: {body}"));
+        assert_eq!(calls.len(), 1, "{body}");
+        calls[0].clone()
+    }
+
+    /// The written forms of every row in the store.
+    fn stored_terms() -> Vec<String> {
+        open_store()
+            .view()
+            .unwrap()
+            .entries()
+            .iter()
+            .map(|entry| entry.written.clone())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn a_script_run_through_call_tool_cannot_add_or_remove_dictionary_terms() {
+        let state = AppState::new().await.unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let session = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "PR-23 dictionary script route".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        // Session ids are reissued: never inherit an agent an earlier test left.
+        let _ = state.agent_manager.remove_session(&session.id).await;
+        let agent = state.get_agent(session.id.clone()).await.unwrap();
+        for name in ["code_execution", "dictionary"] {
+            let target = biorouter::agents::extension_manager::resolve_bundled_extension(name)
+                .unwrap_or_else(|| panic!("{name} is a bundled capability"));
+            agent
+                .add_extension(target.into_config(format!("{name} for the script route test")))
+                .await
+                .unwrap();
+        }
+
+        // An agent row `remove_added_terms` would take if it ran: suggested and public.
+        let seeded = open_store()
+            .write(|file| {
+                let mut term = store::NewTerm::person(REMOVE_PROBE, store::EntryTier::Public);
+                term.source = store::EntrySource::Agent;
+                term.status = store::EntryStatus::Suggested;
+                Ok(
+                    match file.add(term, store::Reach::Public, store::schema::now())? {
+                        store::AddOutcome::Created { id, .. }
+                        | store::AddOutcome::Exists { id } => Some(id),
+                        store::AddOutcome::Skipped => None,
+                    },
+                )
+            })
+            .unwrap()
+            .expect("the seeded agent row was written");
+
+        // The listing tool runs from a script through this route and sees the store, so
+        // the refusals below are about the writing tools, not a script that cannot reach
+        // the dictionary at all.
+        let (status, body) = run_script(
+            &state,
+            &session.id,
+            &format!(
+                "import {{ list_terms }} from \"dictionary\"; \
+                 record_result(list_terms({{ status: \"all\", query: \"{REMOVE_PROBE}\" }}));"
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["is_error"], serde_json::json!(false), "{body}");
+        let call = only_call(&body);
+        assert_eq!(call["tool"], "dictionary__list_terms", "{body}");
+        assert_eq!(call["status"], "ok", "{body}");
+        assert!(text_of(&body).contains(REMOVE_PROBE), "{body}");
+
+        let (status, body) = run_script(
+            &state,
+            &session.id,
+            &format!(
+                "import {{ add_terms }} from \"dictionary\"; \
+                 record_result(add_terms({{ terms: [{{ written: \"{ADD_PROBE}\" }}], \
+                 requested_by_user: true }}));"
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["is_error"], serde_json::json!(true), "{body}");
+        let call = only_call(&body);
+        assert_eq!(call["tool"], "dictionary__add_terms", "{body}");
+        assert_eq!(call["status"], "error", "{body}");
+        assert!(
+            call["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("dictionary_store")),
+            "the add was not refused by the dictionary store's boundary: {body}"
+        );
+        let text = text_of(&body);
+        assert!(
+            text.contains("dictionary__add_terms") && text.contains("biorouter dictionary add"),
+            "the script was not told why: {text}"
+        );
+        assert!(
+            !stored_terms().iter().any(|written| written == ADD_PROBE),
+            "the refused add still wrote a row"
+        );
+
+        let (status, body) = run_script(
+            &state,
+            &session.id,
+            &format!(
+                "import {{ remove_added_terms }} from \"dictionary\"; \
+                 record_result(remove_added_terms({{ ids: [\"{}\"] }}));",
+                seeded.as_str()
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["is_error"], serde_json::json!(true), "{body}");
+        let call = only_call(&body);
+        assert_eq!(call["tool"], "dictionary__remove_added_terms", "{body}");
+        assert_eq!(call["status"], "error", "{body}");
+        assert!(
+            call["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("dictionary_store")),
+            "the removal was not refused by the dictionary store's boundary: {body}"
+        );
+        assert!(
+            text_of(&body).contains("dictionary__remove_added_terms"),
+            "{body}"
+        );
+        assert!(
+            open_store().view().unwrap().find(&seeded).is_some(),
+            "the refused removal still took the agent's row"
+        );
+
+        let _ = open_store().write(|file| {
+            file.entries.retain(|entry| entry.id != seeded);
+            Ok(())
+        });
+        let _ = state.agent_manager.remove_session(&session.id).await;
+        let _ = state.session_manager().delete_session(&session.id).await;
     }
 }
 

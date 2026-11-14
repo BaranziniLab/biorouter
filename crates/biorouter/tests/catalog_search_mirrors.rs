@@ -19,6 +19,8 @@
 //! `landing/scripts/baam-search.test.mjs`, whose differential runs the website's
 //! real page against the canonical field list over 795 catalog queries.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::fs;
 use std::path::PathBuf;
 

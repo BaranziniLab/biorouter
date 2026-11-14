@@ -19,6 +19,8 @@
 //! A separate binary from the other batch gates because it drives its own
 //! cancellation token and timing.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 mod parallel_batch_support;
 
 use std::collections::HashSet;

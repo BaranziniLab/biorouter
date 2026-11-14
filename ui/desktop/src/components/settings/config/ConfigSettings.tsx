@@ -261,6 +261,7 @@ export default function ConfigSettings() {
         // skip secrets and internal/hidden keys
         if (
           key === 'extensions' ||
+          key === 'dictation_dictionary_activation_version' ||
           key === 'BIOROUTER_TELEMETRY_ENABLED' ||
           key === 'tunnel_auto_start' ||
           key.includes('_KEY') ||
@@ -375,7 +376,7 @@ export default function ConfigSettings() {
                         </label>
                       </TooltipTrigger>
                       <TooltipContent>
-                        <span className="font-mono">{key}</span>
+                        <span className="font-mono text-code">{key}</span>
                       </TooltipContent>
                     </Tooltip>
                     <div className="min-w-0">
@@ -385,7 +386,7 @@ export default function ConfigSettings() {
                       {!isEditableValue(configValues[key]) ? (
                         <code
                           data-testid={`config-readonly-${key}`}
-                          className="block whitespace-pre-wrap break-all rounded-element border border-transparent bg-background-fill px-2 py-1.5 font-mono text-supporting text-text-muted"
+                          className="block whitespace-pre-wrap break-all rounded-element border border-transparent bg-background-fill px-2 py-1.5 font-mono text-code text-text-muted"
                         >
                           {JSON.stringify(configValues[key], null, 2)}
                         </code>

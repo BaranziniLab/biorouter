@@ -130,7 +130,10 @@ it('keeps an unavailable Ollama setup open and checks the same host again on req
   await screen.findByDisplayValue('http://localhost:11434');
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
   expect(await screen.findByText(/Cannot reach Ollama/)).toBeInTheDocument();
-  expect(screen.getByText(/does not start Ollama/)).toBeInTheDocument();
+  // The host advice is the InfoTip beside the next step, heard with it by a screen reader.
+  expect(
+    screen.getByRole('button', { name: `About ${providerSetupCopy.ollamaHostLabel}` })
+  ).toHaveAccessibleDescription(/does not start Ollama/);
   expect(onConfigured).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: 'Check again' }));
   await waitFor(() => expect(onConfigured).toHaveBeenCalledWith(ollama));
@@ -322,6 +325,20 @@ it('rechecks a failed configuration retry and offers the new sign-in state', asy
   fireEvent.click(await screen.findByRole('button', { name: 'Retry configuration' }));
   expect(await screen.findByText('codex login')).toBeInTheDocument();
   expect(onConfigured).not.toHaveBeenCalled();
+});
+
+it('says what a coding agent runs on in the recovery title InfoTip, not a paragraph', async () => {
+  mocks.status.mockResolvedValue({ agents: [fixture('claude_code', { state: 'signed_out' })] });
+  await openFailure('claude_code');
+  const recovery = screen.getByTestId('coding-agent-setup-recovery');
+  // The visible line is the state of the check; the intro and the API-key route are the tip's.
+  expect(recovery).not.toHaveTextContent(/subscription sign-in/);
+  expect(screen.getByTestId('provider-recovery-title-info')).toHaveAccessibleDescription(
+    providerSetupCopy.agentRecoveryHelp('Claude Code', 'Anthropic')
+  );
+  expect(providerSetupCopy.agentRecoveryHelp('Claude Code', 'Anthropic')).toMatch(
+    /choose Anthropic under API providers/
+  );
 });
 
 it('explains Claude Code subscription setup without asking for an API key', async () => {

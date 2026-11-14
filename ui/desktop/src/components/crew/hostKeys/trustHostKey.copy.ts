@@ -24,4 +24,11 @@ export const trustHostKeyCopy = {
   /** When the daemon could read no fingerprint, and gave no sentence. */
   unreadable:
     'This computer couldn’t read the server’s fingerprint. Add the key in a terminal of your own.',
+  /**
+   * A refusal shows its first sentence, the reason; what to do about it waits behind this info
+   * icon ("About what to do next"), or under this disclosure when it is longer than a tip holds
+   * (owner, 2026-11-13, design.md 9.16).
+   */
+  nextLabel: 'what to do next',
+  more: 'Details',
 } as const;

@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from 'react';
 import { IpcRendererEvent } from 'electron';
 import { ModalShell } from './ModalShell';
 import { Button } from './ui/button';
+import { InfoTip } from './ui/info-tip';
 import { extractExtensionName } from './settings/extensions/utils';
 import { addExtensionFromDeepLink } from './settings/extensions/deeplink';
 import type { ExtensionConfig } from '../api/types.gen';
@@ -29,7 +30,12 @@ interface ExtensionModalState {
 
 interface ExtensionModalConfig {
   title: string;
+  /** The one line the decision needs: what this install does, or why it is refused. */
   message: string;
+  /** What will run: the command, or the remote URL, as a value to read character by character. */
+  source: { label: 'Command' | 'URL'; value: string };
+  /** The advice behind the line, at most two sentences, in an InfoTip beside it. */
+  help?: string;
   confirmLabel: string;
   cancelLabel: string;
   showSingleButton: boolean;
@@ -114,16 +120,26 @@ export function ExtensionInstallModal({ addExtension, setView }: ExtensionInstal
     extensionInfo: ExtensionInfo
   ): ExtensionModalConfig => {
     const { name, command, remoteUrl } = extensionInfo;
+    // A remote extension names its URL, a local one the command it runs.
+    const source: ExtensionModalConfig['source'] = remoteUrl
+      ? { label: 'URL', value: remoteUrl }
+      : { label: 'Command', value: command ?? '' };
 
     switch (modalType) {
       // One confirmation recipe (Astryx §3.6): the title is the verb phrase the
       // primary button performs, and the buttons name that action — never
       // "Yes"/"No", which force the reader back up to the title to find out
       // what they are agreeing to.
+      // Owner, 2026-11-13: the line a person decides on stays visible (the refusal's reason, the
+      // consequence of installing), the command or URL sits under it as data, and the advice
+      // behind it is an InfoTip beside the line.
       case 'blocked':
         return {
           title: `Cannot install ${name}`,
-          message: `This extension command is not in the allowed list, so its installation is blocked.\n\nCommand: ${command || remoteUrl}\n\nContact your administrator to request approval for this extension.`,
+          message:
+            'This extension command is not in the allowed list, so its installation is blocked.',
+          source,
+          help: 'Contact your administrator to request approval for this extension.',
           confirmLabel: 'Got it',
           cancelLabel: '',
           showSingleButton: true,
@@ -133,7 +149,10 @@ export function ExtensionInstallModal({ addExtension, setView }: ExtensionInstal
       case 'untrusted': {
         return {
           title: `Install untrusted extension ${name}?`,
-          message: `This extension command is not in the allowed list. Once installed it can read your chats.\n\n${remoteUrl ? `URL: ${remoteUrl}` : `Command: ${command}`}\n\nInstalling extensions from untrusted sources may pose security risks. Contact your administrator if you are unsure about this.`,
+          message:
+            'This extension command is not in the allowed list. Once installed it can read your chats.',
+          source,
+          help: 'Installing extensions from untrusted sources may pose security risks. Contact your administrator if you are unsure about this.',
           confirmLabel: 'Install anyway',
           cancelLabel: 'Cancel',
           showSingleButton: false,
@@ -145,7 +164,8 @@ export function ExtensionInstallModal({ addExtension, setView }: ExtensionInstal
       default:
         return {
           title: `Install ${name}?`,
-          message: `This extension will be added to Biorouter and enabled for new chats.\n\nCommand: ${command || remoteUrl}`,
+          message: 'This extension will be added to Biorouter and enabled for new chats.',
+          source,
           confirmLabel: 'Install',
           cancelLabel: 'Cancel',
           showSingleButton: false,
@@ -339,9 +359,20 @@ export function ExtensionInstallModal({ addExtension, setView }: ExtensionInstal
         )
       }
     >
-      <p className="text-body text-text-muted text-left whitespace-pre-wrap min-w-0 [overflow-wrap:anywhere]">
-        {config.message}
-      </p>
+      <div className="flex min-w-0 flex-col gap-3 text-left">
+        <div className="flex min-w-0 items-center">
+          <p className="min-w-0 text-body text-text-default">{config.message}</p>
+          {config.help && <InfoTip label="installing this extension" help={config.help} />}
+        </div>
+        {/* What will run is data, read character by character: mono at the code size, under a
+            sans label (design.md D-33, D-42). */}
+        <div className="flex min-w-0 flex-col gap-0.5">
+          <span className="text-supporting text-text-muted">{config.source.label}</span>
+          <code className="min-w-0 font-mono text-code text-text-default [overflow-wrap:anywhere]">
+            {config.source.value}
+          </code>
+        </div>
+      </div>
       {/* The install failure was recorded but never shown: the dialog simply
           stayed open with no explanation. Now it also carries the way out — a
           deeplink install fails on the extension's own runtime prerequisites

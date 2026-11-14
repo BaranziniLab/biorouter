@@ -1,11 +1,15 @@
 import { useEffect, useId, useMemo, useRef, useState, type FormEvent } from 'react';
 import type { ProviderDetails } from '../../../api';
 import { useNavigate } from 'react-router-dom';
+import { CrewDictationButton } from '../../dictation/CrewDictationButton';
+import { DictationNotices } from '../../dictation/DictationButton';
+import { dictationContext, useDictationComposer } from '../../dictation/useDictationComposer';
 import { AlertTriangle, Info, LoaderCircle } from '../../icons/app-icons';
 import { Button } from '../../ui/button';
 import { Checkbox } from '../../ui/Checkbox';
 import { Disclosure } from '../../ui/disclosure';
-import { Note } from '../../ui/note';
+import { InfoTip } from '../../ui/info-tip';
+import { Note, NOTE_DETAILS_LABEL } from '../../ui/note';
 import { cn } from '../../../utils';
 import type { CrewMessage, ObservedRun } from '../crewApi';
 import { channelName, channelNamesAcrossTeams, teamName } from '../identity';
@@ -26,7 +30,7 @@ import {
   modelDisplay,
   modelMismatch,
   modelRefusalText,
-  fullAccessWarning,
+  fullAccessFold,
   remoteAccessText,
   sameNamedFiles,
   sharedWhen,
@@ -266,6 +270,28 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
       : null
   );
   const [task, setTask] = useState(kept ?? intentSeed?.task ?? seed);
+  const taskField = useRef<HTMLTextAreaElement | null>(null);
+  const composing = useRef(false);
+  const dictationTarget = () => {
+    const at = Math.min(taskField.current?.selectionStart ?? task.length, task.length);
+    const context = dictationContext(task.slice(0, at));
+    return { target_kind: 'crew' as const, ...(context ? { context } : {}) };
+  };
+  const dictation = useDictationComposer({
+    key: `crew:task:${crew.connectionId}:${crew.channelId}`,
+    textAreaRef: taskField,
+    storesDraft: false,
+    target: dictationTarget,
+    setByState: (value, at) => {
+      setTask(value);
+      requestAnimationFrame(() => {
+        const field = taskField.current;
+        if (field && document.activeElement === field) field.setSelectionRange(at, at);
+      });
+    },
+    isComposing: () => composing.current,
+    isEmpty: () => !task,
+  });
   useEffect(() => {
     if (kept !== null) forgetFailedTask(crew.connectionId, crew.channelId);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps -- once, for the task this pane opened with
@@ -311,6 +337,7 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
   const picker = useRef<HTMLButtonElement>(null);
   const taskId = useId();
   const taskHintId = useId();
+  const taskPostedId = useId();
   const modelLabelId = useId();
   const modelErrorId = useId();
   const mismatchId = useId();
@@ -431,8 +458,8 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
     otherChannels.length > 0 || contextChannels.length > 0 || Boolean(crew.connection?.remote_root);
   const folderText = remoteAccessText(crew.connection);
   // Full access, said before Start whatever Advanced shows: what running as the account means,
-  // and for the host what it adds (W1, W2).
-  const fullWarning = fullAccessWarning(crew.connection, workspace, dir.viewerIsHost);
+  // and for the host what it adds (W1, W2). One sentence in view, the rest behind Details.
+  const fullWarning = fullAccessFold(crew.connection, workspace, dir.viewerIsHost);
   const alsoReads = contextChannels
     .filter((id) => id !== channel.id)
     .map((id) => {
@@ -488,7 +515,7 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
   };
   const onSubmit = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    void submit(false);
+    if (!dictation.holdsComposer) void submit(false);
   };
   const showTask = () => {
     crew.setInspectedPriorRun(false);
@@ -504,7 +531,8 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
     !verified ||
     channel.archived ||
     noModels ||
-    blockText !== null;
+    blockText !== null ||
+    dictation.holdsComposer;
 
   return (
     <form ref={form} onSubmit={onSubmit} className={cn('flex min-h-0 flex-1 flex-col', className)}>
@@ -578,29 +606,48 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
         )}
 
         <div className="flex flex-col gap-1.5">
-          <label htmlFor={taskId} className="text-label text-text-default">
-            {agentCopy.task}
-          </label>
+          {/* That the task itself is posted in the channel is the label's info tip, and still the
+              field's description (T-24); the destination above names the channel in view (owner,
+              2026-11-13). */}
+          <span className="inline-flex items-center gap-1">
+            <label htmlFor={taskId} className="text-label text-text-default">
+              {agentCopy.task}
+            </label>
+            <InfoTip label={agentCopy.task} help={agentCopy.taskPosted(here)} id={taskPostedId} />
+          </span>
           {/* Focus turns the border to the accent edge, as the chat composer's card does; the
               rule is authored in pane.css (`.crew-agent-task`), never a Tailwind variant (T-16). */}
           <textarea
+            ref={taskField}
             id={taskId}
             data-crew-pane-autofocus=""
             required
             rows={TASK_MIN_ROWS}
             value={task}
             placeholder={agentCopy.taskPlaceholder}
-            aria-describedby={taskHintId}
+            aria-describedby={longTask ? `${taskPostedId} ${taskHintId}` : taskPostedId}
             // File names and sample IDs are not words: the spell checker underlined
             // `gina-assay.csv` and `15b` in every task (Q3-34).
             spellCheck={false}
             onChange={(event) => setTask(event.target.value)}
+            onKeyDown={(event) => {
+              dictation.handleKeyDown(event);
+            }}
+            onCompositionStart={() => {
+              composing.current = true;
+            }}
+            onCompositionEnd={() => {
+              composing.current = false;
+            }}
             className="crew-agent-task w-full rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 text-body text-text-default transition-[color,background-color,border-color,box-shadow] placeholder:text-text-muted hover:inset-ring-2 hover:inset-ring-border-emphasized/30"
           />
-          <p id={taskHintId} className="text-supporting text-text-muted">
-            {agentCopy.taskPosted(here)}
-            {longTask && ` ${agentCopy.taskLong}`}
-          </p>
+          <DictationNotices dictationKey={dictation.key} />
+          {/* Pasted data is a warning, so it shows once the task reads as pasted data. */}
+          {longTask ? (
+            <p id={taskHintId} className="text-supporting text-text-muted">
+              {agentCopy.taskLong}
+            </p>
+          ) : null}
         </div>
 
         <div className="flex flex-col gap-1.5">
@@ -773,14 +820,28 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
             ? agentCopy.scopeWide(here, alsoReads.length + 1)
             : agentCopy.scope(here)}
         </p>
+        {/* The consent sentence in view, and Start's description; the rest of the warning, word
+            for word as the Join and Host dialogs fold it, behind Details (design.md 9.16). */}
         {fullWarning && (
-          <p
-            id={fullWarningId}
-            className="text-supporting text-text-muted"
-            data-testid="crew-agent-full-access"
-          >
-            {fullWarning}
-          </p>
+          <div className="flex flex-col gap-1">
+            <p
+              id={fullWarningId}
+              className="text-supporting text-text-muted"
+              data-testid="crew-agent-full-access"
+            >
+              {fullWarning.lead}
+            </p>
+            <Disclosure label={NOTE_DETAILS_LABEL}>
+              <div
+                className="flex flex-col gap-1 text-supporting text-text-muted"
+                data-testid="crew-agent-full-access-details"
+              >
+                {fullWarning.details.map((paragraph) => (
+                  <p key={paragraph}>{paragraph}</p>
+                ))}
+              </div>
+            </Disclosure>
+          </div>
         )}
         {/* Before Start, which it disables: the pane says what the daemon would refuse (T-47), for
             a model the institution has not approved and a public model alike (AG-F4). */}
@@ -816,6 +877,11 @@ export function AgentTaskPane({ onShowTask, className }: AgentTaskPaneProps) {
           {submitting ? agentCopy.starting : ''}
         </span>
         <div className="flex justify-end">
+          <CrewDictationButton
+            control={dictation}
+            target={dictationTarget}
+            onSettings={() => navigate('/settings', { state: { section: 'dictation' } })}
+          />
           <Button
             key="start"
             type="submit"

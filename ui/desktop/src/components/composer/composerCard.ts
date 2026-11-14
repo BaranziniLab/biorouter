@@ -39,7 +39,9 @@ export const composerCardSurfaceClassName = cn(
  */
 export function composerCardClassName({ isDraggingOver }: { isDraggingOver: boolean }): string {
   return cn(
-    'relative flex min-w-0 flex-col rounded-container py-2.5 pr-3 pl-4',
+    // The one-line card's geometry (8px all round, the row and the stack above
+    // it) is authored in `composer.css` under `.br-composer-chat-card`.
+    'br-composer-chat-card relative flex min-w-0 flex-col rounded-container',
     composerCardSurfaceClassName,
     // Drag-over is a transient state worth showing: an inset accent edge, so it
     // costs no layout, and the strong fill under it.

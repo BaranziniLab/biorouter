@@ -7,6 +7,8 @@
 //! stream over the Responses route, so they exercise that decoder; gpt-5.5
 //! streams over Chat Completions. The bare `gpt-5.6` is not a deployment.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::fs::OpenOptions;
 use std::io::{Seek, SeekFrom, Write};
 use std::path::Path;

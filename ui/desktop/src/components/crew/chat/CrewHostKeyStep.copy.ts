@@ -27,12 +27,19 @@ export const crewHostKeyStepCopy = {
    * this computer that read it.
    */
   read: trustCopy.offered,
-  /** Under an unknown key's help: what happens once the key is added. */
+  /**
+   * What happens once the key is added, behind the info icon beside the card's one line of
+   * explanation ("About what happens next"), so the card stacks no second paragraph (owner,
+   * 2026-11-13, design.md 9.16).
+   */
+  goesOnLabel: 'what happens next',
   goesOn: 'Once the key is in your known hosts file, this chat goes on by itself.',
   /** The other control on an unknown key's card: stop the chat waiting for it. */
   notNow: 'Not now',
-  /** Said once the person chose Not now. */
-  dismissed: 'This chat stopped waiting for the key. Ask it to try again when the key is added.',
+  /** Said once the person chose Not now; how to go on waits behind its info icon. */
+  dismissed: 'This chat stopped waiting for the key.',
+  dismissedHelpLabel: 'trying again',
+  dismissedHelp: 'Ask it to try again when the key is added.',
   /** Said when the card had already ended (the key was added, or the chat moved on). */
   ended: 'This step has already ended.',
 } as const;

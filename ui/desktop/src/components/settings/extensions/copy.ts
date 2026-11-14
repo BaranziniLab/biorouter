@@ -92,15 +92,23 @@ export const EXTENSION_MODAL_COPY = {
   endpointRequired: 'Endpoint URL is required',
 
   installationNotes: 'Installation notes',
+  /** The disclosure under the notes' first sentence that holds the rest of them. */
+  installationNotesRest: 'Show the rest',
 
   /**
    * Section 13.5: the Add form carries the same line the .brxt install modal does. It follows
-   * the name as it is typed, because on this form the name is the whole input to the tier.
+   * the name as it is typed, because on this form the name is the whole input to the tier. The
+   * badge and the sentence that decides the tier stay on screen; what the tier lets a model do is
+   * the InfoTip beside them (owner, 2026-11-13), as on the .brxt install modal's line.
    */
   tierPrivate:
-    'The Biorouter marketplace publishes this name as private, so this extension will be Private: only private models will be able to call it.',
-  tierPublic:
-    'Extensions you add by hand are always Public. Any model, including commercial models hosted outside your institution, will be able to call this extension.',
+    'The Biorouter marketplace publishes this name as private, so this extension will be Private.',
+  tierPrivateHelp: 'Only private models will be able to call it.',
+  tierPublic: 'Extensions you add by hand are always Public.',
+  tierPublicHelp:
+    'Any model, including commercial models hosted outside your institution, will be able to call this extension.',
+  /** The tier InfoTip's name: "About this extension's tier". */
+  tierLabel: 'this extension’s tier',
 
   envTitle: 'Environment variables',
   envHelp: 'Fill both fields, then Add. Saved secrets show as dots, and Edit replaces one.',
@@ -121,18 +129,23 @@ export const EXTENSION_MODAL_COPY = {
   reviewCredentials: 'Review saved credentials',
   credentialsHelp:
     'Removing an extension keeps its saved credentials for reuse. You can review and delete unshared ones separately.',
-  sharedCredentialsHelp: 'Credentials shared with other extensions or providers are kept.',
+  /**
+   * The InfoTip beside Review saved credentials while removal is being confirmed: the reuse the
+   * removal question no longer spells out, and what Review keeps.
+   */
+  sharedCredentialsHelp:
+    'Kept credentials may be reused automatically if you reinstall. Ones shared with other extensions or providers stay either way.',
 
   removeTitle: (name: string) => `Remove "${name}"?`,
-  removeDescription:
-    'This will remove the extension configuration. Saved credentials are retained and may be reused automatically if you reinstall.',
+  /** The consequence, at the decision. Reuse on reinstall is `removalCredentialsHelp`. */
+  removeDescription: 'Removes this extension’s configuration. Saved credentials are kept.',
   removeAction: 'Remove extension',
   confirmRemoval: 'Confirm removal',
   cancel: 'Cancel',
 
   unsavedTitle: 'Unsaved changes',
-  unsavedMessage:
-    'You have unsaved changes to the extension configuration. Are you sure you want to close without saving?',
+  /** The title already says the changes are unsaved, so the message is the question. */
+  unsavedMessage: 'Close without saving your changes?',
   discard: 'Discard changes',
 } as const;
 
@@ -140,7 +153,7 @@ export const EXTENSION_MODAL_COPY = {
 export const EXTENSION_CREDENTIALS_COPY = {
   title: (name: string) => `Saved credentials for ${name}`,
   subtitle: (name: string) => `Delete saved values for ${name}. Shared ones are kept.`,
-  help: 'Only saved values listed here can be deleted. Environment variables, values in extension settings and credentials already loaded in running chats stay unchanged.',
+  help: 'Only saved values listed here can be deleted. Environment variables, extension settings and credentials loaded in running chats stay unchanged.',
   checking: 'Checking saved credentials…',
   none: 'No saved credential references for this extension.',
   noValue: 'No saved value',
@@ -151,8 +164,12 @@ export const EXTENSION_CREDENTIALS_COPY = {
   deletedHelp:
     'You will need to enter them again when required, unless your environment or extension settings supply them.',
   loadFailed: 'Could not verify saved credentials. Close this dialog and try again.',
-  deleteFailed:
-    'Credentials could not be deleted. References may have changed or storage is unavailable. Close this dialog and review again.',
+  /** The error's line; its cause and the next step are `deleteFailedHelp`, the InfoTip beside it. */
+  deleteFailed: 'Credentials could not be deleted.',
+  deleteFailedHelp:
+    'References may have changed or storage is unavailable. Close this dialog and review again.',
+  /** The error InfoTip's name: "About the failed deletion". */
+  deleteFailedLabel: 'the failed deletion',
   cancel: 'Cancel',
   done: 'Done',
   deleting: 'Deleting…',

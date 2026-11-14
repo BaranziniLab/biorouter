@@ -109,7 +109,15 @@ impl Desk for StepSurface<'_> {
     }
 
     async fn ask(&self, question: &str) -> Result<Option<Zeroizing<String>>> {
-        crate::commands::shared_conversation::terminal_input(question, false, ANSWER_BYTES).await
+        crate::commands::shared_conversation::terminal_input(
+            question,
+            false,
+            ANSWER_BYTES,
+            None,
+            None,
+            None,
+        )
+        .await
     }
 
     async fn passphrase(&self, action: CrewVaultAction) -> Result<Option<Zeroizing<String>>> {
@@ -159,7 +167,7 @@ impl Desk for StepSurface<'_> {
 // A blocking secure-line reader outlives cancellation and keeps consuming stdin.
 // Crew cards use the same cancellable, zeroizing event reader as other chat prompts.
 async fn read_card_secret(prompt: &'static str, _from_stdin: bool) -> Result<Zeroizing<String>> {
-    crate::commands::shared_conversation::terminal_input(prompt, true, 4096)
+    crate::commands::shared_conversation::terminal_input(prompt, true, 4096, None, None, None)
         .await?
         .filter(|secret| !secret.is_empty())
         .context("No passphrase was supplied")

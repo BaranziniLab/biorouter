@@ -8,6 +8,8 @@
 //! 20, no `decisions` table, chats and messages on disk) with raw SQL, then
 //! lets `SessionManager` upgrade it.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 

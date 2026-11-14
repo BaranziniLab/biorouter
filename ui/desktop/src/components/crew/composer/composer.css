@@ -21,10 +21,11 @@
 /* The bar the card sits in: the canvas, 12px above, 24px below, 16px gutters,
    and the 760px chat measure. */
 .crew-compose {
-  /* The card at rest: its 10px + 10px padding, a 32px text row, the 32px
-     control row and the 1px + 1px border. The Verifying bar takes the same
-     height, so swapping one for the other moves nothing above it. */
-  --crew-compose-rest-height: calc(20px + 2 * var(--control-md) + 2px);
+  /* The card at rest: its 8px + 8px padding, ONE 32px row (the text and its
+     controls, as the chat composer since 2026-11-13) and the 1px + 1px border.
+     The Verifying bar takes the same height, so swapping one for the other
+     moves nothing above it. */
+  --crew-compose-rest-height: calc(16px + var(--control-md) + 2px);
 
   flex: 0 0 auto;
   padding: 12px 16px 24px;
@@ -47,6 +48,48 @@
 
 .crew-compose-card {
   min-height: var(--crew-compose-rest-height);
+  padding: 8px;
+}
+
+/* What goes with the message (chips, suggestions, dictation's line, the agent
+   line) stacks above the row, its text 16px in, as in the chat composer. */
+.crew-compose-card > :not(.crew-compose-row) {
+  margin-inline: 8px 4px;
+}
+
+.crew-compose-card > :not(.crew-compose-row):first-child {
+  margin-top: 4px;
+}
+
+/* ONE ROW, the chat composer's (`.br-composer-row`): [+] [text …] [agent]
+   [mic] [Send]. The text grows upward and the controls keep to its last line;
+   each control sits in a 32px slot, centred. */
+.crew-compose-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+
+.crew-compose-slot {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  height: var(--control-md);
+}
+
+.crew-compose-field {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-left: 4px;
+}
+
+/* The agent toggle holds the kept step while its pane is open, as a trigger
+   whose surface a click opened does (shared controls, "Hover and click"). */
+.crew-compose-agent-toggle[aria-expanded='true'] {
+  background-color: var(--background-fill-strong);
+  color: var(--text-default);
 }
 
 /* One row at rest; `Composer.tsx` sets the height to the content, and this is
@@ -55,19 +98,6 @@
   min-height: var(--control-md);
   max-height: 40vh;
   overflow-y: auto;
-}
-
-.crew-compose-controls {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  min-width: 0;
-  /* Pull the paperclip's own inset back to the card's text edge. */
-  margin-left: -8px;
-}
-
-.crew-compose-spacer {
-  flex: 1 1 auto;
 }
 
 .crew-compose-send {

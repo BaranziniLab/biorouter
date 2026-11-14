@@ -312,7 +312,7 @@ export const MessageQueue: React.FC<MessageQueueProps> = ({
             missing from. Mounted on `steerApplies` alone: the note itself
             renders nothing on the desktop, so this condition is "is there a
             turn to steer", not "which surface is this". */}
-        {steerApplies && <SteerUnavailableNote short />}
+        {steerApplies && <SteerUnavailableNote />}
       </div>
     );
   }

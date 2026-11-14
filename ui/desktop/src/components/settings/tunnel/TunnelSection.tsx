@@ -175,7 +175,7 @@ export default function TunnelSection() {
         </CardHeader>
         <CardContent className="pt-4 px-4 space-y-4">
           {error && (
-            <div className="p-3 bg-background-danger/10 border border-border-danger/40 rounded text-sm text-text-danger">
+            <div className="p-3 bg-background-danger/10 border border-transparent rounded text-sm text-text-danger">
               {error}
             </div>
           )}
@@ -234,9 +234,10 @@ export default function TunnelSection() {
                 </div>
               </div>
 
+              {/* The secret-sharing warning is the line; one instruction before it. */}
               <DialogDescription className="text-center text-sm text-text-muted">
-                Scan this QR code with the Biorouter mobile app. Do not share this code with anyone
-                else as it is for your personal access.
+                Scan with the Biorouter mobile app. Do not share this code: it gives access to your
+                Biorouter.
               </DialogDescription>
 
               <div className="border-t pt-4">
@@ -257,7 +258,8 @@ export default function TunnelSection() {
                     <div>
                       <h3 className="text-xs font-medium mb-1 text-text-muted">Tunnel URL</h3>
                       <div className="flex items-center gap-2">
-                        <code className="flex-1 p-2 bg-background-medium rounded text-xs break-all overflow-hidden">
+                        {/* Read and copied character by character: mono at the code role. */}
+                        <code className="flex-1 p-2 bg-background-medium rounded font-mono text-code break-all overflow-hidden">
                           {tunnelInfo.url}
                         </code>
                         <Button
@@ -274,7 +276,7 @@ export default function TunnelSection() {
                     <div>
                       <h3 className="text-xs font-medium mb-1 text-text-muted">Secret key</h3>
                       <div className="flex items-center gap-2">
-                        <code className="flex-1 p-2 bg-background-medium rounded text-xs break-all overflow-hidden">
+                        <code className="flex-1 p-2 bg-background-medium rounded font-mono text-code break-all overflow-hidden">
                           {tunnelInfo.secret}
                         </code>
                         <Button

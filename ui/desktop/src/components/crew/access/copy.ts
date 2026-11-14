@@ -79,6 +79,7 @@ export const accessCopy = {
   consentWorkspace: 'Workspace',
   consentModel: 'Model',
   fixedOnFirstAccess: 'The first access fixes this chat’s workspace, channel and model.',
+  fixedOnFirstAccessLabel: 'what access fixes',
   alsoRead: 'Also read',
   /** Beside Advanced while it is closed: what the chat reads, not what it doesn't (Q3-30). */
   alsoReadSummary: (count: number, channel: string) =>
@@ -251,8 +252,12 @@ export const accessCopy = {
   chatChipName: (destination: string) => `Crew · ${destination}, manage access`,
   chatChipTip: (destination: string) => `This chat can read and post in ${destination}.`,
   // "Team content" was unexplained (Q2-72): say what it is — messages from the channel.
+  // What to do next is the two buttons beside it, so the sentence no longer repeats them (owner,
+  // 2026-11-13); why the chat can't simply go on is its info tip, `chatHoldsMessages`.
   chatRevoked: (destination: string) =>
-    `Crew access to ${destination} was removed, so this chat can’t continue. It holds messages from the channel. Grant access again to continue, or start a new chat.`,
+    `Crew access to ${destination} was removed, so this chat can’t continue.`,
+  chatHoldsMessagesLabel: 'why this chat stops',
+  chatHoldsMessages: 'It holds messages from the channel.',
   chatExpired: (destination: string) =>
     `Crew access to ${destination} expired. This chat has team content, so it can’t continue.`,
   /**
@@ -260,7 +265,7 @@ export const accessCopy = {
    * chat's turns (D-1): not "expired", which reads as time running out.
    */
   chatSettingsChanged: (destination: string) =>
-    `Crew settings changed since this chat was given access to ${destination}, so it can’t continue. Grant access again to continue, or start a new chat.`,
+    `Crew settings changed since this chat was given access to ${destination}, so it can’t continue.`,
   /** A task's chat after the task: its grant ended with it (Q2-09). Neutral, not a warning. */
   chatTaskFinished: (destination: string) =>
     `This task is finished. Its access to ${destination} ended when it finished.`,

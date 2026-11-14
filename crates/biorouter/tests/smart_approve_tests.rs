@@ -10,6 +10,8 @@
 //! The load-bearing assertions are therefore comparative: the same request under
 //! `Approve` vs `SmartApprove` must now land in different buckets.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::collections::HashSet;
 use std::sync::Arc;
 

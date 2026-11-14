@@ -114,6 +114,11 @@ function warningFor(
   };
 }
 
+/**
+ * Each warning is a title and ONE line under it that names the file and adds what the title does
+ * not say (the sizes, where to go instead), never a sentence restating the title (owner,
+ * 2026-11-13: no blocks of text).
+ */
 export function validateDroppedFiles(candidates: StagedFileCandidate[]): FileValidationResult {
   const accepted: StagedFileCandidate[] = [];
   const warnings: FileDropWarning[] = [];
@@ -133,7 +138,7 @@ export function validateDroppedFiles(candidates: StagedFileCandidate[]): FileVal
           label,
           'error',
           'Use the knowledge base importer for archives',
-          `${label} is a full knowledge-base archive. Use "Import from .brkb" in the knowledge base selector instead of staging it for digestion.`
+          `${label} is a knowledge base archive: use "Import from .brkb" in Manage bases instead.`
         )
       );
       continue;
@@ -145,7 +150,7 @@ export function validateDroppedFiles(candidates: StagedFileCandidate[]): FileVal
           label,
           'error',
           'This file is not suitable for knowledge ingestion',
-          `${label} looks like an executable or compiled binary, so it was left out of the staging set.`
+          `${label} looks like an executable or compiled binary, so it was left out.`
         )
       );
       continue;
@@ -160,7 +165,7 @@ export function validateDroppedFiles(candidates: StagedFileCandidate[]): FileVal
           label,
           'error',
           'File is too large to digest safely',
-          `${label} is ${formatBytes(file.size)}. The current limit is ${formatBytes(sizeLimit)} for this kind of staged file.`
+          `${label} is ${formatBytes(file.size)}; the limit for this kind of file is ${formatBytes(sizeLimit)}.`
         )
       );
       continue;
@@ -174,7 +179,7 @@ export function validateDroppedFiles(candidates: StagedFileCandidate[]): FileVal
           label,
           'warning',
           'Staging as plain text',
-          `${label} is not one of the common first-class ingest formats, so Biorouter will treat it as readable text if possible during digestion.`
+          `${label} is not a common ingest format, so Biorouter will read it as text if it can.`
         )
       );
     }

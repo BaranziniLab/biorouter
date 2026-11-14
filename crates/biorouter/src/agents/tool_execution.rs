@@ -134,6 +134,19 @@ pub(crate) fn denied_response_text(
         {
             result.reason.clone()
         }
+        // The two stores refused by channel, not by tier: the transcript database and
+        // the dictionary (DD-42). Nobody declined, and each reason names the door that
+        // still works (`chatrecall`, the Dictionary page). Measured live on 2026-11-06:
+        // GPT-5.5 asked to `cat` the dictionary was told "the user has declined" and
+        // reported a refusal that never happened.
+        Some(result)
+            if result.inspector_name
+                == crate::security::session_store::SESSION_STORE_INSPECTOR_NAME
+                || result.inspector_name
+                    == crate::security::dictionary_store::DICTIONARY_STORE_INSPECTOR_NAME =>
+        {
+            result.reason.clone()
+        }
         // F4: a `workspace_set_tools` change that cannot be made — a built-in
         // capability named for removal, a knowledge base that does not exist —
         // refused BEFORE any card. Nobody was asked, so "the user has declined"
@@ -625,6 +638,30 @@ mod tests {
         PermissionConfirmation {
             principal_type: PrincipalType::Tool,
             permission: Permission::AllowOnce,
+        }
+    }
+
+    /// The two stores refused by channel reach the model in their own words, never as
+    /// "the user has declined", which is false and names no door that works. Found live
+    /// on 2026-11-06: GPT-5.5 asked to `cat` the dictionary store was told the user had
+    /// declined.
+    #[test]
+    fn a_store_refusal_reaches_the_model_in_its_own_words() {
+        use crate::tool_inspection::{InspectionAction, InspectionResult};
+        for inspector in [
+            crate::security::session_store::SESSION_STORE_INSPECTOR_NAME,
+            crate::security::dictionary_store::DICTIONARY_STORE_INSPECTOR_NAME,
+        ] {
+            let reason = format!("Refused by {inspector}: use the door that works.");
+            let results = vec![InspectionResult {
+                tool_request_id: "r1".into(),
+                action: InspectionAction::Deny,
+                reason: reason.clone(),
+                confidence: 1.0,
+                inspector_name: inspector.to_string(),
+                finding_id: None,
+            }];
+            assert_eq!(denied_response_text("r1", &results), reason);
         }
     }
 

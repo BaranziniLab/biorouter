@@ -653,6 +653,22 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
     }
   }
 
+  // The danger-zone button (Button `critical`, design.md 9.14): the one control
+  // still drawn in the family red. Its label is `--text-critical` on
+  // `--background-critical` at 22% over whatever ground the row sits on, the
+  // tint the destructive button wore before red became rare.
+  for (const g of TEXT_GROUNDS) {
+    assertOverTint(
+      `${theme}: danger-zone button ink on its tint over ${g}`,
+      '--text-critical',
+      '--background-critical',
+      0.22,
+      g,
+      4.5,
+      scope
+    );
+  }
+
   // Nav icons are graphical objects, not text: WCAG SC 1.4.11 asks 3:1, and it
   // asks it against every row the icon can sit on — the resting sidebar, the
   // hover fill, and the active fill. The darkest row is what binds. Every

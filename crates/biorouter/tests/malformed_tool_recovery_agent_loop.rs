@@ -1,6 +1,8 @@
 //! Malformed tool calls must teach the next model request what failed without
 //! inventing executable arguments or replaying the provider's raw input.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 

@@ -32,6 +32,8 @@
 //! that production's id shape is intact would pass or fail by luck. One function
 //! owns the order.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::session::session_manager::SessionType;
 use biorouter::session::SessionManager;
 use tempfile::TempDir;

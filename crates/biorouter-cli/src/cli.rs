@@ -1278,6 +1278,496 @@ enum DecisionModelCommand {
 }
 
 #[derive(Subcommand)]
+enum DictationCommand {
+    /// Whether this computer can dictate, and why: engine, processor, backend, models,
+    /// policy, account and data folder
+    #[command(about = "Show whether this computer can dictate, and why")]
+    Status {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+
+        /// Also start a worker and show its hello, or its kept stderr lines when it fails
+        #[arg(short, long)]
+        verbose: bool,
+    },
+
+    /// Every speech model Biorouter knows: size, languages, how well it suits this
+    /// computer, and where it is installed
+    #[command(
+        about = "List the speech models and where they are installed",
+        visible_alias = "ls"
+    )]
+    List {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+    },
+
+    /// Download a speech model (the one recommended for this computer when MODEL is
+    /// left out) and its voice detector into this account's data folder, after checking
+    /// each file against the SHA-256 pinned in Biorouter
+    #[command(about = "Install a speech model", visible_alias = "pull")]
+    Install {
+        /// A model id from `biorouter dictation list`
+        #[arg(value_name = "MODEL")]
+        model: Option<String>,
+
+        /// Install files you already downloaded (see `biorouter dictation urls`); each
+        /// is identified by its SHA-256, whatever its name
+        #[arg(long = "from", value_name = "FILE|DIR")]
+        from: Option<std::path::PathBuf>,
+
+        /// Install into the computer's shared folder, which every account reads (needs
+        /// root or Administrator)
+        #[arg(long)]
+        system: bool,
+
+        /// Install without asking (needed without a terminal)
+        #[arg(short, long)]
+        yes: bool,
+
+        /// Suggest dictionary words from chats after this verified install
+        #[arg(long, conflicts_with = "no_suggest_from_chats")]
+        suggest_from_chats: bool,
+
+        /// Leave chat suggestions off after this verified install
+        #[arg(long, conflicts_with = "suggest_from_chats")]
+        no_suggest_from_chats: bool,
+    },
+
+    /// Delete an installed speech model; removing the last one removes the voice
+    /// detector too
+    #[command(about = "Remove an installed speech model", visible_alias = "rm")]
+    Remove {
+        #[arg(value_name = "MODEL")]
+        model: String,
+
+        /// Remove the copy in the computer's shared folder (needs root or Administrator)
+        #[arg(long)]
+        system: bool,
+
+        /// Remove without asking (needed without a terminal)
+        #[arg(short, long)]
+        yes: bool,
+    },
+
+    /// Choose the speech model dictation uses
+    #[command(about = "Choose the speech model dictation uses")]
+    Use {
+        #[arg(value_name = "MODEL")]
+        model: String,
+    },
+
+    /// Print the address, size and SHA-256 of a model and of every file it needs, to
+    /// download them on another computer and install them with `install --from`
+    #[command(about = "Print the download addresses of a model's files")]
+    Urls {
+        #[arg(value_name = "MODEL")]
+        model: Option<String>,
+    },
+
+    /// Hash every installed model file again; a copy in this account's folder that
+    /// fails is deleted
+    #[command(about = "Check every installed model file against its pin")]
+    Verify {},
+
+    /// Time the model in use on a 5.5 s recording and record how fast this computer runs
+    /// it
+    #[command(about = "Measure how fast this computer transcribes")]
+    Bench {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+    },
+
+    /// Load a model and decode once, so the first dictation does not wait for the GPU's
+    /// shaders to compile. `install` starts it in the background.
+    #[command(name = "warm-up", hide = true)]
+    WarmUp {
+        #[arg(value_name = "MODEL")]
+        model: String,
+    },
+
+    /// The microphones `biorouter dictate` can use, listed without opening any; choose one
+    /// with BIOROUTER_CLI_DICTATION_DEVICE
+    #[command(about = "List the microphones dictation can use")]
+    Devices {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+    },
+
+    /// Record from the microphone for a few seconds and report what arrived: the device,
+    /// the level, and whether the operating system let any sound through. Nothing is
+    /// transcribed or kept. Run it from your own terminal: it is how macOS first asks your
+    /// terminal app for the microphone.
+    #[command(about = "Check the microphone without transcribing")]
+    Test {
+        /// How long to record, at most 600 (default 5)
+        #[arg(long, value_name = "N", default_value_t = 5, value_parser = clap::value_parser!(u32).range(1..=600))]
+        seconds: u32,
+    },
+}
+
+/// `biorouter dictionary` (DD-75). Writes need a person at an interactive terminal,
+/// except `import`; none runs in an agent's shell.
+#[derive(Subcommand)]
+enum DictionaryCommand {
+    /// The terms in this account's dictionary. Without a terminal only the public terms
+    /// are listed
+    #[command(about = "List the dictionary's terms", visible_alias = "ls")]
+    List {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json", "csv"])
+        )]
+        format: String,
+
+        #[arg(
+            long = "status",
+            value_name = "STATUS",
+            default_value = "all",
+            value_parser = clap::builder::PossibleValuesParser::new(["active", "suggested", "all"])
+        )]
+        status: String,
+    },
+
+    /// Add words dictation should spell your way, such as UCSF or EPAS1
+    #[command(about = "Add terms to the dictionary")]
+    Add {
+        #[arg(value_name = "TERM", required = true)]
+        terms: Vec<String>,
+
+        /// How you say the term, comma separated; may repeat
+        #[arg(long = "spoken", value_name = "FORMS")]
+        spoken: Vec<String>,
+
+        /// Use the terms only when dictating into chats on private models
+        #[arg(long)]
+        private: bool,
+    },
+
+    /// Change a term's spelling or how you say it
+    #[command(
+        about = "Change a term",
+        group(clap::ArgGroup::new("change").required(true).multiple(true).args(["new_term", "spoken"]))
+    )]
+    Edit {
+        #[arg(value_name = "TERM", required_unless_present = "id")]
+        term: Option<String>,
+
+        /// The entry's id, for a term that is both public and private
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
+
+        /// The new spelling
+        #[arg(long = "term", value_name = "NEW")]
+        new_term: Option<String>,
+
+        /// How you say the term, comma separated; replaces the spoken forms
+        #[arg(long = "spoken", value_name = "FORMS")]
+        spoken: Option<Vec<String>>,
+    },
+
+    /// Delete terms
+    #[command(
+        about = "Remove terms from the dictionary",
+        visible_alias = "rm",
+        group(clap::ArgGroup::new("which").required(true).multiple(true).args(["terms", "ids"]))
+    )]
+    Remove {
+        #[arg(value_name = "TERM")]
+        terms: Vec<String>,
+
+        /// An entry's id; may repeat
+        #[arg(long = "id", value_name = "ID")]
+        ids: Vec<String>,
+    },
+
+    /// Accept or dismiss the suggestions and the agent's terms waiting for you
+    #[command(about = "Review suggested terms")]
+    Review {},
+
+    /// Accept suggestions by id
+    #[command(about = "Accept suggested terms")]
+    Accept {
+        #[arg(value_name = "ID", required = true)]
+        ids: Vec<String>,
+    },
+
+    /// Dismiss suggestions by id; they are not suggested again
+    #[command(about = "Dismiss suggested terms")]
+    Dismiss {
+        #[arg(value_name = "ID", required = true)]
+        ids: Vec<String>,
+    },
+
+    /// Merge terms from a file or standard input: one term per line
+    /// (`EPAS1 = epas one, e pass one`), CSV or TSV with the header
+    /// `written,spoken_forms,note`, or an export. Never deletes
+    #[command(about = "Import terms")]
+    Import {
+        /// The file, or - for standard input
+        #[arg(value_name = "FILE|-")]
+        input: String,
+
+        /// The file's format (default: from its extension; standard input needs it
+        /// unless it is an export)
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            value_parser = clap::builder::PossibleValuesParser::new(["txt", "csv", "tsv", "json"])
+        )]
+        format: Option<String>,
+
+        /// Print what would change, and change nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Write the terms as JSON, for `import` on another computer. Without ids or usage
+    #[command(about = "Export terms")]
+    Export {
+        /// The file, or - for standard output (the default)
+        #[arg(value_name = "FILE|-")]
+        output: Option<String>,
+
+        /// Include private terms, after a confirmation (needs a terminal and a private
+        /// model configured)
+        #[arg(long)]
+        include_private: bool,
+    },
+
+    /// Let a private term shape dictation into chats on public models
+    #[command(about = "Make a private term public")]
+    Publicize {
+        #[arg(value_name = "TERM", required_unless_present = "id")]
+        term: Option<String>,
+
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
+    },
+
+    /// Use a term only when dictating into chats on private models
+    #[command(about = "Make a public term private")]
+    Privatize {
+        #[arg(value_name = "TERM", required_unless_present = "id")]
+        term: Option<String>,
+
+        #[arg(long, value_name = "ID")]
+        id: Option<String>,
+    },
+
+    /// Show the dictionary's settings, or change them
+    #[command(about = "Show or change the dictionary's settings")]
+    Settings {
+        /// What the agent's terms do: wait for you (suggest), go in when you ask
+        /// (on_request), or go in at once (add)
+        #[arg(
+            long = "agent-writes",
+            value_name = "MODE",
+            value_parser = clap::builder::PossibleValuesParser::new(["suggest", "on_request", "add"])
+        )]
+        agent_writes: Option<String>,
+
+        /// Suggest words from the messages you type in chats on public models, on this
+        /// computer; you keep or dismiss each one
+        #[arg(
+            long = "learn-from-chats",
+            value_name = "ON|OFF",
+            value_parser = clap::builder::PossibleValuesParser::new(["on", "off"])
+        )]
+        learn_from_chats: Option<String>,
+
+        /// Let the agent suggest words it sees in your chats
+        #[arg(long = "suggest-from-chats", value_name = "ON|OFF",
+              value_parser = clap::builder::PossibleValuesParser::new(["on", "off"]))]
+        suggest_from_chats: Option<String>,
+    },
+
+    /// Delete every term, after you type the count
+    #[command(about = "Delete every term")]
+    Clear {
+        /// Delete only the suggestions
+        #[arg(long)]
+        suggested_only: bool,
+    },
+
+    /// The words waiting for you to keep or dismiss: words found in your own messages and
+    /// the agent's suggested terms. Without a terminal only the public ones are listed
+    #[command(about = "List, keep, dismiss or find suggested words")]
+    Suggestions {
+        #[command(subcommand)]
+        command: Option<SuggestionsCommand>,
+
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: Option<String>,
+    },
+}
+
+/// `biorouter dictionary suggestions`. Keeping, dismissing and finding words need a person
+/// at an interactive terminal; listing does not.
+#[derive(Subcommand)]
+enum SuggestionsCommand {
+    /// The words waiting for you (what `suggestions` alone prints)
+    #[command(
+        about = "List the suggested words waiting for you",
+        visible_alias = "ls"
+    )]
+    List {
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: Option<String>,
+    },
+
+    /// Keep suggested words, named by the word or by id
+    #[command(about = "Keep suggested words")]
+    Keep {
+        #[arg(value_name = "TERM|ID", required = true)]
+        terms: Vec<String>,
+    },
+
+    /// Dismiss suggested words, named by the word or by id; a dismissed word is never
+    /// suggested again
+    #[command(about = "Dismiss suggested words")]
+    Dismiss {
+        #[arg(value_name = "TERM|ID", required = true)]
+        terms: Vec<String>,
+    },
+
+    /// Read your own chats on public models from the last 30 days (at most 100) once, on
+    /// this computer, and suggest the words that show up in several of them. Ctrl+C stops
+    /// it after the chat it is reading and keeps what it found
+    #[command(about = "Find words in your recent chats")]
+    Scan {},
+}
+
+impl SuggestionsCommand {
+    fn into_action(
+        command: Option<Self>,
+        format: Option<String>,
+    ) -> crate::commands::dictionary::Action {
+        use crate::commands::dictionary::{Action, ListFormat};
+        let listed = |format: Option<String>| Action::Suggestions {
+            format: match format.as_deref() {
+                Some("json") => ListFormat::Json,
+                _ => ListFormat::Text,
+            },
+        };
+        match command {
+            None => listed(format),
+            Some(Self::List { format: inner }) => listed(inner.or(format)),
+            Some(Self::Keep { terms }) => Action::KeepSuggestions { terms },
+            Some(Self::Dismiss { terms }) => Action::DismissSuggestions { terms },
+            Some(Self::Scan {}) => Action::ScanSuggestions,
+        }
+    }
+}
+
+impl DictionaryCommand {
+    fn into_action(self) -> crate::commands::dictionary::Action {
+        use crate::commands::dictionary::{Action, ListFormat, StatusFilter};
+        match self {
+            Self::List { format, status } => Action::List {
+                format: match format.as_str() {
+                    "json" => ListFormat::Json,
+                    "csv" => ListFormat::Csv,
+                    _ => ListFormat::Text,
+                },
+                status: match status.as_str() {
+                    "active" => StatusFilter::Active,
+                    "suggested" => StatusFilter::Suggested,
+                    _ => StatusFilter::All,
+                },
+            },
+            Self::Add {
+                terms,
+                spoken,
+                private,
+            } => Action::Add {
+                terms,
+                spoken,
+                private,
+            },
+            Self::Edit {
+                term,
+                id,
+                new_term,
+                spoken,
+            } => Action::Edit {
+                term,
+                id,
+                new_term,
+                spoken,
+            },
+            Self::Remove { terms, ids } => Action::Remove { terms, ids },
+            Self::Review {} => Action::Review,
+            Self::Accept { ids } => Action::Accept { ids },
+            Self::Dismiss { ids } => Action::Dismiss { ids },
+            Self::Import {
+                input,
+                format,
+                dry_run,
+            } => Action::Import {
+                input,
+                format,
+                dry_run,
+            },
+            Self::Export {
+                output,
+                include_private,
+            } => Action::Export {
+                output,
+                include_private,
+            },
+            Self::Publicize { term, id } => Action::Publicize { term, id },
+            Self::Privatize { term, id } => Action::Privatize { term, id },
+            Self::Settings {
+                agent_writes,
+                learn_from_chats,
+                suggest_from_chats,
+            } => Action::Settings {
+                agent_writes: agent_writes
+                    .as_deref()
+                    .and_then(biorouter::security::dictionary_store::store::AgentWrites::parse),
+                learn_from_chats: learn_from_chats.map(|value| value == "on"),
+                suggest_from_chats: suggest_from_chats.map(|value| value == "on"),
+            },
+            Self::Clear { suggested_only } => Action::Clear { suggested_only },
+            Self::Suggestions { command, format } => {
+                SuggestionsCommand::into_action(command, format)
+            }
+        }
+    }
+}
+
+#[derive(Subcommand)]
 enum LocalModelCommand {
     /// List the local model catalog and what is already downloaded
     #[command(
@@ -1645,6 +2135,13 @@ struct ServeOptions {
     )]
     no_token: bool,
 
+    /// Keep model installation on the host, not in a served browser
+    #[arg(
+        long,
+        help = "Disable speech model installation from this browser session"
+    )]
+    no_dictation_install: bool,
+
     /// Directory holding the built interface
     #[arg(
         long,
@@ -1700,6 +2197,7 @@ impl ServeOptions {
             self.port,
             self.token,
             self.no_token,
+            self.no_dictation_install,
             self.web_dir,
             self.public_url,
             self.open,
@@ -1884,6 +2382,130 @@ enum Command {
     Models {
         #[command(subcommand)]
         command: ModelsCommand,
+    },
+
+    /// Local dictation: engine status and speech models
+    #[command(about = "Local dictation: engine status and speech models")]
+    Dictation {
+        #[command(subcommand)]
+        command: DictationCommand,
+    },
+
+    /// Turn a recording into text on this computer, with the speech model dictation uses.
+    /// Reads WAV, AIFF, FLAC and MP3 (convert anything else with ffmpeg); nothing leaves
+    /// this computer.
+    /// Exit codes: 0 text, 1 failed, 2 declined to start, 3 nothing heard, 4 cancelled.
+    #[command(about = "Transcribe a recording on this computer")]
+    Transcribe {
+        /// The recording, or - to read it from standard input
+        #[arg(value_name = "FILE|-")]
+        input: String,
+
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json", "srt", "vtt"])
+        )]
+        format: String,
+
+        /// Write the transcript to FILE instead of standard output
+        #[arg(short, long, value_name = "FILE")]
+        output: Option<std::path::PathBuf>,
+
+        /// The language spoken: a two letter code such as en, or auto (default: the
+        /// language set for dictation, en unless changed)
+        #[arg(long, value_name = "LANGUAGE")]
+        language: Option<String>,
+
+        /// A speech model id from `biorouter dictation list` (default: the model in use)
+        #[arg(long, value_name = "MODEL")]
+        model: Option<String>,
+
+        /// The chat the transcript is for: its private dictionary terms are used only when
+        /// the chat is private, you run this at a terminal, and a private model is configured
+        #[arg(long, value_name = "SESSION_ID")]
+        session: Option<String>,
+
+        /// Text the recording is about (at most 4 KB read), which ranks the dictionary
+        /// terms that bias the transcript; it is never sent anywhere
+        #[arg(long = "context-file", value_name = "FILE")]
+        context_file: Option<std::path::PathBuf>,
+
+        /// Transcribe without the personal dictionary
+        #[arg(long = "no-dictionary")]
+        no_dictionary: bool,
+    },
+
+    /// Dictate from this terminal's microphone with the local engine and your dictionary.
+    /// Press Enter to stop; the text is shown for review (Enter uses it, e edits it, Esc
+    /// discards it), then printed, so "$(biorouter dictate)" and pipes send nothing you have
+    /// not seen. Runs only at your own terminal, never in an agent's shell.
+    /// Exit codes: 0 text, 1 failed, 2 declined to start, 3 nothing heard, 4 cancelled,
+    /// 5 --copy found no clipboard and printed the text.
+    #[command(about = "Dictate from this terminal's microphone")]
+    Dictate {
+        /// Put the text on the system clipboard instead of standard output
+        #[arg(long)]
+        copy: bool,
+
+        /// With --copy: ask clipboard managers not to keep the text in their history
+        #[arg(long = "no-history")]
+        no_history: bool,
+
+        #[arg(
+            long = "format",
+            value_name = "FORMAT",
+            default_value = "text",
+            value_parser = clap::builder::PossibleValuesParser::new(["text", "json"])
+        )]
+        format: String,
+
+        /// Stop after N seconds, at most 600 (the limit of every recording)
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u32).range(1..=600))]
+        seconds: Option<u32>,
+
+        /// The chat the text is for: its private dictionary terms are used only when the
+        /// chat is private and a private model is configured
+        #[arg(long, value_name = "SESSION_ID")]
+        session: Option<String>,
+
+        /// Let your private dictionary terms shape this one recording, after a warning:
+        /// only at your own terminal, with a private model configured
+        #[arg(long = "private-terms")]
+        private_terms: bool,
+
+        /// The language spoken: a two letter code such as en, or auto (default: the
+        /// language set for dictation, en unless changed)
+        #[arg(long, value_name = "LANGUAGE")]
+        language: Option<String>,
+
+        /// A speech model id from `biorouter dictation list` (default: the model in use)
+        #[arg(long, value_name = "MODEL")]
+        model: Option<String>,
+
+        /// Dictate without the personal dictionary
+        #[arg(long = "no-dictionary")]
+        no_dictionary: bool,
+
+        /// Print or copy the text without showing it for review first
+        #[arg(long = "no-review")]
+        no_review: bool,
+
+        /// The same as --no-review
+        #[arg(short, long)]
+        yes: bool,
+
+        /// Transcribe a recording instead: the same as `biorouter transcribe FILE`
+        #[arg(long, value_name = "FILE", hide = true)]
+        file: Option<String>,
+    },
+
+    /// The personal dictionary dictation spells your words from, kept on this computer
+    #[command(about = "Manage the words dictation spells your way")]
+    Dictionary {
+        #[command(subcommand)]
+        command: DictionaryCommand,
     },
 
     /// Manage personal knowledge bases (ingest, lint, query)
@@ -2160,6 +2782,10 @@ fn get_command_name(command: &Option<Command>) -> &'static str {
         Some(Command::Schedule { .. }) => "schedule",
         Some(Command::Usage { .. }) => "usage",
         Some(Command::Models { .. }) => "models",
+        Some(Command::Dictation { .. }) => "dictation",
+        Some(Command::Transcribe { .. }) => "transcribe",
+        Some(Command::Dictate { .. }) => "dictate",
+        Some(Command::Dictionary { .. }) => "dictionary",
         Some(Command::Decide(_)) => "decide",
         Some(Command::Knowledge { .. }) => "knowledge",
         Some(Command::Extension { .. }) => "extension",
@@ -3286,6 +3912,130 @@ async fn handle_extension_subcommand(command: ExtensionCommand) -> Result<()> {
     }
 }
 
+/// Run one `biorouter dictation` subcommand (speech models, devices, the microphone test).
+async fn handle_dictation_subcommand(command: DictationCommand) -> Result<()> {
+    match command {
+        DictationCommand::Status { format, verbose } => {
+            crate::commands::dictation::handle_status(&format, verbose).await
+        }
+        DictationCommand::List { format } => crate::commands::dictation::handle_list(&format).await,
+        DictationCommand::Install {
+            model,
+            from,
+            system,
+            yes,
+            suggest_from_chats,
+            no_suggest_from_chats,
+        } => {
+            crate::commands::dictation::handle_install_with_choice(
+                crate::commands::dictation::InstallArgs {
+                    model,
+                    from,
+                    system,
+                    yes,
+                },
+                if suggest_from_chats {
+                    Some(true)
+                } else if no_suggest_from_chats {
+                    Some(false)
+                } else {
+                    None
+                },
+            )
+            .await
+        }
+        DictationCommand::Remove { model, system, yes } => {
+            crate::commands::dictation::handle_remove(&model, system, yes).await
+        }
+        DictationCommand::Use { model } => crate::commands::dictation::handle_use(&model).await,
+        DictationCommand::Urls { model } => {
+            crate::commands::dictation::handle_urls(model.as_deref())
+        }
+        DictationCommand::Verify {} => crate::commands::dictation::handle_verify().await,
+        DictationCommand::Bench { format } => {
+            crate::commands::dictation::handle_bench(&format).await
+        }
+        DictationCommand::WarmUp { model } => {
+            crate::commands::dictation::handle_warm_up(&model).await
+        }
+        DictationCommand::Devices { format } => {
+            crate::commands::dictation::handle_devices(&format).await
+        }
+        DictationCommand::Test { seconds } => {
+            crate::commands::dictate::handle_microphone_test(seconds).await
+        }
+    }
+}
+
+/// Run `biorouter dictate`. [`dispatch`] hands over the whole `Command::Dictate` so its
+/// table stays one arm per verb; no other variant is routed here.
+async fn handle_dictate_command(command: Command) -> Result<()> {
+    let Command::Dictate {
+        copy,
+        no_history,
+        format,
+        seconds,
+        session,
+        private_terms,
+        language,
+        model,
+        no_dictionary,
+        no_review,
+        yes,
+        file,
+    } = command
+    else {
+        unreachable!("dispatch routes only `Command::Dictate` here");
+    };
+    crate::commands::dictate::handle_dictate(crate::commands::dictate::DictateArgs {
+        copy,
+        no_history,
+        format: crate::commands::dictate::DictateFormat::parse(&format),
+        seconds,
+        session,
+        private_terms,
+        language,
+        model,
+        no_dictionary,
+        no_review: no_review || yes,
+        file,
+    })
+    .await
+}
+
+/// Run `biorouter transcribe`. [`dispatch`] hands over the whole `Command::Transcribe` so
+/// its table stays one arm per verb; no other variant is routed here.
+async fn handle_transcribe_command(command: Command) -> Result<()> {
+    let Command::Transcribe {
+        input,
+        format,
+        output,
+        language,
+        model,
+        session,
+        context_file,
+        no_dictionary,
+    } = command
+    else {
+        unreachable!("dispatch routes only `Command::Transcribe` here");
+    };
+    crate::commands::transcribe::handle_transcribe(crate::commands::transcribe::TranscribeArgs {
+        input,
+        format: crate::commands::transcribe::OutputFormat::parse(&format),
+        output,
+        language,
+        model,
+        session,
+        context_file,
+        no_dictionary,
+    })
+    .await
+}
+
+async fn handle_dictionary_subcommand(command: DictionaryCommand) -> Result<()> {
+    crate::commands::dictionary::handle(command.into_action()).await
+}
+
 async fn handle_skill_subcommand(command: SkillCommand) -> Result<()> {
     use crate::commands::skill;
     match command {
@@ -3533,6 +4283,15 @@ pub async fn cli(command_line: CommandLine) -> anyhow::Result<()> {
     dispatch(cli.command).await
 }
 
+/// Mark this process as the terminal surface for the dictation and dictionary code that
+/// reads `activation::process_surface` (the first surface set wins). `session` and `run`
+/// call it before they start.
+fn mark_cli_surface() {
+    biorouter::dictation::activation::set_process_surface(
+        biorouter::dictation::activation::Surface::Cli,
+    );
+}
+
 /// Run the named command.
 ///
 /// Split out of [`cli`] so that adding a verb grows a function that is nothing
@@ -3568,6 +4327,7 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
             extension_opts,
             model_opts,
         }) => {
+            mark_cli_surface();
             let chat = SessionChat {
                 identifier,
                 resume,
@@ -3592,6 +4352,7 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
             output_opts,
             model_opts,
         }) => {
+            mark_cli_surface();
             handle_run_command(
                 input_opts,
                 identifier,
@@ -3623,6 +4384,10 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
         Some(Command::Workflow { command }) => handle_workflow_subcommand(command),
         Some(Command::Decide(options)) => crate::commands::decide::handle_decide(options).await,
         Some(Command::Models { command }) => handle_models_subcommand(command).await,
+        Some(Command::Dictation { command }) => handle_dictation_subcommand(command).await,
+        Some(command @ Command::Dictate { .. }) => handle_dictate_command(command).await,
+        Some(command @ Command::Transcribe { .. }) => handle_transcribe_command(command).await,
+        Some(Command::Dictionary { command }) => handle_dictionary_subcommand(command).await,
         Some(Command::Knowledge { command }) => handle_knowledge_subcommand(command).await,
         Some(Command::Extension { command }) => handle_extension_subcommand(command).await,
         Some(Command::Skill { command }) => handle_skill_subcommand(command).await,
@@ -4815,6 +5580,7 @@ mod cli_tests {
         assert!(options.token.is_none());
         assert!(options.web_dir.is_none());
         assert!(!options.no_token);
+        assert!(!options.no_dictation_install);
         assert!(!options.computer_use_approval);
         assert!(!options.folder_access_approval);
         assert!(!options.open);
@@ -4858,6 +5624,7 @@ mod cli_tests {
             Some(std::path::Path::new("/tmp/web"))
         );
         assert!(!options.no_token);
+        assert!(!options.no_dictation_install);
         assert!(options.computer_use_approval);
         assert!(options.open);
 
@@ -4873,6 +5640,12 @@ mod cli_tests {
             panic!("serve command expected");
         };
         assert!(options.no_token && options.computer_use_approval && options.open);
+
+        let parsed = Cli::try_parse_from(["biorouter", "serve", "--no-dictation-install"]).unwrap();
+        let Some(Command::Serve(options)) = parsed.command else {
+            panic!("serve command expected");
+        };
+        assert!(options.no_dictation_install);
 
         let conflict =
             Cli::try_parse_from(["biorouter", "serve", "--token", "test-token", "--no-token"])

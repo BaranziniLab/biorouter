@@ -2077,6 +2077,7 @@ function BaseChatContent({
           return false;
         }
         adoptDraftReasoningEffort(effortScope, newSession.id, submittedEffort);
+        customEvent.detail?.onAcceptedSession?.(newSession.id);
         navigateToRoute(
           navigate,
           `/pair?resumeSessionId=${newSession.id}`,
@@ -2112,7 +2113,12 @@ function BaseChatContent({
   // `tokenState` is what moves in a live chat: `session` is the row the chat was
   // opened with, so keyed on it alone the ledger, and the footer's cost and By
   // model list, stayed as they were on open until a reload.
-  const { sessionCosts, modelRows, ledgerSettled } = useCostTracking({
+  const {
+    sessionCosts,
+    modelRows,
+    ledgerSettled,
+    reload: reloadCost,
+  } = useCostTracking({
     session,
     liveTokens: tokenState,
   });
@@ -3019,6 +3025,7 @@ function BaseChatContent({
             workingDirLocked={workingDirLocked}
             sessionCosts={footerCost.sessionCosts}
             modelCostRows={footerCost.modelCostRows}
+            reloadCost={reloadCost}
             usageLimitNoticeKey={usageLimitNoticeKey}
             workflow={workflow}
             workflowAccepted={!hasNotAcceptedWorkflow}
@@ -3036,6 +3043,9 @@ function BaseChatContent({
             // Before the first message the dialog opens in draft mode (DR-33).
             onOpenDecisionMonitors={openMonitors}
             privacyBasis={privacyBasis}
+            // DR-33: a new chat's dictation is judged with the decision models its
+            // start will carry.
+            draftDecisionSettings={draftDecisions?.settings ?? null}
             {...customChatInputProps}
           />
         </PendingChatModelContext.Provider>

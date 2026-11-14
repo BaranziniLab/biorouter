@@ -34,7 +34,7 @@ export const CODE_BG = {
 
 /** Shared with the xterm terminal so a pasted command and its output match. */
 export const CODE_FONT_FAMILY = 'var(--font-mono)';
-export const CODE_FONT_SIZE = 'calc(13px * var(--app-font-scale, 1))';
+export const CODE_FONT_SIZE = 'calc(12px * var(--app-font-scale, 1))';
 export const CODE_LINE_HEIGHT = 'calc(20px * var(--app-font-scale, 1))';
 
 /**

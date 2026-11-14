@@ -17,6 +17,8 @@
 //! replaced the text census this file used to hold: a scanner cannot resolve
 //! Rust paths, and a reviewer walked four spellings of a tokio bind past it.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

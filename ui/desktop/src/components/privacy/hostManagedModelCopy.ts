@@ -34,14 +34,19 @@ export const HOST_SERVE_COMMAND = 'biorouter serve';
 /** Heading for a control that is inert because the host owns the choice. */
 export const HOST_MANAGED_MODEL_TITLE = 'The model is set on the host';
 
-/** One line, for a chip or a row with no room for the reason. */
+/** One line, for a chip or a row with no room for the reason, and the note's visible line. */
 export const HOST_MANAGED_MODEL_SHORT = `Biorouter is open in a browser, so the model comes from the machine running ${HOST_SERVE_COMMAND}.`;
 
-/** The full explanation, for anywhere with room for three sentences. */
-export const HOST_MANAGED_MODEL_REASON =
-  `Biorouter is open in a browser, so the model comes from the machine running ${HOST_SERVE_COMMAND}. ` +
+/**
+ * What to do, and why a browser tab cannot: the info icon beside {@link HOST_MANAGED_MODEL_SHORT}
+ * (owner, 2026-11-13: one line up front, the detail on hover). Two sentences.
+ */
+export const HOST_MANAGED_MODEL_HELP =
   `Change it there with ${HOST_CONFIGURE_COMMAND}, then reload this page. A browser tab cannot ` +
-  `switch models, and that is what keeps a private conversation from silently moving to a public model.`;
+  `switch models, so a private conversation never silently moves to a public model.`;
+
+/** The full explanation as one string, for a disabled control's description. */
+export const HOST_MANAGED_MODEL_REASON = `${HOST_MANAGED_MODEL_SHORT} ${HOST_MANAGED_MODEL_HELP}`;
 
 /** Heading for the first-run screen when the host has configured nothing yet. */
 export const HOST_MANAGED_ONBOARDING_TITLE = 'Choose a model on the host';
@@ -54,11 +59,17 @@ export const HOST_MANAGED_ONBOARDING_TITLE = 'Choose a model on the host';
  * that 409s. So the cards are not offered at all — the user is told what to run
  * on the host instead.
  */
-export const HOST_MANAGED_ONBOARDING_REASON =
-  `No provider is configured yet, and a browser tab cannot set one up. On the machine running ` +
-  `${HOST_SERVE_COMMAND}, run ${HOST_CONFIGURE_COMMAND} to choose a provider and model, then ` +
-  `reload this page. Fixing that choice on the host is what keeps a private conversation from ` +
-  `silently moving to a public model.`;
+export const HOST_MANAGED_ONBOARDING_STEP =
+  `On the machine running ${HOST_SERVE_COMMAND}, run ${HOST_CONFIGURE_COMMAND} to choose a ` +
+  `provider and model, then reload this page.`;
+
+/** Why the step happens on the host: the info icon beside the panel's title. */
+export const HOST_MANAGED_ONBOARDING_HELP =
+  `No provider is configured yet, and a browser tab cannot set one up. Choosing on the host keeps ` +
+  `a private conversation from silently moving to a public model.`;
+
+/** The first-run panel's whole account as one string: the step, then why. */
+export const HOST_MANAGED_ONBOARDING_REASON = `${HOST_MANAGED_ONBOARDING_STEP} ${HOST_MANAGED_ONBOARDING_HELP}`;
 
 /**
  * W2-PRV-2, round 4. The settings that decide where a provider sends its
@@ -68,14 +79,18 @@ export const HOST_MANAGED_ONBOARDING_REASON =
  * browser never can, so there they belong to the host as the model does
  * (`../settings/destinationConfigKeys.ts` names them).
  */
-export const HOST_MANAGED_DESTINATION_SHORT = `Biorouter is open in a browser, so where a provider sends its key is set on the computer running ${HOST_SERVE_COMMAND}.`;
+export const HOST_MANAGED_DESTINATION_SHORT = `Biorouter is open in a browser, so where a provider sends its key and requests is set on the computer running ${HOST_SERVE_COMMAND}.`;
 
-/** The full explanation, for a provider form. */
-export const HOST_MANAGED_DESTINATION_REASON =
-  `Biorouter is open in a browser, so where a provider sends its requests and its key is set on ` +
-  `the computer running ${HOST_SERVE_COMMAND}. Change it there with ${HOST_CONFIGURE_COMMAND}, or ` +
-  `in the Biorouter desktop app on that computer, then reload this page. A browser tab cannot ` +
-  `change it, because nothing here can confirm that a person made the change.`;
+/**
+ * What to do, and why a browser tab cannot: the info icon beside
+ * {@link HOST_MANAGED_DESTINATION_SHORT}. Two sentences.
+ */
+export const HOST_MANAGED_DESTINATION_HELP =
+  `Change it there with ${HOST_CONFIGURE_COMMAND} or the desktop app, then reload this page. A ` +
+  `browser tab cannot change it, because nothing here can confirm that a person made the change.`;
+
+/** The full explanation as one string, for a provider form. */
+export const HOST_MANAGED_DESTINATION_REASON = `${HOST_MANAGED_DESTINATION_SHORT} ${HOST_MANAGED_DESTINATION_HELP}`;
 
 /** The error beside a required destination setting the host has not set. */
 export function hostManagedDestinationRequired(fieldName: string): string {

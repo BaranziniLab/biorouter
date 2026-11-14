@@ -17,13 +17,13 @@ import {
   FooterCard,
   FooterCardDetail,
   FooterCardList,
-  FooterCardNote,
   FooterCardRoot,
   FooterCardRow,
   FooterCardSection,
   FooterCardTrigger,
   FooterCardValue,
 } from './FooterCard';
+import { FooterCardHelpSection } from './FooterCardHelpSection';
 import { useFooterCard } from './useFooterCard';
 import { isUnmeteredDecisionProvider } from '../decisions/decisionWire';
 import { UsageLimitSection } from './UsageLimitSection';
@@ -34,6 +34,12 @@ interface CostTrackerProps {
   outputTokens?: number;
   sessionCosts?: SessionCosts;
   modelCostRows?: ModelCostRow[];
+  /**
+   * Reads the chat's usage ledger again (`useCostTracking`'s `reload`). Called each time the card
+   * opens, with the Limit section's own read, so the cost and the limit line count the same
+   * requests: a side call made after the turn's last frame, such as the chat's title, is in both.
+   */
+  reloadCost?: () => void;
   /**
    * Price only the usage ledger, never the bare counters. A decision chat's
    * tokens belong to its decision model, and the fallback prices counters at
@@ -291,12 +297,14 @@ function CostFigure({
   usageLimit,
   showCosts,
   priced,
+  reloadCost,
   onOpenUsageSettings,
 }: {
   summary: CostSummary | null;
   usageLimit?: SessionUsageLimitController;
   showCosts: boolean;
   priced: boolean;
+  reloadCost?: () => void;
   onOpenUsageSettings?: () => void;
 }) {
   const card = useFooterCard();
@@ -305,11 +313,14 @@ function CostFigure({
   const limit = limitState(usageLimit);
   const label = summary ? formatCostEstimate(summary.estimate, summary.currency) : null;
 
-  // The card reads the limit afresh each time it opens.
+  // The card reads the limit and the cost afresh each time it opens, together, so the two count
+  // the same requests (a title's side call lands after the turn's last frame).
   const reload = usageLimit?.reload;
   useEffect(() => {
-    if (card.open) reload?.();
-  }, [card.open, reload]);
+    if (!card.open) return;
+    reload?.();
+    reloadCost?.();
+  }, [card.open, reload, reloadCost]);
 
   // The composer notice's "Change limit" keeps the card open and moves focus into it.
   const openRequest = usageLimit?.openCardRequest ?? 0;
@@ -340,13 +351,18 @@ function CostFigure({
         testId="cost-card"
       >
         {summary && label !== null && (
-          <FooterCardSection label={COST_CARD_COPY.section}>
+          // A partial total says so in its label, "Estimated cost of this chat", and why it is an
+          // estimate in the InfoTip beside it, rather than in a note under the figures.
+          <FooterCardHelpSection
+            label={
+              summary.estimate.partial ? COST_CARD_COPY.sectionEstimated : COST_CARD_COPY.section
+            }
+            about={COST_CARD_COPY.aboutEstimate}
+            help={summary.estimate.partial ? COST_CARD_COPY.partialNote : undefined}
+          >
             <FooterCardValue>{label}</FooterCardValue>
             <TokenDetail lines={COST_CARD_COPY.tokens(summary)} />
-            {summary.estimate.partial && (
-              <FooterCardNote>{COST_CARD_COPY.partialNote}</FooterCardNote>
-            )}
-          </FooterCardSection>
+          </FooterCardHelpSection>
         )}
         {summary && summary.models.length > 0 && (
           <FooterCardSection label={COST_CARD_COPY.byModel} labelId={byModelId}>
@@ -385,6 +401,7 @@ export function CostTracker({
   outputTokens = 0,
   sessionCosts,
   modelCostRows,
+  reloadCost,
   ledgerOnly = false,
   usageLimit,
   onOpenUsageSettings,
@@ -454,6 +471,7 @@ export function CostTracker({
       usageLimit={usageLimit}
       showCosts={showPricing}
       priced={priced}
+      reloadCost={reloadCost}
       onOpenUsageSettings={onOpenUsageSettings}
     />
   );

@@ -302,6 +302,12 @@ describe('the ordinary chat’s Crew access', () => {
       )
     );
     expect(await screen.findByText(accessCopy.chatRevoked('#general'))).toBeInTheDocument();
+    // Why the chat stops is the note's info tip; what to do next is its two buttons.
+    expect(
+      screen.getByRole('button', { name: `About ${accessCopy.chatHoldsMessagesLabel}` })
+    ).toHaveAccessibleDescription(accessCopy.chatHoldsMessages);
+    expect(screen.getByRole('button', { name: accessCopy.chatGrantAgain })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: accessCopy.chatNewChat })).toBeInTheDocument();
     await waitFor(() => expect(screen.getByTestId('blocked')).toHaveTextContent('true'));
     expect(screen.getByTestId('published')).toHaveTextContent('revoked');
     // Q4-15: the held composer's empty box says why Send is grey, before anyone presses Enter.
@@ -995,11 +1001,16 @@ describe('a finished task’s chat', () => {
     installDaemon({ grants: () => [grantRow({ session_id: 'chat-1', expired: true })] });
     renderChat();
     const lapsed = await screen.findByTestId('crew-chat-access-lapsed');
-    expect(lapsed).toHaveTextContent(
-      'was removed, so this chat can’t continue. It holds messages from the channel. Grant access again to continue, or start a new chat.'
-    );
+    expect(lapsed).toHaveTextContent('was removed, so this chat can’t continue.');
+    // Why it stops is the note's info tip; what to do next is its buttons (owner, 2026-11-13).
+    expect(
+      within(lapsed).getByRole('button', { name: `About ${accessCopy.chatHoldsMessagesLabel}` })
+    ).toHaveAccessibleDescription('It holds messages from the channel.');
     expect(
       within(lapsed).getByRole('button', { name: accessCopy.chatGrantAgain })
+    ).toBeInTheDocument();
+    expect(
+      within(lapsed).getByRole('button', { name: accessCopy.chatNewChat })
     ).toBeInTheDocument();
     expect(screen.queryByTestId('crew-chat-access-finished')).toBeNull();
   });

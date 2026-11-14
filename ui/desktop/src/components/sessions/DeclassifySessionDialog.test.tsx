@@ -163,6 +163,12 @@ describe('DeclassifySessionDialog', () => {
     );
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(screen.getByText(/undo/i)).toBeInTheDocument();
+    // Why this chat gets the single click is one hover away, beside the line.
+    expect(
+      screen.getByRole('button', { name: "About this chat's private marker" })
+    ).toHaveAccessibleDescription(
+      'This chat only ran turns against a private model. Its contents are unchanged.'
+    );
 
     rerender(
       <DeclassifySessionDialog
@@ -221,6 +227,15 @@ describe('DeclassifySessionDialog', () => {
       );
       const description = screen.getByRole('dialog').textContent ?? '';
       expect(description, `the copy shown for ${String(reason)}`).toContain(sentence);
+      // Said in the InfoTip beside the one line of consequence (owner, 2026-11-13), and
+      // so read out with it: the trigger carries the reason as its description.
+      expect(
+        screen.getByRole('button', { name: "About this chat's private marker" })
+      ).toHaveAccessibleDescription(expect.stringContaining(sentence));
+      // The consequence of an irreversible action stays in view at the decision.
+      expect(
+        screen.getByText(/A public model will then be able to open it\. This cannot be undone\./)
+      ).toBeVisible();
       if (reason !== 'mcp:ucsfomopagent') {
         expect(
           description,
@@ -399,6 +414,13 @@ describe('DeclassifySessionDialog', () => {
     // chat that genuinely reached a private data source — which would be a
     // claim about this conversation that nothing here established.
     expect(screen.queryByText(/reached a private data source/i)).toBeNull();
+    // The refusal and its reason stay in view; how the list came to be stale is the InfoTip's.
+    expect(
+      screen.getByText(/That request was refused because this chat's record has changed/)
+    ).toBeVisible();
+    expect(screen.getByRole('button', { name: 'About this refusal' })).toHaveAccessibleDescription(
+      expect.stringContaining('typed confirmation')
+    );
   });
 
   it('surfaces a refusal instead of claiming the chat is now public', async () => {

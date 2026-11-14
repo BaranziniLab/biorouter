@@ -10,11 +10,12 @@
  * against the unlayered focus edge in `main.css`, the control ground a filled box would hand its
  * children through `.br-fill-surface` (and this card must not), a thumbnail's tile, and forced
  * colours drawing the border. So the card's own class list (`composerCardClassName`, the one
- * `ChatInput` renders for a chat and for Home) and the real composer pieces (the `+` menu, the
- * queue, the chips row, `Button`) are bundled with esbuild, `styles/main.css` is compiled by
- * Tailwind with the classes the bundle uses, the composer's component CSS is appended as written,
- * and Chromium paints them. Colours are compared with probes that paint the token itself, so a
- * token value can change without this file changing.
+ * `ChatInput` renders for a chat and for Home) and the real composer pieces (the `+` and its
+ * popover, the queue, the chips row, the microphone, `Button`) are bundled with esbuild in
+ * `ChatInput`'s markup (the one-line card and the footer line under it, owner 2026-11-13),
+ * `styles/main.css` is compiled by Tailwind with the classes the bundle uses, the composer's
+ * component CSS is appended as written, and Chromium paints them. Colours are compared with
+ * probes that paint the token itself, so a token value can change without this file changing.
  *
  * Set `COMPOSER_SHOTS_DIR` to also save light and dark screenshots of the cards there.
  */
@@ -32,7 +33,7 @@ const STYLES = resolve(here, '../../styles');
 const requireFromDesktop = createRequire(resolve(here, '../../../package.json'));
 const SHOTS = process.env.COMPOSER_SHOTS_DIR;
 
-/** Keep the real Tools chip; only its daemon-backed lists are replaced. */
+/** Keep the real `+` and its tool lists (`toolsLists.tsx`); only the daemon-backed hooks are replaced. */
 const toolLists: Plugin = {
   name: 'composer-tool-lists',
   setup(builder) {
@@ -68,6 +69,21 @@ const toolLists: Plugin = {
   },
 };
 
+/** Vite's `?url&no-inline` worklet import means nothing to esbuild; the worklet is not loaded here. */
+const workletUrl: Plugin = {
+  name: 'worklet-url',
+  setup(builder) {
+    builder.onResolve({ filter: /\.worklet\.js\?/ }, () => ({
+      path: 'worklet',
+      namespace: 'stub',
+    }));
+    builder.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({
+      contents: 'export default "";',
+      loader: 'js',
+    }));
+  },
+};
+
 const ENTRY = `
 import * as React from 'react';
 import { createRoot } from 'react-dom/client';
@@ -75,7 +91,6 @@ import { composerCardClassName } from './composerCard';
 import { ComposerChips } from './ComposerChips';
 import { ComposerPlusMenu } from './ComposerPlusMenu';
 import { MessageQueue } from '../MessageQueue';
-import { ToolsChip } from '../bottom_menu/ToolsChip';
 import {
   NO_MODEL_CHIP_LABEL,
   NO_MODEL_COMPOSER_ACTION,
@@ -84,6 +99,20 @@ import {
 import { Button } from '../ui/button';
 import { PrivacyBadge } from '../ui/PrivacyBadge';
 import { ArrowUp, ChevronDown, Folder } from '../icons/app-icons';
+import { DictationButton } from '../dictation/DictationButton';
+
+/** The microphone's control at rest: what \`useDictationComposer\` hands it in a chat (DD-60). */
+const micControl = (key) => ({
+  key,
+  available: true,
+  activity: 'idle',
+  holdsComposer: false,
+  press() {},
+  stop() {},
+  cancel() {},
+  handleKeyDown: () => false,
+  noteInterest() {},
+});
 
 const IMAGE =
   'data:image/svg+xml;utf8,' +
@@ -91,9 +120,10 @@ const IMAGE =
     '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96"><rect width="96" height="96" fill="#7aa6c2"/><circle cx="64" cy="34" r="14" fill="#f2d16b"/><path d="M0 96 L36 50 L60 80 L74 64 L96 96Z" fill="#3f6f52"/></svg>'
   );
 
+/** \`ModelEffortChip\`'s trigger as \`ModelsBottomBar\` draws it, with a long name and the padlock. */
 function ModelChip() {
   return (
-    <div className="flex min-w-0 items-center">
+    <div data-testid="composer-model-chip" className="flex min-w-0 items-center">
       <div className="relative flex min-w-0 items-center">
         <button type="button" className="br-picker-chip" data-kind="model">
           <span className="br-picker-chip__name">gpt-5.6-sol-with-a-long-model-name · Deep</span>
@@ -107,12 +137,18 @@ function ModelChip() {
   );
 }
 
+/**
+ * \`ChatInput\`'s markup: the card (what goes with the message, then ONE row of \`+\`, the text,
+ * the microphone and Send), and the footer line under it (the folder; the model, the ring and the
+ * cost). \`decision\` draws a decision chat's row, which has no \`+\`.
+ */
 function Card({
   id,
   text = '',
   ready = false,
   dragging = false,
   working = false,
+  decision = false,
   modelChip,
   children,
 }: {
@@ -121,57 +157,79 @@ function Card({
   ready?: boolean;
   dragging?: boolean;
   working?: boolean;
+  decision?: boolean;
   /** Replaces the model chip, as the no-model state does (no chevron: it opens the catalog). */
   modelChip?: React.ReactNode;
   children?: React.ReactNode;
 }) {
   return (
-    <div className="relative flex w-full flex-col gap-1">
+    <div id={id + '-composer'} className="relative flex w-full flex-col gap-1">
       <div
         id={id}
         className={composerCardClassName({ isDraggingOver: dragging })}
         data-working={working ? 'true' : undefined}
+        data-composer-empty={text ? undefined : 'true'}
       >
         {children}
-        <textarea
-          id={id + '-text'}
-          rows={1}
-          aria-label="Message"
-          defaultValue={text}
-          placeholder="Ask a follow-up"
-          className="br-composer-input block w-full resize-none border-none bg-transparent px-0 py-1.5 text-body text-text-default placeholder:text-text-muted"
-        />
-        <div className="br-composer-controls">
-          <ComposerPlusMenu onAttachFiles={() => {}} onInsertTrigger={() => {}} />
-          <ToolsChip sessionId={id} />
-          <span className="br-composer-controls__spacer" />
-          <div className="br-composer-controls__model">
-            {modelChip ?? <ModelChip />}
-          </div>
-          <span className="flex-shrink-0">
-            <Button
-              id={id + '-send'}
-              type="button"
-              size="default"
-              shape="round"
-              variant={ready ? 'default' : 'secondary'}
-              aria-label="Send"
-            >
-              <ArrowUp className="size-4" />
-            </Button>
+        <div
+          id={id + '-row'}
+          data-testid="chat-input-toolbar"
+          className="br-composer-row"
+          data-plus={decision ? 'none' : undefined}
+        >
+          {!decision && (
+            <span className="br-composer-row__slot">
+              <ComposerPlusMenu sessionId={id} onAttachFiles={() => {}} onInsertTrigger={() => {}} />
+            </span>
+          )}
+          <form className="br-composer-row__field">
+            <textarea
+              id={id + '-text'}
+              rows={1}
+              aria-label="Message"
+              defaultValue={text}
+              placeholder="Ask a follow-up"
+              className="br-composer-input block w-full resize-none border-none bg-transparent px-0 py-1.5 text-body text-text-default placeholder:text-text-muted"
+            />
+          </form>
+          <span className="br-composer-row__slot">
+            <DictationButton control={micControl(id)} setView={() => {}} />
+          </span>
+          <span className="br-composer-row__slot">
+            <span className="flex-shrink-0">
+              <Button
+                id={id + '-send'}
+                type="button"
+                size="default"
+                shape="round"
+                variant={ready ? 'default' : 'secondary'}
+                aria-label="Send"
+                data-armed={ready ? 'true' : undefined}
+                className="br-composer-send"
+              >
+                <span className="br-composer-send__glyph">
+                  <ArrowUp className="size-4" />
+                </span>
+              </Button>
+            </span>
           </span>
         </div>
       </div>
-      <div className="br-footline br-composer-footer">
+      <div id={id + '-footer'} className="br-footline br-composer-footer">
         <div className="br-footline__side">
-          <span className="br-footline__item">
+          <span className="br-footline__item" data-testid="footer-folder">
             <Folder className="size-3.5" aria-hidden />
             <span className="br-footline__name">Desktop</span>
           </span>
         </div>
         <div className="br-footline__side" data-side="end">
-          <span className="br-footline__item">38% left</span>
-          <span className="br-footline__item">$0.42</span>
+          <div className="br-footline__model">{modelChip ?? <ModelChip />}</div>
+          <span className="br-footline__item" data-testid="footer-ring">
+            38% left
+          </span>
+          <span className="br-footline__item" data-testid="footer-cost">
+            $0.42
+          </span>
         </div>
       </div>
     </div>
@@ -280,6 +338,7 @@ function App() {
             </div>
           </Card>
           <Card id="typing" text="Compare the two fits" />
+          <Card id="decision" text="Is the run done?" decision />
           <Card id="drag" dragging />
           <Card id="working" text="Summarise the run" working />
         </div>
@@ -323,7 +382,7 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
       format: 'iife',
       jsx: 'automatic',
       platform: 'browser',
-      plugins: [toolLists],
+      plugins: [toolLists, workletUrl],
       define: { 'process.env.NODE_ENV': '"production"' },
       loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
       logLevel: 'silent',
@@ -337,9 +396,10 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
     });
     css =
       compiler.build(new Scanner({}).scanFiles([{ content: script, extension: 'js' }])) +
-      // The component stylesheets the bundle imports (esbuild drops them), as written.
-      readFileSync(resolve(here, 'composer.css'), 'utf8') +
-      readFileSync(resolve(here, '../bottom_menu/pickers.css'), 'utf8');
+      // The component stylesheets the bundle imports (esbuild drops them), as written, in the
+      // order `ComposerPlusMenu` imports them: the composer's footer rules re-cut the footer's.
+      readFileSync(resolve(here, '../bottom_menu/pickers.css'), 'utf8') +
+      readFileSync(resolve(here, 'composer.css'), 'utf8');
   }, 180_000);
 
   afterAll(async () => {
@@ -570,8 +630,9 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
   /**
    * FR-R2-9: the first screen after leaving first run showed one missing step as two nouns and
    * two controls, "Choose a provider" in the card's notice and "Choose a model" on the chip. The
-   * notice's link and the chip must read the same, in a real layout, and the card must stay one
-   * card (the notice sits above the input, the chip in the controls row).
+   * notice's link and the chip must read the same, in a real layout, and the composer must stay
+   * one card and its footer line (the notice sits above the text in the card, the chip on the
+   * footer line under it).
    */
   it('names the one missing step the same way on the notice link and on the model chip', async (ctx) => {
     if (!browser) return ctx.skip();
@@ -583,17 +644,20 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
           return {
             link: text(document.getElementById('nomodel-action')),
             chip: text(
-              document.querySelector('#nomodel .br-composer-controls__model .br-picker-chip')
+              document.querySelector('#nomodel-footer .br-footline__model .br-picker-chip')
             ),
+            chipInCard: document.querySelector('#nomodel .br-picker-chip') !== null,
             notice: text(document.querySelector('#nomodel .br-composer-notice > span')),
-            // Every visible word the card carries about the missing step, once each.
-            card: text(document.getElementById('nomodel')),
+            // Every visible word the composer (card and footer line) carries about the
+            // missing step, once each.
+            composer: text(document.getElementById('nomodel-composer')),
           };
         });
         expect(words.link, `${mode} link`).toBe('Choose a model');
         expect(words.chip, `${mode} chip`).toBe(words.link);
+        expect(words.chipInCard, `${mode} the chip is on the footer line`).toBe(false);
         expect(words.notice, `${mode} notice`).toBe('No model selected');
-        expect(words.card, `${mode} no second noun`).not.toMatch(/provider/i);
+        expect(words.composer, `${mode} no second noun`).not.toMatch(/provider/i);
       } finally {
         await tab.close();
       }
@@ -601,7 +665,7 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
   });
 
   it.for([760, 440, CHAT_MIN_WIDTH])(
-    'keeps the Tools-only chip, private model and Send on one row in a %ipx pane',
+    'keeps +, the text, the microphone and Send on one row, and the model on the footer line, in a %ipx pane',
     async (width, ctx) => {
       if (!browser) return ctx.skip();
       const tab = await open('light');
@@ -614,15 +678,17 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
           },
           { width, chrome: CHAT_COLUMN_CHROME }
         );
-        const chip = tab.locator('#rest [data-testid="composer-tools-chip"]');
-        expect(await chip.getAttribute('aria-label')).toBe(
-          'Tools: 12 extensions, 123 skills, 45 knowledge bases'
+        // The counts the Tools chip carried are the `+`'s name now; it shows no text of its own.
+        const plus = tab.locator('#rest [data-testid="composer-plus"]');
+        expect(await plus.getAttribute('aria-label')).toBe(
+          'Add files and tools. Tools: 12 extensions, 123 skills, 45 knowledge bases'
         );
-        expect(await chip.textContent()).toBe('Tools');
+        expect(await plus.textContent()).toBe('');
         const geometry = await tab.evaluate(() => {
           const card = document.getElementById('rest')!;
-          const box = (selector: string) => {
-            const el = card.querySelector<HTMLElement>(selector)!;
+          const footer = document.getElementById('rest-footer')!;
+          const box = (root: Element, selector: string) => {
+            const el = root.querySelector<HTMLElement | SVGElement>(selector)!;
             const rect = el.getBoundingClientRect();
             return {
               left: rect.left,
@@ -633,59 +699,131 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
               height: rect.height,
               scrollWidth: el.scrollWidth,
               clientWidth: el.clientWidth,
-              borderWidth: getComputedStyle(el).borderTopWidth,
+              display: getComputedStyle(el).display,
+            };
+          };
+          // A readout's words: their own box, not the item's padded one.
+          const words = (selector: string) => {
+            const item = footer.querySelector<HTMLElement>(selector)!;
+            const range = document.createRange();
+            range.selectNodeContents(item);
+            const text = range.getBoundingClientRect();
+            const style = getComputedStyle(item);
+            const inner = item.getBoundingClientRect();
+            return {
+              width: text.width,
+              right: text.right,
+              // The item's content box, which the words must fit in.
+              room: inner.width - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight),
             };
           };
           return {
             card: card.getBoundingClientRect().toJSON(),
-            layout: getComputedStyle(card.querySelector('.br-composer-controls')!).display,
-            plus: box('[data-testid="composer-plus"]'),
-            tools: box('[data-testid="composer-tools-chip"]'),
-            model: box('[data-kind="model"]'),
-            name: box('[data-kind="model"] .br-picker-chip__name'),
-            lock: box('[data-kind="model"] [data-testid="privacy-badge"]'),
-            chevron: box('[data-kind="model"] .br-picker-chip__chevron'),
-            send: box('#rest-send'),
+            row: box(card, '.br-composer-row'),
+            rowChildren: card.querySelector('.br-composer-row')!.children.length,
+            plus: box(card, '[data-testid="composer-plus"]'),
+            plusGlyph: box(card, '[data-testid="composer-plus"] svg'),
+            text: box(card, '#rest-text'),
+            mic: box(card, '[data-testid="dictation-button"]'),
+            send: box(card, '#rest-send'),
+            modelInCard: card.querySelector('[data-kind="model"]') !== null,
+            footer: { ...footer.getBoundingClientRect().toJSON(), scrollWidth: footer.scrollWidth },
+            folderGlyph: box(footer, '[data-testid="footer-folder"] svg'),
+            model: box(footer, '[data-kind="model"]'),
+            name: box(footer, '[data-kind="model"] .br-picker-chip__name'),
+            lock: box(footer, '[data-kind="model"] [data-testid="privacy-badge"]'),
+            chevron: box(footer, '[data-kind="model"] .br-picker-chip__chevron'),
+            ring: box(footer, '[data-testid="footer-ring"]'),
+            cost: box(footer, '[data-testid="footer-cost"]'),
+            ringWords: words('[data-testid="footer-ring"]'),
+            costWords: words('[data-testid="footer-cost"]'),
           };
         });
         const tolerance = 0.5;
-        const ordered = [geometry.plus, geometry.tools, geometry.model, geometry.send];
+        const middle = (rect: { top: number; height: number }) => rect.top + rect.height / 2;
         expect(geometry.card.width).toBe(width - CHAT_COLUMN_CHROME);
+
+        // THE CARD: one row, `+`, the text, the microphone and Send, left to right.
+        expect(geometry.row.display).toBe('flex');
+        expect(geometry.rowChildren).toBe(4);
+        expect(geometry.row.height).toBe(32);
+        expect(geometry.modelInCard).toBe(false);
+        const ordered = [geometry.plus, geometry.text, geometry.mic, geometry.send];
         for (const control of ordered) {
           expect(control.left).toBeGreaterThanOrEqual(geometry.card.left);
           expect(control.right).toBeLessThanOrEqual(geometry.card.right);
+          // One centre line, the 28px microphone included.
+          expect(Math.abs(middle(control) - middle(geometry.text))).toBeLessThanOrEqual(tolerance);
         }
-        expect(geometry.layout).toBe('flex');
-        expect(geometry.tools.borderWidth).toBe('0px');
         for (let index = 1; index < ordered.length; index++) {
           expect(ordered[index - 1].right).toBeLessThanOrEqual(ordered[index].left + tolerance);
-          expect(ordered[index - 1].top).toBeLessThanOrEqual(ordered[index].bottom);
-          expect(ordered[index - 1].bottom).toBeGreaterThanOrEqual(ordered[index].top);
         }
+        // The text takes what the controls leave, at every width.
+        expect(geometry.text.width).toBeGreaterThan(100);
+        expect([geometry.plus.width, geometry.plus.height]).toEqual([32, 32]);
+        expect([geometry.send.width, geometry.send.height]).toEqual([32, 32]);
+        // The microphone: the 28px ghost round button, immediately left of Send (DD-60).
+        expect([geometry.mic.width, geometry.mic.height]).toEqual([28, 28]);
+        expect(geometry.send.left - geometry.mic.right).toBe(4);
+        // Send on the card's inner right edge (1px border, 8px padding), the `+` glyph on the
+        // stack's 16px edge (and the 32px button's 8px inset).
+        expect(geometry.card.right - geometry.send.right).toBe(1 + 8);
+        expect(geometry.plusGlyph.left - geometry.card.left).toBe(1 + 8 + 8);
+
+        // THE FOOTER LINE: as wide as the card, the folder glyph under the `+` glyph.
+        expect(geometry.footer.left).toBe(geometry.card.left);
+        expect(geometry.footer.right).toBe(geometry.card.right);
+        expect(Math.abs(geometry.folderGlyph.left - geometry.plusGlyph.left)).toBeLessThanOrEqual(
+          tolerance
+        );
+        // The ring and the cost never give way (composer.css): only the folder's and the
+        // model's names ellipsize, so each readout's words fit inside its own padding.
+        for (const [name, readout] of [
+          ['ring', geometry.ringWords],
+          ['cost', geometry.costWords],
+        ] as const) {
+          expect(
+            readout.width,
+            `the ${name}'s words fit its box at ${width}px: ${JSON.stringify(readout)}`
+          ).toBeLessThanOrEqual(readout.room + tolerance);
+        }
+        // So the last readout's words end on Send's outer edge.
+        expect(Math.abs(geometry.costWords.right - geometry.send.right)).toBeLessThanOrEqual(
+          tolerance
+        );
+        // The model first on the right, then the ring and the cost, on one line, all inside it.
+        const readouts = [geometry.model, geometry.ring, geometry.cost];
+        for (const item of readouts) {
+          expect(item.left).toBeGreaterThanOrEqual(geometry.footer.left);
+          expect(item.right).toBeLessThanOrEqual(geometry.footer.right + tolerance);
+          expect(Math.abs(middle(item) - middle(geometry.ring))).toBeLessThanOrEqual(tolerance);
+        }
+        for (let index = 1; index < readouts.length; index++) {
+          expect(readouts[index - 1].right).toBeLessThanOrEqual(readouts[index].left + tolerance);
+        }
+        expect(geometry.folderGlyph.right).toBeLessThanOrEqual(geometry.model.left);
+        expect(geometry.footer.scrollWidth).toBeLessThanOrEqual(geometry.footer.width);
+        // In the footer the chip is a readout: 24px, no chevron, its name giving way first.
+        expect(geometry.model.height).toBe(24);
+        expect(geometry.chevron.display).toBe('none');
         expect(geometry.name.right).toBeLessThanOrEqual(geometry.lock.left + tolerance);
         expect(geometry.lock.width).toBe(12);
         expect(geometry.lock.height).toBe(12);
-        expect(geometry.lock.right).toBeLessThanOrEqual(geometry.chevron.left + tolerance);
-        expect(geometry.chevron.width).toBe(14);
         expect(
-          geometry.chevron.right,
+          geometry.lock.right,
           `the model contents stay inside their trigger: ${JSON.stringify({
             model: geometry.model,
             name: geometry.name,
             lock: geometry.lock,
-            chevron: geometry.chevron,
-            send: geometry.send,
           })}`
         ).toBeLessThanOrEqual(geometry.model.right + tolerance);
         expect(geometry.name.width, 'the model name keeps room for its ellipsis').toBeGreaterThan(
           12
         );
         expect(geometry.name.scrollWidth).toBeGreaterThan(geometry.name.clientWidth);
-        expect(geometry.send.width).toBe(32);
-        expect(geometry.send.height).toBe(32);
         if (SHOTS) {
           mkdirSync(SHOTS, { recursive: true });
-          await tab.locator('#rest').screenshot({
+          await tab.locator('#rest-composer').screenshot({
             path: resolve(SHOTS, `composer-card-light-pane-${width}.png`),
           });
         }
@@ -694,6 +832,38 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
       }
     }
   );
+
+  it('starts a decision chat’s text on the stack edge, with no +, and keeps the microphone and Send', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open('light');
+    try {
+      const geometry = await tab.evaluate(() => {
+        const rect = (selector: string) =>
+          document.querySelector(selector)!.getBoundingClientRect();
+        return {
+          plus: document.querySelector('#decision [data-testid="composer-plus"]') !== null,
+          plusAttr: document.getElementById('decision-row')!.getAttribute('data-plus'),
+          card: rect('#decision').toJSON(),
+          text: rect('#decision-text').toJSON(),
+          mic: rect('#decision [data-testid="dictation-button"]').toJSON(),
+          send: rect('#decision-send').toJSON(),
+          restPlusGlyph: rect('#rest [data-testid="composer-plus"] svg').toJSON(),
+          rest: rect('#rest').toJSON(),
+        };
+      });
+      expect(geometry.plus).toBe(false);
+      expect(geometry.plusAttr).toBe('none');
+      // The text starts where an ordinary chat's `+` glyph does: the stack's 16px edge.
+      expect(geometry.text.left - geometry.card.left).toBe(1 + 8 + 8);
+      expect(geometry.text.left - geometry.card.left).toBe(
+        geometry.restPlusGlyph.left - geometry.rest.left
+      );
+      expect(geometry.card.right - geometry.send.right).toBe(1 + 8);
+      expect(geometry.send.left - geometry.mic.right).toBe(4);
+    } finally {
+      await tab.close();
+    }
+  });
 
   it('saves screenshots when asked', async (ctx) => {
     if (!browser || !SHOTS) return ctx.skip();
@@ -707,7 +877,8 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
             .screenshot({ path: resolve(SHOTS, `composer-card-${mode}-${name}.png`) });
         await tab.screenshot({ path: resolve(SHOTS, `composer-card-${mode}.png`), fullPage: true });
         // At rest on a chat and on Home, and the drag-over card.
-        await shot('#rest', 'rest');
+        await shot('#rest-composer', 'rest');
+        await shot('#decision-composer', 'decision');
         await shot('#home-ground', 'home');
         await shot('#drag', 'drag-over');
         // Focused while empty, then typing (focused with text).

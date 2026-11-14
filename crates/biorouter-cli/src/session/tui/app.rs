@@ -26,13 +26,21 @@ const DIM: Style = Style::new().add_modifier(Modifier::DIM);
 const USER_BG: Color = Color::Indexed(237);
 const USER_FG: Color = Color::Indexed(252);
 
-/// A modal asking the user to approve a tool call.
+/// A modal asking the user to choose: a tool call's approval, or a dictionary row's review.
 pub struct PermissionModal {
+    /// The frame's title, before the scroll hint: [`TOOL_APPROVAL_TITLE`] or
+    /// [`DICTIONARY_REVIEW_TITLE`].
+    pub title: &'static str,
     pub prompt: Option<String>,
     pub options: Vec<(&'static str, &'static str)>,
     pub selected: usize,
     pub scroll: u16,
 }
+
+/// The title of a tool call's approval.
+pub const TOOL_APPROVAL_TITLE: &str = "Tool approval";
+/// The title of `/dictionary review`, which is not a tool approval.
+pub const DICTIONARY_REVIEW_TITLE: &str = "Dictionary review";
 
 /// What category a completion entry is (drives its colored tag in the popup).
 #[derive(Clone, Copy, PartialEq)]
@@ -99,6 +107,28 @@ pub struct App {
     pub input: String,
     /// Cursor position as a byte offset into `input`.
     pub cursor: usize,
+    #[cfg(feature = "dictation")]
+    pub dictation: Option<crate::dictation::frontend::Frontend>,
+    #[cfg(feature = "dictation")]
+    pub dictation_status: Option<String>,
+    #[cfg(feature = "dictation")]
+    pub dictation_available: bool,
+    #[cfg(feature = "dictation")]
+    pub dictation_session: Option<String>,
+    #[cfg(feature = "dictation")]
+    pub dictation_affiliation: Option<biorouter::privacy::ModelAffiliation>,
+    #[cfg(feature = "dictation")]
+    pub dictation_state: crate::dictation::frontend::FrontendSession,
+    #[cfg(feature = "dictation")]
+    pub dictated_spans: Vec<crate::dictation::frontend::DictatedSpan>,
+    #[cfg(feature = "dictation")]
+    pub submitted_spans: VecDeque<(
+        String,
+        String,
+        Vec<crate::dictation::frontend::DictatedSpan>,
+    )>,
+    #[cfg(feature = "dictation")]
+    pub dictation_anchor: Option<(usize, String)>,
     /// Selection anchor as a byte offset. When it differs from `cursor`, the
     /// selected range is the byte range between them.
     pub selection_anchor: Option<usize>,
@@ -175,6 +205,24 @@ impl App {
             scrollback: Vec::new(),
             input: String::new(),
             cursor: 0,
+            #[cfg(feature = "dictation")]
+            dictation: None,
+            #[cfg(feature = "dictation")]
+            dictation_status: None,
+            #[cfg(feature = "dictation")]
+            dictation_available: false,
+            #[cfg(feature = "dictation")]
+            dictation_session: None,
+            #[cfg(feature = "dictation")]
+            dictation_affiliation: None,
+            #[cfg(feature = "dictation")]
+            dictation_state: Default::default(),
+            #[cfg(feature = "dictation")]
+            dictated_spans: Vec::new(),
+            #[cfg(feature = "dictation")]
+            submitted_spans: VecDeque::new(),
+            #[cfg(feature = "dictation")]
+            dictation_anchor: None,
             selection_anchor: None,
             mouse_selecting: false,
             last_input_inner: None,
@@ -343,6 +391,8 @@ impl App {
             Some((c.start, insert))
         });
         if let Some((start, insert)) = completion {
+            #[cfg(feature = "dictation")]
+            self.dictated_spans.clear();
             self.input.replace_range(start..self.cursor, &insert);
             self.cursor = start + insert.len();
             self.completion = None;
@@ -414,12 +464,11 @@ impl App {
 
     pub fn push_error(&mut self, text: &str) {
         self.push_blank();
+        // Red is rare (design.md 9.14): the bold "error:" says what this is, and the
+        // message keeps the terminal's own ink. A failed request is rarely an alarm.
         self.push_line(Line::from(vec![
-            Span::styled(
-                "error: ",
-                Style::new().fg(Color::Red).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(text.to_string(), Style::new().fg(Color::Red)),
+            Span::styled("error: ", Style::new().add_modifier(Modifier::BOLD)),
+            Span::raw(text.to_string()),
         ]));
     }
 
@@ -657,10 +706,122 @@ impl App {
 
     pub fn insert_char(&mut self, c: char) {
         self.delete_selection();
+        #[cfg(feature = "dictation")]
+        {
+            let mut encoded = [0; 4];
+            self.map_dictation_edit(self.cursor, self.cursor, c.encode_utf8(&mut encoded));
+        }
         self.input.insert(self.cursor, c);
         self.cursor += c.len_utf8();
         self.hist_idx = None;
         self.completion_dismissed = false;
+    }
+
+    #[cfg(feature = "dictation")]
+    pub fn start_dictation(&mut self) {
+        if self.dictation.is_some() {
+            return;
+        }
+        self.dictation_anchor = Some((self.cursor, self.input.clone()));
+        self.dictation_status = Some(crate::dictation::messages::LINE_STARTING.to_string());
+        self.dictation = Some(crate::dictation::frontend::Frontend::start(
+            self.dictation_session.clone(),
+            self.dictation_affiliation,
+            self.dictation_state.clone(),
+        ));
+    }
+
+    #[cfg(feature = "dictation")]
+    pub fn stop_dictation(&mut self) {
+        if let Some(frontend) = &self.dictation {
+            frontend.stop();
+        }
+        self.dictation_status = Some(crate::dictation::messages::line_transcribing(0));
+    }
+
+    #[cfg(feature = "dictation")]
+    pub fn retry_dictation(&mut self) {
+        self.dictation_anchor = Some((self.cursor, self.input.clone()));
+        self.dictation_status = Some(crate::dictation::messages::line_transcribing(0));
+        self.dictation = Some(crate::dictation::frontend::Frontend::retry(
+            self.dictation_session.clone(),
+            self.dictation_affiliation,
+            self.dictation_state.clone(),
+        ));
+    }
+
+    #[cfg(feature = "dictation")]
+    pub fn cancel_dictation(&mut self) {
+        if let Some(frontend) = self.dictation.take() {
+            frontend.cancel();
+        }
+        self.dictation_anchor = None;
+        self.dictation_status = None;
+    }
+
+    #[cfg(feature = "dictation")]
+    pub fn insert_transcript(&mut self, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let anchor = self.dictation_anchor.take();
+        let at = match anchor {
+            Some((cursor, original)) if self.input == original => cursor,
+            _ => self.cursor,
+        };
+        let (left, right) = self.input.split_at(at);
+        let separator = if left.chars().next_back().is_some_and(|c| !c.is_whitespace()) {
+            " "
+        } else {
+            ""
+        };
+        let left = format!("{left}{separator}");
+        let right = right.to_string();
+        self.map_dictation_edit(at, at, &format!("{separator}{text}"));
+        self.input.insert_str(at, &format!("{separator}{text}"));
+        if self.dictated_spans.len() == 16 {
+            self.dictated_spans.remove(0);
+        }
+        self.dictated_spans.push(
+            crate::dictation::frontend::DictatedSpan::new(left, text.to_string(), right)
+                .at_range(at + separator.len(), at + separator.len() + text.len()),
+        );
+        self.cursor = at + separator.len() + text.len();
+        self.selection_anchor = None;
+        self.dictation_status = None;
+        self.dictation = None;
+        self.refresh_completion();
+    }
+
+    #[cfg(feature = "dictation")]
+    pub fn stage_submission(&mut self, text: &str) {
+        self.submitted_spans.push_back((
+            text.to_string(),
+            self.input.clone(),
+            std::mem::take(&mut self.dictated_spans),
+        ));
+    }
+
+    #[cfg(feature = "dictation")]
+    fn map_dictation_edit(&mut self, start: usize, end: usize, inserted: &str) {
+        for span in &mut self.dictated_spans {
+            span.map_edit_text(start, end, inserted);
+        }
+    }
+
+    #[cfg(feature = "dictation")]
+    pub fn take_submission(
+        &mut self,
+        text: &str,
+    ) -> Option<(String, Vec<crate::dictation::frontend::DictatedSpan>)> {
+        match self.submitted_spans.front() {
+            Some((queued, _, _)) if queued == text => self
+                .submitted_spans
+                .pop_front()
+                .map(|(_, raw, spans)| (raw, spans)),
+            _ => None,
+        }
     }
 
     pub fn insert_newline(&mut self) {
@@ -672,6 +833,8 @@ impl App {
     pub fn paste(&mut self, text: &str) {
         let clean = Self::normalize_pasted_text(text);
         self.delete_selection();
+        #[cfg(feature = "dictation")]
+        self.map_dictation_edit(self.cursor, self.cursor, &clean);
         self.input.insert_str(self.cursor, &clean);
         self.cursor += clean.len();
         self.hist_idx = None;
@@ -691,6 +854,8 @@ impl App {
             .and_then(|s| s.char_indices().next_back())
             .map(|(i, _)| i)
             .unwrap_or(0);
+        #[cfg(feature = "dictation")]
+        self.map_dictation_edit(prev, self.cursor, "");
         self.input.replace_range(prev..self.cursor, "");
         self.cursor = prev;
         self.hist_idx = None;
@@ -704,6 +869,8 @@ impl App {
         let Some(c) = self.input.get(self.cursor..).and_then(|s| s.chars().next()) else {
             return;
         };
+        #[cfg(feature = "dictation")]
+        self.map_dictation_edit(self.cursor, self.cursor + c.len_utf8(), "");
         self.input
             .replace_range(self.cursor..self.cursor + c.len_utf8(), "");
         self.hist_idx = None;
@@ -845,6 +1012,8 @@ impl App {
         let Some((start, end)) = self.selection_range() else {
             return false;
         };
+        #[cfg(feature = "dictation")]
+        self.map_dictation_edit(start, end, "");
         self.input.replace_range(start..end, "");
         self.cursor = start;
         self.clear_selection();
@@ -879,6 +1048,8 @@ impl App {
 
     pub fn clear_input(&mut self) {
         self.input.clear();
+        #[cfg(feature = "dictation")]
+        self.dictated_spans.clear();
         self.cursor = 0;
         self.clear_selection();
         self.hist_idx = None;
@@ -888,6 +1059,8 @@ impl App {
 
     /// Replace the input with a value from history recall.
     pub fn set_input(&mut self, s: String) {
+        #[cfg(feature = "dictation")]
+        self.dictated_spans.clear();
         self.cursor = s.len();
         self.input = s;
         self.clear_selection();
@@ -936,6 +1109,8 @@ impl App {
 
     pub fn accept_ghost(&mut self) {
         if let Some(g) = self.ghost() {
+            #[cfg(feature = "dictation")]
+            self.dictated_spans.clear();
             let g = g.to_string();
             self.delete_selection();
             self.input.push_str(&g);
@@ -1268,6 +1443,37 @@ fn truncate_lines(s: &str, max_lines: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::tool_output_preview;
+    #[cfg(feature = "dictation")]
+    use super::{App, StatusInfo};
+
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn retyping_only_the_final_dictated_word_keeps_one_pair_and_excludes_adjacent_append() {
+        let mut app = App::new(StatusInfo::default());
+        for c in "prefix ".chars() {
+            app.insert_char(c);
+        }
+        app.insert_transcript("Query the SPOKE knowledge graph for drugs that target EPADS1.");
+        for _ in 0.."EPADS1.".chars().count() {
+            app.backspace();
+        }
+        for c in "EPAS1. later".chars() {
+            app.insert_char(c);
+        }
+        let submitted = app.input.clone();
+        assert!(submitted.ends_with("EPAS1. later"));
+        app.stage_submission(&submitted);
+        let (raw, spans) = app.take_submission(&submitted).expect("queued input");
+        assert_eq!(raw, submitted);
+        assert_eq!(spans.len(), 1);
+        let observed = spans[0]
+            .correction(&submitted)
+            .expect("one final-word pair");
+        assert_eq!(
+            (observed.from.as_str(), observed.to.as_str()),
+            ("EPADS1", "EPAS1")
+        );
+    }
 
     /// `/subagents` and `/attach` ghost like any other command, after the
     /// shared list: `/s` still means `/schedule`, and the shared list itself
@@ -1305,6 +1511,28 @@ mod tests {
                 "{command} belongs to the TUI only"
             );
         }
+    }
+
+    /// The dictation commands sit after `/diverge`, so the ghosts people already
+    /// know keep their meaning: `/d` and `/di` still mean `/diverge`, `/de` still
+    /// means `/decisions`, and `/dic` reaches the dictation commands.
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn dictation_commands_leave_the_d_ghosts_alone() {
+        use super::{App, StatusInfo};
+
+        let ghost_of = |typed: &str| {
+            let mut app = App::new(StatusInfo::default());
+            for c in typed.chars() {
+                app.insert_char(c);
+            }
+            app.ghost()
+        };
+        assert_eq!(ghost_of("/d"), Some("iverge"));
+        assert_eq!(ghost_of("/di"), Some("verge"));
+        assert_eq!(ghost_of("/de"), Some("cisions"));
+        assert_eq!(ghost_of("/dic"), Some("tate"));
+        assert_eq!(ghost_of("/dicti"), Some("onary add"));
     }
 
     /// The transcript pane shows what the tool said, not the envelope the

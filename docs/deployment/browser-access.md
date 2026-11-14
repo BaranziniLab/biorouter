@@ -41,12 +41,15 @@ biorouter serve --open
   The token above is shown once, and is new on every launch.
 
   The model is whichever `biorouter configure` chose; a browser cannot change it.
+  Dictation: no speech model; run `biorouter dictation install`
   Press Ctrl-C to stop.
 ```
 
 `--open` opens your browser at that address. It hands the browser a page only your account can
 read, which carries the address, and never the address itself: a browser's command line can be
 read by other accounts on the machine, and the address works for anyone until `serve` stops.
+On a non-loopback bind without `--public-url`, it leaves the browser closed and prints the
+SSH tunnel instructions instead.
 Without `--open`, copy the URL, including the `?t=` part, which is what authenticates you. `Ctrl-C` stops the daemon and frees the port; so does
 stopping `serve` any other way (see [Stopping it](#stopping-it)).
 
@@ -57,7 +60,7 @@ place.
 ## The command and its options
 
 ```bash
-biorouter serve [--host <addr>] [--port <n>] [--token <t>] [--no-token] [--web-dir <dir>] [--public-url <url>] [--open]
+biorouter serve [--host <addr>] [--port <n>] [--token <t>] [--no-token] [--no-dictation-install] [--web-dir <dir>] [--public-url <url>] [--open]
 ```
 
 | Option | What it does | Default |
@@ -66,6 +69,7 @@ biorouter serve [--host <addr>] [--port <n>] [--token <t>] [--no-token] [--web-d
 | `-p, --port <n>` | Port to listen on. | `8765` |
 | `--token <t>` | Use this access token instead of generating a fresh one. The flag stays on the command line, where other accounts can read it, and `serve` prints a note saying so; `BIOROUTER_BROWSER_TOKEN` does not. | A new random token each launch |
 | `--no-token` | Serve with no access token. Refused for a non-loopback bind, and cannot be combined with `--token`. | Off |
+| `--no-dictation-install` | Stop browsers on this daemon from installing speech models. The host can still install them with `biorouter dictation install`. `BIOROUTER_DICTATION_BROWSER_INSTALL=false` and managed policy also stop browser installs. | Off |
 | `--web-dir <dir>` | Directory holding the built interface. It must contain an `index.html`, or `serve` refuses to start. Takes precedence over `BIOROUTER_SERVE_UI`. | `BIOROUTER_SERVE_UI` if set, otherwise found automatically — see [When the interface cannot be found](#when-the-interface-cannot-be-found) |
 | `--public-url <url>` | The `https://` address a reverse proxy serves the interface at, path prefix included. `serve` prints it with the token, and the live views accept connections from it. Takes precedence over `BIOROUTER_PUBLIC_URL`. See [Behind a reverse proxy](#behind-a-reverse-proxy). | None |
 | `--open` | Open a browser once the server is ready, through a page only your account can read. | Off |
@@ -153,10 +157,11 @@ else. Exposing the port is an explicit act.
 biorouter serve --host 0.0.0.0
 ```
 
-With a wildcard bind, `serve` prints a second address built from a routable address of the machine.
-Browser access from another machine requires a TLS proxy or an SSH tunnel: the plain-HTTP network
-address refuses the interface and apps, even with a valid access token. On a machine with no default
-route `serve` says so rather than printing a loopback address that could not work.
+With a wildcard bind and no `--public-url`, `serve` prints the SSH tunnel command and the full
+`http://127.0.0.1:8765/?t=<token>` address to open on your computer. It does not offer a plain
+HTTP network address as a browser link. In a container it names the published host port instead.
+Browser access from another machine requires an HTTPS proxy or an SSH tunnel: the plain HTTP
+network address refuses the interface and apps, even with a valid access token.
 
 A token is **mandatory** on any non-loopback bind. Passing `--no-token` alongside one does not
 warn, it refuses:
@@ -229,6 +234,33 @@ The proxy must pass the browser's `Sec-Fetch-*` request headers through, which p
 configured to remove them. The browser sends them only to an `https` or loopback address, and the
 daemon serves the interface to another address only when they arrive. Open the address with its
 trailing slash: the interface loads its files relative to it.
+
+Keep audio request bodies in the proxy's memory. On the Biorouter nginx location, set
+`client_body_buffer_size 512k;` or `proxy_request_buffering off;`. With nginx's stock 16 KiB
+buffer, audio chunks larger than 16 KiB are written to a temporary file. Keep a request body
+limit of at least 512 KiB plus headers; nginx's 1 MiB default is enough for Biorouter's 512 KiB
+chunks. HTTP/2 between the browser and proxy also keeps several open tabs from exhausting the
+browser's HTTP/1.1 connections. For a path prefix, end both `location` and `proxy_pass` with `/`
+so nginx removes the prefix before forwarding. For example:
+
+```nginx
+location /user/a/biorouter/ {
+    client_body_buffer_size 512k;
+    proxy_pass http://127.0.0.1:8765/;
+    proxy_http_version 1.1;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+}
+```
+
+The page warns once per browser origin before its first microphone recording. The permission
+covers every page at that origin, including Biorouter apps and notebook outputs. Choose a grant
+for one visit unless you trust every page there. Chromium applies Biorouter's app-page microphone
+header to each app document, but a same-origin popup can still use a lasting grant. Firefox and
+Safari do not enforce that header. The notice applies behind a path prefix too, where other pages
+on the proxy can share the origin.
 
 #### JupyterHub
 
@@ -334,6 +366,7 @@ differs:
 | A delegated subagent's own tab | **Read-only, and it says so before you try.** The tab shows the subagent's conversation and follows it while it works, but has no composer and no Stop button: sending to a subagent, steering it and stopping it need proof that a person acted, which only the desktop application holds. A note takes the composer's place, and one line takes the Stop button's ([SD-8](serve-decisions.md#sd-8--a-control-that-can-never-work-here-says-so-rather-than-failing-on-click)). |
 | Resetting app data (Settings → App → Danger zone → Reset data) | **Not available, and it says so before you try.** A reset deletes chats, knowledge bases and the rest for good, private ones included, so the daemon performs one only for a request that proves a person asked, which only the desktop application can send. The Reset data button is disabled, with a note under it saying why. On the machine running `biorouter serve`, reset from Settings in the Biorouter app there, or remove items from a terminal there with `biorouter session remove`, `schedule remove`, `skill remove` and `extension remove` ([SD-8](serve-decisions.md#sd-8--a-control-that-can-never-work-here-says-so-rather-than-failing-on-click)). |
 | Model and provider selection | **Not available.** See [The model is fixed before you start](#the-model-is-fixed-before-you-start). |
+| Dictation and Dictionary | The browser records from its own microphone and sends audio to the host running `serve`; that host transcribes it. **Settings > Models > Speech models** installs on that host unless the operator uses `--no-dictation-install`, `BIOROUTER_DICTATION_BROWSER_INSTALL=false`, or managed policy. The Dictionary page allows adding, editing, accepting and deleting terms. Publicize, privatize, and settings that raise agent writes or turn chat learning on are done on the host with `biorouter dictionary`. A private add needs private standing. **Show in Finder** is unavailable because the model folder belongs to the host. |
 | Crew | **Not available, and it says so before you try.** Opening **Crew** in the browser shows "Crew needs the Biorouter desktop app", and nothing on that page asks the daemon for Crew data. A chat shows no Crew bar. Every Crew action, even listing saved workspaces, needs proof that a person is at this computer, which the desktop application and `biorouter crew` supply themselves; the daemon `biorouter serve` starts never holds it. A Crew request that reaches it anyway is refused with `crew_human_authority_unavailable` and the sentence "Crew isn't available in a browser opened with biorouter serve…", and no setting in the browser changes that. Use Crew in the desktop application, or with `biorouter crew` in a terminal, on your own computer. See the [Crew user manual](../crew/README.md) and [SD-8](serve-decisions.md#sd-8--a-control-that-can-never-work-here-says-so-rather-than-failing-on-click). |
 | Browsing the marketplace (Browse extensions, Browse skills) | Works. The page reads the live catalogue from `https://biorouter.ucsf.edu/registry.json` itself, so the browser, not the serving machine, has to reach that site. When it cannot, the catalogue bundled with Biorouter is shown, and the dialog says *showing bundled catalog (offline)*. Installs download through the serving machine. |
 | File and folder pickers | No native dialog. You type a path, and it is a path **on the machine running the daemon**, not on the machine holding the browser. |

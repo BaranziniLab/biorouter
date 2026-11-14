@@ -55,6 +55,8 @@ import ExtensionsView, { ExtensionsViewOptions } from './components/extensions/E
 import WorkflowsView from './components/workflows/WorkflowsView';
 import SkillsView from './components/skills/SkillsView';
 import KnowledgeView from './components/knowledge/KnowledgeView';
+import DictionaryView from './components/dictionary/DictionaryView';
+import DictionaryTermDoor from './components/dictionary/DictionaryTermDoor';
 import { KnowledgeProvider } from './components/knowledge/KnowledgeContext';
 import ApplicationsView from './components/applications/ApplicationsView';
 import NotFoundView from './components/NotFoundView';
@@ -247,6 +249,7 @@ const WorkflowsRoute = () => {
 
 const SkillsRoute = () => <SkillsView />;
 const KnowledgeRoute = () => <KnowledgeView />;
+const DictionaryRoute = () => <DictionaryView />;
 
 const PermissionRoute = () => {
   const location = useLocation();
@@ -578,7 +581,9 @@ export function AppInner() {
       }
     };
 
-    return window.electron.on('set-view', handleSetView);
+    const remove = window.electron.on('set-view', handleSetView);
+    window.electron.dictationAnywhereSettingsReady?.();
+    return remove;
   }, [navigate]);
 
   // Cmd+W (Ctrl+W off mac). Sent by the File menu's "Close Tab" item — see
@@ -734,6 +739,9 @@ export function AppInner() {
         pauseOnHover
       />
       <ExtensionInstallModal addExtension={addExtension} setView={setView} />
+      {/* The context menu's **Add to Biorouter dictionary…** (DD-68): renders nothing until
+          the menu sends a word, and nothing on a browser, which has no Electron menu. */}
+      <DictionaryTermDoor />
       <div className="relative w-screen h-screen overflow-hidden bg-background-canvas flex flex-col">
         <div className="titlebar-drag-region" />
         <ChatStreamProvider>
@@ -789,6 +797,7 @@ export function AppInner() {
                 <Route path="workflows" element={<WorkflowsRoute />} />
                 <Route path="skills" element={<SkillsRoute />} />
                 <Route path="knowledge" element={<KnowledgeRoute />} />
+                <Route path="dictionary" element={<DictionaryRoute />} />
                 <Route path="crew" element={<CrewApp />} />
                 <Route
                   path="shared-session"

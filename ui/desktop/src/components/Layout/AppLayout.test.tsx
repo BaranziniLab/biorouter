@@ -210,6 +210,7 @@ describe('the top-band body class', () => {
       '/workflows',
       '/skills',
       '/knowledge',
+      '/dictionary',
       '/shared-session',
       '/permission',
       '/no-such-page',

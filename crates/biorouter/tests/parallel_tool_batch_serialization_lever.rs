@@ -12,6 +12,8 @@
 //! is a real operational constraint, not just a test artifact: setting the
 //! variable on a *running* daemon has no effect, it must be set at start-up.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 mod parallel_batch_support;
 
 use parallel_batch_support::{agent_with_batch, drain, tool_responses};

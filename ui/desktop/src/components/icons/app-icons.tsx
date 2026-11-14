@@ -15,6 +15,7 @@ import {
   ArrowLeft as _ArrowLeft,
   ArrowRight as _ArrowRight,
   ArrowUp as _ArrowUp,
+  BookA as _BookA,
   BookMarked as _BookMarked,
   Bookmark as _Bookmark,
   BookmarkPlus as _BookmarkPlus,
@@ -35,6 +36,7 @@ import {
   Circle as _Circle,
   CircleDotDashed as _CircleDotDashed,
   CircleHelp as _CircleHelp,
+  CircleX as _CircleX,
   Clipboard as _Clipboard,
   ClipboardList as _ClipboardList,
   Clock as _Clock,
@@ -87,6 +89,7 @@ import {
   LogOut as _LogOut,
   Maximize2 as _Maximize2,
   MessageSquare as _MessageSquare,
+  Mic as _Mic,
   MessageSquarePlus as _MessageSquarePlus,
   MessageSquareText as _MessageSquareText,
   MessagesSquare as _MessagesSquare,
@@ -178,6 +181,13 @@ export const ArrowLeft = light(_ArrowLeft);
  * empty graph). */
 export const ArrowRight = light(_ArrowRight);
 export const ArrowUp = light(_ArrowUp);
+/** Dictation: the composer's microphone (DD-60). */
+export const Mic = light(_Mic);
+/**
+ * The Dictionary (DD-67): the sidebar row, the page and its empty state. A book with an "A",
+ * not reused for memory or knowledge, which have their own glyphs.
+ */
+export const Dictionary = light(_BookA);
 export const BookMarked = light(_BookMarked);
 export const Bookmark = light(_Bookmark);
 export const BookmarkPlus = light(_BookmarkPlus);
@@ -205,6 +215,8 @@ export const CircleDotDashed = light(_CircleDotDashed);
 /** The privacy axes' "unstated" mark — see `Landmark` below for the trio. */
 export const CircleHelp = light(_CircleHelp);
 export const CircleHelpIcon = CircleHelp;
+/** A failed transcript line's glyph (`FAILED_GLYPH`): "this failed", said by shape, not by red. */
+export const CircleX = light(_CircleX);
 export const Clipboard = light(_Clipboard);
 export const ClipboardList = light(_ClipboardList);
 export const Clock = light(_Clock);

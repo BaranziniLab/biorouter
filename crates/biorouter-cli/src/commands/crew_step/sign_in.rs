@@ -116,7 +116,15 @@ pub(crate) trait SignInDaemon {
 
 impl SignInDaemon for CrewClient {
     async fn ask(&self, question: &str) -> Result<Option<Zeroizing<String>>> {
-        crate::commands::shared_conversation::terminal_input(question, false, ANSWER_BYTES).await
+        crate::commands::shared_conversation::terminal_input(
+            question,
+            false,
+            ANSWER_BYTES,
+            None,
+            None,
+            None,
+        )
+        .await
     }
 
     async fn sign_in_at(&self, prepare_path: &str, no_terminal: &str) -> Result<Value> {

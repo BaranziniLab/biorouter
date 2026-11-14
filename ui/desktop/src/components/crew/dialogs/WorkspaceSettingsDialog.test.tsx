@@ -501,14 +501,21 @@ describe('WorkspaceSettingsDialog', () => {
     ({ view, dialog } = await at(Math.ceil(15 * MIB * 0.82)));
     expect(dialog.querySelector('[data-crew-settings-storage]')).toHaveTextContent('82% full');
     expect(dialog.querySelector('[data-crew-settings-storage-note]')).toHaveTextContent(
-      'lab is 82% full. When it’s full, only removing people and privacy changes will work; start a new workspace to keep posting.'
+      'lab is 82% full.'
+    );
+    // What still works once full is the note's info tip (owner, 2026-11-13).
+    expect(within(dialog).getByTestId('crew-settings-storage-help')).toHaveAccessibleDescription(
+      'When it’s full, only removing people and privacy changes will work; start a new workspace to keep posting.'
     );
     view.unmount();
 
     ({ view, dialog } = await at(15 * MIB + 1));
     expect(dialog.querySelector('[data-crew-settings-storage]')).toHaveTextContent('Full');
     expect(dialog.querySelector('[data-crew-settings-storage-note]')).toHaveTextContent(
-      'lab is full. Only removing people and privacy changes work now; start a new workspace to keep posting.'
+      'lab is full.'
+    );
+    expect(within(dialog).getByTestId('crew-settings-storage-help')).toHaveAccessibleDescription(
+      'Only removing people and privacy changes work now; start a new workspace to keep posting.'
     );
     view.unmount();
 
@@ -931,6 +938,8 @@ describe('WorkspaceSettingsDialog: governance, context and deletion (OW-1, OW-5,
     // A workspace from before governance reads as managed: today's rules.
     expect(managed).toBeChecked();
     expect(screen.getByText(copy.governance.hostOnly('lab'))).toBeInTheDocument();
+    // What each choice lets people do is the question's info tip, and the group's description.
+    expect(group).toHaveAccessibleDescription(copy.governance.help);
     await act(async () => {
       fireEvent.click(within(group).getByRole('radio', { name: new RegExp(copy.governance.open) }));
     });
@@ -1057,6 +1066,8 @@ describe('WorkspaceSettingsDialog: governance, context and deletion (OW-1, OW-5,
     );
     const panel = await contextTab();
     const editor = within(panel).getByLabelText(contextCopy.label);
+    // What the context is for is the label's info tip, and still the editor's description.
+    expect(editor).toHaveAccessibleDescription(expect.stringContaining(contextCopy.help('lab')));
     fireEvent.change(editor, { target: { value: 'mine' } });
     await act(async () => {
       fireEvent.click(within(panel).getByRole('button', { name: contextCopy.save }));
@@ -1064,6 +1075,10 @@ describe('WorkspaceSettingsDialog: governance, context and deletion (OW-1, OW-5,
     const note = await within(panel).findByRole('alert');
     expect(note).toHaveTextContent(/saved a newer version while you were editing/);
     expect(note).toHaveTextContent(/Bob Lee/);
+    // That the person's own text is still there, and what to do, is the note's info tip.
+    expect(
+      within(note).getByRole('button', { name: `About ${contextCopy.conflictLabel}` })
+    ).toHaveAccessibleDescription(contextCopy.conflictHelp);
     // The refusal is answered here, not repeated as an error.
     expect(screen.queryByText(/revision_conflict/)).toBeNull();
     expect(editor).toHaveValue('mine');

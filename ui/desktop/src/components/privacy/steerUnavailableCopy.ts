@@ -40,17 +40,27 @@ import { HOST_SERVE_COMMAND } from './hostManagedModelCopy';
 /** Heading for the control that is absent because this surface cannot prove a person. */
 export const STEER_UNAVAILABLE_TITLE = 'A running turn cannot be steered from a browser';
 
-/** One line, for a row with no space for the reason. */
+/**
+ * The one line the queue shows, wherever it says this (owner, 2026-11-13: one line up front, the
+ * detail on hover). Why is {@link STEER_UNAVAILABLE_WHY}, behind the info icon beside it.
+ */
 export const STEER_UNAVAILABLE_SHORT =
-  `Biorouter is open in a browser, so a message cannot join a turn that is already running. ` +
-  `Use Stop & send instead.`;
+  'A message cannot join a running turn in a browser. Use Stop & send instead.';
 
-/** The full explanation, for anywhere with room for two sentences. */
-export const STEER_UNAVAILABLE_REASON =
-  `Biorouter is open in a browser, so a message cannot join a turn that is already running: ` +
-  `the machine running ${HOST_SERVE_COMMAND} cannot tell a request from you apart from one made ` +
-  `by the model, and changing what the model is doing mid-turn needs that proof. Use Stop & send ` +
-  `to end this turn and send the message as a new one; steering itself works in the desktop app.`;
+/** The info icon's text beside {@link STEER_UNAVAILABLE_SHORT}: why, and where steering works. */
+export const STEER_UNAVAILABLE_WHY =
+  `The machine running ${HOST_SERVE_COMMAND} cannot tell a request from you apart from one made ` +
+  `by the model, and steering a running turn needs that proof. Steering works in the desktop app.`;
+
+/** The info icon's name: "About steering in a browser". */
+export const STEER_UNAVAILABLE_NAME = 'steering in a browser';
+
+/**
+ * The full explanation, as one string: the reason {@link steerUnavailableReason} returns. The
+ * queue draws it as the line and its info icon; this joins the two halves for a caller that needs
+ * the whole reason as text.
+ */
+export const STEER_UNAVAILABLE_REASON = `${STEER_UNAVAILABLE_SHORT} ${STEER_UNAVAILABLE_WHY}`;
 
 /**
  * The reason a steer is unavailable on this surface, or `null` where it works.

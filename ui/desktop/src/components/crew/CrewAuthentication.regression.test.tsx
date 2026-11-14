@@ -217,7 +217,7 @@ describe('CrewAuthentication', () => {
     );
   });
 
-  it('wears the family terminal palette at 13/20 and re-themes without a new session', async () => {
+  it('wears the family terminal palette at 12/20 and re-themes without a new session', async () => {
     mocks.createCrewAuthentication.mockResolvedValue({ success: true, sessionId: 'session-7' });
     const props = { connectionId: 'connection-7', onConnected: vi.fn(), onClose: vi.fn() };
     const view = render(<CrewAuthentication {...props} />);
@@ -226,8 +226,8 @@ describe('CrewAuthentication', () => {
     );
 
     const terminal = mocks.terminals[0];
-    expect(terminal?.options.fontSize).toBe(13);
-    expect(terminal?.options.lineHeight).toBe(20 / 13);
+    expect(terminal?.options.fontSize).toBe(12);
+    expect(terminal?.options.lineHeight).toBe(20 / 12);
     expect(terminal?.options.theme).toEqual(GENERATED_THEMES.parchment.light.terminal);
     expect(JSON.stringify(terminal?.options.theme)).not.toContain('#17191c');
 

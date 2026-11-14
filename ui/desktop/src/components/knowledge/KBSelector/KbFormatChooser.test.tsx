@@ -40,6 +40,10 @@ describe('KbFormatChooser', () => {
   it('previews the folder in one line, and says the format is permanent once', () => {
     renderChooser();
     expect(screen.getByText(knowledgeCopy.format.folder('cohort-notes'))).toBeVisible();
+    // Where the base will live is a place, not code: sans (design.md D-42).
+    expect(screen.getByText(knowledgeCopy.format.folder('cohort-notes'))).not.toHaveClass(
+      'font-mono'
+    );
     expect(
       screen.getByRole('button', { name: `About ${knowledgeCopy.format.folderInfoLabel}` })
     ).toHaveAccessibleDescription(knowledgeCopy.format.folderInfo);

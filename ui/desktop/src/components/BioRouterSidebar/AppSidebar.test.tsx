@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { MemoryRouter, useLocation } from 'react-router-dom';
@@ -20,11 +20,13 @@ import {
 const mocks = vi.hoisted(() => ({
   listSessions: vi.fn(),
   listSidebarSessions: vi.fn(),
+  listDictionaryEntries: vi.fn(),
 }));
 
 vi.mock('../../api', () => ({
   listSessions: mocks.listSessions,
   listSidebarSessions: mocks.listSidebarSessions,
+  listDictionaryEntries: mocks.listDictionaryEntries,
 }));
 
 vi.mock('../../hooks/chatStreamStore', () => ({
@@ -37,6 +39,10 @@ vi.mock('./SidebarUpdateButton', () => ({
 
 import AppSidebar from './AppSidebar';
 import { SAME_ROUTE_RESET_EVENT } from '../../hooks/useSameRouteReset';
+import type { DictationStatus } from '../dictation/dictationApi';
+import { refreshDictationStatus, resetDictationStoreForTests } from '../dictation/dictationStore';
+import { fakeStatusApi, speechStatus } from '../dictation/dictationTestKit';
+import { resetDictionaryStoreForTests } from '../dictionary/useDictionary';
 
 const session: SessionSummary = {
   id: 'session-1',
@@ -194,7 +200,7 @@ describe('AppSidebar chat navigation', () => {
 
 /**
  * ASTRYX §4.1.3 — the rail carries one destination and one action, and the other
- * six live behind one disclosure.
+ * seven live behind one disclosure.
  *
  * This is where the 240px comes from: nine 32px nav rows become three. jsdom
  * cannot measure that, so what is pinned here is the STRUCTURE that produces it
@@ -218,7 +224,7 @@ describe('AppSidebar — the Components disclosure', () => {
     expect(screen.getByTestId('sidebar-home-button')).toBeInTheDocument();
     expect(screen.getByTestId('sidebar-new-chat-button')).toBeInTheDocument();
     expect(screen.getByTestId('sidebar-components-disclosure')).toBeInTheDocument();
-    // The six destinations are reachable, not resident.
+    // The seven destinations are reachable, not resident.
     expect(screen.queryByTestId('sidebar-components-group')).toBeNull();
     expect(screen.queryByTestId('sidebar-workflows-button')).toBeNull();
     expect(screen.queryByTestId('sidebar-knowledge-button')).toBeNull();
@@ -524,5 +530,161 @@ describe('New chat’s shortcut hint', () => {
     expect(hint).not.toBeNull();
     expect(hint).toHaveTextContent(window.electron?.platform === 'darwin' ? '⌘T' : 'Ctrl+T');
     expect(await screen.findByTestId('recent-chat-session-1')).toBeInTheDocument();
+  });
+});
+
+/**
+ * DD-67: **Dictionary** sits in the Components group after Knowledge and before Built apps. The
+ * group is collapsed by default, so the first verified speech model opens it once; a later
+ * collapse sticks. While suggestions wait the row shows their count and a collapsed group a dot.
+ * The sidebar reads the dictation status store but never loads it, so it sends nothing on mount.
+ */
+describe('AppSidebar: Dictionary', () => {
+  const renderSidebar = (path = '/pair') =>
+    render(
+      <MemoryRouter initialEntries={[path]}>
+        <SidebarHarness />
+      </MemoryRouter>
+    );
+
+  const componentLabels = () =>
+    [...screen.getByTestId('sidebar-components-group').querySelectorAll('.br-nav-row-label')].map(
+      (label) => label.textContent
+    );
+
+  async function loadStatus(status: DictationStatus) {
+    resetDictationStoreForTests(fakeStatusApi(() => status).api);
+    await act(async () => {
+      await refreshDictationStatus();
+    });
+  }
+
+  const noModel = () =>
+    speechStatus({ active_model: null }, { installed: false, id: 'whisper-small.en-q8_0' });
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    resetDictionaryStoreForTests();
+    resetDictationStoreForTests(fakeStatusApi(() => null).api);
+    mocks.listDictionaryEntries.mockReset();
+    mocks.listDictionaryEntries.mockResolvedValue({
+      data: JSON.stringify({ entries: [], next_cursor: null }),
+      response: new Response('{}', { status: 200 }),
+    });
+  });
+
+  afterEach(() => {
+    resetDictationStoreForTests();
+    resetDictionaryStoreForTests();
+    delete document.documentElement.dataset.biorouterSurface;
+  });
+
+  it('sits after Knowledge and before Built apps, with its own glyph and test id', () => {
+    window.localStorage.setItem('biorouter:sidebar-components-expanded', 'true');
+    renderSidebar();
+    expect(componentLabels()).toEqual([
+      'Workflows',
+      'Scheduler',
+      'Extensions',
+      'Skills',
+      'Knowledge',
+      'Dictionary',
+      'Built apps',
+    ]);
+    expect(screen.getByTestId('sidebar-dictionary-button')).toHaveClass('br-nav-row');
+    // Reading the status store is not loading it: nothing went out when the sidebar mounted.
+    expect(mocks.listDictionaryEntries).not.toHaveBeenCalled();
+  });
+
+  it('opens the group on the Dictionary route, as on any component route', () => {
+    renderSidebar('/dictionary');
+    expect(screen.getByTestId('sidebar-dictionary-button')).toHaveAttribute('aria-current', 'page');
+    expect(window.localStorage.getItem('biorouter:sidebar-components-expanded')).toBeNull();
+  });
+
+  it('appears on a serve browser and remains hidden under managed policy', async () => {
+    window.localStorage.setItem('biorouter:sidebar-components-expanded', 'true');
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    const browser = renderSidebar();
+    expect(componentLabels()).toContain('Dictionary');
+    browser.unmount();
+    delete document.documentElement.dataset.biorouterSurface;
+
+    const policy = speechStatus();
+    policy.policy = {
+      ...policy.policy,
+      managed: true,
+      dictionary: { allowed: false, reason: null },
+    };
+    await loadStatus(policy);
+    renderSidebar();
+    expect(componentLabels()).not.toContain('Dictionary');
+    expect(mocks.listDictionaryEntries).not.toHaveBeenCalled();
+  });
+
+  it('opens the group once after the first verified model install; a later collapse sticks', async () => {
+    await loadStatus(noModel());
+    const first = renderSidebar();
+    expect(screen.queryByTestId('sidebar-components-group')).toBeNull();
+
+    // The install lands: the status store reads a usable model.
+    await loadStatus(speechStatus());
+    first.unmount();
+    renderSidebar();
+    await waitFor(() =>
+      expect(screen.getByTestId('sidebar-dictionary-button')).toBeInTheDocument()
+    );
+    expect(window.localStorage.getItem('biorouter:dictionary-revealed')).toBe('true');
+    expect(window.localStorage.getItem('biorouter:sidebar-components-expanded')).toBe('true');
+
+    // The person collapses it, and it stays collapsed with the model still installed.
+    fireEvent.click(screen.getByTestId('sidebar-components-disclosure'));
+    expect(screen.queryByTestId('sidebar-components-group')).toBeNull();
+    renderSidebar();
+    expect(screen.queryAllByTestId('sidebar-components-group')).toHaveLength(0);
+  });
+
+  it('reveals while the sidebar is showing, the moment the install is verified', async () => {
+    let current = noModel();
+    resetDictationStoreForTests(fakeStatusApi(() => current).api);
+    await act(async () => {
+      await refreshDictationStatus();
+    });
+    renderSidebar();
+    expect(screen.queryByTestId('sidebar-components-group')).toBeNull();
+    current = speechStatus();
+    await act(async () => {
+      await refreshDictationStatus();
+    });
+    expect(await screen.findByTestId('sidebar-dictionary-button')).toBeInTheDocument();
+  });
+
+  it('shows the waiting count on the row and a dot on the collapsed group', async () => {
+    mocks.listDictionaryEntries.mockResolvedValue({
+      data: JSON.stringify({
+        entries: [
+          { id: 'a', status: 'suggested' },
+          { id: 'b', status: 'suggested' },
+        ],
+        next_cursor: null,
+      }),
+      response: new Response('{}', { status: 200 }),
+    });
+    window.localStorage.setItem('biorouter:dictionary-revealed', 'true');
+    await loadStatus(speechStatus());
+    renderSidebar();
+    const disclosure = screen.getByTestId('sidebar-components-disclosure');
+    await waitFor(() =>
+      expect(disclosure).toHaveAttribute('aria-label', 'Components, 2 suggestions waiting')
+    );
+    expect(disclosure.querySelector('[data-slot="status-dot"]')).not.toBeNull();
+    expect(mocks.listDictionaryEntries.mock.calls[0][0].query).toEqual({ status: 'suggested' });
+
+    fireEvent.click(disclosure);
+    const row = screen.getByTestId('sidebar-dictionary-button');
+    expect(row).toHaveAttribute('aria-label', 'Dictionary, 2 suggestions waiting');
+    expect(within(row).getByText('2')).toBeInTheDocument();
+    // Open, the group shows the count on the row itself, and the dot goes.
+    expect(disclosure.querySelector('[data-slot="status-dot"]')).toBeNull();
   });
 });

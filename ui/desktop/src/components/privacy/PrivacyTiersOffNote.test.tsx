@@ -38,7 +38,15 @@ const record = (overrides: Partial<PrivacyTiersRecord>): PrivacyTiersRecord => (
   ...overrides,
 });
 
-/** Where a click on the note's one control took the app. */
+/**
+ * Open the note's Details, where how the switch got to off and where it is recorded fold (owner,
+ * 2026-11-13: the headline and the consequence stay on the note, the account folds).
+ */
+async function openDetails() {
+  await userEvent.setup().click(screen.getByRole('button', { name: 'Details' }));
+}
+
+/** Where a click on the note's Privacy settings control took the app. */
 function Location() {
   const location = useLocation();
   return (
@@ -71,14 +79,22 @@ describe('PrivacyTiersOffNote', () => {
     expect(screen.queryByTestId('privacy-tiers-off-note')).toBeNull();
   });
 
-  it('stands while privacy tiers are off, and says where the switch is recorded', () => {
+  it('stands while privacy tiers are off, and says where the switch is recorded', async () => {
     configMocks.enabled = false;
     configMocks.record = record({ origin: 'unrecorded' });
     mount();
 
     const note = screen.getByTestId('privacy-tiers-off-note');
     expect(note).toHaveTextContent(/Privacy tiers are off/i);
+    // The consequence is the disclosure, so it never folds.
+    expect(note).toHaveTextContent(/Nothing is separating private chats/);
+    expect(note).not.toHaveTextContent(PATH);
+    await openDetails();
     expect(note).toHaveTextContent(PATH);
+    // Where the record lives, in the sentence's face (design.md D-42), not mono.
+    const where = note.querySelector(`[data-path="${PATH}"]`);
+    expect(where).not.toBeNull();
+    expect(where?.className).not.toMatch(/\bfont-mono\b/);
     // A standing condition is `status`, not `alert` — nothing just failed.
     expect(note).toHaveAttribute('role', 'status');
   });
@@ -106,7 +122,7 @@ describe('PrivacyTiersOffNote', () => {
     );
   });
 
-  it('names the last recorded change when a one-field edit contradicts it', () => {
+  it('names the last recorded change when a one-field edit contradicts it', async () => {
     configMocks.enabled = false;
     configMocks.record = record({
       origin: 'unrecorded',
@@ -120,12 +136,13 @@ describe('PrivacyTiersOffNote', () => {
     });
     mount();
 
+    await openDetails();
     expect(screen.getByTestId('privacy-tiers-off-note')).toHaveTextContent(
       /last change recorded in the app turned them on/i
     );
   });
 
-  it('does not accuse anyone when the change was made in Settings → Privacy', () => {
+  it('does not accuse anyone when the change was made in Settings → Privacy', async () => {
     configMocks.enabled = false;
     configMocks.record = record({
       origin: 'settings',
@@ -140,6 +157,8 @@ describe('PrivacyTiersOffNote', () => {
     mount();
 
     const note = screen.getByTestId('privacy-tiers-off-note');
+    expect(note).not.toHaveTextContent(/outside the app/i);
+    await openDetails();
     expect(note).toHaveTextContent(/Settings → App → Privacy/);
     expect(note).not.toHaveTextContent(/outside the app/i);
     expect(note).toHaveTextContent(PATH);
@@ -157,7 +176,7 @@ describe('PrivacyTiersOffNote', () => {
     );
   });
 
-  it('has no dismiss control, and its one control opens Settings → Privacy', async () => {
+  it('has no dismiss control, and its one action opens Settings → Privacy', async () => {
     const user = userEvent.setup();
     configMocks.enabled = false;
     configMocks.record = record({ origin: 'unrecorded' });
@@ -165,11 +184,25 @@ describe('PrivacyTiersOffNote', () => {
 
     const note = screen.getByTestId('privacy-tiers-off-note');
     const controls = Array.from(note.querySelectorAll('button'));
-    expect(controls).toHaveLength(1);
-    expect(controls[0]).not.toHaveAccessibleName(/dismiss|close|hide/i);
+    // The Details disclosure and the one action; neither can hide the note.
+    expect(controls).toHaveLength(2);
+    for (const control of controls) {
+      expect(control).not.toHaveAccessibleName(/dismiss|close|hide/i);
+    }
+    const details = screen.getByRole('button', { name: 'Details' });
+    await user.click(details);
+    expect(details).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('privacy-tiers-off-note')).toBeInTheDocument();
 
-    await user.click(controls[0]);
+    await user.click(screen.getByRole('button', { name: 'Privacy settings' }));
     expect(screen.getByTestId('location')).toHaveTextContent('/settings {"section":"privacy"}');
+  });
+
+  it('folds nothing when the daemon sends no record: there is no account to give', () => {
+    configMocks.enabled = false;
+    configMocks.record = null;
+    mount();
+    expect(screen.queryByRole('button', { name: 'Details' })).toBeNull();
   });
 
   /**

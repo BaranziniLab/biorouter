@@ -18,7 +18,8 @@ impl Paths {
             let base = PathBuf::from(test_root);
             match dir_type {
                 DirType::Config => base.join("config"),
-                DirType::Data => base.join("data"),
+                // A sandbox has one data folder: nothing under it roams.
+                DirType::Data | DirType::LocalData => base.join("data"),
                 DirType::State => base.join("state"),
             }
         } else {
@@ -27,12 +28,24 @@ impl Paths {
             // `platform_dirs` resolves it, and holds it while it is in use.
             let dirs =
                 biorouter_mcp::paths::platform_dirs().expect("biorouter requires a home dir");
+            Self::from_platform(dirs, dir_type)
+        }
+    }
 
-            match dir_type {
-                DirType::Config => dirs.config,
-                DirType::Data => dirs.data,
-                DirType::State => dirs.state.unwrap_or(dirs.data),
-            }
+    /// Which of the platform's folders a [`DirType`] names, apart from the
+    /// environment so a lib test can check every arm on every OS.
+    ///
+    /// ⚠ On macOS and Linux `local_data` equals `data`, so a test that reads
+    /// the real platform folders there cannot tell `LocalData => dirs.data`
+    /// from the right arm. Only Windows separates them, and CI runs the
+    /// integration binaries on ubuntu alone, so `from_platform_maps_each_dir_type_to_its_own_folder`
+    /// below, a `--lib` test, is what holds this mapping on every OS.
+    fn from_platform(dirs: biorouter_mcp::paths::PlatformDirs, dir_type: DirType) -> PathBuf {
+        match dir_type {
+            DirType::Config => dirs.config,
+            DirType::Data => dirs.data,
+            DirType::State => dirs.state.unwrap_or(dirs.data),
+            DirType::LocalData => dirs.local_data,
         }
     }
 
@@ -122,6 +135,23 @@ impl Paths {
         Self::data_dir().join(subpath)
     }
 
+    /// Per user data that must not roam, such as speech models (DD-19).
+    ///
+    /// On Windows this is `%LOCALAPPDATA%\UCSF\biorouter\data`, not the
+    /// roaming [`Self::data_dir`]: a roaming profile copies everything under
+    /// `%APPDATA%` at every logon, and a model is 0.3 to 0.6 GB. The local
+    /// root follows the same legacy folder rule as the cache beside it. On
+    /// macOS and Linux it equals [`Self::data_dir`], and under
+    /// `BIOROUTER_PATH_ROOT` it is `<root>/data`, the same folder as
+    /// `data_dir` there too. Pinned by `tests/path_resolver_agreement.rs`.
+    pub fn local_data_dir() -> PathBuf {
+        Self::get_dir(DirType::LocalData)
+    }
+
+    pub fn in_local_data_dir(subpath: &str) -> PathBuf {
+        Self::local_data_dir().join(subpath)
+    }
+
     /// Trusted, admin-owned managed-policy file (BR-65). Returns `None` on
     /// platforms without a well-known admin-writable location.
     ///
@@ -167,10 +197,13 @@ impl Paths {
     }
 }
 
+#[derive(Debug)]
 enum DirType {
     Config,
     Data,
     State,
+    /// [`Paths::local_data_dir`].
+    LocalData,
 }
 
 /// The rule [`Paths::path_root_override`] applies to the variable's raw
@@ -230,6 +263,75 @@ mod path_root_override_tests {
                  get_dir"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod from_platform_tests {
+    use super::{DirType, Paths};
+    use biorouter_mcp::paths::{windows_dirs, PlatformDirs};
+    use std::path::PathBuf;
+
+    /// Every [`DirType`] reads its own field of [`PlatformDirs`], checked
+    /// against dirs whose folders all differ, so a swapped arm fails here on
+    /// every OS. In particular `LocalData` must read `local_data`, never the
+    /// roaming `data`: on Windows that is the difference between a speech
+    /// model under `%LOCALAPPDATA%` and one copied at every logon (DD-19).
+    #[test]
+    fn from_platform_maps_each_dir_type_to_its_own_folder() {
+        let distinct = PlatformDirs {
+            config: PathBuf::from("/fixture/config"),
+            data: PathBuf::from("/fixture/roaming-data"),
+            state: Some(PathBuf::from("/fixture/state")),
+            cache: PathBuf::from("/fixture/cache"),
+            local_data: PathBuf::from("/fixture/local-data"),
+        };
+        let cases = [
+            (DirType::Config, "/fixture/config"),
+            (DirType::Data, "/fixture/roaming-data"),
+            (DirType::State, "/fixture/state"),
+            (DirType::LocalData, "/fixture/local-data"),
+        ];
+        for (dir_type, expected) in cases {
+            let label = format!("{dir_type:?}");
+            assert_eq!(
+                Paths::from_platform(distinct.clone(), dir_type),
+                PathBuf::from(expected),
+                "{label} resolved to the wrong platform folder"
+            );
+        }
+    }
+
+    /// The same mapping over the real Windows layout, built under two
+    /// temporary bases: `LocalData` lands under the local base and never under
+    /// the roaming one, and `State`, which Windows does not have, falls back to
+    /// the roaming data folder.
+    #[test]
+    fn from_platform_keeps_the_windows_local_data_folder_off_the_roaming_base() {
+        let roaming = tempfile::tempdir().expect("a roaming base");
+        let local = tempfile::tempdir().expect("a local base");
+        let dirs = windows_dirs(roaming.path(), local.path());
+        assert_ne!(
+            dirs.local_data, dirs.data,
+            "the Windows layout must separate the two data folders for this test to mean anything"
+        );
+
+        let local_data = Paths::from_platform(dirs.clone(), DirType::LocalData);
+        assert_eq!(local_data, dirs.local_data);
+        assert_ne!(local_data, dirs.data);
+        assert!(local_data.starts_with(local.path()));
+        assert!(!local_data.starts_with(roaming.path()));
+
+        assert_eq!(
+            Paths::from_platform(dirs.clone(), DirType::Config),
+            dirs.config
+        );
+        assert_eq!(Paths::from_platform(dirs.clone(), DirType::Data), dirs.data);
+        assert_eq!(
+            Paths::from_platform(dirs.clone(), DirType::State),
+            dirs.data,
+            "Windows has no state folder, so State falls back to the data folder"
+        );
     }
 }
 

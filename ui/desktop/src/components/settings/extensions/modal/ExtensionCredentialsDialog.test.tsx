@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import ExtensionCredentialsDialog from './ExtensionCredentialsDialog';
 import { EXTENSION_CREDENTIALS_COPY as COPY } from '../copy';
@@ -61,7 +61,12 @@ describe('extension credential deletion', () => {
     const onDeleted = vi.fn();
     render(<ExtensionCredentialsDialog name="fixture" onClose={vi.fn()} onDeleted={onDeleted} />);
     await userEvent.click(await screen.findByRole('button', { name: 'Delete 1 saved credential' }));
-    await screen.findByRole('alert');
+    const alert = await screen.findByRole('alert');
+    // The error's line is on screen; its cause and next step are the InfoTip beside it.
+    expect(alert).toHaveTextContent(COPY.deleteFailed);
+    expect(
+      within(alert).getByRole('button', { name: `About ${COPY.deleteFailedLabel}` })
+    ).toHaveAccessibleDescription(COPY.deleteFailedHelp);
     expect(onDeleted).not.toHaveBeenCalled();
     expect(screen.queryByText(/Saved credentials deleted/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Delete 1 saved credential' })).toBeDisabled();
@@ -105,6 +110,7 @@ describe('the saved-credentials dialog chrome', () => {
       COPY.deleted,
       COPY.deletedHelp,
       COPY.deleteFailed,
+      COPY.deleteFailedHelp,
     ];
     for (const text of strings) expect(text).not.toMatch(/[\u2013\u2014]/);
   });

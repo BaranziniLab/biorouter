@@ -1,6 +1,8 @@
 //! Live provider calls require an exact named test with `--ignored --exact`.
 //! Configured credentials alone never opt an ordinary regression run into network calls.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use anyhow::Result;
 use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::providers::anthropic::ANTHROPIC_DEFAULT_MODEL;

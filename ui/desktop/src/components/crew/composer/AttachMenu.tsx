@@ -6,16 +6,16 @@ import {
   DropdownMenuTrigger,
 } from '../../ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
-import { Paperclip } from '../../icons/app-icons';
+import { Plus } from '../../icons/app-icons';
 import { composerCopy } from './copy';
 
 /**
- * The composer's paperclip: a real menu (`aria-haspopup="menu"`, from Radix) with the two ways
+ * The composer's `+` (the chat composer's glyph, owner 2026-11-13; it was a paperclip): a real menu (`aria-haspopup="menu"`, from Radix) with the two ways
  * a file reaches a channel. **Upload a file…** opens the secure main-process picker;
  * **Share a server path…** opens the dialog that shares a path by name without uploading
  * anything. The items are words only, like every other Crew menu (Q2-61).
  *
- * The menu opens beside the paperclip, its bottom level with the button's, so it stays inside
+ * The menu opens beside the `+`, its bottom level with the button's, so it stays inside
  * the card and never covers the note above the card (Q2-61): the note is usually the answer to
  * what the person just did, such as a refused paste, and the menu is where they go next.
  */
@@ -42,9 +42,9 @@ export function AttachMenu({
               shape="round"
               aria-label={composerCopy.attach}
               disabled={disabled}
-              className="text-text-muted"
+              className="text-text-muted hover:text-text-default"
             >
-              <Paperclip aria-hidden />
+              <Plus aria-hidden />
             </Button>
           </DropdownMenuTrigger>
         </TooltipTrigger>

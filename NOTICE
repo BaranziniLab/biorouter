@@ -53,13 +53,120 @@ llama.cpp
   Licence:   MIT
   Copyright: Copyright (c) 2023-2026 The ggml authors
   Upstream:  https://github.com/ggml-org/llama.cpp
-  Version:   build b9611
+  Version:   build b11429
   Licence text:
     in an installed app  next to llama-server, in the llamacpp directory
 
   The macOS and Linux release archives carry upstream's LICENSE. The Windows
   archive does not, so the packaging script fetches it from the repository at
   the pinned build and refuses to package without it.
+
+
+whisper.cpp
+-----------
+  Used for:  local dictation: the speech recognition engine built into
+             biorouter and biorouterd
+  Licence:   MIT
+  Copyright: Copyright (c) 2023-2026 The ggml authors
+  Upstream:  https://github.com/ggml-org/whisper.cpp
+  Version:   pinned at commit 4da27c41cebadb3cbbcd2563e9c7cbc8d84bdcad
+             (2026-11-03, ggml 0.28.0)
+  Licence text and notice:
+    in this repository   vendor/whisper.cpp/{LICENSE,NOTICE}
+
+  The files the build reads are vendored at vendor/whisper.cpp/source, so a
+  build needs no network. They are upstream's text byte for byte: a hash
+  manifest beside them is checked in CI, and Biorouter's own changes (there
+  are none) would sit in vendor/whisper.cpp/patches and be applied to a copy
+  at build time. A few vendored files carry their own MIT notices, from the
+  Mozilla Foundation, Arm, Intel, and Jeffrey Quesnelle and Bowen Peng;
+  vendor/whisper.cpp/NOTICE lists them.
+
+  Four of upstream's test files are vendored with it for offline tests and
+  are never shipped: two vocabulary-only Whisper models (MIT, OpenAI), the
+  Silero VAD v6.2.0 voice detector (MIT, Silero Team) and a speech sample.
+
+
+miniaudio
+---------
+  Used for:  microphone capture for dictation in the terminal (biorouter)
+  Licence:   MIT No Attribution, chosen from the author's offer of the
+             Unlicense (public domain) or MIT No Attribution
+  Copyright: Copyright 2025 David Reid
+  Upstream:  https://github.com/mackron/miniaudio
+  Version:   0.11.24
+  Licence text:
+    in this repository   the end of
+                         vendor/whisper.cpp/source/examples/miniaudio.h
+
+  It arrives inside the vendored whisper.cpp tree, which carries it for
+  upstream's examples, and shares that tree's pin and hash manifest.
+
+
+English Speller Database word list
+----------------------------------
+  Used for:  local dictation: the English word list that keeps dictionary
+             correction off ordinary words, compiled into biorouter and
+             biorouterd
+  Licence:   the ESDB (previously SCOWL) permission notice, below
+  Copyright: Copyright 2000-2026 by Kevin Atkinson; Australian English data
+             Copyright 2016 by Benjamin Titze
+  Upstream:  https://wordlist.aspell.net, one export from
+             https://app.aspell.net/create (size 60, spellings US GB CA AU,
+             variant level 6, special hacker and roman-numerals, diacritics
+             both; ESDB git revision 1e5b7d3)
+  Version:   the export with SHA-256
+             c500ee2f68e7254e07c4d90abdc2c8d00c146a5cf1f812108423bb6bbc71993a,
+             which scripts/dictation/make-english-words.py checks before it
+             builds the list and refuses any other file
+  Notice text:
+    in this repository   the "#" lines at the head of
+                         crates/biorouter-dictation/assets/english-words.zst,
+                         which travel with the list into every binary
+
+  Copyright 2000-2026 by Kevin Atkinson
+
+  Permission to use, copy, modify, distribute, and sell any part of the English
+  Speller Database (ESDB, previously known as SCOWLv2), or word lists
+  created from it, is hereby granted without fee, provided that the above
+  copyright notice appears in all copies and that both the above copyright
+  notice and this notice appear in supporting documentation.  Kevin Atkinson
+  makes no representations about the suitability of this database for any
+  purpose.  It is provided "as is" without express or implied warranty.
+
+  Copyright 2016 by Benjamin Titze
+
+  Permission to use, copy, modify, distribute and sell this array, the
+  associated software, and its documentation for any purpose is hereby
+  granted without fee, provided that the above copyright notice appears
+  in all copies and that both that copyright notice and this permission
+  notice appear in supporting documentation. Benjamin Titze makes no
+  representations about the suitability of this array for any
+  purpose. It is provided "as is" without express or implied warranty.
+
+
+Speech models downloaded on request
+-----------------------------------
+  Used for:  local dictation, only after a person installs a model with
+             `biorouter dictation install` or from Settings
+  Licence:   MIT
+  Copyright: Copyright (c) 2022 OpenAI (the Whisper weights);
+             Copyright (c) 2023-2026 The ggml authors (their ggml
+             conversions); Copyright (c) 2020-present Silero Team (the
+             Silero VAD v6.2.0 voice detector)
+  Upstream:  https://github.com/BaranziniLab/biorouter-models, one immutable
+             release per file, each a byte identical copy of the upstream
+             file
+  Licence text:
+    with each model      beside the installed file, and as release assets:
+                         LICENSE-openai-whisper.txt and
+                         LICENSE-whisper.cpp.txt for the Whisper models,
+                         LICENSE-silero-vad.txt for the voice detector
+    in this repository   crates/biorouter-dictation/licenses/
+
+  No speech model is part of an install or an update of Biorouter. The
+  installer checks every file against a SHA-256 pin compiled into Biorouter
+  before anything reads it, and writes the license texts beside it.
 
 
 JavaScript and CSS libraries compiled into the binary

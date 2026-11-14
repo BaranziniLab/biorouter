@@ -445,6 +445,57 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # ── Dictation capture in a native Electron renderer (PR-17) ──────────────
+  # jsdom runs no Vite build, no content security policy and no audio, so it
+  # cannot tell whether the AudioWorklet survives the build, loads from
+  # app.asar over file:// under the real policy, and delivers a tone at the
+  # right level and pitch at 16 kHz. scripts/dictation-capture-e2e.mjs builds a
+  # page that imports the real capture module with the renderer's own Vite
+  # config, packs it into app.asar, and runs Electron with the fake microphone
+  # switches main.ts adds and the permission handler main.ts installs. It
+  # asserts RMS 0.3535 +/- 0.005 and 440 +/- 2 Hz from a generated tone,
+  # samples for 98 % or more of wall time, audio alone granted, audio with video
+  # and a foreign document refused with NotAllowedError, a hidden window
+  # capturing, tracks ended and the context closed after stop, and one whole
+  # dictation through the session and the stream client against a loopback
+  # stand in for the daemon. It also builds the page with Vite's default inline
+  # limit, so taking `no-inline` off the worklet import turns this job red. The
+  # latency numbers it prints are evidence, not gates.
+  #
+  # macos-latest like preview-panel: the run was measured on macOS, where the
+  # fake device needs the audio service sandbox lifted (micPermissionSettings.ts).
+  dictation-capture-electron:
+    name: Dictation capture (Electron)
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: ui/desktop/package-lock.json
+
+      # The workflow-level environment skips Electron everywhere else; this job
+      # launches that exact runtime.
+      - name: Install dependencies including Electron
+        run: env -u ELECTRON_SKIP_BINARY_DOWNLOAD npm ci
+
+      - name: Capture a tone through the built worklet in app.asar
+        env:
+          BIOROUTER_DICTATION_CAPTURE_OUTPUT_DIR: ${{ github.workspace }}/ui/desktop/dictation-capture-evidence
+        run: env -u ELECTRON_RUN_AS_NODE node scripts/dictation-capture-e2e.mjs
+
+      - name: Upload the measurements
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: dictation-capture-evidence-${{ runner.arch }}
+          path: ui/desktop/dictation-capture-evidence
+          if-no-files-found: error
+          retention-days: 14
+
   # ── Do console windows actually appear? ───────────────────────────────────
   # The census above reads source. Whether any of it WORKS is a property of
   # Windows, of the Node that Electron ships, and of an Electron embedder flag

@@ -77,6 +77,9 @@ export const SEMANTIC_TOKENS = [
   'background-inverse',
   // status fills + their ink
   'background-danger',
+  // The family's red, kept for the danger-zone button alone (design.md 9.14,
+  // red is rare): the danger tone itself is drawn in ink.
+  'background-critical',
   'background-success',
   'background-info',
   'background-warning',
@@ -96,6 +99,7 @@ export const SEMANTIC_TOKENS = [
   'text-subtle',
   'text-inverse',
   'text-danger',
+  'text-critical',
   'text-success',
   'text-warning',
   'text-info',

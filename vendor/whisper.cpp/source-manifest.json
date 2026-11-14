@@ -1,0 +1,1196 @@
+{
+  "schema_version": 1,
+  "upstream": "ggml-org/whisper.cpp",
+  "commit": "4da27c41cebadb3cbbcd2563e9c7cbc8d84bdcad",
+  "included": [
+    "CMakeLists.txt",
+    "LICENSE",
+    "cmake/",
+    "include/",
+    "src/",
+    "ggml/CMakeLists.txt",
+    "ggml/cmake/",
+    "ggml/include/",
+    "ggml/src/",
+    "examples/miniaudio.h",
+    "models/for-tests-ggml-base.en.bin",
+    "models/for-tests-ggml-tiny.bin",
+    "models/for-tests-silero-v6.2.0-ggml.bin",
+    "samples/jfk.wav"
+  ],
+  "kept_backends": [
+    "ggml-cpu",
+    "ggml-metal"
+  ],
+  "excluded": [
+    {
+      "path_prefix": "ggml/src/ggml-blas/",
+      "reason": "a ggml backend the build never turns on; ggml enters a backend folder only when its GGML_<BACKEND> option is on, and the build turns on only CPU and Metal"
+    },
+    {
+      "path_prefix": "ggml/src/ggml-cann/",
+      "reason": "a ggml backend the build never turns on; ggml enters a backend folder only when its GGML_<BACKEND> option is on, and the build turns on only CPU and Metal"
+    },
+    {
+      "path_prefix": "ggml/src/ggml-cuda/",
+      "reason": "a ggml backend the build never turns on; ggml enters a backend folder only when its GGML_<BACKEND> option is on, and the build turns on only CPU and Metal"
+    },
+    {
+      "path_prefix": "ggml/src/ggml-et/",
+      "reason": "a ggml backend the build never turns on; ggml enters a backend folder only when its GGML_<BACKEND> option is on, and the build turns on only CPU and Metal"
+    },
+    {
+      "path_prefix": "ggml/src/ggml-hexagon/",
+      "reason": "a ggml backend the build never turns on; ggml enters a backend folder only when its GGML_<BACKEND> option is on, and the build turns on only CPU and Metal"
+    },
+    {
+      "path_prefix": "ggml/src/ggml-hip/",
+      "reason": "a ggml backend the build never turns on; ggml enters a backend folder only when its GGML_<BACKEND> option is on, and the build turns on only CPU and Metal"
+    },
+    {
+      "path_prefix": "ggml/src/ggml-musa/",
+      "reason": "a ggml backend the build never turns on; ggml enters a backend folder only when its GGML_<BACKEND> option is on, and the build turns on only CPU and Metal"
+    },
+    {
+      "path_prefix": "ggml/src/ggml-opencl/",
+      "reason": "a ggml backend the build never turns on; ggml enters a backend folder only when its GGML_<BACKEND> option is on, and the build turns on only CPU and Metal"
+    },
+    {
+      "path_prefix": "ggml/src/ggml-openvino/",
+      "reason": "a ggml backend the build never turns on; ggml enters a backend folder only when its GGML_<BACKEND> option is on, and the build turns on only CPU and Metal"
+    },
+    {
+      "path_prefix": "ggml/src/ggml-rpc/",
+      "reason": "a ggml backend the build never turns on; ggml enters a backend folder only when its GGML_<BACKEND> option is on, and the build turns on only CPU and Metal"
+    },
+    {
+      "path_prefix": "ggml/src/ggml-sycl/",
+      "reason": "a ggml backend the build never turns on; ggml enters a backend folder only when its GGML_<BACKEND> option is on, and the build turns on only CPU and Metal"
+    },
+    {
+      "path_prefix": "ggml/src/ggml-virtgpu/",
+      "reason": "a ggml backend the build never turns on; ggml enters a backend folder only when its GGML_<BACKEND> option is on, and the build turns on only CPU and Metal"
+    },
+    {
+      "path_prefix": "ggml/src/ggml-vulkan/",
+      "reason": "a ggml backend the build never turns on; ggml enters a backend folder only when its GGML_<BACKEND> option is on, and the build turns on only CPU and Metal"
+    },
+    {
+      "path_prefix": "ggml/src/ggml-webgpu/",
+      "reason": "a ggml backend the build never turns on; ggml enters a backend folder only when its GGML_<BACKEND> option is on, and the build turns on only CPU and Metal"
+    },
+    {
+      "path_prefix": "ggml/src/ggml-zdnn/",
+      "reason": "a ggml backend the build never turns on; ggml enters a backend folder only when its GGML_<BACKEND> option is on, and the build turns on only CPU and Metal"
+    },
+    {
+      "path_prefix": "ggml/src/ggml-zendnn/",
+      "reason": "a ggml backend the build never turns on; ggml enters a backend folder only when its GGML_<BACKEND> option is on, and the build turns on only CPU and Metal"
+    }
+  ],
+  "file_count": 220,
+  "total_bytes": 14465131,
+  "tree_sha256": "8c01fc7c4ede201a5b8bdd0fd09f8fe87e6dcaa2ac58083f037a8ecc144d61b9",
+  "files": [
+    {
+      "path": "CMakeLists.txt",
+      "size": 12772,
+      "sha256": "f4494d2da1353158b8a33b935abe6bbe76b8cee95d503fb16088224dd4755dcc"
+    },
+    {
+      "path": "LICENSE",
+      "size": 1078,
+      "sha256": "94f29bbed6a22c35b992c5c6ebf0e7c92f13b836b90f36f461c9cf2f0f1d010d"
+    },
+    {
+      "path": "cmake/DefaultTargetOptions.cmake",
+      "size": 385,
+      "sha256": "46a0fea1d8cac20e3017d31551f316a2846343d929b7833ce2e7ed6f39c800b9"
+    },
+    {
+      "path": "cmake/FindFFmpeg.cmake",
+      "size": 6231,
+      "sha256": "bedd2e8a2bcf9349827794d261ec63ab0fabf9ba6d6a71d7e8788e88f82ae944"
+    },
+    {
+      "path": "cmake/arm64-apple-clang.cmake",
+      "size": 555,
+      "sha256": "80d01144241c7a45d1c35461aab1256364f8c7e714c3401a8097a567a8179e03"
+    },
+    {
+      "path": "cmake/arm64-windows-llvm-cuda.cmake",
+      "size": 1225,
+      "sha256": "6cf079481186efb45cd5e3de43ff3803b2fead5b9804f6ef3f8c9c6c355940e6"
+    },
+    {
+      "path": "cmake/arm64-windows-llvm.cmake",
+      "size": 592,
+      "sha256": "12be8ba361b88d1a12cf28970da526f98c0f9b17103c2aa0c0b49ee7fa496a48"
+    },
+    {
+      "path": "cmake/build-info.cmake",
+      "size": 1723,
+      "sha256": "701bf0286befe227d702681f8f8412edae1af332e6aee21c9b0ac748c4e30770"
+    },
+    {
+      "path": "cmake/git-vars.cmake",
+      "size": 717,
+      "sha256": "411507be4e991f2afc0007905a95bbf848176a282189d0e27d7df1d48974290d"
+    },
+    {
+      "path": "cmake/parakeet-config.cmake.in",
+      "size": 1018,
+      "sha256": "e5517c962d1dd491ab99b16a71dd2698d15edc93eefdc916b316dcc74bea3740"
+    },
+    {
+      "path": "cmake/parakeet.pc.in",
+      "size": 299,
+      "sha256": "690ac6ad4f033a37c2ac9623c1f6a90af495aab73239462bf7f1b45588cba60d"
+    },
+    {
+      "path": "cmake/riscv64-spacemit-linux-gnu-gcc.cmake",
+      "size": 1357,
+      "sha256": "75c03099a6b867de97a383550dc745335bb3dc0078b56497ee76d39ca4f89b1f"
+    },
+    {
+      "path": "cmake/whisper-config.cmake.in",
+      "size": 1000,
+      "sha256": "8a922981f9561a61248178ffe3dc961cf3bcee29fd16986ce16b44c5e317f297"
+    },
+    {
+      "path": "cmake/whisper.pc.in",
+      "size": 297,
+      "sha256": "cfa8c1a222c4be1b6c030e487fdda8177b933b1c37f450cb0468752e4cfeaa92"
+    },
+    {
+      "path": "cmake/x64-windows-llvm.cmake",
+      "size": 139,
+      "sha256": "416e1385f9ac92ff29e2158da8b1894ae2cfccc3bb024eb46c3b937cb42477a8"
+    },
+    {
+      "path": "examples/miniaudio.h",
+      "size": 4107565,
+      "sha256": "c029554572ae71a94b7825ef1ab9bd7e646344a79e2e852a03f8b18e428c1443"
+    },
+    {
+      "path": "ggml/CMakeLists.txt",
+      "size": 21801,
+      "sha256": "77f797b4794845be320ffbfc1dd9429b0372d50ba23c023309a46ea28919847c"
+    },
+    {
+      "path": "ggml/cmake/FindNCCL.cmake",
+      "size": 964,
+      "sha256": "496ad9fbb75ce307f8142ed2dc8fa1ea1baaaef70e51b8d0b153ebd191b650f8"
+    },
+    {
+      "path": "ggml/cmake/GitVars.cmake",
+      "size": 717,
+      "sha256": "411507be4e991f2afc0007905a95bbf848176a282189d0e27d7df1d48974290d"
+    },
+    {
+      "path": "ggml/cmake/common.cmake",
+      "size": 5418,
+      "sha256": "b4e0804e36d6295889da4df37e1c0902149c24101d84a6b043e136922b643956"
+    },
+    {
+      "path": "ggml/cmake/ggml-config.cmake.in",
+      "size": 8018,
+      "sha256": "021c2a163b30e5c4b2130540fbd76f9f0d6a61b756ccc33c2ed9a48936181264"
+    },
+    {
+      "path": "ggml/include/ggml-alloc.h",
+      "size": 3689,
+      "sha256": "d114067f9099c4a0e2bbc0625c676d4894d9cf0ea27168ee072c7de0e71bb51d"
+    },
+    {
+      "path": "ggml/include/ggml-backend.h",
+      "size": 27570,
+      "sha256": "0e5e8e1f16d11ebbf501e38bc6705d79eee819b5f0b17476533f2100ed9674e2"
+    },
+    {
+      "path": "ggml/include/ggml-blas.h",
+      "size": 586,
+      "sha256": "e76cb8594dc9866d99e7d63191b9fff6ab8b50244b4a28ce3af0f962964a6b5b"
+    },
+    {
+      "path": "ggml/include/ggml-cann.h",
+      "size": 4553,
+      "sha256": "2cdb134f27fe5c4ec19d52f1eb58f5355aa42b8f54bf385f0e487501c5df7362"
+    },
+    {
+      "path": "ggml/include/ggml-cpp.h",
+      "size": 1652,
+      "sha256": "bc15ba002c68685df23faae42df0d2b3d58032011f88b649021ab92485862c72"
+    },
+    {
+      "path": "ggml/include/ggml-cpu.h",
+      "size": 7753,
+      "sha256": "316279e004cdeb8e6ef78599acb602bf79a8abdf897fed9fd1914808c1518c6e"
+    },
+    {
+      "path": "ggml/include/ggml-cuda.h",
+      "size": 1565,
+      "sha256": "9cbfcea49f6da4d07f41dc22fa8dbf870825faaa2a68e34e65fe30ea6c41e042"
+    },
+    {
+      "path": "ggml/include/ggml-et.h",
+      "size": 887,
+      "sha256": "33118c0642b8059a99ea930fd4e4a045e78ccb41760b173ede221f1297c35977"
+    },
+    {
+      "path": "ggml/include/ggml-hexagon.h",
+      "size": 351,
+      "sha256": "b2c12bac390f14707b16bdd27c8c75ce4f075ed509c729ee28fd4f03b17e7375"
+    },
+    {
+      "path": "ggml/include/ggml-metal.h",
+      "size": 2141,
+      "sha256": "322f36cd30f3e9e7aad7b5b9bc63078012fd0b7706ac4e24f5721b604f3d8980"
+    },
+    {
+      "path": "ggml/include/ggml-opencl.h",
+      "size": 581,
+      "sha256": "8e443e1aa9c8bc6e0cf116c4cc3f42f4858938fa15e65b06bc07b26686e1233a"
+    },
+    {
+      "path": "ggml/include/ggml-openvino.h",
+      "size": 1034,
+      "sha256": "c2e3f301e28ad815b4285888aad6130808a77e6acb4e8b558de63a648cf9743e"
+    },
+    {
+      "path": "ggml/include/ggml-opt.h",
+      "size": 14040,
+      "sha256": "3586de1bc8a934b5c72339e2b6937b0641e8f149b512231e666f67de0736eea2"
+    },
+    {
+      "path": "ggml/include/ggml-rpc.h",
+      "size": 1184,
+      "sha256": "cffb226def0ac6bb77de273ff609aa852c7c7cff952e0e18af07613c2f2faa47"
+    },
+    {
+      "path": "ggml/include/ggml-sycl.h",
+      "size": 2492,
+      "sha256": "728e4f15d0853d63feb95dd596821c750181c26995fff57fe035e964e70fd85f"
+    },
+    {
+      "path": "ggml/include/ggml-virtgpu.h",
+      "size": 194,
+      "sha256": "ed231e7db3f0f58b84073f5ee67f9ec9d63046d1a7ed091c36a6cfe9f685a463"
+    },
+    {
+      "path": "ggml/include/ggml-vulkan.h",
+      "size": 952,
+      "sha256": "7eae5dad2cc7bb4d3eca828539f441816d5fd59fdc7b224d49aa229fc7b7248c"
+    },
+    {
+      "path": "ggml/include/ggml-webgpu.h",
+      "size": 328,
+      "sha256": "a91d855313a9e85e75ba597ff869a267247dea936a2c0faef03aeb7f1ea6e79c"
+    },
+    {
+      "path": "ggml/include/ggml-zdnn.h",
+      "size": 361,
+      "sha256": "13e42214e6743abeb250b1ec9aa4be386a9f778d644001dbbb51e3f778bd84a9"
+    },
+    {
+      "path": "ggml/include/ggml-zendnn.h",
+      "size": 498,
+      "sha256": "2cb034b842438281616ce647232d922fb224450323f0d422d2af567c334aa8ff"
+    },
+    {
+      "path": "ggml/include/ggml.h",
+      "size": 118304,
+      "sha256": "2b4dd92fa992cb4ef484917a6c62fef5097698744160ccc09214fd0c459c92c7"
+    },
+    {
+      "path": "ggml/include/gguf.h",
+      "size": 11355,
+      "sha256": "e56714aab702e5ce62ee587a409643c08f7e93e8fbb77f48ef7cc85075f96fa4"
+    },
+    {
+      "path": "ggml/src/CMakeLists.txt",
+      "size": 27496,
+      "sha256": "bae77e31bc3498973b435e29681c74e8a28857e84383698ef3b88ca2fb6b900a"
+    },
+    {
+      "path": "ggml/src/ggml-alloc.c",
+      "size": 45068,
+      "sha256": "9664bda3e9c4223f5c94ebfeb3c0381f0065a5091ddae707c09a800f7e419a39"
+    },
+    {
+      "path": "ggml/src/ggml-backend-dl.cpp",
+      "size": 1051,
+      "sha256": "acd76df8b83bcdef6807bc7b0520f57b379d61b4ff1027c04aa4d140d16ad07f"
+    },
+    {
+      "path": "ggml/src/ggml-backend-dl.h",
+      "size": 791,
+      "sha256": "225bd83a197c4e8b5f985717176824d1144e2b74a79f04838f51b84115c14dc5"
+    },
+    {
+      "path": "ggml/src/ggml-backend-impl.h",
+      "size": 15095,
+      "sha256": "4e861c8e23d3d7b0d99d8e0836e68564af58f8597d75d7bbb732857d7a632fa7"
+    },
+    {
+      "path": "ggml/src/ggml-backend-meta.cpp",
+      "size": 120566,
+      "sha256": "01e7406728787d72ee953ba2ce7ec5bb75ec27376c043a6b1a47fd359495d179"
+    },
+    {
+      "path": "ggml/src/ggml-backend-reg.cpp",
+      "size": 18091,
+      "sha256": "1436b46bd1e8355345d454baa4b40069be73e9cb09a3a188d32426ea1e1037fe"
+    },
+    {
+      "path": "ggml/src/ggml-backend.cpp",
+      "size": 102696,
+      "sha256": "79ade6b83b3d042e43e035fa81d2c672211a552af9af38e410a047e4ba2723a0"
+    },
+    {
+      "path": "ggml/src/ggml-common.h",
+      "size": 135161,
+      "sha256": "0061131b615c5721fc88a78feeb22c1f8c450f1c2646a317d80796a653bf595c"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/CMakeLists.txt",
+      "size": 33159,
+      "sha256": "b69ed1a14063642c47c70b7b4c67177388e02ee3c27d2e7adfde9ed5ba5859bf"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/amx/amx.cpp",
+      "size": 8404,
+      "sha256": "0d1641ce16917e3f6260ff74523b158bb823599bbf76cbf9aedcc9d365de84d4"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/amx/amx.h",
+      "size": 202,
+      "sha256": "9d098ceee6a8114d4a660ff269064a27aa25b8a4f205d1e6984d17bec5104f0d"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/amx/common.h",
+      "size": 2675,
+      "sha256": "c694f6bb066a820b717f986914b0d112dca0d8d3a1e239e958fce30c864751c3"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/amx/mmq.cpp",
+      "size": 108216,
+      "sha256": "0f95c80e0300eca3b3a3df07272042fee708425e19cd5f2c4cba7b253b26d226"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/amx/mmq.h",
+      "size": 397,
+      "sha256": "bd33d0713b12daf9eedea1619dd715619baaa36b98c44ec754d532909d80933a"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/arch-fallback.h",
+      "size": 23135,
+      "sha256": "92bb73c53e12b10a19facaea987335802dbf9333ec3e8cc7f9cf900c58475afb"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/arch/arm/cpu-feats.cpp",
+      "size": 926,
+      "sha256": "a8691f7fb8f41f707d68566a168196b5ff7743090b0b486a0be998df6476c511"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/arch/arm/quants.c",
+      "size": 217602,
+      "sha256": "7b6d89b7172770442c5fe580c5f75c792d3f51ebdd81c56a065765dd6edede8a"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/arch/arm/repack.cpp",
+      "size": 269785,
+      "sha256": "6a96da05d38f693bcf259ef063c0e4adf762c006a92252fd83133f7cf626b76d"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/arch/loongarch/quants.c",
+      "size": 94730,
+      "sha256": "6adfe8a7ef75113fff1eba93e7fa52affd156f5f6f9f0adb2c53557909b02d4c"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/arch/powerpc/cpu-feats.cpp",
+      "size": 2074,
+      "sha256": "cbee31db1ec3b93278f6b4724d26fa07c8641359c25a40ffc464617632859c47"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/arch/powerpc/quants.c",
+      "size": 97985,
+      "sha256": "5a7d65d4cae3cb46adac6cb151349e1a18d571f15306bc46bc9a65eddc8f1c2d"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/arch/riscv/cpu-feats.cpp",
+      "size": 807,
+      "sha256": "6187bf810718647068814020407d25ecb89ccd96d40135a064029e5c1f3cd60f"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/arch/riscv/quants.c",
+      "size": 294126,
+      "sha256": "acf089ff8b39c1eeb7cb8f67df8ab49055a5b82a530b9c4871ea7ab732cf390f"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/arch/riscv/repack.cpp",
+      "size": 97889,
+      "sha256": "57b1362562ec0dfe8475e49a639783468da3ddbf7a5f009adcd01a7e4ed61fbf"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/arch/s390/cpu-feats.cpp",
+      "size": 1017,
+      "sha256": "177c1d60be3487bc8635180fd43c2ed2be456a81c6260e6a1c30f2c16c7df3ea"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/arch/s390/quants.c",
+      "size": 57284,
+      "sha256": "d171d40223f13dac82d61a9ba8304f9f242fbbe519174d1cdc2f1199a276ade3"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/arch/s390/repack.cpp",
+      "size": 8533,
+      "sha256": "9f7a310b1cf25b528b0a90f4b8dce60acef626e94b2c03b52a9d5272dcb351ec"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/arch/wasm/quants.c",
+      "size": 46731,
+      "sha256": "defc3f28aa882d52a390d4573f5308ddc3aa95c5f487bbdaf311e7b0874493b3"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/arch/x86/cpu-feats.cpp",
+      "size": 10727,
+      "sha256": "b0f6aaaeb0b12a4f3e15ceec14d0c2031633f91e864a6c15954a001d6390f6d4"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/arch/x86/quants.c",
+      "size": 200035,
+      "sha256": "777d0a4c1caf0e5b2589e8e77eb376a10691155deb5589d981838f9fef286c52"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/arch/x86/repack.cpp",
+      "size": 665038,
+      "sha256": "c69735f83caf854172cac78eed2cbc022ef81c077e5f6aca55a49d3404a02331"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/binary-ops.cpp",
+      "size": 6709,
+      "sha256": "2df261aadce36a20f5e3bf6961d4ca27b8c2d461afc41488361ee6ad09c1730d"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/binary-ops.h",
+      "size": 518,
+      "sha256": "5915519c4e2227db28239b2a5d3b8a5f9022730cc0ddb7880b24748ee78cd1f9"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/cmake/FindSIMD.cmake",
+      "size": 2651,
+      "sha256": "c36807121bb1452dfb1ab39a7b366bd49f454c49b43b1df4b7c54f038c824d49"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/cmake/FindSMTIME.cmake",
+      "size": 2075,
+      "sha256": "81fc6290d1b2fdc30746c222fe993cc7403942ca388f9db0c5885ef568929adb"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/common.h",
+      "size": 2333,
+      "sha256": "db7c19747a28c819d18922aa43b91b224df3730e424e6d8a4cf4fd16bfb1db14"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/ggml-cpu-impl.h",
+      "size": 14292,
+      "sha256": "fd3e46b3e95c8aadda96f17ed13a4a2e83d122d7108c5b56951c80cc29224950"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/ggml-cpu.c",
+      "size": 133088,
+      "sha256": "97a3d16efc5bbb0417b78b9a689b32162b4e16392b044888645ecdcfec23cca1"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/ggml-cpu.cpp",
+      "size": 25005,
+      "sha256": "ccf382d3fbf126b5ddb5850a0a970656fb24e00587da4003419439277c91cd01"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/hbm.cpp",
+      "size": 2156,
+      "sha256": "e5cf5c8327f99ccb58461d8416e27bc38da01d9bd450e48f3df69bd34a81a47c"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/hbm.h",
+      "size": 155,
+      "sha256": "340c84ac6a1c83d2218a15d6d71c1efb6ba1a5517162c2fde4baa0a9204af26b"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/kleidiai/CMakeLists.txt",
+      "size": 417,
+      "sha256": "305d5a47e237a5dcfba62f19e24c4fdaa68286e6397d779fef68cf06f87ad14b"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/kleidiai/kernels.cpp",
+      "size": 83183,
+      "sha256": "4774ea4f359c50970829d3d6e1e565d8d7068db3919ade1d992fbb42598edb41"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/kleidiai/kernels.h",
+      "size": 3080,
+      "sha256": "3f1c15bfbe3ef6e0488b3364787a6636497979c0e11747ee330a353e5326842a"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/kleidiai/kleidiai.cpp",
+      "size": 78638,
+      "sha256": "a4fa72b11069dba81d45285d521cccbbb796d8569a864746ab5e35a3bcf75f6f"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/kleidiai/kleidiai.h",
+      "size": 323,
+      "sha256": "bea31f009d2c471a7f6cd7a0ecf31ecaf08691914305a9ef7f986740e39f0910"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/llamafile/sgemm.cpp",
+      "size": 166263,
+      "sha256": "8413c9a0828ddea7289aee72a32c03bd56a23ee40179ec3600f9b0589a21e338"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/llamafile/sgemm.h",
+      "size": 524,
+      "sha256": "6ec12aa9244a8ffb13ae56b2e391f905b1d152ae25ff45da6a66e18daf650b3b"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/ops.cpp",
+      "size": 428851,
+      "sha256": "acaa7a406bea976cc82558316ef1cb1996f28d34b8203fc46da09b53783d943d"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/ops.h",
+      "size": 10356,
+      "sha256": "f20b8c090dc0572bc69b045e4d32dea2793087c2c4a7bb776960f7ef5fc7a34f"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/quants.c",
+      "size": 45124,
+      "sha256": "a61f1011e49d05b5f99d352b158d5b8e36cf008294bb0db309f72bdd7f1d4e35"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/quants.h",
+      "size": 10862,
+      "sha256": "918d6755b3e601ec7bb83c7dbf1d73304490651ccbb4072b0d31a2b45df751da"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/repack.cpp",
+      "size": 213807,
+      "sha256": "159d4e6e863ca3d39e0ba0ab4fa3b10be7d0c778f6d59f2baea07dcab00c744a"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/repack.h",
+      "size": 21341,
+      "sha256": "d392cb13586c8c9177f6a0f75a75936882d09b9a70e6d989cedb3dd79f3c752a"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/simd-gemm.h",
+      "size": 8816,
+      "sha256": "e82a07445059ec4a4c7d8dd75a2663d459025274d817be3f83c1f5989a79208d"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/simd-mappings.h",
+      "size": 57672,
+      "sha256": "da1ce4e4a16589171519532c070923458f358a6ef8fc9ed5f3bcbc059501c3ae"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/spacemit/ime.cpp",
+      "size": 78119,
+      "sha256": "fc71e27a50e0f54245226a5cd013cc5088f409234226655bc8849bcb828e3f4c"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/spacemit/ime.h",
+      "size": 511,
+      "sha256": "2007cbf6ea43a0d97f46e046f1449ab752ff35cc42caa09a22195dbe06656143"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/spacemit/ime1_kernels.cpp",
+      "size": 63629,
+      "sha256": "3158f67ab216eadeb0fedfad0d2b2806d9f018c6716658646226ddc5fec3b105"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/spacemit/ime2_kernels.cpp",
+      "size": 291755,
+      "sha256": "98b9f38041ead963baf59628167979d667f44c52570cb80d9340efce775fae73"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/spacemit/ime_env.cpp",
+      "size": 12208,
+      "sha256": "5f31bd7195f7daffe278e7394c7c84327ec6cce421a2f035b9a0ba4edfd53b2c"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/spacemit/ime_env.h",
+      "size": 1810,
+      "sha256": "2d8b0529166cefb919715e87ca2ed56ef6f0739a6ba008a4e98b2db9545c8295"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/spacemit/ime_kernels.h",
+      "size": 8410,
+      "sha256": "b6fa08ff9966173b082b0570fd444db63aa4f748556ef390fb9df8ef4fe2dbd3"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/spacemit/repack.cpp",
+      "size": 77894,
+      "sha256": "29a8bf365771e401c2096349bb10bf465b530f98ec21058007a979b50022395c"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/spacemit/repack.h",
+      "size": 316,
+      "sha256": "70f7c5aae3b7972841bbb68e05acb84f299c08af61ea8608ab233fc432db8920"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/spacemit/rvv_kernels.cpp",
+      "size": 154759,
+      "sha256": "cde0a685538533b52e614485871656651f48f800babd78b37a60507138e0db5d"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/spacemit/rvv_kernels.h",
+      "size": 4380,
+      "sha256": "666e988d3700b733dad9a406b1575f521f75186fad942a27edd0792f2b4165e7"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/spacemit/spine_barrier.h",
+      "size": 1007,
+      "sha256": "ddba450200089601aac492a45d6be7881eeef02cd0a4abedf69db5c4b9dfe134"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/spacemit/spine_mem_pool.cpp",
+      "size": 27104,
+      "sha256": "3ca25e1b06f9aa8144d15e4382b40a1561609e65518119da876765bd6fc1aeed"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/spacemit/spine_mem_pool.h",
+      "size": 920,
+      "sha256": "8f441ca61472aef8ee16f88fe0f640c188ff036e4c80bb5657b1c0a4c204d889"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/spacemit/spine_tcm.h",
+      "size": 13965,
+      "sha256": "8bfe1bfa04a24f88d79610e209047de81f867d12c7dce8bf16402fcb3f67b0c8"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/tiled/tiled-kernel.cpp",
+      "size": 36765,
+      "sha256": "1d311e25a1da81029ff3644505e1c63b5f65711ad44edb10ac20d1349f8ba5f1"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/tiled/tiled-kernel.h",
+      "size": 9547,
+      "sha256": "0d729f5a6b4cd1584bd181fbc882e39f64fd41bf66ac1a9c009025d2b09ff23e"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/tiled/tiled.cpp",
+      "size": 58049,
+      "sha256": "a5d92ce8f617696778e225de6658180649143fec3792c5cfef84170641f2d06e"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/tiled/tiled.h",
+      "size": 1387,
+      "sha256": "684aaa5320e20eadfc799c8ce04c52bf7c0d32b323f395de59ce469bda254a72"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/traits.cpp",
+      "size": 1231,
+      "sha256": "a85bd3ff50c91cb67d14221988544664dfe5975db0811b330dc4a2f385239de4"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/traits.h",
+      "size": 1157,
+      "sha256": "26e1b41879091a663325848aa82a4023b459fd1e688b3b0e2a9bde3e72a3a764"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/unary-ops.cpp",
+      "size": 11550,
+      "sha256": "57a73a81b91473945040054a03bd921f1f77656d217e205cf8fd7f1e0acae7ad"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/unary-ops.h",
+      "size": 2442,
+      "sha256": "280b7979055079d43bdde7790a7290bf04f75640481c59abc2364c46d6ac6d8e"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/vec.cpp",
+      "size": 29280,
+      "sha256": "ed6690d3246f420c37d1441469a3631e365c24425f9722ca2f46651c88c1e292"
+    },
+    {
+      "path": "ggml/src/ggml-cpu/vec.h",
+      "size": 72790,
+      "sha256": "d969d24adcf494eaac83a865ae1c46aab744ce71d2fd8028286071c4c651a6be"
+    },
+    {
+      "path": "ggml/src/ggml-feats.h",
+      "size": 5253,
+      "sha256": "32d4848b03c91888d5d18f0539eb78136df6d962e443a4bfc3dfcddc70509a3e"
+    },
+    {
+      "path": "ggml/src/ggml-impl.h",
+      "size": 25821,
+      "sha256": "43564db0238aebb7ed68501e346c194866b5dac218d1d37b26baff9f458c00d3"
+    },
+    {
+      "path": "ggml/src/ggml-metal/CMakeLists.txt",
+      "size": 13027,
+      "sha256": "0809f38e6badeaf9e476ca1ca26e0013180b0003d16a40b1d9b2820e4a5c6bf4"
+    },
+    {
+      "path": "ggml/src/ggml-metal/ggml-metal-common.cpp",
+      "size": 20011,
+      "sha256": "ade4f77559e687901f84c17cf4411a35fb1bc0500818dd27cab74905fecf5978"
+    },
+    {
+      "path": "ggml/src/ggml-metal/ggml-metal-common.h",
+      "size": 3054,
+      "sha256": "59f371d72b118b536fbe787ea109ffe26771bfb351224430db93a1549b91ec90"
+    },
+    {
+      "path": "ggml/src/ggml-metal/ggml-metal-context.h",
+      "size": 1454,
+      "sha256": "9f2d9d91ecc54470a6b0d19109a55871cc362212bfe79ba7ea8d4a7798068b98"
+    },
+    {
+      "path": "ggml/src/ggml-metal/ggml-metal-context.m",
+      "size": 28077,
+      "sha256": "0218b62f335163b56bbc5dd5dff786c0f5f8a1d6ac1fe869399f6a43890a57f4"
+    },
+    {
+      "path": "ggml/src/ggml-metal/ggml-metal-device.cpp",
+      "size": 93990,
+      "sha256": "81b603b5dca551a39bd4ee85f4c91b1b51bda8023203c3f29cc073a5a814abac"
+    },
+    {
+      "path": "ggml/src/ggml-metal/ggml-metal-device.h",
+      "size": 21251,
+      "sha256": "9af275f23e35cfc05797e705dfc26e2eaab035108af19c7a552f6d78e757fdba"
+    },
+    {
+      "path": "ggml/src/ggml-metal/ggml-metal-device.m",
+      "size": 94281,
+      "sha256": "a0bc096d0bb27c0ed1461666a271b24168449ec371b08032f3c2e6badb6c46b7"
+    },
+    {
+      "path": "ggml/src/ggml-metal/ggml-metal-fusion.cpp",
+      "size": 46509,
+      "sha256": "5bf998f55a16cefd79c898a5b51d3a82e960ddbe97f5851451ac83ebbc32bd55"
+    },
+    {
+      "path": "ggml/src/ggml-metal/ggml-metal-fusion.h",
+      "size": 5094,
+      "sha256": "53d5276565dbf7566fc76b3be23336914a5aad439f0dd94d65e550fc5ba7fc5e"
+    },
+    {
+      "path": "ggml/src/ggml-metal/ggml-metal-impl.h",
+      "size": 29040,
+      "sha256": "469e5aee5f0eecb41a097cf95007015195f2c3de1012b0b763666c3f8617308c"
+    },
+    {
+      "path": "ggml/src/ggml-metal/ggml-metal-ops.cpp",
+      "size": 220812,
+      "sha256": "c996f88af4c4e5f7dc354271c387a62161febec37457194b8ff25500ec945f22"
+    },
+    {
+      "path": "ggml/src/ggml-metal/ggml-metal-ops.h",
+      "size": 5471,
+      "sha256": "f4d146fc4e05ddb93b79c4cc823f2f9c249bc3435a9a50fc06775d306f50311f"
+    },
+    {
+      "path": "ggml/src/ggml-metal/ggml-metal-tuning.cpp",
+      "size": 62658,
+      "sha256": "b96a167f033617d5c7b5534e371bf6767ec904cc784dd6a334bfa52efd2eeeb5"
+    },
+    {
+      "path": "ggml/src/ggml-metal/ggml-metal-tuning.h",
+      "size": 2586,
+      "sha256": "6697fdbbe65efdbae9a17b21652a993ce89de4f46dc76d0336387c599d216b61"
+    },
+    {
+      "path": "ggml/src/ggml-metal/ggml-metal.cpp",
+      "size": 39641,
+      "sha256": "59d4b4db565c55a1a016d0021becb7bf57784c27aec41105d694e4dca7864ae0"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/argsort.metal",
+      "size": 15741,
+      "sha256": "3b569aa508de86e0ddbb9ff476679447196f9353b52ad8b2f3e211d071bad2ac"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/binbcast.metal",
+      "size": 8279,
+      "sha256": "9a7aea67f41feb834e6c1e13ec69bf0c07fbdd5da66b4e4d07d5abad970358a5"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/common.h",
+      "size": 3481,
+      "sha256": "525d4d7f9dbdaef3702195be92235ba2cc7cc86d5c97101d374a52b06117215e"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/conv.metal",
+      "size": 26269,
+      "sha256": "910ad50f89648c136cf4c92a0f983e7234d44c2f6b53f5429d1cab305da47ec1"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/dequantize.h",
+      "size": 28011,
+      "sha256": "b64da60146cad11863bae09873e542dce76897c787849d47abaa2a5837d5bf8f"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/fa_aux.metal",
+      "size": 18446,
+      "sha256": "8803f66ced73db75ab8df6a7c974eda111ea9b9a1833322cc781974d43c9136f"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/fa_common.metal",
+      "size": 28666,
+      "sha256": "ec44dd8f84580201fe63eb3ea0342039519740d4c4bffa03aff1e7a361a288d8"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/fa_f16.metal",
+      "size": 8229,
+      "sha256": "b181b6b3b32933a815c0e0ba47c796118862451c27de2accdf863f0ffcdd56c2"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/fa_f32.metal",
+      "size": 4654,
+      "sha256": "3f3f7cbb602c92a6dbdefbee50658f2a1b823b508bea335d23dd87d43b3be6eb"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/fa_q4_0.metal",
+      "size": 4637,
+      "sha256": "38ae21612fa7a6be70b14d197ded88126733fb419dd9ab11e7b33d28682b240c"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/fa_q4_1.metal",
+      "size": 4637,
+      "sha256": "2f8caafcd74efc10ec69ed3f4e0773ee24abdb29c340cdcb4aedd2dde0c0a58c"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/fa_q5_0.metal",
+      "size": 4637,
+      "sha256": "c362bbf3bf33014b217f75561670fc515559802541e2f077668454111580aabd"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/fa_q5_1.metal",
+      "size": 4637,
+      "sha256": "38652f76760fbce44eb2c10a675adaddb893330228168fe799e65efe11bd9ba3"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/fa_q8_0.metal",
+      "size": 4637,
+      "sha256": "d1906618b34323a2c509cb2debd6ca0fa683b770e07269263c30084f6bab4d96"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/fa_tensor.metal",
+      "size": 11395,
+      "sha256": "51d4526b1205465156c87b24edbd6a5448532eeb66f30e81d07194284595d8bb"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/fa_vec_common.metal",
+      "size": 26738,
+      "sha256": "0a8d29a82fb0ddc48e3c27598e95d665545bf97c9ca734cdbc5a86cf8c2724bc"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/fa_vec_f16.metal",
+      "size": 19449,
+      "sha256": "60ed68dee021ccc2319035920bf41b2fc3046d2b05f33aa3f6871d6c2350a24b"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/fa_vec_f32.metal",
+      "size": 3208,
+      "sha256": "9f6f983a7b8b3a32a3e1ae40783abc4820803f1f3346bf64b2c0ef3b723f797b"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/fa_vec_q4_0.metal",
+      "size": 16410,
+      "sha256": "e8fe05fb2091b90d89116c3c94b4e6d1914427b036d74369cbeaf715db8ac074"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/fa_vec_q4_1.metal",
+      "size": 16410,
+      "sha256": "9961dfda0646cfa53672550eb5b33dac4e8cce74a83ed8946c818f77fa61878b"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/fa_vec_q5_0.metal",
+      "size": 16410,
+      "sha256": "31aa98ef311a1e439f7419aee0ad4e1b409e5da53fb6fedd6b04ec35a5f9d5af"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/fa_vec_q5_1.metal",
+      "size": 16410,
+      "sha256": "55f7adf113fc0e3e7a70ccb04726cfdfe36675138a92d16f4366fad3f5ec539d"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/fa_vec_q8_0.metal",
+      "size": 16410,
+      "sha256": "fc7627d5f4560ecd58c0fd69247d3f28eb998142c5ad2da315f208f77d02a765"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/gated_delta_net.metal",
+      "size": 9402,
+      "sha256": "2d6b4c1e580918f07ad53cd9fec4400f58d92239c7c40f36f747a9fbf469056b"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/misc.metal",
+      "size": 35438,
+      "sha256": "f05161ddbadc99797cf26d0c1cf19b13beb17c2fc9d6b1c85b0cdb9835bde2f4"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/mul_mm.metal",
+      "size": 58613,
+      "sha256": "c3653dbd858e6d68e2db73aa4e37fe914f389fe346f36e1c3b19e9be4bcf307f"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/mul_mv.metal",
+      "size": 133398,
+      "sha256": "3b6250aa1ec74091bbadedbae35355c2d6ea5d566c2033f91d9aecd896c69059"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/mul_mv_mma.metal",
+      "size": 27341,
+      "sha256": "115e843e70a6b5f8b6d4dc691a14706fadf6e9929b7f661989b5d7ae3d7716f9"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/norm.metal",
+      "size": 10380,
+      "sha256": "0dd430fa7b0d0981f63df688f8e4e2f815275f9bc29c1a7b51bf353df542daa3"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/pool.metal",
+      "size": 5733,
+      "sha256": "c2c671c703bcd9af148a9ba70d5777bec7e9cc7ca17f0b89895d35191e548660"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/quantize.h",
+      "size": 6779,
+      "sha256": "0bdfe2ad67ec2840642e961d59497b00c1d1ad9606608b8f29bdbcaa63b20ece"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/quantize.metal",
+      "size": 26627,
+      "sha256": "5ce7c2899a90c8377f4e8c9d64fbe64eb8ce4eb39ad68c1ac1a5d5aac9bd6f0b"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/reduce.metal",
+      "size": 6433,
+      "sha256": "885d26a5be3003380fb80528e7d30fe51e4ed1d69badad495f2dac5b4ff45bbf"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/rope.metal",
+      "size": 13965,
+      "sha256": "ec29ea430182842124c9bc7e62e1f8a2f48e1afc51d2ded54b96911201588987"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/softmax.metal",
+      "size": 7253,
+      "sha256": "306d1a0124f45e9daaa533c1ca8d97192c3a7e5284a64b63baff29250bf4fb9e"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/solve_tri.metal",
+      "size": 2456,
+      "sha256": "f28166aec0282cc150d0e64cf073909c9b19056f9dc7f41331b37a37f9b48cd3"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/ssm.metal",
+      "size": 20441,
+      "sha256": "a3f006c23ddb4c5aea74c5ba637051e07d22dd4ad70c756fa0be667f4670f832"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/tri.metal",
+      "size": 2820,
+      "sha256": "deda0bdd7b491291e061d3f8bd0b2c8bd9196e751d9cc637bf14a32943de0959"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/unary.metal",
+      "size": 15672,
+      "sha256": "11fd4983a083b14db03a0df5ad0945b3ae3e206f6326782395b4a030543ccac2"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/upscale.metal",
+      "size": 6930,
+      "sha256": "e284522182ffda27b4dd3b81c3a2ceabe6b2631538b7b5e9f241456cdc89d21b"
+    },
+    {
+      "path": "ggml/src/ggml-metal/kernels/wkv.metal",
+      "size": 5729,
+      "sha256": "af0099322294990fba0ca5ea5b2988b8b7778a5c820f52c05ca0e433dfcc9ef8"
+    },
+    {
+      "path": "ggml/src/ggml-opt.cpp",
+      "size": 42081,
+      "sha256": "e35fd27856e37f3611d3bc6f17ee963be51bfe92bec96fad0a9fa2c7ebbe9c46"
+    },
+    {
+      "path": "ggml/src/ggml-quants.c",
+      "size": 226847,
+      "sha256": "5574a2dccf7c07e75b143733e04a5412d3d8c819e7945f5217a7b83a2b2ff8ab"
+    },
+    {
+      "path": "ggml/src/ggml-quants.h",
+      "size": 9803,
+      "sha256": "28ae5fca1f3be636b36cd6c4fa2ca74fd42d229bfbd5352eaf66f3727bb8a6da"
+    },
+    {
+      "path": "ggml/src/ggml-threading.cpp",
+      "size": 250,
+      "sha256": "13a18d885393722b7c9f42d4cf8575a4d41699926d656f78a867fa4fac9dad20"
+    },
+    {
+      "path": "ggml/src/ggml-threading.h",
+      "size": 198,
+      "sha256": "9652729043ed91482392c1aa08af5d813190d0ace2e7982d2539d28240ab8d8b"
+    },
+    {
+      "path": "ggml/src/ggml-version.h.in",
+      "size": 95,
+      "sha256": "2b6f26259bfc6768229c90b127fee770f60271e74f4513d7abecb5900fa0b112"
+    },
+    {
+      "path": "ggml/src/ggml.c",
+      "size": 263959,
+      "sha256": "45e90696c4a766d5747f3443f817cd3be11f0110cf93cd16926698c0f49ed083"
+    },
+    {
+      "path": "ggml/src/ggml.cpp",
+      "size": 738,
+      "sha256": "64e6b5c8d716ae8697e45481a7153540be01f721be2dc7e753aa47b36a69c753"
+    },
+    {
+      "path": "ggml/src/gguf.cpp",
+      "size": 58995,
+      "sha256": "7505d6a434dc740941a682fd3b476ef9bd9893ab76adf18c9969daa528bd5be5"
+    },
+    {
+      "path": "include/parakeet.h",
+      "size": 16246,
+      "sha256": "fa5e1bcfcb36924fe560a169defab72fc3cf360f585402f454eab4763717edee"
+    },
+    {
+      "path": "include/whisper.h",
+      "size": 37439,
+      "sha256": "a7d19f7feb5be52426628ff07e0602de28a30dc4312d0d0603e1e536753f76dd"
+    },
+    {
+      "path": "models/for-tests-ggml-base.en.bin",
+      "size": 586836,
+      "sha256": "1bc042ca584ff1895897e95bffb34ccf357be46c1fca97cf7fbe32f2060aa9e8"
+    },
+    {
+      "path": "models/for-tests-ggml-tiny.bin",
+      "size": 575451,
+      "sha256": "c486fb9f14a28b1c1dc252741a431646cc573450c900b9d9c406e10294aa01e6"
+    },
+    {
+      "path": "models/for-tests-silero-v6.2.0-ggml.bin",
+      "size": 885098,
+      "sha256": "2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987"
+    },
+    {
+      "path": "samples/jfk.wav",
+      "size": 352078,
+      "sha256": "59dfb9a4acb36fe2a2affc14bacbee2920ff435cb13cc314a08c13f66ba7860e"
+    },
+    {
+      "path": "src/CMakeLists.txt",
+      "size": 8601,
+      "sha256": "fe75ab67c91adce33b15ce7a221c85e9e7b81366a78ea315e5855106b3c93d51"
+    },
+    {
+      "path": "src/aneforge/whisper-aneforge.cpp",
+      "size": 6768,
+      "sha256": "2946310c28ff5cf14634691078542b9286a2d8ba27929104179a87dec2f763aa"
+    },
+    {
+      "path": "src/aneforge/whisper-aneforge.h",
+      "size": 952,
+      "sha256": "9870672ab5115132b47de746a588bb38915abf1c0adc6e49de9603fca0e44c1f"
+    },
+    {
+      "path": "src/coreml/whisper-compat.h",
+      "size": 467,
+      "sha256": "c66240d5ea327ea6804797db726da8a766644693e2f193fab9ce4473048fe52b"
+    },
+    {
+      "path": "src/coreml/whisper-compat.m",
+      "size": 1246,
+      "sha256": "07b08e5db7cfbdde67aab1b38c9acb6367a010f2bcdbee7db95a7bc555763329"
+    },
+    {
+      "path": "src/coreml/whisper-decoder-impl.h",
+      "size": 8837,
+      "sha256": "9e83cdb1de16b78c5b704120fdf29b17b9accac8df7b869921b4fe006bfc302f"
+    },
+    {
+      "path": "src/coreml/whisper-decoder-impl.m",
+      "size": 10249,
+      "sha256": "51c6ae6b20f1081a30f94b7eeb1bf8a5a66bffaf8c5345b6a924f622a3fbe505"
+    },
+    {
+      "path": "src/coreml/whisper-encoder-impl.h",
+      "size": 8605,
+      "sha256": "bf8c6d8b5e2bf9219115d47c457c52aa7d74f60414da33124de2a738c56e6a1a"
+    },
+    {
+      "path": "src/coreml/whisper-encoder-impl.m",
+      "size": 9961,
+      "sha256": "fe94336e9b3aa8022f4678a5dbdd4e3d07af732fb02cb76ad7c548e6b95f2492"
+    },
+    {
+      "path": "src/coreml/whisper-encoder.h",
+      "size": 675,
+      "sha256": "5f5404265f34e2529fbdd6a8a0bade03e2a3d56be448540505a1b41713aaa242"
+    },
+    {
+      "path": "src/coreml/whisper-encoder.mm",
+      "size": 2224,
+      "sha256": "e20bb1eb2128802b3f8d0e4e7f498fd7e3ad175bfed67665edd5e513f03c2347"
+    },
+    {
+      "path": "src/openvino/whisper-openvino-encoder.cpp",
+      "size": 3988,
+      "sha256": "b35faa2d9d1baa762feda901605b194e14c8222d7e4a7f5d01c9a883114cc5af"
+    },
+    {
+      "path": "src/openvino/whisper-openvino-encoder.h",
+      "size": 876,
+      "sha256": "30debb67a2ba5972d0bfecc5ab35827d67c4e38b5485dbb6bb00af9f64e4404c"
+    },
+    {
+      "path": "src/parakeet-arch.h",
+      "size": 12911,
+      "sha256": "0c7523a955813acb0eb057320369b8f2e332f543748c8e8058e558e3f267fa3e"
+    },
+    {
+      "path": "src/parakeet.cpp",
+      "size": 148946,
+      "sha256": "2e56a6d1b4aadcdb45dd6e4aaea4e41dccc909301b12f8fd257a6dcdd3f1ad2a"
+    },
+    {
+      "path": "src/vitisai/whisper-vitisai-encoder.cpp",
+      "size": 23683,
+      "sha256": "7950b0a02de271b09d2c7ebd118c9d377e09ca1669e67706dbd45e65660aa994"
+    },
+    {
+      "path": "src/vitisai/whisper-vitisai-encoder.h",
+      "size": 833,
+      "sha256": "054ca6bb362d8c71090ede30c850140e2bc6fa5b1386374cd4e9296fae7859c3"
+    },
+    {
+      "path": "src/vitisai/whisper-vitisai-helpers.cpp",
+      "size": 16986,
+      "sha256": "b089c6b3d7b7837e46b5010139c71d4e05c33c6856aee99e7c6a602ba53be827"
+    },
+    {
+      "path": "src/vitisai/whisper-vitisai-helpers.h",
+      "size": 3835,
+      "sha256": "415b67b03efc32eadb533c131ef88d4438e5eaacf660c5faf2dc323a47535388"
+    },
+    {
+      "path": "src/whisper-arch.h",
+      "size": 9212,
+      "sha256": "f35cf51d54c4df7e1c504ba8ef3f06012ba483459ddf2a5cba533deb7b85c239"
+    },
+    {
+      "path": "src/whisper.cpp",
+      "size": 345264,
+      "sha256": "4d2a67c744008da78b5e0edcb5a8e2e9f02a66ca6c8e7ebfa4596a8df56d19c7"
+    }
+  ]
+}

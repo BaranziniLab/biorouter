@@ -29,6 +29,10 @@
 /// move.
 static SANDBOX_ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 
+// Every `keyring::Entry` this binary builds uses process memory, never the OS
+// credential store (`config::test_binary_credentials`).
+crate::keep_this_test_binary_off_the_os_credential_store!();
+
 /// Run before `main`, because the placement is the whole point.
 ///
 /// `Config::global()` (`GLOBAL_CONFIG`), the session store's root
@@ -86,12 +90,16 @@ static SANDBOX_ROOT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 /// the test-only fault/probe counters' derived `Default`s — no file, no
 /// keyring. It records the keyring *service name*; it never opens the store.
 /// What it does freeze is the secret BACKEND: `BIOROUTER_DISABLE_KEYRING` is
-/// read now, from the outer environment, where before it was read by whichever
-/// test touched the cell first — and no test here sets that variable
-/// in-process; only `handle_keyring_fallback_error` does, at run time, after a
-/// keyring failure. `rust.yml` sets it for this suite, and on macOS a run
-/// without it can block in `SecKeychainFindGenericPassword` whether or not this
-/// line exists, because provider construction reads secrets.
+/// read now, where before it was read by whichever test touched the cell first.
+/// The ctor sets it to `true` when the outer environment leaves it unset, so
+/// `Config::global()` keeps its secrets in this sandbox's `secrets.yaml`, the
+/// backend every `rust.yml` test step already chose by exporting it, and a
+/// child this binary starts inherits the same. Before that, a local run without
+/// the variable froze the OS keychain here, and on macOS provider construction
+/// then blocked in `SecKeychainFindGenericPassword` behind a password dialog.
+/// The OS store is out of reach either way: this module also invokes
+/// `keep_this_test_binary_off_the_os_credential_store!` (below), which replaces
+/// it for every `keyring::Entry` in the process.
 #[ctor::ctor]
 fn sandbox_config_root_for_the_lib_test_binary() {
     crate::fork_safety::complete_libnotify_init(); // before any test thread; see fork_safety
@@ -113,6 +121,11 @@ fn sandbox_config_root_for_the_lib_test_binary() {
     // we minted is recorded as the value we just installed.
     if let Some(root) = std::env::var_os("BIOROUTER_PATH_ROOT") {
         record_sandbox_root(&root);
+    }
+    // After the root, so the file it selects is the sandbox's; before the
+    // `Config::global()` freeze below, which reads it (see this ctor's docs).
+    if std::env::var_os("BIOROUTER_DISABLE_KEYRING").is_none() {
+        std::env::set_var("BIOROUTER_DISABLE_KEYRING", "true");
     }
     let _ = crate::session::session_manager::SessionManager::shared_store_root();
     // …and the global manager's config root, for the same reason: its first

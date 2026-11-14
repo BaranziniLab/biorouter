@@ -15,8 +15,10 @@
  * Read from the syntax tree, not the text: a tag in a comment or a string is not an element, and
  * `<br>`, `<button>` and `<blockquote>` are not `<b>`.
  *
- * Excluded: `settings/dictation/` and `settings/tunnel/`, frozen and unmounted (nothing imports
- * them, which the last case keeps true), where four bare strongs remain that no person can see.
+ * Excluded: `settings/tunnel/`, frozen and unmounted (nothing imports it, which the last case
+ * keeps true), where two bare strongs remain that no person can see. `settings/dictation/`, the
+ * inherited cloud dictation, was excluded too until PR-01 of `docs/dictation/implementation-plan.md`
+ * deleted it in 2026-11; the local dictation components are guarded like any other.
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
@@ -29,7 +31,7 @@ const SRC = resolve(here, '../..');
 const COMPONENTS = resolve(here, '..');
 
 /** Folders under `components/` that are frozen and mounted nowhere. */
-const UNMOUNTED = ['settings/dictation', 'settings/tunnel'];
+const UNMOUNTED = ['settings/tunnel'];
 
 const NAMES_A_WEIGHT = /(?<![\w-])font-(semibold|normal|medium)(?![\w-])/;
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { CrewStepRequest } from '../../../api';
 import { failureSentence } from '../../../utils/ipcError';
 import { Button } from '../../ui/button';
+import { Disclosure } from '../../ui/disclosure';
 import { sanitizeDisplayText } from '../identity/displayText';
 import { crewVaultStepCopy as copy } from './CrewVaultStep.copy';
 import { CrewStepFrame, dismissStep } from './CrewStepFrame';
@@ -66,11 +67,13 @@ export default function CrewVaultStep({
   }, [prompting, onHolding]);
 
   if (!api) {
+    // The warning stays in view; where to do it instead folds (owner, 2026-11-13).
     return (
       <CrewStepFrame kind="vault" title={title}>
-        <p className="text-supporting text-text-muted">
-          {init ? copy.initFallback : copy.unlockFallback}
-        </p>
+        <p className="text-supporting text-text-muted">{copy.fallbackWarning}</p>
+        <Disclosure label={init ? copy.initHowLabel : copy.unlockHowLabel}>
+          <p className="text-supporting text-text-muted">{init ? copy.initHow : copy.unlockHow}</p>
+        </Disclosure>
       </CrewStepFrame>
     );
   }
@@ -111,9 +114,15 @@ export default function CrewVaultStep({
             ? copy.setUp
             : copy.unlocked
           : null;
+  // Where the passphrase goes stays in view; what the vault is and what the button opens wait
+  // behind the title's info icon (owner, 2026-11-13).
   return (
-    <CrewStepFrame kind="vault" title={title}>
-      <p className="text-supporting text-text-muted">{init ? copy.initBody : copy.unlockBody}</p>
+    <CrewStepFrame
+      kind="vault"
+      title={title}
+      titleHelp={{ label: copy.aboutLabel, help: init ? copy.initAbout : copy.unlockAbout }}
+    >
+      <p className="text-supporting text-text-muted">{copy.passphraseGoes}</p>
       {status && (
         <p role="status" className="text-supporting text-text-default">
           {status}

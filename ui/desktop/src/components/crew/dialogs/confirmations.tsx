@@ -287,6 +287,7 @@ function RemovePerson({ principalId, onClose }: { principalId: string; onClose()
       open
       title={confirmCopy.removePerson.title(personLabel(person, 'authority', dir), workspace)}
       description={confirmCopy.removePerson.description}
+      details={confirmCopy.removePerson.details}
       phrase={username}
       fieldLabel={confirmCopy.typeToConfirm(username)}
       confirmLabel={confirmCopy.removePerson.confirm(workspace)}
@@ -329,7 +330,7 @@ function ArchiveChannel({ channelId, onClose }: { channelId: string; onClose(): 
       message={confirmCopy.archiveChannel.description}
       confirmLabel={confirmCopy.archiveChannel.confirm}
       cancelLabel={confirmCopy.cancel}
-      confirmVariant="destructive"
+      confirmVariant="critical"
       isSubmitting={crew.isPending(key)}
       onCancel={onClose}
       onConfirm={() =>
@@ -390,7 +391,7 @@ function DeleteChannel({ channelId, onClose }: { channelId: string; onClose(): v
       message={confirmCopy.deleteChannel.description(name)}
       confirmLabel={confirmCopy.deleteChannel.confirm}
       cancelLabel={confirmCopy.cancel}
-      confirmVariant="destructive"
+      confirmVariant="critical"
       isSubmitting={crew.isPending(key)}
       onCancel={onClose}
       onConfirm={() => {
@@ -489,6 +490,7 @@ function DeleteWorkspace({ connectionId, onClose }: { connectionId: string; onCl
       open
       title={confirmCopy.deleteWorkspace.title(workspace)}
       description={confirmCopy.deleteWorkspace.description(workspace, server)}
+      details={confirmCopy.deleteWorkspace.details}
       phrase={phrase}
       fieldLabel={confirmCopy.typeToConfirm(phrase)}
       confirmLabel={confirmCopy.deleteWorkspace.confirm}
@@ -626,11 +628,16 @@ function RemoveConnection({ connectionId, onClose }: { connectionId: string; onC
       <DangerousConfirmDialog
         open
         title={confirmCopy.removeConnection.title(workspace)}
-        description={`${confirmCopy.removeConnection.onlyHostDescription(workspace, username)}${
+        description={confirmCopy.removeConnection.onlyHostDescription(workspace)}
+        details={[
+          confirmCopy.removeConnection.onlyHostKeep(username),
           saved?.ssh_target
-            ? ` ${confirmCopy.removeConnection.onlyHostUpdateFirst(saved.ssh_target)}`
-            : ''
-        }`}
+            ? confirmCopy.removeConnection.onlyHostUpdateFirst(saved.ssh_target)
+            : '',
+          confirmCopy.removeConnection.alsoDetails,
+        ]
+          .filter(Boolean)
+          .join(' ')}
         phrase={phrase}
         fieldLabel={confirmCopy.typeToConfirm(phrase)}
         confirmLabel={confirmCopy.removeConnection.onlyHostConfirm}
@@ -650,14 +657,24 @@ function RemoveConnection({ connectionId, onClose }: { connectionId: string; onC
         standing === 'deleted'
           ? confirmCopy.removeConnection.deletedDescription(workspace)
           : standing === 'account'
-            ? confirmCopy.removeConnection.accountDescription(
+            ? confirmCopy.removeConnection.accountDescription
+            : standing === 'member'
+              ? confirmCopy.removeConnection.memberDescription(workspace, username)
+              : confirmCopy.removeConnection.description
+      }
+      // What else the removal does is one click away; the consequence stays the message.
+      details={
+        standing === 'deleted'
+          ? undefined
+          : standing === 'account'
+            ? confirmCopy.removeConnection.accountDetails(
                 workspace,
                 saved ? serverLabel(saved) : '',
                 username ? `@${username}` : null
               )
             : standing === 'member'
-              ? confirmCopy.removeConnection.memberDescription(workspace, username)
-              : confirmCopy.removeConnection.description
+              ? confirmCopy.removeConnection.alsoDetails
+              : confirmCopy.removeConnection.descriptionDetails
       }
       confirmLabel={confirmCopy.removeConnection.confirm}
       cancelLabel={confirmCopy.cancel}

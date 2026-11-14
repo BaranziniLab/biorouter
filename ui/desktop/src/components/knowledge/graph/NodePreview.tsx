@@ -333,7 +333,8 @@ export function NodePreview({ kbId, node, mode, previewSha, onClose }: Props) {
         </div>
       </div>
 
-      <div className="bg-background-fill px-4 py-2 font-mono text-supporting break-all text-text-muted">
+      {/* Where the page lives, so sans (design.md D-42): a location, not a value to retype. */}
+      <div className="bg-background-fill px-4 py-2 text-supporting break-words text-text-muted">
         {node.path}
       </div>
     </div>

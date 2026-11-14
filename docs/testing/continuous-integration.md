@@ -41,13 +41,13 @@ organisation's plan runs 20 jobs at once, 5 of them on macOS.
 
 | Check | What it runs | Run time (min) |
 |---|---|---|
-| `guards` | cross-drift, retired-name, version, Copilot naming, vendored source guards | 0.5 |
+| `guards` | cross-drift, retired-name, version, Copilot naming, vendored source guards (Open Computer Use and whisper.cpp), the dictation fixture budget and build prerequisites | 0.5 |
 | `cross-check (x86_64-pc-windows-gnu)` | `cargo check --workspace --all-targets` (8.9) and the hostname-call clippy gate (4.1), in the release's docker image | 13.2 |
 | `No inheritable sockets (x86_64-pc-windows-gnu)` | the socket gate on the target where the bug lives | 8.1 |
 | `lib tests (ubuntu)` | `cargo test --workspace --lib` (9.1) | 10.5 |
 | `integration (ubuntu, 1/3)` | bin targets (5.5), Ollama readiness, sandbox integration, a third of `tests/*.rs` offline (5.5) | 12.9 |
 | `integration (ubuntu, 2/3)` | a third of `tests/*.rs` offline | 9.8 |
-| `integration (ubuntu, 3/3)` | a third of `tests/*.rs` offline (7.6), the generated API contract, the `serve` browser contract | 10.0 |
+| `integration (ubuntu, 3/3)` | a third of `tests/*.rs` offline (7.6), the generated API contract, the `serve` browser contract, and served dictation in Chromium and Firefox (fake audio, a path prefix; added by #485 after this was measured) | 10.0 |
 | `test (ubuntu-latest)` | gate: every job above passed | 0.1 |
 | `test (macos-latest)` | subset: Seatbelt sandbox, unit and integration | 1.6 |
 | `test (windows-latest)` | subset: directory probes, sandbox unit, integration and `bounded_fs`, the console-window test (4.3) | 7.3 |
@@ -99,12 +99,12 @@ step of the three shards) and vitest in one job (`vitest (all files)`), plus:
 
 | Job or step | Why it is not on a pull request |
 |---|---|
-| full `test (macos-latest)`: lib + bins, Ollama readiness | 58 min median on the scarcest runner; see the subset rule above. Also on a pull request labelled `ci:full` |
-| full `test (windows-latest)`: lib + bins (with `--timings`), Ollama readiness, the MSVC hostname clippy gate | 33 min median; the clippy gate runs on every pull request on windows-gnu. Also on `ci:full` |
+| full `test (macos-latest)`: lib + bins, Ollama readiness, "Backends declare macOS 12.0", the dictation engine, worker role and supervisor tests (Metal) | 58 min median on the scarcest runner; see the subset rule above. Also on a pull request labelled `ci:full` |
+| full `test (windows-latest)`: lib + bins (with `--timings`), Ollama readiness, the dictation engine, worker role and supervisor tests (the MSVC engine build, M-3), the MSVC hostname clippy gate | 33 min median; the clippy gate runs on every pull request on windows-gnu. Also on `ci:full` |
 | `cross-check (x86_64-unknown-linux-gnu)` (push and dispatch) | compiles what the ubuntu jobs already compile, in the release's bullseye image; the nightly full cross build covers that image too |
 | ubuntu leg of the socket gate (in `lib tests (ubuntu)`) | the gate guards a Windows property; the Windows leg runs on every pull request |
 | host `cargo clippy --workspace --all-targets` (in `lib tests (ubuntu)`) | informational: it fails only on a compile error, which the cross check and the test builds already catch |
-| `cross-build-nightly` (nightly and dispatch) | unchanged: the full release build of both cross targets, the glibc floor, the runtime-library contract |
+| `cross-build-nightly` (nightly and dispatch) | the full release build of both cross targets, the glibc floor, the runtime-library contract, the dictation self test on bullseye, the old-processor check (DD-12), Windows system DLLs only, capture absent from the daemon (P-10); then `windows-native-dictation` runs the mingw binaries on real Windows under a folder name that is not ASCII (M-1) |
 
 Sharding is for a pull request, where someone waits; on `main` three shards would only hold
 three runner slots. `main` runs therefore take about as long as before (the macOS full suite is

@@ -95,6 +95,14 @@ describe('CopilotControl', () => {
     expect(screen.getByText(status.destination, { exact: false })).toBeVisible();
     expect(screen.getByText(status.target)).toBeVisible();
     expect(screen.getByText(/including sensitive information/)).toBeVisible();
+    // The consent is drawn whole, and what Stop cannot undo stays in view as one line under it;
+    // what Stop does and what stays shared are the InfoTip beside that line (design.md 9.16).
+    expect(screen.getByText('Stop cannot undo changes already made.')).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: 'About stopping Biorouter Copilot' })
+    ).toHaveAccessibleDescription(
+      /already delivered to an app stays\. Desktop apps and files remain shared with other tasks\./
+    );
     expect(mocks.decision).not.toHaveBeenCalled();
     fireEvent.click(allow);
     await screen.findByText('Biorouter Copilot active');
@@ -126,7 +134,11 @@ describe('CopilotControl', () => {
     render(<CopilotControl sessionId="task-a" />);
     const allow = await screen.findByRole('button', { name: 'Allow control and sharing' });
     expect(allow).toBeDisabled();
-    expect(screen.getByText(/computer running Biorouter/)).toBeVisible();
+    // Which computer is controlled: named on the Computer line, explained by its InfoTip.
+    expect(screen.getByText(status.target)).toBeVisible();
+    expect(
+      screen.getByRole('button', { name: 'About the computer it controls' })
+    ).toHaveAccessibleDescription(/computer running Biorouter/);
     fireEvent.change(screen.getByLabelText('Biorouter Copilot approval key', { exact: false }), {
       target: { value: 'human-passphrase' },
     });
@@ -341,14 +353,18 @@ describe('CopilotControl', () => {
     render(<CopilotControl sessionId="task-a" />);
     const open = await screen.findByRole('button', { name: 'Show Biorouter Copilot details' });
     expect(open).toHaveAttribute('aria-expanded', 'false');
+    // How to start is the title's InfoTip, so it is there whether the details are open or not.
+    const about = screen.getByRole('button', { name: 'About Biorouter Copilot' });
+    expect(about).toHaveAccessibleDescription(/Ask Biorouter to use the computer/);
     fireEvent.click(open);
-    expect(screen.getByText(/Ask Biorouter to use the computer/)).toBeVisible();
+    expect(screen.getByText(/Data destination/)).toBeVisible();
     const close = screen.getByRole('button', { name: 'Hide Biorouter Copilot details' });
     expect(close).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(close);
     // The container stays mounted and is hidden, so aria-controls always
     // resolves to a real element. Assert VISIBILITY, not presence.
-    expect(screen.getByText(/Ask Biorouter to use the computer/)).not.toBeVisible();
+    expect(screen.getByText(/Data destination/)).not.toBeVisible();
+    expect(about).toBeVisible();
     // jsdom applies no Tailwind and computes no layout, so this asserts the
     // TOKEN CHOICE that separates the panel from the chat canvas, not the
     // painted pixel. The tokens themselves are audited by check-contrast.mjs.
@@ -383,6 +399,13 @@ describe('CopilotControl', () => {
     // the filled panel it rests on the page ground with no resting edge.
     expect(field.className).toContain('br-field');
     expect(field.className).not.toContain('border-border-default');
+    // Where the key comes from is the InfoTip beside the label, and the field's description;
+    // the label names the field and nothing more.
+    expect(field).toHaveAccessibleName('Biorouter Copilot approval key');
+    expect(field).toHaveAccessibleDescription(/--computer-use-approval/);
+    expect(
+      screen.getByRole('button', { name: 'About the approval key' })
+    ).toHaveAccessibleDescription(/--computer-use-approval/);
   });
 
   it('withholds the collapse control while an approval is pending', async () => {

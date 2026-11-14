@@ -39,6 +39,21 @@
   gap: 4px;
 }
 
+/* A trailing part placed below (`trailingPlacement="below"`) takes a line of its
+   own under the head, at the label's left edge (the glyph's 16px plus the
+   head's 8px gap), so the label keeps its words. It stays inside the line,
+   which wraps, so the padding `message-meta.css` gives the line reaches it. */
+.br-transcript-row-line[data-trailing='below'] {
+  flex-wrap: wrap;
+  row-gap: 0;
+}
+
+.br-transcript-row-line[data-trailing='below'] > .br-transcript-row-trailing {
+  flex: 1 0 100%;
+  min-width: 0;
+  padding-inline-start: 24px;
+}
+
 .br-transcript-row-head {
   display: inline-flex;
   flex: 0 1 auto;
@@ -81,9 +96,20 @@ button.br-transcript-row-head:focus-visible {
 /* State selectors reach the row's OWN line through child combinators. A row can
    hold rows (the Explored row opens onto its calls), and a descendant selector
    would paint an open row's turned chevron, a running row's pulse or a failed
-   row's ink onto every row nested in its body. */
+   row's ink onto every row nested in its body.
+
+   A failed row is NOT red (owner, 2026-11-12; design.md 9.14, red is rare). Tool
+   calls fail all the time from a model's misstep and are rarely a big deal, so
+   the line keeps the row's muted ink like its neighbours. What marks it is the
+   words ("Failed to …") and the failure glyph TranscriptRow draws in place of
+   the tool's own, a circled ✕ in the primary ink, so a person scanning the
+   transcript can still spot it and open it. */
 .br-transcript-row[data-tone='danger'] > .br-transcript-row-line .br-transcript-row-head {
-  color: var(--text-danger);
+  color: var(--text-muted);
+}
+
+.br-transcript-row[data-tone='danger'] > .br-transcript-row-line .br-transcript-row-glyph {
+  color: var(--text-default);
 }
 
 .br-transcript-row-glyph {

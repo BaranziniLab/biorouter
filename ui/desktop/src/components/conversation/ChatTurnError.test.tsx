@@ -105,6 +105,48 @@ describe('ChatTurnError', () => {
     expect(presentation.message).not.toContain('provider settings');
   });
 
+  // Owner, 2026-11-13: the error's first sentence stays on the row; the advice after it is the
+  // info icon beside it, and still its accessible description.
+  it('shows the first sentence of a long message and puts the advice behind the info icon', () => {
+    render(
+      <ChatTurnError
+        error={error({
+          message: 'Failed to fetch',
+          code: 'session_load_unreachable',
+          scope: 'transport',
+          retryable: true,
+        })}
+        onRetry={vi.fn()}
+      />
+    );
+    expect(screen.getByText("Biorouter's backend is restarting or unreachable.")).toHaveClass(
+      'text-secondary',
+      'text-text-muted'
+    );
+    expect(screen.getByRole('button', { name: 'About this error' })).toHaveAccessibleDescription(
+      'Your chat is safe. Retry in a moment, or check that the app is running.'
+    );
+    // The whole message still reaches a screen reader with the alert.
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      "Biorouter's backend is restarting or unreachable. Your chat is safe."
+    );
+  });
+
+  it('folds a long tail into Details beside the raw payload, word for word', () => {
+    const advice =
+      'Retrying will not help until the key or sign-in is fixed. Once it is, send your message again. This chat reads the new credentials with its next message.';
+    render(
+      <ChatTurnError
+        error={error({ message: `Authentication failed. ${advice}`, technicalDetails: 'raw 401' })}
+      />
+    );
+    expect(screen.getByText('Authentication failed.')).toBeInTheDocument();
+    expect(screen.queryByText(advice)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: transcriptCopy.turn.details }));
+    expect(screen.getByText(advice)).toBeInTheDocument();
+    expect(screen.getByText('raw 401')).toBeInTheDocument();
+  });
+
   it('labels a dropped stream as a mid-response interruption', () => {
     const presentation = presentChatTurnError(
       error({

@@ -109,7 +109,10 @@ describe('a setup that stopped on a host key (D2)', () => {
     );
     expect(screen.getByTestId('crew-setup-host-key-changed')).toBeInTheDocument();
     expect(screen.getByText(trustCopy.changedBody)).toBeInTheDocument();
-    expect(trustCopy.changedBody).toContain('known hosts file');
+    expect(trustCopy.changedWhy).toContain('known hosts file');
+    expect(
+      screen.getByRole('button', { name: `About ${trustCopy.changedWhyLabel}` })
+    ).toHaveAccessibleDescription(trustCopy.changedWhy);
     expect(keys.read).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: trustHostKeyCopy.trust })).toBeNull();
     expect(screen.queryByText(trustHostKeyCopy.warning)).toBeNull();

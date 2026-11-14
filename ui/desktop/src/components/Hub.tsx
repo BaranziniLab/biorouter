@@ -103,6 +103,7 @@ export default function Hub({
         // The draft started with the chat; the next chat from Home starts with none.
         setDraftDecisions(null);
         adoptDraftReasoningEffort(effortScope, session.id, submittedEffort);
+        customEvent.detail?.onAcceptedSession?.(session.id);
         setView('pair', {
           resumeSessionId: session.id,
           initialMessage: combinedTextFromInput,
@@ -166,6 +167,9 @@ export default function Hub({
             toolCount={0}
             onWorkingDirChange={setWorkingDir}
             onOpenDecisionMonitors={() => setMonitorsOpen(true)}
+            // DR-33: dictation here is judged with the decision models the start
+            // will carry.
+            draftDecisionSettings={draftDecisions?.settings ?? null}
           />
         </div>
       </div>

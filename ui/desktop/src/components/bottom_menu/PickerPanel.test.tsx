@@ -1,9 +1,17 @@
 import * as React from 'react';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  act,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import BuiltInBadge from '../ui/BuiltInBadge';
-import { PickerPanel, PickerRow } from './PickerPanel';
+import { PickerPanel, PickerRow, useBuiltInDisclosure } from './PickerPanel';
 import { TOOLS_COPY } from './copy';
 
 /**
@@ -139,7 +147,7 @@ describe('the picker shell', () => {
       // ...because it is named BY REFERENCE, to its visible text, and never from
       // its content: Chromium reads the hidden switch's name into a name built from
       // content (a focusable button, a `::after`), which jsdom never shows. The
-      // Chromium half is in toolsPopover.browser.test.tsx; this pins what it rests on.
+      // Chromium half is in composer/plusPopover.browser.test.tsx; this pins what it rests on.
       const parts = option.getAttribute('aria-labelledby')!.split(' ');
       expect(parts.map((id) => document.getElementById(id)!.className)).toEqual(
         row.note ? ['br-picker-row__title', 'br-picker-row__note'] : ['br-picker-row__title']
@@ -333,6 +341,43 @@ describe('the picker shell', () => {
     fireEvent.change(screen.getByRole('combobox'), { target: { value: 'zzz' } });
     expect(screen.queryAllByRole('option')).toHaveLength(0);
     expect(screen.getByText('No extensions found')).toBeInTheDocument();
+    // An empty line with nothing more to say draws no second InfoTip.
+    expect(screen.getAllByRole('button', { name: /^About / })).toHaveLength(1);
+  });
+
+  /** design.md 9.16: an empty list shows one line; what explains it waits in an InfoTip. */
+  it('folds an empty list’s explanation into an InfoTip beside its one line', async () => {
+    const user = userEvent.setup();
+    render(
+      <PickerPanel
+        listLabel="Extensions"
+        searchPlaceholder="Search extensions…"
+        query=""
+        onQueryChange={() => {}}
+        scopeLabel="This chat"
+        scopeHelp="Help."
+        emptyText="No extensions added to this chat."
+        emptyHelp={{
+          about: 'built-in capabilities',
+          text: 'Built-in capabilities are always on; manage them in Settings.',
+        }}
+      >
+        {[]}
+      </PickerPanel>
+    );
+    const line = screen.getByText('No extensions added to this chat.');
+    const tip = screen.getByRole('button', { name: 'About built-in capabilities' });
+    // Beside the line, in one group, and named for what it explains.
+    expect(line.closest('.br-picker-panel__empty-line')).toBe(
+      tip.closest('.br-picker-panel__empty-line')
+    );
+    expect(tip).toHaveAccessibleDescription(
+      'Built-in capabilities are always on; manage them in Settings.'
+    );
+    // Enter on the glyph keeps its tip; the listbox's keys stay with the field.
+    tip.focus();
+    await user.keyboard('{Enter}');
+    expect(tip).toHaveAttribute('data-pinned', 'true');
   });
 
   /**
@@ -397,5 +442,48 @@ describe('the picker shell', () => {
     expect(screen.getByRole('option', { name: 'alpha' })).toHaveAttribute('aria-selected', 'true');
     expect(picture).toHaveAttribute('data-state', 'checked');
     expect(picture).not.toHaveAttribute('data-motion-still');
+  });
+});
+
+/**
+ * The built-in groups stay out of the way (owner, 2026-11-13): "collapsed by default so that the
+ * users are not bombarded with the complexity of all of the built-in capabilities". They open
+ * only when the person asks (a click) or types a search that matches one, and every new look at
+ * the list starts collapsed again.
+ */
+describe('useBuiltInDisclosure', () => {
+  type Props = { listOpen: boolean; matching: boolean };
+  const mount = (initial: Props) =>
+    renderHook(({ listOpen, matching }: Props) => useBuiltInDisclosure(listOpen, matching), {
+      initialProps: initial,
+    });
+
+  it('starts collapsed, with the list closed or open, and an empty search never opens it', () => {
+    const { result, rerender } = mount({ listOpen: false, matching: false });
+    expect(result.current[0]).toBe(false);
+    rerender({ listOpen: true, matching: false });
+    expect(result.current[0]).toBe(false);
+  });
+
+  it('opens on the person’s click and collapses again once the list closes', () => {
+    const { result, rerender } = mount({ listOpen: true, matching: false });
+    act(() => result.current[1](true));
+    expect(result.current[0]).toBe(true);
+    rerender({ listOpen: false, matching: false });
+    expect(result.current[0]).toBe(false);
+    // The next look at the list starts collapsed, not where the last one was left.
+    rerender({ listOpen: true, matching: false });
+    expect(result.current[0]).toBe(false);
+  });
+
+  it('opens while a search matches a built-in, and the person can still fold it', () => {
+    const { result, rerender } = mount({ listOpen: true, matching: false });
+    rerender({ listOpen: true, matching: true });
+    expect(result.current[0]).toBe(true);
+    act(() => result.current[1](false));
+    expect(result.current[0]).toBe(false);
+    // Typing on while it still matches does not force it open again.
+    rerender({ listOpen: true, matching: true });
+    expect(result.current[0]).toBe(false);
   });
 });

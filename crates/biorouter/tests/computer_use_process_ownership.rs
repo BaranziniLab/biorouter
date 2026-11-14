@@ -1,6 +1,8 @@
 //! Production consent boundary across real processes, without a desktop helper.
 #![cfg(unix)]
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::agents::types::SharedProvider;
 use biorouter::privacy::ProviderTier;
 use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage};

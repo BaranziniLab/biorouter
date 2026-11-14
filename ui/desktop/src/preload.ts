@@ -2,6 +2,12 @@ import Electron, { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { Workflow } from './workflow';
 import { createCrewShareDroppedFile } from './utils/crewSharePathBridge';
 import type { AppExportRequest, AppExportResult } from './utils/appExportRequest';
+import {
+  DICTIONARY_ADD_TERM_CHANNEL,
+  DICTIONARY_OFFERED_CHANNEL,
+  readDictionaryAddTermPayload,
+  type DictionaryAddTermPayload,
+} from './components/dictionary/contextMenu';
 
 // One-time warning for callers still using the legacy `off()` API. Each
 // channel only warns once to avoid log spam under React StrictMode.
@@ -237,6 +243,12 @@ interface UpdaterEvent {
 }
 
 // Define the API types in a single place
+/** The installed SF Mono (regular, and italic when present), as raw font bytes. */
+export interface SystemMonoFont {
+  regular: Uint8Array;
+  italic: Uint8Array | null;
+}
+
 type ElectronAPI = {
   copyConversationId?: (id: string) => Promise<void>;
   copySelectedText?: (text: string) => Promise<void>;
@@ -296,6 +308,8 @@ type ElectronAPI = {
   deleteFile: (filePath: string) => Promise<boolean>;
   deleteDirectory: (dirPath: string) => Promise<boolean>;
   getAllowedExtensions: () => Promise<string[]>;
+  /** The installed SF Mono's bytes on macOS, else null (`utils/systemMonoFont.ts`). */
+  getSystemMonoFont?: () => Promise<SystemMonoFont | null>;
   getPathForFile: (file: File) => string;
   setMenuBarIcon: (show: boolean) => Promise<boolean>;
   getMenuBarIconState: () => Promise<boolean>;
@@ -316,6 +330,111 @@ type ElectronAPI = {
   setSpellcheck: (enable: boolean) => Promise<boolean>;
   getSpellcheckState: () => Promise<boolean>;
   openNotificationsSettings: () => Promise<boolean>;
+  /**
+   * Dictation (DD-65). Optional, so a bridge that predates them, or a test's
+   * partial one, reads as "no answer" rather than throwing.
+   *
+   * - `dictationMicStatus`: the operating system's microphone access for this
+   *   app; `unknown` on Linux.
+   * - `dictationMicRequest`: on macOS, the system prompt while the status is
+   *   `not-determined`; elsewhere `true`.
+   * - `dictationOpenMicSettings`: the microphone page of the system settings;
+   *   `false` where there is none (Linux).
+   * - `setDictationBusy`: this window arms, records or transcribes, so a restart
+   *   for an update asks first.
+   * - `onDictationLockScreen`: the screen locked; stop and insert.
+   * - `dictationShowModelsFolder`: open the speech model folder the daemon reports
+   *   (`status.models_dir`) in Finder, Explorer or the file manager, creating it when
+   *   missing; `false` when main refused (an external backend, or a string that does
+   *   not name the folder main derives for this account, `utils/dictationModelsFolder.ts`).
+   */
+  dictationMicStatus?: () => Promise<
+    'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown'
+  >;
+  dictationMicRequest?: () => Promise<boolean>;
+  dictationOpenMicSettings?: () => Promise<boolean>;
+  dictationShowModelsFolder?: (folder: string) => Promise<boolean>;
+  dictationAnywhereSettingsReady?: () => void;
+  dictationAnywhereGet?: () => Promise<{
+    enabled: boolean;
+    shortcut: string | null;
+    disclosureShown: boolean;
+    tray: boolean;
+    gnomeWayland: boolean;
+    saveFailed?: boolean;
+    captureAllowed: boolean;
+    capturePolicyReason: 'MSG-POLICY' | 'MSG-POLICY-CAPTURE';
+  }>;
+  dictationAnywhereSet?: (value: {
+    enabled: boolean;
+    shortcut: string | null;
+    disclosureShown: boolean;
+  }) => Promise<{
+    enabled: boolean;
+    shortcut: string | null;
+    disclosureShown: boolean;
+    tray: boolean;
+    gnomeWayland: boolean;
+    shortcutTaken: boolean;
+    saveFailed?: boolean;
+    captureAllowed: boolean;
+    capturePolicyReason: 'MSG-POLICY' | 'MSG-POLICY-CAPTURE';
+  }>;
+  dictationAnywhereStartPreview?: (viewId: string, privateConfirmed: boolean) => Promise<boolean>;
+  dictationAnywherePreviewFocused?: (viewId: string) => Promise<boolean>;
+  dictationAnywhereCaptureReady?: () => void;
+  dictationAnywhereCaptureReply?: (reply: unknown) => void;
+  onDictationAnywhereCapture?: (
+    callback: (
+      command:
+        | {
+            type: 'start';
+            source: 'tray' | 'shortcut' | 'preview';
+            privateConfirmed: boolean;
+            generation: number;
+            pressedAtEpochMs: number;
+          }
+        | { type: 'stop' | 'cancel' | 'retry' | 'drop' }
+    ) => void
+  ) => () => void;
+  onDictationAnywhereReview?: (
+    callback: (review: {
+      text?: string;
+      message?: string;
+      confirmPrivate?: boolean;
+      /** **Retry** shows: a failed recording is held for it (`dictationAnywhereReviewRetry`). */
+      retry?: boolean;
+      expiresAt: number | null;
+      revision: number;
+    }) => void
+  ) => () => void;
+  dictationAnywhereReviewCopy?: () => Promise<boolean>;
+  dictationAnywhereReviewGet?: () => Promise<{
+    text?: string;
+    message: string;
+    confirmPrivate: boolean;
+    retry?: boolean;
+    expiresAt: number | null;
+    revision: number;
+  } | null>;
+  /** The review card's **Retry**: transcribe the held recording again; `false` when none is held. */
+  dictationAnywhereReviewRetry?: () => Promise<boolean>;
+  dictationAnywherePrivateChoice?: (include: boolean) => Promise<boolean>;
+  setDictationBusy?: (busy: boolean) => void;
+  onDictationLockScreen?: (callback: () => void) => () => void;
+  /**
+   * The context menu's **Add to Biorouter dictionary…** (DD-68): the word or
+   * selection and where the menu opened, `{text, x, y}`, so the renderer can
+   * resolve the pane under that point and open the term dialog prefilled. A
+   * payload that is not that shape is dropped here. Answers the disposer.
+   */
+  onDictionaryAddTerm?: (callback: (payload: DictionaryAddTermPayload) => void) => () => void;
+  /**
+   * Whether this window's context menu offers **Add to Biorouter dictionary…**:
+   * `false` once its dictation status store reads managed `dictionary: false`,
+   * as the sidebar hides its row.
+   */
+  setDictionaryOffered?: (offered: boolean) => void;
   onMouseBackButtonClicked: (callback: () => void) => () => void;
   offMouseBackButtonClicked: (callback: () => void) => void;
   /** Subscribe to a main-process IPC event. Returns a disposer; call it to
@@ -768,6 +887,7 @@ const electronAPI: ElectronAPI = {
   deleteDirectory: (dirPath: string) => ipcRenderer.invoke('delete-directory', dirPath),
   getPathForFile: (file: File) => webUtils.getPathForFile(file),
   getAllowedExtensions: () => ipcRenderer.invoke('get-allowed-extensions'),
+  getSystemMonoFont: () => ipcRenderer.invoke('get-system-mono-font'),
   setMenuBarIcon: (show: boolean) => ipcRenderer.invoke('set-menu-bar-icon', show),
   getMenuBarIconState: () => ipcRenderer.invoke('get-menu-bar-icon-state'),
   setDockIcon: (show: boolean) => ipcRenderer.invoke('set-dock-icon', show),
@@ -782,6 +902,54 @@ const electronAPI: ElectronAPI = {
   setSpellcheck: (enable: boolean) => ipcRenderer.invoke('set-spellcheck', enable),
   getSpellcheckState: () => ipcRenderer.invoke('get-spellcheck-state'),
   openNotificationsSettings: () => ipcRenderer.invoke('open-notifications-settings'),
+  dictationMicStatus: () => ipcRenderer.invoke('dictation:mic-status'),
+  dictationMicRequest: () => ipcRenderer.invoke('dictation:mic-request'),
+  dictationOpenMicSettings: () => ipcRenderer.invoke('dictation:open-mic-settings'),
+  dictationShowModelsFolder: (folder: string) =>
+    ipcRenderer.invoke('dictation:show-models-folder', folder),
+  dictationAnywhereSettingsReady: () => ipcRenderer.send('dictation:anywhere:settings-ready'),
+  dictationAnywhereGet: () => ipcRenderer.invoke('dictation:anywhere:get'),
+  dictationAnywhereSet: (value) => ipcRenderer.invoke('dictation:anywhere:set', value),
+  dictationAnywhereStartPreview: (viewId, privateConfirmed) =>
+    ipcRenderer.invoke('dictation:anywhere:preview-start', { viewId, privateConfirmed }),
+  dictationAnywherePreviewFocused: (viewId) =>
+    ipcRenderer.invoke('dictation:anywhere:preview-focused', { viewId }),
+  dictationAnywhereCaptureReady: () => ipcRenderer.send('dictation:anywhere:capture-ready'),
+  dictationAnywhereCaptureReply: (reply) =>
+    ipcRenderer.send('dictation:anywhere:capture-reply', reply),
+  onDictationAnywhereCapture: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, command: Parameters<typeof callback>[0]) =>
+      callback(command);
+    ipcRenderer.on('dictation:anywhere:capture-command', listener);
+    return () => ipcRenderer.removeListener('dictation:anywhere:capture-command', listener);
+  },
+  onDictationAnywhereReview: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, review: Parameters<typeof callback>[0]) =>
+      callback(review);
+    ipcRenderer.on('dictation:anywhere:review', listener);
+    return () => ipcRenderer.removeListener('dictation:anywhere:review', listener);
+  },
+  dictationAnywhereReviewCopy: () => ipcRenderer.invoke('dictation:anywhere:review-copy'),
+  dictationAnywhereReviewGet: () => ipcRenderer.invoke('dictation:anywhere:review-get'),
+  dictationAnywhereReviewRetry: () => ipcRenderer.invoke('dictation:anywhere:review-retry'),
+  dictationAnywherePrivateChoice: (include) =>
+    ipcRenderer.invoke('dictation:anywhere:private-choice', include),
+  setDictationBusy: (busy: boolean) => ipcRenderer.send('dictation:busy', busy === true),
+  onDictationLockScreen: (callback: () => void) => {
+    const listener = () => callback();
+    ipcRenderer.on('dictation:lock-screen', listener);
+    return () => ipcRenderer.removeListener('dictation:lock-screen', listener);
+  },
+  onDictionaryAddTerm: (callback: (payload: DictionaryAddTermPayload) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: unknown) => {
+      const checked = readDictionaryAddTermPayload(payload);
+      if (checked) callback(checked);
+    };
+    ipcRenderer.on(DICTIONARY_ADD_TERM_CHANNEL, listener);
+    return () => ipcRenderer.removeListener(DICTIONARY_ADD_TERM_CHANNEL, listener);
+  },
+  setDictionaryOffered: (offered: boolean) =>
+    ipcRenderer.send(DICTIONARY_OFFERED_CHANNEL, offered === true),
   onMouseBackButtonClicked: (callback: () => void) => {
     const wrapper = (_event: Electron.IpcRendererEvent) => callback();
     ipcRenderer.on('mouse-back-button-clicked', wrapper);
@@ -1012,6 +1180,12 @@ const appConfigAPI: AppConfigAPI = {
 // Expose the APIs
 contextBridge.exposeInMainWorld('electron', electronAPI);
 contextBridge.exposeInMainWorld('appConfig', appConfigAPI);
+
+// A new document dictates nothing yet. A reload or a crash recovery while the
+// old one was dictating would otherwise leave this window counted as busy by
+// the main process, and the update restart would ask about a dictation that is
+// gone (`utils/dictationBusy.ts`).
+ipcRenderer.send('dictation:busy', false);
 
 // Type declaration for TypeScript
 declare global {

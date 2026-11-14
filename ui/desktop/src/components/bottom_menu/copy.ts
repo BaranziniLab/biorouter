@@ -58,13 +58,25 @@ export const EXTENSIONS_COPY = {
   /**
    * A chat with no extensions added (A-6, E-3). Never "No extensions available":
    * built-in capabilities run in every chat whatever this list holds, so that
-   * sentence read as nothing running while fourteen loaded.
+   * sentence read as nothing running while fourteen loaded. `emptyHelp` says so,
+   * in the InfoTip beside this line (design.md 9.16: one line, then helper text).
    */
-  empty:
-    'No extensions added to this chat. Built-in capabilities are always on; manage them in Settings.',
+  empty: 'No extensions added to this chat.',
   /** The same on Home, where the list is the next chat's. */
-  emptyNextChat:
-    'No extensions added for the next chat. Built-in capabilities are always on; manage them in Settings.',
+  emptyNextChat: 'No extensions added for the next chat.',
+  /** What the empty line's InfoTip is about: its name reads "About built-in capabilities". */
+  emptyHelpAbout: 'built-in capabilities',
+  /** The empty line's InfoTip, in a chat and on Home alike. */
+  emptyHelp: 'Built-in capabilities stay on until you switch them off, below or in Settings.',
+  /**
+   * The disclosure after the person's own rows (owner, 2026-11-13): the shipped
+   * capabilities, switched for this chat (or the next one, on Home).
+   */
+  builtInsLabel: 'Built-in capabilities',
+  /** Beside the label: how many are on for this chat. */
+  builtInsSummary: (n: number) => `${n} on`,
+  /** A capability the daemon lists no entry for, so there is nothing to add. */
+  builtInUnavailable: 'Not available in this app',
   /** The list while this chat's extensions have not answered yet (A-6). */
   loading: 'Loading extensions…',
   /** The list when this chat's extensions could not be read (A-6). */
@@ -90,10 +102,20 @@ export const SKILLS_COPY = {
   enableAll: (n: number) => `Enable all (${n})`,
   disableAll: (n: number) => `Disable all (${n})`,
   loading: 'Loading skills…',
-  empty: 'No skills available',
+  /** The installed list is empty; the shipped Contexts are below it, not counted here. */
+  empty: 'No skills installed',
   noMatch: 'No skills found',
   bundleCount: (n: number) => count(n, 'skill', 'skills'),
   bundleMembers: (names: string[]) => `Includes ${names.join(', ')}`,
+  /**
+   * The disclosure after the installed skills (owner, 2026-11-13): the shipped
+   * Contexts, switched for this chat, or on Home as Settings → Contexts does.
+   */
+  contextsLabel: 'Built-in contexts',
+  /** Beside the label: how many are on. */
+  contextsSummary: (n: number) => `${n} on`,
+  /** A Context the chat's catalog does not list, so a switch would name nothing. */
+  contextUnavailable: 'Not available in this app',
   updateFailedTitle: 'Skill update failed',
   updateFailed: (reason: string) => `The change was not saved: ${reason}`,
 } as const;
@@ -148,6 +170,8 @@ export const FOLDER_ACCESS_COPY = {
   cardLabel: 'Working folder',
   /** The first section's label. */
   workingFolder: 'Working folder',
+  /** Its InfoTip's name reads "About the working folder"; the InfoTip holds `whoAsks`. */
+  aboutWorkingFolder: 'the working folder',
   /** An existing chat whose folder has not been read yet, or whose row names none. */
   workingFolderUnknown: 'Not known yet.',
   /** #44: once the chat has messages the folder cannot change, and the card says so. */
@@ -155,6 +179,11 @@ export const FOLDER_ACCESS_COPY = {
   /** The empty chat's way to another folder (the native chooser). */
   chooseFolder: 'Choose folder…',
   otherFolders: 'Other approved folders',
+  /**
+   * Its InfoTip's name reads "About other approved folders"; the InfoTip holds when a session
+   * grant ends (`folderAccessLifetime()`) and `onceNotListed`.
+   */
+  aboutOtherFolders: 'other approved folders',
   loading: 'Checking folder access…',
   loadFailed: 'Folder access could not be loaded.',
   none: 'None.',
@@ -167,17 +196,24 @@ export const FOLDER_ACCESS_COPY = {
   /** The button's name says which folder, so a list of them is not a list of "Revoke". */
   revokeLabel: (folder: string) => `Revoke access to ${folder}`,
   revokeFailed: 'Access could not be revoked. The grant is still listed; try again.',
-  /** Follows `folderAccessLifetime()`, the sentence about when a session grant ends. */
+  /**
+   * Follows `folderAccessLifetime()`, the sentence about when a session grant ends, in the Other
+   * approved folders InfoTip: two sentences, the InfoTip's limit.
+   */
   onceNotListed: 'Folders allowed once are not listed.',
   approvalKey: 'Folder approval key',
+  /** The key field's InfoTip name reads "About the folder approval key". */
+  aboutApprovalKey: 'the folder approval key',
+  /** Behind the key field's InfoTip, and the field's accessible description. */
   approvalKeyHelp:
     'Use the separate key configured with biorouter serve --folder-access-approval. It is cleared after each revocation.',
   /**
-   * What folder approval covers, said exactly, on Home and in a chat. Only the Developer and Files
-   * extensions' editor, file analysis and image tools ask (`admit_file_access` in
-   * `agents/extension_manager.rs`, `file_access_plan` in `biorouter-mcp/src/file_access.rs`); the
-   * shell and the PDF, Word and Excel tools never do. A tool can still ask first as the person's
-   * permission mode says, so nothing here claims that nothing else asks.
+   * What folder approval covers, said exactly, on Home and in a chat, behind the Working folder
+   * label's InfoTip. Only the Developer and Files extensions' editor, file analysis and image tools
+   * ask (`admit_file_access` in `agents/extension_manager.rs`, `file_access_plan` in
+   * `biorouter-mcp/src/file_access.rs`); the shell and the PDF, Word and Excel tools never do. A
+   * tool can still ask first as the person's permission mode says, so nothing here claims that
+   * nothing else asks.
    */
   whoAsks:
     'The file editor, file analysis and image tools ask before they use another folder. Shell commands and document tools do not ask.',
@@ -314,13 +350,20 @@ export const COST_CARD_COPY = {
   /** The card's accessible name (it is a `dialog`). */
   cardLabel: 'Cost',
   section: 'Cost of this chat',
+  /**
+   * The section's label when the total is partial: the one visible word that says the figure is
+   * an estimate, with `partialNote` behind its InfoTip.
+   */
+  sectionEstimated: 'Estimated cost of this chat',
+  /** The partial total's InfoTip name reads "About this estimate". */
+  aboutEstimate: 'this estimate',
   /** The muted line under the total: "22,788 input · 382 output · 65,408 cache read". */
   tokens: (tokens: CostCardTokens) =>
     costTokenLines(
       [tokenBucket(tokens.inputTokens, 'input'), tokenBucket(tokens.outputTokens, 'output')],
       tokens
     ),
-  /** When the estimate is partial: a price or a count is missing. */
+  /** When the estimate is partial (a price or a count is missing), behind the label's InfoTip. */
   partialNote: 'This is a conservative estimate from the token counts and prices available.',
   byModel: 'By model',
   /** The muted line under a model's name: "$0.14 · 22,788 in · 382 out · 65,408 cache read". */
@@ -356,7 +399,8 @@ export const USAGE_LIMIT_COPY = {
   usedOnly: (used: string) => `${used} used`,
   /**
    * Who the used line counts. A chat's limit counts the chat and every subagent it started, while
-   * "Cost of this chat" above it counts the chat's own requests only, so the line says so.
+   * "Cost of this chat" above it counts the chat's own requests only (its side calls, such as the
+   * title, included), so the line says so.
    */
   chatUsed: (reading: string) => `This chat and its subagents: ${reading}`,
   /** In a subagent's chat the line is the parent's, which counts the parent and its subagents. */
@@ -375,8 +419,18 @@ export const USAGE_LIMIT_COPY = {
     `One request is estimated at ${estimate}, more than the whole limit.`,
   warnChat: 'This chat is near its limit.',
   warnMonth: 'Usage is near the monthly limit.',
+  /** The Limit label's InfoTip name reads "About this limit". */
+  aboutLimit: 'this limit',
+  /**
+   * The sentences below are the Limit label's InfoTip (`limitHelp` in UsageLimitSection.tsx), at
+   * most two at a time: one about a dollar limit nothing can trip, one about why this card offers
+   * no write.
+   */
   chatDollarInert: 'Nothing this chat used has a price, so its dollar limit cannot stop it.',
   monthDollarInert: 'Nothing this month has a price, so the monthly dollar limit cannot stop it.',
+  /** Both dollar limits inert at once: one sentence, so the InfoTip stays at two. */
+  bothDollarInert:
+    'Nothing this chat or this month used has a price, so neither dollar limit can stop it.',
   parentChat: 'This chat counts toward the limit of the chat that started it.',
   browserNote: 'Limits can be changed in the Biorouter desktop app.',
   noChatYet: 'A limit can be set once the chat has started. Until then the default applies.',

@@ -3900,6 +3900,11 @@ impl CodeExecutionClient {
         const BOUNDARY: crate::security::UninspectedBoundary =
             crate::security::UninspectedBoundary::ExecuteCodeScript;
 
+        if let Some(refusal) =
+            crate::managed::ManagedPolicy::load().uninspected_boundary_refusal(tool_name)
+        {
+            return Some(("managed_policy", refusal.to_string()));
+        }
         if let Some(refusal) = crate::security::global_memory::uninspected_boundary_refusal(
             tool_name, evaluated, BOUNDARY,
         ) {
@@ -3924,6 +3929,16 @@ impl CodeExecutionClient {
             tool_name, evaluated, BOUNDARY,
         ) {
             return Some(("knowledge_delete_consent", refusal));
+        }
+        // DD-42: the dictionary's writing tools stamp a term with the capability the call
+        // was admitted with, and a script a person ran through `POST /agent/call_tool`
+        // runs as public, so a private chat's term would land public. Refused from
+        // either tier; `dictionary__list_terms` stays callable when managed policy
+        // permits it. The store's path, read from the evaluated arguments, is refused here too.
+        if let Some(refusal) = crate::security::dictionary_store::uninspected_boundary_refusal(
+            tool_name, evaluated, BOUNDARY,
+        ) {
+            return Some(("dictionary_store", refusal));
         }
         // Issue #56, the first-crossing disclosure, and the sharpest of the
         // three: an undisclosed write here does not merely escape ONE approval
@@ -4922,6 +4937,131 @@ mod tests {
     use rmcp::object;
     use std::sync::Arc;
     use test_case::test_case;
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn nested_dictionary_reads_obey_managed_deny_for_public_and_private_calls() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let root = tempfile::tempdir().unwrap();
+        let root_name = root.path().to_string_lossy().into_owned();
+        let _root = crate::test_sandbox::relocate_path_root(root_name.as_str());
+        let managed_dir = root.path().join("managed");
+        std::fs::create_dir(&managed_dir).unwrap();
+        std::fs::set_permissions(&managed_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let policy_file = managed_dir.join("managed-policy.yaml");
+        for tier in [
+            crate::privacy::ProviderTier::Public,
+            crate::privacy::ProviderTier::Private,
+        ] {
+            let cap = crate::privacy::CallCapability::for_test(tier, true);
+            let session_manager = Arc::new(crate::session::SessionManager::new(
+                root.path().to_path_buf(),
+            ));
+            let session = session_manager
+                .create_session(
+                    root.path().to_path_buf(),
+                    "nested managed dictionary".into(),
+                    crate::session::SessionType::User,
+                )
+                .await
+                .unwrap();
+            let manager = Arc::new(crate::agents::ExtensionManager::new(
+                Arc::new(Mutex::new(None)),
+                Arc::clone(&session_manager),
+            ));
+            let client = CodeExecutionClient::new(PlatformExtensionContext {
+                extension_manager: Some(Arc::downgrade(&manager)),
+                session_manager,
+            })
+            .unwrap();
+
+            for tool in ["list_terms", "add_terms", "remove_added_terms"] {
+                manager
+                    .add_client(
+                        "dictionary".to_string(),
+                        crate::agents::extension::ExtensionConfig::Platform {
+                            name: "dictionary".into(),
+                            description: "Dictionary dispatch fixture".into(),
+                            bundled: Some(true),
+                            available_tools: Vec::new(),
+                        },
+                        Arc::new(ToolResultClient {
+                            tool_name: tool.into(),
+                            result: CallToolResult::success(vec![Content::text(
+                                "dispatch reached",
+                            )]),
+                        }),
+                        None,
+                        None,
+                    )
+                    .await;
+                let code = format!(
+                    "import {{ {tool} }} from \"dictionary\"; record_result({tool}({{}}));"
+                );
+                for (policy, denied) in [
+                    ("dictation:\n  dictionary: false\n", true),
+                    ("dictation:\n  dictionary: true\n", false),
+                ] {
+                    std::fs::write(&policy_file, policy).unwrap();
+                    std::fs::set_permissions(&policy_file, std::fs::Permissions::from_mode(0o600))
+                        .unwrap();
+                    let result = client
+                        .handle_execute_code(
+                            &session.id,
+                            cap,
+                            Some(
+                                serde_json::json!({"code": code})
+                                    .as_object()
+                                    .unwrap()
+                                    .clone(),
+                            ),
+                            CancellationToken::new(),
+                        )
+                        .await
+                        .unwrap();
+                    let calls = &result.meta.as_ref().unwrap().0[TOOL_CALLS_META_KEY];
+                    assert_eq!(calls[0]["tool"], format!("dictionary__{tool}"), "{tier:?}");
+                    if denied {
+                        assert_eq!(calls[0]["status"], "error", "{tier:?}: {tool}");
+                        assert!(
+                            calls[0]["error"]
+                                .as_str()
+                                .unwrap()
+                                .contains("managed_policy"),
+                            "{tier:?}: {tool}"
+                        );
+                        assert!(
+                            !result_text(&result).contains("dispatch reached"),
+                            "{tier:?}: {tool}"
+                        );
+                    } else if tool == "list_terms" {
+                        assert_eq!(calls[0]["status"], "ok", "{tier:?}");
+                        assert!(
+                            result_text(&result).contains("dispatch reached"),
+                            "{tier:?}"
+                        );
+                    } else {
+                        assert_eq!(calls[0]["status"], "error", "{tier:?}: {tool}");
+                        assert!(
+                            calls[0]["error"]
+                                .as_str()
+                                .unwrap()
+                                .contains("dictionary_store"),
+                            "{tier:?}: {tool}"
+                        );
+                        assert!(
+                            !result_text(&result).contains("dispatch reached"),
+                            "{tier:?}: {tool}"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
     /// QA finding F7. A PreToolUse hook's rewrite is what runs, so the boundary
     /// refusals have to see the rewrite as well as the script's own arguments:

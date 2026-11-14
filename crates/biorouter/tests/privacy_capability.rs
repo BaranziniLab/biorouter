@@ -39,6 +39,8 @@
 //! to be checked"* mechanical instead of aspirational — a list of call sites is
 //! not the answer, because the next call site will not be on it.
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use biorouter::agents::types::SharedProvider;
 use biorouter::privacy::{CallCapability, ProviderTier};
 use std::collections::{BTreeMap, BTreeSet};
@@ -577,6 +579,17 @@ const EXPECTED: &[Site] = &[
         count: 1,
         what: "DR-26 bypassing path 1, `POST /agent/add_extension`, an HTTP route \
                and not a tool dispatch, so there is no admitted capability to inherit",
+    },
+    Site {
+        needle: "affiliation::gate_cross_affiliation",
+        file: "crates/biorouter/src/dictation/bias.rs",
+        count: 1,
+        what: "the dictation bias set (PR-14, O-35, P-16): a private dictionary row stands in \
+               for a private extension whose allowlist is one of its institutions, asked \
+               once per institution inside the loop over the row's allowlists, so a row \
+               reaches dictation aimed at a model only when every institution it names \
+               admits that model. A dictation makes no tool call, so there is no admitted \
+               capability to inherit; the target's model is read once with its tier",
     },
     Site {
         needle: "affiliation::gate_cross_affiliation",

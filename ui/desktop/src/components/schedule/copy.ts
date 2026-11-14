@@ -15,9 +15,13 @@
  * that source was the user's own workflow file. `scheduler::scheduler_owns_source` now confines
  * the unlink to the private copy the scheduler made for itself, so the confirmation names the
  * file that survives. It is a destructive consequence, so it stays visible (principle 2).
+ *
+ * One line (owner, 2026-11-13: no block of text where one line will do). The title already says
+ * "Delete <name>?", so "removes the schedule" was said twice; what is left is the consequence,
+ * the file that survives and that it is final.
  */
 export const DELETE_SCHEDULE_MESSAGE =
-  'This removes the schedule and stops its future runs. The workflow it runs is left in place. This action cannot be undone.';
+  "This stops the schedule's future runs and leaves its workflow in place. It cannot be undone.";
 
 export const scheduleCopy = {
   title: 'Scheduler',
@@ -77,6 +81,9 @@ export const scheduleCopy = {
     workflow: 'Workflow',
     lastRun: 'Last run',
     lastError: 'Last error',
+    // The disclosure under a long last error, and its Copy button's name ("Copy last error").
+    fullError: 'Full error',
+    lastErrorCopyLabel: 'last error',
     started: 'Started',
     openChat: 'Open chat',
     recentRuns: 'Recent runs',

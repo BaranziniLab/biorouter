@@ -12,6 +12,8 @@ import type { SessionUsageLimitResponse } from '../api';
 import { USAGE_LIMIT_COPY } from './bottom_menu/copy';
 
 const api = vi.hoisted(() => ({ getLimit: vi.fn(), getSummary: vi.fn() }));
+// The real dictation hook, except that a test may say a recording holds the composer.
+const dictation = vi.hoisted(() => ({ holds: false }));
 
 vi.mock('./ConfigContext', () => ({
   useConfig: () => ({
@@ -35,7 +37,10 @@ vi.mock('./ModelAndProviderContext', () => ({
 vi.mock('../hooks/useDiverge', () => ({
   useDiverge: () => ({ diverge: vi.fn() }),
 }));
-vi.mock('./bottom_menu/ToolsChip', () => ({ ToolsChip: () => null }));
+vi.mock('./bottom_menu/toolsLists', () => ({
+  useToolsLists: () => ({ shown: null, clearQueries: () => {} }),
+  ToolsListPanel: () => null,
+}));
 vi.mock('./bottom_menu/ModelEffortChip', () => ({ ModelEffortChip: () => null }));
 // The footer as what the composer hands it: the cost card's open requests.
 vi.mock('./bottom_menu/ComposerFooter', () => ({
@@ -58,6 +63,16 @@ vi.mock('../api', () => ({
   getUsageSummary: api.getSummary,
   putSessionUsageLimit: vi.fn(),
 }));
+vi.mock('./dictation/useDictationComposer', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./dictation/useDictationComposer')>();
+  return {
+    ...real,
+    useDictationComposer: (...args: Parameters<typeof real.useDictationComposer>) => {
+      const hook = real.useDictationComposer(...args);
+      return dictation.holds ? { ...hook, available: true, holdsComposer: true } : hook;
+    },
+  };
+});
 vi.mock('../utils/userAction', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../utils/userAction')>()),
   userActionHeaders: async () => ({ 'X-User-Action': 'proof' }),
@@ -99,6 +114,7 @@ const pausedBy = (reason: 'chat' | 'month') =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  dictation.holds = false;
   api.getLimit.mockResolvedValue({ data: limitState() });
   api.getSummary.mockResolvedValue({ data: { monthlyReached: false, monthlyNear: false } });
   Object.assign(window, {
@@ -144,6 +160,11 @@ function composer(
 }
 
 const send = () => document.querySelector('button[type="submit"]');
+// Radix opens a trigger's tooltip on a focus the Tab key moved (`ui/tooltip.tsx`).
+const openSendTooltip = () => {
+  fireEvent.keyDown(document, { key: 'Tab' });
+  fireEvent.focus(send()!.parentElement!);
+};
 
 describe('the composer while a usage limit holds the chat', () => {
   it('reads the chat’s limit with the proof', async () => {
@@ -237,6 +258,27 @@ describe('the composer while a usage limit holds the chat', () => {
     expect(send()).toBeDisabled();
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter', code: 'Enter' });
     expect(handleSubmit).not.toHaveBeenCalled();
+  });
+
+  // Dictation holding the composer outranks the usage limit as Send's reason: the person is
+  // mid-recording, and the notice above the text already says the chat is paused.
+  it('names the recording, not the limit, while dictation holds the composer', async () => {
+    dictation.holds = true;
+    api.getLimit.mockResolvedValue({ data: pausedBy('chat') });
+    render(composer());
+    await screen.findByTestId('composer-usage-limit-notice');
+    expect(send()).toBeDisabled();
+    openSendTooltip();
+    expect((await screen.findAllByText('Finish dictating first')).length).toBeGreaterThan(0);
+    expect(screen.queryByText(USAGE_LIMIT_COPY.sendPaused)).toBeNull();
+  });
+
+  it('names the limit as Send’s reason once no recording holds the composer', async () => {
+    api.getLimit.mockResolvedValue({ data: pausedBy('chat') });
+    render(composer());
+    await screen.findByTestId('composer-usage-limit-notice');
+    openSendTooltip();
+    expect((await screen.findAllByText(USAGE_LIMIT_COPY.sendPaused)).length).toBeGreaterThan(0);
   });
 
   it('reads the limit again when the chat’s usage moves between turns', async () => {

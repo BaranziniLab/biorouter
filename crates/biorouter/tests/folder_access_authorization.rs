@@ -1,3 +1,5 @@
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;

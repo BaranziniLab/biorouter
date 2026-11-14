@@ -69,6 +69,45 @@ An extension has one of two states:
 The set comes from the marketplace registry, compiled into the build. Today exactly two extensions
 are classified private — `cdwagent` and `ucsfomopagent` — and both name `ucsf`.
 
+### A private dictionary term
+
+Local dictation steers recognition toward the terms in your personal dictionary, and a term can
+end up written into the text it produces. So a private term carries the institutions whose data
+it may hold, and this axis decides which models it may reach. Design:
+[private rows and institutions](../dictation/dictionary.md#private-rows-and-institutions).
+
+A private term's institutions are those of the chat it was written in: the institutions behind
+that chat's model, together with every institution whose connector that chat used. A chat on a
+local model that read the UCSF OMOP connector therefore writes terms tagged `ucsf`. This holds
+whether the agent added the term, a correction taught it, or you added it inside that chat with
+**Add to Biorouter dictionary…** or `/dictionary add`.
+
+| What the term records | When | Dictation it may shape |
+|---|---|---|
+| No institution | You added it with no chat: on the **Dictionary** page, with `biorouter dictionary add`, or by import without one | Dictation into any private chat |
+| One institution | Its chat's model and connectors named one | Dictation aimed at a model of that institution alone, or at a local model |
+| Two or more | They named several | Dictation aimed at a local model only |
+| Unknown | Biorouter could not read its chat's record or model, or the chat named more than eight | Dictation aimed at a local model only |
+
+Each institution is asked the same question this page describes for an extension, one at a time,
+so a term tagged `ucsf` never shapes dictation aimed at a Stanford model, even though both are
+private. Three things lift the check: privacy tiers switched off, the `open` mixing mode, and you
+choosing **Include my private terms** for one recording after the warning, which says that
+Biorouter cannot then keep your terms from other institutions' models.
+
+Unlike an extension mismatch, nothing here asks you to approve: dictation makes no extension call
+there could be an approval for, so a term the check leaves out does not shape that dictation, and
+nothing in the result says it was left out. No control changes a term's institutions. To make a
+term reach every private chat, delete it and add it again on the **Dictionary** page, which
+records no institution.
+
+Two limits are worth knowing. Content that reached a chat through a knowledge base search or a
+recalled chat adds no institution, because only a call to an institution's connector is recorded,
+and nothing is recorded while privacy tiers are switched off. And dictation into a chat whose
+agent has not loaded yet does not know the chat's model, so it uses only the private terms that
+carry no institution; the owner kept this behaviour on 2026-11-10 (O-43 in the
+[dictation plan](../dictation/implementation-plan.md#owner-decisions)).
+
 ## The rule, and the part everyone gets backwards
 
 Affiliation is asked only after tier has been, and only when both ends are private. The whole rule:
@@ -208,4 +247,5 @@ answer is not in this application.
 - [Privacy tiers](privacy-tiers.md) — the public/private axis this one is orthogonal to, and the gates that enforce it
 - [Permission modes](permission-modes.md) — the autonomy setting, which is **not** a lever on any privacy gate
 - [Choosing a model provider](../getting-started/choosing-a-model-provider.md) — the full provider inventory, including which models are local
+- [Dictation dictionary](../dictation/dictionary.md#private-rows-and-institutions): how a private dictionary term records its institutions, and the tests that hold the rule (P-16)
 - [Security documentation index](README.md) — the other security layers and where each is decided

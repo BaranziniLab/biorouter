@@ -17,9 +17,14 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
  *
  * `ChatPane` below has `BaseChat`'s shape at that seam (a ternary holding the
  * composer in its empty branch, and a bar after it holding the composer
- * otherwise) and nothing else. The REAL composer, Tools chip and model chip
- * run; the three lists are stand-ins that answer per mount, a moment after
- * they are asked, as the real ones do.
+ * otherwise) and nothing else. The REAL composer, `+` and model chip run; the
+ * three lists are stand-ins that answer per mount, a moment after they are
+ * asked, as the real ones do.
+ *
+ * Since the one-line composer (owner, 2026-11-13) the three counts the Tools
+ * chip carried are the `+`'s accessible name (and tooltip), handed over through
+ * `useToolsLists`' `handOffKey`, and the padlock is on the model chip in the
+ * footer line. What the person reads is the same; where it sits moved.
  */
 
 const lists = vi.hoisted(() => ({ extensions: 2, skills: 2, knowledge: 1, answerAfterMs: 15 }));
@@ -123,20 +128,24 @@ vi.mock('./settings/models/subcomponents/SwitchModelModal', () => ({
 vi.mock('../hooks/useDiverge', () => ({
   useDiverge: () => ({ diverge: vi.fn() }),
 }));
-// The footer as the folder it names, and a way to pick one.
+// The footer as the folder it names, a way to pick one, and the model chip
+// `ChatInput` hands it (the real one: its padlock is part of what is stated).
 vi.mock('./bottom_menu/ComposerFooter', () => ({
   ComposerFooter: ({
     workingDir,
     onWorkingDirChange,
+    model,
   }: {
     workingDir: string | null;
     onWorkingDirChange: (dir: string) => void;
+    model?: React.ReactNode;
   }) => (
     <div>
       <span data-testid="footer-folder">{workingDir ?? ''}</span>
       <button type="button" onClick={() => onWorkingDirChange(CHOSEN_DIR)}>
         Pick folder
       </button>
+      {model}
     </div>
   ),
 }));
@@ -264,17 +273,22 @@ function ChatPane({ clean, sessionId, composerKey = TAB }: PaneProps) {
   );
 }
 
-const toolCounts = (chip: HTMLElement | null) =>
-  chip?.getAttribute('aria-label')?.match(/\d+/g) ?? [];
+const toolCounts = (plus: HTMLElement | null) =>
+  plus?.getAttribute('aria-label')?.match(/\d+/g) ?? [];
 
-/** What the composer states in one frame: the Tools chip, its name, the padlock, the folder. */
+/**
+ * What the composer states in one frame: the `+`'s counts and its name (the
+ * counts are part of it), whether it says they are still being read, the
+ * padlock on the model chip, and the folder.
+ */
 function frame(): string {
-  const tools = screen.queryByTestId('composer-tools-chip');
+  const plus = screen.queryByTestId('composer-plus');
   const model = screen.queryByTestId('model-chip');
   const lock = model?.querySelector('[data-testid="privacy-badge"]') ? '+lock' : 'no lock';
   const folder = screen.queryByTestId('footer-folder')?.textContent ?? '-';
-  const counts = toolCounts(tools).join(', ');
-  return `${tools?.textContent ?? '-'} | ${counts || '-'} | ${tools?.getAttribute('aria-label') ?? '-'} | ${lock} | ${folder}`;
+  const counts = toolCounts(plus).join(', ');
+  const busy = plus?.getAttribute('aria-busy') === 'true' ? 'busy' : 'settled';
+  return `${counts || '-'} | ${plus?.getAttribute('aria-label') ?? '-'} | ${busy} | ${lock} | ${folder}`;
 }
 
 /** Every distinct committed state from now on (the observer reports per commit). */
@@ -298,7 +312,8 @@ const settle = (ms: number) =>
     await new Promise((resolve) => setTimeout(resolve, ms));
   });
 
-const SETTLED = `Tools | 2, 2, 1 | Tools: 2 extensions, 2 skills, 1 knowledge base | +lock | ${CHOSEN_DIR}`;
+const STATED = 'Add files and tools. Tools: 2 extensions, 2 skills, 1 knowledge base';
+const SETTLED = `2, 2, 1 | ${STATED} | settled | +lock | ${CHOSEN_DIR}`;
 
 /** A new tab, answered, with a folder picked before the first message. */
 async function openNewChatWithPickedFolder() {
@@ -336,9 +351,9 @@ describe('a new chat’s first send keeps what the composer states (V2-R8-3)', (
 
     // The same tab, opened again: it asks for itself.
     const again = render(<ChatPane clean sessionId={null} />);
-    expect(toolCounts(screen.getByTestId('composer-tools-chip'))).toEqual([]);
-    expect(screen.getByTestId('composer-tools-chip')).toHaveTextContent(/^Tools$/);
-    expect(screen.getByTestId('composer-tools-chip')).toHaveAccessibleName('Tools');
+    expect(toolCounts(screen.getByTestId('composer-plus'))).toEqual([]);
+    expect(screen.getByTestId('composer-plus')).toHaveAccessibleName('Add files and tools');
+    expect(screen.getByTestId('composer-plus')).toHaveAttribute('aria-busy', 'true');
     expect(screen.getByTestId('footer-folder')).toHaveTextContent(DEFAULT_DIR);
     again.unmount();
 
@@ -347,15 +362,13 @@ describe('a new chat’s first send keeps what the composer states (V2-R8-3)', (
     const chatA = render(<ChatPane clean={false} sessionId={NEW_CHAT} />);
     await waitFor(() => expect(frame()).toBe(SETTLED));
     chatA.rerender(<ChatPane clean sessionId={OTHER_CHAT} />);
-    expect(toolCounts(screen.getByTestId('composer-tools-chip'))).toEqual([]);
-    expect(screen.getByTestId('composer-tools-chip')).toHaveTextContent(/^Tools$/);
-    expect(screen.getByTestId('composer-tools-chip')).toHaveAccessibleName('Tools');
+    expect(toolCounts(screen.getByTestId('composer-plus'))).toEqual([]);
+    expect(screen.getByTestId('composer-plus')).toHaveAccessibleName('Add files and tools');
+    expect(screen.getByTestId('composer-plus')).toHaveAttribute('aria-busy', 'true');
     expect(screen.getByTestId('footer-folder')).toHaveTextContent(/^$/);
     // Then its own figures and folder, once they are read.
     await waitFor(() =>
-      expect(frame()).toBe(
-        `Tools | 2, 2, 1 | Tools: 2 extensions, 2 skills, 1 knowledge base | +lock | ${OTHER_DIR}`
-      )
+      expect(frame()).toBe(`2, 2, 1 | ${STATED} | settled | +lock | ${OTHER_DIR}`)
     );
     chatA.unmount();
     expect(composerHandOffSizeForTests()).toBe(0);

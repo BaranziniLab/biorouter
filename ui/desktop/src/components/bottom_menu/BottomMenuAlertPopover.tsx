@@ -148,6 +148,9 @@ export default function BottomMenuAlertPopover({ alerts }: AlertPopoverProps) {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as Node;
       if (popoverRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
+      // An alert's info icon floats its words in a portal; a press there keeps the tip, and is
+      // not a press outside the notifications.
+      if (target instanceof Element && target.closest('[data-slot="info-tip-content"]')) return;
       closePopover();
     };
 

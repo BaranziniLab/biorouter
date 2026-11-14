@@ -3,7 +3,7 @@
  *
  * The list opens upward from the composer CARD's top edge, 8px clear of it,
  * starting at the text's left edge. It used to hang from the text field's top,
- * which sits 11px inside the card (its 1px border and 10px of padding, and
+ * which sits 9px inside the card (its 1px border and 8px of padding, and
  * further down under a queue or a chips row), so the list's bottom 3px covered
  * the card's coral focus edge, and in a card holding chips it covered the chips.
  *

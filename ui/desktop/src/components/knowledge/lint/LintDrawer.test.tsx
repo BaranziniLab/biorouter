@@ -37,7 +37,8 @@ vi.mock('../../ModelAndProviderContext', () => ({
   useModelAndProvider: () => mocks.modelAndProvider,
 }));
 
-vi.mock('../hooks/useIngestStream', () => ({
+vi.mock('../hooks/useIngestStream', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../hooks/useIngestStream')>()),
   useIngestStream: () => ({
     ...mocks.stream,
     start: mocks.start,
@@ -191,6 +192,20 @@ describe('LintDrawer', () => {
     expect(screen.getByText('HTTP 400: invalid model')).toBeInTheDocument();
     // A stream that died leaves NO report on screen to be mistaken for one.
     expect(screen.queryByTestId('knowledge-lint-diagnostic')).toBeNull();
+  });
+
+  // The shared stream's no-result line names a digest and its advice is about curation that may
+  // have committed; a check is read-only, so it says its own sentence instead.
+  it('says a check that ended with no result in its own words, not the digest line', () => {
+    mocks.stream = {
+      events: [],
+      status: 'error',
+      finalResult: null,
+      error: 'The digest stopped without reporting a result.',
+    };
+    render(<LintDrawer open onOpenChange={() => undefined} />);
+    expect(screen.getByText('The stream ended without reporting a result.')).toBeInTheDocument();
+    expect(screen.queryByText(/digest/i)).toBeNull();
   });
 
   it('dispatches nothing when there is no base to check', async () => {

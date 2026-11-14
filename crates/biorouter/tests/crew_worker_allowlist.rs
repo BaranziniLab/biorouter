@@ -37,6 +37,8 @@
 //! socket and CI's loopback-only integration step runs it.
 #![cfg(unix)]
 
+biorouter::keep_this_test_binary_off_the_os_credential_store!();
+
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};

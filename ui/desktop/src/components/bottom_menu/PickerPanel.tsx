@@ -1,6 +1,8 @@
 import './pickers.css';
 import * as React from 'react';
+import { ChevronRight } from '../icons/app-icons';
 import { Button } from '../ui/button';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/collapsible';
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '../ui/command';
 import { InfoTip } from '../ui/info-tip';
 import { Switch } from '../ui/switch';
@@ -39,7 +41,7 @@ import { TOOLS_COPY } from './copy';
  * both said it once; `inert` on the wrapper did not help. So the option points at
  * its visible text (the title line, then the note) with `aria-labelledby`, or
  * carries `label` as its `aria-label`, and nothing else inside it can reach its
- * name. `toolsPopover.browser.test.tsx` reads Chromium's tree to pin it.
+ * name. `composer/plusPopover.browser.test.tsx` reads Chromium's tree to pin it.
  */
 export interface PickerPanelProps {
   /** The listbox's accessible name ("Extensions"). */
@@ -52,10 +54,25 @@ export interface PickerPanelProps {
   scopeHelp: string;
   /** The ghost bulk action ("Enable all (3)"); omitted when nothing can change. */
   bulk?: { label: string; onClick: () => void; disabled?: boolean } | null;
-  /** Shown instead of rows when there are none. */
-  emptyText: string;
+  /**
+   * Shown instead of rows when there are none. `null` shows no empty line: a
+   * search that matched only rows in `trailing` has nothing to apologise for.
+   */
+  emptyText: string | null;
+  /**
+   * More to say about an empty list, in an InfoTip beside `emptyText` (design.md
+   * 9.16: one line, then helper text). `about` names it ("About built-in
+   * capabilities"), `text` is the help, two sentences at most.
+   */
+  emptyHelp?: { about: string; text: string };
   /** Focused when the popover opens on this list. */
   inputRef?: React.Ref<HTMLInputElement>;
+  /**
+   * A section after the rows, or after the empty line, in the same scrolling
+   * list: the built-in capabilities or contexts (`PickerDisclosure`). It is not
+   * a row, so a list with none of the person's own still says why above it.
+   */
+  trailing?: React.ReactNode;
   children: React.ReactNode;
   'data-testid'?: string;
 }
@@ -69,7 +86,9 @@ export function PickerPanel({
   scopeHelp,
   bulk,
   emptyText,
+  emptyHelp,
   inputRef,
+  trailing,
   children,
   'data-testid': testId,
 }: PickerPanelProps) {
@@ -108,9 +127,21 @@ export function PickerPanel({
       <CommandList aria-label={listLabel} aria-multiselectable className="br-picker-panel__list">
         {hasRows ? (
           children
-        ) : (
-          <CommandEmpty className="br-picker-panel__empty">{emptyText}</CommandEmpty>
+        ) : emptyText === null ? null : (
+          <CommandEmpty className="br-picker-panel__empty">
+            {emptyHelp ? (
+              // One centred group: the line, then its glyph 4px after the last word. The
+              // InfoTip keeps its own keys: `Command` leaves any target but the field alone.
+              <span className="br-picker-panel__empty-line">
+                <span>{emptyText}</span>
+                <InfoTip label={emptyHelp.about} help={emptyHelp.text} />
+              </span>
+            ) : (
+              emptyText
+            )}
+          </CommandEmpty>
         )}
+        {trailing}
       </CommandList>
     </Command>
   );
@@ -227,4 +258,109 @@ export function PickerRow({
       </span>
     </CommandItem>
   );
+}
+
+export interface PickerDisclosureProps {
+  /** The trigger's words and the group's name ("Built-in capabilities"). */
+  label: string;
+  /** Beside the label in muted ink, and the trigger's description ("12 on"). */
+  summary?: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** `PickerRow`s, mounted only while open. */
+  children: React.ReactNode;
+  'data-testid'?: string;
+}
+
+/**
+ * The built-in rows at the end of a list, behind one row that opens them
+ * (owner, 2026-11-13: "a little Advanced button … the option to expand"). The
+ * person's own extensions or skills come first and stay the list; what ships
+ * with Biorouter waits one click away (simplicity first, complexity hidden).
+ *
+ * A group in the listbox, named by its trigger. The trigger is a real button in
+ * the row recipe, so Tab reaches it and Enter or Space opens it: `Command`
+ * leaves the keys of any target but its field alone. Its rows are ordinary
+ * options, so once open the arrow keys walk them like the rows above.
+ *
+ * ⚠ **The trigger is not an option.** An option is a row a person switches,
+ * and every count of options (the tests', a screen reader's "1 of 3") would
+ * then include a row that is not one. The content is Radix `Collapsible`, which
+ * unmounts it while closed, so a closed group adds no option either; it opens
+ * with the shared disclosure animation (`.biorouter-disclosure-panel`).
+ */
+export function PickerDisclosure({
+  label,
+  summary,
+  open,
+  onOpenChange,
+  children,
+  'data-testid': testId,
+}: PickerDisclosureProps) {
+  const labelId = React.useId();
+  const summaryId = React.useId();
+  return (
+    <Collapsible
+      open={open}
+      onOpenChange={onOpenChange}
+      role="group"
+      aria-labelledby={labelId}
+      className="br-picker-disclosure"
+      data-testid={testId}
+    >
+      <CollapsibleTrigger asChild>
+        <button
+          type="button"
+          className="br-picker-disclosure__trigger"
+          aria-labelledby={labelId}
+          aria-describedby={summary ? summaryId : undefined}
+        >
+          <span id={labelId} className="br-picker-disclosure__label">
+            {label}
+          </span>
+          {summary ? (
+            <>
+              <span aria-hidden="true" className="br-picker-disclosure__summary">
+                ·
+              </span>
+              <span id={summaryId} className="br-picker-disclosure__summary">
+                {summary}
+              </span>
+            </>
+          ) : null}
+          <ChevronRight aria-hidden="true" className="br-picker-disclosure__chevron" />
+        </button>
+      </CollapsibleTrigger>
+      <CollapsibleContent className="biorouter-disclosure-panel">
+        <div className="br-picker-disclosure__rows">{children}</div>
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+/**
+ * Whether a list's built-in section is open: collapsed whenever the list comes
+ * on screen, and opened by a search that matches a built-in row, so a person
+ * who types "Developer" sees it rather than "No extensions found". After that
+ * the person's own click decides.
+ *
+ * @param listOpen the list is on screen; closing it collapses the section.
+ * @param matching a non-empty search matches at least one built-in row.
+ */
+export function useBuiltInDisclosure(
+  listOpen: boolean,
+  matching: boolean
+): [boolean, (open: boolean) => void] {
+  const [expanded, setExpanded] = React.useState(false);
+  // Adjusted during render rather than in an effect, so a search that opens the
+  // section does not paint one frame of it closed (react.dev, "Adjusting some
+  // state when a prop changes").
+  const [seen, setSeen] = React.useState({ listOpen, matching });
+  if (seen.listOpen !== listOpen || seen.matching !== matching) {
+    setSeen({ listOpen, matching });
+    if (!listOpen) setExpanded(false);
+    // A search that starts matching, or a list reopened on one that does.
+    else if (matching && (!seen.matching || !seen.listOpen)) setExpanded(true);
+  }
+  return [expanded, setExpanded];
 }
