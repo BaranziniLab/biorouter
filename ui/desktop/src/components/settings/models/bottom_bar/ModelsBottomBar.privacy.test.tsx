@@ -224,7 +224,9 @@ describe('ModelsBottomBar — the chip carries the dense padlock, never a pill',
     mocks.currentProvider = 'versa_azure';
     renderBar('public');
 
-    const trigger = await screen.findByLabelText(/Private model/);
+    // The trigger itself: its padlock now also names its subject ("Private model"), so a label
+    // query would match both.
+    const trigger = await screen.findByTestId('model-chip');
     const label = trigger.getAttribute('aria-label') ?? '';
     expect(label).toBe('Current model: claude-opus-4 (Private model, UCSF). Public chat');
     // The exact failure: the chat's tier standing inside the model's clause.

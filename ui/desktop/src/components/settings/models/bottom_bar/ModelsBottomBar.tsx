@@ -679,7 +679,7 @@ export default function ModelsBottomBar({
                   tooltip and the menu: this chip has room for one mark. */}
               {boundTier && (
                 <span className="br-picker-chip__badge">
-                  <PrivacyBadge tier={boundTier} dense />
+                  <PrivacyBadge tier={boundTier} dense subject="model" />
                 </span>
               )}
               <ChevronDown className="br-picker-chip__chevron" aria-hidden="true" />

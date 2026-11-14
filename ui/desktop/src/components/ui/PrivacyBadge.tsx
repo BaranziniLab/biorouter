@@ -45,6 +45,14 @@ export interface PrivacyBadgeProps {
    */
   dense?: boolean;
   /**
+   * What the dense padlock is hung on, for its accessible name: a chat (the default), the
+   * model on the composer's chip, or a knowledge base in its selector. The chip passes the
+   * MODEL's tier (see `tier` above), so a private model in a chat a decision model made public
+   * was announced as "Private chat" (Phase C). Only the dense form names its subject; the pill
+   * says its tier in words beside whatever names the subject.
+   */
+  subject?: 'chat' | 'model' | 'knowledge base';
+  /**
    * The master switch (`BIOROUTER_PRIVACY_TIERS`) is OFF, so nothing enforces
    * this tier (issue #56, DR-15).
    *
@@ -195,6 +203,7 @@ export const PRIVATE_MARK_INK = 'text-text-muted';
 export function PrivacyBadge({
   tier,
   dense = false,
+  subject = 'chat',
   enforcementOff,
   help,
   className,
@@ -214,7 +223,7 @@ export function PrivacyBadge({
   if (dense && !spec.markedWhenDense) return null; // no padlock means public
 
   if (dense) {
-    const name = off ? 'Private chat, enforcement off' : 'Private chat';
+    const name = off ? `Private ${subject}, enforcement off` : `Private ${subject}`;
     const mark = (
       <span
         ref={notice}

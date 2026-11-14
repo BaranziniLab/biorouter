@@ -310,6 +310,27 @@ describe('PrivacyBadge', () => {
   });
 
   /**
+   * The dense padlock names what it is hung on. The composer's model chip passes the MODEL's
+   * tier, so a private model in a chat a decision model made public was announced as "Private
+   * chat" (Phase C); it says "Private model" there, and "Private knowledge base" on a base's row.
+   */
+  it('names the subject a dense padlock is hung on', () => {
+    expect(
+      badgeOf(<PrivacyBadge tier="private" dense subject="model" />)!.getAttribute('aria-label')
+    ).toBe('Private model');
+    expect(
+      badgeOf(<PrivacyBadge tier="private" dense subject="knowledge base" />)!.getAttribute(
+        'aria-label'
+      )
+    ).toBe('Private knowledge base');
+    expect(
+      badgeOf(<PrivacyBadge tier="private" dense subject="model" enforcementOff />)!.getAttribute(
+        'aria-label'
+      )
+    ).toBe('Private model, enforcement off');
+  });
+
+  /**
    * The sentence is the padlock's HELP, so it is an InfoTip on the mark, never a
    * `title=` (spec 2.6): it used to sit in a title on a span no key could reach.
    * Now the mark is a tab stop, the sentence is its description, and a click
