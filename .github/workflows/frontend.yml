@@ -28,14 +28,15 @@ on:
 # free on a public repo and keeps the check safe to mark required.
 
 concurrency:
-  # A group holds at most ONE pending run by default: a newly queued run cancels
-  # the pending one, whatever cancel-in-progress says (that governs only the
-  # running one). Keyed by ref, a merge burst to main on 2026-09-09 thus lost 12
-  # of its 14 runs before they started, leaving those commits with no status.
-  # So only a PR's runs share a group, where the newest should win. Any other
-  # run is keyed by run_id, not sha, which repeat dispatches of a commit share.
-  group: frontend-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # A pull request's runs share a group and the newest wins, and since
+  # 2026-11-14 (the owner's ruling) so do pushes to main: a newer main push
+  # cancels the older main run, running or queued, so an intermediate main
+  # commit can end up with NO CI result of its own. rust.yml's concurrency
+  # comment says why and what that costs. A manual dispatch stays keyed by
+  # run_id and is never cancelled. The event name is in the key because a
+  # dispatch on main and a push to main share `github.ref`.
+  group: frontend-${{ github.event_name }}-${{ (github.event_name == 'pull_request' || github.event_name == 'push') && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 defaults:
   run:

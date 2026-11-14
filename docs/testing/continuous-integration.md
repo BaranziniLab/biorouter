@@ -3,7 +3,8 @@
 > **What this is.** The map of the GitHub Actions checks on this repository: which jobs run on a
 > pull request, after a merge to `main`, nightly and on a release, how long each takes, and why
 > the pull request set is smaller than the `main` set.
-> **Status:** Current (layout of 2026-11-13). Times are measured on the pull request run that
+> **Status:** Current (layout of 2026-11-13; superseded `main` runs cancelled since 2026-11-14).
+> Times are measured on the pull request run that
 > introduced the layout (#498, head f536dcb7e) unless marked otherwise.
 > **Audience:** developers and agents who push pull requests, and maintainers who change
 > `.github/workflows/`.
@@ -154,11 +155,39 @@ into more jobs makes it slower, not faster, and the cheapest minutes to win are 
 - `no-ai-coauthor` runs on pull requests and on pushes to `main`, not also on every push to a
   pull request's branch, where it answered the same question twice.
 
+- A newer push to `main` cancels the older `main` run (below).
+
 A pull request's run holds 18 jobs (10 Rust, 8 Frontend) and a `main` run 15 (9 and 6), the
-latter's macOS and Windows full suites holding their slots for about an hour and half an hour. The bigger
-lever during a burst of merges is that every push to `main` starts its own full run and none is
-cancelled by the next (a deliberate choice, explained at the top of `rust.yml`, so that every
-`main` commit carries a status); that is for the maintainers to weigh.
+latter's macOS and Windows full suites holding their slots for about an hour and half an hour.
+
+## A newer push to `main` cancels the older run
+
+Since 2026-11-14, by the owner's ruling, the workflows that test every commit (`Rust`,
+`Frontend`, `Apps smoke`, `Rebuilt session storage acceptance`) cancel their older `main` run,
+running or still queued, when a newer push to `main` starts one, exactly as a pull request's new
+push already cancelled its older run. During a burst of merges each push used to start a full run
+that nothing cancelled, and those runs held most of the organisation's 20 slots while pull
+requests queued behind them.
+
+The cost: **an intermediate `main` commit can end up with no CI result of its own.** When `main`
+turns red after several merges, the newest run says something broke but not which merge broke
+it. To find out, run CI on the earlier commits. Do not re-run the cancelled `main` run itself: a
+re-run joins the same `main` concurrency group and cancels whatever `main` run is in progress,
+and the next push cancels it in turn. Dispatch on a throwaway branch instead; a dispatched run is
+keyed by its own run id, so it cancels nothing and nothing cancels it:
+
+```bash
+sha=<the earlier commit>
+git push origin "${sha}:refs/heads/ci-bisect-${sha:0:9}"
+gh workflow run rust.yml --repo BaranziniLab/biorouter --ref "ci-bisect-${sha:0:9}"
+```
+
+(`"${sha}:refs/..."` with braces: in zsh `$sha:r` is a path modifier.) A dispatch runs every job,
+the full macOS and Windows suites included. Delete the branch afterwards.
+
+What is never cancelled by a push: the nightly schedule, a manual dispatch, the release and
+package workflows (`release-artifact-smoke.yml`, the GUI package workflows), and the website
+deploy (`deploy-landing.yml`, its own `pages` group).
 
 ## Caches
 

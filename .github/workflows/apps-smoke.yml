@@ -14,10 +14,11 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Same rule as rust.yml and frontend.yml: only a PR's runs share a group, so a
-  # merge burst to main can no longer cancel its own queued runs before they start.
-  group: apps-smoke-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Same rule as rust.yml and frontend.yml: a newer run of the same pull request,
+  # or a newer push to main (since 2026-11-14), cancels the older one; a manual
+  # dispatch is keyed by run_id and never cancelled.
+  group: apps-smoke-${{ github.event_name }}-${{ (github.event_name == 'pull_request' || github.event_name == 'push') && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 jobs:
   reference-apps:
