@@ -10,13 +10,13 @@ import { Note } from '../ui/note';
 import CrewHostTrust from './CrewHostTrust';
 import { signInCopy } from './auth/copy';
 import './auth/auth.css';
+import { terminalLineHeight } from '../../utils/terminalLineHeight';
 
 /**
  * The terminal's type, the app's code role: 12px on a 20px line, as the in-app terminal and every
  * code block set it (design.md 9.15).
  */
 const TERMINAL_FONT_SIZE = 12;
-const TERMINAL_LINE_HEIGHT = 20 / 12;
 
 /**
  * xterm measures glyphs itself and cannot read `var(--font-mono)`, so the stack is resolved from
@@ -112,7 +112,7 @@ export default function CrewAuthentication({
       screenReaderMode: true,
       fontFamily: terminalFontFamily(),
       fontSize: TERMINAL_FONT_SIZE,
-      lineHeight: TERMINAL_LINE_HEIGHT,
+      lineHeight: terminalLineHeight(terminalFontFamily(), TERMINAL_FONT_SIZE),
       disableStdin: false,
       theme: paletteRef.current,
     });

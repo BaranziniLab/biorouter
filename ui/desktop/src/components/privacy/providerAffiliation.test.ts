@@ -2,6 +2,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  affiliationExplanation,
   affiliationPresentation,
   institutionLabel,
   readProviderAffiliation,
@@ -114,13 +115,16 @@ describe('affiliationPresentation', () => {
    * outright.
    */
   it('renders local as the least restricted affiliation, not a narrower institution', () => {
-    const words = of({ kind: 'local', institutions: [] });
-    expect(words?.label).toBe('On this machine');
-    expect(words?.title).toContain('least restricted');
-    expect(words?.title).toContain('every private extension');
+    const words = of({ kind: 'local', institutions: [] })!;
+    expect(words.label).toBe('On this machine');
+    // The line at rest says where the work happens; its InfoTip states the reach.
+    expect(words.title).toBe('Runs on this machine, so nothing leaves it.');
+    const explanation = affiliationExplanation(words);
+    expect(explanation).toContain('least restricted');
+    expect(explanation).toContain('every private extension');
     // Not phrased as an institution: no possessive agreements clause, which is
     // what the institutions arm uses.
-    expect(words?.title).not.toContain('Covered by');
+    expect(explanation).not.toContain('Covered by');
   });
 
   /**
@@ -158,7 +162,24 @@ describe('affiliationPresentation', () => {
       institutions: [{ id: 'ucsf', display_name: 'UCSF' }],
     });
     expect(words?.label).toBe('UCSF');
-    expect(words?.title).toContain('Compliance does not transfer');
+    // One line at rest; the cross-institutional approval and the compliance sentence are its
+    // InfoTip (owner rule "no walls of text", Phase C ruling F-13).
+    expect(words?.title).toBe('Covered by UCSF’s agreements.');
+    expect(words?.detail).toContain('Compliance does not transfer');
+    expect(words?.detail).toContain('needs your approval first');
+  });
+
+  /** Owner rule "no walls of text" (Phase C ruling F-13): one sentence at rest, at most two more. */
+  it('keeps each line to one sentence and its detail to two', () => {
+    for (const kind of ['local', 'institutions', 'unstated'] as const) {
+      const words = of({
+        kind,
+        institutions: kind === 'institutions' ? [{ id: 'ucsf', display_name: 'UCSF' }] : [],
+      })!;
+      const sentences = (text: string) => text.split(/(?<=\.)\s+/).filter(Boolean).length;
+      expect(sentences(words.title), kind).toBe(1);
+      expect(sentences(words.detail), kind).toBeLessThanOrEqual(2);
+    }
   });
 
   /** Every kind has words. A `Record` keyed on the union makes this structural. */

@@ -314,12 +314,15 @@ describe('SwitchModelModal — pre-flight, not post-refusal', () => {
       text.split(sentence).length - 1,
       'the affiliation sentence is said once, never again by the badge’s tip'
     ).toBe(1);
-    expect(row.querySelector('[data-slot="info-tip-description"]')).toBeNull();
-    expect(row.querySelector('[data-slot="info-tip-trigger"]')).toBeNull();
-    expect(row.querySelector('[tabindex]')).toBeNull();
+    // The rest of the disclosure is the InfoTip beside the line, its only tip (owner rule "no
+    // walls of text", Phase C ruling F-13); the badge draws none, so nothing is said twice.
+    const tips = row.querySelectorAll('[data-slot="info-tip-trigger"]');
+    expect(tips).toHaveLength(1);
+    expect(tips[0]).toHaveAccessibleDescription(affiliationPresentation(ucsf)!.detail);
     const badge = within(row).getByTestId('affiliation-badge');
     expect(badge).not.toHaveAttribute('aria-describedby');
     expect(badge).not.toHaveAttribute('title');
+    expect(badge).not.toHaveAttribute('tabindex');
   });
 
   it('does not submit the old model while a different provider search is uncommitted', async () => {

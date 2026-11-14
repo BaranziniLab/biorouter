@@ -265,6 +265,47 @@ pub struct DetectableProvider {
 pub struct DetectableProvidersResponse {
     pub providers: Vec<DetectableProvider>,
 }
+
+/// `/config/upsert`'s refusal for the master privacy switch, or `None` to go on. Split out of
+/// [`upsert_config`] only to keep it under the repo's `too_many_lines` limit.
+fn master_switch_upsert_refusal(query: &UpsertConfigQuery) -> Option<(StatusCode, String)> {
+    // Issue #56 Task 30, hardening measure (2). The master switch is the ONE key
+    // this route will not write as an ordinary config value.
+    //
+    // ⚠ These two arms look contradictory and are not. `/config/upsert` MUST be
+    // one of the toggle's two writers — it is the channel Settings > Privacy
+    // uses — and a BARE upsert of this key MUST be refused. What separates them
+    // is the confirmation field, which is what the panel sends and what a tool
+    // call composing an ordinary config write does not.
+    if biorouter::privacy::is_privacy_tiers_key(&query.key) {
+        // Exact comparison, deliberately: a case-insensitive or trimmed match
+        // would let "disable privacy tiers" through, and the phrase exists to be
+        // typed rather than guessed.
+        if query.confirm.as_deref() != Some(biorouter::privacy::PRIVACY_TIERS_DISABLE_PHRASE) {
+            return Some((StatusCode::FORBIDDEN, master_switch_refusal(&query.key)));
+        }
+        // ⚠ And never into the SECRET store. `config.set(.., is_secret)` routes a
+        // secret to the OS credential store, which the start-up loader does not
+        // read — so a confirmed secret write would set this process's atomic to
+        // `off` and then silently revert to `on` at the next launch, with the
+        // panel showing whichever of the two it last read. Unreachable from the
+        // panel, which always sends `false`; refused here so that stays a
+        // property of the daemon rather than of one caller.
+        if query.is_secret {
+            return Some((
+                StatusCode::FORBIDDEN,
+                format!(
+                    "'{}' is the master privacy switch and cannot be stored as a secret: the \
+                     daemon reads it from its own record in the configuration directory at \
+                     start-up and would not see a value written to the credential store.",
+                    query.key
+                ),
+            ));
+        }
+    }
+    None
+}
+
 #[utoipa::path(
     post,
     path = "/config/upsert",
@@ -298,39 +339,8 @@ pub async fn upsert_config(
     headers: http::HeaderMap,
     Json(query): Json<UpsertConfigQuery>,
 ) -> Result<Json<Value>, (StatusCode, String)> {
-    // Issue #56 Task 30, hardening measure (2). The master switch is the ONE key
-    // this route will not write as an ordinary config value.
-    //
-    // ⚠ These two arms look contradictory and are not. `/config/upsert` MUST be
-    // one of the toggle's two writers — it is the channel Settings > Privacy
-    // uses — and a BARE upsert of this key MUST be refused. What separates them
-    // is the confirmation field, which is what the panel sends and what a tool
-    // call composing an ordinary config write does not.
-    if biorouter::privacy::is_privacy_tiers_key(&query.key) {
-        // Exact comparison, deliberately: a case-insensitive or trimmed match
-        // would let "disable privacy tiers" through, and the phrase exists to be
-        // typed rather than guessed.
-        if query.confirm.as_deref() != Some(biorouter::privacy::PRIVACY_TIERS_DISABLE_PHRASE) {
-            return Err((StatusCode::FORBIDDEN, master_switch_refusal(&query.key)));
-        }
-        // ⚠ And never into the SECRET store. `config.set(.., is_secret)` routes a
-        // secret to the OS credential store, which the start-up loader does not
-        // read — so a confirmed secret write would set this process's atomic to
-        // `off` and then silently revert to `on` at the next launch, with the
-        // panel showing whichever of the two it last read. Unreachable from the
-        // panel, which always sends `false`; refused here so that stays a
-        // property of the daemon rather than of one caller.
-        if query.is_secret {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!(
-                    "'{}' is the master privacy switch and cannot be stored as a secret: the \
-                     daemon reads it from its own record in the configuration directory at \
-                     start-up and would not see a value written to the credential store.",
-                    query.key
-                ),
-            ));
-        }
+    if let Some(refusal) = master_switch_upsert_refusal(&query) {
+        return Err(refusal);
     }
     // The usage limits are enforced, so writing their section needs the same
     // proof `PUT /usage/limits` asks for.

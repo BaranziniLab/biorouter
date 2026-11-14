@@ -2,7 +2,11 @@ import { cleanup, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AffiliationBadge } from './AffiliationBadge';
-import { affiliationPresentation, type ProviderAffiliation } from '../privacy/providerAffiliation';
+import {
+  affiliationExplanation,
+  affiliationPresentation,
+  type ProviderAffiliation,
+} from '../privacy/providerAffiliation';
 
 afterEach(cleanup);
 
@@ -114,16 +118,18 @@ describe('AffiliationBadge', () => {
     expect(pill).not.toHaveAttribute('title');
     expect(pill).toHaveAttribute('tabindex', '0');
     expect(pill).toHaveClass('br-info-tip-target');
-    expect(pill).toHaveAccessibleDescription(words.title);
+    expect(pill).toHaveAccessibleDescription(affiliationExplanation(words));
     await user.click(pill);
     expect(pill).toHaveAttribute('data-pinned', 'true');
-    expect(document.querySelector('[data-slot="info-tip-content"]')).toHaveTextContent(words.title);
+    expect(document.querySelector('[data-slot="info-tip-content"]')).toHaveTextContent(
+      affiliationExplanation(words)
+    );
 
     cleanup();
     render(<AffiliationBadge affiliation={ucsf} dense />);
     const mark = screen.getByTestId('affiliation-badge');
     expect(mark).toHaveAttribute('tabindex', '0');
-    expect(mark).toHaveAccessibleDescription(`${words.label}. ${words.title}`);
+    expect(mark).toHaveAccessibleDescription(`${words.label}. ${affiliationExplanation(words)}`);
   });
 
   /**

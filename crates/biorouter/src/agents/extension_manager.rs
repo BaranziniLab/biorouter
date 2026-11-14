@@ -1045,8 +1045,37 @@ async fn call_admitted_tool(
 /// running waits out the job's interval first, after every admission check and
 /// before the call, and its result says it was held. `call` is the chat's
 /// session id and the prefixed tool name the pacing keys on.
+/// Issue #56 and DR-33 for a private knowledge base: the knowledge server refuses in one sentence
+/// because it cannot see a call's capability. The words that say why come from the call's own
+/// sample (the `cap` its dispatch admitted it with, copied into the call's future) and replace
+/// only that sentence (Phase C, F-6).
+fn kb_refusal_words(cap: crate::privacy::CallCapability) -> Option<String> {
+    crate::privacy::refusal::kb_refusal_explained(
+        cap.private_from_next_turn(),
+        cap.lowered_by_decision(),
+    )
+}
+
+/// The knowledge server's private-base refusal in the words this call's capability can give
+/// ([`crate::privacy::refusal::kb_refusal_explained`]); every other error, and the refusal when
+/// there are no such words, unchanged.
+fn explain_kb_refusal(mut error: ErrorData, words: Option<&str>) -> ErrorData {
+    if let Some(words) = words {
+        if error
+            .message
+            .contains(biorouter_mcp::knowledge::tier::KB_PRIVATE_REFUSAL)
+        {
+            error.message = words.to_string().into();
+        }
+    }
+    error
+}
+
+/// One admitted call, paced. `call` is the session, the prefixed tool name and the capability
+/// the dispatch admitted it with, whose words a private knowledge base's refusal takes
+/// ([`kb_refusal_words`]).
 async fn call_paced_tool(
-    call: (&str, &str),
+    call: (&str, &str, crate::privacy::CallCapability),
     client: &McpClientBox,
     tool_name: &str,
     arguments: Option<rmcp::model::JsonObject>,
@@ -1055,7 +1084,7 @@ async fn call_paced_tool(
     computer_permit: Option<crate::security::computer_use::ComputerUsePermit>,
 ) -> Result<rmcp::model::CallToolResult, ErrorData> {
     use crate::tool_monitor::poll_pacing;
-    let (session_id, prefixed_name) = call;
+    let (session_id, prefixed_name, cap) = call;
     let paced = poll_pacing::before_dispatch(
         session_id,
         prefixed_name,
@@ -1072,7 +1101,8 @@ async fn call_paced_tool(
         cancellation_token,
         computer_permit,
     )
-    .await?;
+    .await
+    .map_err(|error| explain_kb_refusal(error, kb_refusal_words(cap).as_deref()))?;
     poll_pacing::after_dispatch(paced, prefixed_name, arguments.as_ref(), &mut result);
     Ok(result)
 }
@@ -3864,7 +3894,7 @@ impl ExtensionManager {
             // where every path to a model converges. A repeated check of a
             // running job first waits out its interval (`call_paced_tool`).
             let mut result = call_paced_tool(
-                (&session_id, &prefixed_name),
+                (&session_id, &prefixed_name, cap),
                 &client,
                 &tool_name,
                 arguments.clone(),
@@ -4704,6 +4734,33 @@ mod tests {
     use rmcp::model::CallToolResult;
     use rmcp::model::{InitializeResult, JsonObject};
     use rmcp::{object, ServiceError as Error};
+
+    /// Phase C, F-6: a private knowledge base refused in a turn whose chat was switched to a
+    /// private model, or made public by a decision model, says why; every other error, and
+    /// the refusal with no words to give, is untouched.
+    #[test]
+    fn a_kb_refusal_takes_the_words_this_call_can_give() {
+        let refusal = ErrorData::new(
+            ErrorCode::INVALID_REQUEST,
+            biorouter_mcp::knowledge::tier::KB_PRIVATE_REFUSAL,
+            None,
+        );
+        let next = crate::privacy::refusal::kb_refusal_explained(true, false);
+        let explained = explain_kb_refusal(refusal.clone(), next.as_deref());
+        assert!(explained
+            .message
+            .contains("takes effect from the next message"));
+        assert_eq!(explained.code, refusal.code);
+
+        let decision = crate::privacy::refusal::kb_refusal_explained(false, true);
+        assert!(explain_kb_refusal(refusal.clone(), decision.as_deref())
+            .message
+            .contains("public decision model"));
+
+        assert_eq!(explain_kb_refusal(refusal.clone(), None), refusal);
+        let other = ErrorData::new(ErrorCode::INTERNAL_ERROR, "the base is busy", None);
+        assert_eq!(explain_kb_refusal(other.clone(), next.as_deref()), other);
+    }
 
     use rmcp::model::ListPromptsResult;
     use rmcp::model::ListResourcesResult;

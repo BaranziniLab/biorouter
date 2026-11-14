@@ -3181,6 +3181,35 @@ async fn push_startup_notices(app: &mut App) {
     }
 }
 
+/// `/help`'s Navigation keys, in order, with the dictation key as the footer names it. Split out
+/// of [`help_into`] only to keep that function under the line limit.
+fn navigation_keys(app: &App) -> Vec<(String, &'static str)> {
+    let mut keys: Vec<(String, &'static str)> = vec![
+        ("↵".into(), "send · ⇧↵ or ^J for a newline"),
+        (
+            "↑ / ↓".into(),
+            "history · scroll with PageUp/Down or the mouse",
+        ),
+        ("^C".into(), "clear the line, or quit when empty"),
+    ];
+    // The dictation key, as the footer names it (`dictation_hint`): the configured letter,
+    // offered only where dictation can run and the key is free.
+    if let Some(dictate) = dictation_hint(app).strip_prefix(" · ") {
+        if let Some(key) = dictate.strip_suffix(" dictate") {
+            keys.push((
+                key.to_string(),
+                "dictate · ↵ or the same key inserts the text, esc cancels",
+            ));
+        }
+    }
+    keys.push(("^B".into(), "show or hide the subagent pane"));
+    keys.push((
+        "^O".into(),
+        "select a subagent: ↑↓ choose, ↵ opens its chat, esc back",
+    ));
+    keys
+}
+
 fn help_into(app: &mut App) {
     app.push_blank();
     app.push_raw(
@@ -3260,29 +3289,7 @@ fn help_into(app: &mut App) {
         "Navigation",
         Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
     );
-    let mut keys: Vec<(String, &str)> = vec![
-        ("↵".into(), "send · ⇧↵ or ^J for a newline"),
-        (
-            "↑ / ↓".into(),
-            "history · scroll with PageUp/Down or the mouse",
-        ),
-        ("^C".into(), "clear the line, or quit when empty"),
-    ];
-    // The dictation key, as the footer names it (`dictation_hint`): the configured letter,
-    // offered only where dictation can run and the key is free.
-    if let Some(dictate) = dictation_hint(app).strip_prefix(" · ") {
-        if let Some(key) = dictate.strip_suffix(" dictate") {
-            keys.push((
-                key.to_string(),
-                "dictate · ↵ or the same key inserts the text, esc cancels",
-            ));
-        }
-    }
-    keys.push(("^B".into(), "show or hide the subagent pane"));
-    keys.push((
-        "^O".into(),
-        "select a subagent: ↑↓ choose, ↵ opens its chat, esc back",
-    ));
+    let keys = navigation_keys(app);
     for (k, d) in keys {
         app.push_line(Line::from(vec![
             Span::styled(help_cell(&k, width), Style::new().fg(ACCENT)),

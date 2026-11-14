@@ -646,6 +646,34 @@ pub fn is_annotated(text: &str) -> bool {
     kind_from_annotation(text).is_some()
 }
 
+/// `text` as a person reads it: without the taxonomy's header, the one line
+/// [`ToolError::header`] puts in front of the tool's own text. With that text
+/// present the whole line goes, guidance included, because the guidance is
+/// addressed to the agent. A result that was only the header keeps its
+/// guidance, which is still a sentence. The desktop strips it by the same rule
+/// (`withoutToolErrorHeader` in `ui/desktop/src/utils/repetitionStop.ts`).
+pub fn without_tool_error_header(text: &str) -> &str {
+    let trimmed = text.trim_start();
+    let Some(after_tag) = trimmed.strip_prefix("[tool_error ") else {
+        return text;
+    };
+    let Some((tag, rest)) = after_tag.split_once(']') else {
+        return text;
+    };
+    if tag.contains('\n') {
+        return text;
+    }
+    let (guidance, original) = rest.split_once('\n').unwrap_or((rest, ""));
+    let original = original.trim();
+    if !original.is_empty() {
+        return original;
+    }
+    match guidance.trim() {
+        "" => text,
+        guidance => guidance,
+    }
+}
+
 // `src/main.rs:42:7`, `./tests/foo.py:9`, `C:\src\x.ts:3:1`.
 static PATH_LINE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?m)([A-Za-z]:[\\/][^\s:]+|[\w./\\+-]*[\w+-]\.[A-Za-z][A-Za-z0-9]{0,9}):(\d{1,7})(?::(\d{1,7}))?")
@@ -785,6 +813,27 @@ fn annotated_content(content: Vec<Content>, error: &ToolError) -> Vec<Content> {
 mod tests {
     use super::*;
     use std::borrow::Cow;
+
+    /// A person reads the tool's own words, not the header and its advice to the agent;
+    /// a header with nothing after it keeps its guidance; text with no header is untouched.
+    #[test]
+    fn a_person_reads_an_error_without_the_taxonomys_header() {
+        let header = ToolError::new(ToolErrorKind::InvalidArgs, "x").header();
+        let refusal = "This chat is private, so it cannot start a subagent on a public model.";
+        assert_eq!(
+            without_tool_error_header(&format!("{header}\n{refusal}")),
+            refusal
+        );
+        assert_eq!(
+            without_tool_error_header(&header),
+            ToolErrorKind::InvalidArgs.guidance()
+        );
+        assert_eq!(without_tool_error_header(refusal), refusal);
+        assert_eq!(
+            without_tool_error_header("[tool_error unclosed\nline] x"),
+            "[tool_error unclosed\nline] x"
+        );
+    }
 
     fn err(message: &str) -> ToolResult<CallToolResult> {
         Err(ErrorData {

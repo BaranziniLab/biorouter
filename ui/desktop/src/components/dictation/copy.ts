@@ -138,8 +138,12 @@ export const DICTATION_MESSAGES = {
   'MSG-DISCLOSE-LOCAL': 'Speech is transcribed by Biorouter on this computer. Audio is not saved.',
   'MSG-DISCLOSE-REMOTE':
     "Audio is transcribed on <host>, the computer running Biorouter's service. Models install there, not on this device.",
+  // One line at rest, the rest in an InfoTip beside it (owner rule "no walls of text";
+  // Phase C ruling F-13): a mandated disclosure keeps its core visible.
   'MSG-DISCLOSE-HOST':
-    'Your voice is sent to the Biorouter server on <host> and turned into text there. Biorouter does not save it or send it anywhere else. The text appears here for you to check before you send it.',
+    'Your voice is sent to the Biorouter server on <host> and turned into text there.',
+  'MSG-DISCLOSE-HOST-DETAIL':
+    'Biorouter does not save it or send it anywhere else. The text appears here for you to check before you send it.',
   'MSG-SETUP':
     "Dictation turns your speech into text <where>. It needs a speech model: <name> (<size>), downloaded once from the Baranzini Lab's model repository on GitHub into <folder>. Audio is not saved.",
   'MSG-SETUP-SUGGEST':
@@ -221,6 +225,8 @@ export const DICTATION_ACTIONS = {
  */
 export const DICTATION_LABELS = {
   setUp: 'Set up dictation',
+  /** MSG-DISCLOSE-HOST-DETAIL's InfoTip: "About your voice". */
+  voicePrivacy: 'your voice',
   activationSaveFailed: 'Dictionary choice could not be saved. Retry to finish setting it up.',
   activationChoicePending: 'Finish setting up Dictionary for new chats.',
   activationSavedChoiceDiffered:

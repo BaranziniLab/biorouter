@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { GENERATED_THEMES } from '../../styles/themes.generated';
 import CrewAuthentication from './CrewAuthentication';
+import { terminalLineHeight } from '../../utils/terminalLineHeight';
 
 const mocks = vi.hoisted(() => {
   const terminals: FakeTerminal[] = [];
@@ -227,7 +228,11 @@ describe('CrewAuthentication', () => {
 
     const terminal = mocks.terminals[0];
     expect(terminal?.options.fontSize).toBe(12);
-    expect(terminal?.options.lineHeight).toBe(20 / 12);
+    // 12px on a 20px line: the multiplier xterm needs for a 20px row (Phase C, F-12; the row
+    // itself is measured in `utils/terminalLineHeight.browser.test.ts`).
+    expect(terminal?.options.lineHeight).toBe(
+      terminalLineHeight(String(terminal?.options.fontFamily), 12)
+    );
     expect(terminal?.options.theme).toEqual(GENERATED_THEMES.parchment.light.terminal);
     expect(JSON.stringify(terminal?.options.theme)).not.toContain('#17191c');
 

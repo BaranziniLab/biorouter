@@ -52,6 +52,14 @@ export function setupModel(status: DictationStatus | null): SpeechModel | null {
   );
 }
 
+/**
+ * MSG-DISCLOSE-HOST-DETAIL for a `serve` host, the rest of its disclosure for the InfoTip beside
+ * the one line; `null` elsewhere, where the line says it all.
+ */
+export function disclosureDetailFor(place: DictationDaemonPlace): string | null {
+  return place.kind === 'serve' ? dictationMessage('MSG-DISCLOSE-HOST-DETAIL') : null;
+}
+
 /** MSG-DISCLOSE-LOCAL, MSG-DISCLOSE-REMOTE or MSG-DISCLOSE-HOST, by where the daemon is. */
 export function disclosureFor(place: DictationDaemonPlace): string {
   const id: DictationMessageId =
@@ -61,6 +69,18 @@ export function disclosureFor(place: DictationDaemonPlace): string {
         ? 'MSG-DISCLOSE-REMOTE'
         : 'MSG-DISCLOSE-HOST';
   return dictationMessage(id, place.kind === 'this-computer' ? {} : { host: place.host });
+}
+
+/** The InfoTip beside a disclosure line, where the disclosure has more to say. */
+export function DisclosureDetail({ place }: { place: DictationDaemonPlace }) {
+  const detail = disclosureDetailFor(place);
+  if (!detail) return null;
+  return (
+    <>
+      {' '}
+      <InfoTip label={DICTATION_LABELS.voicePrivacy} help={detail} />
+    </>
+  );
 }
 
 export interface SetupPopoverProps {
@@ -109,6 +129,7 @@ export function SetupPopover({ status, progress, onNotNow, onMoreInSettings }: S
       )}
       <p className="br-dictation-setup__privacy" data-testid="dictation-setup-privacy">
         {disclosureFor(place)}
+        <DisclosureDetail place={place} />
       </p>
       {caution && <p className="br-dictation-setup__warning">{caution.text}</p>}
       {(refusal || failed) && (

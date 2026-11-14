@@ -1928,8 +1928,10 @@ impl<'a> TerminalDictation<'a> {
     }
 }
 
-/// What dictation does at a terminal prompt (S9): the chord, and the `/dictate` commands
-/// the prompt answers itself, read from the whole line as the person typed it before Enter.
+/// What dictation does at a terminal prompt (S9): the chord, and the `/dictate` and
+/// `/dictionary` commands the prompt answers itself, read from the whole line as the person
+/// typed it before Enter. The grammar is the in-process chat's (`session/input.rs`), so a chat
+/// on the shared daemon never hands one of these lines to the model as a message.
 #[cfg(feature = "dictation")]
 enum DictateLine {
     Chord,
@@ -1937,6 +1939,9 @@ enum DictateLine {
     Retry,
     Status,
     Install(Option<String>),
+    DictionaryAdd(String),
+    DictionaryReview,
+    DictionaryScan,
 }
 
 #[cfg(feature = "dictation")]
@@ -1946,10 +1951,17 @@ impl DictateLine {
             "/dictate" => Some(Self::Capture),
             "/dictate retry" => Some(Self::Retry),
             "/dictate status" => Some(Self::Status),
-            other => other
-                .strip_prefix("/dictate install")
-                .filter(|rest| rest.is_empty() || rest.starts_with(' '))
-                .map(|rest| Self::Install(Some(rest.trim().to_string()).filter(|m| !m.is_empty()))),
+            "/dictionary review" => Some(Self::DictionaryReview),
+            "/dictionary scan" => Some(Self::DictionaryScan),
+            other => match other.strip_prefix("/dictionary add ") {
+                Some(term) => Some(Self::DictionaryAdd(term.trim().to_string())),
+                None => other
+                    .strip_prefix("/dictate install")
+                    .filter(|rest| rest.is_empty() || rest.starts_with(' '))
+                    .map(|rest| {
+                        Self::Install(Some(rest.trim().to_string()).filter(|m| !m.is_empty()))
+                    }),
+            },
         }
     }
 
@@ -2012,6 +2024,33 @@ impl DictateLine {
                 if let Err(error) = result {
                     eprintln!("{error}");
                 }
+                eprint!("\r{}", safe_text(prompt));
+                Ok(events)
+            }
+            // The three run as they do in an in-process chat, outside raw mode so the
+            // review's questions and the scan's Ctrl+C read the terminal as they do there.
+            // With no model in this process, `add_term` takes the chat's tier from its
+            // stored row, which the daemon keeps.
+            Self::DictionaryAdd(term) => {
+                let chat = session.unwrap_or_default();
+                let add = crate::dictation::frontend::add_term(&chat, None, &term);
+                let (events, added) = outside_raw_mode(events, add).await?;
+                match added {
+                    Ok(note) => eprintln!("{note}"),
+                    Err(reason) => eprintln!("{reason}"),
+                }
+                eprint!("\r{}", safe_text(prompt));
+                Ok(events)
+            }
+            Self::DictionaryReview => {
+                let review = async { crate::session::review_dictionary_in_session() };
+                let (events, ()) = outside_raw_mode(events, review).await?;
+                eprint!("\r{}", safe_text(prompt));
+                Ok(events)
+            }
+            Self::DictionaryScan => {
+                let scan = crate::commands::dictionary::scan_in_classic_session();
+                let (events, ()) = outside_raw_mode(events, scan).await?;
                 eprint!("\r{}", safe_text(prompt));
                 Ok(events)
             }
@@ -3802,6 +3841,37 @@ mod tests {
             "/dictate stat",
             "dictate",
             "hello",
+        ] {
+            assert!(parse(other).is_none(), "{other}");
+        }
+    }
+
+    // The `/dictionary` lines an in-process chat answers (`session/input.rs`), answered by a
+    // chat on the shared daemon too, so none reaches the model as a message (Phase C F-4:
+    // `/dictionary scan` was sent to the agent, which read files with its shell instead).
+    #[cfg(feature = "dictation")]
+    #[test]
+    fn the_prompt_answers_the_dictionary_lines_an_in_process_chat_does() {
+        use super::DictateLine;
+        let parse = |line: &str| DictateLine::parse(line);
+        assert!(matches!(
+            parse("/dictionary scan"),
+            Some(DictateLine::DictionaryScan)
+        ));
+        assert!(matches!(
+            parse(" /dictionary review "),
+            Some(DictateLine::DictionaryReview)
+        ));
+        assert!(matches!(
+            parse("/dictionary add  EPAS1 "),
+            Some(DictateLine::DictionaryAdd(term)) if term == "EPAS1"
+        ));
+        for other in [
+            "/dictionary",
+            "/dictionary add",
+            "/dictionary scanner",
+            "/dictionary reviews",
+            "/dictionaryscan",
         ] {
             assert!(parse(other).is_none(), "{other}");
         }

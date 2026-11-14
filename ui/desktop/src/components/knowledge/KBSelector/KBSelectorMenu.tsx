@@ -151,7 +151,9 @@ export function KBSelectorMenu({ onManage, onCreate, onClose }: Props) {
                       popover it was noise, and the band names the selected
                       base's format. The tier stays: it is what a pick commits
                       the chat to. */}
-                  {base.tier !== 'public' && <PrivacyBadge tier={base.tier} dense />}
+                  {base.tier !== 'public' && (
+                    <PrivacyBadge tier={base.tier} dense subject="knowledge base" />
+                  )}
                   {isPrimary && (
                     <Check
                       className="h-icon-row w-icon-row shrink-0 text-text-default"
