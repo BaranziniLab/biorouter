@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExtensionsPanel, useExtensionPicker } from './BottomMenuExtensionSelection';
 import { EXTENSIONS_COPY } from './copy';
@@ -144,7 +144,11 @@ describe('BottomMenuExtensionSelection — the pairing, not the extension', () =
     expect(screen.getByText('UCSFOMOPAgent')).toBeInTheDocument();
 
     const item = screen.getByText('UCSFOMOPAgent').closest('[role="option"]')!;
-    expect(item).toHaveAttribute('aria-disabled', 'true');
+    // The rows render before the bound model's tier arrives (`useBoundProviderTier`
+    // resolves it from `getProviders` after mount, and `undefined` judges nothing),
+    // so the refusal is waited for, not read at once: on a loaded CI runner the
+    // immediate read saw the row before the tier and failed (PR #500's vitest 3/3).
+    await waitFor(() => expect(item).toHaveAttribute('aria-disabled', 'true'));
     // The refusal is a visible line on the row, never tooltip-only (principle 2).
     expect(item).toHaveTextContent(EXTENSIONS_COPY.pairingRefused);
     // A click on a refused row changes nothing.
