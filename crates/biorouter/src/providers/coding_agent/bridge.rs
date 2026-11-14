@@ -560,7 +560,26 @@ impl BridgeGrant {
         if let Some(id) = child_call_id {
             self.record(id, &result);
         }
-        Ok(child_view(&result))
+        let mut view = child_view(&result);
+        if !self.declares_output_schema(&name) {
+            view.structured_content = None;
+        }
+        Ok(view)
+    }
+
+    /// Whether the granted tool `name` declares an output schema, which makes its structured
+    /// content part of the MCP answer a client validates.
+    ///
+    /// A tool that declares none gets its structured content dropped from the child's view.
+    /// A native chat's model reads a result's content blocks and is never sent its structured
+    /// content, which is there for the desktop. `decide`'s summary carries the decision model's
+    /// slug for the card, while its text names the alias (R3-F8). A Claude Code chat read the
+    /// slug from the structured copy and repeated it to the person (Phase C, F-1). The recorded
+    /// copy, which the transcript and the desktop read, keeps the structured content.
+    fn declares_output_schema(&self, name: &str) -> bool {
+        self.tools
+            .iter()
+            .any(|tool| tool.name.as_ref() == name && tool.output_schema.is_some())
     }
 
     /// Keep `result` for the transcript, under the child's id for the call.
@@ -1575,6 +1594,61 @@ mod tests {
             "the full result, annotations and all, is kept for the transcript"
         );
         assert_eq!(take_recorded_result(lease.url(), "toolu_7"), None);
+    }
+
+    /// A native chat's model is never sent a result's structured content, so the child is not
+    /// sent it either, unless the tool declares an output schema. In Phase C (F-1), `decide`'s
+    /// structured summary carried the decision model's slug for the desktop, and a Claude Code
+    /// chat repeated it to the person. The kept result still holds the structured content, for
+    /// the transcript and the desktop.
+    #[tokio::test]
+    async fn a_child_reads_structured_content_only_from_a_tool_that_declares_a_schema() {
+        publish_base_url("http://127.0.0.1:65535");
+        let mut full = CallToolResult::success(vec![rmcp::model::Content::text(
+            "decide: 1 chunk x 1 question with joey-1 (public)",
+        )]);
+        full.structured_content = Some(serde_json::json!({
+            "model": { "provider": "baseten_decision", "model": "decision-models/baseten-joey-2b-latest" }
+        }));
+        for (schema, child_reads_it) in [
+            (None, false),
+            (Some(Arc::new(serde_json::Map::new())), true),
+        ] {
+            let mut tool = Tool::new("developer__shell", "test tool", serde_json::Map::new());
+            tool.output_schema = schema;
+            let mut grant = dummy_grant();
+            grant.tools = vec![tool];
+            grant.dispatcher = Arc::new(FixedResultDispatch(full.clone()));
+            grant.inspections = Arc::new(inspections_with(&grant.hooks, false));
+            let lease = issue(grant).expect("a base URL is published");
+            let grant = lookup(lease.url().rsplit('/').next().unwrap()).unwrap();
+
+            let answered = grant
+                .call_for_child(
+                    CallToolRequestParams {
+                        name: "developer__shell".into(),
+                        arguments: Some(serde_json::Map::new()),
+                        meta: None,
+                        task: None,
+                    },
+                    Some("toolu_f1".to_string()),
+                )
+                .await
+                .expect("approved in Auto mode");
+
+            assert_eq!(answered.content, child_view(&full).content);
+            assert_eq!(
+                answered.structured_content.is_some(),
+                child_reads_it,
+                "the child reads structured content only when the tool declares a schema"
+            );
+            assert_eq!(
+                take_recorded_result(lease.url(), "toolu_f1")
+                    .and_then(|kept| kept.structured_content),
+                full.structured_content,
+                "the kept result holds the structured content either way"
+            );
+        }
     }
 
     /// A dispatcher that keeps the tool-call id each dispatched call ran under.
