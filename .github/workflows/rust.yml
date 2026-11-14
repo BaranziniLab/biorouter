@@ -663,7 +663,7 @@ jobs:
       # list, every package of which 26.04 carries. Drop the override when Playwright
       # names 26.04.
       - name: Install Playwright browsers and the audio server for served dictation
-        if: matrix.shard == 3 && !cancelled()
+        if: ${{ !cancelled() && (matrix.shard == 3 || github.event_name != 'pull_request') }}
         working-directory: ui/desktop
         env:
           PLAYWRIGHT_HOST_PLATFORM_OVERRIDE: ubuntu24.04-x64
@@ -777,7 +777,7 @@ jobs:
           echo 'the browser contract holds'
 
       - name: Served microphone and dictation in Chromium and Firefox
-        if: matrix.shard == 3 && !cancelled()
+        if: ${{ !cancelled() && (matrix.shard == 3 || github.event_name != 'pull_request') }}
         working-directory: ui/desktop
         env:
           BIOROUTER_SERVE_BIN: ${{ github.workspace }}/target/debug/biorouter

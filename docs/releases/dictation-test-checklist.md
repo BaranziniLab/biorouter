@@ -63,16 +63,16 @@ Pull request #485 merged on 2026-11-14 through the batch pull request #501 (merg
 | `dictation-accuracy.yml` | 43543892953 | green, Tier 1 with `whisper-small.en-q8_0` |
 | Copilot native payloads | 43543892674 | green on all five platforms and the release gate |
 
-Where each dictation check runs since #498:
+Where each dictation check runs since #498, with `cf8aff075`'s change that a push to `main` runs every integration shard's steps in one job, `integration (ubuntu, 1/1)`:
 
 | Check | Job | When |
 |---|---|---|
 | vendored whisper.cpp, fixture budget, build prerequisites | `guards` | every pull request and push |
-| engine build script, C and C++ in both cross images | `cross-check` | every pull request and push |
+| engine build script, C and C++ in the cross images | `cross-check` | the Windows image on every pull request; both images on a push to `main` and on dispatch |
 | lib tests, the MSVC engine build (M-3) and the macOS self inspection | `lib tests (ubuntu)`; `test (macos-latest)` and `test (windows-latest)` on the full suite | every pull request on Ubuntu; the full macOS and Windows suites as above |
 | `dictation_engine_offline`, `dictation_worker_role`, `dictation_worker` | the offline step of the integration shards; on the full suites also `test (macos-latest)` (Metal) and `test (windows-latest)` (MSVC) | as above |
 | "Backends declare macOS 12.0" | `test (macos-latest)`, full suite | as above |
-| served dictation in Chromium and Firefox, the worklet build output | `integration (ubuntu, 3/3)` | every pull request and push |
+| served dictation in Chromium and Firefox, the worklet build output | `integration (ubuntu, 3/3)` on a pull request; `integration (ubuntu, 1/1)`, which runs every shard's steps, on a push to `main`, nightly and dispatch | every pull request and push |
 | the self test on bullseye, old processors, Windows DLLs, capture absent from the daemon (P-10) | `cross-build-nightly` | nightly and dispatch |
 | the shipped mingw binaries on real Windows under a folder whose name is not ASCII (M-1) | `windows-native-dictation` | nightly and dispatch, after `cross-build-nightly` |
 | the worklet loaded from `app.asar` | `frontend.yml` `Dictation capture (Electron)` | every pull request and push |
