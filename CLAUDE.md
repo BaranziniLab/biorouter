@@ -59,7 +59,13 @@ cd ui/desktop && npm run test-e2e               # Run Playwright E2E tests
   hunk, a path naming it, and on Windows the dependency set), or the pull request carries the
   `ci:full` label (add it, then push). The full macOS and Windows suites run on every push to
   `main`, nightly and on dispatch, where the integration binaries and vitest run unsharded (one
-  job each) to hold fewer of the organisation's 20 runner slots. So a pull request that changes, say, a Windows-only branch deep
+  job each) to hold fewer of the organisation's 20 runner slots.
+- **A newer push to `main` cancels the older `main` run** (since 2026-11-14, owner's ruling), as a
+  pull request's newer push always did. So an intermediate `main` commit can have **no CI result
+  of its own**, and finding which merge broke `main` means running CI on the earlier commits:
+  dispatch on a throwaway branch at that commit, never re-run the cancelled `main` run (it would
+  cancel the current one). `docs/testing/continuous-integration.md` has the commands. The nightly,
+  dispatches, releases and the website deploy are never cancelled by a push. So a pull request that changes, say, a Windows-only branch deep
   inside a shared file without its `cfg` in view can still pass and turn `main` red; read `main`'s
   run after a merge.
 - **Required checks** are gate jobs that fail unless every job they name passed:

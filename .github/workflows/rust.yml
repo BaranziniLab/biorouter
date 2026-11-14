@@ -64,14 +64,18 @@ on:
 # was actually wanted — a newer push supersedes an older push on the same ref —
 # without letting three unrelated kinds of run compete for one slot.
 concurrency:
-  # A group holds at most ONE pending run by default: a newly queued run cancels
-  # the pending one, whatever cancel-in-progress says (that governs only the
-  # running one). Keyed by ref, a merge burst to main cancels its own queued
-  # runs and leaves those commits with no status at all. So only a PR's runs
-  # share a group, where the newest should win; any other run is keyed by
-  # run_id, not sha, which repeat dispatches of one commit share.
-  group: rust-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # A pull request's runs share a group and the newest wins. So, since
+  # 2026-11-14, do pushes to main (the owner's ruling): during a burst of
+  # merges each main push used to start its own full run, none cancelled, and
+  # those runs filled the organisation's 20 runner slots while pull requests
+  # queued behind them. Now a newer push to main cancels the older main run,
+  # running or queued, so an intermediate main commit can end up with NO CI
+  # result of its own; finding which commit broke main then means re-running
+  # this workflow on the earlier commits (docs/testing/continuous-integration.md).
+  # The schedule and manual dispatch stay keyed by run_id and are never
+  # cancelled: a push must not kill the nightly cross build or a dispatched run.
+  group: rust-${{ github.event_name }}-${{ (github.event_name == 'pull_request' || github.event_name == 'push') && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
 
 env:
   CARGO_TERM_COLOR: always
