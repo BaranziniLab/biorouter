@@ -80,13 +80,16 @@ GitHub: https://github.com/BaranziniLab/biorouter
 ### Community band
 "Join the Biorouter Slack." with a Join the Slack button. Every page carries the same band.
 
-### Capabilities (6)
+### Capabilities (9)
 1. Workflows: instructions, extensions, skills and a model in one file, run again or shared
 2. Scheduling: a workflow on a schedule, or a prompt looped at an interval
 3. Skills: teach the agent a method once; install research skills from BAAM or write your own
 4. Knowledge bases: a wiki the agent writes and reads, with typed links, sources and history; BioOKF adds a biomedical vocabulary
 5. Built apps: describe a tool and the agent builds it, then works inside it with you
 6. Crew: shared lab channels, where each person's agent runs on their own computer with their own model
+7. Subagents: hand parts of a task to subagents that run at the same time, watch each one in the side panel, and get the results back in the chat
+8. Decision models: fast models answer a yes or no question with a probability; screen many notes, then send only the unsure ones to a larger model
+9. Voice dictation: speak into any composer; speech is transcribed on your computer, and your dictionary spells gene names and lab terms
 
 ### Get started band
 "Start with Biorouter." Download the app, connect a model, ask a first question; the `biorouter` command line tool comes with it. Download button and a Getting started link.
@@ -367,7 +370,7 @@ The page's Earlier updates list goes back to v1.20.0 (21 January 2026) and also 
 ### Introduction tab
 - [x] Hero with the product animation inside the first 900px at 1440 wide
 - [x] Three principles, each beside its animation
-- [x] Capabilities (6)
+- [x] Capabilities (9)
 - [x] Footer links to About, Updates, Release notes and the Baranzini Lab
 
 ### Download tab
