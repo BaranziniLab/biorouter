@@ -1,6 +1,13 @@
-# Biorouter Landing Site — Content & Requirements Tracker
+# Landing site content and requirements tracker
+
+> **What this is.** A page by page record of what the Biorouter website at biorouter.ucsf.edu shows, and the requirements its pages meet.
+> **Status:** Current (checked against `landing/` on 2026-11-15).
+> **Audience:** maintainers of the website under `landing/`.
+
+The website is the static site in `landing/`, published by `.github/workflows/deploy-landing.yml`. This file says what each of its five pages carries, so a change to a page can be checked against it. Scripts read two parts of it: `scripts/release.sh landing` reads the version line below and the first release link in the News list under Tab 5, and `landing/scripts/check-consistency.mjs` and `assemble-docs.mjs` read the version line. How the site is built and checked is in [the website README](../README.md).
 
 ## Overview
+
 Landing site for UCSF Biorouter. Design: the desktop app's own look on the web. White paper, warm ink, subtle fills instead of outlined boxes, hairlines only for section and table rules, one coral accent, mobile/tablet/desktop responsive, light only.
 
 **Color palette:** white paper (#ffffff), warm ink (#2a2520), coral (#b85a32, rails #cf6d47), UCSF navy (#052049). The values mirror the app's Parchment light tokens in `site.css`.
@@ -9,24 +16,40 @@ Landing site for UCSF Biorouter. Design: the desktop app's own look on the web. 
 
 ---
 
-## File Structure
+## File structure
 
 ```
 landing/
-├── index.html          # Tab 1: Introduction
-├── download.html       # Tab 2: Download
-├── docs.html           # Tab 3: Documentation (assembled, never edited by hand)
-├── baam.html           # Tab 4: BAAM (Agent Marketplace); its cards generate registry.json
-├── about.html          # Tab 5: About (team, inspirations, updates)
+├── index.html          # Introduction
+├── download.html       # Download
+├── docs.html           # Documentation (assembled, never edited by hand)
+├── baam.html           # BAAM; its extension and skill cards generate registry.json
+├── about.html          # About: team, collaborators, inspirations, updates, links
 ├── intro.html          # Redirects to index.html
 ├── skills.html         # Redirects to baam.html
+├── CNAME               # biorouter.ucsf.edu
+├── README.md           # How the site is built, published and checked
+├── MIGRATION.md        # Record of the 2026-06-29 move of the site into this repository
 ├── site.css            # Tokens, type scale and parts shared by every page
 ├── home.css, download.css, docs.css, baam.css, about.css   # One stylesheet per page
-├── art/                # The small product animations on the Introduction page
+├── site.js             # Header, menu, reveal on scroll, copy buttons, the release version
+├── home.js             # The hero's download label and its "New" line
+├── download.js         # Platform detection and the download table
+├── baam.js, baam-details.js, marketplace-search.js   # BAAM shelves, card details, the search matcher
+├── art/                # The small product animations on the Introduction page (CSS and JS)
 ├── registry.json       # The marketplace catalog, generated from baam.html
 ├── scripts/            # Consistency checks, the registry generator, the docs assembler
-└── assets/landing-site-content.md  # This file
+├── shared.css, theme.js, app-mockups.css, app-mockups.js   # The previous design's files (see below)
+├── video/              # Sources for the tour, release and reel videos
+├── docs/               # One design spec under docs/superpowers/specs/, not page content
+├── icon.svg, icon-transparent.svg, icon.png, icon-transparent.png
+└── assets/
+    ├── landing-site-content.md   # This file
+    ├── ehr-diabetes-recipe.yaml  # The workflow file BAAM's Workflows shelf offers
+    └── videos/                   # Rendered mp4 and webm files and their posters
 ```
+
+No page loads `shared.css`, `theme.js`, `app-mockups.css` or `app-mockups.js`. The reel in `video/reel/` loads `shared.css` and the two `app-mockups` files, `video/` keeps its own copies under `video/assets/`, and `check-consistency.mjs` reads `app-mockups.js`. The Introduction page draws its product animations with the CSS and JS in `art/`. No page embeds the files in `assets/videos/`.
 
 Docs source: `docs/website/` (a shell and one fragment per page). `node landing/scripts/assemble-docs.mjs` writes `landing/docs.html` from it.
 Icon: `landing/icon.svg`, `icon-transparent.svg`, `icon.png` (copied from `ui/desktop/src/images/`).
@@ -34,24 +57,51 @@ GitHub: https://github.com/BaranziniLab/biorouter
 
 ---
 
-## Tab 1 — Introduction (`intro.html`)
+## Tab 1: Introduction (`index.html`)
 
-### Banner / Hero
-- Biorouter logo (icon.png) with glow animation
-- Version badge: "v1.94.1 Now Available"
-- Headline: "UCSF Biorouter"
-- Subheading: AI-powered integrated research environment tagline
-- CTA buttons: Download, Documentation, GitHub
+### Header and footer (every page)
+- Header: the Biorouter mark and wordmark, then Introduction, Download, Docs, BAAM, About, GitHub, and a Slack link
+- Footer: the mark and "A research environment for biomedical AI, from the Baranzini Lab at UCSF."; three columns, Product (Download, Docs, BAAM, Release notes), Community (About, Updates, Slack, GitHub) and UCSF (Baranzini Lab, Bakar Institute, Academic Research Services); "© 2026 Baranzini Lab, UCSF" and the Apache 2.0 license
 
-### Summary (from presentation)
-**Core message:** Biorouter is an Agentic-AI-powered Integrated Biomedical Research Environment.
+### Hero
+- Eyebrow: "Baranzini Lab · UCSF"
+- Headline: "The AI-native biomedical research environment."
+- Lede: Biorouter combines local, institutional and commercial models in one place; private data stays private, inside your institution, and shared workflows carry the method, never the data
+- Download button, which names the visitor's platform (`home.js`), and "Read the docs"
+- Meta line: "Free and open source · macOS, Windows, Linux · v1.94.1", the version refreshed from GitHub releases
+- "New" line: the headline of the newest row in the About page's Updates list, read by `home.js`, linking to that list. Its fallback text names no version ("Latest Biorouter updates"), because `scripts/release.sh landing` replaces every copy of the old version in `index.html`
+- Hero animation (`art/hub`): Biorouter at the center, connected to local, institutional and public models. Caption: "One interface, every model." Local models, institution-hosted models, commercial APIs, and the Claude Code or Codex plan the visitor already pays for, switched inside a chat
+
+### Principles (3)
+1. Private stays private: a chat that uses a private model or private data becomes private, and stays private
+2. Share the method, not the data: a workflow carries instructions, never records
+3. Built for biomedical research: connectors from BAAM, research skills, and knowledge bases with a biomedical vocabulary
+
+### Community band
+"Join the Biorouter Slack." with a Join the Slack button. Every page carries the same band.
+
+### Capabilities (6)
+1. Workflows: instructions, extensions, skills and a model in one file, run again or shared
+2. Scheduling: a workflow on a schedule, or a prompt looped at an interval
+3. Skills: teach the agent a method once; install research skills from BAAM or write your own
+4. Knowledge bases: a wiki the agent writes and reads, with typed links, sources and history; BioOKF adds a biomedical vocabulary
+5. Built apps: describe a tool and the agent builds it, then works inside it with you
+6. Crew: shared lab channels, where each person's agent runs on their own computer with their own model
+
+### Get started band
+"Start with Biorouter." Download the app, connect a model, ask a first question; the `biorouter` command line tool comes with it. Download button and a Getting started link.
+
+### Background (from the project presentation)
+This is the project's framing, kept for reference. The page does not show it as written.
+
+**Core message:** Biorouter is an agentic, AI-powered integrated biomedical research environment.
 
 **Problem statement:**
 - Biomedical researchers face: heavy local compute needs, unique local setups, proprietary codebases, on-prem datasets, sensitive patient/research data
 - Commercial AI services are limited due to privacy/security
 - UCSF enterprise AI lacks agentic support
 
-**Solution — Biorouter is an all-in-one tool with:**
+**Solution: Biorouter is an all-in-one tool with:**
 - Security offered by enterprise AI models
 - Ability to orchestrate diverse workflows with AI agents
 - Share workflows without sharing data across collaborations
@@ -65,15 +115,15 @@ GitHub: https://github.com/BaranziniLab/biorouter
 - Customizable workflows for exploratory analysis, prototyping, automation
 - Federated cross-institution collaboration
 
-**Key capability — Share Workflow and Skills:**
+**Key capability: Share Workflow and Skills:**
 - Can be shared across institutions
 - Standardized analysis pipelines with AI-driven adaptation
 
-**Key capability — Diverse Research Database Connections:**
+**Key capability: Diverse Research Database Connections:**
 - Structured and unstructured electronic health records
 - Biological knowledge graph (SPOKE)
 
-**Conclusion — Biorouter:**
+**Conclusion: Biorouter:**
 - Unifies the full research stack (commercial + institution-hosted + local AI models)
 - Is secure by design: enterprise-grade AI security
 - Enables agentic orchestration and automation
@@ -81,292 +131,212 @@ GitHub: https://github.com/BaranziniLab/biorouter
 - Offers growing ecosystem (skills, agents, databases, etc.)
 - Ongoing: UCSF Institution-managed AI Agent Marketplace (quality-controlled, community-driven)
 
-### Feature Cards (6)
-1. Enterprise-Grade Security — UCSF-hosted AI, local Ollama, patient data stays in institution
-2. Agentic Orchestration — MCP agents, clinical DBs, knowledge graphs
-3. Federated Collaboration — Workflows shareable across institutions without sharing data
-4. Multi-Provider LLMs — Claude, GPT, Gemini, commercial/institutional/local
-5. Automation & Scheduling — Workflows, cron scheduling
-6. Desktop + CLI — GUI for exploration, CLI for scripting
-
-### Provider Ecosystem
-Chips for: UCSF Azure OpenAI (highlight), UCSF Amazon Bedrock (highlight), Anthropic Claude, OpenAI GPT, Google Gemini, Ollama (Local), OpenRouter, X.AI Grok, Custom Endpoints
-
-### Bottom Links
-- About & Acknowledgements (→ about.html)
-- v1.94.1 Release Notes (https://github.com/BaranziniLab/biorouter/releases/tag/v1.94.1)
-- Baranzini Lab (https://baranzinilab.ucsf.edu/)
-
 ---
 
-## Tab 2 — Download (`download.html`)
+## Tab 2: Download (`download.html`)
 
 ### Hero
 - Title: "Biorouter for your computer." (the second line in the quiet ink)
 - Buttons: the installer for this computer, then "All platforms"
 - Meta line: "Free and open source · v1.94.1 · the release date from GitHub · Release notes"
 
-### Smart OS Detection
-JavaScript detects the visitor's OS and shows the recommended download button prominently.
+### Smart OS detection
+JavaScript (`download.js`) detects the visitor's OS and shows the recommended download button prominently.
 
 **Detection logic:**
-- macOS Apple Silicon (arm) → arm64.dmg
-- macOS Intel → x64.dmg
-- Windows → win32-x64.zip
-- Linux → amd64.deb (default for Linux)
+- macOS Apple Silicon (arm) → arm64.dmg, with the Intel file offered under it
+- macOS Intel → x64.dmg, with the Apple silicon file offered under it
+- macOS with an unknown chip → two buttons, Apple silicon first
+- Windows → Biorouter-Setup-{ver}.exe (the installer, preferred), falling back to Biorouter-win32-x64-{ver}.zip; the zip is offered as "Or the archive:"
+- Linux → amd64.deb, with the .rpm offered "For Fedora or RHEL:"
+- Linux on ARM → a note that the Linux packages are built for x86_64
 - Unknown/iOS/Android → show all options without a primary
 
-### Download Links (v1.94.1)
+### Download links (v1.94.1)
 | Platform | File | URL |
 |---|---|---|
 | macOS Apple Silicon | Biorouter-1.94.1-arm64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.94.1/Biorouter-1.94.1-arm64.dmg |
 | macOS Intel | Biorouter-1.94.1-x64.dmg | https://github.com/BaranziniLab/biorouter/releases/download/v1.94.1/Biorouter-1.94.1-x64.dmg |
-| Windows x64 | Biorouter-win32-x64-1.94.1.zip | https://github.com/BaranziniLab/biorouter/releases/download/v1.94.1/Biorouter-win32-x64-1.94.1.zip |
+| Windows installer | Biorouter-Setup-1.94.1.exe | https://github.com/BaranziniLab/biorouter/releases/download/v1.94.1/Biorouter-Setup-1.94.1.exe |
+| Windows archive | Biorouter-win32-x64-1.94.1.zip | https://github.com/BaranziniLab/biorouter/releases/download/v1.94.1/Biorouter-win32-x64-1.94.1.zip |
 | Linux Ubuntu/Pop!_OS | biorouter_1.94.1_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.94.1/biorouter_1.94.1_amd64.deb |
 | Linux Fedora/RHEL | Biorouter-1.94.1-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.94.1/Biorouter-1.94.1-1.x86_64.rpm |
 | Linux CLI Debian/Ubuntu | biorouter-cli_1.94.1_amd64.deb | https://github.com/BaranziniLab/biorouter/releases/download/v1.94.1/biorouter-cli_1.94.1_amd64.deb |
 | Linux CLI Fedora/RHEL | biorouter-cli-1.94.1-1.x86_64.rpm | https://github.com/BaranziniLab/biorouter/releases/download/v1.94.1/biorouter-cli-1.94.1-1.x86_64.rpm |
 
-### Install Commands
+The Linux desktop packages (.deb and .rpm) need Debian 12, Ubuntu 22.04, Fedora or RHEL 9 or newer, and local models need Debian 12 or Ubuntu 22.04 or newer. The command line packages also run on Debian 11 (x86_64).
+
+### Install commands
 - macOS: Open DMG and drag Biorouter.app to /Applications
-- Windows: Unzip and run Biorouter.exe
+- Windows: run Biorouter-Setup-1.94.1.exe, which upgrades an existing install in place; or unzip the archive and run Biorouter.exe
 - Linux Debian: sudo apt install ./biorouter_1.94.1_amd64.deb
 - Linux RPM: sudo dnf install ./Biorouter-1.94.1-1.x86_64.rpm
 
-### Setup Note / Info Box
-After installing, users should:
-1. Set up UCSF Versa API (UCSF affiliated) → https://ai.ucsf.edu/platforms-tools-and-resources/ucsf-versa
-2. For other institutions: check institution policies for LLM hosting
-3. For local models: install Ollama → https://ollama.com/download
-4. Alternatively: commercial API keys — Anthropic (https://platform.claude.com/) or OpenAI (https://openai.com/api/) — but per institution policy, access to research/proprietary DBs may be limited
-5. Link to Documentation Setup Guide tab
+### After you install
+1. Open the app: from Applications, the Start menu or the app launcher
+2. Connect a model: pick a provider on the Welcome screen, or later in Settings → Models. Llama Server, on the Local tab, needs no account or key. UCSF users pick Versa API Azure or Versa API Bedrock on the Institutional tab
+3. Ask a question
+4. Link to the Getting started page of the docs
+
+### Command line and servers
+- The command line tool ships with the app; the app offers to put it on the PATH as it starts (the Biorouter CLI card), or `biorouter setup-path` does it by hand
+- On a Linux server, HPC node or container, the command line only packages hold `biorouter`, `biorouterd`, the web interface and the `biorouter-crew` helper
+- `biorouter configure`, `biorouter serve` and `biorouter doctor`, each with a copy button
+
+### Requirements
+macOS 12 or newer on Apple silicon and Intel (local models need macOS 13.3 or newer); Windows 10 or newer on x64; Linux x86_64 as above.
 
 ---
 
-## Tab 3 — Documentation (`docs.html`)
+## Tab 3: Documentation (`docs.html`)
 
-### Left Sidebar Navigation
-**Getting Started:**
-- Installation & Setup
-- UCSF Setup Guide
+`docs.html` is assembled, never edited by hand: `node landing/scripts/assemble-docs.mjs`, run from the repository root, writes it from `docs/website/shell.html` and the fourteen page fragments in `docs/website/pages/`. A search box ("Search the docs") sits above the sidebar.
 
-**Core Concepts:**
-- Providers & Models
-- Extensions & Skills
-- Workflows & Automation
-- Data Privacy
+### Left sidebar navigation
+| Group | Page | Source |
+|---|---|---|
+| Start | Getting started | `docs/website/pages/getstarted.html` |
+| Start | The desktop app | `docs/website/pages/app.html` |
+| Start | Command line | `docs/website/pages/cli.html` |
+| Models and privacy | Models and providers | `docs/website/pages/providers.html` |
+| Models and privacy | Private and public | `docs/website/pages/privacy.html` |
+| Models and privacy | Security | `docs/website/pages/vaulting.html` |
+| Build | Extensions and skills | `docs/website/pages/extensions.html` |
+| Build | Workflows and scheduling | `docs/website/pages/workflows.html` |
+| Build | Knowledge bases | `docs/website/pages/knowledge.html` |
+| Build | Built apps | `docs/website/pages/apps.html` |
+| Build | Crew | `docs/website/pages/crew.html` |
+| How it works | The agent loop | `docs/website/pages/agentloop.html` |
+| How it works | Configuration | `docs/website/pages/config.html` |
+| How it works | Architecture | `docs/website/pages/architecture.html` |
 
-**Advanced:**
-- Architecture
-- MCP Agents
-
-### Content Pages
-
-#### Installation & Setup
-Source: `/Users/wgu/Desktop/biorouter/documentation/installation-setup.md`
-- Step 1: Download (macOS DMG, Windows ZIP, Linux DEB/RPM, macOS CLI)
-- Step 2: Configure LLM Provider (UCSF Azure, Bedrock, Ollama, commercial keys)
-- Step 3: Verify setup
-- Step 4: Enable extensions
-- Step 5: MCP Agents
-- Config file location: `~/.config/biorouter/config.yaml`
-- Troubleshooting table
-
-#### UCSF Setup Guide
-- Option A: UCSF Versa → https://ai.ucsf.edu/platforms-tools-and-resources/ucsf-versa
-- Option B: Azure OpenAI (UCSF ChatGPT)
-- Option C: Amazon Bedrock (UCSF-hosted Anthropic) — requires aws sso login
-- Option D: Local Ollama (air-gapped)
-- Other institutions guidance
-- Warning about PHI/patient data
-
-#### Providers & Models
-Source: `/Users/wgu/Desktop/biorouter/documentation/providers-and-models.md`
-- UCSF institutional providers table
-- Commercial providers table with env vars and key URLs
-- Local models (Ollama) with example commands
-
-#### Extensions & Skills
-Source: `/Users/wgu/Desktop/biorouter/documentation/extensions-skills-mcp.md`
-- Built-in extensions table (Developer, Biorouter Copilot, Memory, Auto Visualiser, Chat Recall, Code Execution)
-- Adding external MCP servers (Desktop UI + config YAML)
-- Skills system description
-
-#### Workflows & Automation
-Source: `/Users/wgu/Desktop/biorouter/documentation/workflows.md`
-- What is a Workflow?
-- Workflow YAML structure example
-- Running workflows (Desktop + CLI)
-- Scheduling with cron
-- Sharing workflows across institutions
-
-#### Data Privacy
-Source: `/Users/wgu/Desktop/biorouter/documentation/data-privacy.md`
-- Warning about patient data / PHI
-- Provider privacy properties table
-- Best practices list
-
-#### Architecture
-Source: `/Users/wgu/Desktop/biorouter/documentation/architecture.md`
-- Three-layer architecture (Interface, Agent, Extensions)
-- Backend: Rust workspace, crate table
-- Frontend: Electron + React
-- MCP protocol overview
-
-#### MCP Agents
-- How to add agents via Desktop UI
-- How to add via config YAML
-- Remote HTTP agents
-- Prerequisites (uvx / npx)
-- Link to BAAM marketplace
+### Built-in extensions
+The Extensions and skills page lists the seven bundled extensions, each on by default: Developer, Biorouter Copilot, Web & Documents, Auto Visualiser, Memory, Knowledge and Agent Drafter (`ui/desktop/src/components/settings/extensions/bundled-extensions.json`; `check-consistency.mjs` checks the docs table against it). Chat Recall is an optional platform capability that is off by default, as is Dictionary. The platform capabilities on by default are Workspace Control, Code Execution, Todo, Skills, Extension Manager, Decisions and Crew.
 
 ---
 
-## Tab 4 — BAAM (`baam.html`)
+## Tab 4: BAAM (`baam.html`)
 
-**Full name:** UCSF Biorouter AI Agent Marketplace (UCSF BAAM)
+**Full name:** Biorouter AI Agent Marketplace (BAAM)
 
 ### Hero
-- BAAM acronym badge
-- Title: "Biorouter AI Agent Marketplace"
-- Description: curated, quality-controlled ecosystem for biomedical research
-- Search box (filters agent cards in real-time)
+- Title: "Biorouter AI Agent Marketplace. Extensions, skills and workflows."
+- Lede: install from the Extensions, Skills and Workflows pages in Biorouter, or download a file here and add it yourself
+- Search box that filters the open shelf as you type ("Search extensions", "Search skills", "Search workflows")
+- Three shelves as tabs, each with its count: Extensions, Skills and Workflows
 
-### Agent Cards
-Each card contains:
-- Agent icon (emoji)
-- Agent name
-- Organization
-- GitHub link (icon button)
-- Description
-- One-liner install command (copyable)
-- Tags (UCSF, MCP, category)
+### Catalog
+BAAM has three shelves: Extensions, Skills and Workflows. The machine-readable catalog `landing/registry.json` (version 2; currently 38 extensions and 129 skills) is generated from `baam.html` by `landing/scripts/build-registry.mjs`, with privacy and institution badges. The same run writes the desktop app's bundled copy and the Rust list of private extensions. Workflows live only on `baam.html` (currently one, the EHR Diabetes Demographics & Reporting Dashboard) and are not in `registry.json`. The extensions include audited rebuilds such as Folklore Clinical Variant Interpretation MCP v2.0.0+biorouter.1. Read `registry.json` for the current list rather than a copy here.
 
-#### Agent 1 — UCSF OMOP Agent
-- **Name:** UCSF OMOP Agent
-- **Org:** BaranziniLab / UCSF
-- **GitHub:** https://github.com/BaranziniLab/UCSFOMOPAgent
-- **Description:** MCP server enabling SQL queries on UCSF OMOP de-identified clinical database. Read-only access to standardized EHRs under OMOP Common Data Model.
-- **Command:** `uvx --from git+https://github.com/BaranziniLab/UCSFOMOPAgent ucsfomopagent`
-- **Tags:** UCSF, MCP, Clinical, OMOP
+### Cards
+- Extension cards, grouped Featured, Extensions, Integrations and All extensions: an SVG icon tile, the name, the author and version, a GitHub link, the description, tags (a Private or Public privacy badge, an affiliation badge such as "UCSF data", then topic tags), and a `.brxt` download
+- Skill cards, grouped Featured, Core skills, Developer and authoring skills, and Biomedical analysis skills: the name, its type or slash command, the description, tags and a `.zip` download
+- The workflow card: the description, tags, a `.yaml` download (`assets/ehr-diabetes-recipe.yaml`), "Use it" and "Share it" steps, and the file itself
 
-#### Agent 2 — SPOKEAgent
-- **Name:** SPOKEAgent
-- **Org:** BaranziniLab / UCSF
-- **GitHub:** https://github.com/BaranziniLab/SPOKEAgent
-- **Description:** MCP server for querying SPOKE biomedical knowledge graph. Cypher queries against large-scale biomedical DB for rapid biomedical knowledge inference.
-- **Command:** `uvx --from git+https://github.com/BaranziniLab/SPOKEAgent spokeagent`
-- **Tags:** UCSF, MCP, Knowledge Graph, SPOKE
-
-#### Agent 3 — MedCP
-- **Name:** MedCP
-- **Org:** BaranziniLab / UCSF
-- **GitHub:** https://github.com/BaranziniLab/MedCP
-- **Description:** Medical Model Context Protocol. Transforms Biorouter into a medical AI assistant with secure, local access to EHRs and biomedical knowledge graphs.
-- **Command:** `uvx --from git+https://github.com/BaranziniLab/MedCP medcp`
-- **Tags:** UCSF, MCP, Clinical AI, Local
-
-#### Agent 4 — Playwright MCP
-- **Name:** Playwright MCP
-- **Org:** Microsoft
-- **GitHub:** https://github.com/microsoft/playwright-mcp
-- **Description:** MCP server enabling LLMs to interact with web pages via accessibility snapshots. Browser automation without vision models.
-- **Command:** `npx @playwright/mcp@latest`
-- **Tags:** MCP, Browser, Web, Automation
-
-### Bottom CTA
-"Have an agent to contribute? Submit it to the marketplace." → GitHub link
+### Contribute
+Where to contribute: the app and this website (BaranziniLab/biorouter), skills (BaranziniLab/biorouter-skills), workflows (BaranziniLab/biorouter-workflows), and extensions (each extension's own GitHub repository).
 
 ---
 
-## Tab 5 — About (`about.html`)
+## Tab 5: About (`about.html`)
 
-### News
-1. **Biorouter v1.94.1 Release** (November 2026)
-   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.94.1
-   - What's new: Ollama checks the configured server and model before work starts and gives clearer setup guidance; Meditation keeps its last successful discovery date after connection and server failures; Max turns has clear Unlimited and Set a limit controls; Windows no longer flashes console windows during Biorouter Copilot status checks
+### Intro
+- Headline: "Built at UCSF, open source."
+- Lede: Biorouter is a research environment for biomedical AI, built by the Baranzini Lab (https://baranzinilab.ucsf.edu/) at UCSF; anyone may use, study and change it under the Apache 2.0 license
 
-2. **Biorouter v1.94.0 Release** (October 2026)
-   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.94.0
-   - What's new: file operations outside your project ask for read only or read and write access to that folder, once or for the session, and Folder access under the composer lists and revokes grants; session history and undo snapshots use storage only your account can read; ordinary chats no longer stop at 100 turns or 200 tool calls; stream recovery handles interrupted responses; tool cards tell a failed operation from a successful status lookup; bug reports need one approval of the exact report before they are filed; JSON CLI output stays parseable; Versa API Bedrock adds Claude Opus 5.5 and Sonnet 5.5
+### Team
+- **Wanjun Gu:** Lead developer, Baranzini Lab, UCSF; GitHub https://github.com/Broccolito; wanjun.gu@ucsf.edu
+- **Gianmarco Bellucci:** Baranzini Lab, UCSF
+- **Sergio Baranzini:** Baranzini Lab, UCSF; lab website https://baranzinilab.ucsf.edu/
 
-3. **Biorouter v1.93.4 Release** (October 2026)
-   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.93.4
-   - What's new: Baseten joins the public providers with eleven open-weight models, including GLM 5.3, Kimi K3, DeepSeek V4.1 and GPT OSS 120B; chat costs use Baseten's prices, including cached input; Baseten's model list and prices stay current between releases from a public catalog Biorouter reads only while a Baseten key is saved
-
-4. **Biorouter v1.93.2 Release** (October 2026)
-   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.93.2
-   - What's new: replaces v1.93.1; an update download continues after a dropped connection instead of failing with net::ERR_CONNECTION_RESET; Restart & update waits until macOS has prepared the update and then reopens Biorouter, or says why it could not; the update dialog has Try again; plus everything in v1.93.1: Claude Code chats use about as much of the context window as Versa, Crew sets itself up on a shared Linux server with your server login, Llama Server retries a reply cut by a shared memory collision, and biorouter serve works behind HTTPS proxies and path prefixes, including JupyterHub
-
-5. **Biorouter v1.93.0 Release** (October 2026)
-   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.93.0
-   - What's new: simpler desktop controls and chat organization; clearer local inference failures and text tool-call handling; browser-free checks before built app build, launch, serving and export; exported launchers reuse the service on macOS and Linux; private /bug reports open for your review; Crew is in Settings > Chat > Capabilities
-
-6. **Biorouter v1.92.1 Release** (October 2026)
-   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.92.1
-   - What's new: Versa API Azure adds GPT-5.6 Sol, Terra and Luna, sent through the Responses API; Versa API Bedrock lists only the Claude models UCSF serves, adding Sonnet 5 and dropping Opus 5.5 and Opus 5; long GPT-5.6 chats compact instead of stopping
-
-7. **Biorouter v1.92.0 Release** (September 2026)
-   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.92.0
-   - What's new: Crew brings shared lab channels, files and agent tasks; macOS and Linux connect to the background service silently; new models are available; Copy works again in chats and previews
-
-8. **Biorouter v1.91.2 Release** (September 2026)
-   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.2
-   - What's new: Biorouter Copilot status appears only in conversations that request it and can be dismissed; prompts and slash commands use its current name; Windows child processes request hidden console windows; chat gains quoted selections, persistent drafts, active extensions in the slash picker, and adjustable text sizes
-
-9. **Biorouter v1.91.1 Release** (September 2026)
-   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.1
-   - What's new: on Windows, Biorouter's network sockets no longer leak into the programs it starts, so ports are released and the tunnel closes cleanly; on macOS, inline-Python extensions no longer occasionally fail to start; and the test suite's flaky failures are fixed at their causes
-
-10. **Biorouter v1.91.0 Release** (September 2026)
-   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.0
-   - What's new: Biorouter Copilot observes and controls the desktop with an approval for every request, web and documents become their own capability, office contexts load only when needed, Windows gets its first installer and a long list of fixes, and third-party attribution is now correct
-
-11. **Biorouter v1.90.5 Release** (September 2026)
-   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.90.5
-   - What's new: chats keep their place when a tab closes mid-reply, streamed text keeps repeated tokens at chunk boundaries, mid-turn steering stays queued until the running turn consumes it, the artifact preview adapts between a side panel and a vertical layout, and scheduled work follows the caller's reach
-
-12. **Biorouter v1.90.0 Release** (September 2026)
-   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.90.0
-   - What's new: every tool driven across providers, and a review run before the drive
-
-13. **UCSF AI Research Day** (2026)
-   - Link: https://ai.ucsf.edu/researchday
-   - Biorouter to be featured
-
-### Resource Links
-- GitHub: https://github.com/BaranziniLab/biorouter
-- Baranzini Lab: https://baranzinilab.ucsf.edu/
-- Bakar CHSI: https://bakarinstitute.ucsf.edu/
-- UCSF ARS: https://ars.ucsf.edu/
-- UCSF Versa: https://ai.ucsf.edu/platforms-tools-and-resources/ucsf-versa
-- UCSF AI Research Day: https://ai.ucsf.edu/researchday
-
-### Acknowledgements
-**The Baranzini Lab (https://baranzinilab.ucsf.edu/)**
-- Gianmarco Bellucci
-- Sergio Baranzini
-
-**Bakar Computational Health Science Institute (BCHSI) (https://bakarinstitute.ucsf.edu/)**
+### Collaborators
+**Bakar Computational Health Sciences Institute (https://bakarinstitute.ucsf.edu/)**
 - Sharat Israni
 - Marina Sirota
 
-**UCSF Academic Research Services (ARS) (https://ars.ucsf.edu/)**
+**UCSF Academic Research Services (https://ars.ucsf.edu/)**
 - William Santo
 - Evan Philps
 - Rick Larson
 - Oksana Gologorskaya
 
-### About the Developer
-- **Name:** Wanjun Gu
-- **Role:** Lead Developer, Baranzini Lab, UCSF
-- **Email:** wanjun.gu@ucsf.edu
-- **GitHub:** https://github.com/Broccolito
-- **Lab:** https://baranzinilab.ucsf.edu/
+### Inspirations
+"Biorouter's design was inspired by the agents below." Claude Code, Codex CLI, Gemini CLI, OpenHands, Aider, Cline, OpenCode and ForgeCode, each with a one-line description and a link.
+
+### News
+The page's Updates list, newest first. The page shows its newest five rows and folds the rest under "Earlier updates". The first entry here is the newest release, which `scripts/release.sh landing` checks.
+
+1. **Biorouter v1.94.1 Release** (2 November 2026)
+   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.94.1
+   - What's new: Ollama checks the configured server and model before work starts and gives clearer setup guidance; Meditation keeps its last successful discovery date after connection and server failures; Max turns has clear Unlimited and Set a limit controls; Windows no longer flashes console windows during Biorouter Copilot status checks
+
+2. **Biorouter v1.94.0 Release** (25 October 2026)
+   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.94.0
+   - What's new: file operations outside your project ask for read only or read and write access to that folder, once or for the session, and Folder access under the composer lists and revokes grants; session history and undo snapshots use storage only your account can read; ordinary chats no longer stop at 100 turns or 200 tool calls; stream recovery handles interrupted responses; tool cards tell a failed operation from a successful status lookup; bug reports need one approval of the exact report before they are filed; JSON CLI output stays parseable; Versa API Bedrock adds Claude Opus 5.5 and Sonnet 5.5
+
+3. **Biorouter v1.93.4 Release** (21 October 2026)
+   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.93.4
+   - What's new: Baseten joins the public providers with eleven open-weight models, including GLM 5.3, Kimi K3, DeepSeek V4.1 and GPT OSS 120B; chat costs use Baseten's prices, including cached input; Baseten's model list and prices stay current between releases from a public catalog Biorouter reads only while a Baseten key is saved
+
+4. **Biorouter at Jupyter Day 2026** (19 October 2026, San Jose Convention Center)
+   - Talk: "Notebooks Behind the Firewall: AI Agents and Real Patient Data in Jupyter"
+   - Video: https://www.youtube.com/watch?v=DEq3HI-SCOI
+   - Session details: https://sessionize.com/s/wanjun-gu/notebooks-behind-the-firewall-ai-agents-and-real-p/192251
+   - The talk shows how Biorouter connects to Jupyter as an ACP agent, so researchers keep their notebooks, work with institutionally hosted models, and keep protected health data inside institutional boundaries
+
+5. **Biorouter v1.93.2 Release** (18 October 2026)
+   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.93.2
+   - What's new: replaces v1.93.1; an update download continues after a dropped connection instead of failing with net::ERR_CONNECTION_RESET; Restart & update waits until macOS has prepared the update and then reopens Biorouter, or says why it could not; the update dialog has Try again; plus everything in v1.93.1: Claude Code chats use about as much of the context window as Versa, Crew sets itself up on a shared Linux server with your server login, Llama Server retries a reply cut by a shared memory collision, and biorouter serve works behind HTTPS proxies and path prefixes, including JupyterHub
+
+6. **Biorouter v1.93.0 Release** (13 October 2026)
+   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.93.0
+   - What's new: simpler desktop controls and chat organization; clearer local inference failures and text tool-call handling; browser-free checks before built app build, launch, serving and export; exported launchers reuse the service on macOS and Linux; private /bug reports open for your review; Crew is in Settings > Chat > Capabilities
+
+7. **Biorouter v1.92.1 Release** (6 October 2026)
+   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.92.1
+   - What's new: Versa API Azure adds GPT-5.6 Sol, Terra and Luna, sent through the Responses API; Versa API Bedrock lists only the Claude models UCSF serves, adding Sonnet 5 and dropping Opus 5.5 and Opus 5; long GPT-5.6 chats compact instead of stopping
+
+8. **Biorouter v1.92.0 Release** (30 September 2026)
+   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.92.0
+   - What's new: Crew brings shared lab channels, files and agent tasks; macOS and Linux connect to the background service silently; new models are available; Copy works again in chats and previews
+
+9. **Biorouter v1.91.2 Release** (23 September 2026)
+   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.2
+   - What's new: Biorouter Copilot status appears only in conversations that request it and can be dismissed; prompts and slash commands use its current name; Windows child processes request hidden console windows; chat gains quoted selections, persistent drafts, active extensions in the slash picker, and adjustable text sizes
+
+10. **Biorouter v1.91.1 Release** (22 September 2026)
+   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.1
+   - What's new: on Windows, Biorouter's network sockets no longer leak into the programs it starts, so ports are released and the tunnel closes cleanly; on macOS, inline-Python extensions no longer occasionally fail to start; and the test suite's flaky failures are fixed at their causes
+
+11. **Biorouter v1.91.0 Release** (21 September 2026)
+   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.91.0
+   - What's new: Biorouter Copilot observes and controls the desktop with an approval for every request, web and documents become their own capability, office contexts load only when needed, Windows gets its first installer and a long list of fixes, and third-party attribution is now correct
+
+12. **Biorouter v1.90.5 Release** (15 September 2026)
+   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.90.5
+   - What's new: chats keep their place when a tab closes mid-reply, streamed text keeps repeated tokens at chunk boundaries, mid-turn steering stays queued until the running turn consumes it, the artifact preview adapts between a side panel and a vertical layout, and scheduled work follows the caller's reach
+
+13. **Biorouter v1.90.0 Release** (3 September 2026)
+   - Link: https://github.com/BaranziniLab/biorouter/releases/tag/v1.90.0
+   - What's new: every tool driven across providers, and a review run before the drive
+
+14. **Biorouter at UCSF Research AI Day** (11 March 2026)
+   - Link: https://www.youtube.com/live/_2N_w3DtO-Y?si=N1mWBmG-yRH6FVui&t=9983
+   - The recorded talk, from 2:46:23, showed agentic workflows, BAAM and collaboration across institutions
+
+The page's Earlier updates list goes back to v1.20.0 (21 January 2026) and also holds the BAAM expansion (2 July) and the office hours recording (16 March).
+
+### Links
+- GitHub: https://github.com/BaranziniLab/biorouter
+- Baranzini Lab: https://baranzinilab.ucsf.edu/
+- Bakar Institute: https://bakarinstitute.ucsf.edu/
+- Academic Research Services: https://ars.ucsf.edu/
+- UCSF Versa: https://ai.ucsf.edu/platforms-tools-and-resources/ucsf-versa
+- UCSF Research AI Day: https://ai.ucsf.edu/researchday
 
 ---
 
-## Design Requirements
+## Design requirements
 
 ### General
 - [x] The app's look on the web: white paper, warm ink, one coral accent, UCSF navy
@@ -384,20 +354,20 @@ Each card contains:
 - [x] Menu button under 760px
 - [x] Blurred header with a hairline once the page scrolls
 
-### Introduction Tab
+### Introduction tab
 - [x] Hero with the product animation inside the first 900px at 1440 wide
 - [x] Three principles, each beside its animation
 - [x] Capabilities (6)
-- [x] Links to About, Release Notes, Baranzini Lab
+- [x] Footer links to About, Updates, Release notes and the Baranzini Lab
 
-### Download Tab
+### Download tab
 - [x] Smart OS detection → primary download button
 - [x] Complete platform table with all download links
 - [x] Install instructions per platform
-- [x] Setup guide link
-- [x] Info box about UCSF Versa, Ollama, commercial APIs
+- [x] Getting started link
+- [x] After you install: open the app, connect a model (Llama Server on the Local tab, Versa on the Institutional tab), ask a question
 
-### Documentation Tab
+### Documentation tab
 - [x] Sidebar navigation
 - [x] Fourteen doc pages, assembled from `docs/website/`
 - [x] UCSF-specific setup
@@ -405,30 +375,24 @@ Each card contains:
 - [x] Data tables
 - [x] Warning/info alert boxes
 
-### BAAM Tab
-- [x] Search functionality (real-time filter)
-- [x] Agent cards with: name, org, description, command, GitHub link, tags
-- [x] Copy-to-clipboard for commands
-- [x] Extensions, skills and workflows, with privacy and institution badges, generated into `registry.json`
+### BAAM tab
+- [x] Search that filters the open shelf as you type
+- [x] Three shelves with counts: Extensions, Skills and Workflows
+- [x] Cards with an SVG icon tile, name, author and version, GitHub link, description, privacy and affiliation badges, tags and a download (`.brxt`, `.zip` or `.yaml`)
+- [x] Extensions and skills, with privacy and institution badges, generated into `registry.json`; workflows stay on `baam.html`
 
-### About Tab
-- [x] News cards with dates
-- [x] Resource link grid
-- [x] Acknowledgements with group labels
-- [x] Developer card with contact info
+### About tab
+- [x] Updates list with dates, newest first, the newest five visible above a folded "Earlier updates" (`check-consistency.mjs` counts the five)
+- [x] Links grid
+- [x] Collaborators with group labels
+- [x] Team cards, with contact links for the lead developer
+- [x] Inspirations list
 
 ---
 
-## Source Files Referenced
-- `/Users/wgu/Desktop/biorouter/documentation/installation-setup.md`
-- `/Users/wgu/Desktop/biorouter/documentation/data-privacy.md`
-- `/Users/wgu/Desktop/biorouter/documentation/providers-and-models.md`
-- `/Users/wgu/Desktop/biorouter/documentation/extensions-skills-mcp.md`
-- `/Users/wgu/Desktop/biorouter/documentation/workflows.md`
-- `/Users/wgu/Desktop/biorouter/documentation/schedulers.md`
-- `/Users/wgu/Desktop/biorouter/documentation/architecture.md`
-- `/Users/wgu/Desktop/biorouter/ui/desktop/src/images/icon.png`
-- `/Users/wgu/Desktop/biorouter/README.md`
-- `/Users/wgu/Desktop/biorouter/docs/release-notes/vX.Y.Z.md`
-- GitHub: https://github.com/BaranziniLab/biorouter
-- GitHub Agents: UCSFOMOPAgent, SPOKEAgent, MedCP, playwright-mcp
+## Related documentation
+
+- [The website README](../README.md): how the site is published, the shared files, and the rules its checks enforce
+- [The website migration record](../MIGRATION.md): how the site moved into this repository on 2026-06-29
+- [Website documentation sources](../../docs/website/README.md): the shell and page fragments `docs.html` is assembled from
+- [Documentation style guide](../../docs/contributing/documentation-style.md): the context header, headings and closing section this file follows
