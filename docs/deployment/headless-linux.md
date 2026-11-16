@@ -281,6 +281,33 @@ The package replaces the binaries **and** the interface bundle at `/usr/share/bi
 together, so the two cannot drift apart. Configuration, secrets and session history live in the
 service user's home directory and are untouched.
 
+### Updating from the page
+
+A running `serve` also offers an **Update to X** row in the page when a new release is out.
+Biorouter has already downloaded the update and checked it against the SHA-256 the release
+publishes.
+
+- If `serve` runs as root, or as an account where `sudo -n` works without a password, the update
+  takes one click and the package manager installs the package.
+- If `serve` runs as an ordinary service user (the unprivileged `biorouter` account above), the
+  page shows **Updating needs administrator rights on this server** and a one-line command behind a
+  Copy button. An administrator runs it in a terminal on the server; it checks the file's SHA-256
+  as root before installing. Then click **Check again** and **Restart**.
+- On restart, `serve` re-executes itself in place, with the same pid, command line and address, so
+  systemd does not see the unit stop. The unit above works as written.
+- Chats that are still working stop when it restarts. If the new version does not start, the
+  previous one is put back.
+
+The details are in [Updating from the page](browser-access.md#updating-from-the-page) and
+[decision SD-19](serve-decisions.md#sd-19-the-person-on-the-page-updates-serve-and-it-comes-back-on-the-same-address).
+
+### Speech models and containers
+
+Install speech models for dictation on the host as the service user, from your own terminal:
+`sudo -u biorouter -H biorouter dictation install`. `biorouter serve --no-dictation-install` only stops browsers from installing them. To run
+`biorouter serve` in a container instead of a systemd unit, see
+[Running Biorouter in Docker](../../BUILDING_DOCKER.md#running-biorouter-in-docker).
+
 ## Watching for interface drift
 
 The browser interface and the Electron desktop application are built from one shared renderer, so a
@@ -299,8 +326,10 @@ deployment:
 ## Related documentation
 
 - [Reaching Biorouter from a browser](browser-access.md) — the command, the access token, and what a browser session can and cannot do.
-- [Decisions behind `biorouter serve`](serve-decisions.md) — why the model is fixed, why a token is mandatory off loopback, and why the standalone binary was retired.
+- [Decisions behind `biorouter serve`](serve-decisions.md) — why an agent cannot change the provider, why a token is mandatory off loopback, why the standalone binary was retired, and how `serve` updates itself.
 - [How browser-served Biorouter is built](serve-architecture.md) — the architecture, for developers.
+- [Building and running Biorouter with Docker](../../BUILDING_DOCKER.md) — the container image, including `serve` and browser dictation.
+- [Voice dictation](../dictation/README.md) — speech models, `biorouter dictation install` and the dictionary.
 - [Secret storage](../security/secret-storage.md) — what `BIOROUTER_DISABLE_KEYRING=true` switches to, and why a host with no desktop keyring needs it.
 - [Environment variables](../configuration/environment-variables.md) — every variable the daemon and `biorouter serve` read.
 - [Config file reference](../configuration/config-file-reference.md) — the configuration directory a deployment points Biorouter at.
