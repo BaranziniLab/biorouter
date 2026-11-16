@@ -8,18 +8,21 @@ use biorouter::model::ModelConfig;
 use biorouter::providers::api_client::{ApiClient, AuthMethod};
 use biorouter::providers::openai::OpenAiProvider;
 use biorouter_acp::server::{serve, BioRouterAcpAgent, BioRouterAcpConfig};
-use common::{setup_mock_openai, spawn_mcp_http_server, FAKE_CODE};
+use common::{
+    setup_mock_openai, setup_slow_mock_openai, spawn_mcp_http_server, wait_for_provider_request,
+    FAKE_CODE,
+};
 use fs_err as fs;
 use sacp::schema::{
-    AudioContent, ContentBlock, ContentChunk, InitializeRequest, LoadSessionRequest, McpServer,
-    McpServerHttp, NewSessionRequest, PermissionOptionKind, PromptRequest, ProtocolVersion,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, SessionUpdate, StopReason, TextContent,
-    ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+    AudioContent, CancelNotification, ContentBlock, ContentChunk, InitializeRequest,
+    LoadSessionRequest, McpServer, McpServerHttp, NewSessionRequest, PermissionOptionKind,
+    PromptRequest, ProtocolVersion, RequestPermissionOutcome, RequestPermissionRequest,
+    RequestPermissionResponse, SelectedPermissionOutcome, SessionNotification, SessionUpdate,
+    StopReason, TextContent, ToolCallId, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
 };
 use sacp::{ClientToAgent, JrConnectionCx};
 use std::future::Future;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use test_case::test_case;
@@ -698,6 +701,194 @@ fn test_acp_failed_load_is_answered_and_the_connection_stays_open() {
                     );
                     assert!(!session.session_id.0.is_empty());
                 }
+            },
+        )
+        .await;
+    });
+}
+
+/// W1-07: a `session/cancel` makes the prompt answer `cancelled`, even when the
+/// reply stream ends without another event.
+///
+/// The reply loop watches the same token as the prompt handler. A cancel while
+/// the turn waits on its provider makes the loop give up the request and end
+/// its stream, so no event arrives after the cancel. The handler used to set
+/// its cancelled flag only from such an event, and answered `end_turn`, which
+/// is what an editor heard after pressing Stop.
+#[test]
+fn test_acp_cancel_answers_cancelled_when_the_stream_ends_on_its_own() {
+    /// Long enough that only the cancel, never the provider's answer, can end
+    /// the prompt inside the time the test allows it.
+    const PROVIDER_HOLD: Duration = Duration::from_secs(30);
+
+    run_async_test(async {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let prompt = "write a nine hundred word essay about bananas";
+        let mock_server = setup_slow_mock_openai(
+            PROVIDER_HOLD,
+            include_str!("./test_data/openai_basic_response.txt"),
+        )
+        .await;
+        let mock = &mock_server;
+        let provider_request = format!(r#"</info-msg>\n{prompt}""#);
+
+        run_acp_session(
+            mock,
+            vec![],
+            &[],
+            temp_dir.path(),
+            BioRouterMode::Auto,
+            None,
+            |cx, session_id, updates| async move {
+                let started = std::time::Instant::now();
+                let answered = cx
+                    .send_request(PromptRequest::new(
+                        session_id.clone(),
+                        vec![ContentBlock::Text(TextContent::new(prompt))],
+                    ))
+                    .block_task();
+                let cancel = async {
+                    bounded(
+                        "the provider receiving the prompt",
+                        wait_for_provider_request(mock, &provider_request),
+                    )
+                    .await;
+                    cx.send_notification(CancelNotification::new(session_id.clone()))
+                        .expect("the client sends session/cancel");
+                };
+                let (response, ()) =
+                    tokio::join!(bounded("session/prompt after a cancel", answered), cancel);
+                let response = response.expect("a cancelled prompt is answered, not failed");
+
+                assert!(
+                    started.elapsed() < PROVIDER_HOLD / 2,
+                    "premise: the cancel ended the prompt, not the provider's late answer ({:?})",
+                    started.elapsed()
+                );
+                assert!(
+                    !updates
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|n| matches!(n.update, SessionUpdate::AgentMessageChunk(_))),
+                    "premise: no reply event reached the client after the cancel"
+                );
+                assert_eq!(
+                    response.stop_reason,
+                    StopReason::Cancelled,
+                    "a prompt the client cancelled answers `cancelled`"
+                );
+            },
+        )
+        .await;
+    });
+}
+
+/// W1-08: `session/new` opens the chat in the folder the client names.
+///
+/// ACP requires `cwd` to be an absolute path. The handler used to ignore it and
+/// open every new chat in the folder `biorouter acp` was started in, so an
+/// editor's shell and file tools ran outside its project. A cwd that is not an
+/// absolute path to an existing folder is refused without failing the request:
+/// the chat opens in the server's own folder, as before.
+#[test]
+fn test_acp_new_session_uses_the_client_cwd() {
+    use biorouter::session::SessionManager;
+
+    run_async_test(async {
+        let data_dir = tempfile::tempdir().unwrap();
+        let work_dir = tempfile::tempdir().unwrap();
+        let mock_server = setup_mock_openai(Vec::new()).await;
+        let requested = vec![
+            work_dir.path().to_path_buf(),
+            PathBuf::from("relative/project"),
+            work_dir.path().join("no-such-folder"),
+        ];
+
+        let ids = Arc::new(Mutex::new(Vec::new()));
+        run_acp_client(
+            &mock_server,
+            &[],
+            data_dir.path(),
+            BioRouterMode::Auto,
+            None,
+            {
+                let ids = ids.clone();
+                let requested = requested.clone();
+                move |cx, _updates| async move {
+                    for cwd in requested {
+                        let step = format!("session/new in {}", cwd.display());
+                        let session = bounded(
+                            &step,
+                            cx.send_request(NewSessionRequest::new(cwd)).block_task(),
+                        )
+                        .await
+                        .unwrap_or_else(|e| panic!("{step} failed: {e}"));
+                        ids.lock().unwrap().push(session.session_id.0.to_string());
+                    }
+                }
+            },
+        )
+        .await;
+
+        let ids = ids.lock().unwrap().clone();
+        assert_eq!(ids.len(), requested.len(), "every session/new was answered");
+        let sm = SessionManager::new(data_dir.path().to_path_buf());
+        let dirs = bounded("reading the new chats", async {
+            let mut dirs = Vec::new();
+            for id in &ids {
+                dirs.push(sm.get_session(id, false).await.unwrap().working_dir);
+            }
+            dirs
+        })
+        .await;
+        bounded("closing the store that read the chats", sm.close()).await;
+
+        let process_dir = std::env::current_dir().unwrap();
+        assert_eq!(
+            dirs[0],
+            work_dir.path(),
+            "session/new opens the chat in the folder the client named"
+        );
+        assert_eq!(
+            dirs[1], process_dir,
+            "a relative cwd is refused, and the chat opens in the server's own folder"
+        );
+        assert_eq!(
+            dirs[2], process_dir,
+            "a folder that does not exist is refused the same way"
+        );
+    });
+}
+
+/// W1-17: `initialize` names the agent, so an editor can show which agent and
+/// which version it is talking to.
+#[test]
+fn test_acp_initialize_reports_agent_info() {
+    run_async_test(async {
+        let data_dir = tempfile::tempdir().unwrap();
+        let mock_server = setup_mock_openai(Vec::new()).await;
+
+        run_acp_client(
+            &mock_server,
+            &[],
+            data_dir.path(),
+            BioRouterMode::Auto,
+            None,
+            |cx, _updates| async move {
+                let initialized = bounded(
+                    "initialize",
+                    cx.send_request(InitializeRequest::new(ProtocolVersion::LATEST))
+                        .block_task(),
+                )
+                .await
+                .expect("initialize is answered");
+                let info = initialized
+                    .agent_info
+                    .expect("initialize reports agentInfo");
+                assert_eq!(info.name, "biorouter");
+                assert_eq!(info.title.as_deref(), Some("Biorouter"));
+                assert_eq!(info.version, env!("CARGO_PKG_VERSION"));
             },
         )
         .await;

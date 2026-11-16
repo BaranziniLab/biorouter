@@ -13,6 +13,13 @@ maintaining one of those adapters. The adapters themselves live in the repositor
 here carry the architecture, the version pins and the verification record, and link out to each
 package's own install instructions.
 
+Every adapter here reaches Biorouter through the Agent Client Protocol (ACP) by launching
+`biorouter acp`. A new ACP session opens in the folder the host names as its `cwd`, so the agent's
+shell and file tools work in the host's project; a `cwd` that is not an absolute path to an existing
+folder falls back to the folder `biorouter acp` was started in. A prompt the host stops with
+`session/cancel` answers with the `cancelled` stop reason, and `initialize` reports the agent's name
+and version in `agentInfo`.
+
 ## Documents in this folder
 
 | Document | What it covers |

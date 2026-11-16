@@ -12,6 +12,7 @@ use rmcp::{
 };
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::task::JoinHandle;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -69,6 +70,48 @@ pub async fn setup_mock_openai(exchanges: Vec<(String, &'static str)>) -> MockSe
         .await;
 
     mock_server
+}
+
+/// Mock OpenAI streaming endpoint that holds every chat completion for `hold`
+/// before answering with `response`, so a test can act while a turn is still
+/// waiting on its provider. The session-name request is answered at once, as
+/// [`setup_mock_openai`] answers it.
+pub async fn setup_slow_mock_openai(hold: Duration, response: &'static str) -> MockServer {
+    let mock_server = MockServer::start().await;
+
+    Mock::given(method("POST"))
+        .and(path("/v1/chat/completions"))
+        .respond_with(move |req: &wiremock::Request| {
+            let body = String::from_utf8_lossy(&req.body);
+            if body.contains("Reply with only a description in four words or less") {
+                return ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/json")
+                    .set_body_string(include_str!("./test_data/openai_session_description.json"));
+            }
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(response)
+                .set_delay(hold)
+        })
+        .mount(&mock_server)
+        .await;
+
+    mock_server
+}
+
+/// Wait until `mock_server` has received a request whose body contains `needle`.
+/// The mock records a request when it arrives, before any delay it answers with.
+pub async fn wait_for_provider_request(mock_server: &MockServer, needle: &str) {
+    loop {
+        let received = mock_server.received_requests().await.unwrap_or_default();
+        if received
+            .iter()
+            .any(|request| String::from_utf8_lossy(&request.body).contains(needle))
+        {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 #[derive(Clone)]
