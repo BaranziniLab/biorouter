@@ -1651,6 +1651,116 @@ mod tests {
         }
     }
 
+    /// Phase C, T3: a coding-agent parent spawns through `handle_bridged_subagent_tool`, which
+    /// always takes the background path. When the default worker model cannot run the child,
+    /// the parent learns it only from the note `spawn_background_subagent` appends to its text,
+    /// beside the handle snapshot it puts in the structured content. Claude Code reads a
+    /// result's structured content over its text, so on build 4f86f4f1b a Claude Code parent
+    /// saw the handle JSON and no note. The subagent tool declares no output schema, so the
+    /// child is answered with the text alone, over the bridge's own HTTP surface, and the kept
+    /// result still holds the handle for the transcript and the desktop.
+    #[tokio::test]
+    async fn a_bridged_spawn_reaches_the_parent_with_the_default_worker_note_and_no_handle_json() {
+        use super::super::bridge_http::LoopbackBridge;
+        use crate::agents::default_worker::{fallback_note, fallback_reason, DefaultWorker};
+        use crate::agents::subagent_handle::{HandleSnapshot, HandleState};
+        use serde_json::{json, Value};
+
+        // The note a spawn writes when a private default worker meets a public chat.
+        let worker = DefaultWorker {
+            provider: "versa_bedrock".to_string(),
+            model: "us.anthropic.claude-haiku-5-5".to_string(),
+        };
+        let reason = fallback_reason(&anyhow::anyhow!(
+            crate::privacy::PrivacyRefusal::spawn_upgrade(crate::privacy::ProviderTier::Private)
+        ));
+        let note = fallback_note(&worker, &reason);
+        assert!(note.contains("this chat is public"), "{note}");
+
+        // `spawn_background_subagent`'s result: the started message with the note appended,
+        // and the handle's snapshot as the structured content.
+        let snapshot = HandleSnapshot {
+            handle: "sub_t3".to_string(),
+            title: "summarise the notes".to_string(),
+            child_session_id: "20261115_t3".to_string(),
+            state: HandleState::Running,
+            elapsed_seconds: 0,
+            result: None,
+        };
+        let spawned = CallToolResult {
+            content: vec![rmcp::model::Content::text(format!(
+                "Subagent started in the background (handle `sub_t3`, session `20261115_t3`). \
+                 It keeps working while you do.\n\n{note}"
+            ))],
+            structured_content: serde_json::to_value(&snapshot).ok(),
+            is_error: Some(false),
+            meta: None,
+        };
+        assert!(spawned.structured_content.is_some());
+
+        // The spawn tool as the workspace extension advertises it to the bridge.
+        let mut spawn_tool = crate::agents::subagent_tool::create_subagent_tool(&[]);
+        spawn_tool.name = "workspace__subagent".into();
+        assert!(
+            spawn_tool.output_schema.is_none(),
+            "a declared output schema hands the child the handle JSON, which Claude Code reads \
+             over the note"
+        );
+
+        let bridge = LoopbackBridge::start_for_test().await.unwrap();
+        let mut grant = inert_grant_for_test();
+        grant.inspections = Arc::new(inspections_with(&grant.hooks, false));
+        grant.tools = vec![spawn_tool];
+        grant.dispatcher = Arc::new(FixedResultDispatch(spawned.clone()));
+        let lease = issue_at_base_for_test(grant, bridge.base_url());
+        let url = format!(
+            "{}/tool_bridge/{}",
+            bridge.base_url(),
+            lease.url().rsplit('/').next().unwrap()
+        );
+
+        let called: Value = reqwest::Client::new()
+            .post(&url)
+            .json(&json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "workspace__subagent",
+                    "arguments": { "instructions": "summarise the notes" },
+                    "_meta": { "claudecode/toolUseId": "toolu_t3" }
+                }
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let result = &called["result"];
+        assert_ne!(result["isError"], true, "{called}");
+        assert!(
+            result.get("structuredContent").is_none(),
+            "the child must not be handed the handle JSON: {called}"
+        );
+        let content = result["content"].as_array().expect("content blocks");
+        assert_eq!(content.len(), 1, "{called}");
+        let text = content[0]["text"].as_str().expect("a text block");
+        assert!(
+            text.contains(&note),
+            "the parent must read the fallback note: {text}"
+        );
+        assert!(text.contains("sub_t3"), "{text}");
+
+        assert_eq!(
+            take_recorded_result(lease.url(), "toolu_t3").and_then(|kept| kept.structured_content),
+            spawned.structured_content,
+            "the kept result holds the handle for the transcript and the desktop"
+        );
+        drop(lease);
+        drop(bridge);
+    }
+
     /// A dispatcher that keeps the tool-call id each dispatched call ran under.
     #[derive(Default)]
     struct CallIdSpy(std::sync::Mutex<Vec<(String, Option<String>)>>);
