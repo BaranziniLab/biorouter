@@ -245,7 +245,7 @@ describe('MSG-PRIVATE-DRAFT (DD-71)', () => {
     await settle();
     const dialog = screen.getByRole('dialog');
     expect(dialog).toHaveTextContent(
-      'This message was dictated with your private dictionary terms turned on, so it may contain them, and gpt-5.6-sol is a public model. Send it anyway?'
+      'This message was dictated with your private dictionary terms turned on, so it may contain them, and GPT-5.6 Sol is a public model. Send it anyway?'
     );
     expect(handleSubmit).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Send anyway' }));

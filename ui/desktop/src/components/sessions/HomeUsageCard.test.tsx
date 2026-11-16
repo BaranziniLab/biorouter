@@ -342,7 +342,7 @@ describe('HomeUsageCard', () => {
       },
     });
     render(<HomeUsageCard window={windowOf()} />);
-    await waitFor(() => expect(figure('Favorite model')).toHaveTextContent('gpt-5.5'));
+    await waitFor(() => expect(figure('Favorite model')).toHaveTextContent('GPT-5.5'));
     expect(figure('Favorite model')).not.toHaveTextContent('2026');
     expect(figure('Favorite model').querySelector('.br-stat-figure')).toHaveAttribute(
       'title',
@@ -352,8 +352,8 @@ describe('HomeUsageCard', () => {
     await user.click(screen.getByRole('tab', { name: 'Models' }));
     const rows = await screen.findAllByTestId('home-usage-model');
     expect(rows.map((row) => row.firstElementChild?.textContent)).toEqual([
-      'gpt-5.5',
-      'claude-3-5-sonnet',
+      'GPT-5.5',
+      'Claude 3.5 Sonnet',
     ]);
     expect(rows[1].firstElementChild).toHaveAttribute(
       'title',

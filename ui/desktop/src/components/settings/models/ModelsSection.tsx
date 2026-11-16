@@ -16,6 +16,7 @@ import { SettingSection } from '../../ui/setting-row';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
 import { defaultModelCopy, modelsDangerCopy } from './copy';
 import { joinModelValue, knownDefaultModelValue } from './defaultModelValue';
+import { modelDisplayName } from '../../bottom_menu/modelLabel';
 
 interface ModelsSectionProps {
   setView: (view: View) => void;
@@ -38,9 +39,12 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
   );
 
   const loadModelData = useCallback(async () => {
-    let modelDisplayName = '';
+    let shownModel = '';
     try {
-      modelDisplayName = await getCurrentModelDisplayName();
+      // The display name every surface shows (T1 F2). The context answers with a predefined
+      // alias or a Llama Server catalog name when the model has one, which `modelDisplayName`
+      // leaves as it is (a name is never re-read as an id), else with the id itself.
+      shownModel = modelDisplayName(await getCurrentModelDisplayName());
 
       let providerLabel: string | null;
       const providerDisplayName = await getCurrentProviderDisplayName();
@@ -63,10 +67,10 @@ export default function ModelsSection({ setView }: ModelsSectionProps) {
       }
       // One write once both halves are known, so a row that already shows a value never reads
       // the new model beside the old provider.
-      setModelValue(joinModelValue(modelDisplayName, providerLabel));
+      setModelValue(joinModelValue(shownModel, providerLabel));
     } catch (error) {
       console.error('Error loading model data:', error);
-      setModelValue((shown) => shown ?? joinModelValue(modelDisplayName, null));
+      setModelValue((shown) => shown ?? joinModelValue(shownModel, null));
     }
   }, [read, getProviders, getCurrentModelDisplayName, getCurrentProviderDisplayName]);
 

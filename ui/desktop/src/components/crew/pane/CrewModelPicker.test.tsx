@@ -96,7 +96,8 @@ describe('CrewModelPicker', () => {
       within(versaGroup)
         .getAllByRole('option')
         .map((option) => option.textContent)
-    ).toEqual(['gpt-5.5', 'gpt-5.5-mini']);
+      // Each row: the display name the chat's chip shows (T1 F2), then the id it stands for.
+    ).toEqual(['GPT-5.5gpt-5.5', 'GPT-5.5 minigpt-5.5-mini']);
     // One mark with words, "Private · UCSF", never two bare glyphs or the chat badge's
     // "Private chat" (Q2-67).
     expect(versaGroup).toHaveAccessibleName(/Private/);
@@ -132,7 +133,7 @@ describe('CrewModelPicker', () => {
     expect(onTrigger).toHaveTextContent('Private · UCSF');
     expect(agentCopy.privateOnly).toBe('Private. Only private models can run this task.');
     // The mark is not part of the field's name, which stays "Model {choice}".
-    expect(trigger()).toHaveAccessibleName('Model gpt-5.5 · Versa');
+    expect(trigger()).toHaveAccessibleName('Model GPT-5.5 · Versa');
     await user.click(trigger());
     const list = await screen.findByRole('listbox', { name: agentCopy.modelsLabel });
     const versaGroup = await within(list).findByRole('group', { name: /Versa/ });
@@ -192,9 +193,9 @@ describe('CrewModelPicker', () => {
     const onChange = vi.fn();
     render(<Picker onChange={onChange} />);
     await user.click(trigger());
-    await user.click(await screen.findByRole('option', { name: /^qwen3\.8:27b/ }));
+    await user.click(await screen.findByRole('option', { name: /^Qwen3\.8 27B/ }));
     expect(onChange).toHaveBeenCalledWith({ provider: 'ollama', model: 'qwen3.8:27b' });
-    expect(trigger()).toHaveAccessibleName('Model qwen3.8:27b · Ollama');
+    expect(trigger()).toHaveAccessibleName('Model Qwen3.8 27B · Ollama');
     expect(screen.queryByRole('listbox')).toBeNull();
   });
 
@@ -211,7 +212,7 @@ describe('CrewModelPicker', () => {
         .getAllByRole('option')
         .map((option) => option.textContent)
     ).toEqual([
-      'gpt-5.5-mini',
+      'GPT-5.5 minigpt-5.5-mini',
       agentCopy.modelUse('mini', 'Versa'),
       agentCopy.modelUse('mini', 'Ollama'),
       agentCopy.modelUse('mini', 'OpenRouter'),
@@ -271,7 +272,7 @@ describe('CrewModelPicker', () => {
     expect(ollamaGroup).not.toHaveTextContent(reason);
 
     // The pane explains the choice and the daemon decides; the picker only marks it.
-    await user.click(within(versaGroup).getByRole('option', { name: /^gpt-5\.5-mini/ }));
+    await user.click(within(versaGroup).getByRole('option', { name: /^GPT-5\.5 mini/ }));
     expect(onChange).toHaveBeenCalledWith({ provider: 'versa_azure', model: 'gpt-5.5-mini' });
   });
 

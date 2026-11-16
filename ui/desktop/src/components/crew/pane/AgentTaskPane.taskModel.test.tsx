@@ -133,7 +133,7 @@ describe('the model a task starts on (OW-11)', () => {
     await connected();
     await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
     const task = await screen.findByLabelText(agentCopy.task);
-    expect(await screen.findByText('gpt-5.5 · Versa')).toBeInTheDocument();
+    expect(await screen.findByText('GPT-5.5 · Versa')).toBeInTheDocument();
     // It is already the model for Crew tasks: nothing to make it so.
     expect(screen.queryByRole('button', { name: agentCopy.useForFutureTasks })).toBeNull();
     fireEvent.change(task, { target: { value: 'tally the plates' } });
@@ -148,7 +148,7 @@ describe('the model a task starts on (OW-11)', () => {
     renderCrew(Layout);
     await connected();
     await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
-    expect(await screen.findByText('qwen3.8:27b · Ollama')).toBeInTheDocument();
+    expect(await screen.findByText('Qwen3.8 27B · Ollama')).toBeInTheDocument();
   });
 
   it('makes another model the one for future tasks with a link, not a checkbox (C9)', async () => {
@@ -157,7 +157,7 @@ describe('the model a task starts on (OW-11)', () => {
     await connected();
     await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
     await user.click(await screen.findByRole('button', { name: agentCopy.modelChangeName }));
-    await user.click(await screen.findByRole('option', { name: /^qwen3\.8:27b/ }));
+    await user.click(await screen.findByRole('option', { name: /^Qwen3\.8 27B/ }));
     const link = screen.getByRole('button', { name: agentCopy.useForFutureTasks });
     expect(screen.queryByRole('checkbox')).toBeNull();
 
@@ -172,7 +172,7 @@ describe('the model a task starts on (OW-11)', () => {
       expect(screen.queryByRole('button', { name: agentCopy.useForFutureTasks })).toBeNull()
     );
     expect(screen.getByRole('status')).toHaveTextContent(
-      agentCopy.usedForFutureTasks('qwen3.8:27b · Ollama')
+      agentCopy.usedForFutureTasks('Qwen3.8 27B · Ollama')
     );
   });
 
@@ -183,13 +183,13 @@ describe('the model a task starts on (OW-11)', () => {
     await connected();
     await user.click(screen.getByRole('button', { name: 'Ask my agent' }));
     await user.click(await screen.findByRole('button', { name: agentCopy.modelChangeName }));
-    await user.click(await screen.findByRole('option', { name: /^qwen3\.8:27b/ }));
+    await user.click(await screen.findByRole('option', { name: /^Qwen3\.8 27B/ }));
     await user.click(screen.getByRole('button', { name: agentCopy.useForFutureTasks }));
     expect(await screen.findByRole('alert')).toHaveTextContent(
       agentCopy.useForFutureTasksFailed('409 Conflict')
     );
     expect(screen.getByRole('button', { name: /^Model/ })).toHaveAccessibleName(
-      'Model qwen3.8:27b · Ollama'
+      'Model Qwen3.8 27B · Ollama'
     );
   });
 });
@@ -210,7 +210,7 @@ describe('opened by the composer’s @agent (OW-10)', () => {
     );
     const task = await screen.findByLabelText(agentCopy.task);
     expect(task).toHaveValue('plot it');
-    await screen.findByText('gpt-5.5 · Versa');
+    await screen.findByText('GPT-5.5 · Versa');
     await user.click(startButton());
     await waitFor(() => expect(runPosts()).toHaveLength(1));
     expect(runPosts()[0][2]).toMatchObject({ prompt: 'plot it' });
@@ -289,7 +289,7 @@ describe('an open workspace whose broker reads wide (wide_runs_v1)', () => {
     expect(screen.getByText(agentCopy.scopeWide('#general', 2))).toBeInTheDocument();
 
     fireEvent.change(task, { target: { value: 'summarize the week' } });
-    await screen.findByText('gpt-5.5 · Versa');
+    await screen.findByText('GPT-5.5 · Versa');
     await user.click(startButton());
     await waitFor(() => expect(runPosts()).toHaveLength(1));
     expect(runPosts()[0][2]).toMatchObject({ context_channels: [general.id, methods.id] });
@@ -313,7 +313,7 @@ describe('an open workspace whose broker reads wide (wide_runs_v1)', () => {
     expect(screen.getByText('Reads only #general')).toBeInTheDocument();
 
     fireEvent.change(task, { target: { value: 'just here' } });
-    await screen.findByText('gpt-5.5 · Versa');
+    await screen.findByText('GPT-5.5 · Versa');
     await user.click(startButton());
     await waitFor(() => expect(runPosts()).toHaveLength(1));
     expect(runPosts()[0][2]).toMatchObject({ context_channels: [general.id] });

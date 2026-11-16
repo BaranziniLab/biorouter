@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
-import { ModelBreakdownTable, modelLabel } from './ModelBreakdownTable';
+import { labelsNeedProvider, ModelBreakdownTable, modelLabel } from './ModelBreakdownTable';
 import { MODEL_NOT_RECORDED } from './copy';
 import { homeUsageCopy } from '../usage/copy';
 import { UNKNOWN_MODEL_LABEL, type ModelCostRow } from '../../hooks/useCostTracking';
@@ -48,9 +48,19 @@ const rows: ModelCostRow[] = [
 ];
 
 describe('modelLabel', () => {
-  it('joins provider and model, and names the null bucket in sentence case', () => {
-    expect(modelLabel({ provider: 'openai', model: 'gpt-5' })).toBe('openai/gpt-5');
-    expect(modelLabel({ provider: undefined, model: 'gpt-5' })).toBe('gpt-5');
+  it('names the model as every surface does, and the null bucket in sentence case', () => {
+    // T1 F2: the display name the composer's chip shows, never `provider/id`.
+    expect(modelLabel({ provider: 'openai', model: 'gpt-5' })).toBe('GPT-5');
+    expect(modelLabel({ provider: undefined, model: 'gpt-5' })).toBe('GPT-5');
+    // The provider follows only where two rows would otherwise read the same.
+    expect(modelLabel({ provider: 'openai', model: 'gpt-5' }, true)).toBe('GPT-5 · openai');
+    expect(
+      labelsNeedProvider([
+        { provider: 'openai', model: 'gpt-5' },
+        { provider: 'openrouter', model: 'openai/gpt-5' },
+        { provider: 'anthropic', model: 'claude-fable-5' },
+      ])
+    ).toEqual([true, true, false]);
     // Home's usage card's name for the bucket, not a second one (usage/copy.test.ts).
     expect(MODEL_NOT_RECORDED).toBe(homeUsageCopy.notRecorded);
     expect(modelLabel({ provider: undefined, model: undefined })).toBe(MODEL_NOT_RECORDED);
@@ -139,10 +149,10 @@ describe('ModelBreakdownTable', () => {
     expect(bodyRows).toHaveLength(4);
 
     // gpt-5 row: every token bucket, cache-aware billed total, partial cost.
-    const gptRow = screen.getByText('openai/gpt-5').closest('tr')!;
+    const gptRow = screen.getByText('GPT-5').closest('tr')!;
     const gptCells = within(gptRow).getAllByRole('cell');
     expect(gptCells.map((c) => c.textContent)).toEqual([
-      'openai/gpt-5',
+      'GPT-5',
       '2',
       '300',
       '500',
@@ -153,7 +163,7 @@ describe('ModelBreakdownTable', () => {
     ]);
 
     // A sub-cent cost keeps its digits, as the chat's total does (utils/formatUsd.ts).
-    const claudeRow = screen.getByText('anthropic/claude-fable-5').closest('tr')!;
+    const claudeRow = screen.getByText('Claude Fable 5').closest('tr')!;
     expect(within(claudeRow).getAllByRole('cell')[7].textContent).toBe('$0.0004');
 
     // The bucket with no model: named in sentence case, null price explicitly unavailable.
@@ -196,7 +206,7 @@ describe('ModelBreakdownTable', () => {
         ]}
       />
     );
-    const row = screen.getByText('versa/gpt-5').closest('tr')!;
+    const row = screen.getByText('GPT-5').closest('tr')!;
     const cells = within(row).getAllByRole('cell');
     expect(cells[2].textContent).toBe('12,000,000');
     expect(cells[5].textContent).toBe('1,300,000');
@@ -223,11 +233,11 @@ describe('ModelBreakdownTable', () => {
       />
     );
 
-    const row = screen.getByText('anthropic/legacy-model').closest('tr')!;
+    const row = screen.getByText('legacy-model').closest('tr')!;
     expect(
       within(row)
         .getAllByRole('cell')
         .map((cell) => cell.textContent)
-    ).toEqual(['anthropic/legacy-model', '2', '100', 'Not recorded', '5', '20', '125', '$1.25']);
+    ).toEqual(['legacy-model', '2', '100', 'Not recorded', '5', '20', '125', '$1.25']);
   });
 });

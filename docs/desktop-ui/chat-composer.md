@@ -19,7 +19,7 @@ The card holds, from the top: the message queue, any notice (no model, a usage l
 
 The controls keep to the text's last line, so a long draft never moves them. The row is `.br-composer-row` in `composer/composer.css`; each control sits in a 32px slot, centred, so the 28px microphone and the 32px buttons share one centre line with a single line of text.
 
-Under the card, the footer line (`bottom_menu/ComposerFooter.tsx`): the working folder on the left; the model, the context ring and the chat's cost (where its usage limit is set) on the right. On Home only the folder and the model show. The model chip opens its menu above the card, never over the draft (`ModelsBottomBar`'s `menuClearOf`). The folder, the ring and the cost open footer cards: a hover peeks, a click pins ([shared controls](shared-controls.md), "Hover and click").
+Under the card, the footer line (`bottom_menu/ComposerFooter.tsx`): the working folder on the left; the model, the context ring and the chat's cost (where its usage limit is set) on the right. On Home only the folder and the model show. The model chip opens its menu above the card, never over the draft (`ModelsBottomBar`'s `menuClearOf`). It names the model by its display name, the one name every surface uses ("Claude Haiku 5.5" for `us.anthropic.claude-haiku-5-5`, from `modelDisplayName` in `bottom_menu/modelLabel.ts`, which `bottom_menu/modelNameSurfaces.test.ts` holds every surface to); the raw id is in the chip's tooltip and in an InfoTip beside the name in its menu. The folder, the ring and the cost open footer cards: a hover peeks, a click pins ([shared controls](shared-controls.md), "Hover and click").
 
 ## The `+` popover
 

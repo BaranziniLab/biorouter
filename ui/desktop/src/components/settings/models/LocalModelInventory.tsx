@@ -51,8 +51,9 @@ const progressLabel = (progress: PullProgress) => {
   return progress.status;
 };
 
-const operationFallbackLabel = (operation: LlamaServerOperation) =>
-  operation.kind === 'warmup' ? `Warming up ${operation.model}…` : `Preparing ${operation.model}…`;
+// Named by the catalog's display name, as the row above it is (T1 F2).
+const operationFallbackLabel = (operation: LlamaServerOperation, name: string) =>
+  operation.kind === 'warmup' ? `Warming up ${name}…` : `Preparing ${name}…`;
 
 const terminalErrorTitle = (kind: 'install' | 'start' | 'warmup') =>
   kind === 'warmup'
@@ -533,7 +534,7 @@ export default function LocalModelInventory() {
           const installed = isInstalled(model);
           const mine = operation && operation.model === model.name ? operation : null;
           const busyLabel = mine
-            ? compactStatusMessage(mine.message ?? operationFallbackLabel(mine))
+            ? compactStatusMessage(mine.message ?? operationFallbackLabel(mine, model.display_name))
             : deleteAction && deleteAction.model === model.name
               ? deleteAction.message
               : null;

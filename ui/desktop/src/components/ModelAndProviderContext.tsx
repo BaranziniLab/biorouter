@@ -59,6 +59,7 @@ import {
 import { localModelsCopy } from './settings/models/copy';
 import { llamaCopy, splitMemoryWarning } from './onboarding/copy';
 import { homeFolder, tildePath } from '../utils/folderPath';
+import { modelDisplayName } from './bottom_menu/modelLabel';
 
 // titles
 export const UNKNOWN_PROVIDER_TITLE = 'Provider name lookup';
@@ -634,7 +635,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         (providerName === LOCAL_PROVIDER
           ? localModelNamesRef.current?.get(modelName)
           : undefined) ??
-        modelName;
+        modelDisplayName(modelName);
 
       try {
         if (providerName === LOCAL_PROVIDER) {
@@ -798,7 +799,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         // it goes when the person leaves, instead of lingering over another
         // screen's controls.
         toastError({
-          title: `${providerName}/${modelName} failed`,
+          title: `${providerName}/${modelDisplayName(modelName)} failed`,
           msg: `${error}`,
           traceback: error instanceof Error ? error.message : String(error),
           scope: 'screen',

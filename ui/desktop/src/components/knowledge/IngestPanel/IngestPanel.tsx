@@ -1,4 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import { modelDisplayName } from '../../bottom_menu/modelLabel';
 import { InfoTip } from '../../ui/info-tip';
 import { Progress } from '../../ui/progress';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../ui/Tooltip';
@@ -217,7 +218,7 @@ export function IngestPanel() {
       await refresh();
       toastSuccess({
         title: 'Knowledge model updated',
-        msg: `${next.provider} / ${next.model} will digest staged sources and scheduled knowledge jobs.`,
+        msg: `${next.provider} / ${modelDisplayName(next.model)} will digest staged sources and scheduled knowledge jobs.`,
       });
     } catch (err) {
       setModelOverride(previousOverride);

@@ -1,8 +1,9 @@
 import type { ProviderDetails } from '../../../api';
-import { getModelDisplayName, getProviderDisplayName } from './predefinedModelsUtils';
+import { modelDisplayName } from '../../bottom_menu/modelLabel';
+import { getProviderDisplayName } from './predefinedModelsUtils';
 
 /**
- * The Model row's value, "gpt-5.5-2026-04-24 · Versa API Azure", the words the row shows.
+ * The Model row's value, "GPT-5.5 · Versa API Azure", the words the row shows.
  *
  * Both halves are known without asking the daemon anything. The app already holds the model and
  * provider in force (`useModelAndProvider`), and the provider list (`useConfig().providersList`)
@@ -30,7 +31,8 @@ export function knownDefaultModelValue(
   providers: readonly ProviderDetails[] | undefined
 ): string | null {
   if (!currentModel || !currentProvider) return null;
-  const model = getModelDisplayName(currentModel) || currentModel;
+  // The display name every surface shows (T1 F2), a predefined alias first.
+  const model = modelDisplayName(currentModel);
   const pinned = getProviderDisplayName(currentModel);
   if (pinned) return joinModelValue(model, pinned);
   const listed = providers?.find((candidate) => candidate.name === currentProvider);

@@ -100,11 +100,11 @@ describe('the Default worker model row', () => {
     mocks.values[WORKER_PROVIDER_KEY] = 'ollama';
     mocks.values[WORKER_MODEL_KEY] = 'qwen3.8:27b';
     render(<DefaultWorkerModelRow />);
-    await waitFor(() => expect(row()).toHaveTextContent('qwen3.8:27b · Ollama'));
+    await waitFor(() => expect(row()).toHaveTextContent('Qwen3.8 27B · Ollama'));
     expect(row().querySelector('[data-crew-model-tier="private"]')).not.toBeNull();
     expect(row()).not.toHaveTextContent(defaultWorkerModelCopy.sameAsChat);
     // Never the raw provider id where the app has a name for it.
-    expect(row()).not.toHaveTextContent('qwen3.8:27b · ollama');
+    expect(row()).not.toHaveTextContent('Qwen3.8 27B · ollama');
   });
 
   it('offers "Same as the chat’s model" first, then configured chat models only', async () => {
@@ -116,8 +116,8 @@ describe('the Default worker model row', () => {
     const options = within(list).getAllByRole('option');
     expect(options[0]).toHaveTextContent(defaultWorkerModelCopy.sameAsChat);
     expect(options[0]).toHaveAttribute('aria-selected', 'true');
-    expect(within(list).getByRole('option', { name: /^gpt-4o-mini/ })).toBeInTheDocument();
-    expect(within(list).getByRole('option', { name: /^qwen3\.8:27b/ })).toBeInTheDocument();
+    expect(within(list).getByRole('option', { name: /^GPT-4o mini/ })).toBeInTheDocument();
+    expect(within(list).getByRole('option', { name: /^Qwen3\.8 27B/ })).toBeInTheDocument();
     // A decision model cannot carry out a subagent's task; an unconfigured provider cannot run.
     expect(within(list).queryByRole('option', { name: /^tev1/ })).toBeNull();
     expect(within(list).queryByRole('option', { name: /^claude-sonnet/ })).toBeNull();
@@ -128,8 +128,8 @@ describe('the Default worker model row', () => {
     render(<DefaultWorkerModelRow />);
     await waitFor(() => expect(change()).toBeEnabled());
     await user.click(change());
-    await user.click(await screen.findByRole('option', { name: /^gpt-4o-mini/ }));
-    await waitFor(() => expect(row()).toHaveTextContent('gpt-4o-mini · OpenAI'));
+    await user.click(await screen.findByRole('option', { name: /^GPT-4o mini/ }));
+    await waitFor(() => expect(row()).toHaveTextContent('GPT-4o mini · OpenAI'));
     expect(mocks.writes).toEqual([`upsert ${WORKER_MODEL_KEY}`, `upsert ${WORKER_PROVIDER_KEY}`]);
     expect(mocks.upsert).toHaveBeenCalledWith(WORKER_MODEL_KEY, 'gpt-4o-mini', false);
     expect(mocks.upsert).toHaveBeenCalledWith(WORKER_PROVIDER_KEY, 'openai', false);
@@ -140,10 +140,10 @@ describe('the Default worker model row', () => {
     mocks.values[WORKER_MODEL_KEY] = 'qwen3.8:27b';
     const user = userEvent.setup();
     render(<DefaultWorkerModelRow />);
-    await waitFor(() => expect(row()).toHaveTextContent('qwen3.8:27b · Ollama'));
+    await waitFor(() => expect(row()).toHaveTextContent('Qwen3.8 27B · Ollama'));
     await user.click(change());
-    await user.click(await screen.findByRole('option', { name: /^gpt-4o-mini/ }));
-    await waitFor(() => expect(row()).toHaveTextContent('gpt-4o-mini · OpenAI'));
+    await user.click(await screen.findByRole('option', { name: /^GPT-4o mini/ }));
+    await waitFor(() => expect(row()).toHaveTextContent('GPT-4o mini · OpenAI'));
     expect(mocks.writes).toEqual([
       `remove ${WORKER_PROVIDER_KEY}`,
       `upsert ${WORKER_MODEL_KEY}`,
@@ -156,7 +156,7 @@ describe('the Default worker model row', () => {
     mocks.values[WORKER_MODEL_KEY] = 'qwen3.8:27b';
     const user = userEvent.setup();
     render(<DefaultWorkerModelRow />);
-    await waitFor(() => expect(row()).toHaveTextContent('qwen3.8:27b · Ollama'));
+    await waitFor(() => expect(row()).toHaveTextContent('Qwen3.8 27B · Ollama'));
     await user.click(change());
     await user.click(
       await screen.findByRole('option', { name: defaultWorkerModelCopy.sameAsChat })
@@ -180,7 +180,7 @@ describe('the Default worker model row', () => {
     render(<DefaultWorkerModelRow />);
     await waitFor(() => expect(change()).toBeEnabled());
     await user.click(change());
-    await user.click(await screen.findByRole('option', { name: /^gpt-4o-mini/ }));
+    await user.click(await screen.findByRole('option', { name: /^GPT-4o mini/ }));
     await waitFor(() =>
       expect(row()).toHaveTextContent(defaultWorkerModelCopy.saveFailed('400 Bad Request'))
     );
@@ -193,7 +193,7 @@ describe('the Default worker model row', () => {
     mocks.values[WORKER_PROVIDER_KEY] = 'openai';
     mocks.values[WORKER_MODEL_KEY] = 'gpt-4o-mini';
     act(() => announceAppModelSelection());
-    await waitFor(() => expect(row()).toHaveTextContent('gpt-4o-mini · OpenAI'));
+    await waitFor(() => expect(row()).toHaveTextContent('GPT-4o mini · OpenAI'));
   });
 });
 

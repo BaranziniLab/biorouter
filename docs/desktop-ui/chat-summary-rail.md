@@ -389,7 +389,7 @@ mounted for the chat.
   subagent's conversation and not its parent's), closed by default, whose heading carries the
   token figure alone ("392k tokens",
   also its accessible description; nothing while Tokens is not known). Open, a `dl` of 28px
-  rows: Model (the chat's model by its short name, as the model chip names it), Privacy
+  rows: Model (the chat's model by its display name, as the model chip names it), Privacy
   (Private or Public, while privacy tiers are on), Tool calls, Tokens (with an InfoTip saying
   what is counted), Artifacts, and Code as `+N −M` in success and danger ink, read as words. The
   chat's cost is not repeated here: the composer footer's cost card, right under the summary,

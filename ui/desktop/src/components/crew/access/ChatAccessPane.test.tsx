@@ -1231,7 +1231,7 @@ describe('chat access: the chat’s model and workspace, before Allow', () => {
         .map((term) => term.textContent)
     ).toEqual([accessCopy.consentWorkspace, accessCopy.consentModel]);
     expect(paneNode).toHaveTextContent(/Workspace\s*lab/);
-    await waitFor(() => expect(pane()).toHaveTextContent('gpt-5.5 · Versa'));
+    await waitFor(() => expect(pane()).toHaveTextContent('GPT-5.5 · Versa'));
     expect(pane().querySelector('[data-crew-model-tier="private"]')).not.toBeNull();
     expect(pane()).toHaveTextContent(
       'The first access fixes this chat’s workspace, channel and model.'
@@ -1247,7 +1247,7 @@ describe('chat access: the chat’s model and workspace, before Allow', () => {
     chatOn('stanford_gateway', 'gpt-5.5');
     setup({});
     await openPaneFromNote(accessCopy.noteReviewName);
-    const reason = agentCopy.institutionMismatch('gpt-5.5', 'Stanford', 'lab', 'ucsf');
+    const reason = agentCopy.institutionMismatch('GPT-5.5', 'Stanford', 'lab', 'ucsf');
     expect(await within(pane()).findByText(reason)).toBeInTheDocument();
     expect(allow()).toBeDisabled();
     expect(allow()).toHaveAccessibleDescription(reason);
@@ -1268,7 +1268,7 @@ describe('chat access: the chat’s model and workspace, before Allow', () => {
     chatOn('versa_azure', 'gpt-5.5');
     setup({});
     await openPaneFromNote(accessCopy.noteReviewName);
-    await waitFor(() => expect(pane()).toHaveTextContent('gpt-5.5 · Versa'));
+    await waitFor(() => expect(pane()).toHaveTextContent('GPT-5.5 · Versa'));
     expect(allow()).toBeEnabled();
     act(() =>
       announceSessionBinding({ sessionId: 'agent-1', provider: 'openrouter', model: 'free-model' })

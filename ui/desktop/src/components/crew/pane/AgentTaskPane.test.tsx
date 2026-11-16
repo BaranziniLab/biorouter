@@ -186,9 +186,10 @@ async function openAgent(user: ReturnType<typeof userEvent.setup>) {
   return screen.findByLabelText(agentCopy.task);
 }
 
-async function chooseModel(user: ReturnType<typeof userEvent.setup>, model: string) {
+/** Picks a row by the name it shows: its display name (`GPT-5.5`), or a short id it keeps. */
+async function chooseModel(user: ReturnType<typeof userEvent.setup>, shown: string) {
   await user.click(screen.getByRole('button', { name: /^Model/ }));
-  await user.click(await screen.findByRole('option', { name: new RegExp(`^${model}`) }));
+  await user.click(await screen.findByRole('option', { name: new RegExp(`^${shown}`) }));
 }
 
 beforeEach(() => {
@@ -452,18 +453,18 @@ describe('AgentTaskPane', () => {
       );
       renderCrew(Layout);
       const task = await openAgent(user);
-      expect(await screen.findByText('gpt-5.5 · Versa')).toBeInTheDocument();
+      expect(await screen.findByText('GPT-5.5 · Versa')).toBeInTheDocument();
       expect(screen.getByRole('group', { name: agentCopy.model })).toHaveTextContent(
-        'gpt-5.5 · Versa'
+        'GPT-5.5 · Versa'
       );
       expect(screen.queryByRole('button', { name: /^Model/ })).toBeNull();
       // It wraps rather than ellipsizing: the provider was the part a truncation cut (T-47).
-      expect(screen.getByText('gpt-5.5 · Versa')).not.toHaveClass('truncate');
+      expect(screen.getByText('GPT-5.5 · Versa')).not.toHaveClass('truncate');
       // The label sits above the value, as Task's does, not centred beside what wraps (Q2-67).
       const group = screen.getByRole('group', { name: agentCopy.model });
       const label = within(group).getByText(agentCopy.model);
       expect(label.parentElement).toBe(group);
-      expect(label.nextElementSibling).toContainElement(screen.getByText('gpt-5.5 · Versa'));
+      expect(label.nextElementSibling).toContainElement(screen.getByText('GPT-5.5 · Versa'));
       expect(group).toHaveClass('flex-col');
       // One mark with words (Q2-67). #general is Restricted in a Private workspace, so only a
       // private model can run this task, and the mark says so in the task's words.
@@ -500,7 +501,7 @@ describe('AgentTaskPane', () => {
         await screen.findByRole('listbox', { name: agentCopy.modelsLabel })
       ).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /^Model/ })).toHaveAccessibleName(
-        'Model gpt-5.5 · Versa'
+        'Model GPT-5.5 · Versa'
       );
       await user.click(screen.getByRole('option', { name: /^free-model/ }));
       expect(screen.getByRole('button', { name: /^Model/ })).toHaveAccessibleName(
@@ -582,7 +583,7 @@ describe('AgentTaskPane', () => {
       expect(screen.getByText(refusal)).toBeInTheDocument();
       expect(startButton()).toBeDisabled();
       expect(startButton()).toHaveAccessibleDescription(refusal);
-      await chooseModel(user, 'gpt-5.5');
+      await chooseModel(user, 'GPT-5.5');
       expect(screen.queryByText(refusal)).toBeNull();
       expect(startButton()).toBeEnabled();
     });
@@ -680,7 +681,7 @@ describe('AgentTaskPane', () => {
 
   describe('Institution (T-47)', () => {
     const mismatch = agentCopy.institutionMismatch(
-      'gpt-5.5',
+      'GPT-5.5',
       'UCSF',
       'foreign-lab',
       'foreign-synthetic'
@@ -695,7 +696,7 @@ describe('AgentTaskPane', () => {
       const task = await openAgent(user);
       expect(await screen.findByText(mismatch)).toBeInTheDocument();
       expect(mismatch).toBe(
-        'gpt-5.5 is approved for UCSF. foreign-lab uses foreign-synthetic. Choose a model approved for foreign-synthetic, or a local model.'
+        'GPT-5.5 is approved for UCSF. foreign-lab uses foreign-synthetic. Choose a model approved for foreign-synthetic, or a local model.'
       );
       expect(startButton()).toBeDisabled();
       expect(startButton()).toHaveAccessibleDescription(mismatch);
@@ -716,10 +717,10 @@ describe('AgentTaskPane', () => {
       const list = await screen.findByRole('listbox', { name: agentCopy.modelsLabel });
       const notHere = agentCopy.notApproved('foreign-synthetic');
       expect(within(list).getByRole('group', { name: /Versa/ })).toHaveTextContent(notHere);
-      expect(within(list).getByRole('option', { name: /^gpt-5\.5/ })).toHaveTextContent(notHere);
+      expect(within(list).getByRole('option', { name: /^GPT-5\.5/ })).toHaveTextContent(notHere);
       expect(within(list).getByRole('group', { name: /Ollama/ })).not.toHaveTextContent(notHere);
 
-      await user.click(within(list).getByRole('option', { name: /^qwen3\.8:27b/ }));
+      await user.click(within(list).getByRole('option', { name: /^Qwen3\.8 27B/ }));
       expect(screen.queryByText(mismatch)).toBeNull();
       fireEvent.change(task, { target: { value: 'sum the columns' } });
       expect(startButton()).toBeEnabled();
@@ -762,7 +763,7 @@ describe('AgentTaskPane', () => {
       defaultModel('versa_azure', 'gpt-5.5');
       renderCrew(Layout);
       const task = await openAgent(user);
-      await screen.findByText('gpt-5.5 · Versa');
+      await screen.findByText('GPT-5.5 · Versa');
       expect(screen.queryByText(mismatch)).toBeNull();
       fireEvent.change(task, { target: { value: 'public work' } });
       expect(startButton()).toBeEnabled();
@@ -784,18 +785,18 @@ describe('AgentTaskPane', () => {
       defaultModel('versa_azure', 'gpt-5.5');
       renderCrew(Layout);
       const task = await openAgent(user);
-      await screen.findByText('gpt-5.5 · Versa');
+      await screen.findByText('GPT-5.5 · Versa');
       fireEvent.change(task, { target: { value: 'try it' } });
       await user.click(startButton());
       await waitFor(() => expect(runPosts()).toHaveLength(1));
       const pane = screen.getByRole('complementary', { name: agentCopy.title });
       expect(await within(pane).findByRole('alert')).toHaveTextContent(
-        agentCopy.institutionRefused('gpt-5.5', 'UCSF')
+        agentCopy.institutionRefused('GPT-5.5', 'UCSF')
       );
       expect(screen.queryByText(/resolved affiliation/)).toBeNull();
 
       await user.click(screen.getByRole('button', { name: agentCopy.modelChangeName }));
-      await user.click(await screen.findByRole('option', { name: /^qwen3\.8:27b/ }));
+      await user.click(await screen.findByRole('option', { name: /^Qwen3\.8 27B/ }));
       await waitFor(() => expect(within(pane).queryByRole('alert')).toBeNull());
       expect(currentCrew().error).toBeNull();
     });

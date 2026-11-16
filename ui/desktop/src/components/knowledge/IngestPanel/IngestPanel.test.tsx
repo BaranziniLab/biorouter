@@ -137,7 +137,7 @@ describe('IngestPanel model selection', () => {
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
     await waitFor(() =>
       expect(trigger).toHaveAccessibleName(
-        knowledgeCopy.ingest.modelTriggerName('gpt-5.5-2026-04-24', 'versa_azure')
+        knowledgeCopy.ingest.modelTriggerName('GPT-5.5', 'versa_azure')
       )
     );
     expect(trigger.textContent).not.toMatch(/anthropic|claude/i);
@@ -171,7 +171,7 @@ describe('IngestPanel model selection', () => {
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
     await waitFor(() =>
       expect(trigger).toHaveAccessibleName(
-        knowledgeCopy.ingest.modelTriggerName('qwen3.8:27b', 'ollama')
+        knowledgeCopy.ingest.modelTriggerName('Qwen3.8 27B', 'ollama')
       )
     );
   });
@@ -308,7 +308,7 @@ describe('IngestPanel model loading state', () => {
 
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
     expect(trigger).toHaveAccessibleName(
-      knowledgeCopy.ingest.modelTriggerName('qwen3.8:27b', 'ollama')
+      knowledgeCopy.ingest.modelTriggerName('Qwen3.8 27B', 'ollama')
     );
 
     fireEvent.click(screen.getByTestId('knowledge-digest-button'));
@@ -351,7 +351,7 @@ describe('IngestPanel model freshness', () => {
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
     await waitFor(() =>
       expect(trigger).toHaveAccessibleName(
-        knowledgeCopy.ingest.modelTriggerName('qwen3.8:27b', 'ollama')
+        knowledgeCopy.ingest.modelTriggerName('Qwen3.8 27B', 'ollama')
       )
     );
 
@@ -364,7 +364,7 @@ describe('IngestPanel model freshness', () => {
     // primary must never be named once the switch has been committed.
     expect(modelLabels()).not.toContain('ollama / qwen3.8:27b');
     expect(trigger).toHaveAccessibleName(
-      knowledgeCopy.ingest.modelTriggerName('gpt-5.5-2026-04-24', 'versa_azure')
+      knowledgeCopy.ingest.modelTriggerName('GPT-5.5', 'versa_azure')
     );
   });
 
@@ -376,7 +376,7 @@ describe('IngestPanel model freshness', () => {
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
     await waitFor(() =>
       expect(trigger).toHaveAccessibleName(
-        knowledgeCopy.ingest.modelTriggerName('gpt-5.5-2026-04-24', 'versa_azure')
+        knowledgeCopy.ingest.modelTriggerName('GPT-5.5', 'versa_azure')
       )
     );
 
@@ -388,7 +388,7 @@ describe('IngestPanel model freshness', () => {
     });
     await waitFor(() =>
       expect(trigger).toHaveAccessibleName(
-        knowledgeCopy.ingest.modelTriggerName('qwen3.8:27b', 'ollama')
+        knowledgeCopy.ingest.modelTriggerName('Qwen3.8 27B', 'ollama')
       )
     );
 
@@ -397,7 +397,7 @@ describe('IngestPanel model freshness', () => {
     rerender(<IngestPanel />);
 
     expect(trigger).toHaveAccessibleName(
-      knowledgeCopy.ingest.modelTriggerName('gpt-5.5-2026-04-24', 'versa_azure')
+      knowledgeCopy.ingest.modelTriggerName('GPT-5.5', 'versa_azure')
     );
 
     stageSomeText();

@@ -68,7 +68,7 @@ describe('PrivacyPanel’s statement about non-private models', () => {
   it('says which side of the line the current model is on', async () => {
     render(<PrivacyPanel />);
     expect(await screen.findByTestId('privacy-current-model-tier')).toHaveTextContent(
-      'Your current model, gpt-5.5-2026-04-24, is private.'
+      'Your current model, GPT-5.5, is private.'
     );
   });
 
@@ -76,7 +76,7 @@ describe('PrivacyPanel’s statement about non-private models', () => {
     mocks.model = { currentModel: 'claude-fable-5-1', currentProvider: 'claude_code' };
     const { unmount } = render(<PrivacyPanel />);
     expect(await screen.findByTestId('privacy-current-model-tier')).toHaveTextContent(
-      'Your current model, claude-fable-5-1, is public.'
+      'Your current model, Claude Fable 5.1, is public.'
     );
     unmount();
 

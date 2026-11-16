@@ -394,7 +394,8 @@ describe('SwitchModelModal — pre-flight, not post-refusal', () => {
     expect(confirm).toBeDisabled();
 
     await act(async () => resolveCodex(['gpt-5.6-sol']));
-    expect(await screen.findByText('gpt-5.6-sol')).toBeInTheDocument();
+    // Chosen and shown by its display name (T1 F2); the submit still names the id.
+    expect(await screen.findByText('GPT-5.6 Sol')).toBeInTheDocument();
     expect(confirm).toBeEnabled();
     fireEvent.click(confirm);
 

@@ -138,7 +138,7 @@ describe('V2-R8-1: a changed binding never wears the previous provider’s tier'
     view.rerender(bar('gwas', GWAS));
 
     const chip = screen.getByTestId('model-chip');
-    expect(chip).toHaveAccessibleName(/Current model: claude-sonnet-4-6/);
+    expect(chip).toHaveAccessibleName(/Current model: Claude Sonnet 4\.6\b/);
     expect(screen.queryByTestId('privacy-badge')).toBeNull();
     expect(chip).not.toHaveAccessibleName(/Private model/);
     // Home's read already listed Bedrock, so its own row is stated at once.
@@ -159,7 +159,7 @@ describe('V2-R8-1: a changed binding never wears the previous provider’s tier'
     view.rerender(bar('gwas', GWAS));
 
     const chip = screen.getByTestId('model-chip');
-    expect(chip).toHaveAccessibleName(/Current model: claude-sonnet-4-6/);
+    expect(chip).toHaveAccessibleName(/Current model: Claude Sonnet 4\.6\b/);
     expect(screen.queryByTestId('privacy-badge')).toBeNull();
     expect(chip).not.toHaveAccessibleName(/Private model/);
     expect(chip).not.toHaveAccessibleName(/Public model/);
@@ -185,7 +185,7 @@ describe('V2-R8-1: a changed binding never wears the previous provider’s tier'
     );
     record.stop();
     // Home's padlock, the chat's name with none, then the chat's own padlock.
-    expect(record.frames).toEqual(['gpt-5.5 +lock', 'qwen3.6', 'qwen3.6 +lock']);
+    expect(record.frames).toEqual(['GPT-5.5 +lock', 'qwen3.6', 'qwen3.6 +lock']);
   });
 
   it('never commits the public chat’s name beside a padlock, there or back', async () => {
@@ -202,6 +202,6 @@ describe('V2-R8-1: a changed binding never wears the previous provider’s tier'
     await act(async () => held.answer([VERSA, BEDROCK, OLLAMA]));
     record.stop();
 
-    expect(record.frames).toEqual(['gpt-5.5 +lock', 'claude-sonnet-4-6', 'gpt-5.5 +lock']);
+    expect(record.frames).toEqual(['GPT-5.5 +lock', 'Claude Sonnet 4.6', 'GPT-5.5 +lock']);
   });
 });

@@ -467,7 +467,7 @@ describe('the Models tab rows in a real layout engine (spec 3.13, 5.7)', () => {
         return Boolean(first) && frames[frames.length - 1].at - first!.at > 900;
       });
       const probe = await tab.evaluate(() => (window as unknown as { __probe: Probe }).__probe);
-      const WORDS = 'gpt-5.6-sol · Versa Azure';
+      const WORDS = 'GPT-5.6 Sol · Versa Azure';
 
       // The first commit that has the Model row already holds the words and no skeleton.
       const commits = probe.commits.slice(probe.commits.findIndex((sample) => sample.hasRow));

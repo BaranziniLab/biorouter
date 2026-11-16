@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
+import { modelDisplayName } from '../bottom_menu/modelLabel';
 import { ChevronDown, ChevronUp, Copilot, X } from '../icons/app-icons';
 import { CopilotRuntimeDetails, runtimeVerdict } from './CopilotSetup';
 import { PermissionCheckButton } from './PermissionCheckButton';
@@ -374,7 +375,7 @@ function SessionCopilotControl({ sessionId }: { sessionId: string }) {
           {browser && <InfoTip label="the computer it controls" help={BROWSER_TARGET_HELP} />}
         </p>
         <p className="break-words">
-          Model: {status.model} · {status.provider}
+          Model: {modelDisplayName(status.model)} · {status.provider}
         </p>
         <p className="break-words">Data destination: {status.destination}</p>
         {requested && !busy ? (

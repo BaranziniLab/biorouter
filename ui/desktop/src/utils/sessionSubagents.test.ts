@@ -335,11 +335,15 @@ describe('labels', () => {
   });
 
   it('shortens model names to fit a narrow row', () => {
-    expect(shortModelLabel('claude-sonnet-4-5-20250929')).toBe('claude-sonnet-4-5');
-    expect(shortModelLabel('accounts/fireworks/models/qwen3-235b')).toBe('qwen3-235b');
-    expect(shortModelLabel('us.anthropic.claude-opus-4-1-20250805-v1:0')).toBe('claude-opus-4-1');
-    expect(shortModelLabel('qwen3.8:latest')).toBe('qwen3.8');
-    expect(shortModelLabel('gpt-5.5-2026-01-15')).toBe('gpt-5.5');
+    // The display name every surface shows (T1 F2), from any provider's spelling.
+    expect(shortModelLabel('claude-sonnet-4-5-20250929')).toBe('Claude Sonnet 4.5');
+    expect(shortModelLabel('accounts/fireworks/models/qwen3-235b')).toBe('Qwen3 235B');
+    expect(shortModelLabel('accounts/fireworks/models/kimi-k2-instruct')).toBe('kimi-k2-instruct');
+    expect(shortModelLabel('us.anthropic.claude-opus-4-1-20250805-v1:0')).toBe('Claude Opus 4.1');
+    // An Ollama tag keeps its `:latest`, as the chip and the decision surfaces name it.
+    expect(shortModelLabel('qwen3.8:latest')).toBe('qwen3.8:latest');
+    expect(shortModelLabel('gpt-5.5-2026-01-15')).toBe('GPT-5.5');
+    expect(shortModelLabel('claude-sonnet-4@20250514')).toBe('Claude Sonnet 4');
     expect(shortModelLabel('a-really-long-model-name-that-goes-on-and-on')).toBe(
       'a-really-long-model-nam…'
     );
@@ -361,7 +365,7 @@ describe('labels', () => {
 
   it('gives the second line the model, the setup as counts and the run time', () => {
     expect(subagentSetup(row())).toEqual({
-      model: 'claude-sonnet-4-5',
+      model: 'Claude Sonnet 4.5',
       counts: [
         { kind: 'extension', count: 2 },
         { kind: 'skill', count: 1 },
@@ -374,10 +378,10 @@ describe('labels', () => {
       subagentSetup(
         row({ extensions: [], skills: ['a', 'b'], knowledgeBases: [], elapsedSeconds: null })
       )
-    ).toEqual({ model: 'claude-sonnet-4-5', counts: [{ kind: 'skill', count: 2 }], elapsed: null });
+    ).toEqual({ model: 'Claude Sonnet 4.5', counts: [{ kind: 'skill', count: 2 }], elapsed: null });
     expect(
       subagentSetup(row({ modelName: 'gpt-5.5', extensions: [], skills: [], elapsedSeconds: 5 }))
-    ).toEqual({ model: 'gpt-5.5', counts: [{ kind: 'knowledge', count: 1 }], elapsed: '5s' });
+    ).toEqual({ model: 'GPT-5.5', counts: [{ kind: 'knowledge', count: 1 }], elapsed: '5s' });
     expect(SETUP_COUNT_KINDS).toEqual(['extension', 'skill', 'knowledge']);
   });
 });

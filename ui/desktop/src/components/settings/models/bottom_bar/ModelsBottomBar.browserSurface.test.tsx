@@ -115,12 +115,15 @@ describe('ModelsBottomBar on a browser-served surface', () => {
     expect(note.textContent).toMatch(/biorouter serve/);
     // The note's info icon sits inside a menu, and is still in the keyboard's reach: the menu's
     // Up and Down visit its InfoTips as well as its rows (`moveFocusAcrossMenuStops`). Here both
-    // rows are disabled, so from the open menu the first Down lands on it.
+    // rows are disabled, so from the open menu the first Down lands on the InfoTip beside the
+    // model's name (its id, T1 F2), and the next on the note's.
     const tip = note.querySelector<HTMLElement>('[data-slot="info-tip-trigger"]')!;
     expect(tip).not.toBeNull();
     const menu = note.closest<HTMLElement>('[role="menu"]')!;
     act(() => menu.focus());
     fireEvent.keyDown(menu, { key: 'ArrowDown' });
+    expect(screen.getByTestId('model-id-info')).toHaveFocus();
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
     expect(tip).toHaveFocus();
 
     expect(screen.getByRole('menuitem', { name: /Change model/ })).toHaveAttribute(

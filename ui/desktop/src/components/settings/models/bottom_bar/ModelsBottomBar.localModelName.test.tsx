@@ -178,13 +178,23 @@ describe('the model chip on a Llama Server model', () => {
     expect(chip.getAttribute('aria-label')).toMatch(/Model: gemma4-31b$/);
   });
 
-  it('leaves every other model as it was: no catalog read, no id tail', async () => {
+  it('names every other model by its display name, with no catalog read', async () => {
     selection = { model: 'gpt-5.5-2026-04-24', provider: 'versa_azure' };
     renderBar({});
     const chip = await screen.findByTestId('model-chip');
-    await waitFor(() => expect(chip).toHaveTextContent('gpt-5.5'));
-    expect(chip).toHaveAccessibleName(/^Current model: gpt-5\.5-2026-04-24\b/);
-    expect(chip.getAttribute('aria-label')).not.toMatch(/Model: gpt/);
+    // T1 F2: every model goes by the name every surface shows, and the id it stands for closes
+    // the accessible name, as a Llama Server model's does.
+    await waitFor(() => expect(chip).toHaveTextContent('GPT-5.5'));
+    expect(chip).toHaveAccessibleName(/^Current model: GPT-5\.5\b/);
+    expect(chip.getAttribute('aria-label')).toMatch(/Model: gpt-5\.5-2026-04-24$/);
     expect(mocks.llamacppStatus).not.toHaveBeenCalled();
+  });
+
+  it('adds no id to a model whose name is its id', async () => {
+    selection = { model: 'tev1:0.8b', provider: 'ollama' };
+    renderBar({});
+    const chip = await screen.findByTestId('model-chip');
+    await waitFor(() => expect(chip).toHaveTextContent('tev1:0.8b'));
+    expect(chip.getAttribute('aria-label')).not.toMatch(/Model: /);
   });
 });

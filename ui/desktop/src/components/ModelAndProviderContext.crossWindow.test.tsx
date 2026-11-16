@@ -135,12 +135,19 @@ const PROVIDER_ROWS = [
   providerRow('codex', 'Codex', 'public'),
 ];
 
-/** The chip's accessible name, exactly as a screen reader — or QA — reads it. */
+/**
+ * The chip's accessible name, exactly as a screen reader — or QA — reads it: the model by its
+ * display name (T1 F2), the chat's tier when it has one, then the id the name stands for.
+ */
+const chipName = (model: string, shown: string, chat?: string) =>
+  `Current model: ${shown}.${chat ? ` ${chat}` : ''} Model: ${model}`;
 const CHIP = {
-  [PRIVATE.model]: `Current model: ${PRIVATE.model} (Private model, UCSF)`,
-  [PUBLIC.model]: `Current model: ${PUBLIC.model} (Public model)`,
-  [CODEX.model]: `Current model: ${CODEX.model} (Public model)`,
+  [PRIVATE.model]: chipName(PRIVATE.model, 'GPT-5.5 (Private model, UCSF)'),
+  [PUBLIC.model]: chipName(PUBLIC.model, 'Claude Fable 5.1 (Public model)'),
+  [CODEX.model]: chipName(CODEX.model, 'GPT-6 Astra (Public model)'),
 };
+const PRIVATE_CHAT =
+  'Private chat. Biorouter only lets private models, decision models included, read it.';
 
 /** The chip's label for whatever pair the daemon holds right now. */
 const chipForDaemon = () => CHIP[nextNewChatBinding().model as string];
@@ -494,7 +501,7 @@ describe('F3 — a write nothing announces', () => {
       expect.objectContaining({
         title: 'Message not sent',
         msg: expect.stringContaining(
-          `New chats now start on ${PUBLIC.model} (Claude Code, a public model), not ${PRIVATE.model}`
+          'New chats now start on Claude Fable 5.1 (Claude Code, a public model), not GPT-5.5'
         ),
       })
     );
@@ -553,7 +560,7 @@ describe('F3 / privacy-tiers P4 — a switch made in a chat is about that chat',
     expect(chipIn('window 2')).toHaveAccessibleName(chipForDaemon());
     expect(mocks.toastSuccess).toHaveBeenCalledWith(
       expect.objectContaining({
-        msg: `This chat now uses ${CODEX.model} from ${CODEX.provider}. Other chats, and new ones, are unchanged.`,
+        msg: `This chat now uses GPT-6 Astra from ${CODEX.provider}. Other chats, and new ones, are unchanged.`,
       })
     );
   });
@@ -598,7 +605,7 @@ describe('F3 — the pin still outranks a stale row', () => {
     );
     await expectChip(
       'window 2',
-      `${CHIP[PRIVATE.model]}. Private chat. Biorouter only lets private models, decision models included, read it.`
+      chipName(PRIVATE.model, 'GPT-5.5 (Private model, UCSF)', PRIVATE_CHAT)
     );
 
     fireEvent.click(inWindow('window 1').getByRole('button', { name: /to Claude Code/ }));
@@ -606,7 +613,7 @@ describe('F3 — the pin still outranks a stale row', () => {
     await expectChip('window 1', CHIP[PUBLIC.model]);
 
     expect(chipIn('window 2')).toHaveAccessibleName(
-      `${CHIP[PRIVATE.model]}. Private chat. Biorouter only lets private models, decision models included, read it.`
+      chipName(PRIVATE.model, 'GPT-5.5 (Private model, UCSF)', PRIVATE_CHAT)
     );
     expect(chipIn('window 2')).not.toHaveAccessibleName(new RegExp(CODEX.model));
     expect(chipIn('window 2')).not.toHaveAccessibleName(new RegExp(PUBLIC.model));

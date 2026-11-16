@@ -11,6 +11,7 @@ import {
 } from '../api/sdk.gen';
 import type { ListSessionDecisionsData, PutDecisionSettingsData } from '../api/types.gen';
 import { decisionModelName } from './usageStats';
+import { modelDisplayName } from '../components/bottom_menu/modelLabel';
 import { userActionHeaders } from './userAction';
 
 /**
@@ -404,11 +405,13 @@ export interface GateJudge {
   reason: string | null;
 }
 
-/** `gpt-5.5, the chat's model` or `joey-1, a decision model`. */
+/**
+ * `GPT-5.5, the chat's model` or `joey-1, a decision model`: the model by the display name the
+ * chat model chip gives it (T1 F2).
+ */
 export function gateJudgeWords(judge: GateJudge): string {
-  return judge.kind === 'chat_model'
-    ? `${judge.model}, the chat's model`
-    : `${judge.model}, a decision model`;
+  const model = modelDisplayName(judge.model);
+  return judge.kind === 'chat_model' ? `${model}, the chat's model` : `${model}, a decision model`;
 }
 
 function parseGateJudge(value: unknown): GateJudge | null {
@@ -1489,17 +1492,17 @@ export function formatLatency(ms: number | null | undefined): string | null {
 /**
  * A model reference as the person reads it: a Baseten slug by its alias
  * (`joey-1`, as the model picker, the Usage panel and the decision chat's reply
- * name it; `baseten_display_name` in `providers/decision/catalog.rs`), an Ollama
- * tag by its last path segment (`tev1:0.8b`). The provider goes after it in a
- * title. The record keeps the slug.
+ * name it; `baseten_display_name` in `providers/decision/catalog.rs`), any other
+ * model by the display name the chat model chip gives it (`modelDisplayName`:
+ * `tev1:0.8b`, "Qwen3 1.7B" for `qwen3:1.7b`; T1 F2). The provider goes after it
+ * in a title. The record keeps the slug.
  */
 export function decisionModelLabel(
   model: Pick<DecisionModelRef, 'provider' | 'model'> | null | undefined
 ): string | null {
   if (!model) return null;
   if (model.provider === 'baseten_decision') return decisionModelName(model.model) || model.model;
-  const name = model.model.slice(model.model.lastIndexOf('/') + 1);
-  return name || model.model;
+  return modelDisplayName(model.model) || model.model;
 }
 
 /** What a probability's source means, in words. Uncalibrated is always said. */

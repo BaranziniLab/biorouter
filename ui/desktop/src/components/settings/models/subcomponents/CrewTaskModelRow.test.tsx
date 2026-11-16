@@ -87,7 +87,7 @@ describe('the Crew tasks row (OW-11)', () => {
   it('names its own model with the tier mark', async () => {
     mocks.values.CREW_TASK_MODEL = { provider: 'ollama', model: 'qwen3.8:27b' };
     render(<CrewTaskModelRow />);
-    await waitFor(() => expect(row()).toHaveTextContent('qwen3.8:27b · Ollama'));
+    await waitFor(() => expect(row()).toHaveTextContent('Qwen3.8 27B · Ollama'));
     expect(row().querySelector('[data-crew-model-tier="private"]')).not.toBeNull();
     expect(row()).not.toHaveTextContent(crewTaskModelCopy.sameAsNewChats);
   });
@@ -101,10 +101,10 @@ describe('the Crew tasks row (OW-11)', () => {
     const options = within(list).getAllByRole('option');
     expect(options[0]).toHaveTextContent(crewTaskModelCopy.sameAsNewChats);
     expect(options[0]).toHaveAttribute('aria-selected', 'true');
-    expect(within(list).getByRole('option', { name: /^gpt-5\.5/ })).toBeInTheDocument();
-    expect(within(list).getByRole('option', { name: /^qwen3\.8:27b/ })).toBeInTheDocument();
+    expect(within(list).getByRole('option', { name: /^GPT-5\.5/ })).toBeInTheDocument();
+    expect(within(list).getByRole('option', { name: /^Qwen3\.8 27B/ })).toBeInTheDocument();
     expect(within(list).getByRole('option', { name: /^opus/ })).toBeInTheDocument();
-    expect(within(list).getByRole('option', { name: /^gpt-6-sol/ })).toBeInTheDocument();
+    expect(within(list).getByRole('option', { name: /^GPT-6 Sol/ })).toBeInTheDocument();
   });
 
   it('saves Claude Code as the model for Crew tasks and names it with its public mark', async () => {
@@ -128,20 +128,20 @@ describe('the Crew tasks row (OW-11)', () => {
     render(<CrewTaskModelRow />);
     await waitFor(() => expect(change()).toBeEnabled());
     await user.click(change());
-    await user.click(await screen.findByRole('option', { name: /^qwen3\.8:27b/ }));
+    await user.click(await screen.findByRole('option', { name: /^Qwen3\.8 27B/ }));
     expect(mocks.upsert).toHaveBeenCalledWith(
       'CREW_TASK_MODEL',
       { provider: 'ollama', model: 'qwen3.8:27b' },
       false
     );
-    await waitFor(() => expect(row()).toHaveTextContent('qwen3.8:27b · Ollama'));
+    await waitFor(() => expect(row()).toHaveTextContent('Qwen3.8 27B · Ollama'));
   });
 
   it('removes the key for "Same as new chats"', async () => {
     mocks.values.CREW_TASK_MODEL = { provider: 'ollama', model: 'qwen3.8:27b' };
     const user = userEvent.setup();
     render(<CrewTaskModelRow />);
-    await waitFor(() => expect(row()).toHaveTextContent('qwen3.8:27b · Ollama'));
+    await waitFor(() => expect(row()).toHaveTextContent('Qwen3.8 27B · Ollama'));
     await user.click(change());
     await user.click(await screen.findByRole('option', { name: crewTaskModelCopy.sameAsNewChats }));
     expect(mocks.remove).toHaveBeenCalledWith('CREW_TASK_MODEL', false);
@@ -165,7 +165,7 @@ describe('the Crew tasks row (OW-11)', () => {
     render(<CrewTaskModelRow />);
     await waitFor(() => expect(change()).toBeEnabled());
     await user.click(change());
-    await user.click(await screen.findByRole('option', { name: /^gpt-5\.5/ }));
+    await user.click(await screen.findByRole('option', { name: /^GPT-5\.5/ }));
     await waitFor(() =>
       expect(row()).toHaveTextContent(crewTaskModelCopy.saveFailed('409 Conflict'))
     );
@@ -177,6 +177,6 @@ describe('the Crew tasks row (OW-11)', () => {
     await waitFor(() => expect(row()).toHaveTextContent(crewTaskModelCopy.sameAsNewChats));
     mocks.values.CREW_TASK_MODEL = { provider: 'versa_azure', model: 'gpt-5.5' };
     act(() => announceAppModelSelection());
-    await waitFor(() => expect(row()).toHaveTextContent('gpt-5.5 · Versa'));
+    await waitFor(() => expect(row()).toHaveTextContent('GPT-5.5 · Versa'));
   });
 });

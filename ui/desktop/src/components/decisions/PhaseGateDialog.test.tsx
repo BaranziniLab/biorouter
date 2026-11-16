@@ -309,7 +309,7 @@ describe('what the dialog says about a gate', () => {
     draw({ phase, phases });
     const details = openDetails();
     expect(screen.getByTestId('phase-gate-judge')).toHaveTextContent(
-      /^gpt-5\.5, the chat's model$/
+      /^GPT-5\.5, the chat's model$/
     );
     expect(screen.getByTestId('phase-gate-judge-reason')).toHaveTextContent(
       "This chat has no decision model it may use, so gpt-5.5, the chat's model, judged the gate."

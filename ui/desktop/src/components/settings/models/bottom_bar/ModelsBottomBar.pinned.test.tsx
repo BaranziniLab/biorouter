@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import ModelsBottomBar, {
   CHAT_KEEPS_ITS_MODEL_NOTE,
@@ -116,11 +116,9 @@ describe('a chat bound to something other than the app-wide selection', () => {
   it('names the model that actually runs here, not the app-wide selection', async () => {
     renderBar(PINNED);
     await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: /Current model: gpt-5\.5-2026-04-24/ })
-      ).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /Current model: GPT-5\.5\b/ })).toBeInTheDocument()
     );
-    expect(screen.queryByText('claude-opus-5')).toBeNull();
+    expect(screen.queryByText('Claude Opus 5')).toBeNull();
   });
 
   /**
@@ -143,8 +141,13 @@ describe('a chat bound to something other than the app-wide selection', () => {
     // event, exactly as the sibling suite in this directory does it.
     fireEvent.pointerDown(screen.getByLabelText(/Current model/), { button: 0, ctrlKey: false });
     await screen.findByText('Current model');
-    // The name on its own line, then the provider by its display name.
-    expect(screen.getByText('gpt-5.5-2026-04-24')).toBeInTheDocument();
+    // The name on its own line, by the display name the chip shows (T1 F2), its id in the
+    // InfoTip beside it, then the provider by its display name.
+    const menu = screen.getByRole('menu');
+    expect(within(menu).getByText('GPT-5.5')).toBeInTheDocument();
+    expect(
+      within(menu).getByRole('button', { name: 'About the model id' })
+    ).toHaveAccessibleDescription('Model: gpt-5.5-2026-04-24');
     await waitFor(() =>
       expect(screen.getByTestId('model-provider-line')).toHaveTextContent(/^Versa API Azure/)
     );
@@ -154,10 +157,10 @@ describe('a chat bound to something other than the app-wide selection', () => {
     renderBar(undefined);
     await waitFor(() =>
       expect(
-        screen.getByRole('button', { name: /Current model: claude-opus-5/ })
+        screen.getByRole('button', { name: /Current model: Claude Opus 5\b/ })
       ).toBeInTheDocument()
     );
-    expect(screen.queryByText('gpt-5.5-2026-04-24')).toBeNull();
+    expect(screen.queryByText('GPT-5.5')).toBeNull();
   });
 
   /**

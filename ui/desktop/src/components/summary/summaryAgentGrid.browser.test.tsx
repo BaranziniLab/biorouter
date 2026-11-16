@@ -544,7 +544,7 @@ describe('the agent grid in the summary card, in a real layout engine', () => {
       expect(placed.pinned).toBe(null);
       // The card names the agent, its model and where it runs, its status and time, and Open.
       expect(placed.text).toContain('Checker 10');
-      expect(placed.text).toContain('claude-sonnet-4-5 · Public');
+      expect(placed.text).toContain('Claude Sonnet 4.5 · Public');
       expect(placed.text).toContain('Running');
       expect(placed.text).toContain('Open in a tab');
       // The chat's monitor that watches its subagents is named on the card.

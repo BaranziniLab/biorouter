@@ -1,5 +1,6 @@
 import type { PinnedModelView } from '../../hooks/chatStreamStore';
 import type { ProviderTier, Session, SessionClassification } from '../../api/types.gen';
+import { modelDisplayName } from '../bottom_menu/modelLabel';
 
 /**
  * Issue #56 / F2 — what the user is told when a chat runs on a model other than
@@ -162,11 +163,12 @@ export function pinnedModelNoticeParts(notice: string): { lead: string; detail: 
   return match ? { lead: match[1], detail: match[2] } : { lead: notice, detail: '' };
 }
 
-/** `Versa API Azure / gpt-5.5-2026-04-24`, falling back to the raw id. */
+/** `Versa API Azure / GPT-5.5`: the model's display name (T1 F2), after its provider when known. */
 export function bindingLabel(
   providerDisplayName: string | undefined | null,
   model: string
 ): string {
   const provider = providerDisplayName?.trim();
-  return provider ? `${provider} / ${model}` : model;
+  const name = modelDisplayName(model);
+  return provider ? `${provider} / ${name}` : name;
 }

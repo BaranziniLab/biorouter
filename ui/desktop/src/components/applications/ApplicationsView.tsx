@@ -31,6 +31,7 @@ import ExportAppDialog from './ExportAppDialog';
 import type { AppExportRequest, AppExportResult } from '../../utils/appExportRequest';
 import { failureSentence } from '../../utils/ipcError';
 import { isBrowserSurface } from '../../utils/surface';
+import { modelDisplayName } from '../bottom_menu/modelLabel';
 import { userActionHeaders } from '../../utils/userAction';
 import { subscribeSessionRemoved } from '../../utils/sessionListCache';
 import {
@@ -515,7 +516,9 @@ export function ApplicationItem({
     : (buildChat ?? { kind: 'checking' });
   const chatEnabled = buildChatEnabled(chat);
   const chatNote = buildChatNote(chat);
-  const model = app.agent?.model?.model;
+  // The app's model by the display name every surface shows (T1 F2).
+  const modelId = app.agent?.model?.model;
+  const model = modelId ? modelDisplayName(modelId) : undefined;
   const kb = app.agent?.knowledge_base;
   const surface = copy.surface(
     app.surface?.actions?.length ?? 0,

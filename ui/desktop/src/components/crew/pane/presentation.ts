@@ -3,10 +3,8 @@ import {
   affiliationPresentation,
   readProviderAffiliation,
 } from '../../privacy/providerAffiliation';
-import {
-  getModelDisplayName,
-  getProviderDisplayName,
-} from '../../settings/models/predefinedModelsUtils';
+import { modelDisplayName } from '../../bottom_menu/modelLabel';
+import { getProviderDisplayName } from '../../settings/models/predefinedModelsUtils';
 import type { Channel, CrewConnection, Snapshot, Team } from '../crewApi';
 import {
   connectionNames,
@@ -323,9 +321,10 @@ export function sharedWhen(createdAt: number, now: Date = new Date()): string | 
 }
 
 /**
- * A model as the chat composer's model chip names it (T-47): `getModelDisplayName` (the
- * predefined-model alias, else the id) and `getProviderDisplayName` (the predefined subtext), then
- * the provider's own display name. Imported, never re-implemented, so the two surfaces agree.
+ * A model as the chat composer's model chip names it (T-47): `modelDisplayName` (the
+ * predefined-model alias, else the display name every surface shows) and `getProviderDisplayName`
+ * (the predefined subtext), then the provider's own display name. Imported, never re-implemented,
+ * so the surfaces agree.
  */
 export function modelDisplay(
   choice: ModelChoice,
@@ -336,7 +335,8 @@ export function modelDisplay(
   // would log a parse failure on every render.
   const predefined = typeof window !== 'undefined' && typeof window.appConfig?.get === 'function';
   return {
-    model: (predefined && getModelDisplayName(choice.model)) || choice.model,
+    // The display name every surface shows ("Claude Haiku 5.5"), the predefined alias first.
+    model: modelDisplayName(choice.model),
     provider:
       (predefined && getProviderDisplayName(choice.model)) ||
       providerLabel(provider, choice.provider),

@@ -242,11 +242,12 @@ describe('the cost card', () => {
     const models = within(card).getByRole('list', { name: 'By model' });
     const rows = within(models).getAllByRole('listitem');
     expect(rows).toHaveLength(2);
-    expect(rows[0]).toHaveTextContent('anthropic/claude-opus-4-5');
+    // By the display name the composer's chip shows (T1 F2), never `provider/id`.
+    expect(rows[0]).toHaveTextContent('Claude Opus 4.5');
     expect(within(rows[0]).getByText('$3.50 · 100 in · 50 out')).toHaveClass(
       'br-footer-card__detail'
     );
-    expect(rows[1]).toHaveTextContent('openai/gpt-retired');
+    expect(rows[1]).toHaveTextContent('gpt-retired');
     expect(within(rows[1]).getByText('Unavailable · 20,000 in · 1,500 out')).toBeInTheDocument();
     // Rows of figures carry no action: the card's one control is the estimate's InfoTip.
     expect(within(models).queryByRole('button')).not.toBeInTheDocument();

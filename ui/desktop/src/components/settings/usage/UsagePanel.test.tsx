@@ -417,7 +417,7 @@ describe('UsageReport', () => {
     // Model token flow is one line, with the cache split in its tooltip and read
     // out to a screen reader.
     const table = screen.getByTestId('usage-model-table');
-    const row = within(table).getByText('claude-sonnet-4').closest('tr')!;
+    const row = within(table).getByText('Claude Sonnet 4').closest('tr')!;
     expect(within(row).getByText('anthropic')).toBeTruthy();
     const flow = within(row).getByTestId('usage-model-token-flow');
     expect(flow).toHaveAttribute('title', 'Cache read 500, cache write 100');

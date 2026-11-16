@@ -149,7 +149,8 @@ function modelWords(model: DecisionModelRef, models: readonly DecisionModelEntry
       : entry?.tier === 'public'
         ? supervisionCopy.public
         : null;
-  return [entry?.displayName ?? decisionModelLabel(model) ?? model.model, tier]
+  // Named as the decision model pickers name it (T1 F2), the catalog's name only as a fallback.
+  return [decisionModelLabel(model) ?? entry?.displayName ?? model.model, tier]
     .filter(Boolean)
     .join(' · ');
 }

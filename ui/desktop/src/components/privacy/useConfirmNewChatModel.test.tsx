@@ -83,8 +83,8 @@ describe('useConfirmNewChatModel', () => {
     expect(mocks.toastWarning).toHaveBeenCalledWith({
       title: NEW_CHAT_MODEL_CHANGED_TITLE,
       msg:
-        'New chats now start on claude-fable-5-1 (Claude Code, a public model), not ' +
-        'gpt-5.5-2026-04-24, which this window was still showing. Your message is back in the ' +
+        'New chats now start on Claude Fable 5.1 (Claude Code, a public model), not ' +
+        'GPT-5.5, which this window was still showing. Your message is back in the ' +
         'composer, and the model shown below is the one it will use.',
       // W2-PRV-11 / W2-PRV-16: readable in full, until dismissed, and gone when
       // the person leaves this screen.
@@ -119,7 +119,7 @@ describe('useConfirmNewChatModel', () => {
     expect(await confirm()).toBe(false);
     expect(mocks.toastWarning).toHaveBeenCalledWith(
       expect.objectContaining({
-        msg: expect.stringContaining('New chats now start on gpt-6-astra (codex), not'),
+        msg: expect.stringContaining('New chats now start on GPT-6 Astra (codex), not'),
       })
     );
   });

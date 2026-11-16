@@ -166,7 +166,7 @@ describe('a run nested under its parent reads as subordinate', () => {
     expect(title).not.toHaveClass('text-label');
     const meta = withModel.querySelector('.br-history-row-meta')!;
     expect(meta.querySelector('time')).not.toBeNull();
-    expect(within(meta as HTMLElement).getByText('gpt-5.5')).toBeInTheDocument();
+    expect(within(meta as HTMLElement).getByText('GPT-5.5')).toBeInTheDocument();
     expect(withModel.querySelector('[data-working-dir]')).toBeNull();
     expect(withModel.textContent).not.toMatch(/cohort-study/);
 
@@ -189,7 +189,7 @@ describe('a run nested under its parent reads as subordinate', () => {
     expect(title).toHaveClass('br-history-row-title');
     expect(title).toHaveAttribute('title', 'Run a');
     // The chip carries the short label; the full id is its tooltip's.
-    expect(within(row).getByText('gpt-5.5')).toBeInTheDocument();
+    expect(within(row).getByText('GPT-5.5')).toBeInTheDocument();
     // A run with no role keeps its task-derived title and no tooltip.
     expect(within(rowOf('Run b')!).getByText('Run b')).not.toHaveAttribute('title');
   });

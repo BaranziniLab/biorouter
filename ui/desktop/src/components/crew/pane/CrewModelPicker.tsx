@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useId, useMemo, useState } from 'react';
+import { forwardRef, useCallback, useEffect, useId, useMemo, useState } from 'react';
 import type { ProviderDetails } from '../../../api';
 import { Check, ChevronDown } from '../../icons/app-icons';
 import { useConfig } from '../../ConfigContext';
@@ -20,6 +20,11 @@ import { PrivacyBadge } from '../../ui/PrivacyBadge';
 import { cn } from '../../../utils';
 import { agentCopy } from './copy';
 import { modelDisplay } from './presentation';
+import { modelDisplayName } from '../../bottom_menu/modelLabel';
+import { useOptionalModelAndProvider } from '../../ModelAndProviderContext';
+
+/** The Llama Server provider, whose models go by their catalog names. */
+const LOCAL_MODEL_PROVIDER = 'llamacpp';
 import { providerLabel, type ModelChoice } from './useConfiguredModels';
 import './pane.css';
 
@@ -193,6 +198,20 @@ export function CrewModelList({
 }: CrewModelListProps) {
   const providers = useMemo(() => providersProp ?? [], [providersProp]);
   const providersLoading = providersProp === null;
+  // A row's name is the one the composer's chip shows (T1 F2): a Llama Server model's catalog name
+  // ("Qwen3.8 27B") where the app has read the catalog, else the model's display name.
+  const modelContext = useOptionalModelAndProvider();
+  const localName = modelContext?.localModelDisplayName;
+  const loadLocalNames = modelContext?.loadLocalModelNames;
+  const hasLocal = providers.some((item) => item.name === LOCAL_MODEL_PROVIDER);
+  useEffect(() => {
+    if (hasLocal) void loadLocalNames?.();
+  }, [hasLocal, loadLocalNames]);
+  const nameOf = useCallback(
+    (providerName: string, name: string) =>
+      localName?.(providerName, name) ?? modelDisplayName(name),
+    [localName]
+  );
   const needle = query.trim().toLowerCase();
   const groups = useMemo(
     () =>
@@ -202,8 +221,13 @@ export function CrewModelList({
         const providerMatches =
           needle !== '' &&
           (item.name.toLowerCase().includes(needle) || label.toLowerCase().includes(needle));
+        // A row is found by its display name ("haiku 5.5") or by its id.
         const listed = all.filter(
-          (name) => needle === '' || providerMatches || name.toLowerCase().includes(needle)
+          (name) =>
+            needle === '' ||
+            providerMatches ||
+            name.toLowerCase().includes(needle) ||
+            nameOf(item.name, name).toLowerCase().includes(needle)
         );
         const freeText =
           needle !== '' && !all.some((name) => name.toLowerCase() === needle) ? query.trim() : null;
@@ -215,7 +239,7 @@ export function CrewModelList({
           unavailable: unavailableReason?.(item) ?? null,
         };
       }),
-    [providers, models, needle, query, unavailableReason]
+    [providers, models, needle, query, unavailableReason, nameOf]
   );
   const anyRows = groups.some((group) => group.listed.length > 0 || group.freeText);
   const showLeading =
@@ -269,6 +293,8 @@ export function CrewModelList({
               >
                 {group.listed.map((name) => {
                   const selected = provider === group.provider.name && model === name;
+                  // The display name leads; the id it stands for sits under it, as data.
+                  const display = nameOf(group.provider.name, name);
                   return (
                     <CommandItem
                       key={name}
@@ -276,7 +302,12 @@ export function CrewModelList({
                       onSelect={() => onChoose({ provider: group.provider.name, model: name })}
                     >
                       <span className="flex min-w-0 flex-1 flex-col">
-                        <span className="truncate">{name}</span>
+                        <span className="truncate">{display}</span>
+                        {display !== name && (
+                          <span className="truncate font-mono text-code text-text-muted">
+                            {name}
+                          </span>
+                        )}
                         {group.unavailable && (
                           <span className="text-supporting text-text-muted">
                             {group.unavailable}
