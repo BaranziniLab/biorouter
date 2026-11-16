@@ -22722,6 +22722,49 @@ fail, revert, and record the observed failures in the commit message.
 ⚠ And one case that must **pass**: a public card whose description says "patient". That is the
 false failure Step 2 exists to prevent, and without this test someone will reinstate the keyword list.
 
+## A running turn keeps the capability it started with (2026-11-13)
+
+> **Built 2026-11-13** for issue #56, in commits `6919bdbda` and `ac5695eea` (PR #484). Not an
+> owner ruling, so it carries no DR number. It amends Gates C and E (§9.1 of
+> [privacy-tiers.md](privacy-tiers.md)) and adds a bullet to its
+> [What shipped](privacy-tiers.md#what-shipped-and-what-did-not) ledger.
+
+**The defect.** The reply loop pins the provider a turn's requests run on for the whole turn
+(`reply_internal`'s `reply_provider`), while Gate C and Gate E sampled the provider slot on every
+call. A person who switched a public chat to a private model while a turn ran therefore had private
+extension calls admitted for the rest of that turn, and their results went to the public model the
+turn was still sending to.
+
+**What was built.**
+
+- `Agent::reply` opens a ceiling for the turn (`TurnCeilings::open`): a raw
+  `CallCapability::sample` taken after Gate B's repair and ratchet and before the loop pins its
+  provider. Taking it after the ratchet is what makes it sound: Gate A refuses a public bind on a
+  private row, so the pinned model cannot be less private than the ceiling unless the person
+  declassifies the chat first, and `TurnCeilings::lower` narrows the ceiling to the slot as the pin
+  found it for that case.
+- Every call on the turn is admitted on `CallCapability::no_wider_than(ceiling)` through
+  `Agent::sample_turn_call` and `Agent::capped_to_turn`: the loop's tool calls, the schedule branch,
+  the prefetch, Gate E's roster, the spawn check, and the two knowledge-ingest branches in
+  `knowledge_tool.rs` and `knowledge_source_tool.rs`.
+- `no_wider_than` keeps the fresh sample when it is Public (a switch to a less private model
+  applies at once), takes the ceiling when the ceiling is Public and the sample Private (setting
+  `private_from_next_turn`), and combines affiliations with `composite_affiliation` when both are
+  Private. The master switch comes from the fresh sample.
+- A refusal on a call that `private_from_next_turn` marks uses
+  `privacy::refusal::private_from_next_turn_sentence`, which says the new model takes effect from
+  the next message. A subagent spawn while such a switch waits is refused with
+  `SPAWN_WAITS_FOR_NEXT_TURN` in `agents/agent.rs`.
+- The ceiling is keyed per chat on the Agent, because `biorouter web` shares one agent across
+  chats, and is released when the turn's stream is dropped, however the turn ends.
+
+**Census and tests.** `no_wider_than` has its own row in the guard registry in
+`crates/biorouter/tests/privacy_guard_wiring.rs` (two callers in `agents/agent.rs`). Behaviour is
+tested in `crates/biorouter/src/agents/agent_mid_turn_switch_tests.rs` and, for the spawn refusal,
+by `cargo test -p biorouter --lib -- subagent`.
+
+---
+
 ## DR-33: a chat's decision models count toward its tier, and its least private model sets it
 
 > **Ruled 2026-11-10**, by the owner, after live QA showed that a Versa chat could never use a

@@ -413,6 +413,38 @@ this section is the ledger.
   worker model once at start, which is why `BIOROUTER_LEAD_MODEL` and `BIOROUTER_LEAD_PROVIDER` stay
   capability keys. A chat saved as a lead/worker pair still restores as one, with its `least` tier.
 
+- **A running turn is held to the capability it started with (issue #56, 2026-11-13, after this
+  ledger was written).** The reply loop sends every request of a turn to the provider it pinned at
+  the start, while Gates C and E sample the provider slot on every call, so a person who switched a
+  chat's model mid-turn changed what the turn could reach without changing the model that received
+  the results. Now `Agent::reply` records a ceiling per turn: a raw `CallCapability::sample` taken
+  right after Gate B's repair and ratchet, before the loop pins the provider. Every tool call and
+  tool listing on that turn (Gate C's `dispatch_tool_call`, Gate E's `filter_tools` roster, the
+  schedule branch and the prefetch) is admitted on `CallCapability::no_wider_than(ceiling)`, the
+  lesser of a fresh sample and the ceiling.
+  - A switch to a **less** private model applies at once: the fresh sample is the answer.
+  - A switch from a public chat to a **more** private model does not widen the running turn. It
+    stays Public, so private extensions and knowledge bases stay refused until it ends, and the
+    private model takes effect from the next message, whose Gate B takes a new ceiling. This is the
+    only case that sets `private_from_next_turn`, so the refusal says the new model starts with the
+    next message (`privacy::refusal::private_from_next_turn_sentence`) instead of asking the person
+    to switch to a private model they just chose.
+  - When both are Private the tier stays Private, and the affiliation is
+    `providers::composite_affiliation` of the two.
+  - A subagent spawn made while such a switch waits is refused with a sentence saying why. A spawn
+    never changes the tier.
+  - Knowledge ingest (conversation and source) is capped to the same ceiling through
+    `Agent::capped_to_turn`. Those branches return before the loop's own sample, so they would
+    otherwise decide which knowledge base ids a public turn could be told.
+
+  The ceiling is keyed per chat on the Agent (`TurnCeilings`), because `biorouter web` shares one
+  agent across chats, and `TurnCeilings::lower` narrows it to the slot as the loop pinned its
+  provider. The master switch always comes from the fresh sample, never the ceiling. The guard
+  registry in `crates/biorouter/tests/privacy_guard_wiring.rs` counts `no_wider_than`'s two callers
+  in `agents/agent.rs`. Tests: `crates/biorouter/src/agents/agent_mid_turn_switch_tests.rs`, and
+  `cargo test -p biorouter --lib -- subagent` for the spawn refusal. Record:
+  [a running turn keeps the capability it started with](privacy-tiers-execution-plan.md#a-running-turn-keeps-the-capability-it-started-with-2026-11-13).
+
 - **Local dictation and the personal dictionary follow the tiers (added with local dictation on
   `feat/local-dictation`, PR-14 to PR-30, after this ledger was written).** Design and record:
   [the dictionary](../dictation/dictionary.md#privacy-tiers-and-the-bias-set). Whisper copies its
@@ -1719,6 +1751,12 @@ prompt. It must be here and not in `fetch_all_tools` (`:940`) or `get_all_tools_
 `update_provider` does not bump it, so filtering upstream would freeze one model's allowed set
 across a mid-session model swap. Covers `get_prefixed_tools`, `get_prefixed_tools_excluding`, and
 therefore `code_execution`'s importable-module catalogue for free.
+
+> **Amended 2026-11-13 (issue #56).** "Visible on the very next dispatch" now holds only for a
+> switch to a less private model. Gates C and E admit a call on a running turn on
+> `CallCapability::no_wider_than(ceiling)`, where the ceiling is the capability the turn started
+> with, so a switch to a more private model while a turn runs applies from the next message. See
+> the [What shipped](#what-shipped-and-what-did-not) ledger's bullet on the running turn.
 
 ### 9.2 Why no path escapes
 
