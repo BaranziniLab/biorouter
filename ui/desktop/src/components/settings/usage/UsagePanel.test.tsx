@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import {
@@ -17,6 +17,7 @@ import {
   modelLabel,
 } from './UsagePanel';
 import { MODEL_NOT_RECORDED, settingsUsageCopy as copy } from '../../usage/copy';
+import { rememberProviderNames } from '../../bottom_menu/modelLabel';
 import type { UsageReportRow, UsageSummaryResponse } from '../../../api';
 
 const dayRows: UsageReportRow[] = [
@@ -220,6 +221,24 @@ describe('UsageReport', () => {
     expect(within(unknownRow).getByText(copy.unattributedProvider)).toBeInTheDocument();
     // Unknown pricing is explicit and is never presented as $0.
     expect(within(unknownRow).getAllByRole('cell')[4].textContent).toBe('Unavailable');
+  });
+
+  describe('provider line', () => {
+    afterEach(() => rememberProviderNames([]));
+
+    it('names the provider by its catalog name, not its key', () => {
+      rememberProviderNames([{ name: 'openai', metadata: { display_name: 'OpenAI' } }]);
+      render(
+        <UsageReport
+          summary={summary()}
+          dayRows={dayRows}
+          modelRows={[{ ...modelRows[0], modelId: 'gpt-5.5', provider: 'openai' }]}
+        />
+      );
+      const table = screen.getByTestId('usage-model-table');
+      expect(within(table).getByText('OpenAI')).toBeInTheDocument();
+      expect(within(table).queryByText('openai')).not.toBeInTheDocument();
+    });
   });
 
   it('gives two snapshots of one model from one provider rows that read apart', () => {

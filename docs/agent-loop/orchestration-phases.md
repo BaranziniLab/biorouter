@@ -145,8 +145,8 @@ The chat's own model is the one the chat is bound to, at the chat's own tier, so
 
 The gate's record keeps who gave its last verdict and why, in one plain sentence, and every surface shows it. The agent's reply ends with the sentence, the gate dialog shows it under Judged by, and `biorouter session gates` prints it under the gate:
 
-- "This chat has no decision model it may use, so gpt-5.5, the chat's model, judged the gate."
-- "joey-1 on Baseten could not be reached because its server's certificate did not match, so gpt-5.5, the chat's model, judged the gate."
+- "This chat has no decision model it may use, so GPT-5.5, the chat's model, judged the gate."
+- "joey-1 on Baseten could not be reached because its server's certificate did not match, so GPT-5.5, the chat's model, judged the gate."
 
 A gate that names a decision model asks only that model. One the chat may not use is refused when the gate is declared or set, and one that cannot be reached is an evaluation error that waits for the person, as before. A refusal, an answer that could not be read and a rate limit are errors whoever was asked, never a reason to ask the chat's model. Monitors never fall back to the chat's model.
 

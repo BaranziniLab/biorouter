@@ -16,6 +16,7 @@ import { Button } from '../../ui/button';
 import {
   distinguishModels,
   modelDisplayName,
+  providerDisplayName,
   type ModelRowName,
 } from '../../bottom_menu/modelLabel';
 import { InfoTip } from '../../ui/info-tip';
@@ -427,7 +428,7 @@ export function UsageReport({ summary, dayRows, modelRows, showCosts = true }: U
   const orderedDayRows = [...dayRows].sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
   const modelNames = modelRows.map(usageModelName);
   // The provider is always the second line, so all a row may still need is its raw id: two
-  // snapshots of one model from one provider read "GPT-5.5 · openai" alike (`distinguishModels`).
+  // snapshots of one model from one provider read "GPT-5.5 · OpenAI" alike (`distinguishModels`).
   const modelNeedsId = distinguishModels(modelNames).map((parts) => parts.id);
   const tokenUnavailableReason =
     tokenPercent !== null
@@ -631,7 +632,9 @@ export function UsageReport({ summary, dayRows, modelRows, showCosts = true }: U
                           >
                             {decision
                               ? `${decisionCopy.modelKind} · ${requestCount(row.decisionRequests ?? 0)}`
-                              : (row.provider ?? copy.unattributedProvider)}
+                              : row.provider
+                                ? (providerDisplayName(row.provider) ?? row.provider)
+                                : copy.unattributedProvider}
                             {modelNeedsId[index] && ` · ${row.modelId}`}
                           </p>
                         </div>

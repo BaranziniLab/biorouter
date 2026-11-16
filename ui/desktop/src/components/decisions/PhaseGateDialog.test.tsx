@@ -303,7 +303,7 @@ describe('what the dialog says about a gate', () => {
         kind: 'chat_model',
         model: 'gpt-5.5',
         reason:
-          "This chat has no decision model it may use, so gpt-5.5, the chat's model, judged the gate.",
+          "This chat has no decision model it may use, so GPT-5.5, the chat's model, judged the gate.",
       },
     });
     draw({ phase, phases });
@@ -312,7 +312,7 @@ describe('what the dialog says about a gate', () => {
       /^GPT-5\.5, the chat's model$/
     );
     expect(screen.getByTestId('phase-gate-judge-reason')).toHaveTextContent(
-      "This chat has no decision model it may use, so gpt-5.5, the chat's model, judged the gate."
+      "This chat has no decision model it may use, so GPT-5.5, the chat's model, judged the gate."
     );
     expect(details).toHaveTextContent('Judged by');
   });
