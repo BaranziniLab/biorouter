@@ -12,6 +12,7 @@ import { TranscriptRow } from './TranscriptRow';
 import {
   APPROVAL_COPY,
   CREW_READ_CONSENT_EVENT,
+  crossingCard,
   isCrewPersonTool,
   isCrewReadConsent,
   sentenceStart,
@@ -318,6 +319,16 @@ export default function ToolConfirmation({
     readConsent && typeof data.arguments?.workspace === 'string' && data.arguments.workspace
       ? data.arguments.workspace
       : null;
+  // The first-crossing card (W1-42): its prompt fences the payload for the terminal. The card
+  // folds only the warning, and an ordinary crossing's approval stops asking for the pair of
+  // chats, so its button and answered row never say "once".
+  const crossing =
+    !folderAccess && !crewPerson && typeof prompt === 'string' ? crossingCard(prompt) : null;
+  const remembersThePair = crossing?.remembersThePair ?? false;
+  // The payload stays on the card: under Arguments when the preview holds all of it, else in its
+  // own disclosure.
+  const crossingPayload =
+    crossing && !(preview?.kind === 'arguments' && !preview.truncated) ? crossing.payload : '';
   // Who asks: the daemon's name on the card (a subagent's card shown in the chat
   // that started it), else the tab's own subagent, else this chat's agent.
   const tabRequester = useFolderRequester();
@@ -389,7 +400,9 @@ export default function ToolConfirmation({
     } else if (newStatus === ALWAYS_ALLOW) {
       newActionDisplay = APPROVAL_COPY.outcome.alwaysAllow;
     } else if (newStatus === ALLOW_ONCE) {
-      newActionDisplay = APPROVAL_COPY.outcome.allowOnce;
+      newActionDisplay = remembersThePair
+        ? APPROVAL_COPY.crossing.allowed
+        : APPROVAL_COPY.outcome.allowOnce;
     } else if (newStatus === CANCEL) {
       newActionDisplay = 'cancelled';
     } else {
@@ -532,7 +545,7 @@ export default function ToolConfirmation({
     crewPerson ? (
       <HeadedFindingLine prompt={prompt} />
     ) : (
-      <FindingLine prompt={prompt} />
+      <FindingLine prompt={crossing ? crossing.finding : prompt} />
     )
   ) : null;
 
@@ -645,6 +658,14 @@ export default function ToolConfirmation({
         {/* BR-63: the whole point — what the call will actually do. */}
         {preview && <ToolCallPreview preview={preview} />}
 
+        {crossingPayload && (
+          <Disclosure label={APPROVAL_COPY.crossing.payload}>
+            <p className="min-w-0 whitespace-pre-wrap text-body text-text-default [overflow-wrap:anywhere]">
+              {crossingPayload}
+            </p>
+          </Disclosure>
+        )}
+
         {browserFolderAccess && (
           <div className="flex flex-col gap-1 text-body">
             <span className="inline-flex items-center gap-1">
@@ -734,7 +755,11 @@ export default function ToolConfirmation({
               disabled={isSending}
               onClick={() => handleButtonClick(ALLOW_ONCE)}
             >
-              {readConsent ? APPROVAL_COPY.readConsent.allow : APPROVAL_COPY.allowOnce}
+              {readConsent
+                ? APPROVAL_COPY.readConsent.allow
+                : remembersThePair
+                  ? APPROVAL_COPY.crossing.allow
+                  : APPROVAL_COPY.allowOnce}
             </Button>
             {/* Only offer "Always allow" when there's no security finding. A
                 permanent grant is not something to decide from a card that

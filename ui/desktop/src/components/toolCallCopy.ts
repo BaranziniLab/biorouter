@@ -501,6 +501,66 @@ export function isCrewReadConsent(
  */
 export const CREW_READ_CONSENT_EVENT = 'biorouter:crew-read-consent';
 
+/**
+ * The words of the first-crossing card: a chat on a model inside the institution about to write
+ * into a public one (`WorkspaceCrossingInspector`, `workspace_inspector.rs`). Its prompt is the
+ * warning, one of the two sentences below, then the payload between the two markers, last. The
+ * daemon's constants and these are pinned together by `the_crossing_markers_match_the_desktop_copy`,
+ * which reads this block, so spell each value on one line and in single quotes.
+ */
+export const CROSSING_COPY = {
+  payloadOpen: '⟪WHAT IT WOULD SEND⟫',
+  payloadClose: '⟪END⟫',
+  /** Approving records the pair, and later writes between the two chats do not ask. */
+  remembersThePair: 'Approving sends it now, and stops asking for this pair of conversations.',
+  /** DR-33: a child this chat started while it was public, asked about on every write. */
+  asksEveryTime:
+    'Approving sends it now. Because this conversation started that one while it was public, it asks again for every message it sends there.',
+} as const;
+
+/** What the first-crossing card shows, read off its prompt (`crossingCard`). */
+export interface CrossingCard {
+  /** The prompt without the fenced payload: the warning the card folds as its finding. */
+  finding: string;
+  /** The payload, word for word, for a card whose preview does not already show all of it. */
+  payload: string;
+  /** Approving stops asking for this pair of chats, so the button says "Allow", not "once". */
+  remembersThePair: boolean;
+}
+
+/** The lock the terminal prints before the warning; the card's own triangle is its glyph. */
+const LEADING_LOCK = /^\s*\u{1F512}️?\s*/u;
+
+/**
+ * The first-crossing card's parts, or null for any other prompt.
+ *
+ * The prompt is recognised by the daemon's own sentence before the payload's opening marker, never
+ * by text after it: everything after the marker is the payload, which the model wrote and which may
+ * spell a marker or one of the sentences itself. For the same reason the payload runs to the LAST
+ * closing marker, so a payload that closes the fence early and then imitates the card stays inside
+ * it. Inspectors' reasons are joined with a blank line and the crossing's own holds none before its
+ * payload, so its reason starts after the last blank line before the marker; a reason another
+ * inspector gave, before or after it, stays in the finding.
+ */
+export function crossingCard(prompt: string): CrossingCard | null {
+  const open = prompt.indexOf(CROSSING_COPY.payloadOpen);
+  if (open < 0) return null;
+  const before = prompt.slice(0, open);
+  const blank = before.lastIndexOf('\n\n');
+  const start = blank < 0 ? 0 : blank + 2;
+  const reason = before.slice(start);
+  const everyTime = reason.includes(CROSSING_COPY.asksEveryTime);
+  if (!everyTime && !reason.includes(CROSSING_COPY.remembersThePair)) return null;
+  const close = prompt.lastIndexOf(CROSSING_COPY.payloadClose);
+  const closed = close > open;
+  const payload = prompt
+    .slice(open + CROSSING_COPY.payloadOpen.length, closed ? close : prompt.length)
+    .trim();
+  const after = closed ? prompt.slice(close + CROSSING_COPY.payloadClose.length) : '';
+  const finding = `${before.slice(0, start)}${reason.replace(LEADING_LOCK, '').trimEnd()}${after}`;
+  return { finding: finding.trim(), payload, remembersThePair: !everyTime };
+}
+
 export const APPROVAL_COPY = {
   question: 'Run',
   allowOnce: 'Allow once',
@@ -520,6 +580,16 @@ export const APPROVAL_COPY = {
     alreadyResolved: 'already answered',
   },
   confirmFailed: 'Could not confirm your decision. Try again.',
+  /**
+   * The first-crossing card (`crossingCard`). Approving an ordinary crossing stops the asking for
+   * that pair of chats, so it is never "once"; one that asks on every write keeps `allowOnce`.
+   */
+  crossing: {
+    allow: 'Allow',
+    allowed: 'allowed',
+    /** A payload the Arguments preview does not show in full, behind its own disclosure. */
+    payload: 'What it would send',
+  },
   /** AO-12's read consent (`isCrewReadConsent`): it lasts until taken back, so never "once". */
   readConsent: {
     allow: 'Allow',

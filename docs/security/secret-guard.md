@@ -108,6 +108,10 @@ A command is read the way the shell will read it, by the resolver under
   `find -exec`, `xargs` and `sudo`), `eval`, here-documents, command substitutions, and the
   strings code hands to a shell (`os.system("…")`, backquotes, AppleScript's
   `do shell script "…"`). Path literals inside code (`python -c "open('…')"`) are judged too.
+  The refusal names the path inside the script and what it resolves to:
+  `bash -c 'cat ~/.aws/credentials'` is refused as `~/.aws/credentials`, resolved under `HOME`,
+  not as the whole script joined to the working directory. When the script cannot be read far
+  enough to name a path, the refusal quotes the script itself, still with no file let through.
 - **`find -name`** patterns are judged as the file names they will find, so
   `find ~ -name credentials -exec cat {} \;` is refused.
 

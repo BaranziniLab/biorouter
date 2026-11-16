@@ -418,8 +418,10 @@ impl<'a> Resolver<'a> {
             i += 1;
         }
         let args = &words[i..];
-        for word in args {
-            self.check_word(word, state, &word_text(word))?;
+        for (j, word) in args.iter().enumerate() {
+            if let Err(whole) = self.check_word(word, state, &word_text(word)) {
+                return Err(self.name_inside_script(args, j, whole, state));
+            }
         }
         for redirect in redirects {
             if let Some(target) = &redirect.target {
@@ -540,6 +542,66 @@ impl<'a> Resolver<'a> {
             }
         }
         Ok((args.len(), String::new()))
+    }
+
+    /// The refusal for `args[index]`, a word [`Self::check_word`] refused as
+    /// one path (`whole`), named for what it really is.
+    ///
+    /// W1-50: a script handed to a shell (`bash -c 'cat ~/.aws/credentials'`,
+    /// `eval '…'`, `find … -exec sh -c '…'`) is also a word of the outer
+    /// command, so it was judged as a path before [`Self::program_semantics`]
+    /// read it as a script, and the refusal named the whole script resolved
+    /// against the working directory ("<cwd>/cat ~/.aws/credentials"). Here the
+    /// script is read the way `program_semantics` reads it, and the first path
+    /// it refuses, with that path's own resolution, is the one named.
+    ///
+    /// Only the NAME changes: every arm returns a refusal. When the script
+    /// names nothing (it nests too deeply to read, or its text matched only as
+    /// a whole), the whole-word refusal stands as the fail-closed fallback,
+    /// without a resolution, because a script resolved as a path names no
+    /// file. A word that is not a script keeps `whole` exactly.
+    fn name_inside_script(
+        &mut self,
+        args: &[Word],
+        index: usize,
+        whole: Finding,
+        state: &mut State,
+    ) -> Finding {
+        let Some(word) = args.get(index) else {
+            return whole;
+        };
+        let handed_to_a_shell = args.iter().enumerate().take(index).any(|(k, shell)| {
+            is_shell(&program_name(shell))
+                && c_script(&args[k + 1..]).is_some_and(|script| std::ptr::eq(script, word))
+        });
+        let scripts = if handed_to_a_shell {
+            self.readings_as_text(word, state)
+        } else {
+            // `program_of` records `env X=1` assignments; this reading is only
+            // for the name, so it works on a copy.
+            let mut scratch = State {
+                cwds: state.cwds.clone(),
+                vars: state.vars.clone(),
+                depth: state.depth,
+            };
+            match self.program_of(args, &mut scratch) {
+                Ok((program, name)) if name == "eval" && index > program => {
+                    self.joined_readings(&args[program + 1..], &scratch)
+                }
+                _ => return whole,
+            }
+        };
+        for script in scripts {
+            if let Err(inner) = self.nested(&script, state) {
+                if inner.reason != Reason::TooComplex {
+                    return inner;
+                }
+            }
+        }
+        Finding {
+            path: None,
+            ..whole
+        }
     }
 
     fn change_dir(&mut self, rest: &[Word], state: &mut State, is_cd: bool) -> Scan {

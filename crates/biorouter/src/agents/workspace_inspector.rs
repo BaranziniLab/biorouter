@@ -771,6 +771,27 @@ pub async fn uninspected_crossing_refusal(
     ))
 }
 
+/// The words the first-crossing card is built from, and recognised by.
+///
+/// The terminal prints the card's prompt as it stands, fence and all. The
+/// desktop card draws the sentence before the fence as its line, leaves the
+/// payload to the Arguments it already shows, and labels its button by which of
+/// the two sentences the prompt carries: "Allow" when approving stops asking for
+/// the pair, "Allow once" when every write asks again (W1-42). The renderer
+/// cannot import Rust, so `ui/desktop/src/components/toolCallCopy.ts`
+/// (`CROSSING_COPY`) spells each of these, and
+/// `the_crossing_markers_match_the_desktop_copy` reads that file so the two
+/// cannot drift apart.
+pub(crate) const CROSSING_PAYLOAD_OPEN: &str = "⟪WHAT IT WOULD SEND⟫";
+pub(crate) const CROSSING_PAYLOAD_CLOSE: &str = "⟪END⟫";
+/// An ordinary first crossing: the ledger records the pair once the write lands.
+pub(crate) const CROSSING_REMEMBERS_THE_PAIR: &str =
+    "Approving sends it now, and stops asking for this pair of conversations.";
+/// DR-33: a child under this chat's public ceiling, asked about on every write.
+pub(crate) const CROSSING_ASKS_EVERY_TIME: &str =
+    "Approving sends it now. Because this conversation started that one while it was public, \
+     it asks again for every message it sends there.";
+
 pub struct WorkspaceCrossingInspector {
     provider: crate::agents::types::SharedProvider,
 }
@@ -869,10 +890,9 @@ impl WorkspaceCrossingInspector {
             // DR-33: a child under this chat's public ceiling is asked about on
             // every write, so the card must not promise the opposite.
             let remembered = if every_time {
-                "Approving sends it now. Because this conversation started that one while it \
-                 was public, it asks again for every message it sends there."
+                CROSSING_ASKS_EVERY_TIME
             } else {
-                "Approving sends it now, and stops asking for this pair of conversations."
+                CROSSING_REMEMBERS_THE_PAIR
             };
             results.push(InspectionResult {
                 tool_request_id: request.id.clone(),
@@ -883,7 +903,8 @@ impl WorkspaceCrossingInspector {
                     "🔒 This conversation is on a model hosted inside your institution. \
                      It is about to send text to conversation {target}, which is NOT. \
                      {remembered} This confirmation appears in every permission mode, \
-                     including Fully Automatic. ⟪WHAT IT WOULD SEND⟫ {payload} ⟪END⟫"
+                     including Fully Automatic. {CROSSING_PAYLOAD_OPEN} {payload} \
+                     {CROSSING_PAYLOAD_CLOSE}"
                 ))),
                 reason: format!("Private-to-public workspace write into {target}"),
                 confidence: 1.0,
@@ -1905,5 +1926,98 @@ mod tests {
             .await
             .unwrap();
         assert!(results.is_empty(), "{results:?}");
+    }
+
+    /// W1-42 (p1 full-suite pass, 2026-11-16): the desktop drew the whole
+    /// crossing prompt as its finding line, so the fence markers showed as text
+    /// and the payload appeared twice, and its only button said "Allow once"
+    /// over a sentence saying approval stops asking for the pair. The card now
+    /// recognises the prompt by these words and labels its button by them, so
+    /// `toolCallCopy.ts` must spell each one exactly as this inspector writes
+    /// it. This also holds the prompt's shape the card relies on: the sentence
+    /// before the fence, the payload last, the close marker at the very end.
+    #[tokio::test]
+    async fn the_crossing_markers_match_the_desktop_copy() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../ui/desktop/src/components/toolCallCopy.ts");
+        let source = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        let start = source
+            .find("export const CROSSING_COPY = {")
+            .unwrap_or_else(|| panic!("{} has no CROSSING_COPY", path.display()));
+        let from = source.get(start..).unwrap();
+        let block = from.get(..from.find("} as const;").unwrap()).unwrap();
+        for (what, literal) in [
+            ("the payload's opening marker", CROSSING_PAYLOAD_OPEN),
+            ("the payload's closing marker", CROSSING_PAYLOAD_CLOSE),
+            ("the remembered-pair sentence", CROSSING_REMEMBERS_THE_PAIR),
+            ("the every-time sentence", CROSSING_ASKS_EVERY_TIME),
+        ] {
+            let quoted = format!("'{literal}'");
+            assert!(
+                block.contains(&quoted),
+                "CROSSING_COPY in {} must spell {what} exactly as the daemon does: {quoted}",
+                path.display()
+            );
+        }
+
+        let sm = crate::session::session_manager::SessionManager::instance();
+        let target = sm
+            .create_session(
+                std::env::temp_dir(),
+                "A public chat".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let caller = Session {
+            id: format!("crossing-copy-caller-{}", Uuid::new_v4().simple()),
+            ..Session::default()
+        };
+        let request = ToolRequest {
+            id: "req-send".to_string(),
+            tool_call: Ok(rmcp::model::CallToolRequestParams {
+                name: "workspace__workspace_send_prompt".into(),
+                arguments: Some(args(serde_json::json!({
+                    "session_id": target.id,
+                    "mode": "note",
+                    "text": "the cohort summary",
+                }))),
+                meta: None,
+                task: None,
+            }),
+            metadata: None,
+            tool_meta: None,
+        };
+        let inspector =
+            WorkspaceCrossingInspector::new(std::sync::Arc::new(tokio::sync::Mutex::new(None)));
+        let private =
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true);
+        let results = inspector
+            .inspect_with_pinned_capability(&[request], &caller, Some(private))
+            .await
+            .unwrap();
+        let [result] = results.as_slice() else {
+            panic!("one first crossing, one card: {results:?}");
+        };
+        let InspectionAction::RequireApproval(Some(prompt)) = &result.action else {
+            panic!(
+                "a first crossing must require approval: {:?}",
+                result.action
+            );
+        };
+        let open = prompt.find(CROSSING_PAYLOAD_OPEN).expect(prompt);
+        let sentence = prompt.find(CROSSING_REMEMBERS_THE_PAIR).expect(prompt);
+        assert!(
+            sentence < open,
+            "the sentence comes before the fence: {prompt}"
+        );
+        assert!(!prompt.contains(CROSSING_ASKS_EVERY_TIME), "{prompt}");
+        assert!(
+            prompt.ends_with(&format!(
+                "{CROSSING_PAYLOAD_OPEN} mode note — the cohort summary {CROSSING_PAYLOAD_CLOSE}"
+            )),
+            "the payload is last and fenced: {prompt}"
+        );
     }
 }
