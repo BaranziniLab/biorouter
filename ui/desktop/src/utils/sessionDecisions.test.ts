@@ -651,14 +651,14 @@ describe('parsing', () => {
         kind: 'chat_model',
         model: 'gpt-5.5',
         reason:
-          "This chat has no decision model it may use, so gpt-5.5, the chat's model, judged the gate.",
+          "This chat has no decision model it may use, so GPT-5.5, the chat's model, judged the gate.",
       },
     })!;
     expect(judged.lastJudge).toEqual({
       kind: 'chat_model',
       model: 'gpt-5.5',
       reason:
-        "This chat has no decision model it may use, so gpt-5.5, the chat's model, judged the gate.",
+        "This chat has no decision model it may use, so GPT-5.5, the chat's model, judged the gate.",
     });
     // The judge by the display name the chip gives the chat's model (T1 F2).
     expect(gateJudgeWords(judged.lastJudge!)).toBe("GPT-5.5, the chat's model");
