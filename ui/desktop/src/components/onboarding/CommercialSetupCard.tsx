@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { modelDisplayName } from '../bottom_menu/modelLabel';
 import { detectProvider, getDetectableProviders } from '../../api';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -231,7 +232,7 @@ export default function CommercialSetupCard({
           <Note tone="success" role="status" icon={Check}>
             <div className="text-label">{commercialCopy.detected(result.provider)}</div>
             <div className="mt-0.5">
-              {commercialCopy.detectedDetail(result.model, result.totalModels)}
+              {commercialCopy.detectedDetail(modelDisplayName(result.model), result.totalModels)}
             </div>
           </Note>
         )}

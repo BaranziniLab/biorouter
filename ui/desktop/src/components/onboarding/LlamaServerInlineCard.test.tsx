@@ -504,7 +504,7 @@ describe('LlamaServerInlineCard', () => {
 
     const first = render(<LlamaServerInlineCard onSuccess={vi.fn()} />);
     expect(await first.findByTestId('llamacpp-progress')).toHaveTextContent(
-      'Preparing qwen3.8-27b. Loading or downloading on first use…'
+      'Preparing Qwen3.8 27B. Loading or downloading on first use…'
     );
     first.unmount();
 

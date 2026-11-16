@@ -93,7 +93,7 @@ beforeEach(() => {
 async function openProviderMenu() {
   // The bound provider's model loads first, which is also how we know the
   // provider list has arrived.
-  await screen.findByText('gpt-5.5-2026-04-24');
+  await screen.findByText('GPT-5.5');
   fireEvent.keyDown(screen.getAllByRole('combobox')[0], { key: 'ArrowDown', code: 'ArrowDown' });
 }
 

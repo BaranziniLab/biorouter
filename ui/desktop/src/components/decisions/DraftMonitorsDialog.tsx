@@ -1,4 +1,4 @@
-import { friendlyModelName } from '../bottom_menu/modelLabel';
+import { modelDisplayName } from '../bottom_menu/modelLabel';
 import { MonitorsDialog } from './MonitorsDialog';
 import { chatModelKey, type DraftDecisionSettings } from './draftDecisionSettings';
 import type { DecisionSettings } from '../../utils/sessionDecisions';
@@ -46,7 +46,7 @@ export function DraftMonitorsDialog({
       // reasons and `chatEffect` say what each model would do to it.
       chatTier="public"
       settings={draft?.settings ?? NO_SETTINGS}
-      chatModelName={named ? friendlyModelName(named) : null}
+      chatModelName={named ? modelDisplayName(named) : null}
       draft={{
         chat: provider && model ? { boundProvider: provider, boundModel: model } : null,
         accepted: key !== null && draft?.acceptedFor === key,

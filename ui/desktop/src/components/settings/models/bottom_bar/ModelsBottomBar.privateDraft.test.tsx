@@ -93,7 +93,7 @@ describe('switching an unsent chat whose draft was dictated with private terms',
     await pickFor({ name: 'gpt-5.6-sol', provider: 'openai' });
     const dialog = await screen.findByRole('dialog');
     expect(dialog).toHaveTextContent(
-      'If you switch this chat to gpt-5.6-sol, a public model, the draft goes there with your next message. Switch anyway?'
+      'If you switch this chat to GPT-5.6 Sol, a public model, the draft goes there with your next message. Switch anyway?'
     );
     expect(choose).not.toHaveBeenCalled();
     fireEvent.click(within(dialog).getByRole('button', { name: 'Switch anyway' }));

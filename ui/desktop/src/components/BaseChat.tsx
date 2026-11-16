@@ -42,7 +42,7 @@ import { PrivacyTiersOffNote } from './privacy/PrivacyTiersOffNote';
 import { usePinnedModel } from './privacy/usePinnedModel';
 import { useConfirmNewChatModel } from './privacy/useConfirmNewChatModel';
 import { useModelAndProvider, type ChangeModelOptions } from './ModelAndProviderContext';
-import { friendlyModelName } from './bottom_menu/modelLabel';
+import { modelDisplayName } from './bottom_menu/modelLabel';
 import { PendingChatModelContext, useHeldChatModel } from './settings/models/pendingChatModel';
 import type Model from './settings/models/modelInterface';
 import { scanWorkflow } from '../workflow';
@@ -2718,7 +2718,7 @@ function BaseChatContent({
     // This chat's model and tier, as the model chip and the composer name them.
     chatModel:
       (effectiveModel?.model ?? currentModel)
-        ? friendlyModelName((effectiveModel?.model ?? currentModel)!)
+        ? modelDisplayName((effectiveModel?.model ?? currentModel)!)
         : null,
     privacyTier: session?.privacy_tier ?? loadingChatRow?.privacy_tier ?? null,
     decisionChat,
@@ -3481,7 +3481,7 @@ function BaseChatContent({
             settings={sessionDecisions.data?.settings ?? null}
             // The tip beside "This chat will be public" names the chat's model as
             // the model chip does (gpt-5.5), not "its language model".
-            chatModelName={currentModel ? friendlyModelName(currentModel) : null}
+            chatModelName={currentModel ? modelDisplayName(currentModel) : null}
             // A subagent's own monitors never reach subagents of its own, so the
             // dialog offers no "Also watch the subagents" there.
             isSubagentChat={subagentChatKind === 'subagent'}

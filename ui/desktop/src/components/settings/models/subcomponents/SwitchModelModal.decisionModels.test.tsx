@@ -118,7 +118,8 @@ beforeEach(() => {
 });
 
 async function openProviderMenu() {
-  await screen.findByText('gpt-5.5-2026-04-24');
+  // The chosen model, by its display name (T1 F2).
+  await screen.findByText('GPT-5.5');
   fireEvent.keyDown(screen.getAllByRole('combobox')[0], { key: 'ArrowDown', code: 'ArrowDown' });
 }
 

@@ -15,7 +15,7 @@ import {
 } from '../../../ui/dropdown-menu';
 import { InfoTip, useInfoTipId } from '../../../ui/info-tip';
 import { MODEL_COPY } from '../../../bottom_menu/copy';
-import { friendlyModelName } from '../../../bottom_menu/modelLabel';
+import { modelDisplayName } from '../../../bottom_menu/modelLabel';
 import { useReasoningEffortValue } from '../../../bottom_menu/BottomMenuReasoningEffort';
 import { EffortSection, moveFocusAcrossMenuStops } from '../../../bottom_menu/EffortSection';
 import {
@@ -382,7 +382,10 @@ export default function ModelsBottomBar({
    * optionally, so a context that predates the two members still names the id.
    */
   const localModelName = localModelDisplayName?.(effectiveProvider, displayModel) ?? null;
-  const spokenModelLabel = localModelName ?? fullModelLabel;
+  // T1 F2: every other model goes by its display name too ("Claude Haiku 5.5", never
+  // `us.anthropic.claude-haiku-5-5` or `claude-haiku-5-5`), the name every surface shows.
+  const shownDisplayName = localModelName ?? modelDisplayName(fullModelLabel);
+  const spokenModelLabel = shownDisplayName;
   // The selection's own local model is read by the model context; a chat bound
   // to one while the selection is elsewhere asks for the catalog here.
   useEffect(() => {
@@ -611,15 +614,15 @@ export default function ModelsBottomBar({
     );
   }
 
-  // Spec 3.7: the chip names the model the way a person says it, so the date
-  // stamp comes off (`gpt-5.6-sol-2026-07-09` reads `gpt-5.6-sol`). The full id
-  // stays in the tooltip, the menu and the accessible name.
+  // Spec 3.7: the chip names the model the way a person says it, by its display
+  // name (`gpt-5.6-sol-2026-07-09` reads "GPT-5.6 Sol"). The full id stays in the
+  // tooltip, the menu and the accessible name.
   // A decision model goes by its alias (R3): `joey-1`, never `decision-models/joey-1`.
   const decisionAlias =
     decisionChat && effectiveProvider && displayModel
       ? decisionModelLabel({ provider: effectiveProvider, model: displayModel })
       : null;
-  const chipModelLabel = decisionAlias ?? localModelName ?? friendlyModelName(displayModel);
+  const chipModelLabel = decisionAlias ?? shownDisplayName;
   // A decision model has no reasoning effort to set: it answers in one step.
   const showEffort = !decisionChat && effort !== null && effort !== DEFAULT_REASONING_EFFORT;
   // The InfoTip's notes: where a choice here reaches. At most one applies (Home
@@ -650,7 +653,9 @@ export default function ModelsBottomBar({
     decisionChat && effectiveProvider && shownModelName
       ? (decisionModelLabel({ provider: effectiveProvider, model: shownModelName }) ??
         shownModelName)
-      : (localModelName ?? shownModelName);
+      : (localModelName ?? modelDisplayName(shownModelName));
+  // The raw id behind the name (its InfoTip below), only when the name differs from it.
+  const lineModelId = !decisionChat && lineModelName !== shownModelName ? shownModelName : null;
   // DR-17 and §14.2, kept VISIBLE as one line (principle 2): the chat's tier,
   // then the standing disclosure the daemon serves for a non-private model.
   const showPrivacyBlock = Boolean(privacyLine || disclosureLine);
@@ -671,7 +676,7 @@ export default function ModelsBottomBar({
                 privacyLine,
                 !decisionChat && effort !== null && `Effort: ${REASONING_EFFORT_LABELS[effort]}`,
                 // W2-5. The id the visible name stands for, in the tooltip's words.
-                localModelName && MODEL_COPY.fullIdTooltip(displayModel),
+                shownDisplayName !== displayModel && MODEL_COPY.fullIdTooltip(displayModel),
               ])}
               ref={chipRef}
               data-testid="model-chip"
@@ -732,7 +737,19 @@ export default function ModelsBottomBar({
                 />
               )}
             </div>
-            <div className="mt-0.5 truncate text-label text-text-default">{lineModelName}</div>
+            <div className="mt-0.5 flex min-w-0 items-center text-label text-text-default">
+              <span className="truncate">{lineModelName}</span>
+              {/* The raw id the name stands for, for a person who needs to quote it or type it
+                  into `biorouter configure`. In an InfoTip, not a line: the composer sets no
+                  text in mono (spec 3.7), and an id in the reading face would read as a name. */}
+              {lineModelId && (
+                <InfoTip
+                  label={MODEL_COPY.modelId}
+                  help={MODEL_COPY.fullIdTooltip(lineModelId)}
+                  data-testid="model-id-info"
+                />
+              )}
+            </div>
             {providerLine && (
               // Read whole at the menu's 288px, never cut (live QA, 2026-11-12: "Llama
               // Server · Private …" and "On this mac…"). The provider and the tier are one
@@ -850,7 +867,7 @@ export default function ModelsBottomBar({
         isOpen={switchAsk !== null}
         title={DICTATION_LABELS.privateDraftSwitchTitle}
         message={dictationMessage('MSG-PRIVATE-DRAFT-SWITCH', {
-          model: switchAsk?.model.alias || switchAsk?.model.name || '',
+          model: switchAsk?.model.alias || modelDisplayName(switchAsk?.model.name ?? ''),
         })}
         confirmLabel={DICTATION_ACTIONS.switchAnyway}
         cancelLabel={DICTATION_ACTIONS.cancel}

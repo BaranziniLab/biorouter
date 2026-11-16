@@ -143,6 +143,8 @@ export const MODEL_COPY = {
   /** The Effort InfoTip's name reads "About effort". */
   aboutEffort: 'effort',
   aboutModel: 'this model',
+  /** The menu's InfoTip beside the model's name, holding its raw id: "About the model id". */
+  modelId: 'the model id',
   noModelTooltip: 'Opens the provider catalog',
 } as const;
 

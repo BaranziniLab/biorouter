@@ -22,8 +22,7 @@ import {
   type ModelUsage,
   type UsageRange,
 } from '../../utils/usageStats';
-import { friendlyModelName } from '../bottom_menu/modelLabel';
-import { getModelDisplayName } from '../settings/models/predefinedModelsUtils';
+import { modelDisplayName } from '../bottom_menu/modelLabel';
 import { InfoTip } from '../ui/info-tip';
 import { SegmentedControl } from '../ui/segmented-control';
 import { Tabs, TabsList, TabsTrigger } from '../ui/tabs';
@@ -129,14 +128,14 @@ function useModelReport(end: string, range: UsageRange): ReportState {
 
 /**
  * A model's name as the composer's model chip says it (principle 10): the
- * configured alias when there is one, and the provider's release-date stamp
- * off (`gpt-5.5-2026-04-24` reads `gpt-5.5`). The full `provider/modelId`
- * stays in the tooltip.
+ * configured alias when there is one, else its display name
+ * (`gpt-5.5-2026-04-24` reads "GPT-5.5"). The full `provider/modelId` stays in
+ * the tooltip.
  */
 function modelName(modelId: string | null | undefined, decision = false): string {
   if (!modelId) return copy.notRecorded;
   if (decision) return decisionModelName(modelId);
-  return friendlyModelName(getModelDisplayName(modelId));
+  return modelDisplayName(modelId);
 }
 
 function modelTitle(row: { modelId?: string | null; provider?: string | null }) {

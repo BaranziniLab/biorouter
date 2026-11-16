@@ -21,6 +21,7 @@ import {
 } from './privacyTiers';
 import { privacyOffStripCopy, privacyRowCopy } from './copy';
 import { SETTINGS_SECTION_IDS } from '../settingsSections';
+import { modelDisplayName } from '../../bottom_menu/modelLabel';
 
 // Re-exported so the panel stays the name every existing importer already
 // reaches for; the definitions live in `privacyTiers.ts` because
@@ -452,7 +453,7 @@ function CurrentModelTierLine({ model }: { model: string }) {
   if (tier !== 'private' && tier !== 'public') return null;
   return (
     <p data-testid="privacy-current-model-tier" className="min-w-0 text-text-muted">
-      Your current model, {model}, is {tier}.
+      Your current model, {modelDisplayName(model)}, is {tier}.
     </p>
   );
 }

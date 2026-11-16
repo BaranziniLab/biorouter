@@ -4,6 +4,7 @@ import { useModelAndProvider, type AppModelSelection } from '../ModelAndProvider
 import { readResolvedProviderTier } from './useBoundProviderTier';
 import { toastWarning } from '../../toasts';
 import type { ProviderTier } from '../../api/types.gen';
+import { modelDisplayName } from '../bottom_menu/modelLabel';
 
 export const NEW_CHAT_MODEL_CHANGED_TITLE = 'Message not sent';
 
@@ -47,7 +48,7 @@ export function newChatModelChangedMessage(
         ? ', a public model'
         : '';
   return (
-    `New chats now start on ${fresh.model} (${freshProviderName ?? fresh.provider}${tier}), ` +
+    `New chats now start on ${modelDisplayName(fresh.model)} (${freshProviderName ?? fresh.provider}${tier}), ` +
     `not ${shownModel}, which this window was still showing. Your message is back in the ` +
     'composer, and the model shown below is the one it will use.'
   );
@@ -106,7 +107,7 @@ export function useConfirmNewChatModel(): () => Promise<boolean> {
     }
     toastWarning({
       title: NEW_CHAT_MODEL_CHANGED_TITLE,
-      msg: newChatModelChangedMessage(currentModel, fresh, providerName, tier),
+      msg: newChatModelChangedMessage(modelDisplayName(currentModel), fresh, providerName, tier),
       ...NEW_CHAT_MODEL_CHANGED_TOAST,
     });
     return false;

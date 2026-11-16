@@ -123,7 +123,7 @@ describe('@agent in the composer (OW-10)', () => {
     const composer = await channelReady();
     await typeTask(composer, '@agent summarize counts.csv');
     await waitFor(() =>
-      expect(consent()).toHaveTextContent('Enter starts your agent with gpt-5.5 · Versa')
+      expect(consent()).toHaveTextContent('Enter starts your agent with GPT-5.5 · Versa')
     );
     // What the task reads is the consent line's info tip (owner, 2026-11-13).
     expect(
@@ -372,7 +372,7 @@ describe('@agent in the composer (OW-10)', () => {
       enter(composer);
       expect(await screen.findByLabelText(agentCopy.task)).toHaveValue('plot it');
       // The picker opens on its own, after the pane has taken focus.
-      const option = await screen.findByRole('option', { name: /^gpt-5\.5/ });
+      const option = await screen.findByRole('option', { name: /^GPT-5\.5/ });
       expect(runPosts()).toHaveLength(0);
 
       const user = userEvent.setup();
@@ -444,7 +444,7 @@ describe('@agent in the composer (OW-10)', () => {
       enter(composer);
       const note = await screen.findByText(composerCopy.startErrorLead);
       const alert = note.closest('[role="alert"]') as HTMLElement;
-      expect(alert).toHaveTextContent(agentCopy.institutionRefused('gpt-5.5', 'UCSF'));
+      expect(alert).toHaveTextContent(agentCopy.institutionRefused('GPT-5.5', 'UCSF'));
       expect(alert).not.toHaveTextContent(composerCopy.sendErrorLead);
       expect(composer).toHaveValue('@agent summarize counts.csv');
       expect(currentCrew().error).toMatchObject({ source: 'composer', action: 'task-start' });

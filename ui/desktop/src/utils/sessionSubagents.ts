@@ -1,6 +1,7 @@
 import type { Message } from '../api';
 import { navigateToRoute } from './navigationUtils';
 import { parsePhaseGateSnapshot, type PhaseGateSnapshot } from './sessionDecisions';
+import { modelDisplayName } from '../components/bottom_menu/modelLabel';
 
 /**
  * A chat's subagents and its orchestration plan, as `GET /sessions/{id}/subagents`
@@ -451,10 +452,10 @@ export function subagentTitle(row: SubagentRow): string {
 const MODEL_LABEL_MAX = 24;
 
 /**
- * A model name short enough for a 240px row: no provider path
- * (`accounts/fireworks/models/`, `us.anthropic.`), no release date suffix
- * (`-20251101`, `@20250514`) and no `:latest`. Falls back to the provider's name
- * when the row has no model, and to `null` when it has neither.
+ * A model name short enough for a 240px row: the model's display name (`modelDisplayName`, the
+ * name every surface shows: "Claude Haiku 5.5", `qwen3-235b` for
+ * `accounts/fireworks/models/qwen3-235b`), clipped. Falls back to the provider's name when the row
+ * has no model, and to `null` when it has neither.
  */
 export function shortModelLabel(
   modelName: string | null,
@@ -462,20 +463,11 @@ export function shortModelLabel(
 ): string | null {
   const raw = modelName?.trim();
   if (!raw) return providerName?.trim() || null;
-  let label = raw.slice(raw.lastIndexOf('/') + 1);
-  // Bedrock-style ids: `us.anthropic.claude-sonnet-4-5-20250929-v1:0`.
-  const dotted = label.match(
-    /^(?:[a-z]{2}\.)?(?:anthropic|meta|amazon|cohere|mistral|ai21)\.(.+)$/
-  );
-  if (dotted) label = dotted[1];
-  label = label
-    .replace(/:latest$/, '')
-    .replace(/-v\d+:\d+$/, '')
-    .replace(/[-@]20\d{6}$/, '')
-    .replace(/-\d{4}-\d{2}-\d{2}$/, '');
-  if (!label) label = raw;
-  return label.length > MODEL_LABEL_MAX ? `${label.slice(0, MODEL_LABEL_MAX - 1)}…` : label;
+  return clipModelLabel(modelDisplayName(raw));
 }
+
+const clipModelLabel = (label: string) =>
+  label.length > MODEL_LABEL_MAX ? `${label.slice(0, MODEL_LABEL_MAX - 1)}…` : label;
 
 /** `45s`, `4m`, `1h 5m`, `2d`. `null` in, `null` out. */
 export function formatElapsed(seconds: number | null | undefined): string | null {

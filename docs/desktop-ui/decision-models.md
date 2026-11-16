@@ -529,7 +529,7 @@ diverge. It edits the default decision model (the select above) and the monitors
 nothing to the daemon. So where a chat's dialog says "Saved" after a change, the draft dialog says
 "Ready for the first message", with the same check, under the note "These monitors start with the
 chat when you send its first message." The tip beside "This chat will be public" names the chat model the way the
-model chip does (`gpt-5.5`, not `gpt-5.5-2026-04-24`), here and in a chat's own Monitors dialog. The draft lives in renderer memory beside the held chat model
+model chip does ("GPT-5.5", not `gpt-5.5-2026-04-24`), here and in a chat's own Monitors dialog. The draft lives in renderer memory beside the held chat model
 (`decisions/draftDecisionSettings.ts`), keyed by the composer (a chat tab, or Home's draft key), so
 it outlives a tab switch and a trip to Settings and is never written to disk. The list is read
 with `GET /decisions/models?boundProvider=<p>&boundModel=<m>`, so each row carries what it would

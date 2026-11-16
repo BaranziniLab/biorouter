@@ -94,15 +94,15 @@ describe('up to four subagents: comfortable two-line rows', () => {
     expect(mark).toHaveAttribute('data-kind', 'running');
     expect(mark).toHaveAttribute('data-pulse', '');
     expect(mark).toHaveAttribute('width', '14');
-    expect(first).toHaveAccessibleName('Running, Reviewer, claude-sonnet-4-5, 1m');
-    expect(first).toHaveTextContent(/^Reviewer1mclaude-sonnet-4-5 · Working…$/);
+    expect(first).toHaveAccessibleName('Running, Reviewer, Claude Sonnet 4.5, 1m');
+    expect(first).toHaveTextContent(/^Reviewer1mClaude Sonnet 4\.5 · Working…$/);
     const second = screen.getByTestId('subagent-row-b');
     // An ended child with no result line says its status word.
     expect(second).toHaveAccessibleName(
-      'Completed, Search PubMed for trials, claude-sonnet-4-5, 1h 5m'
+      'Completed, Search PubMed for trials, Claude Sonnet 4.5, 1h 5m'
     );
     expect(second.querySelector('.br-agents__meta')).toHaveTextContent(
-      'claude-sonnet-4-5 · Completed'
+      'Claude Sonnet 4.5 · Completed'
     );
   });
 
@@ -122,13 +122,13 @@ describe('up to four subagents: comfortable two-line rows', () => {
     );
     const line = (id: string) =>
       screen.getByTestId(`subagent-row-${id}`).querySelector('.br-agents__meta')?.textContent;
-    expect(line('q')).toBe('claude-sonnet-4-5 · Waiting to start');
-    expect(line('c')).toBe('claude-sonnet-4-5 · Stopping…');
-    expect(line('r')).toBe('claude-sonnet-4-5 · Found 12 trials');
+    expect(line('q')).toBe('Claude Sonnet 4.5 · Waiting to start');
+    expect(line('c')).toBe('Claude Sonnet 4.5 · Stopping…');
+    expect(line('r')).toBe('Claude Sonnet 4.5 · Found 12 trials');
     // A child that ended early reads Stopped, never Incomplete, and waits for a look.
-    expect(line('i')).toBe('claude-sonnet-4-5 · Stopped');
+    expect(line('i')).toBe('Claude Sonnet 4.5 · Stopped');
     expect(screen.getByTestId('subagent-row-i')).toHaveAccessibleName(
-      'Stopped, Search PubMed for trials, claude-sonnet-4-5, 1m'
+      'Stopped, Search PubMed for trials, Claude Sonnet 4.5, 1m'
     );
     expect(screen.getByTestId('subagent-row-i')).toHaveAttribute('data-mark', 'waiting');
   });
@@ -137,7 +137,7 @@ describe('up to four subagents: comfortable two-line rows', () => {
     draw(data([wireRow({ sessionId: 'a' })]));
     const row = screen.getByTestId('subagent-row-a');
     expect(row.querySelector('[data-count]')).toBeNull();
-    expect(row).toHaveTextContent('claude-sonnet-4-5');
+    expect(row).toHaveTextContent('Claude Sonnet 4.5');
     expect(row.querySelector('.br-agents__trailing')).toHaveTextContent('1m');
     expect(row).not.toHaveTextContent(/anthropic|developer|20250929/);
   });
@@ -150,7 +150,7 @@ describe('up to four subagents: comfortable two-line rows', () => {
     expect(row).toHaveTextContent(copy.quietFor('4m'));
     expect(row).not.toHaveTextContent(/stall|dead|stuck/i);
     expect(row).toHaveAccessibleName(
-      'Quiet for 4m, Search PubMed for trials, claude-sonnet-4-5, 1m'
+      'Quiet for 4m, Search PubMed for trials, Claude Sonnet 4.5, 1m'
     );
   });
 
@@ -175,9 +175,9 @@ describe('up to four subagents: comfortable two-line rows', () => {
     expect(row.querySelector('.br-agent-mark')).toHaveAttribute('data-kind', 'failed');
     expect(row.querySelector('.br-agents__trailing')).toHaveTextContent(/^Failed · 1m$/);
     expect(row.querySelector('.br-agents__meta')).toHaveTextContent(
-      'claude-sonnet-4-5 · The registry export could not be read'
+      'Claude Sonnet 4.5 · The registry export could not be read'
     );
-    expect(row).toHaveAccessibleName('Failed, Auditor, claude-sonnet-4-5, 1m');
+    expect(row).toHaveAccessibleName('Failed, Auditor, Claude Sonnet 4.5, 1m');
     fireEvent.click(row);
     const card = await screen.findByTestId('subagent-card-f');
     expect(card).toHaveTextContent('Failed · 1m');
@@ -203,7 +203,7 @@ describe('up to four subagents: comfortable two-line rows', () => {
     draw(data([wireRow({ sessionId: 'a', privacyTier: 'private' })]));
     const row = screen.getByTestId('subagent-row-a');
     expect(row).toHaveAccessibleName(
-      'Running, Search PubMed for trials, claude-sonnet-4-5, 1m, private'
+      'Running, Search PubMed for trials, Claude Sonnet 4.5, 1m, private'
     );
     expect(row.querySelector('.br-agents__lock')).not.toBeNull();
   });
@@ -302,7 +302,7 @@ describe('five or more: a grid of squares, then the first five rows', () => {
     expect(cells()).toEqual(inSpawnOrder(data(rows).subagents).map((row) => row.sessionId));
     expect(cells()).toHaveLength(20);
     const square = screen.getByTestId('subagent-cell-failed');
-    expect(square).toHaveAccessibleName('Failed, Broke, claude-sonnet-4-5, 1m');
+    expect(square).toHaveAccessibleName('Failed, Broke, Claude Sonnet 4.5, 1m');
     expect(square.querySelector('.br-agent-mark')).toHaveAttribute('width', '10');
     expect(square.querySelector('.br-agent-mark')).toHaveAttribute('data-kind', 'failed');
     expect(
@@ -317,7 +317,7 @@ describe('five or more: a grid of squares, then the first five rows', () => {
     // A dense row is one line: the run time trails, no second line.
     expect(screen.getByTestId('subagent-row-run-0').querySelector('.br-agents__meta')).toBeNull();
     expect(screen.getByTestId('subagent-row-run-0')).toHaveAccessibleName(
-      'Running, run task 1, claude-sonnet-4-5, 1m'
+      'Running, run task 1, Claude Sonnet 4.5, 1m'
     );
   });
 
@@ -537,7 +537,7 @@ describe('the peek', () => {
     expect(within(card).getByRole('button', { name: copy.peek.openInTab })).toBeInTheDocument();
     const details = within(card).getByRole('button', { name: copy.peek.details });
     // Closed, with the model's short name as its summary.
-    expect(details).toHaveAccessibleDescription('gpt-5.5');
+    expect(details).toHaveAccessibleDescription('GPT-5.5');
     fireEvent.click(details);
     expect(card).toHaveTextContent('Developer');
     expect(card).toHaveTextContent('Biorouter Copilot');

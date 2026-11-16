@@ -74,8 +74,8 @@ describe('PinnedModelNote', () => {
     const note = await screen.findByTestId('pinned-model-note');
     await waitFor(() =>
       expect(note).toHaveTextContent(
-        'This chat is marked private, so it stays on Versa API Azure / gpt-5.2-2025-12-11. ' +
-          'Claude Code / claude-opus-5 is not used here.'
+        'This chat is marked private, so it stays on Versa API Azure / GPT-5.2. ' +
+          'Claude Code / Claude Opus 5 is not used here.'
       )
     );
     // `versa_azure` is not what that provider is called anywhere else in the
@@ -86,13 +86,11 @@ describe('PinnedModelNote', () => {
     // Owner, 2026-11-13: the line is where the chat stays; which selection is not used is the
     // info icon beside it, and still that icon's accessible description.
     expect(
-      screen.getByText(
-        'This chat is marked private, so it stays on Versa API Azure / gpt-5.2-2025-12-11.'
-      )
+      screen.getByText('This chat is marked private, so it stays on Versa API Azure / GPT-5.2.')
     ).toBeInTheDocument();
     expect(
       screen.getByRole('button', { name: 'About the selected model' })
-    ).toHaveAccessibleDescription('Claude Code / claude-opus-5 is not used here.');
+    ).toHaveAccessibleDescription('Claude Code / Claude Opus 5 is not used here.');
   });
 
   it('says nothing when the chat already runs on the selected model', () => {
@@ -162,7 +160,7 @@ describe('PinnedModelNote', () => {
    * …but a provider the catalog knows and cannot NAME still gets its sentence:
    * the id is true, and an invented display name would not be.
    */
-  it('falls back to ids when a row carries no display name', async () => {
+  it('falls back to the model alone when a row carries no display name', async () => {
     mocks.getProviders.mockResolvedValue([
       { name: 'versa_azure', metadata: { tier: 'private' }, resolved_tier: 'private' },
       { name: 'claude_code', metadata: { tier: 'public' }, resolved_tier: 'public' },
@@ -170,8 +168,7 @@ describe('PinnedModelNote', () => {
     render(<PinnedModelNote session={chat('private')} />);
     const note = await screen.findByTestId('pinned-model-note');
     expect(note).toHaveTextContent(
-      'This chat is marked private, so it stays on gpt-5.2-2025-12-11. ' +
-        'claude-opus-5 is not used here.'
+      'This chat is marked private, so it stays on GPT-5.2. ' + 'Claude Opus 5 is not used here.'
     );
   });
 
@@ -295,8 +292,8 @@ describe('what the chip and gauge are told to state', () => {
     before.rerender({ session: chat('private') });
     await waitFor(() =>
       expect(before.result.current.notice).toBe(
-        'This chat is marked private, so it stays on Versa API Azure / gpt-5.2-2025-12-11. ' +
-          'Claude Code / claude-opus-5 is not used here.'
+        'This chat is marked private, so it stays on Versa API Azure / GPT-5.2. ' +
+          'Claude Code / Claude Opus 5 is not used here.'
       )
     );
   });
@@ -369,8 +366,9 @@ describe('the pure half', () => {
   });
 
   it('labels a binding by provider and model, or by model alone', () => {
-    expect(bindingLabel('Versa API Azure', 'gpt-5.5')).toBe('Versa API Azure / gpt-5.5');
-    expect(bindingLabel(undefined, 'gpt-5.5')).toBe('gpt-5.5');
-    expect(bindingLabel('   ', 'gpt-5.5')).toBe('gpt-5.5');
+    // The model by its display name, as the chip names it (T1 F2).
+    expect(bindingLabel('Versa API Azure', 'gpt-5.5')).toBe('Versa API Azure / GPT-5.5');
+    expect(bindingLabel(undefined, 'gpt-5.5')).toBe('GPT-5.5');
+    expect(bindingLabel('   ', 'gpt-5.5')).toBe('GPT-5.5');
   });
 });

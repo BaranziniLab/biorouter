@@ -255,7 +255,7 @@ describe('the footer’s cost in a live chat', () => {
     await waitFor(() => expect(figure()).toHaveTextContent('$0.12'));
     await user.click(figure());
     await waitFor(() => expect(byModel()).toHaveLength(1));
-    expect(byModel()[0]).toHaveTextContent('anthropic/claude-opus-4-5');
+    expect(byModel()[0]).toHaveTextContent('Claude Opus 4.5');
     expect(byModel()[0]).toHaveTextContent('$0.12 · 20,000 in · 4,000 out');
 
     // Turn 2, with two provider calls: each records its usage, and the card,

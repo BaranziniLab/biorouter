@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { modelDisplayName } from '../../bottom_menu/modelLabel';
 import { Parameter } from '../../../workflow';
 
 import ParameterInput from '../../parameter/ParameterInput';
@@ -322,7 +323,7 @@ export function WorkflowFormFields({
     field.state.meta.errors.length > 0 ? field.state.meta.errors[0] : undefined;
   const values = form.state.values;
   const advancedSummary = copy.advancedSummary(
-    values.settings?.biorouter_model || null,
+    values.settings?.biorouter_model ? modelDisplayName(values.settings.biorouter_model) : null,
     values.parameters.filter((parameter: Parameter) => parameter.key?.trim()).length,
     extensions.length
   );

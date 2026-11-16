@@ -18,7 +18,7 @@ import {
   CommandItem,
   CommandList,
 } from '../../ui/command';
-import { friendlyModelName } from '../../bottom_menu/modelLabel';
+import { modelDisplayName } from '../../bottom_menu/modelLabel';
 import { fetchModelsForProviders } from '../../settings/models/modelInterface';
 import {
   getOrderedProviderGroups,
@@ -192,18 +192,20 @@ export function IngestModelPicker({
   const currentProviderLabel = value
     ? (providerDisplayNames[value.provider] ?? value.provider)
     : '';
-  // The model's name as the composer's chip says it (the release stamp comes off). The provider
-  // and the full id are in the Tooltip and the accessible name, which is where the 45px the old
-  // "MODEL" label took used to go: at 268px the name no longer truncates to "Versa API Azure / g…".
+  // The model's name as the composer's chip says it ("GPT-5.5", T1 F2). The provider is in the
+  // accessible name and the full id in the Tooltip, which is where the 45px the old "MODEL" label
+  // took used to go: at 268px the name no longer truncates to "Versa API Azure / g…". The
+  // accessible name says the shown name, so a person who says what they see reaches the button.
+  const shownModel = value ? modelDisplayName(value.model) : '';
   const triggerLabel = value
-    ? friendlyModelName(value.model)
+    ? shownModel
     : valueState === 'loading'
       ? 'Loading model…'
       : valueState === 'unavailable'
         ? 'Knowledge base unavailable'
         : 'No model configured';
   const triggerName = value
-    ? knowledgeCopy.ingest.modelTriggerName(value.model, currentProviderLabel)
+    ? knowledgeCopy.ingest.modelTriggerName(shownModel, currentProviderLabel)
     : knowledgeCopy.ingest.modelName;
 
   const needle = query.trim().toLowerCase();
@@ -212,6 +214,7 @@ export function IngestModelPicker({
     const label = providerDisplayNames[provider.name] ?? provider.name;
     return (
       model.toLowerCase().includes(needle) ||
+      modelDisplayName(model).toLowerCase().includes(needle) ||
       provider.name.toLowerCase().includes(needle) ||
       label.toLowerCase().includes(needle)
     );
@@ -317,7 +320,14 @@ export function IngestModelPicker({
                               setOpen(false);
                             }}
                           >
-                            <span className="min-w-0 flex-1 truncate">{model}</span>
+                            <span className="flex min-w-0 flex-1 flex-col">
+                              <span className="truncate">{modelDisplayName(model)}</span>
+                              {modelDisplayName(model) !== model && (
+                                <span className="truncate font-mono text-code text-text-muted">
+                                  {model}
+                                </span>
+                              )}
+                            </span>
                             {selected && (
                               <Check
                                 className="h-icon-row w-icon-row shrink-0 text-text-default"

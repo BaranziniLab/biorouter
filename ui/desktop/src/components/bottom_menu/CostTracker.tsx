@@ -12,7 +12,7 @@ import {
   type SessionCostRow,
   type SessionCosts,
 } from '../../hooks/useCostTracking';
-import { modelLabel } from './ModelBreakdownTable';
+import { labelsNeedProvider, modelLabel } from './ModelBreakdownTable';
 import {
   FooterCard,
   FooterCardDetail,
@@ -367,9 +367,11 @@ function CostFigure({
         {summary && summary.models.length > 0 && (
           <FooterCardSection label={COST_CARD_COPY.byModel} labelId={byModelId}>
             <FooterCardList labelledBy={byModelId}>
-              {summary.models.map((row, index) => (
+              {summary.models.map((row, index, rows) => (
                 <FooterCardRow key={`${modelRowKey(row.provider, row.model)}:${index}`}>
-                  <FooterCardValue>{modelLabel(row)}</FooterCardValue>
+                  <FooterCardValue>
+                    {modelLabel(row, labelsNeedProvider(rows)[index])}
+                  </FooterCardValue>
                   <TokenDetail
                     lines={COST_CARD_COPY.modelDetail(
                       formatTooltipMoney(row.totalCost, summary.currency),

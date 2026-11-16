@@ -13,6 +13,7 @@ import { ModelEffortChip } from './bottom_menu/ModelEffortChip';
 import { ComposerFooter } from './bottom_menu/ComposerFooter';
 import { useSessionUsageLimit } from './bottom_menu/useSessionUsageLimit';
 import { USAGE_LIMIT_COPY } from './bottom_menu/copy';
+import { modelDisplayName } from './bottom_menu/modelLabel';
 import { contextWindowModelKey } from './ContextWindowIndicator';
 import { draftReasoningScope, sessionReasoningScope } from '../store/reasoningEffort';
 import { InfoTip } from './ui/info-tip';
@@ -2010,7 +2011,8 @@ export default function ChatInput({
         tier = undefined;
       }
       if (tier === 'private') runPastPrivateDraft(proceed);
-      else setPrivateDraftAsk({ model, proceed });
+      // Named as the chip names it (T1 F2).
+      else setPrivateDraftAsk({ model: modelDisplayName(model), proceed });
     })();
     return true;
   };

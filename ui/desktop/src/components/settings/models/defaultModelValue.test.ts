@@ -28,7 +28,7 @@ describe('knownDefaultModelValue', () => {
 
   it('is the model and the provider’s display name, joined with a middle dot', () => {
     expect(knownDefaultModelValue('gpt-5.5-2026-04-24', 'versa_azure', providers)).toBe(
-      'gpt-5.5-2026-04-24 · Versa API Azure'
+      'GPT-5.5 · Versa API Azure'
     );
   });
 

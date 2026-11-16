@@ -13,6 +13,7 @@ import {
 } from '../../../utils/usageStats';
 import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
+import { modelDisplayName } from '../../bottom_menu/modelLabel';
 import { InfoTip } from '../../ui/info-tip';
 import { Progress } from '../../ui/progress';
 import { SettingRow } from '../../ui/setting-row';
@@ -608,7 +609,9 @@ export function UsageReport({ summary, dayRows, modelRows, showCosts = true }: U
                           <p className="truncate">
                             {decision && row.modelId
                               ? decisionModelName(row.modelId)
-                              : row.modelId || MODEL_NOT_RECORDED}
+                              : row.modelId
+                                ? modelDisplayName(row.modelId)
+                                : MODEL_NOT_RECORDED}
                           </p>
                           <p
                             className="truncate text-supporting text-text-subtle"

@@ -82,7 +82,7 @@ describe('ModelsSection', () => {
 
   it('holds four sections whose ids the Settings deep links scroll to, Speech models third', async () => {
     const { container } = render(<ModelsSection setView={vi.fn()} />);
-    await screen.findByText('gpt-5.6-sol · Versa Azure');
+    await screen.findByText('GPT-5.6 Sol · Versa Azure');
 
     expect(container.querySelector(`#${SETTINGS_SECTION_IDS.defaultModel}`)).not.toBeNull();
     expect(container.querySelector(`#${SETTINGS_SECTION_IDS.localModels}`)).not.toBeNull();
@@ -106,7 +106,7 @@ describe('ModelsSection', () => {
     const user = userEvent.setup();
     render(<ModelsSection setView={vi.fn()} />);
 
-    expect(await screen.findByText('gpt-5.6-sol · Versa Azure')).toBeInTheDocument();
+    expect(await screen.findByText('GPT-5.6 Sol · Versa Azure')).toBeInTheDocument();
     // "Change…" is what it says; the dialog it opens keeps its name "Switch models".
     const change = screen.getByRole('button', { name: defaultModelCopy.changeName });
     expect(change).toHaveTextContent(defaultModelCopy.change);
@@ -119,7 +119,7 @@ describe('ModelsSection', () => {
     const user = userEvent.setup();
     const setView = vi.fn();
     render(<ModelsSection setView={setView} />);
-    await screen.findByText('gpt-5.6-sol · Versa Azure');
+    await screen.findByText('GPT-5.6 Sol · Versa Azure');
 
     const manage = screen.getByRole('button', { name: defaultModelCopy.manageName });
     expect(manage).toHaveTextContent(defaultModelCopy.manage);
@@ -130,7 +130,7 @@ describe('ModelsSection', () => {
   it('has no Providers row when the deployment pins its models', async () => {
     mocks.predefined = true;
     render(<ModelsSection setView={vi.fn()} />);
-    await screen.findByText('gpt-5.6-sol · Versa Azure');
+    await screen.findByText('GPT-5.6 Sol · Versa Azure');
 
     expect(
       screen.queryByRole('button', { name: defaultModelCopy.manageName })
@@ -140,7 +140,7 @@ describe('ModelsSection', () => {
 
   it('puts the explanations in InfoTips and no description paragraph in a row', async () => {
     const { container } = render(<ModelsSection setView={vi.fn()} />);
-    await screen.findByText('gpt-5.6-sol · Versa Azure');
+    await screen.findByText('GPT-5.6 Sol · Versa Azure');
 
     expect(
       screen.getByRole('button', { name: `About ${defaultModelCopy.section}` })
@@ -167,7 +167,7 @@ describe('ModelsSection', () => {
       const { container } = render(<ModelsSection setView={vi.fn()} />);
 
       // Read synchronously: nothing has awaited, so this is the first committed frame.
-      expect(screen.getByText('gpt-5.6-sol · Versa Azure')).toBeInTheDocument();
+      expect(screen.getByText('GPT-5.6 Sol · Versa Azure')).toBeInTheDocument();
       expect(skeletons(container)).toHaveLength(0);
     });
 
@@ -179,7 +179,7 @@ describe('ModelsSection', () => {
       daemonSilent();
       const html = renderToString(<ModelsSection setView={vi.fn()} />);
 
-      expect(html).toContain('gpt-5.6-sol · Versa Azure');
+      expect(html).toContain('GPT-5.6 Sol · Versa Azure');
       expect(html).not.toContain('data-slot="skeleton"');
 
       mocks.providersList = [];
@@ -189,12 +189,12 @@ describe('ModelsSection', () => {
     it('keeps the same value on screen when the daemon then answers with the same words', async () => {
       mocks.providersList = [provider('versa_azure', 'Versa Azure')];
       const { container } = render(<ModelsSection setView={vi.fn()} />);
-      const value = screen.getByText('gpt-5.6-sol · Versa Azure');
+      const value = screen.getByText('GPT-5.6 Sol · Versa Azure');
 
       await vi.waitFor(() => expect(mocks.getCurrentProviderDisplayName).toHaveBeenCalled());
       await Promise.resolve();
       // The same node, not a skeleton and then a new one.
-      expect(screen.getByText('gpt-5.6-sol · Versa Azure')).toBe(value);
+      expect(screen.getByText('GPT-5.6 Sol · Versa Azure')).toBe(value);
       expect(skeletons(container)).toHaveLength(0);
     });
 
@@ -203,7 +203,7 @@ describe('ModelsSection', () => {
       const { container } = render(<ModelsSection setView={vi.fn()} />);
 
       expect(skeletons(container)).toHaveLength(1);
-      expect(await screen.findByText('gpt-5.6-sol · Versa Azure')).toBeInTheDocument();
+      expect(await screen.findByText('GPT-5.6 Sol · Versa Azure')).toBeInTheDocument();
       expect(skeletons(container)).toHaveLength(0);
     });
 
@@ -213,7 +213,7 @@ describe('ModelsSection', () => {
       const { container } = render(<ModelsSection setView={vi.fn()} />);
 
       expect(skeletons(container)).toHaveLength(1);
-      expect(screen.queryByText(/gpt-5.6-sol/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/GPT-5\.6 Sol/)).not.toBeInTheDocument();
     });
 
     it('changes the words at once when the model in force changes, never the old model beside the new', () => {
@@ -223,14 +223,14 @@ describe('ModelsSection', () => {
       ];
       daemonSilent();
       const { rerender, container } = render(<ModelsSection setView={vi.fn()} />);
-      expect(screen.getByText('gpt-5.6-sol · Versa Azure')).toBeInTheDocument();
+      expect(screen.getByText('GPT-5.6 Sol · Versa Azure')).toBeInTheDocument();
 
       mocks.currentModel = 'claude-opus-5';
       mocks.currentProvider = 'anthropic';
       rerender(<ModelsSection setView={vi.fn()} />);
 
-      expect(screen.getByText('claude-opus-5 · Anthropic')).toBeInTheDocument();
-      expect(screen.queryByText(/gpt-5.6-sol/)).not.toBeInTheDocument();
+      expect(screen.getByText('Claude Opus 5 · Anthropic')).toBeInTheDocument();
+      expect(screen.queryByText(/GPT-5\.6 Sol/)).not.toBeInTheDocument();
       expect(skeletons(container)).toHaveLength(0);
     });
   });

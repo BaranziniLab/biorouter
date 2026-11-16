@@ -4,6 +4,7 @@ import { billedTokens, knownBilledTokens } from '../../utils/usageAccounting';
 import { decisionModelName } from '../../utils/usageStats';
 import { isDecisionProvider, pluralize } from '../decisions/decisionWire';
 import { MODEL_NOT_RECORDED } from './copy';
+import { modelDisplayName } from './modelLabel';
 import { formatTooltipMoney, isUnmeteredDecisionRow } from './CostTracker';
 
 interface ModelBreakdownTableProps {
@@ -12,19 +13,32 @@ interface ModelBreakdownTableProps {
 }
 
 /**
- * Label a row's model for a person: `provider/model`, or `MODEL_NOT_RECORDED` for the bucket of
- * turns saved without a model. A label is copy, never a key: key a row by `modelRowKey`. A
- * decision model's row is named as one (`Decision model: joey-1`), since its Baseten slug says
- * little.
+ * Label a row's model for a person: its display name ("Claude Haiku 5.5", the name the composer's
+ * chip and every other surface show; T1 F2), or `MODEL_NOT_RECORDED` for the bucket of turns saved
+ * without a model. A label is copy, never a key: key a row by `modelRowKey`. A decision model's
+ * row is named as one (`Decision model: joey-1`), since its Baseten slug says little. Pass
+ * `withProvider` when two rows would otherwise read the same (one model through two providers).
  */
-export function modelLabel(row: Pick<ModelCostRow, 'provider' | 'model'>): string {
+export function modelLabel(
+  row: Pick<ModelCostRow, 'provider' | 'model'>,
+  withProvider = false
+): string {
   if (!row.model) {
     return MODEL_NOT_RECORDED;
   }
   if (isDecisionProvider(row.provider)) {
     return `Decision model: ${decisionModelName(row.model)}`;
   }
-  return row.provider ? `${row.provider}/${row.model}` : row.model;
+  const name = modelDisplayName(row.model);
+  return withProvider && row.provider ? `${name} · ${row.provider}` : name;
+}
+
+/** Whether each row's label needs its provider to tell it from another row's. */
+export function labelsNeedProvider(rows: Pick<ModelCostRow, 'provider' | 'model'>[]): boolean[] {
+  const counts = new Map<string, number>();
+  const names = rows.map((row) => modelLabel(row));
+  for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
+  return names.map((name) => (counts.get(name) ?? 0) > 1);
 }
 
 /**
@@ -65,6 +79,7 @@ export function ModelBreakdownTable({ rows, currency = '$' }: ModelBreakdownTabl
   if (rows.length === 0) {
     return null;
   }
+  const withProvider = labelsNeedProvider(rows);
 
   return (
     <table
@@ -84,12 +99,12 @@ export function ModelBreakdownTable({ rows, currency = '$' }: ModelBreakdownTabl
         </tr>
       </thead>
       <tbody>
-        {rows.map((row) => (
+        {rows.map((row, index) => (
           <tr
             key={modelRowKey(row.provider, row.model)}
             className="h-10 border-b border-border-subtle text-text-default last:border-b-0"
           >
-            <td className="pr-3">{modelLabel(row)}</td>
+            <td className="pr-3">{modelLabel(row, withProvider[index])}</td>
             <td className="px-2 text-right tabular-nums">{turnsCell(row)}</td>
             <td className="px-2 text-right tabular-nums">{row.inputTokens.toLocaleString()}</td>
             <td className="px-2 text-right tabular-nums">{tokenCell(row.cacheReadTokens)}</td>

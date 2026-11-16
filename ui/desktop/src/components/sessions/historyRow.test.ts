@@ -177,7 +177,7 @@ describe('subagentOutcomeOf', () => {
 
 describe('runModelName', () => {
   it('names the model a run used, or nothing', () => {
-    expect(runModelName({ model_config: { model_name: 'gpt-5.5' } })).toBe('gpt-5.5');
+    expect(runModelName({ model_config: { model_name: 'gpt-5.5' } })).toBe('GPT-5.5');
     expect(runModelName({ model_config: { model_name: '  ' } })).toBeNull();
     expect(runModelName({ model_config: null })).toBeNull();
     expect(runModelName({})).toBeNull();
@@ -185,7 +185,8 @@ describe('runModelName', () => {
 
   it('shortens a dated id the way the chat summary does, and keeps the full id for the tooltip', () => {
     const run = { model_config: { model_name: 'gpt-5.5-2026-04-24' } };
-    expect(runModelName(run)).toBe('gpt-5.5');
+    // The display name every surface shows (T1 F2).
+    expect(runModelName(run)).toBe('GPT-5.5');
     expect(runModelFullName(run)).toBe('gpt-5.5-2026-04-24');
   });
 });

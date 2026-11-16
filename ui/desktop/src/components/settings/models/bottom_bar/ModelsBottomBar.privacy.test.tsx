@@ -228,7 +228,9 @@ describe('ModelsBottomBar — the chip carries the dense padlock, never a pill',
     // query would match both.
     const trigger = await screen.findByTestId('model-chip');
     const label = trigger.getAttribute('aria-label') ?? '';
-    expect(label).toBe('Current model: claude-opus-4 (Private model, UCSF). Public chat');
+    expect(label).toBe(
+      'Current model: Claude Opus 4 (Private model, UCSF). Public chat. Model: claude-opus-4'
+    );
     // The exact failure: the chat's tier standing inside the model's clause.
     expect(label).not.toMatch(/\(Public chat/);
   });

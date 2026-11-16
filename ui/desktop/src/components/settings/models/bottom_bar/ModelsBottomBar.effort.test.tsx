@@ -14,7 +14,7 @@ import {
 
 /**
  * Spec 3.7: the model and the effort are ONE picker. The chip names the model
- * the way a person says it, plus a non-default effort ("gpt-5.6-sol · Deep"),
+ * the way a person says it, plus a non-default effort ("GPT-5.6 Sol · Deep"),
  * and its padlock. The menu sets effort with labelled Quick, Normal and Deep segments.
  */
 const mocks = vi.hoisted(() => ({
@@ -101,9 +101,12 @@ describe('the model and effort chip', () => {
   it('names the model without its date stamp, keeps the full id in its name', async () => {
     renderChip();
     const chip = await screen.findByTestId('model-chip');
-    await waitFor(() => expect(chip).toHaveTextContent('gpt-5.6-sol'));
+    // T1 F2: by the display name every surface shows; the id closes the accessible name.
+    await waitFor(() => expect(chip).toHaveTextContent('GPT-5.6 Sol'));
     expect(chip).not.toHaveTextContent('2026-07-09');
-    expect(chip).toHaveAccessibleName(/^Current model: gpt-5\.6-sol-2026-07-09/);
+    expect(chip).toHaveAccessibleName(
+      /^Current model: GPT-5\.6 Sol \(.*\. Model: gpt-5\.6-sol-2026-07-09$/
+    );
     // The padlock is the one mark, and the model's tier drives it.
     expect(await screen.findByTestId('privacy-badge')).toHaveAttribute('data-privacy', 'private');
   });
@@ -112,11 +115,11 @@ describe('the model and effort chip', () => {
     mocks.model = 'us.anthropic.claude-sonnet-4-5-20250929-v1:0';
     renderChip();
     const chip = await screen.findByTestId('model-chip');
-    await waitFor(() => expect(chip).toHaveTextContent('claude-sonnet-4-5'));
+    await waitFor(() => expect(chip).toHaveTextContent('Claude Sonnet 4.5'));
     expect(chip).not.toHaveTextContent('us.anthropic');
     expect(chip).not.toHaveTextContent('v1:0');
     expect(chip).toHaveAccessibleName(
-      /^Current model: us\.anthropic\.claude-sonnet-4-5-20250929-v1:0/
+      /^Current model: Claude Sonnet 4\.5\b.*\. Model: us\.anthropic\.claude-sonnet-4-5-20250929-v1:0$/
     );
   });
 
@@ -133,11 +136,11 @@ describe('the model and effort chip', () => {
     renderChip();
     const chip = await screen.findByTestId('model-chip');
     expect(chip).not.toHaveTextContent('Normal');
-    expect(chip).toHaveAccessibleName(/Effort: Normal$/);
+    expect(chip).toHaveAccessibleName(/Effort: Normal\. Model: gpt-5\.6-sol-2026-07-09$/);
 
     act(() => setReasoningEffort(SCOPE, 'deep'));
-    await waitFor(() => expect(chip).toHaveTextContent('gpt-5.6-sol · Deep'));
-    expect(chip).toHaveAccessibleName(/Effort: Deep$/);
+    await waitFor(() => expect(chip).toHaveTextContent('GPT-5.6 Sol · Deep'));
+    expect(chip).toHaveAccessibleName(/Effort: Deep\. Model: gpt-5\.6-sol-2026-07-09$/);
   });
 
   it('reads its name as sentences with one period each, never two (V2-R8-5)', async () => {
@@ -147,7 +150,7 @@ describe('the model and effort chip', () => {
     // The chat's tier sentence ends with its own period; the effort follows it
     // after one, not after a second one the join used to add.
     expect(chip).toHaveAccessibleName(
-      'Current model: gpt-5.6-sol-2026-07-09 (Private model). Private chat. Biorouter only lets private models, decision models included, read it. Effort: Normal'
+      'Current model: GPT-5.6 Sol (Private model). Private chat. Biorouter only lets private models, decision models included, read it. Effort: Normal. Model: gpt-5.6-sol-2026-07-09'
     );
     expect(chip.getAttribute('aria-label')).not.toContain('..');
   });
@@ -172,7 +175,7 @@ describe('the model and effort chip', () => {
     const chip = await screen.findByTestId('model-chip');
     await waitFor(() =>
       expect(chip).toHaveAccessibleName(
-        /Public chat: monitor "Done" uses joey-1\u00a0· Baseten\. Effort: Normal$/
+        /Public chat: monitor "Done" uses joey-1\u00a0· Baseten\. Effort: Normal\. Model: gpt-5\.6-sol-2026-07-09$/
       )
     );
   });
@@ -228,7 +231,7 @@ describe('the model and effort chip', () => {
     await waitFor(() => expect(getReasoningEffort(SCOPE)).toBe('deep'));
     expect(reasoningEffortForRequest(getReasoningEffort(SCOPE))).toBe('deep');
     expect(within(control).getByRole('radio', { name: 'Deep' })).toBeChecked();
-    await waitFor(() => expect(chip).toHaveTextContent('gpt-5.6-sol · Deep'));
+    await waitFor(() => expect(chip).toHaveTextContent('GPT-5.6 Sol · Deep'));
     await user.keyboard('{Home}');
     expect(getReasoningEffort(SCOPE)).toBe('quick');
     await user.keyboard('{End}');
@@ -321,7 +324,7 @@ describe('the model and effort chip', () => {
 
     act(() => change.focus());
     const stops: (string | null)[] = [];
-    for (let step = 0; step < 4; step++) {
+    for (let step = 0; step < 5; step++) {
       await user.keyboard('{ArrowUp}');
       const at = document.activeElement;
       stops.push(
@@ -330,7 +333,15 @@ describe('the model and effort chip', () => {
           : (at?.getAttribute('data-testid') ?? null)
       );
     }
-    expect(stops).toEqual(['Normal', 'effort-info', 'affiliation-badge', 'affiliation-badge']);
+    // The model id's InfoTip beside the model's name (T1 F2) is the topmost stop, and holds.
+    expect(stops).toEqual([
+      'Normal',
+      'effort-info',
+      'affiliation-badge',
+      'model-id-info',
+      'model-id-info',
+    ]);
+    await user.keyboard('{ArrowDown}');
     expect(badge).toHaveFocus();
     expect(getReasoningEffort(SCOPE)).toBe('normal');
 

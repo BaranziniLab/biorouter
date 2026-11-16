@@ -137,8 +137,8 @@ describe('ApplicationItem', () => {
     // The line is one paragraph; the facts are its first run (a build-chat note would follow).
     const line = screen.getByTestId('app-row-meta');
     expect(line.tagName).toBe('P');
-    expect(line.textContent).toBe('claude-sonnet-4-5 · ms-cohort');
-    expect(within(line).getByText('claude-sonnet-4-5 · ms-cohort')).toBeInTheDocument();
+    expect(line.textContent).toBe('Claude Sonnet 4.5 · ms-cohort');
+    expect(within(line).getByText('Claude Sonnet 4.5 · ms-cohort')).toBeInTheDocument();
     expect(line.closest('.font-mono')).toBeNull();
     // The description gives way to the facts; the row has two lines.
     expect(screen.queryByText('Explore a paired cohort.')).toBeNull();

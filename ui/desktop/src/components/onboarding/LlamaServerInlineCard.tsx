@@ -180,6 +180,9 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
   const selectedModel = pickedModel || initialModelFor(status);
   const sidecar = status?.sidecar ?? null;
   const catalog = useMemo(() => status?.catalog ?? [], [status]);
+  // The running operation's model by its catalog name, as the picker lists it (T1 F2).
+  const operationName =
+    catalog.find((entry) => entry.name === operation?.model)?.display_name ?? operation?.model;
   const system = status?.system ?? null;
   // Any in-flight operation (started here or in Settings → Models) renders
   // the live progress box; the store keeps polling across unmounts.
@@ -215,7 +218,10 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
         if (!mountedRef.current) return;
         toastService.success({
           title: llamaCopy.ready,
-          msg: llamaCopy.readyDetail(model),
+          // By its catalog name, as the picker listed it and the chip will say it (T1 F2).
+          msg: llamaCopy.readyDetail(
+            catalog.find((entry) => entry.name === model)?.display_name ?? model
+          ),
         });
         onSuccess();
       } catch (error) {
@@ -228,7 +234,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
         });
       }
     },
-    [onSuccess, upsert]
+    [catalog, onSuccess, upsert]
   );
 
   useEffect(() => {
@@ -537,9 +543,9 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
                   <Spinner size={14} />
                   <span>
                     {sidecar?.state === 'ready' && sidecar.model === operation.model
-                      ? `Running warm-up prompt for ${operation.model}…`
+                      ? `Running warm-up prompt for ${operationName}…`
                       : sidecar?.state === 'starting'
-                        ? `Preparing ${operation.model}. Loading or downloading on first use…`
+                        ? `Preparing ${operationName}. Loading or downloading on first use…`
                         : `Starting llama-server…`}
                   </span>
                 </div>

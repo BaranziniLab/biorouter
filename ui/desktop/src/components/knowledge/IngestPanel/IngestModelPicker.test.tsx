@@ -158,11 +158,12 @@ describe('IngestModelPicker trigger', () => {
     const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
     await waitFor(() =>
       expect(trigger).toHaveAccessibleName(
-        knowledgeCopy.ingest.modelTriggerName('gpt-5.5-2026-04-24', 'Versa API Azure')
+        // The name it shows, as the chip says it (T1 F2); the full id is in its tooltip.
+        knowledgeCopy.ingest.modelTriggerName('GPT-5.5', 'Versa API Azure')
       )
     );
 
-    expect(trigger).toHaveTextContent(/^gpt-5\.5$/);
+    expect(trigger).toHaveTextContent(/^GPT-5\.5$/);
     expect(trigger.querySelector('.text-caps')).toBeNull();
     // The chevron is the only glyph in it.
     expect(trigger.querySelectorAll('svg')).toHaveLength(1);

@@ -404,7 +404,7 @@ describe('the draft dialog’s tip (M1-3)', () => {
     await pickDefault('joey-1');
     const asking = await screen.findByTestId('monitors-public-confirm');
     const tip = within(asking).getByRole('button', { name: 'About Why this chat will be public' });
-    expect(tip).toHaveAccessibleDescription(/so gpt-5\.5 keeps answering/);
+    expect(tip).toHaveAccessibleDescription(/so GPT-5\.5 keeps answering/);
     expect(tip.getAttribute('aria-describedby')).toBeTruthy();
     expect(asking.textContent).not.toContain('2026-04-24');
   });

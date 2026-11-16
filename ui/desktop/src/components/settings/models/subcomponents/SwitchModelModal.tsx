@@ -43,6 +43,7 @@ import { DecisionModelInstall } from '../../../decisions/DecisionModelInstall';
 import { readResolvedProviderTier } from '../../../privacy/useBoundProviderTier';
 import { TIER_EFFECT_COPY, decisionModelPlace } from '../../../decisions/decisionWords';
 import type { PrivacyBasis } from '../../../../utils/sessionDecisions';
+import { modelDisplayName } from '../../../bottom_menu/modelLabel';
 import './model-dialogs.css';
 import {
   llamacppStatus,
@@ -64,6 +65,8 @@ type ModelOption = {
   providerType?: ProviderType;
   isDisabled?: boolean;
   detail?: string;
+  /** The raw id under a display name that differs from it (T1 F2), drawn as data. */
+  idLine?: string;
 };
 
 function findFirstAvailableModel(models: ModelOption[]): string | null {
@@ -110,6 +113,21 @@ const llamaModelOption = (
     provider: selectedProvider.name,
     providerType: selectedProvider.provider_type,
     detail,
+  };
+};
+
+/**
+ * A chat model's row (T1 F2): its display name ("Claude Haiku 5.5"), the name the chip and every
+ * other surface show, with the id it stands for under it.
+ */
+const chatModelOption = (modelName: string, selectedProvider: ProviderDetails): ModelOption => {
+  const label = modelDisplayName(modelName);
+  return {
+    value: modelName,
+    label,
+    provider: selectedProvider.name,
+    providerType: selectedProvider.provider_type,
+    ...(label !== modelName ? { idLine: modelName } : {}),
   };
 };
 
@@ -344,8 +362,9 @@ const renderModelOptionLabel = (
 ) => {
   const option = rawOption as ModelOption;
   const detail = meta.context === 'menu' && blockedReason ? blockedReason : option.detail;
+  const idLine = meta.context === 'menu' ? option.idLine : undefined;
 
-  if (!detail) {
+  if (!detail && !idLine) {
     return option.label;
   }
 
@@ -356,7 +375,12 @@ const renderModelOptionLabel = (
   return (
     <div className="min-w-0 py-0.5">
       <div className="truncate text-label text-current">{option.label}</div>
-      <div className="mt-0.5 line-clamp-2 text-supporting text-current opacity-70">{detail}</div>
+      {idLine && (
+        <div className="truncate font-mono text-code text-current opacity-70">{idLine}</div>
+      )}
+      {detail && (
+        <div className="mt-0.5 line-clamp-2 text-supporting text-current opacity-70">{detail}</div>
+      )}
     </div>
   );
 };
@@ -1079,15 +1103,15 @@ export const SwitchModelModal = ({
         const options: ModelOption[] = modelList.map((m) =>
           selectedProvider.name === 'llamacpp'
             ? llamaModelOption(m, llamaCatalog, llamaSystem, selectedProvider)
-            : {
-                value: m,
-                label: m,
-                provider: selectedProvider.name,
-                providerType: selectedProvider.provider_type,
-                ...(isDecisionProvider(selectedProvider.name)
-                  ? { detail: switchModelCopy.decisionModel }
-                  : {}),
-              }
+            : isDecisionProvider(selectedProvider.name)
+              ? {
+                  value: m,
+                  label: m,
+                  provider: selectedProvider.name,
+                  providerType: selectedProvider.provider_type,
+                  detail: switchModelCopy.decisionModel,
+                }
+              : chatModelOption(m, selectedProvider)
         );
 
         if (selectedProvider.metadata.allows_unlisted_models) {
@@ -1166,7 +1190,7 @@ export const SwitchModelModal = ({
       ? modelOptionsByProvider[provider]?.find((option) => option.value === model)
       : null;
     if (selectedOption) return selectedOption;
-    return { value: model, label: model, provider: provider || '' };
+    return { value: model, label: modelDisplayName(model), provider: provider || '' };
   }, [model, modelOptionsByProvider, provider]);
   const providerSelectValue = useMemo(
     () => providerOptions.find((option) => option.value === provider) || null,
