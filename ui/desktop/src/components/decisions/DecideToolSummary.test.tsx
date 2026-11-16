@@ -393,6 +393,55 @@ describe('counts that add up (R1-5, R3-F1)', () => {
     // No slug, ever.
     expect(container).not.toHaveTextContent('decision-models/');
   });
+
+  // W1-04: two models of a vote that share a name come from the daemon as `provider/name`. The
+  // provider key is no word for a person, so each reads its name and where it runs.
+  it('tells apart two models of a vote that share a name by where each runs, never its key', () => {
+    const vote = {
+      kind: 'decide_vote',
+      batchId: 'batch-vote',
+      chunks: 20,
+      elapsedMs: 9000,
+      models: [
+        {
+          provider: 'baseten_decision',
+          model: 'decision-models/joey-1',
+          label: 'baseten_decision/joey-1',
+        },
+        { provider: 'ollama_decision', model: 'joey-1', label: 'ollama_decision/joey-1' },
+        { provider: 'ollama_decision', model: 'qwen3.8:27b', label: 'qwen3.8:27b' },
+      ].map(({ provider, model, label }) => ({
+        model: { provider, model },
+        label,
+        tier: 'private',
+        decided: 20,
+        errors: 0,
+        error: null,
+      })),
+      questions: [
+        {
+          name: 'has_ms',
+          type: 'yes_no',
+          threshold: 0.9,
+          passOn: 'yes',
+          perModel: [{ yes: 6, no: 14 }],
+          majority: { yes: 7, no: 13 },
+          ties: 0,
+          compared: 20,
+          agreed: 19,
+          disagreements: [],
+          moreDisagreements: 0,
+          majorityIds: {},
+        },
+      ],
+    };
+    const { container } = show(true, ONE_YES_NO, vote);
+    openWell(container);
+    expect(screen.getByTestId('decide-tool-head')).toHaveTextContent(
+      'Vote of 3 models: joey-1 · Baseten, joey-1 · Ollama, Qwen3.8 27B'
+    );
+    expect(container).not.toHaveTextContent('_decision');
+  });
 });
 
 describe('a choice with a threshold', () => {
@@ -647,6 +696,35 @@ describe('a call that escalated', () => {
     expect(screen.getByTestId('decide-tool-escalation-text')).toHaveTextContent(
       /^1 of 30 escalated to elephant-1 · 1 too long for elephant-1$/
     );
+  });
+
+  // W1-04: the daemon names a decision model by its short name, which for an Ollama model is
+  // its raw id. The card's head and the decision history read the same model by its display
+  // name (`modelDisplayName`), so the escalation line named one model two ways.
+  it('names the models it escalated between by their display names', () => {
+    const pathed = {
+      ...summary,
+      escalation: {
+        ...escalation,
+        label: 'hf.co/acme/clef-flash:latest',
+        firstLabel: 'qwen3.8:27b',
+      },
+    };
+    const { container } = show(true, ONE_ARGS, pathed);
+    openWell(container);
+    expect(screen.getByTestId('decide-tool-escalation-text')).toHaveTextContent(
+      /^12 of 30 escalated to clef-flash:latest · 1 failed$/
+    );
+    expect(screen.getByTestId('decide-tool-escalation')).toHaveTextContent(
+      'were asked again of clef-flash:latest, and its answers are final. Where it gave no ' +
+        "answer, Qwen3.8 27B's answer stands."
+    );
+    const listed = screen.getByTestId('decide-tool-escalated');
+    expect(listed.querySelector('li')).toHaveTextContent(
+      'Chunk 1no 0.90, was yes 0.60 by Qwen3.8 27B'
+    );
+    expect(container).not.toHaveTextContent('hf.co/');
+    expect(container).not.toHaveTextContent('qwen3.8:27b');
   });
 
   it('draws no escalation for a call that did not escalate', () => {

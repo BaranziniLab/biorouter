@@ -17,7 +17,8 @@ import {
   type DecideEscalation,
   type DecideQuestionSummary,
 } from './decisionWire';
-import { CALIBRATION_COPY, decisionModelDisplay } from './decisionWords';
+import { CALIBRATION_COPY, DECISION_PLACE_WORDS, decisionModelDisplay } from './decisionWords';
+import { modelDisplayName } from '../bottom_menu/modelLabel';
 import { useRevealWhenOpened } from './useRevealWhenOpened';
 
 /** The card names at most this many questions; the rest are in the history. */
@@ -117,6 +118,40 @@ export const DECIDE_TOOL_COPY = {
 };
 
 const n = (value: number) => value.toLocaleString('en-US');
+
+/** Where a decision provider's model runs, for a label the daemon wrote as `provider/name`. */
+const LABEL_PLACES: Readonly<Record<string, string>> = {
+  baseten_decision: DECISION_PLACE_WORDS.baseten,
+  ollama_decision: DECISION_PLACE_WORDS.ollama,
+};
+
+/**
+ * A decision model the daemon named in the result, as every surface names it (W1-04). The daemon
+ * writes a model's short name: a Baseten model's alias (`joey-1`, already its name) or an Ollama
+ * model's id, which reads by its display name as on the card's head and in the decision history
+ * (`hf.co/acme/clef-flash:latest` reads `clef-flash:latest`). Two models of a vote that share a
+ * name come as `provider/name`: the key is no word for a person, so the place each runs follows
+ * its name instead (`joey-1 · Baseten`).
+ */
+export function decideModelName(label: string): string {
+  const slash = label.indexOf('/');
+  const place = slash > 0 ? LABEL_PLACES[label.slice(0, slash)] : undefined;
+  if (place) {
+    const name = label.slice(slash + 1);
+    const shown = label.startsWith('baseten_decision/') ? name : modelDisplayName(name);
+    return `${shown} · ${place}`;
+  }
+  return modelDisplayName(label);
+}
+
+/** The escalation with its two models named as {@link decideModelName} names them. */
+function namedEscalation(escalation: DecideEscalation): DecideEscalation {
+  return {
+    ...escalation,
+    label: decideModelName(escalation.label),
+    firstLabel: escalation.firstLabel && decideModelName(escalation.firstLabel),
+  };
+}
 
 /** "Checking 600 chunks against 3 questions": the row's verb and what it counts. */
 export function summarizeDecideCall(args: Record<string, unknown> | undefined): string {
@@ -228,7 +263,7 @@ function headLine(summary: DecideBatchSummary): {
       model: null,
       isPrivate: false,
       rest: joinParts([
-        DECIDE_TOOL_COPY.vote(summary.voteModels.map((model) => model.label)),
+        DECIDE_TOOL_COPY.vote(summary.voteModels.map((model) => decideModelName(model.label))),
         silent > 0 ? DECIDE_TOOL_COPY.modelsSilent(silent) : null,
       ]),
     };
@@ -396,7 +431,11 @@ export function DecideToolSummary({
   onOpenArtifact,
 }: DecideToolSummaryProps) {
   const asked = decideArguments(args);
-  const summary = toolResult === undefined ? null : parseDecideBatchSummary(toolResult);
+  const parsed = toolResult === undefined ? null : parseDecideBatchSummary(toolResult);
+  const summary =
+    parsed?.escalation != null
+      ? { ...parsed, escalation: namedEscalation(parsed.escalation) }
+      : parsed;
   const textOf = new Map(asked.questions.map((question) => [question.name, question.instructions]));
   // Once the batch answered, its questions as the daemon ran them; before, the call's own.
   const questions: Array<{ name: string; counts: string | null }> = summary
