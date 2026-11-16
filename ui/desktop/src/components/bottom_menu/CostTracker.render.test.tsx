@@ -274,6 +274,35 @@ describe('the cost card', () => {
     expect(card).not.toHaveTextContent(/unknown/);
   });
 
+  it('gives two snapshots of one model from one provider rows that read apart', async () => {
+    const user = userEvent.setup();
+    // Both read "GPT-5.5" and are priced on their own, so the provider alone cannot tell them
+    // apart; each row carries its id.
+    const april: ModelCostRow = {
+      ...ledgerRow,
+      provider: 'openai',
+      model: 'gpt-5.5-2026-04-24',
+      totalCost: 1.5,
+    };
+    const july: ModelCostRow = { ...april, model: 'gpt-5.5-2026-07-09', totalCost: 0.25 };
+    render(<CostTracker modelCostRows={[april, july]} />);
+    await waitFor(() => expect(figure()).toHaveTextContent('$1.75'));
+    await user.click(figure());
+    const card = screen.getByRole('dialog', { name: COST_CARD_COPY.cardLabel });
+    const rows = within(
+      within(card).getByRole('list', { name: COST_CARD_COPY.byModel })
+    ).getAllByRole('listitem');
+    expect(rows).toHaveLength(2);
+    expect(within(rows[0]).getByText('GPT-5.5 · openai · gpt-5.5-2026-04-24')).toHaveClass(
+      'br-footer-card__value'
+    );
+    expect(within(rows[0]).getByText('$1.50 · 100 in · 50 out')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('GPT-5.5 · openai · gpt-5.5-2026-07-09')).toHaveClass(
+      'br-footer-card__value'
+    );
+    expect(within(rows[1]).getByText('$0.25 · 100 in · 50 out')).toBeInTheDocument();
+  });
+
   it('says nothing about an estimate when every row is priced exactly', async () => {
     const user = userEvent.setup();
     render(<CostTracker modelCostRows={[ledgerRow]} />);

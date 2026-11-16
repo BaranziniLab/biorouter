@@ -1333,6 +1333,9 @@ export const SwitchModelModal = ({
                 // tier pre-flight, and it has to be closed here for the same reason.
                 const radioId = `${fieldIdPrefix}-predefined-${model.id || model.name}`;
                 const recommended = model.alias?.toLowerCase().includes('recommended');
+                // The name every surface shows (T1 F2), with the id it stands for under it, as
+                // the provider's model list draws its rows (`chatModelOption`).
+                const shownName = model.alias || modelDisplayName(model.name);
                 return (
                   <CustomRadio
                     key={model.id || model.name}
@@ -1344,7 +1347,7 @@ export const SwitchModelModal = ({
                     onChange={() => setSelectedPredefinedModel(model)}
                     label={
                       <>
-                        {model.alias || model.name}
+                        {shownName}
                         {recommended ? (
                           <span className="ml-2 text-chip text-text-muted">
                             {switchModelCopy.recommended}
@@ -1353,7 +1356,19 @@ export const SwitchModelModal = ({
                       </>
                     }
                     secondaryLabel={
-                      model.subtext ? <span className="line-clamp-2">{model.subtext}</span> : null
+                      shownName !== model.name || model.subtext ? (
+                        <>
+                          {shownName !== model.name && (
+                            <span
+                              data-testid="predefined-model-id"
+                              className="block font-mono text-code [overflow-wrap:anywhere]"
+                            >
+                              {model.name}
+                            </span>
+                          )}
+                          {model.subtext && <span className="line-clamp-2">{model.subtext}</span>}
+                        </>
+                      ) : null
                     }
                     rightContent={model.provider ? model.provider : null}
                   />

@@ -4,7 +4,7 @@ import { billedTokens, knownBilledTokens } from '../../utils/usageAccounting';
 import { decisionModelName } from '../../utils/usageStats';
 import { isDecisionProvider, pluralize } from '../decisions/decisionWire';
 import { MODEL_NOT_RECORDED } from './copy';
-import { modelDisplayName } from './modelLabel';
+import { distinctModelLabels, modelDisplayName, type ModelRowName } from './modelLabel';
 import { formatTooltipMoney, isUnmeteredDecisionRow } from './CostTracker';
 
 interface ModelBreakdownTableProps {
@@ -16,29 +16,32 @@ interface ModelBreakdownTableProps {
  * Label a row's model for a person: its display name ("Claude Haiku 5.5", the name the composer's
  * chip and every other surface show; T1 F2), or `MODEL_NOT_RECORDED` for the bucket of turns saved
  * without a model. A label is copy, never a key: key a row by `modelRowKey`. A decision model's
- * row is named as one (`Decision model: joey-1`), since its Baseten slug says little. Pass
- * `withProvider` when two rows would otherwise read the same (one model through two providers).
+ * row is named as one (`Decision model: joey-1`), since its Baseten slug says little. In a list,
+ * label the rows with {@link modelLabels}, which tells apart rows that would read the same.
  */
-export function modelLabel(
-  row: Pick<ModelCostRow, 'provider' | 'model'>,
-  withProvider = false
-): string {
-  if (!row.model) {
-    return MODEL_NOT_RECORDED;
-  }
-  if (isDecisionProvider(row.provider)) {
-    return `Decision model: ${decisionModelName(row.model)}`;
-  }
-  const name = modelDisplayName(row.model);
-  return withProvider && row.provider ? `${name} · ${row.provider}` : name;
+export function modelLabel(row: Pick<ModelCostRow, 'provider' | 'model'>): string {
+  return rowName(row).name;
 }
 
-/** Whether each row's label needs its provider to tell it from another row's. */
-export function labelsNeedProvider(rows: Pick<ModelCostRow, 'provider' | 'model'>[]): boolean[] {
-  const counts = new Map<string, number>();
-  const names = rows.map((row) => modelLabel(row));
-  for (const name of names) counts.set(name, (counts.get(name) ?? 0) + 1);
-  return names.map((name) => (counts.get(name) ?? 0) > 1);
+function rowName(row: Pick<ModelCostRow, 'provider' | 'model'>): ModelRowName {
+  if (!row.model) {
+    return { name: MODEL_NOT_RECORDED, provider: row.provider };
+  }
+  if (isDecisionProvider(row.provider)) {
+    // Its wire provider (`baseten_decision`) is no word for a person; its slug tells two apart.
+    return { name: `Decision model: ${decisionModelName(row.model)}`, id: row.model };
+  }
+  return { name: modelDisplayName(row.model), provider: row.provider, id: row.model };
+}
+
+/**
+ * Each row's label, told apart from every other row's (`distinctModelLabels`): the provider
+ * follows a name two rows share, and the raw id follows when one provider served both, as two
+ * snapshots of one model (`gpt-5.5-2026-04-24`, `gpt-5.5-2026-07-09`) or two Bedrock profiles
+ * (`us.` and `global.`), each priced on its own.
+ */
+export function modelLabels(rows: readonly Pick<ModelCostRow, 'provider' | 'model'>[]): string[] {
+  return distinctModelLabels(rows.map(rowName));
 }
 
 /**
@@ -79,7 +82,7 @@ export function ModelBreakdownTable({ rows, currency = '$' }: ModelBreakdownTabl
   if (rows.length === 0) {
     return null;
   }
-  const withProvider = labelsNeedProvider(rows);
+  const labels = modelLabels(rows);
 
   return (
     <table
@@ -104,7 +107,7 @@ export function ModelBreakdownTable({ rows, currency = '$' }: ModelBreakdownTabl
             key={modelRowKey(row.provider, row.model)}
             className="h-10 border-b border-border-subtle text-text-default last:border-b-0"
           >
-            <td className="pr-3">{modelLabel(row, withProvider[index])}</td>
+            <td className="pr-3 [overflow-wrap:anywhere]">{labels[index]}</td>
             <td className="px-2 text-right tabular-nums">{turnsCell(row)}</td>
             <td className="px-2 text-right tabular-nums">{row.inputTokens.toLocaleString()}</td>
             <td className="px-2 text-right tabular-nums">{tokenCell(row.cacheReadTokens)}</td>

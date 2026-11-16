@@ -13,7 +13,11 @@ import {
 } from '../../../utils/usageStats';
 import { ModalShell } from '../../ModalShell';
 import { Button } from '../../ui/button';
-import { modelDisplayName } from '../../bottom_menu/modelLabel';
+import {
+  distinguishModels,
+  modelDisplayName,
+  type ModelRowName,
+} from '../../bottom_menu/modelLabel';
 import { InfoTip } from '../../ui/info-tip';
 import { Progress } from '../../ui/progress';
 import { SettingRow } from '../../ui/setting-row';
@@ -124,6 +128,16 @@ export function modelLabel(row: Pick<UsageReportRow, 'modelId' | 'provider'>): s
   if (row.modelId && row.provider) return `${row.provider}/${row.modelId}`;
   if (row.modelId) return row.modelId;
   return MODEL_NOT_RECORDED;
+}
+
+/**
+ * What a model row reads by on its first line, and what can tell it from another row's: its
+ * display name, the provider on the second line, and its raw id.
+ */
+function usageModelName(row: UsageReportRow): ModelRowName {
+  if (!row.modelId) return { name: MODEL_NOT_RECORDED, provider: row.provider };
+  if (isDecisionUsageRow(row)) return { name: decisionModelName(row.modelId), id: row.modelId };
+  return { name: modelDisplayName(row.modelId), provider: row.provider, id: row.modelId };
 }
 
 export function cacheTokens(
@@ -411,6 +425,10 @@ export function UsageReport({ summary, dayRows, modelRows, showCosts = true }: U
   const tokenPercent = serverPercent(summary.tokenPercent);
   const dollarPercent = serverPercent(summary.dollarPercent);
   const orderedDayRows = [...dayRows].sort((a, b) => (b.date ?? '').localeCompare(a.date ?? ''));
+  const modelNames = modelRows.map(usageModelName);
+  // The provider is always the second line, so all a row may still need is its raw id: two
+  // snapshots of one model from one provider read "GPT-5.5 · openai" alike (`distinguishModels`).
+  const modelNeedsId = distinguishModels(modelNames).map((parts) => parts.id);
   const tokenUnavailableReason =
     tokenPercent !== null
       ? null
@@ -606,13 +624,7 @@ export function UsageReport({ summary, dayRows, modelRows, showCosts = true }: U
                     <tr key={`${modelLabel(row)}-${index}`} className="text-text-default">
                       <td className={TD}>
                         <div className="min-w-0" title={modelLabel(row)}>
-                          <p className="truncate">
-                            {decision && row.modelId
-                              ? decisionModelName(row.modelId)
-                              : row.modelId
-                                ? modelDisplayName(row.modelId)
-                                : MODEL_NOT_RECORDED}
-                          </p>
+                          <p className="truncate">{modelNames[index].name}</p>
                           <p
                             className="truncate text-supporting text-text-subtle"
                             data-testid={decision ? 'usage-decision-model-kind' : undefined}
@@ -620,6 +632,7 @@ export function UsageReport({ summary, dayRows, modelRows, showCosts = true }: U
                             {decision
                               ? `${decisionCopy.modelKind} · ${requestCount(row.decisionRequests ?? 0)}`
                               : (row.provider ?? copy.unattributedProvider)}
+                            {modelNeedsId[index] && ` · ${row.modelId}`}
                           </p>
                         </div>
                       </td>

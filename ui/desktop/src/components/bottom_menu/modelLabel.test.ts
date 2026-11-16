@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { friendlyModelName, modelDisplayName } from './modelLabel';
+import {
+  distinctModelLabels,
+  distinguishModels,
+  friendlyModelName,
+  modelDisplayName,
+} from './modelLabel';
 
 describe('friendlyModelName', () => {
   it.each([
@@ -156,5 +161,76 @@ describe('modelDisplayName', () => {
       },
     });
     expect(modelDisplayName('us.anthropic.claude-haiku-5-5')).toBe('Lab Haiku');
+  });
+});
+
+describe('distinctModelLabels', () => {
+  const row = (provider: string | null, id: string) => ({
+    name: modelDisplayName(id),
+    provider,
+    id,
+  });
+
+  it('names each model alone where no other row reads the same', () => {
+    expect(
+      distinctModelLabels([row('openai', 'gpt-5.5-2026-04-24'), row('anthropic', 'claude-fable-5')])
+    ).toEqual(['GPT-5.5', 'Claude Fable 5']);
+  });
+
+  it('adds the provider where one model came through two providers', () => {
+    expect(
+      distinctModelLabels([
+        row('openai', 'gpt-5'),
+        row('openrouter', 'openai/gpt-5'),
+        row('anthropic', 'claude-fable-5'),
+      ])
+    ).toEqual(['GPT-5 · openai', 'GPT-5 · openrouter', 'Claude Fable 5']);
+  });
+
+  it('adds the raw id where one provider served two snapshots of one model', () => {
+    // Two dated snapshots, each priced on its own: the display name drops the date.
+    expect(
+      distinctModelLabels([
+        row('openai', 'gpt-5.5-2026-04-24'),
+        row('openai', 'gpt-5.5-2026-07-09'),
+        row('openrouter', 'openai/gpt-5.5'),
+      ])
+    ).toEqual([
+      'GPT-5.5 · openai · gpt-5.5-2026-04-24',
+      'GPT-5.5 · openai · gpt-5.5-2026-07-09',
+      'GPT-5.5 · openrouter',
+    ]);
+    // Two Bedrock inference profiles of one model, priced differently: it drops the region.
+    expect(
+      distinctModelLabels([
+        row('aws_bedrock', 'us.anthropic.claude-haiku-5-5'),
+        row('aws_bedrock', 'global.anthropic.claude-haiku-5-5'),
+      ])
+    ).toEqual([
+      'Claude Haiku 5.5 · aws_bedrock · us.anthropic.claude-haiku-5-5',
+      'Claude Haiku 5.5 · aws_bedrock · global.anthropic.claude-haiku-5-5',
+    ]);
+  });
+
+  it('adds the raw id where the rows have no provider to tell them apart', () => {
+    expect(distinguishModels([row(null, 'gpt-5.5-2026-04-24'), row(null, 'gpt-5.5')])).toEqual([
+      { provider: false, id: true },
+      { provider: false, id: true },
+    ]);
+  });
+
+  it('ends with every row of a list keyed by provider and id reading apart', () => {
+    const rows = [
+      row('openai', 'gpt-5.5-2026-04-24'),
+      row('openai', 'gpt-5.5-2026-07-09'),
+      row('openai', 'gpt-5.5'),
+      row('openrouter', 'openai/gpt-5.5'),
+      row(null, 'gpt-5.5'),
+      row('aws_bedrock', 'us.anthropic.claude-haiku-5-5'),
+      row('aws_bedrock', 'global.anthropic.claude-haiku-5-5'),
+      row('anthropic', 'claude-haiku-5-5'),
+    ];
+    const labels = distinctModelLabels(rows);
+    expect(new Set(labels).size).toBe(rows.length);
   });
 });

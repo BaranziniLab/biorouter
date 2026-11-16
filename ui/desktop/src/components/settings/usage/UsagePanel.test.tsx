@@ -222,6 +222,36 @@ describe('UsageReport', () => {
     expect(within(unknownRow).getAllByRole('cell')[4].textContent).toBe('Unavailable');
   });
 
+  it('gives two snapshots of one model from one provider rows that read apart', () => {
+    // Both read "GPT-5.5" over "openai" and are priced on their own: each second line adds its id.
+    const snapshot = (modelId: string, cost: number): UsageReportRow => ({
+      ...modelRows[0],
+      modelId,
+      provider: 'openai',
+      cost,
+    });
+    render(
+      <UsageReport
+        summary={summary()}
+        dayRows={dayRows}
+        modelRows={[
+          snapshot('gpt-5.5-2026-04-24', 1.5),
+          snapshot('gpt-5.5-2026-07-09', 0.25),
+          { ...snapshot('claude-fable-5', 2), provider: 'anthropic' },
+        ]}
+      />
+    );
+    const table = screen.getByTestId('usage-model-table');
+    const april = within(table).getByText('openai · gpt-5.5-2026-04-24').closest('tr')!;
+    expect(within(april).getByText('GPT-5.5')).toBeInTheDocument();
+    expect(within(april).getAllByRole('cell')[4]).toHaveTextContent('$1.50');
+    const july = within(table).getByText('openai · gpt-5.5-2026-07-09').closest('tr')!;
+    expect(within(july).getAllByRole('cell')[4]).toHaveTextContent('$0.25');
+    // A model no other row shares a name with keeps its provider alone.
+    const fable = within(table).getByText('Claude Fable 5').closest('tr')!;
+    expect(within(fable).getByText('anthropic')).toBeInTheDocument();
+  });
+
   it('shows the unpriced note when any row lacks pricing', () => {
     render(<UsageReport summary={summary()} dayRows={dayRows} modelRows={modelRows} />);
     expect(screen.getByTestId('usage-unpriced-note')).toBeTruthy();

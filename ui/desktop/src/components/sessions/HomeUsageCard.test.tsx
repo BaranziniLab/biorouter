@@ -361,6 +361,28 @@ describe('HomeUsageCard', () => {
     );
   });
 
+  it('tells apart rows that would read the same name', async () => {
+    const user = userEvent.setup();
+    mocks.getUsageReport.mockResolvedValue({
+      data: {
+        rows: [
+          report('gpt-5.5-2026-04-24', 500),
+          report('gpt-5.5-2026-07-09', 300),
+          { ...report('openai/gpt-5.5', 200), provider: 'openrouter' },
+        ],
+      },
+    });
+    render(<HomeUsageCard window={windowOf()} />);
+    await user.click(screen.getByRole('tab', { name: 'Models' }));
+    const rows = await screen.findAllByTestId('home-usage-model');
+    // Two snapshots from one provider add their ids; the one other provider adds its name.
+    expect(rows.map((row) => row.firstElementChild?.textContent)).toEqual([
+      'GPT-5.5 · versa_azure · gpt-5.5-2026-04-24',
+      'GPT-5.5 · versa_azure · gpt-5.5-2026-07-09',
+      'GPT-5.5 · openrouter',
+    ]);
+  });
+
   /**
    * V1-M7: "Unknown model 743.8M 89%" led the Models tab while Overview's
    * Favorite model skipped it. Both now agree on the top row; usage without a

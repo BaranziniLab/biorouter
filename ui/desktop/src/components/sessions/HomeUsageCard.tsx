@@ -22,7 +22,7 @@ import {
   type ModelUsage,
   type UsageRange,
 } from '../../utils/usageStats';
-import { modelDisplayName } from '../bottom_menu/modelLabel';
+import { distinctModelLabels, modelDisplayName } from '../bottom_menu/modelLabel';
 import { InfoTip } from '../ui/info-tip';
 import { SegmentedControl } from '../ui/segmented-control';
 import { Tabs, TabsList, TabsTrigger } from '../ui/tabs';
@@ -218,7 +218,7 @@ function OverviewTiles({
   return <StatGrid items={items} animateKey={range} data-testid="home-usage-tiles" />;
 }
 
-function ModelRow({ model }: { model: ModelUsage }) {
+function ModelRow({ model, name }: { model: ModelUsage; name: string }) {
   if (model.unrecorded) {
     // Last, muted and without a share: it says how much usage carries no model
     // name, not which model it was.
@@ -239,7 +239,6 @@ function ModelRow({ model }: { model: ModelUsage }) {
       </li>
     );
   }
-  const name = model.other ? copy.other : modelName(model.modelId, model.decision);
   const share = model.share ?? 0;
   const width = `${Math.max(0, Math.min(100, share * 100))}%`;
   return (
@@ -272,6 +271,19 @@ function ModelsPanel({ report }: { report: ReportState }) {
     );
   }
   const models = modelBreakdown(report.rows);
+  // Told apart row from row: one model through two providers, or two snapshots of it, would
+  // otherwise read the same (`distinctModelLabels`).
+  const names = distinctModelLabels(
+    models.map((model) =>
+      model.other
+        ? { name: copy.other }
+        : {
+            name: modelName(model.modelId, model.decision),
+            provider: model.decision ? null : model.provider,
+            id: model.modelId,
+          }
+    )
+  );
   if (models.length === 0) {
     return (
       <div className="br-usage-empty">
@@ -281,8 +293,8 @@ function ModelsPanel({ report }: { report: ReportState }) {
   }
   return (
     <ul className="br-usage-models" aria-label={copy.models}>
-      {models.map((model) => (
-        <ModelRow key={model.key} model={model} />
+      {models.map((model, index) => (
+        <ModelRow key={model.key} model={model} name={names[index]} />
       ))}
     </ul>
   );

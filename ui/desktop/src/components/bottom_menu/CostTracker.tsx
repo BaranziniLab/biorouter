@@ -12,7 +12,7 @@ import {
   type SessionCostRow,
   type SessionCosts,
 } from '../../hooks/useCostTracking';
-import { labelsNeedProvider, modelLabel } from './ModelBreakdownTable';
+import { modelLabels } from './ModelBreakdownTable';
 import {
   FooterCard,
   FooterCardDetail,
@@ -312,6 +312,8 @@ function CostFigure({
   const byModelId = useId();
   const limit = limitState(usageLimit);
   const label = summary ? formatCostEstimate(summary.estimate, summary.currency) : null;
+  // Told apart row from row: two snapshots of one model read "GPT-5.5" alike (`modelLabels`).
+  const modelNames = summary ? modelLabels(summary.models) : [];
 
   // The card reads the limit and the cost afresh each time it opens, together, so the two count
   // the same requests (a title's side call lands after the turn's last frame).
@@ -367,10 +369,10 @@ function CostFigure({
         {summary && summary.models.length > 0 && (
           <FooterCardSection label={COST_CARD_COPY.byModel} labelId={byModelId}>
             <FooterCardList labelledBy={byModelId}>
-              {summary.models.map((row, index, rows) => (
+              {summary.models.map((row, index) => (
                 <FooterCardRow key={`${modelRowKey(row.provider, row.model)}:${index}`}>
-                  <FooterCardValue>
-                    {modelLabel(row, labelsNeedProvider(rows)[index])}
+                  <FooterCardValue className="[overflow-wrap:anywhere]">
+                    {modelNames[index]}
                   </FooterCardValue>
                   <TokenDetail
                     lines={COST_CARD_COPY.modelDetail(
