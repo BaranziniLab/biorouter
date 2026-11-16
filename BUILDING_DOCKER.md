@@ -83,7 +83,7 @@ docker run --rm \
 
 For an offline install, mount a folder holding the two files from the pinned Biorouter model releases read only and use `dictation install --yes --from /model-cache`. An administrator can also mount a system model folder read only at `/var/lib/biorouter/dictation/models`. `biorouter transcribe /data/memo.wav` works with a recording mounted at `/data` and the same data volume.
 
-To check a local image with an existing model cache, run the same image checks as CI. The cache folder must hold `ggml-small.en-q8_0.bin` and `ggml-silero-v6.2.0.bin`; the script checks their SHA-256 pins before using them. `--browser` needs the desktop's Playwright package and Chromium on the host. Choose a fresh run folder. The script retains its evidence and named data volumes for inspection.
+To check a local image with an existing model cache, run the same image checks as CI. The cache folder must hold `ggml-small.en-q8_0.bin` and `ggml-silero-v6.2.0.bin`; the script checks their SHA-256 pins before using them. `--browser` needs the desktop's Playwright package and Playwright's full Chromium on the host (`cd ui/desktop && npx playwright install chromium`); the headless shell cannot open a microphone. To use an installed Chrome instead, set `PR31_BROWSER_CHANNEL=chrome`. `--port` picks the host loopback port the container publishes when 8765 is taken. Choose a fresh run folder. When the browser step fails it keeps `browser-failure.png` and `browser-failure.json` in the run folder. The script retains its evidence and named data volumes for inspection.
 
 ```bash
 bash scripts/check-docker-dictation.sh --image biorouter:local \
@@ -211,7 +211,7 @@ A local tag exists only on the Docker host that built it. A separate CI job must
 
 - **Multi-stage build**: the Go, Rust and Node builder stages are discarded; only the compiled artifacts are copied forward
 - **Base image**: `debian:bookworm-slim`, pinned by digest, plus eleven runtime packages (`ca-certificates`, `libssl3`, `libdbus-1-3`, `libxcb1`, `python3`, `python3-gi`, `gir1.2-atspi-2.0`, `gir1.2-gtk-3.0`, `at-spi2-core`, `curl`, `git`). The five in the middle are the Biorouter Copilot helper's AT-SPI runtime
-- **Optimizations**: the `Dockerfile` overrides the release profile with LTO, one codegen unit, `opt-level=z`, and stripping
+- **Optimizations**: the `Dockerfile` overrides the release profile with thin LTO, one codegen unit, `opt-level=z`, and stripping, and builds only the two binaries it ships. Fat LTO needed 17 GB to 18 GB for each binary's link on linux/arm64, more than the 16 GB runners that build the image; `scripts/check-docker-build.sh` keeps both settings
 - **Contents**: the CLI (`/usr/local/bin/biorouter`), its sibling daemon (`/usr/local/bin/biorouterd`), the web bundle (`/usr/share/biorouter/web`), and the Biorouter Copilot helper (`/usr/libexec/biorouter/computer-use`). No model is stored in the image
 
 Image and binary sizes are not stated here on purpose: they move with the profile settings and the dependency tree, and a stale number is worse than none. Measure your own build with `docker images biorouter:local`.

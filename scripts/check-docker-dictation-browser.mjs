@@ -7,9 +7,15 @@ const { PR31_UI_DIR: ui, PR31_URL: url, PR31_WAV: wav, PR31_RUN_ROOT: runRoot } 
 if (!ui || !url || !wav || !runRoot) throw new Error('PR31 browser check inputs are missing');
 const require = createRequire(join(ui, 'package.json'));
 const { chromium } = require('@playwright/test');
-// CI installs Playwright's Chromium. A local run may name an installed browser
-// instead (for example PR31_BROWSER_CHANNEL=chrome) rather than download one.
-const channel = process.env.PR31_BROWSER_CHANNEL || undefined;
+// Full Chromium (Playwright's `chromium` channel, its new headless mode), never the
+// headless shell `chromium.launch()` picks with no channel: the shell answers
+// getUserMedia with "NotSupportedError: Not supported" while the microphone button
+// still draws, so the check could never reach recording there (measured 2026-11-16
+// with chromium-headless-shell 145 on Linux x64, Linux arm64 and macOS; rust.yml's
+// served dictation step made the same choice in c6d619d54). CI installs both with
+// `npx playwright install --with-deps chromium`. A local run may name an installed
+// browser instead (for example PR31_BROWSER_CHANNEL=chrome) rather than download one.
+const channel = process.env.PR31_BROWSER_CHANNEL || 'chromium';
 const browser = await chromium.launch({
   channel,
   args: [
@@ -18,9 +24,27 @@ const browser = await chromium.launch({
   ],
 });
 const context = await browser.newContext();
+// What the page did, kept for the failure evidence below: console lines, page errors,
+// failed requests and error answers, by path (a query can carry the token).
+const events = [];
+const note = (line) => {
+  events.push(String(line).slice(0, 500));
+  if (events.length > 200) events.shift();
+};
+let stage = 'launch';
+let page = null;
 try {
   await context.grantPermissions(['microphone'], { origin: new URL(url).origin });
-  const page = await context.newPage();
+  page = await context.newPage();
+  page.on('console', (message) => note(`console ${message.type()}: ${message.text()}`));
+  page.on('pageerror', (error) => note(`pageerror: ${error.message}`));
+  page.on('requestfailed', (request) =>
+    note(`requestfailed ${request.method()} ${new URL(request.url()).pathname}: ${request.failure()?.errorText}`));
+  page.on('response', (response) => {
+    if (response.status() >= 400) {
+      note(`http ${response.status()} ${response.request().method()} ${new URL(response.url()).pathname}`);
+    }
+  });
   await page.addInitScript(() => {
     window.__PR31_CAPTURE_START__ = null;
     window.__PR31_FIRST_FRAME__ = null;
@@ -42,11 +66,13 @@ try {
       window.AudioWorkletNode = ObservedAudioWorkletNode;
     }
   });
+  stage = 'token exchange';
   await page.goto(`${url}?t=pr31-local-check`, { waitUntil: 'domcontentloaded' });
   await page.waitForURL((address) => !address.searchParams.has('t'));
   const secureContext = await page.evaluate(() => window.isSecureContext);
   if (!secureContext) throw new Error('the published loopback page is not a secure context');
 
+  stage = 'the composer microphone';
   const mic = page.getByTestId('dictation-button').first();
   await mic.waitFor({ state: 'visible', timeout: 30000 });
   const hostLoadBefore = loadavg();
@@ -67,9 +93,11 @@ try {
     }, { capture: true, once: true }));
     await acknowledge.click();
   }
+  stage = 'recording';
   await page.locator('[data-testid="dictation-button"][data-dictation-phase="recording"]')
     .first().waitFor({ timeout: 30000 });
   await page.waitForTimeout(12000);
+  stage = 'transcription into the composer';
   const stoppedAt = Date.now();
   await mic.click();
   await page.waitForFunction(() => {
@@ -113,7 +141,52 @@ try {
     clip_semantics_match: true,
   }, null, 2) + '\n', { mode: 0o600 });
   console.log(`PR-31 browser dictation passed; stop to text ${stopToTextMs} ms`);
+} catch (error) {
+  if (page) await keepFailureEvidence(page, error).catch((evidence) => {
+    console.error(`could not keep the browser failure evidence: ${evidence}`);
+  });
+  throw error;
 } finally {
   await context.close();
   await browser.close();
+}
+
+/**
+ * What the page showed when the check failed, beside the other evidence in the run root:
+ * a screenshot, and a JSON record of the stage, the microphone and composer it found, the
+ * page's text, whether this browser can open a microphone at all, and the page's events.
+ * The daemon secret is cut out of every string before it is written.
+ */
+async function keepFailureEvidence(page, error) {
+  await page.screenshot({ path: join(runRoot, 'browser-failure.png') }).catch(() => undefined);
+  const seen = await page.evaluate(async () => {
+    const mics = [...document.querySelectorAll('[data-testid="dictation-button"]')];
+    let microphone;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((track) => track.stop());
+      microphone = 'opened';
+    } catch (refusal) {
+      microphone = `${refusal?.name ?? 'Error'}: ${refusal?.message ?? refusal}`;
+    }
+    return {
+      secret: window.__BIOROUTER_HEADLESS_CONFIG__?.secretKey ?? '',
+      path: `${location.pathname}${location.hash}`,
+      title: document.title,
+      microphone_buttons: mics.length,
+      microphone_phases: mics.map((button) => button.getAttribute('data-dictation-phase')),
+      chat_inputs: document.querySelectorAll('[data-testid="chat-input"]').length,
+      user_agent: navigator.userAgent,
+      microphone,
+      text: (document.body?.innerText ?? '').slice(0, 4000),
+    };
+  });
+  const { secret, ...rest } = seen;
+  const record = JSON.stringify({ stage, error: String(error?.message ?? error), channel, ...rest, events }, null, 2);
+  await writeFile(
+    join(runRoot, 'browser-failure.json'),
+    (secret ? record.split(secret).join('<daemon secret>') : record) + '\n',
+    { mode: 0o600 },
+  );
+  console.error(`the browser check failed at ${stage}; evidence in ${join(runRoot, 'browser-failure.json')}`);
 }

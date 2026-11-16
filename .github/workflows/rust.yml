@@ -151,6 +151,15 @@ jobs:
           python3 -I scripts/check-windows-imports.py --self-test
           python3 -I scripts/check-dictation-status-json.py --self-test
 
+      # The Docker image's Rust build fits the 16 GB runners that build it nightly: the
+      # builder links only the binaries the image ships, and with no fat LTO (one fat LTO
+      # link held 17 GB to 18 GB on linux/arm64). Here as well as in docker-image.yml, so a
+      # pull request that breaks it hears so on the day, not the night after it merges.
+      - name: Docker build fits its runners
+        run: |
+          ./scripts/check-docker-build.sh
+          ./scripts/check-docker-build.sh --self-test
+
   # ── 2. Cross COMPILE gate — the BR-70 core. Docker, the SAME images/flags as
   #      scripts/release.sh (both source scripts/cross-env.sh). ubuntu-latest is
   #      just the docker HOST; the TARGET triple is what is being proven.
