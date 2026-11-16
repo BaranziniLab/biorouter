@@ -9137,9 +9137,23 @@ mod wait_tests {
         assert!(text.contains("the result changed (3 checks"), "{text}");
     }
 
+    /// Stops the test runtime's clock, which then moves only when the wait
+    /// sleeps, by exactly what it sleeps. For the tests that count checks
+    /// against the clock: on a real one the test "second" (`wait::wait_unit`,
+    /// 10 ms) is shorter than the 15.6 ms Windows timer tick, so each check's
+    /// own work and each late wake moved the next check later, and on a loaded
+    /// windows-latest runner the third check ended less than a "second" before
+    /// the deadline, which then got no check of its own: 3 checks, not 4 (Rust
+    /// run 43724634246). Called once the harness exists, because its session
+    /// store is set up on the real clock.
+    fn hold_the_clock() {
+        tokio::time::pause();
+    }
+
     #[tokio::test]
     async fn wait_for_times_out_and_says_to_call_again() {
         let harness = harness(vec![job("running")]).await;
+        hold_the_clock();
         let result = wait_for(
             &harness,
             serde_json::json!({"tool": "fixture__status", "arguments": {"job_id": "j-timeout"},
@@ -9168,6 +9182,7 @@ mod wait_tests {
             .to_string(),
         )]);
         let harness = harness(vec![slow]).await;
+        hold_the_clock();
         let result = wait_for(
             &harness,
             serde_json::json!({"tool": "fixture__status", "arguments": {"job_id": "j-hint"},
