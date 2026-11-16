@@ -19,18 +19,22 @@ prompt: Summarize this week's enrollments.</code></pre>
     <tr><td><code>instructions</code></td><td>The system instructions for the chat. A workflow needs <code>instructions</code>, <code>prompt</code> or both.</td></tr>
     <tr><td><code>prompt</code></td><td>The first message.</td></tr>
     <tr><td><code>parameters</code></td><td>Values filled in at launch and inserted with <code>{{ key }}</code>. See <a href="#workflows-parameters">Parameters</a>.</td></tr>
-    <tr><td><code>extensions</code></td><td>The extensions the chat needs. An <code>env_keys</code> list names the secrets an extension needs, and the command line asks for any that are missing.</td></tr>
+    <tr><td><code>extensions</code></td><td>The extensions the chat needs. They add to the capabilities that are on for every chat rather than replace them. An <code>env_keys</code> list names the secrets an extension needs, and the command line asks for any that are missing.</td></tr>
+    <tr><td><code>capabilities</code></td><td><strong>Next release.</strong> <code>explicit</code>, the only value, keeps the chat to exactly the <code>extensions</code> list, without the capabilities turned on in <strong>Settings → Chat → Capabilities</strong>. It does nothing without an <code>extensions</code> key, and a workflow with knowledge bases still gets Knowledge.</td></tr>
     <tr><td><code>skills</code></td><td>Skills whose instructions are added before the first model call. A skill that is not installed, or is switched off in the chat, stops the run with an error. A bundle name adds every skill in the bundle.</td></tr>
     <tr><td><code>knowledge_bases</code></td><td><code>visible</code>: the ids of the bases the chat may search. <code>default</code>: the base it writes to.</td></tr>
     <tr><td><code>settings</code></td><td><code>biorouter_provider</code>, <code>biorouter_model</code> and <code>temperature</code>, for this workflow only.</td></tr>
     <tr><td><code>activities</code></td><td>Buttons shown when the workflow opens in the desktop app. An entry that starts with <code>message:</code> is shown as a note above them.</td></tr>
     <tr><td><code>response</code></td><td>A <code>json_schema</code> the final answer must match. The validated JSON is printed as the last line of output.</td></tr>
     <tr><td><code>retry</code></td><td><code>checks</code> run after the chat finishes (<code>shell</code>, <code>file_exists</code>, <code>output_contains</code>, <code>json_schema</code>), with <code>max_retries</code> and an optional <code>on_failure</code> command. A failed check starts the run again from the beginning.</td></tr>
-    <tr><td><code>sub_workflows</code></td><td>Other workflow files this one can call as tools, each with a <code>name</code>, a <code>path</code> and fixed <code>values</code>. Experimental.</td></tr>
+    <tr><td><code>sub_workflows</code></td><td>Other workflow files this one can call as tools, each with a <code>name</code>, a <code>path</code> and fixed <code>values</code>. Experimental. A sub-workflow runs as a subagent of the chat, and the monitors in its <code>decision_settings</code> are put on that subagent. One that declares an <code>orchestration_plan</code> is refused when it would be started, because a subagent cannot run phases.</td></tr>
+    <tr><td><code>decision_settings</code></td><td><strong>Next release.</strong> A default decision model and up to 8 monitors for the chat the workflow starts. A monitor needs a decision model.</td></tr>
+    <tr><td><code>orchestration_plan</code></td><td><strong>Next release.</strong> A plan of up to 12 phases whose gates the agent must work within. Only you pass, skip or retry a gate. A plan runs only in Autonomous mode, and a gate that names no model is judged by the chat's own model.</td></tr>
     <tr><td><code>author</code></td><td><code>contact</code> and <code>metadata</code> about who wrote it.</td></tr>
     <tr><td><code>version</code></td><td>The file format version. Defaults to <code>"1.0.0"</code>.</td></tr>
   </tbody>
 </table></div>
+<p><code>decision_settings</code> and <code>orchestration_plan</code> apply once, when the workflow starts its own chat from <strong>Workflows</strong>, <code>biorouter run --workflow</code> or a schedule, and they cannot use parameters. A slash command for such a workflow is refused before anything is sent, because it runs in a chat that already exists. <code>biorouter run --workflow review.yaml --explain</code> prints the supervision a run would set up.</p>
 <p>The text fields are templates:</p>
 <ul>
   <li><code>{{ workflow_dir }}</code> is the folder that holds the file, so a workflow can point at files that travel with it.</li>
@@ -67,7 +71,7 @@ prompt: Summarize enrollments in {{ study }} as {{ format }}.</code></pre>
 <h3>Save a chat as a workflow</h3>
 <ol class="steps">
   <li><strong>Open the chat summary</strong> In the chat you want to keep, find the chat summary. In a wide window it sits at the right of the chat. In a narrower one, choose the summary button at the top right of the chat to open it. Then choose <strong>Make workflow</strong>.</li>
-  <li><strong>Read the draft</strong> Biorouter drafts the title, instructions and prompt from the conversation and fills in the chat's extensions, skills, knowledge bases and model. Edit what you need.</li>
+  <li><strong>Read the draft</strong> Biorouter drafts the title, instructions and prompt from the conversation and fills in the chat's extensions, skills, knowledge bases and model. Edit what you need. The chat's default decision model, the monitors you set and its phase plan come along too, the plan as its phases, goals and gates without the progress made on it. They show read only, so change them in the workflow file. Monitors an agent set are left out.</li>
   <li><strong>Save</strong> Choose <strong>Create</strong>, or <strong>Create and run</strong>. The workflow appears under <strong>Workflows</strong> in the sidebar.</li>
 </ol>
 <p>You can also ask in the chat, for example “Turn this chat into a workflow.” The agent shows you the workflow and asks you to approve it before anything is saved. Saved workflows live in <code>~/.config/biorouter/workflows/</code>, where the app and the command line both find them.</p>
@@ -96,6 +100,7 @@ biorouter workflow list</code></pre>
 </figure>
 <ul>
   <li><strong>Each run is the recipient's own chat.</strong> It starts on their computer, with their extensions, their credentials and their models, under their institution's agreements. It follows the same privacy rules as any other chat: if it uses a private model or a private data extension, it becomes Private. See <a href="#privacy">Private and public</a>.</li>
+  <li><strong>Decision models count too.</strong> A chat is as private as its least private model, decision models included, so a workflow that names a public decision model, such as one on Baseten, makes the chat it starts public. The desktop app and the command line ask before starting it. A decision model a workflow names must also be installed on the recipient's computer and allowed to read the chat, or the run is refused, so leave model names out of a workflow you plan to share.</li>
   <li><strong>Data is read where it lives.</strong> A <code>file</code> parameter reads a file on the computer of the person running the workflow, when the run starts.</li>
   <li><strong>Results stay with the recipient.</strong> Nothing flows back to you. They share what they choose to share.</li>
   <li><strong>Edits do not travel back.</strong> A recipient's changes stay in their copy, and your file is unchanged.</li>
@@ -145,4 +150,10 @@ biorouter schedule cron-help    # cron examples</code></pre>
   <li>The model's credentials, the extensions and the files the workflow uses, all in place on this computer when the run starts. A workflow that works in a chat can still fail on a schedule if it depends on something only you supply there.</li>
 </ul>
 <p>A failed run is recorded on the schedule, and the schedule runs again at its next time.</p>
+<p><strong>Next release.</strong> A run that a usage limit stops part way counts as failed: the last-run time does not move, and the run does not count against a schedule set to run a fixed number of times. A run that finishes its work and only then reaches a limit counts as a success. Some runs are refused before anything starts. The reason shows as the schedule's last error, and no chat is left behind:</p>
+<ul>
+  <li>A run that comes due while the month is at the monthly limit set in <strong>Settings → App → Usage</strong>. This run does not count against a fixed number of runs either.</li>
+  <li>A run whose workflow names a decision model that would make its chat public. A schedule cannot do that yet, so run such a workflow from the desktop app.</li>
+  <li>A run that names a public decision model when its chat starts private, because the chat that created the schedule is private.</li>
+</ul>
 </div>
