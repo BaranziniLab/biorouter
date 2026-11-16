@@ -339,7 +339,7 @@ Most of the time the answer is one of the deliberate behaviours above: a subagen
 
 - [Session metadata contract](session-metadata-contract.md) — conversation ID, session kind, parent, and what makes something a subagent run.
 - [Workspace Control capability](../extensions/built-in/workspace.md) — the user-facing reference: the two tiers, what each tool asks you first, the always-confirm rule, and how injected messages are labelled forever.
-- [Workspace Control tool reference](workspace-control-tools.md) — the developer-facing contract for the same nine tools: exact arguments and defaults, every refusal string, the caps and clamps, and the cases where a tool reports success it did not earn.
+- [Workspace Control tool reference](workspace-control-tools.md) — the developer-facing contract for the ten `workspace_*` tools and `subagent`: exact arguments and defaults, every refusal string, the caps and clamps, and the cases where a tool reports success it did not earn.
 - [Subagents](subagents.md) — the glass-box tab in full, steering and stopping a child, and configuring one from a workflow file.
 - [Orchestration phases](orchestration-phases.md): staged delegation with `workspace_orchestrate`, the barrier between phases, and the hand-offs that carry results forward.
 - [Tool routing](tool-routing.md) — which tool the agent should reach for, and what separates workspace control from Chat Recall, Memory and the knowledge base.
