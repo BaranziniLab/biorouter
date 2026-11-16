@@ -152,7 +152,7 @@
     btn.hidden = false;
   }
 
-  // "Apple silicon · Biorouter-1.91.2-arm64.dmg · 222 MB"
+  // "Apple silicon · Biorouter-<version>-arm64.dmg · <size> MB"
   function fileLine(variant, row) {
     el.file.textContent = '';
     var parts = [node('span', 'part', variant), node('code', 'part', row.name)];

@@ -151,8 +151,8 @@
     <div class="dl-cli reveal">
       <div class="dl-cli-text">
         <h3 class="subtitle">The command line tool ships with the app.</h3>
-        <p class="body-muted">The first time you open the app, it offers to install the tool: press Install on the Biorouter CLI card. After that, <code>biorouter</code> works in any terminal.</p>
-        <p class="body-muted">On a Linux server, HPC node or container, install a command line only package instead. It holds the <code>biorouter</code> tool, the <code>biorouterd</code> daemon and the web interface, without the desktop app.</p>
+        <p class="body-muted">When the command is not on your PATH, the app offers to install it as it starts: press Install on the Biorouter CLI card, and <code>biorouter</code> then works in any terminal. The same card offers Update when the copy on your PATH is older, and Reinstall when that copy will not run.</p>
+        <p class="body-muted">On a Linux server, HPC node or container, install a command line only package instead. It holds the <code>biorouter</code> tool, the <code>biorouterd</code> daemon, the web interface and the <code>biorouter-crew</code> helper that Crew installs on servers over SSH, without the desktop app. Speech to text is built in: install a speech model with <code>biorouter dictation install</code>, and <code>biorouter transcribe</code> and dictation in a browser opened with <code>biorouter serve</code> then work.</p>
       </div>
       <dl class="dl-cmds">
         <div>
@@ -183,11 +183,11 @@
     <div class="dl-req reveal">
       <div>
         <h3>macOS</h3>
-        <p>Apple silicon and Intel. Builds are signed with UCSF's Developer ID and notarized by Apple.</p>
+        <p>Apple silicon and Intel, on macOS&nbsp;12 or newer. Local models in Llama Server need macOS&nbsp;13.3 or newer. Builds are signed with UCSF's Developer ID and notarized by Apple.</p>
       </div>
       <div>
         <h3>Windows</h3>
-        <p>x64. The installer upgrades an existing install in place.</p>
+        <p>x64, Windows&nbsp;10 or newer. The installer upgrades an existing install in place.</p>
       </div>
       <div>
         <h3>Linux</h3>
