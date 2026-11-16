@@ -14,6 +14,7 @@ import { type SharedSessionDetails } from './sharedSessions';
 import { ErrorUI } from './components/ErrorBoundary';
 import { TOAST_SURFACE_CLASS_NAME } from './components/alerts/NotificationSurface';
 import { watchToastClearance } from './components/alerts/toastClearance';
+import { TOAST_LIBRARY_COLORS } from './components/alerts/toastLibraryColors';
 import { ExtensionInstallModal } from './components/ExtensionInstallModal';
 import { ToastContainer, cssTransition } from 'react-toastify';
 import AnnouncementModal from './components/AnnouncementModal';
@@ -713,6 +714,8 @@ export function AppInner() {
         transition={TOAST_TRANSITION}
         style={
           {
+            // The library's palette, as tokens (Red is rare): see toastLibraryColors.ts.
+            ...TOAST_LIBRARY_COLORS,
             '--toastify-z-index': 'var(--z-toast)',
             top: 'var(--toast-inset-top)',
             width: 'fit-content',
