@@ -1,0 +1,226 @@
+/* JupyterLab tile (Ways to use Biorouter). JupyterLab's file browser as a
+   recessed strip at the left, and the Jupyter AI chat it has open: the
+   person's message, the persona's reply with its avatar, name and one tool
+   row, and the message box with Jupyter AI's placeholder (art/access-jupyter.js).
+   Drawn in the site's colours, not JupyterLab's blue. Fills before lines: the
+   strip and the message box rest on the subtle fill with no outline, and the
+   box draws the coral edge only while it has focus. The mention menu is a
+   floating surface and keeps its hairline and shadow. Every rule is scoped
+   under [data-art="access-jupyter"]. */
+
+[data-art="access-jupyter"] .ajl {
+  position: absolute; inset: 0;
+  container-type: size;
+  font-family: var(--font);
+  color: var(--ink);
+  line-height: 1;
+  -webkit-user-select: none; user-select: none;
+  --ajl-strip: clamp(106px, 30cqw, 128px);
+  --ajl-pad: clamp(12px, 4.4cqw, 16px);
+  --ajl-gap: 10px;    /* between the conversation and the message box */
+}
+[data-art="access-jupyter"] .ajl svg { display: block; flex: none; }
+
+/* ── The file browser ──────────────────────────────────── */
+[data-art="access-jupyter"] .ajl-files {
+  position: absolute; left: 0; top: 0; bottom: 0; width: var(--ajl-strip);
+  display: flex; flex-direction: column; gap: 2px;
+  padding: calc(var(--ajl-pad) - 4px) 6px;
+  background: var(--fill);
+}
+[data-art="access-jupyter"] .ajl-file {
+  display: flex; align-items: center; gap: 6px;
+  height: 26px; padding: 0 7px; min-width: 0;
+  border-radius: var(--r-element);
+  color: var(--muted);
+}
+/* The open chat's file: the strong step, as a current row on a fill ground. */
+[data-art="access-jupyter"] .ajl-file.is-current { background: var(--fill-strong); color: var(--ink); }
+[data-art="access-jupyter"] .ajl-file-ic { width: 14px; height: 14px; color: var(--subtle); }
+[data-art="access-jupyter"] .ajl-file.is-current .ajl-file-ic { color: var(--ink); }
+[data-art="access-jupyter"] .ajl-file-name {
+  flex: 1; min-width: 0;
+  font-size: 13px; line-height: 18px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+/* Narrow tiles: where the browser would squeeze the chat, access-jupyter.js
+   keeps only its icons; a name that still does not fit steps down a size. */
+[data-art="access-jupyter"] .ajl.fit-sm .ajl-file-name { font-size: 12px; }
+[data-art="access-jupyter"] .ajl.fit-icons { --ajl-strip: 44px; }
+[data-art="access-jupyter"] .ajl.fit-icons .ajl-file { justify-content: center; padding: 0; }
+[data-art="access-jupyter"] .ajl.fit-icons .ajl-file-name { display: none; }
+
+/* ── The chat ──────────────────────────────────────────── */
+[data-art="access-jupyter"] .ajl-chat {
+  position: absolute; top: 0; bottom: 0; right: 0; left: var(--ajl-strip);
+  display: flex; flex-direction: column; gap: var(--ajl-gap);
+  padding: var(--ajl-pad);
+}
+
+/* The conversation is pinned above the message box, with room for the whole
+   turn held from the start. */
+[data-art="access-jupyter"] .ajl-log {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column; justify-content: flex-end;
+  overflow: hidden;
+}
+[data-art="access-jupyter"] .ajl.fit-over .ajl-log {
+  -webkit-mask-image: linear-gradient(to bottom, transparent, black 16px);
+  mask-image: linear-gradient(to bottom, transparent, black 16px);
+}
+[data-art="access-jupyter"] .ajl-stack {
+  flex: none; display: flex; flex-direction: column; gap: 12px;
+  transition: opacity var(--dur-med) var(--ease);
+}
+[data-art="access-jupyter"] .ajl.is-clearing .ajl-stack { opacity: 0; }
+
+[data-art="access-jupyter"] .ajl-user {
+  display: flex; justify-content: flex-end;
+  opacity: 0; transform: translateY(4px);
+  transition: opacity var(--dur-med) var(--ease), transform var(--dur-med) var(--ease);
+}
+[data-art="access-jupyter"] .ajl.is-sent .ajl-user { opacity: 1; transform: none; }
+[data-art="access-jupyter"] .ajl-bubble {
+  max-width: 92%;
+  background: var(--medium); border-radius: var(--r-container);
+  padding: 6px 10px;
+  font-size: 13px; line-height: 18px; color: var(--ink);
+}
+[data-art="access-jupyter"] .ajl-bubble b { font-weight: 700; }
+
+/* The reply: the persona's avatar and name, its tool row, then the answer. */
+[data-art="access-jupyter"] .ajl-reply { display: flex; flex-direction: column; gap: 4px; }
+[data-art="access-jupyter"] .ajl-who {
+  display: flex; align-items: center; gap: 7px; height: 20px;
+  opacity: 0; transition: opacity var(--dur-med) var(--ease);
+}
+[data-art="access-jupyter"] .ajl.show-who .ajl-who { opacity: 1; }
+[data-art="access-jupyter"] .ajl-name { font-size: 13px; line-height: 18px; font-weight: 700; color: var(--ink); white-space: nowrap; }
+/* The avatar crops the icon's safe-area margin, so its plate fills the box. */
+[data-art="access-jupyter"] .ajl-av {
+  position: relative; flex: none;
+  width: 18px; height: 18px;
+  border-radius: var(--r-inner); overflow: hidden;
+}
+[data-art="access-jupyter"] .ajl-av img {
+  position: absolute; left: 50%; top: 50%;
+  width: 124.3%; height: 124.3%; max-width: none;
+  transform: translate(-50%, -50%);
+}
+
+/* One line, as Jupyter AI draws a tool call: its status icon, then the title,
+   ending in an ellipsis where the chat is too narrow for it. */
+[data-art="access-jupyter"] .ajl-tool {
+  display: flex; align-items: center; gap: 7px;
+  height: 20px; min-width: 0;
+  font-size: 13px; line-height: 20px; color: var(--muted);
+  opacity: 0; transform: translateY(4px);
+  transition: opacity var(--dur-med) var(--ease), transform var(--dur-med) var(--ease);
+}
+[data-art="access-jupyter"] .ajl-tool:not([data-state="hidden"]) { opacity: 1; transform: none; }
+[data-art="access-jupyter"] .ajl-tool-ic { position: relative; flex: none; width: 18px; height: 16px; }
+[data-art="access-jupyter"] .ajl-tool-ic svg {
+  position: absolute; left: 1px; top: 0; width: 16px; height: 16px;
+  opacity: 0; transition: opacity var(--dur-menu) var(--ease);
+}
+[data-art="access-jupyter"] .ajl-i-run { color: var(--coral); }
+/* Jupyter AI ticks a finished call in green; the site's --ok. */
+[data-art="access-jupyter"] .ajl-i-done { color: var(--ok); }
+[data-art="access-jupyter"] .ajl-tick { stroke-dasharray: 1; stroke-dashoffset: 1; transition: stroke-dashoffset var(--dur-slow) var(--ease); }
+[data-art="access-jupyter"] .ajl-tool[data-state="active"] .ajl-i-run { opacity: 1; }
+[data-art="access-jupyter"] .ajl-tool[data-state="done"] .ajl-i-done { opacity: 1; }
+[data-art="access-jupyter"] .ajl-tool[data-state="done"] .ajl-tick { stroke-dashoffset: 0; }
+[data-art="access-jupyter"] .ajl-tool-t { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The running title breathes 1 → 0.7 → 1, only while the tile is on screen. */
+[data-art="access-jupyter"] .ajl.is-live .ajl-tool[data-state="active"] .ajl-tool-t { animation: access-jupyter-breathe calc(var(--dur-slow) * 4) var(--ease) infinite; }
+@keyframes access-jupyter-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+[data-art="access-jupyter"] .ajl-ans { margin: 2px 0 0; font-size: 13px; line-height: 19px; color: var(--ink); }
+[data-art="access-jupyter"] .ajl-w { opacity: 0; transition: opacity var(--dur-menu) var(--ease); }
+[data-art="access-jupyter"] .ajl-w.on { opacity: 1; }
+[data-art="access-jupyter"] .ajl-w.is-strong { font-weight: 700; }
+
+/* Tall turns in short tiles: a tighter rhythm before anything is cut. */
+[data-art="access-jupyter"] .ajl.fit-tight .ajl-stack { gap: 8px; }
+[data-art="access-jupyter"] .ajl.fit-tight .ajl-reply { gap: 2px; }
+[data-art="access-jupyter"] .ajl.fit-tight .ajl-bubble { padding: 5px 9px; max-width: 100%; }
+[data-art="access-jupyter"] .ajl.fit-short .ajl-who { display: none; }
+
+/* ── The message box ───────────────────────────────────── */
+/* A field on the subtle fill with no resting edge. It grows upward line by
+   line as the question wraps, as Jupyter AI's box does. Its edge turns coral
+   while the mention is typed, then rests, so the chosen mention and the armed
+   Send carry the accent. */
+[data-art="access-jupyter"] .ajl-field {
+  position: relative; flex: none;
+  display: flex; align-items: flex-end; gap: 6px;
+  padding: 4px 4px 4px 10px;
+  background: var(--fill);
+  border: 1px solid transparent; border-radius: var(--r-element);
+  transition: border-color var(--dur-menu) var(--ease);
+}
+[data-art="access-jupyter"] .ajl.is-edge .ajl-field { border-color: var(--coral); }
+/* The placeholder and the typed text share one grid cell, so the box is as
+   tall as the longer of the two and both wrap, as a textarea's do. */
+[data-art="access-jupyter"] .ajl-input {
+  flex: 1; min-width: 0;
+  display: grid; grid-template-columns: minmax(0, 1fr);
+  padding: 4px 0;
+  font-size: 13px; line-height: 18px; color: var(--ink);
+}
+[data-art="access-jupyter"] .ajl-ph,
+[data-art="access-jupyter"] .ajl-typed { grid-area: 1 / 1; min-width: 0; }
+/* The placeholder starts just after the caret, as a native field's does. */
+[data-art="access-jupyter"] .ajl-ph { padding-left: 2px; color: var(--muted); }
+[data-art="access-jupyter"] .ajl.has-text .ajl-ph { visibility: hidden; }
+[data-art="access-jupyter"] .ajl.is-mention .ajl-mention { color: var(--coral-ink); }
+[data-art="access-jupyter"] .ajl-caret {
+  display: inline-block; width: 1px; height: 15px; margin-left: 1px; vertical-align: -3px;
+  background: var(--ink); opacity: 0;
+}
+[data-art="access-jupyter"] .ajl.is-focus .ajl-caret { opacity: 1; }
+
+/* Send: idle it rests one step back on the page ground, inside the filled box;
+   with text in the box it is armed. */
+[data-art="access-jupyter"] .ajl-send {
+  display: grid; place-items: center; flex: none;
+  width: 26px; height: 26px; border-radius: var(--r-inner);
+  background: var(--paper); color: var(--subtle);
+  transition: background var(--dur-menu) var(--ease), color var(--dur-menu) var(--ease), transform var(--dur-fast) var(--ease);
+}
+[data-art="access-jupyter"] .ajl-send-ic { width: 14px; height: 14px; }
+[data-art="access-jupyter"] .ajl.has-text .ajl-send { background: var(--coral); color: var(--paper); }
+[data-art="access-jupyter"] .ajl.is-press .ajl-send { transform: scale(0.98); }
+
+/* The mention menu: a popover above the box, one persona, selected. */
+[data-art="access-jupyter"] .acc-pick {
+  position: absolute; left: -1px; bottom: calc(100% + 6px);
+  max-width: calc(100% + 2px);
+  background: var(--paper);
+  border: 1px solid var(--line); border-radius: var(--r-container);
+  box-shadow: var(--shadow-popover);
+  padding: 4px;
+  opacity: 0; transform: translateY(6px);
+  transition: opacity var(--dur-menu) var(--ease), transform var(--dur-med) var(--ease);
+}
+[data-art="access-jupyter"] .ajl.show-pick .acc-pick { opacity: 1; transform: none; }
+[data-art="access-jupyter"] .ajl-pick-row {
+  display: flex; align-items: center; gap: 7px;
+  height: 28px; padding: 0 14px 0 6px;
+  border-radius: var(--r-element);
+  background: var(--fill-strong);
+}
+[data-art="access-jupyter"] .ajl-pick-name { font-size: 13px; line-height: 18px; color: var(--ink); white-space: nowrap; }
+
+/* Small tiles: the chat's gutters tighten. */
+@container (max-width: 300px) {
+  [data-art="access-jupyter"] .ajl-files,
+  [data-art="access-jupyter"] .ajl-chat { --ajl-pad: 10px; }
+}
+
+/* Resets between loops happen with no transition at all. Kept last. */
+[data-art="access-jupyter"] .ajl.ajl-still,
+[data-art="access-jupyter"] .ajl.ajl-still * { transition: none; }
