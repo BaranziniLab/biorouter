@@ -42,5 +42,5 @@ This lane does not validate Windows ACLs, macOS ACLs, unrestricted shell contain
 
 ## Related documentation
 
-- [Private session history and deliberate relocation](session-storage.md) — the storage rules this procedure checks.
-- [Session-storage acceptance: retained failed evidence](session-storage-acceptance-failures.md) — the first run, which failed and is kept as evidence.
+- [Private session history and deliberate relocation](session-storage.md): the storage rules this procedure checks.
+- [Session-storage acceptance: retained failed evidence](session-storage-acceptance-failures.md): the first run, which failed and is kept as evidence.
