@@ -16,9 +16,9 @@ pick one, find the credential it needs, or switch models — read
 the credential variable itself among all other settings, read
 [Environment variables](../configuration/environment-variables.md). Note that this folder
 is not an inventory of every shipping provider: BioRouter has 40+ provider modules under
-`crates/biorouter/src/providers/`, and only the few named below — the three provider reference pages in
+`crates/biorouter/src/providers/`, and only the few named below are documented here: the three provider reference pages in
 this folder, plus the two local providers (the bundled Llama Server and Ollama) and the two
-coding-agent providers in the subdirectories — are documented here. Every other provider is
+coding-agent providers in the subdirectories. Every other provider is
 documented only by its own source module.
 
 ## Documents

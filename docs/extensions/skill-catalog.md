@@ -151,7 +151,7 @@ to being stale is to refetch.
 (the first one, a chat switch, a rescan) and commits an answer, a failure or the end
 of `loading` only if it is still the newest. Without that, the read for the chat the
 hook served before could land after the next chat's and replace its view, and the
-composer's Tools chip would show the old chat's skills, then correct itself. A
+composer's Skills list would show the old chat's skills, then correct itself. A
 write made through `setEnabled` is not a read: it serialises through its own queue
 and commits the daemon's answer to the write it made.
 
