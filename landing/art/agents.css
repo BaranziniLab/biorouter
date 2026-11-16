@@ -1,0 +1,151 @@
+/* Agents tile. Every rule is scoped to the artifact. Values follow the app:
+   the transcript's tool-call line (muted 13px text, a 16px icon, the chevron
+   at 60%; not a card), and the Chat summary's Agents section on the subtle
+   fill with no outline: a 12px muted heading with its count at the right
+   (chatSummary.css, SummarySectionHeading), then one row per agent
+   (summaryAgents.css): a 14px mark in a 14px column, the role in 13px ink with
+   the run time in 12px muted tabular figures at the right, and a 12px muted
+   line under it, cut with an ellipsis. Marks follow summaryAgentGrid.css: the
+   muted ink while waiting to start, the info ink while running (its core
+   pulses), and a calm sage once done, the success ink greyed with the muted
+   ink and set at 70% over the card's fill. Never red.
+   The rows sit 3px from each other where the app gives 5px, so three of them
+   fit the 216px tile. */
+
+[data-art="agents"] .art-agents {
+  position: absolute; inset: 0;
+  container-type: size;
+  --pad: clamp(12px, 4.8cqw, 18px);
+  /* The finished column: the 22px line, a 10px gap and the card with its
+     heading and three 40px rows. The column is centred on it, so nothing above
+     a row moves as the rows open. */
+  --ag-h: 186px;
+  /* The running ink is the app's --text-info. The site's --info wins once it
+     declares one. */
+  --ag-info: var(--info, #1053b0);
+  --ag-done: color-mix(in srgb, color-mix(in srgb, var(--ok) 60%, var(--muted)) 70%, var(--fill));
+  font-family: var(--font);
+  color: var(--ink);
+  -webkit-user-select: none; user-select: none;
+}
+[data-art="agents"] svg { display: block; flex: none; }
+
+[data-art="agents"] .ag-col {
+  position: absolute; left: var(--pad); right: var(--pad);
+  top: max(var(--pad), calc((100cqh - var(--ag-h)) / 2));
+  display: flex; flex-direction: column; gap: 10px;
+  transition: opacity var(--dur-slow) var(--ease);
+}
+[data-art="agents"] .art-agents.is-clearing .ag-col { opacity: 0; }
+
+/* ── The transcript line: one slot, each line handing over to the next ── */
+[data-art="agents"] .ag-slot { display: grid; height: 22px; min-width: 0; }
+[data-art="agents"] .ag-line {
+  grid-area: 1 / 1;
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  height: 22px; font-size: 13px; line-height: 22px; color: var(--muted); white-space: nowrap;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+/* The outgoing line is almost gone before the next arrives, so the two are
+   never read on top of each other. */
+[data-art="agents"] .ag-line.is-on { opacity: 1; transition: opacity var(--dur-menu) var(--ease) calc(var(--dur-fast) / 2); }
+[data-art="agents"] .ag-line-ic { width: 16px; height: 16px; }
+[data-art="agents"] .ag-line-text { display: inline-flex; align-items: center; min-width: 0; }
+[data-art="agents"] .ag-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+[data-art="agents"] .ag-chev { width: 16px; height: 16px; margin-left: 6px; opacity: 0.6; }
+/* The agent's answer is prose: the default ink, no icon. */
+[data-art="agents"] .ag-answer { color: var(--ink); }
+
+/* The running line breathes 1 → 0.7 → 1, the app's own running indicator
+   (br-tool-text-pulse). It runs only while the tile is on screen. */
+[data-art="agents"] .art-agents.is-live .ag-line.is-run .ag-t { animation: agents-breathe calc(var(--dur-slow) * 4) var(--ease) infinite; }
+@keyframes agents-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* ── The Agents section ─────────────────────────────────── */
+/* It appears with the first subagent, holding its row. */
+[data-art="agents"] .ag-card {
+  background: var(--fill);
+  border: 1px solid transparent; border-radius: var(--r-container);
+  padding: 4px 12px;
+  opacity: 0; transform: translateY(4px);
+  transition: opacity var(--dur-med) var(--ease), transform var(--dur-med) var(--ease);
+}
+[data-art="agents"] .art-agents.has-agents .ag-card { opacity: 1; transform: none; }
+
+[data-art="agents"] .ag-head {
+  display: flex; align-items: center; gap: 8px; height: 24px;
+  font-size: 12px; line-height: 16px; color: var(--muted); white-space: nowrap;
+}
+[data-art="agents"] .ag-head-chev { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 18px; flex: none; }
+[data-art="agents"] .ag-head-ic { width: 12px; height: 12px; }
+[data-art="agents"] .ag-label { flex: 1 1 auto; min-width: 0; }
+[data-art="agents"] .ag-count { flex: none; font-variant-numeric: tabular-nums; }
+
+/* Each later row opens under the last; the first arrives with the section. */
+[data-art="agents"] .ag-row {
+  display: grid; grid-template-rows: 0fr; opacity: 0;
+  transition: grid-template-rows var(--dur-med) var(--ease), opacity var(--dur-menu) var(--ease) var(--dur-fast);
+}
+[data-art="agents"] .ag-row:first-child,
+[data-art="agents"] .ag-row:not([data-state="hidden"]) { grid-template-rows: 1fr; opacity: 1; }
+[data-art="agents"] .ag-row-in { min-height: 0; overflow: hidden; }
+[data-art="agents"] .ag-row-box {
+  display: flex; align-items: flex-start; gap: 8px;
+  box-sizing: border-box; height: 40px; padding: 3px 0;
+}
+
+/* The mark (AgentMark): ring, core and solid square share one box. */
+[data-art="agents"] .ag-glyph { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 18px; flex: none; }
+[data-art="agents"] .ag-mark { width: 14px; height: 14px; overflow: visible; color: var(--muted); transition: color var(--dur-menu) var(--ease); }
+[data-art="agents"] .ag-ring { fill: none; stroke: currentColor; stroke-width: 1.5; transition: opacity var(--dur-menu) var(--ease); }
+[data-art="agents"] .ag-core,
+[data-art="agents"] .ag-solid { fill: currentColor; opacity: 0; transition: opacity var(--dur-menu) var(--ease); }
+[data-art="agents"] .ag-row[data-state="running"] .ag-mark { color: var(--ag-info); }
+[data-art="agents"] .ag-row[data-state="running"] .ag-core { opacity: 1; }
+[data-art="agents"] .ag-row[data-state="done"] .ag-mark { color: var(--ag-done); }
+[data-art="agents"] .ag-row[data-state="done"] .ag-ring { opacity: 0; }
+[data-art="agents"] .ag-row[data-state="done"] .ag-solid { opacity: 1; }
+/* A running agent's core pulses, opacity only, while the tile is on screen. */
+[data-art="agents"] .art-agents.is-live .ag-row[data-state="running"] .ag-core { animation: agents-pulse calc(var(--dur-slow) * 3) var(--ease) infinite; }
+@keyframes agents-pulse {
+  50% { opacity: 0.35; }
+}
+
+[data-art="agents"] .ag-text { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+[data-art="agents"] .ag-name-line { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+[data-art="agents"] .ag-name {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 13px; line-height: 18px; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+[data-art="agents"] .ag-time { flex: none; font-size: 12px; line-height: 16px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* The line under the role: what the agent is doing, or what it found. The
+   three share one cell and hand over in turn. */
+[data-art="agents"] .ag-meta { display: grid; min-width: 0; font-size: 12px; line-height: 16px; color: var(--muted); }
+[data-art="agents"] .ag-m {
+  grid-area: 1 / 1; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+[data-art="agents"] .ag-row:not([data-state="running"]):not([data-state="done"]) .ag-m-wait,
+[data-art="agents"] .ag-row[data-state="running"] .ag-m-work,
+[data-art="agents"] .ag-row[data-state="done"] .ag-m-res {
+  opacity: 1;
+  transition: opacity var(--dur-menu) var(--ease) calc(var(--dur-fast) / 2);
+}
+
+/* Narrow tiles (the 289 wide tile at 1024): the line keeps its whole label
+   and drops the chevron. */
+@container (max-width: 299px) {
+  [data-art="agents"] .ag-chev { display: none; }
+}
+
+/* Resets between loops happen with no transition at all. Kept last. */
+[data-art="agents"] .art-agents.ag-instant,
+[data-art="agents"] .art-agents.ag-instant * { transition: none; }
