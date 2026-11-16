@@ -1,0 +1,33 @@
+/* Compact panes: rung 5 of the yield ladder (yieldLadder.ts, paneFit).
+
+   A pane in a split that is too small for its chat shows a placeholder, and
+   keeps the chat mounted and laid out behind it. Full is today's layout:
+   nothing in the frame rules below applies unless the pane is compact.
+   docs/desktop-ui/compact-panes.md has the reasons; styles/paneFloor.test.ts
+   pins them at the source and chatGroups/compactPane.browser.test.tsx in a
+   real layout engine. */
+
+/* `hidden`, never `clip`: the hidden box can be wider or taller than the pane,
+   and a `scrollIntoView` inside it skips a `clip` box and scrolls the next
+   scrollable ancestor, shifting the window. With `hidden` the pane absorbs
+   the call, and ChatPaneFrame resets its own scroll to 0. */
+.br-chat-pane[data-pane-fit='compact'] {
+  overflow: hidden;
+}
+
+/* Out of the flow, at a box of at least 360 by 270 that stops changing while
+   the pane keeps shrinking, so no observer inside the chat ever sees a sliver.
+   `visibility: hidden` keeps layout and every scroll offset and skips paint
+   (`display: none` would reset the transcript's scroll and hand every
+   observer a 0px box). `opacity: 0` hides a descendant that sets
+   `visibility: visible`, and makes this a stacking context that holds
+   BaseChat's own z-index under the placeholder. ChatPaneFrame adds `inert`. */
+.br-chat-pane[data-pane-fit='compact'] > .br-chat-pane__content {
+  position: absolute;
+  inset-block-start: 0;
+  inset-inline-start: 0;
+  width: max(100%, var(--pane-min-width));
+  height: max(100%, var(--pane-min-height));
+  visibility: hidden;
+  opacity: 0;
+}
