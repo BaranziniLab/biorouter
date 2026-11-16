@@ -10,6 +10,29 @@ import { PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef } fro
  */
 const MIN_PANE_FRACTION = 0.12;
 
+/**
+ * The pair's new shares after a drag of `shift` (a fraction of the branch).
+ *
+ * The pair's combined share is invariant: whatever one pane gives up, its
+ * neighbour takes. Each pane's floor is 12% of the pair, or its own share when
+ * it is already under that, so a pane Make wider (or a stored layout) left
+ * smaller does not jump to 12% on the first pixel of a drag. It can grow, and
+ * it never shrinks further.
+ */
+export function clampPairShares(
+  a: number,
+  b: number,
+  shift: number,
+  minFraction = MIN_PANE_FRACTION
+): [number, number] {
+  const pair = a + b;
+  const floor = minFraction * pair;
+  const minA = Math.min(floor, a);
+  const minB = Math.min(floor, b);
+  const nextA = Math.min(Math.max(a + shift, minA), pair - minB);
+  return [nextA, pair - nextA];
+}
+
 interface ChatGroupSplitterProps {
   dir: 'row' | 'col';
   /** Index of the child BEFORE this splitter. */
@@ -66,14 +89,12 @@ export function ChatGroupSplitter({
       event.preventDefault();
       const delta = (dir === 'row' ? event.clientX : event.clientY) - drag.start;
       const shift = delta / drag.total;
-      // The pair's combined share is invariant: whatever one pane gives up, its
-      // neighbour takes. This is what keeps the other panes still.
-      const pair = drag.a + drag.b;
-      const min = MIN_PANE_FRACTION * pair;
-      const nextA = Math.min(Math.max(drag.a + shift, min), pair - min);
+      // Only the pair moves (see clampPairShares). This is what keeps the other
+      // panes still.
+      const [nextA, nextB] = clampPairShares(drag.a, drag.b, shift);
       const next = [...sizesRef.current];
       next[index] = nextA;
-      next[index + 1] = pair - nextA;
+      next[index + 1] = nextB;
       onResizeRef.current(next);
     };
     const finish = () => {

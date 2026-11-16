@@ -18,6 +18,9 @@ import { GroupLayout } from '../chatGroups/chatGroupsTypes';
  *      shouldShowTabOverflowMenu
  *   4. a split merges back to one group rather than render two useless slivers —
  *      splitYieldAction
+ *   5. a pane the split leaves under 360 x 270 shows a placeholder in place of
+ *      its chat, and keeps the chat mounted behind it — paneFit. Rung 4 still
+ *      merges on a width crossing; rung 5 covers the splits rung 4 leaves alone.
  *
  * Nothing here is new chrome. Each rung is something the app could already do;
  * the decision is only WHAT ORDER they let go in.
@@ -350,7 +353,8 @@ export function previewSideWidth(opts: { paneWidth: number; userWidth?: number |
 
 /**
  * The conversation's floor under a stacked sheet: its measured chrome (the
- * composer bar, 174px today; a replay's page header), the 8px resize edge, and
+ * composer bar, 130px since the one-line composer (2026-11-13); a replay's page
+ * header), the 8px resize edge, and
  * 146px of transcript below it.
  * An unmeasurable chrome counts as none — the CSS grid still holds the
  * transcript's own 146px, so the worst case is a sheet a composer's height too
@@ -593,4 +597,138 @@ export function splitYieldAction(opts: {
   if (!isFitting) return groupCount > 1 ? 'merge' : 'none';
   // Crossed OUT of too-narrow: only give the split back if WE took it away.
   return autoMerged ? 'restore' : 'none';
+}
+
+// ---------------------------------------------------------------------------
+// Rung 5 — a pane too small for its chat shows a placeholder
+// ---------------------------------------------------------------------------
+
+/** The narrowest pane that holds a chat. Rung 4's leaf floor, the same number. */
+export const PANE_MIN_WIDTH = CHAT_MIN_WIDTH; // 360
+
+/** Mirrors `--chrome-height`, the pane's band. Pinned by styles/paneFloor.test.ts. */
+export const PANE_HEADER_HEIGHT = 44;
+
+/**
+ * The resting composer bar: pt-7 28 + the one-line card 50 + the 4px gap + the
+ * 24px footer line + pb-6 24. Measured by composerCard.browser.test.tsx; if the
+ * measurement differs by more than 2px, this constant takes the measured value.
+ */
+export const PANE_COMPOSER_BAR_HEIGHT = 130;
+
+/** Four lines of transcript at its 14px/24px face. */
+export const PANE_TRANSCRIPT_FLOOR = 96;
+
+/** 44 + 130 + 96 = 270. */
+export const PANE_MIN_HEIGHT =
+  PANE_HEADER_HEIGHT + PANE_COMPOSER_BAR_HEIGHT + PANE_TRANSCRIPT_FLOOR;
+
+/** The same 12px rungs 0 and 2 use: leaves compact at 372 by 282. */
+export const PANE_RETURN_BUFFER = 12;
+
+export type PaneFit = 'full' | 'compact';
+export type PaneShortfall = 'width' | 'height' | 'both';
+
+export interface PaneFitAnswer {
+  fit: PaneFit;
+  /** Which axis is short, judged with the buffer in force. Null when full. */
+  shortfall: PaneShortfall | null;
+  /** False only for an answer that never saw a real box. */
+  measured: boolean;
+}
+
+export const PANE_FULL_UNMEASURED: PaneFitAnswer = {
+  fit: 'full',
+  shortfall: null,
+  measured: false,
+};
+
+const PANE_FULL: PaneFitAnswer = { fit: 'full', shortfall: null, measured: true };
+
+/**
+ * Whether a pane shows its chat or the compact placeholder.
+ *
+ * Measured on the PANE'S OWN BOX, never the window: a split decouples the two,
+ * and a window-width rule is what drew a chat into a 140px column in the first
+ * place. A lone pane is never replaced, because nothing in the app could give
+ * it room back. An unmeasured box (a first paint, a hidden window) is not a
+ * small one: it keeps the previous answer, as `summaryRailFit` does.
+ *
+ * NO FEEDBACK LOOP. A pane's box is set by its flex share in the branch, never
+ * by its content, and the swap changes only what is inside the box. The 12px
+ * return buffer is there so a slow drag across the seam does not flicker.
+ */
+export function paneFit(opts: {
+  width: number;
+  height: number;
+  /** groupCount === 1. A lone pane is never replaced. */
+  alone: boolean;
+  previous: PaneFitAnswer | null;
+}): PaneFitAnswer {
+  if (opts.alone) return PANE_FULL;
+  if (!measured(opts.width) || !measured(opts.height)) {
+    return opts.previous ?? PANE_FULL_UNMEASURED;
+  }
+  const buffer = opts.previous?.fit === 'compact' ? PANE_RETURN_BUFFER : 0;
+  const narrow = opts.width < PANE_MIN_WIDTH + buffer;
+  const short = opts.height < PANE_MIN_HEIGHT + buffer;
+  if (!narrow && !short) return PANE_FULL;
+  return {
+    fit: 'compact',
+    shortfall: narrow && short ? 'both' : narrow ? 'width' : 'height',
+    measured: true,
+  };
+}
+
+/**
+ * The placeholder's three densities. No hysteresis: the density changes
+ * nothing outside the placeholder, so it cannot loop.
+ *
+ *   card  — the tile, the title, the state line and the action words:
+ *           44 band + 8 + 12 + (32 + 8 + 20 + 2 + 16 + 8 + 16) + 12 + 8 = 186,
+ *           rounded to 188; 176 wide gives the title about 17 characters.
+ *   glyph — a 48px square button (the tile and 8px a side) and the body padding:
+ *           64 wide, 44 + 64 = 108 tall.
+ *   band  — the body is empty and the action is a 24px button in the band.
+ */
+export const COMPACT_CARD_MIN_WIDTH = 176;
+export const COMPACT_CARD_MIN_HEIGHT = 188;
+export const COMPACT_GLYPH_MIN_WIDTH = 64;
+export const COMPACT_GLYPH_MIN_HEIGHT = 108;
+
+export type CompactPaneDensity = 'card' | 'glyph' | 'band';
+
+/** card when width >= 176 and height >= 188; glyph when >= 64 and >= 108; band otherwise (and for unmeasured input). */
+export function compactPaneDensity(width: number, height: number): CompactPaneDensity {
+  if (!measured(width) || !measured(height)) return 'band';
+  if (width >= COMPACT_CARD_MIN_WIDTH && height >= COMPACT_CARD_MIN_HEIGHT) return 'card';
+  if (width >= COMPACT_GLYPH_MIN_WIDTH && height >= COMPACT_GLYPH_MIN_HEIGHT) return 'glyph';
+  return 'band';
+}
+
+/** A band button: 24px, plus the 4px gap to its neighbour. */
+const COMPACT_BAND_CONTROL = 28;
+/** The band keeps 8px free at its inline end. */
+const COMPACT_BAND_END = 8;
+
+/**
+ * What the compact pane's 44px band can hold after the titlebar reserve: the
+ * action (in band density only, where the body is empty) and the ▾ tab menu
+ * (from two tabs). The action wins a band too narrow for both.
+ */
+export function compactBandControls(opts: {
+  width: number;
+  /** The titlebar reserve this pane's band must leave free (172 or 0). */
+  insetStart: number;
+  density: CompactPaneDensity;
+  tabCount: number;
+}): { action: boolean; menu: boolean } {
+  const room = (Number.isFinite(opts.width) ? opts.width : 0) - opts.insetStart - COMPACT_BAND_END;
+  const wantsMenu = opts.tabCount >= 2;
+  if (opts.density === 'band') {
+    const action = room >= COMPACT_BAND_CONTROL;
+    const menu = wantsMenu && room >= (action ? 2 * COMPACT_BAND_CONTROL : COMPACT_BAND_CONTROL);
+    return { action, menu };
+  }
+  return { action: false, menu: wantsMenu && room >= COMPACT_BAND_CONTROL };
 }
