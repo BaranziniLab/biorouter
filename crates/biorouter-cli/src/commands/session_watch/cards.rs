@@ -1426,7 +1426,13 @@ mod tests {
             "Type allow (until you revoke it with biorouter crew grants revoke 20261106_4 --reads) or deny, then press Enter. Your next line answers this request and is not sent to the chat."
         );
         assert_eq!(
-            answer_outcome(200, r#"{"status":"delivered"}"#, "allow_once", true, "20261106_4"),
+            answer_outcome(
+                200,
+                r#"{"status":"delivered"}"#,
+                "allow_once",
+                true,
+                "20261106_4"
+            ),
             "[answered] Allowed. This chat may read the workspace as you until you revoke it with biorouter crew grants revoke 20261106_4 --reads."
         );
         for line in asked {

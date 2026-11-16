@@ -46,20 +46,31 @@ impl SystemInfo {
         }
     }
 
-    pub fn to_text(&self) -> String {
+    /// `system.txt` for a bundle about one chat. `chat_provider` and `chat_model` are the
+    /// pair the chat itself is bound to, either of which it may not have recorded.
+    ///
+    /// ⚠ The machine's configured pair is labelled as the default it is (W1-30). It was the
+    /// only pair, printed as plain "Provider:", and for a chat bound to another provider (a
+    /// Claude Code chat on a machine configured for Versa) that named a provider the report is
+    /// not about.
+    pub fn to_text(&self, chat_provider: Option<&str>, chat_model: Option<&str>) -> String {
         format!(
             "App Version: {}\n\
              OS: {}\n\
              OS Version: {}\n\
              Architecture: {}\n\
-             Provider: {}\n\
-             Model: {}\n\
+             Chat provider: {}\n\
+             Chat model: {}\n\
+             Configured default provider: {}\n\
+             Configured default model: {}\n\
              Enabled Extensions: {}\n\
              Timestamp: {}\n",
             self.app_version,
             self.os,
             self.os_version,
             self.architecture,
+            chat_provider.unwrap_or("not recorded"),
+            chat_model.unwrap_or("not recorded"),
             self.provider.as_deref().unwrap_or("unknown"),
             self.model.as_deref().unwrap_or("unknown"),
             self.enabled_extensions.join(", "),
@@ -863,8 +874,21 @@ async fn generate_diagnostics_from(
             }
         }
 
+        // The row, not the transcript: its provider and model are what the report is about,
+        // and they ship even when a Crew grant withholds the chat's content, as usage.txt's
+        // per-model rows always have.
+        let chat = session_manager.get_session(session_id, false).await.ok();
         zip.start_file("system.txt", options)?;
-        zip.write_all(system_info.to_text().as_bytes())?;
+        zip.write_all(
+            system_info
+                .to_text(
+                    chat.as_ref().and_then(|chat| chat.provider_name.as_deref()),
+                    chat.as_ref()
+                        .and_then(|chat| chat.model_config.as_ref())
+                        .map(|model| model.model_name.as_str()),
+                )
+                .as_bytes(),
+        )?;
 
         // Token accounting so a usage-mismatch report is self-diagnosing
         // (last-turn vs accumulated vs MTD, per model, incl. cache buckets).
@@ -1111,6 +1135,61 @@ mod tests {
         assert!(
             !names.contains(&"collection-notes.txt"),
             "nothing failed, so nothing should be reported as having failed: {names:?}"
+        );
+    }
+
+    /// W1-30 (e): `system.txt` names the provider and model the chat itself is bound to, and
+    /// labels the machine's configured pair as the default it is. It used to print only the
+    /// configured pair under "Provider:", which for a chat on another provider (a Claude Code
+    /// chat on a machine configured for Versa) is a different provider from the one the report
+    /// is about.
+    #[tokio::test(flavor = "current_thread")]
+    async fn system_txt_names_the_chats_own_provider() {
+        let temp = TempDir::new().unwrap();
+        let sources = sources_in(&temp);
+        let sm = SessionManager::new(temp.path().join("sessions"));
+        let session = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "diagnostics".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        sm.update(&session.id)
+            .provider_name("claude_code")
+            .model_config(crate::model::ModelConfig::new_or_fail(
+                "claude-chat-model-w1-30",
+            ))
+            .apply()
+            .await
+            .unwrap();
+
+        let entries = bundle_entries(
+            generate_diagnostics_from(&sm, &session.id, &sources)
+                .await
+                .unwrap(),
+        );
+        let system = entries
+            .iter()
+            .find(|(name, _)| name == "system.txt")
+            .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
+            .expect("every bundle carries system.txt");
+        assert!(
+            system.contains("Chat provider: claude_code\n"),
+            "the chat's own provider is missing: {system}"
+        );
+        assert!(
+            system.contains("Chat model: claude-chat-model-w1-30\n"),
+            "the chat's own model is missing: {system}"
+        );
+        assert!(
+            system.contains("Configured default provider: "),
+            "the configured pair must say it is the default: {system}"
+        );
+        assert!(
+            !system.lines().any(|line| line.starts_with("Provider: ")),
+            "an unlabelled provider line reads as the chat's: {system}"
         );
     }
 

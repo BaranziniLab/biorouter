@@ -2,6 +2,7 @@ use crate::session::message_to_markdown;
 use anyhow::{Context, Result};
 
 use crate::commands::needs_terminal;
+use crate::commands::print_line;
 use crate::commands::session_grouping::{
     group_by_parent, listed_session_types, liveness_label, render_child, Liveness, SessionRow,
 };
@@ -27,6 +28,21 @@ pub(crate) const REMOVE_CONFIRMATION_NEEDS_A_TERMINAL: &str =
 pub(crate) const REMOVE_PICKER_NEEDS_A_TERMINAL: &str =
     "`biorouter session remove` with no --session-id, --name or --regex opens a picker, which \
      needs a terminal; name what to remove with one of those flags and add --yes.";
+
+/// What `session declassify` says when it would have to ask and there is no terminal to ask
+/// on (W1-30). It has no `--yes`: lowering a chat's privacy is the person's decision.
+pub(crate) const DECLASSIFY_NEEDS_A_TERMINAL: &str =
+    "`biorouter session declassify` asks you to confirm before it lowers a chat's privacy, and \
+     needs a terminal to ask on; run it from a terminal.";
+
+/// What a command says when it would open the session picker and there is no terminal to draw
+/// it on (W1-30). `command` is the `session` subcommand.
+pub(crate) fn picker_needs_a_terminal(command: &str) -> String {
+    format!(
+        "`biorouter session {command}` with no --session-id or --name opens a picker, which \
+         needs a terminal; name the session with --session-id <id> or --name <name>."
+    )
+}
 
 /// Which rows a listing — and a removal that selects from one — looks through.
 ///
@@ -249,13 +265,14 @@ async fn remove_in(
                 .filter(|session| session_regex.is_match(&session.id))
                 .collect();
 
+            // A failure, as a `--name` that names nothing is (W1-30): a script that removes
+            // by pattern must be able to tell "removed" from "matched nothing".
             if matched.is_empty() {
-                println!(
-                    "Regex string '{}' does not match any sessions{}",
+                return Err(anyhow::anyhow!(
+                    "Regex string '{}' does not match any sessions{}, so nothing was removed.",
                     regex_val,
                     widen_hint(scope)
-                );
-                return Ok(());
+                ));
             }
             matched
         }
@@ -396,27 +413,26 @@ pub async fn handle_session_list(
             sessions.truncate(n);
         }
 
+        // `print_line`, never `println!`: a reader that went away (`| head`) ends the
+        // listing quietly, where `println!` panicked with a broken pipe (W1-12).
         match format.as_str() {
             "json" => {
-                println!("{}", serde_json::to_string(&sessions)?);
+                print_line(serde_json::to_string(&sessions)?);
             }
             _ => {
                 if sessions.is_empty() {
-                    println!("No sessions found");
+                    print_line("No sessions found");
                     return Ok(());
                 }
 
-                println!("Available sessions:");
+                print_line("Available sessions:");
                 for session in sessions {
-                    println!(
-                        "{}",
-                        session_list_line(
-                            &session.id,
-                            &session.name,
-                            session.updated_at,
-                            session.decision_count,
-                        )
-                    );
+                    print_line(session_list_line(
+                        &session.id,
+                        &session.name,
+                        session.updated_at,
+                        session.decision_count,
+                    ));
                 }
             }
         }
@@ -513,22 +529,22 @@ async fn print_grouped_sessions(
                     })
                 })
                 .collect();
-            println!("{}", serde_json::to_string(&payload)?);
+            print_line(serde_json::to_string(&payload)?);
         }
         _ => {
             if groups.is_empty() {
-                println!("No sessions found");
+                print_line("No sessions found");
                 return Ok(());
             }
 
-            println!("Available sessions:");
+            print_line("Available sessions:");
             for group in groups {
-                println!(
+                print_line(format!(
                     "{} - {} - {}",
                     group.session.id, group.session.name, group.session.updated_at
-                );
+                ));
                 for child in &group.children {
-                    println!("{}", render_child(child, liveness_of(&child.id)));
+                    print_line(render_child(child, liveness_of(&child.id)));
                 }
             }
         }
@@ -670,9 +686,9 @@ pub async fn handle_session_export(
         fs::write(&output_path, output).with_context(|| {
             format!("Failed to write to output file: {}", output_path.display())
         })?;
-        println!("Session exported to {}", output_path.display());
+        print_line(format!("Session exported to {}", output_path.display()));
     } else {
-        println!("{}", output);
+        print_line(output);
     }
 
     Ok(())
@@ -755,7 +771,10 @@ pub async fn handle_session_diverge(session_id: &str, name: Option<String>) -> R
 /// door was used.
 pub async fn declassify_command(session_id: &str) -> Result<()> {
     let session_manager = SessionManager::instance();
-    let outcome = declassify_by_id(&session_manager, session_id, &mut TerminalPrompt).await?;
+    let mut prompt = TerminalPrompt {
+        terminal: needs_terminal::prompt_can_run(),
+    };
+    let outcome = declassify_by_id(&session_manager, session_id, &mut prompt).await?;
     println!("{}", render_declassify_outcome(session_id, outcome));
     Ok(())
 }
@@ -817,11 +836,18 @@ pub(crate) const DECLASSIFY_ESCALATION_NOTICE: &str =
     "That request was refused: this chat's record has changed since it was read, so it now takes \
      the typed confirmation.";
 
-/// The real one.
-struct TerminalPrompt;
+/// The real one. With no terminal it refuses with [`DECLASSIFY_NEEDS_A_TERMINAL`] at the
+/// first question, so a chat that needs none (one that is already public, or an id that names
+/// no chat) is still answered under a pipe.
+struct TerminalPrompt {
+    /// Whether a cliclack prompt can run here ([`needs_terminal::prompt_can_run`]), sampled
+    /// once by the caller.
+    terminal: bool,
+}
 
 impl DeclassifyPrompt for TerminalPrompt {
     fn confirm_single_click(&mut self, session_id: &str) -> Result<bool> {
+        needs_terminal::require(self.terminal, DECLASSIFY_NEEDS_A_TERMINAL)?;
         Ok(confirm(format!(
             "Declassify session {session_id}? It will no longer be restricted to private models."
         ))
@@ -835,6 +861,7 @@ impl DeclassifyPrompt for TerminalPrompt {
         phrase: &str,
         notice: &str,
     ) -> Result<Option<String>> {
+        needs_terminal::require(self.terminal, DECLASSIFY_NEEDS_A_TERMINAL)?;
         println!("{notice}");
         let typed: String = cliclack::input(format!(
             "Type the last six characters of the session id ({phrase}) to confirm, or leave \
@@ -991,13 +1018,25 @@ pub(crate) fn render_declassify_outcome(session_id: &str, outcome: DeclassifyOut
 }
 
 pub async fn handle_diagnostics(session_id: &str, output_path: Option<PathBuf>) -> Result<()> {
+    diagnostics_in(&SessionManager::instance(), session_id, output_path).await
+}
+
+/// [`handle_diagnostics`] over an explicit store, so its rules are testable against a
+/// throwaway database.
+async fn diagnostics_in(
+    session_manager: &SessionManager,
+    session_id: &str,
+    output_path: Option<PathBuf>,
+) -> Result<()> {
+    // Before anything is written (W1-30): a bundle for an id that names no chat used to be
+    // "saved" with exit 0, the only trace of the typo a note inside the zip.
+    session_by_id(session_manager, session_id).await?;
     println!(
         "Generating diagnostics bundle for session '{}'...",
         session_id
     );
 
-    let session_manager = SessionManager::instance();
-    let diagnostics_data = generate_diagnostics(&session_manager, session_id)
+    let diagnostics_data = generate_diagnostics(session_manager, session_id)
         .await
         .with_context(|| {
             format!(
@@ -1093,12 +1132,42 @@ fn export_session_to_markdown(
     markdown_output
 }
 
-/// Prompt the user to interactively select a session
+/// The session a `session` subcommand given no --session-id or --name works on, chosen in
+/// the picker; `None` when nothing was chosen, with the reason already on stderr.
 ///
-/// Shows a list of available sessions and lets the user select one
+/// No terminal is the [`needs_terminal::NeedsTerminal`] refusal, which `main` prints alone and
+/// exits 2 with, rather than cliclack's bare `Error: not connected` under exit 0 (W1-30).
+pub async fn pick_session(
+    session_manager: &SessionManager,
+    command: &str,
+) -> Result<Option<String>> {
+    match prompt_interactive_session_selection(
+        session_manager,
+        command,
+        needs_terminal::prompt_can_run(),
+    )
+    .await
+    {
+        Ok(id) => Ok(Some(id)),
+        Err(e) if e.downcast_ref::<needs_terminal::NeedsTerminal>().is_some() => Err(e),
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            Ok(None)
+        }
+    }
+}
+
+/// Prompt the user to interactively select a session for `biorouter session <command>`.
+///
+/// Shows a list of available sessions and lets the user select one. `terminal` is whether a
+/// prompt can run here; without one this refuses before it lists anything, as
+/// `session remove`'s picker does.
 pub async fn prompt_interactive_session_selection(
     session_manager: &SessionManager,
+    command: &str,
+    terminal: bool,
 ) -> Result<String> {
+    needs_terminal::require(terminal, &picker_needs_a_terminal(command))?;
     let sessions = session_manager.list_sessions().await?;
 
     if sessions.is_empty() {
@@ -1106,7 +1175,9 @@ pub async fn prompt_interactive_session_selection(
     }
 
     // Build the selection prompt
-    let mut selector = select("Select a session to export:");
+    let mut selector = select(format!(
+        "Select a session for `biorouter session {command}`:"
+    ));
 
     // Map to display text
     let display_map: std::collections::HashMap<String, Session> = sessions
@@ -1131,13 +1202,13 @@ pub async fn prompt_interactive_session_selection(
 
     // Add a cancel option
     let cancel_value = String::from("cancel");
-    selector = selector.item(cancel_value, "Cancel", "Cancel export");
+    selector = selector.item(cancel_value, "Cancel", "Choose nothing");
 
     // Get user selection
     let selected_display_text: String = selector.interact()?;
 
     if selected_display_text == "cancel" {
-        return Err(anyhow::anyhow!("Export canceled"));
+        return Err(anyhow::anyhow!("Cancelled; nothing was done."));
     }
 
     // Retrieve the selected session
@@ -2720,6 +2791,125 @@ mod tests {
             .await
             .expect_err("an unknown id must not read as a successful declassification");
         assert!(err.to_string().contains("29990101_000000"), "{err}");
+    }
+
+    /// W1-30 (a): a command that would open the session picker with no terminal to draw it on
+    /// refuses with a sentence that names the flags, before it lists anything, rather than
+    /// cliclack's bare `Error: not connected`.
+    #[tokio::test]
+    async fn export_without_a_terminal_says_so() {
+        for populated in [false, true] {
+            let dir = TempDir::new().unwrap();
+            let sm = if populated {
+                store_with_three_row_kinds(&dir).await.0
+            } else {
+                SessionManager::new(dir.path().to_path_buf())
+            };
+            let err = prompt_interactive_session_selection(&sm, "export", false)
+                .await
+                .expect_err("no terminal, so no picker");
+            let refusal = err
+                .downcast_ref::<needs_terminal::NeedsTerminal>()
+                .unwrap_or_else(|| panic!("not the needs-a-terminal refusal: {err:#}"));
+            let sentence = refusal.to_string();
+            assert!(
+                sentence.contains("`biorouter session export`"),
+                "{sentence}"
+            );
+            assert!(sentence.contains("--session-id"), "{sentence}");
+            assert!(sentence.contains("--name"), "{sentence}");
+        }
+    }
+
+    /// W1-30 (a): declassifying a private chat asks at the terminal, so with none it refuses
+    /// with a sentence and leaves the chat private. A chat that is already public needs no
+    /// question, so it is answered as before.
+    #[tokio::test]
+    async fn declassify_without_a_terminal_says_so() {
+        use biorouter::privacy::SessionClassification;
+
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        for reason in ["turn:versa_azure", "mcp:ucsfomopagent"] {
+            let id = private_session_of_type(&sm, &dir, SessionType::User, reason).await;
+            let err = declassify_by_id(&sm, &id, &mut TerminalPrompt { terminal: false })
+                .await
+                .expect_err("no terminal, so no confirmation");
+            let refusal = err
+                .downcast_ref::<needs_terminal::NeedsTerminal>()
+                .unwrap_or_else(|| panic!("{reason}: not the needs-a-terminal refusal: {err:#}"));
+            assert!(
+                refusal
+                    .to_string()
+                    .contains("`biorouter session declassify`"),
+                "{refusal}"
+            );
+            assert_eq!(
+                sm.get_session(&id, false).await.unwrap().privacy_tier,
+                SessionClassification::Private,
+                "{reason}: the refused declassification changed the chat"
+            );
+        }
+
+        let public = sm
+            .create_session(dir.path().to_path_buf(), "plain".into(), SessionType::User)
+            .await
+            .unwrap();
+        assert_eq!(
+            declassify_by_id(&sm, &public.id, &mut TerminalPrompt { terminal: false })
+                .await
+                .unwrap(),
+            DeclassifyOutcome::AlreadyPublic
+        );
+    }
+
+    /// W1-30 (b): a diagnostics bundle for a chat that does not exist is refused before
+    /// anything is written, and the command fails, where it used to print "saved" and exit 0.
+    #[tokio::test]
+    async fn diagnostics_for_a_missing_chat_fails() {
+        let dir = TempDir::new().unwrap();
+        let (sm, chat, ..) = store_with_three_row_kinds(&dir).await;
+        let out = TempDir::new().unwrap();
+
+        let missing = out.path().join("missing.zip");
+        let err = diagnostics_in(&sm, "20990101_1", Some(missing.clone()))
+            .await
+            .expect_err("no such chat");
+        let text = err.to_string();
+        assert!(text.contains("20990101_1"), "{text}");
+        assert!(text.contains("not found"), "{text}");
+        assert!(!missing.exists(), "a refused bundle was written");
+
+        // The positive control: a chat that exists still gets its bundle.
+        let saved = out.path().join("chat.zip");
+        diagnostics_in(&sm, &chat, Some(saved.clone()))
+            .await
+            .expect("a bundle for a chat that exists");
+        assert!(saved.exists());
+    }
+
+    /// W1-30 (c): `--regex` that matches nothing fails, as a `--name` that matches nothing
+    /// does, and removes nothing.
+    #[tokio::test]
+    async fn regex_remove_with_no_match_fails() {
+        let dir = TempDir::new().unwrap();
+        let (sm, chat, empty, subagent) = store_with_three_row_kinds(&dir).await;
+
+        let err = remove_in(
+            &sm,
+            RemoveSelector::Regex("^no-such-id$".to_string()),
+            SessionScope::default(),
+            true,
+            false,
+        )
+        .await
+        .expect_err("a regex that matches nothing is a failure");
+        let text = err.to_string();
+        assert!(text.contains("^no-such-id$"), "{text}");
+        assert!(text.contains("--include-empty"), "{text}");
+        for id in [&chat, &empty, &subagent] {
+            assert!(exists(&sm, id).await, "{id} was removed");
+        }
     }
 
     /// The rule lives in exactly one place, so the listing and the `--name`
