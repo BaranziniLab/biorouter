@@ -15,7 +15,7 @@
   container-type: size;
   --pad: clamp(12px, 4.8cqw, 18px);
   --dm-gap: 8px;      /* between the well's parts */
-  --dm-hang: 0px;     /* decisions.js: how far the Escalated list runs past the bottom */
+  --dm-shift: 0px;    /* decisions.js: how far the answered column moves down to show its top line whole */
   font-family: var(--font);
   color: var(--ink);
   -webkit-user-select: none; user-select: none;
@@ -23,14 +23,15 @@
 .art-decisions svg { display: block; flex: none; }
 
 /* ── The transcript: one column pinned to the bottom ─────── */
-/* Content that rises past the top runs out under a fade, as a chat scrolls;
-   the Escalated list runs out the same way at the bottom. The top fade is
-   clear over its first half, so the edge of a message scrolled almost out of
-   view leaves no sliver. */
+/* Content that rises past the top runs out under a fade, as a chat scrolls.
+   The fade is clear over its first half, so the edge of a message scrolled
+   almost out of view leaves no sliver, and decisions.js keeps any line from
+   resting half faded. The answered well ends inside the frame at every tile
+   size, so the bottom needs no fade. */
 .art-decisions .dm-thread {
   position: absolute; inset: 0;
-  -webkit-mask-image: linear-gradient(to bottom, transparent calc(var(--pad) / 2), #000 var(--pad), #000 calc(100% - var(--pad)), transparent 100%);
-  mask-image: linear-gradient(to bottom, transparent calc(var(--pad) / 2), #000 var(--pad), #000 calc(100% - var(--pad)), transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, transparent calc(var(--pad) / 2), #000 var(--pad));
+  mask-image: linear-gradient(to bottom, transparent calc(var(--pad) / 2), #000 var(--pad));
   transition: opacity var(--dur-slow) var(--ease);
 }
 .art-decisions.is-clearing .dm-thread { opacity: 0; }
@@ -39,7 +40,7 @@
   display: flex; flex-direction: column; gap: 10px;
   transition: transform var(--dur-med) var(--ease);
 }
-.art-decisions.show-sec .dm-col { transform: translateY(var(--dm-hang)); }
+.art-decisions.show-sec .dm-col { transform: translateY(var(--dm-shift)); }
 
 .art-decisions .dm-user {
   display: flex; justify-content: flex-end;
@@ -169,6 +170,10 @@
 .art-decisions .dm-chunk { color: var(--ink); white-space: nowrap; }
 .art-decisions .dm-ans { min-width: 0; color: var(--muted); }
 
+/* decisions.js: a line that would rest half under the top fade leaves as the
+   last part opens. Kept after the rules that show each line. */
+.art-decisions.show-sec .dm-away { opacity: 0; transition: opacity var(--dur-med) var(--ease); }
+
 /* Short tiles (the 289 by 216 tile at 1024): the well's parts sit a little
    closer, so the row's line stays clear of the top fade once the well is
    full. */
@@ -180,8 +185,10 @@
 /* The narrowest tiles (two columns just above a 600px window, 258 to 275
    wide): the summary alone is wider than the line, so it truncates as the
    app's row does, rather than running past the frame. decisions.js has
-   already dropped the meta and the chevron by then. */
+   already dropped the meta and the chevron by then. The escalation line's
+   InfoTip glyph goes too, so it never wraps onto a line of its own. */
 @container (max-width: 275px) {
+  .art-decisions .dm-info { display: none; }
   .art-decisions .dm-label { flex: 0 1 auto; min-width: 0; grid-template-columns: minmax(0, 1fr); }
   .art-decisions .dm-run,
   .art-decisions .dm-done { justify-self: stretch; min-width: 0; overflow: hidden; }

@@ -4,26 +4,27 @@
    decision glyph (ENTITY_ICONS.decision, Lucide Gauge), the app's summary
    ("Checking 30 chunks against 1 question" while it runs, breathing as a
    running row does, then "Checked 30 chunks against 1 question" with the
-   meta "9 yes, 8 escalated"; summarizeDecideCall and decideCallMeta in
+   meta "9 yes, 1 escalated"; summarizeDecideCall and decideCallMeta in
    DecideToolSummary.tsx), and its chevron. The row is opened, as a person
    opens it: while it runs the well names only the question it asked. Once
    the batch answers, the well holds what DecideToolSummary draws for a call
    with `escalate`: the first model and where it runs ("joey-1 · Baseten",
    decisionModelDisplay; a Baseten model is public, so no padlock), the
-   escalation line ("8 of 30 escalated to elephant-1" and its InfoTip), the
+   escalation line ("1 of 30 escalated to elephant-1" and its InfoTip), the
    question in plain words with its counts ("9 yes · 21 no", the final
-   answers, decideCountsLine), then the Escalated section, each chunk by its
-   number in the call with the final answer beside the first model's
-   ("yes 0.94, was no 0.55 by joey-1", DECIDE_TOOL_COPY.escalatedAnswer).
+   answers, decideCountsLine), then the Escalated section: the one chunk
+   asked again, by its number in the call, with the final answer beside the
+   first model's ("yes 0.94, was no 0.55 by joey-1",
+   DECIDE_TOOL_COPY.escalatedAnswer). The card lists every escalated chunk up
+   to ten (DECIDE_CARD_ESCALATED_SHOWN), so a call that escalated one shows
+   one row, and the whole well fits the frame.
    The two models are real Baseten aliases (providers/decision/catalog.rs);
    the escalation is one call, as docs/agent-loop/decision-models.md
    ("Escalating the unsure answers") describes it.
    The transcript is pinned to the frame's bottom and runs out under a fade
-   at the top, as a chat scrolls. The Escalated list runs on past the frame's
-   bottom edge under a second fade: the card lists all eight, and the tile
-   shows the first. One liberty: the app draws the well's lines at once when
-   the result lands; here they arrive one after another. One thing moves at
-   a time. Reduced motion shows the answered call. */
+   at the top, as a chat scrolls. One liberty: the app draws the well's lines
+   at once when the result lands; here they arrive one after another. One
+   thing moves at a time. Reduced motion shows the answered call. */
 (function () {
   'use strict';
   if (!window.BR || !BR.art) return;
@@ -41,21 +42,20 @@
       '" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">' + ICON[name] + '</svg>';
   }
 
-  // The call: 30 chunks, one yes or no question, joey-1 first, its unsure
-  // answers (a top probability under 0.80) asked again of elephant-1.
+  // The call: 30 chunks, one yes or no question, joey-1 first, its one
+  // unsure answer (a top probability under 0.80) asked again of elephant-1.
   var PROMPT = 'Which of 30 notes record a relapse?';
   var QUESTION = 'Does the note record a relapse?';
   var CHUNKS = 30;
   var YES = 9;
-  var ESCALATED = 8;
+  var ESCALATED = 1;
   var FIRST = 'joey-1';
   var SECOND = 'elephant-1';
-  // Three of the eight chunks asked again; the first is the one the tile shows.
+  // The chunk asked again: joey-1 said no at 0.55, elephant-1 says yes, which
+  // makes the ninth yes.
   // [place in the call, final answer, its P, first answer, its P]
   var ASKED_AGAIN = [
-    [4, 'yes', '0.94', 'no', '0.55'],
-    [11, 'no', '0.91', 'yes', '0.58'],
-    [17, 'yes', '0.88', 'yes', '0.64']
+    [4, 'yes', '0.94', 'no', '0.55']
   ];
 
   // The app's words for these numbers (DECIDE_TOOL_COPY and the functions
@@ -111,15 +111,15 @@
     var q = function (s) { return stage.querySelector(s); };
     var row = q('.dm-row'), line = q('.dm-line'), glyph = q('.dm-glyph');
     var runText = q('.dm-run .dm-t'), doneText = q('.dm-dt');
-    var metaIn = q('.dm-meta-in'), well = q('.dm-well'), asks = q('.dm-asks');
+    var metaIn = q('.dm-meta-in');
 
     // Width: the row's meta gives way first, then its chevron, so the summary
     // keeps every word. Only on the narrowest tile, where the summary alone is
     // wider than the line, does it truncate as the app's row does (CSS); its
     // full width is read from scrollWidth there.
-    // Height: the Escalated list hangs below the frame by all but its first
-    // chunk, so that chunk sits on the bottom edge and the next one runs out
-    // under the fade.
+    // Height: on the shorter tiles the answered column is taller than the
+    // frame, and its top runs out under the fade. settle() keeps every line
+    // of text either whole or gone.
     function fit() {
       line.classList.remove('dm-fit-meta', 'dm-fit-chev');
       var avail = line.clientWidth;
@@ -131,11 +131,61 @@
       var showMeta = lead + Math.max(run, done + metaIn.scrollWidth) + (showChev ? chev : 0) <= avail + 0.5;
       line.classList.toggle('dm-fit-chev', !showChev);
       line.classList.toggle('dm-fit-meta', !showMeta);
-      var first = asks.firstChild;
-      var cs = getComputedStyle(well);
-      var hang = asks.offsetHeight - (first.offsetTop + first.offsetHeight) +
-        parseFloat(cs.paddingBottom) + parseFloat(cs.borderBottomWidth);
-      stage.style.setProperty('--dm-hang', Math.max(0, Math.round(hang)) + 'px');
+      settle();
+    }
+
+    // The lines of the answered column, top to bottom: each is shown whole or
+    // not at all.
+    var LINES = '.dm-user, .dm-line, .dm-head .dm-l, .dm-esc .dm-l, .dm-qtext, .dm-counts .dm-l, .dm-sec-label, .dm-ask';
+    // The answered column is laid out in a hidden copy, whatever the loop is
+    // showing, and each line's ink (its text, glyphs and the bubble) is read
+    // from it. A line half under the top fade is the problem. The column may
+    // move down by about half the frame's margin to show that line whole;
+    // when that is not enough, the line and any above it fade out as the
+    // last part opens, as a chat scrolled to its end shows its newest lines.
+    // On the larger tiles the column fits, and nothing moves or fades.
+    function settle() {
+      var copy = stage.cloneNode(true);
+      copy.className = 'art-decisions dm-instant show-user is-open show-head show-esc show-counts show-sec';
+      copy.style.removeProperty('--dm-shift');
+      copy.style.visibility = 'hidden';
+      copy.querySelector('.dm-row').setAttribute('data-state', 'done');
+      root.appendChild(copy);
+      // The fade is drawn on the thread, which fills the frame.
+      var top0 = copy.querySelector('.dm-thread').getBoundingClientRect().top;
+      var pad = parseFloat(getComputedStyle(copy.querySelector('.dm-col')).bottom);
+      var range = document.createRange();
+      var spans = Array.prototype.map.call(copy.querySelectorAll(LINES), function (el) {
+        var boxes = [];
+        if (el.classList.contains('dm-user')) boxes.push(el.firstChild.getBoundingClientRect());
+        var walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+        for (var t = walk.nextNode(); t; t = walk.nextNode()) {
+          range.selectNodeContents(t);
+          Array.prototype.push.apply(boxes, range.getClientRects());
+        }
+        Array.prototype.forEach.call(el.querySelectorAll('svg'), function (g) { boxes.push(g.getBoundingClientRect()); });
+        var top = Infinity, bot = -Infinity;
+        boxes.forEach(function (b) {
+          if (b.width > 0 && b.height > 0) { top = Math.min(top, b.top - top0); bot = Math.max(bot, b.bottom - top0); }
+        });
+        return [top, bot];
+      });
+      root.removeChild(copy);
+      function cut(d, i) { return spans[i][1] + d > pad / 2 + 0.5 && spans[i][0] + d < pad - 0.5; }
+      function clear(d) {
+        for (var i = 0; i < spans.length; i++) if (cut(d, i)) return false;
+        return true;
+      }
+      var most = Math.ceil(pad / 2 + 1), shift = 0, away = -1;
+      while (shift <= most && !clear(shift)) shift++;
+      if (shift > most) {
+        shift = 0;
+        for (var i = 0; i < spans.length; i++) if (spans[i][0] < pad - 0.5) away = i;
+      }
+      stage.style.setProperty('--dm-shift', shift + 'px');
+      Array.prototype.forEach.call(stage.querySelectorAll(LINES), function (el, i) {
+        el.classList.toggle('dm-away', i <= away);
+      });
     }
     if ('ResizeObserver' in window) new ResizeObserver(fit).observe(stage);
 
