@@ -9,24 +9,28 @@
       <h4><span class="privacy is-private">Private</span></h4>
       <ul>
         <li>Llama Server and Ollama, running on this computer</li>
+        <li>Decision models running on this computer, such as <code>tev1:0.8b</code> in Ollama</li>
         <li>Versa API Azure and Versa API Bedrock, hosted by UCSF</li>
         <li>CDWAgent and UCSFOMOPAgent, marked “UCSF data” in BAAM</li>
-        <li>Every chat that has used one of these, and every knowledge base a private chat wrote to</li>
+        <li>Chats that ran on a private model or read private data (see <a href="#privacy-becomes">How a chat becomes private</a>), and every knowledge base a private chat wrote to</li>
       </ul>
     </div>
     <div>
       <h4><span class="privacy is-public">Public</span></h4>
       <ul>
         <li>Every other provider, including Claude Code and Codex</li>
+        <li>Baseten's decision models (joey-1, elephant-1, mammoth-1), and an Ollama decision model on another computer or with a cloud tag</li>
         <li>Every other extension</li>
-        <li>Chats and knowledge bases that never touched private material</li>
+        <li>Chats and knowledge bases that never touched private material, and chats a public decision model made public</li>
       </ul>
     </div>
   </div>
   <figcaption>What is private, and what it makes private in turn.</figcaption>
 </figure>
 <p>A provider is private only when Biorouter can tell where inference runs. Ollama or Llama Server pointed at another machine is public, and so is an Ollama cloud model (a tag such as <code>gpt-oss:120b-cloud</code>), because Ollama sends it to ollama.com. Azure OpenAI and Amazon Bedrock on the Public tab stay public even when they point at a UCSF address; only the Versa providers are treated as UCSF's. <a href="#providers">Models and providers</a> lists every provider by tab.</p>
-<p>A private chat, model, extension or knowledge base shows a padlock and the word Private. Public ones show the word Public.</p>
+<p>A chat is as private as its least private model, and that includes its decision models, the fast models behind a chat's monitors, gates and <code>decide</code> tool. A private chat can be read only by a decision model on this computer. A chat with no messages yet becomes public when you choose a Baseten decision model for it and confirm; <a href="#privacy-becomes">How a chat becomes private</a> has the rules.</p>
+<p>A private chat, model, extension or knowledge base shows a padlock and the word Private. Public ones show the word Public. Where there is no room for the word, on the composer's model chip and in the knowledge base selector, a private item shows only the padlock and a public one shows nothing; a screen reader names the padlock “Private model” or “Private knowledge base”. The padlock on the model chip describes the model, not the chat, so a private model keeps it in a chat a decision model made public. That chat's Public pill names the decision model that made it public when you point at it.</p>
+<p>While <a href="#privacy-switch">Privacy tiers</a> is turned off, the marks stay and say so: the word reads “Private (enforcement off)” or “Public (enforcement off)”, and the padlock's name ends with “enforcement off”.</p>
 
 <h2 id="privacy-becomes">How a chat becomes private</h2>
 <p>A chat becomes private the first time either of these happens:</p>
@@ -35,6 +39,7 @@
   <li><strong>A private data extension answers</strong> CDWAgent or UCSFOMOPAgent returns a result to one of the chat's tool calls.</li>
 </ol>
 <p>It then stays private. The mark survives restarts and travels with the chat into diverged chats, imports, scheduled runs and subagents. Only you can remove it; see <a href="#privacy-make-public">Make a chat public</a>.</p>
+<p><strong>Decision models count too.</strong> A chat is as private as its least private model. When you choose a public decision model, such as joey-1 on Baseten, for a Versa chat before its first message, Biorouter asks you to confirm: “This chat will be public: joey-1 runs on Baseten.” Once you do, the chat is public: Versa still answers, but the chat cannot use private extensions, private knowledge bases or private chats. A Versa chat whose only decision model runs on this computer, such as <code>tev1:0.8b</code>, stays private, and a public chat that uses one stays public. A chat that is already private, or already has messages on a private model, is refused public decision models and nothing is saved: make it public from History first (see <a href="#privacy-make-public">Make a chat public</a>), or start a new chat. Removing a chat's last public decision model makes it private at its next message. An agent cannot change a chat's tier this way. <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/agent-loop/decision-models.md#privacy">Decision models</a> has every case.</p>
 <figure class="doc-figure">
   <div class="flow">
     <div class="node"><b>Public chat</b><span>Any model can run it</span></div>
@@ -53,6 +58,7 @@
   <li><strong>A public model cannot read a private chat</strong>, through chat recall or through the tools that read other conversations.</li>
   <li><strong>A public model cannot read a private knowledge base.</strong> The refusal names the base.</li>
   <li><strong>A public model cannot use a private extension</strong>, and one cannot be turned on in a chat that runs a public model.</li>
+  <li><strong>A private chat never reaches a public decision model.</strong> Baseten's decision models are public, and so is an Ollama decision model on another computer or with a cloud tag, so a private chat is refused them before anything is sent. Choose a decision model on this computer, or start the work in a public chat.</li>
   <li><strong>A subagent never crosses the line.</strong> See the table below.</li>
   <li><strong>A private chat writing into a public one asks you first.</strong> Before the agent in a private chat sends a message to a public chat or changes its tools, Biorouter shows you what it will send. It asks once for each pair of chats.</li>
 </ul>
@@ -65,16 +71,17 @@
     <tr><td>Private</td><td>Public</td><td>Refused. The task a private chat writes is private too.</td></tr>
   </tbody>
 </table></div>
-<p>A public subagent is started without the parent's private extensions, and the parent is told what was left out. If a spawn is refused, retrying will not help: switch the parent chat, or start a new chat on the model you want.</p>
+<p>A public subagent is started without the parent's private extensions, and the parent is told what was left out. A chat a decision model made public counts as public here: its subagents run as public chats, even when they keep its own private model, such as Versa. A spawn is also refused before anything starts when a monitor on it names a decision model the parent chat may not use; the refusal names the monitor and ends “Nothing was started.” If a spawn is refused, retrying will not help: switch the parent chat, or start a new chat on the model you want.</p>
+<p>A running turn keeps the access it started with. If you switch a public chat to a private model while a turn runs, that turn still goes to the public model and reaches only what a public chat may; the private model takes over from your next message. A switch to a public model, where the chat allows one, applies at once.</p>
 
 <h2 id="privacy-institutions">Institutions</h2>
 <p>Private is about how sensitive the data is. A second check asks whose agreements cover it, because compliance approved at one institution does not cover another institution's data.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Model</th><th>Affiliation</th><th>May use</th></tr></thead>
   <tbody>
-    <tr><td>Llama Server, Ollama on this computer</td><td>Local</td><td>Every private extension. Nothing leaves the computer, so no agreement is needed.</td></tr>
+    <tr><td>Llama Server, Ollama on this computer (chat and decision models)</td><td>Local</td><td>Every private extension. Nothing leaves the computer, so no agreement is needed.</td></tr>
     <tr><td>Versa API Azure, Versa API Bedrock</td><td>UCSF</td><td>Private extensions that allow UCSF, which today are CDWAgent and UCSFOMOPAgent.</td></tr>
-    <tr><td>Public models</td><td>None</td><td>No private extension.</td></tr>
+    <tr><td>Public models, including Baseten's decision models</td><td>None</td><td>No private extension.</td></tr>
   </tbody>
 </table></div>
 <p>By default, when a model from one institution reaches an extension that belongs to another, the call is refused before anything is sent. The refusal opens with “Cross-institutional data flow” and names both institutions, and a button, <strong>Approve this flow for</strong> followed by the extension's name, appears under it. Only you can press it; an agent cannot. “Approving records your acceptance for this chat, this extension and this model's institution only.”</p>
@@ -94,6 +101,7 @@
   <li><strong>A chat Biorouter saw run a turn on a private model</strong> needs one click, then gives you five seconds to undo.</li>
   <li><strong>Any other private chat</strong> (it reached private data, was imported, came from a private parent, or was marked from the model it last used when privacy tiers arrived) asks you to type the last six characters of the chat's ID, then to pass your computer's own password prompt.</li>
 </ul>
+<p>A chat that read Crew channels cannot be made public at all. It is refused with “This chat read Crew channels, so it can't be made public. Start a new chat for public work.”, because its limits come from the channels' permissions, which marking the chat public cannot remove.</p>
 <p>The contents are not changed, and the change cannot be undone once it lands. It is written to a record on your computer. An agent can ask you to do this but cannot do it. From a terminal:</p>
 <pre><code>biorouter session declassify SESSION_ID</code></pre>
 
