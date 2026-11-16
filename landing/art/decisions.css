@@ -1,0 +1,182 @@
+/* Decision models tile. Every rule is scoped to the artifact. Values follow
+   the app: the person's message (the medium fill, 12px radius), the
+   transcript row (components/transcript-row.css: a 16px glyph, 13px muted
+   text, the chevron at 60% that turns and darkens while the row is open, the
+   well 24px in, on the subtle fill with a transparent edge and the element
+   radius, content 12px in), and the decide well (decisionsPanel.css,
+   .br-decide-card: 8px between its parts, 13px lines, the question in ink and
+   everything else muted, the Escalated label at 12px over rows 2px apart,
+   each a chunk in ink and its answers muted, wrapping onto a second line
+   where the two do not fit). The tool row is 22px tall, as on the skills
+   tile. The well's 1px edge stays transparent: fills before lines. */
+
+.art-decisions {
+  position: absolute; inset: 0;
+  container-type: size;
+  --pad: clamp(12px, 4.8cqw, 18px);
+  --dm-gap: 8px;      /* between the well's parts */
+  --dm-hang: 0px;     /* decisions.js: how far the Escalated list runs past the bottom */
+  font-family: var(--font);
+  color: var(--ink);
+  -webkit-user-select: none; user-select: none;
+}
+.art-decisions svg { display: block; flex: none; }
+
+/* ── The transcript: one column pinned to the bottom ─────── */
+/* Content that rises past the top runs out under a fade, as a chat scrolls;
+   the Escalated list runs out the same way at the bottom. The top fade is
+   clear over its first half, so the edge of a message scrolled almost out of
+   view leaves no sliver. */
+.art-decisions .dm-thread {
+  position: absolute; inset: 0;
+  -webkit-mask-image: linear-gradient(to bottom, transparent calc(var(--pad) / 2), #000 var(--pad), #000 calc(100% - var(--pad)), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent calc(var(--pad) / 2), #000 var(--pad), #000 calc(100% - var(--pad)), transparent 100%);
+  transition: opacity var(--dur-slow) var(--ease);
+}
+.art-decisions.is-clearing .dm-thread { opacity: 0; }
+.art-decisions .dm-col {
+  position: absolute; left: var(--pad); right: var(--pad); bottom: var(--pad);
+  display: flex; flex-direction: column; gap: 10px;
+  transition: transform var(--dur-med) var(--ease);
+}
+.art-decisions.show-sec .dm-col { transform: translateY(var(--dm-hang)); }
+
+.art-decisions .dm-user {
+  display: flex; justify-content: flex-end;
+  opacity: 0; transform: translateY(4px);
+  transition: opacity var(--dur-med) var(--ease), transform var(--dur-med) var(--ease);
+}
+.art-decisions.show-user .dm-user { opacity: 1; transform: none; }
+.art-decisions .dm-bubble {
+  display: inline-block; max-width: 100%;
+  background: var(--medium); border-radius: var(--r-container);
+  padding: 6px 11px;
+  font-size: 13px; line-height: 20px; white-space: nowrap;
+}
+
+/* ── The decide row: a line, then its well ───────────────── */
+.art-decisions .dm-row {
+  opacity: 0; transform: translateY(4px);
+  transition: opacity var(--dur-med) var(--ease), transform var(--dur-med) var(--ease);
+}
+.art-decisions .dm-row:not([data-state="hidden"]) { opacity: 1; transform: none; }
+
+.art-decisions .dm-line {
+  display: flex; align-items: center; min-width: 0;
+  height: 22px; font-size: 13px; line-height: 22px; color: var(--muted); white-space: nowrap;
+}
+.art-decisions .dm-glyph { width: 16px; height: 16px; margin-right: 8px; flex: none; }
+.art-decisions .dm-glyph-ic { width: 16px; height: 16px; }
+
+/* The two summaries share one cell and hand over in turn. */
+.art-decisions .dm-label { display: grid; justify-items: start; flex: none; }
+.art-decisions .dm-run,
+.art-decisions .dm-done {
+  grid-area: 1 / 1;
+  transition: opacity var(--dur-med) var(--ease);
+}
+.art-decisions .dm-done { display: inline-flex; opacity: 0; }
+/* The running summary is almost gone before the settled one arrives, so the
+   two are never read on top of each other and the line is never blank. */
+.art-decisions .dm-row[data-state="done"] .dm-run { opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
+.art-decisions .dm-row[data-state="done"] .dm-done { opacity: 1; transition: opacity var(--dur-menu) var(--ease) calc(var(--dur-fast) / 2); }
+
+/* The meta follows the summary one word space on, once the batch answered.
+   Its room opens as it fades in, so the chevron slides rather than jumps. */
+.art-decisions .dm-meta {
+  display: inline-grid; grid-template-columns: 0fr; flex: none; opacity: 0;
+  transition: grid-template-columns var(--dur-med) var(--ease), opacity var(--dur-menu) var(--ease);
+}
+.art-decisions .dm-meta-in { min-width: 0; overflow: hidden; padding-left: 4px; }
+.art-decisions .dm-row[data-state="done"] .dm-meta {
+  grid-template-columns: 1fr; opacity: 1;
+  transition: grid-template-columns var(--dur-med) var(--ease), opacity var(--dur-menu) var(--ease) var(--dur-fast);
+}
+
+.art-decisions .dm-chev {
+  width: 16px; height: 16px; margin-left: 6px; opacity: 0.6;
+  transition: transform var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
+}
+.art-decisions.is-open .dm-chev { transform: rotate(90deg); opacity: 1; }
+/* decisions.js: on a narrow tile the meta goes first, then the chevron. */
+.art-decisions .dm-line.dm-fit-meta .dm-meta,
+.art-decisions .dm-line.dm-fit-chev .dm-chev { display: none; }
+
+/* The running row breathes 1 → 0.7 → 1, the app's own running indicator
+   (br-tool-text-pulse: four periods of the slow unit, on the app's curve). It
+   runs only while the tile is on screen. */
+.art-decisions.is-live .dm-row[data-state="running"] .dm-run .dm-t { animation: decisions-breathe calc(var(--dur-slow) * 4) var(--ease) infinite; }
+@keyframes decisions-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* The well opens under the row: its room first, then its words. */
+.art-decisions .dm-body {
+  display: grid; grid-template-rows: 0fr;
+  transition: grid-template-rows var(--dur-med) var(--ease);
+}
+.art-decisions.is-open .dm-body { grid-template-rows: 1fr; }
+.art-decisions .dm-body-in {
+  min-height: 0; overflow: hidden;
+  padding-left: 24px;
+  opacity: 0;
+  transition: opacity var(--dur-menu) var(--ease);
+}
+.art-decisions.is-open .dm-body-in { opacity: 1; transition: opacity var(--dur-menu) var(--ease) var(--dur-fast); }
+.art-decisions .dm-well {
+  margin-top: 4px;
+  padding: 11px;
+  border: 1px solid transparent; border-radius: var(--r-element);
+  background: var(--fill);
+}
+
+/* The well's lines: 13px, muted, except the question. */
+.art-decisions .dm-l,
+.art-decisions .dm-qtext,
+.art-decisions .dm-ask {
+  font-size: 13px; line-height: 18px; overflow-wrap: anywhere;
+}
+.art-decisions .dm-l { color: var(--muted); }
+.art-decisions .dm-qtext { color: var(--ink); }
+/* The InfoTip's glyph, a word space after the line, in the tip's subtle ink. */
+.art-decisions .dm-info { display: inline-block; width: 14px; height: 14px; margin-left: 4px; vertical-align: -2px; color: var(--subtle); }
+
+/* A part that arrives with the result: room, then words. Each part carries
+   the 8px between it and its neighbour, so a closed part adds no space. */
+.art-decisions .dm-open {
+  display: grid; grid-template-rows: 0fr; opacity: 0;
+  transition: grid-template-rows var(--dur-med) var(--ease), opacity var(--dur-fast) var(--ease);
+}
+.art-decisions .dm-in { min-height: 0; overflow: hidden; }
+/* The gap rides on the words, not on .dm-in: a closed row can shrink its item
+   to nothing but never below the item's own padding. */
+.art-decisions .dm-head .dm-l,
+.art-decisions .dm-esc .dm-l { padding-bottom: var(--dm-gap); }
+.art-decisions .dm-sec-label { padding-top: var(--dm-gap); }
+.art-decisions.show-head .dm-head,
+.art-decisions.show-esc .dm-esc,
+.art-decisions.show-counts .dm-counts,
+.art-decisions.show-sec .dm-sec {
+  grid-template-rows: 1fr; opacity: 1;
+  transition: grid-template-rows var(--dur-med) var(--ease), opacity var(--dur-menu) var(--ease) var(--dur-fast);
+}
+
+/* The Escalated section: its label, then one row per chunk asked again. */
+.art-decisions .dm-sec-label { font-size: 12px; line-height: 16px; color: var(--muted); margin-bottom: 4px; }
+.art-decisions .dm-asks { position: relative; display: flex; flex-direction: column; gap: 2px; }
+.art-decisions .dm-ask { display: flex; flex-wrap: wrap; gap: 0 8px; }
+.art-decisions .dm-chunk { color: var(--ink); white-space: nowrap; }
+.art-decisions .dm-ans { min-width: 0; color: var(--muted); }
+
+/* Short tiles (the 289 by 216 tile at 1024): the well's parts sit a little
+   closer, so the row's line stays clear of the top fade once the well is
+   full. */
+@container (max-height: 225px) {
+  .art-decisions { --dm-gap: 6px; }
+  .art-decisions .dm-well { margin-top: 2px; padding: 9px 11px; }
+}
+
+/* Resets between loops happen with no transition at all. Kept last. */
+[data-art="decisions"] .art-decisions.dm-instant,
+[data-art="decisions"] .art-decisions.dm-instant * { transition: none; }
