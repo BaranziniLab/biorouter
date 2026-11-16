@@ -1,7 +1,7 @@
 # Crew administration
 
 > **What this is.** What the Linux server needs for Crew, how Biorouter installs it in each account, how Crew knows a person by their server account, and how to start, upgrade, delete, back up and troubleshoot a workspace.
-> **Status:** Current. Checked against the Crew code on 2026-11-06, after the account ownership change ([design](design/account-ownership.md)).
+> **Status:** Current. Checked against the Crew code on 2026-11-06, after the account ownership change ([design](design/account-ownership.md)). Edited since for the account ownership follow-ups, last on 2026-11-13, without a fresh line-by-line check; its quoted strings, codes and data paths pass `node scripts/check-crew-manual.mjs` as of 2026-11-15.
 > **Audience:** Lab managers who host a workspace, and the IT staff who support its server.
 
 A Crew workspace holds a lab's channels, shared files and AI agents. The host runs `biorouter-crew` on a Linux server as their own account. This broker keeps the workspace in files owned by that account, listens only on a Unix socket under `/tmp`, and learns each caller's account from the kernel. When a member connects, Biorouter starts the same program over SSH in their account, as a bridge to that socket. Biorouter installs the program in each account itself, from the copy built into the desktop app and the command line, when the person joins or hosts ([How Biorouter installs Crew](#how-biorouter-installs-crew)). Crew needs no administrator rights, system service or open network port. For the app, see [Hosting a workspace](hosting-a-workspace.md).

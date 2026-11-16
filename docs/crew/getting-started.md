@@ -1,7 +1,7 @@
 # Getting started with Crew
 
 > **What this is.** The first page of the Crew user manual: what you need, the background service, the first screen, the parts of the Crew view, and the terms the manual uses.
-> **Status:** Current. Checked against the Crew code on 2026-11-06, after the account ownership change ([design](design/account-ownership.md)).
+> **Status:** Current. Checked against the Crew code on 2026-11-06, after the account ownership change ([design](design/account-ownership.md)). Edited since for the account ownership follow-ups, last on 2026-11-12, without a fresh line-by-line check; its quoted strings, codes and data paths pass `node scripts/check-crew-manual.mjs` as of 2026-11-15.
 > **Audience:** Lab members who are new to Crew, including people who have never used SSH or a terminal.
 
 Crew is the part of the Biorouter desktop app where your lab chats, shares files and runs AI agents. Open it from **Crew** in the Biorouter sidebar, below **New chat**. As in Slack, a workspace holds channels where you post messages and files. Teams group channels, and agents read and post in a channel when you allow it. You see only the channels you are in. In an open workspace, **Browse channels** lists the others, and you join them yourself. In a managed workspace, ask a channel's owner to add you. The host can also add you, but only to a team or channel the host is in.

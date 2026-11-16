@@ -1,7 +1,7 @@
 # Coding-agent parity in Crew
 
 > **What this is.** The design contract that lets Claude Code and Codex chats use Crew exactly as chats on any other provider do: connect to a channel, run a Crew task, and use the person tools. Crew decides who may read a workspace by matching the chat's privacy to the workspace's privacy, the same way for every provider, and never by the kind of provider.
-> **Status:** Proposed. Ruled by the owner on 2026-11-12, overruling the recommendation to keep these chats away from Crew channels and tasks. Built on branch `claude/crew-coding-parity-37b543`, stacked on the account ownership work (#475) and mixed provider tiers (#484). This touches privacy and permission code, so it needs human review before it lands (CP-8 lists the enforcement points).
+> **Status:** Current. Ruled by the owner on 2026-11-12, overruling the recommendation to keep these chats away from Crew channels and tasks, and merged to main as #490 on 2026-11-14. Crew admits Claude Code and Codex by privacy alone through `crew/model_match.rs`; [agents and chat access](../agents-and-chat-access.md) and [privacy and security](../privacy-and-security.md) describe the shipped behaviour, and CP-8 lists the enforcement points.
 > **Audience:** Developers and reviewers of Crew and of the coding-agent providers. Users read the [Crew user manual](../README.md).
 
 ## Why

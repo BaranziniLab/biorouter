@@ -1,7 +1,7 @@
 # Joining a workspace
 
 > **What this is.** How to join your lab's Crew workspace, open it on another computer, add a computer again, and what to do when a step stops you.
-> **Status:** Current. Checked against the Crew code on 2026-11-07, after the account ownership change ([design](design/account-ownership.md)) and the second part of the chat-parity build.
+> **Status:** Current. Checked against the Crew code on 2026-11-07, after the account ownership change ([design](design/account-ownership.md)) and the second part of the chat-parity build. Edited since for the account ownership follow-ups, last on 2026-11-13, without a fresh line-by-line check; its quoted strings, codes and data paths pass `node scripts/check-crew-manual.mjs` as of 2026-11-15.
 > **Audience:** Lab members who received a Crew invitation, or who use a workspace from more than one computer. You need no SSH experience.
 
 To join, verify the lab server once, paste the invitation from your host (the person who created the workspace), choose what your agent may do on the server, and choose Join. If Crew's server program is not in your server account yet, Biorouter installs it there when you choose Join. On a server with a current Crew, the workspace opens at once. On a server with an older Crew, Crew shows a code: send it to your host, and the workspace opens when your host, or in an open workspace any member, enters it.

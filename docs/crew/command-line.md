@@ -1,7 +1,7 @@
 # Crew command line
 
 > **What this is.** A task reference for the `biorouter crew` commands: their syntax, what they print and their exit status.
-> **Status:** Current. Checked against the Crew code on 2026-11-07, after the account ownership change ([design](design/account-ownership.md)) and the second part of the chat-parity build.
+> **Status:** Current. Checked against the Crew code on 2026-11-07, after the account ownership change ([design](design/account-ownership.md)) and the second part of the chat-parity build. Edited since for coding-agent parity (2026-11-12) and the agent-grant and host-restart wording (2026-11-14), last on 2026-11-14, without a fresh line-by-line check; its quoted strings, codes and data paths pass `node scripts/check-crew-manual.mjs` as of 2026-11-15.
 > **Audience:** IT staff, lab managers, and lab members who prefer a terminal or want to script Crew. You should know how to open a terminal and run a command.
 
 These commands and the desktop app share one background service on your computer, the Biorouter daemon (`biorouterd`), and its saved connections, so both show the same workspace.
