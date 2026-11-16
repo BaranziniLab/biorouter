@@ -33,5 +33,5 @@ any deployment live in [configuration](../configuration/environment-variables.md
 - [Secret storage](../security/secret-storage.md) — how secrets are stored per platform, and what `BIOROUTER_DISABLE_KEYRING=true` switches to on a host with no desktop keyring.
 - [Environment variables](../configuration/environment-variables.md) — the full set of variables the daemon and `biorouter serve` read.
 - [Config file reference](../configuration/config-file-reference.md) — the server-side config directory a deployment points Biorouter at.
-- [Privacy tiers](../security/privacy-tiers.md) — the classification system behind the rules a browser session runs under.
+- [Privacy tiers](../security/privacy-tiers.md): the classification system behind the rules a browser session runs under.
 - [biorouter CLI command reference](../cli/command-reference.md) — `serve` and every other subcommand.

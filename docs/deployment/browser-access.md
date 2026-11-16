@@ -60,7 +60,7 @@ place.
 ## The command and its options
 
 ```bash
-biorouter serve [--host <addr>] [--port <n>] [--token <t>] [--no-token] [--no-dictation-install] [--web-dir <dir>] [--public-url <url>] [--open]
+biorouter serve [--host <addr>] [--port <n>] [--token <t>] [--no-token] [--no-dictation-install] [--web-dir <dir>] [--public-url <url>] [--computer-use-approval] [--folder-access-approval] [--allow-public-decision-models] [--open]
 ```
 
 | Option | What it does | Default |
@@ -72,6 +72,9 @@ biorouter serve [--host <addr>] [--port <n>] [--token <t>] [--no-token] [--no-di
 | `--no-dictation-install` | Stop browsers on this daemon from installing speech models. The host can still install them with `biorouter dictation install`. `BIOROUTER_DICTATION_BROWSER_INSTALL=false` and managed policy also stop browser installs. | Off |
 | `--web-dir <dir>` | Directory holding the built interface. It must contain an `index.html`, or `serve` refuses to start. Takes precedence over `BIOROUTER_SERVE_UI`. | `BIOROUTER_SERVE_UI` if set, otherwise found automatically — see [When the interface cannot be found](#when-the-interface-cannot-be-found) |
 | `--public-url <url>` | The `https://` address a reverse proxy serves the interface at, path prefix included. `serve` prints it with the token, and the live views accept connections from it. Takes precedence over `BIOROUTER_PUBLIC_URL`. See [Behind a reverse proxy](#behind-a-reverse-proxy). | None |
+| `--computer-use-approval` | Set a Biorouter Copilot approval key of at least 16 characters at a hidden terminal prompt. A person types it in the browser to approve a Biorouter Copilot task. It is never saved, and `serve` refuses the flag without an interactive terminal. | Off |
+| `--folder-access-approval` | Set a separate folder approval key the same way. A person types it in the browser's **Folder approval key** field to allow or revoke a chat's access to a folder outside its working folder. See [External folder access](../security/folder-access.md#browser-setup). | Off |
+| `--allow-public-decision-models` | Let a person in the browser make a new chat public by choosing a public decision model before its first message. Without it the daemon refuses that choice and saves nothing. See [SD-16](serve-decisions.md#sd-16-a-keyless-daemon-makes-no-chat-public-by-a-decision-model-unless-its-operator-allows-it). | Off |
 | `--open` | Open a browser once the server is ready, through a page only your account can read. | Off |
 
 The default port is `8765` rather than `3000` deliberately: `3000` is `biorouterd`'s own default, so

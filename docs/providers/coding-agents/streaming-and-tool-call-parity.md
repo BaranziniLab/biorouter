@@ -569,7 +569,7 @@ riskiest phase is **phase 3** (the loop-adjacent marker skip and the pair contra
   between stream items (`agent.rs:7111-7113`) — so a streaming path shipped without its
   own deadline hangs indefinitely on a wedged child, with user cancel as the only
   recovery.
-  `crates/biorouter/src/providers/lead_worker.rs` — forward `supports_streaming()`/`stream()`
+  `crates/biorouter/src/providers/lead_worker.rs`: forward `supports_streaming()`/`stream()`
   (done: `LeadWorkerProvider` forwards both).
 - **New types:** none beyond the stream state struct.
 - **Tests:** fixture-driven unit tests replaying the phase-0 NDJSON through the decoder,

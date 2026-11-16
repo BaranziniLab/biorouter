@@ -2074,7 +2074,7 @@ The `/t` command controls the syntax highlighting theme for markdown content in 
 
 **Configuration:**
 
-- The default theme is `dark`
+- The default theme is `ansi`. A saved or environment value that is not `light`, `dark` or `ansi` falls back to `dark`
 - The theme setting is saved to the [configuration file](../configuration/config-file-reference.md) as `BIOROUTER_CLI_THEME` and persists between sessions
 - The saved configuration can be overridden for the session using the `BIOROUTER_CLI_THEME` [environment variable](../configuration/environment-variables.md#session-management)
 

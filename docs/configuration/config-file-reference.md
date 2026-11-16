@@ -37,7 +37,7 @@ Set these at the root level of `config.yaml`.
 | `BIOROUTER_TOOLSHIM` | Enable tool interpretation | true/false | false | No |
 | `BIOROUTER_TOOLSHIM_OLLAMA_MODEL` | Model for tool interpretation | Model name (e.g. `"llama3.2"`) | System default | No |
 | `BIOROUTER_CLI_MIN_PRIORITY` | Tool output verbosity | Float between 0.0 and 1.0 | 0.0 | No |
-| `BIOROUTER_CLI_THEME` | [Theme](../cli/command-reference.md#themes) for CLI response markdown | `"light"`, `"dark"`, `"ansi"` | `"dark"` | No |
+| `BIOROUTER_CLI_THEME` | [Theme](../cli/command-reference.md#themes) for CLI response markdown | `"light"`, `"dark"`, `"ansi"` | `"ansi"` | No |
 | `BIOROUTER_CLI_SHOW_COST` | Show estimated cost for token use in the CLI | true/false | false | No |
 | `BIOROUTER_ALLOWLIST` | URL for allowed extensions | Valid URL | None | No |
 | `BIOROUTER_WORKFLOW_GITHUB_REPO` | GitHub repository for workflows | Format: `"org/repo"` | None | No |
