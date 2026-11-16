@@ -298,6 +298,29 @@ fn ends_with_host(text: &str) -> bool {
     token == "localhost" || (token.contains('.') && !token.starts_with('.'))
 }
 
+/// Whether a provider's own words say the API key is what it refused.
+///
+/// Not every provider says so with a 401. Google answers a bad or expired key
+/// with 400 `INVALID_ARGUMENT` ("API key not valid. Please pass a valid API
+/// key.", reason `API_KEY_INVALID`) and xAI with 400 ("Incorrect API key
+/// provided: …"), so the status alone filed both as a bad request and the person
+/// was never told the key is the thing to fix. One list, read by the HTTP
+/// mapping (`utils::map_http_error_to_provider_error`) and by
+/// [`classify_provider_details`], so the two cannot disagree.
+pub(crate) fn names_an_invalid_key(text: &str) -> bool {
+    let text = text.to_ascii_lowercase();
+    [
+        "invalid api key",
+        "incorrect api key",
+        "invalid_api_key",
+        "api key not valid",
+        "api_key_invalid",
+        "api key expired",
+    ]
+    .iter()
+    .any(|phrase| text.contains(phrase))
+}
+
 fn classify_provider_details(details: &str) -> ProviderErrorKind {
     let details = without_urls(&details.to_ascii_lowercase());
     let status = |code: &str| mentions_status(&details, code);
@@ -306,8 +329,7 @@ fn classify_provider_details(details: &str) -> ProviderErrorKind {
         || details.contains("unauthorized")
         || details.contains("authentication failed")
         || details.contains("authentication error")
-        || details.contains("invalid api key")
-        || details.contains("incorrect api key")
+        || names_an_invalid_key(&details)
     {
         ProviderErrorKind::Auth
     } else if details.contains("insufficient_quota")
@@ -729,6 +751,33 @@ mod tests {
             assert_eq!(kind, ProviderErrorKind::Other, "{message}");
             assert!(!kind.is_transient(), "{message}");
         }
+    }
+
+    /// Google's bad-key wording, as a provider that formats its own failure
+    /// (`google.rs`'s non-streaming path, Tetrate's Gemini route) carries it in
+    /// a `RequestFailed`. It is a 400 with `INVALID_ARGUMENT`, so the status
+    /// arm read it as an invalid request, and the person was told to change the
+    /// request rather than the key.
+    #[test]
+    fn google_invalid_key_is_auth() {
+        for message in [
+            "Request failed with status: 400 Bad Request. Message: API key not valid. Please pass a valid API key.",
+            r#"Bad request (400): {"error":{"code":400,"status":"INVALID_ARGUMENT","details":[{"reason":"API_KEY_INVALID"}]}}"#,
+            "Request failed with status: 400 Bad Request. Message: API key expired. Please renew the API key.",
+        ] {
+            let kind = ProviderError::RequestFailed(message.into()).kind();
+            assert_eq!(kind, ProviderErrorKind::Auth, "{message}");
+            assert!(!kind.is_transient(), "{message}");
+        }
+        // A 400 about something else keeps its class.
+        assert_eq!(
+            ProviderError::RequestFailed(
+                "Request failed with status: 400 Bad Request. Message: Invalid JSON payload."
+                    .into()
+            )
+            .kind(),
+            ProviderErrorKind::InvalidRequest
+        );
     }
 
     #[test]

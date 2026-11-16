@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   read: vi.fn(),
   getCustomProvider: vi.fn(),
   updateCustomProvider: vi.fn(),
+  createCustomProvider: vi.fn(),
+  removeCustomProvider: vi.fn(),
 }));
 
 vi.mock('../../../api', async (importOriginal) => ({
@@ -32,6 +34,8 @@ vi.mock('../../../api', async (importOriginal) => ({
   checkProvider: mocks.checkProvider,
   getCustomProvider: mocks.getCustomProvider,
   updateCustomProvider: mocks.updateCustomProvider,
+  createCustomProvider: mocks.createCustomProvider,
+  removeCustomProvider: mocks.removeCustomProvider,
 }));
 // The configure modal asks which provider is bound before offering "Remove".
 vi.mock('../../ModelAndProviderContext', () => ({
@@ -41,8 +45,11 @@ vi.mock('../../ModelAndProviderContext', () => ({
 }));
 // A successful save opens the model picker; what it shows is its own suite's
 // business (`SwitchModelModal.*.test.tsx`), not this one's.
+// It does show which provider it opens on, since the catalog decides that.
 vi.mock('../models/subcomponents/SwitchModelModal', () => ({
-  SwitchModelModal: () => <div data-testid="switch-model-modal" />,
+  SwitchModelModal: ({ initialProvider }: { initialProvider?: string | null }) => (
+    <div data-testid="switch-model-modal" data-initial-provider={initialProvider ?? ''} />
+  ),
 }));
 vi.mock('../../../utils/userAction', () => ({
   userActionHeaders: async () => ({ 'X-User-Action': 'test-key' }),
@@ -1084,6 +1091,169 @@ describe('updating a custom provider', () => {
       path: { id: 'custom_lab' },
       headers: { 'X-User-Action': 'test-key' },
     });
+  });
+});
+
+const LAB_GATEWAY = {
+  data: {
+    is_editable: true,
+    config: {
+      engine: 'openai',
+      display_name: 'Lab gateway',
+      base_url: 'https://lab.example/v1',
+      models: [{ name: 'lab-model' }],
+      supports_streaming: true,
+    },
+  },
+};
+
+/**
+ * W1-33: a custom provider opens in its own edit dialog, and that dialog had only Cancel and
+ * Update, so a provider added by mistake could not be removed in the app. The one Remove the
+ * catalog had lived in the built-in providers' dialog, which a custom provider never reaches.
+ */
+describe('removing a custom provider from its edit dialog', () => {
+  const lab = {
+    ...provider('custom_lab', { is_configured: true }, 'Lab gateway'),
+    provider_type: 'Custom',
+  } as ProviderDetails;
+
+  const openEdit = async (refreshProviders = vi.fn()) => {
+    mocks.getCustomProvider.mockResolvedValue(LAB_GATEWAY);
+    render(
+      <ProviderCatalog
+        providers={[lab]}
+        mode="settings"
+        refreshProviders={refreshProviders}
+        initialTab="public"
+      />
+    );
+    fireEvent.click(await screen.findByTestId('provider-card-custom_lab'));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(customProviderCopy.edit('Lab gateway'))).toBeInTheDocument();
+    return dialog;
+  };
+
+  it('removes it after one confirmation that says what is deleted', async () => {
+    mocks.removeCustomProvider.mockResolvedValue({ data: 'Removed custom provider: custom_lab' });
+    mocks.read.mockImplementation(async (key: string) =>
+      key === 'BIOROUTER_PROVIDER' ? 'versa_azure' : null
+    );
+    const refreshProviders = vi.fn();
+    const dialog = await openEdit(refreshProviders);
+
+    fireEvent.click(within(dialog).getByRole('button', { name: customProviderCopy.remove }));
+    // The confirmation: one line of consequence, and the removal behind its own button.
+    expect(
+      await within(dialog).findByText(customProviderCopy.removeConsequence)
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText(customProviderCopy.removeTitle('Lab gateway'))).toBeVisible();
+    expect(mocks.removeCustomProvider).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: customProviderCopy.removeConfirm }));
+
+    await waitFor(() => expect(mocks.removeCustomProvider).toHaveBeenCalledTimes(1));
+    expect(mocks.removeCustomProvider.mock.calls[0][0]).toMatchObject({
+      path: { id: 'custom_lab' },
+    });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(refreshProviders).toHaveBeenCalled();
+    expect(screen.queryByTestId('switch-model-modal')).toBeNull();
+  });
+
+  it('stays open and says so, in muted ink, when the removal fails', async () => {
+    mocks.read.mockResolvedValue(null);
+    mocks.removeCustomProvider.mockRejectedValue(new Error(''));
+    const refreshProviders = vi.fn();
+    const dialog = await openEdit(refreshProviders);
+    fireEvent.click(within(dialog).getByRole('button', { name: customProviderCopy.remove }));
+    fireEvent.click(
+      await within(dialog).findByRole('button', { name: customProviderCopy.removeConfirm })
+    );
+    const failure = await within(dialog).findByTestId('custom-provider-remove-error');
+    expect(failure).toHaveTextContent(customProviderCopy.removeFailed);
+    expect(failure.className).toContain('text-text-muted');
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(refreshProviders).not.toHaveBeenCalled();
+  });
+
+  it('goes back to the form when the confirmation is cancelled', async () => {
+    mocks.read.mockResolvedValue(null);
+    const dialog = await openEdit();
+    fireEvent.click(within(dialog).getByRole('button', { name: customProviderCopy.remove }));
+    await within(dialog).findByText(customProviderCopy.removeConsequence);
+    fireEvent.click(within(dialog).getByRole('button', { name: customProviderCopy.cancel }));
+    expect(
+      await within(dialog).findByRole('button', { name: customProviderCopy.update })
+    ).toBeInTheDocument();
+    expect(within(dialog).getByDisplayValue('https://lab.example/v1')).toBeInTheDocument();
+    expect(mocks.removeCustomProvider).not.toHaveBeenCalled();
+  });
+
+  it('refuses while it is the provider new chats use', async () => {
+    mocks.read.mockImplementation(async (key: string) =>
+      key === 'BIOROUTER_PROVIDER' ? 'custom_lab' : null
+    );
+    const dialog = await openEdit();
+    fireEvent.click(within(dialog).getByRole('button', { name: customProviderCopy.remove }));
+    expect(await within(dialog).findByText(customProviderCopy.inUse)).toBeInTheDocument();
+    expect(
+      within(dialog).queryByRole('button', { name: customProviderCopy.removeConfirm })
+    ).toBeNull();
+    expect(mocks.removeCustomProvider).not.toHaveBeenCalled();
+  });
+
+  it('offers no Remove when adding a provider', async () => {
+    render(
+      <ProviderCatalog
+        providers={[provider('anthropic', {}, 'Anthropic')]}
+        mode="settings"
+        configuredProvider={null}
+        initialTab="public"
+      />
+    );
+    fireEvent.click(screen.getByTestId('add-custom-provider-card'));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).queryByRole('button', { name: customProviderCopy.remove })).toBeNull();
+  });
+});
+
+/**
+ * W1-34: after Create, Choose model opened on whatever provider it would have used before (the
+ * old default), while the edit and configure paths both open it on the provider just saved.
+ */
+describe('creating a custom provider opens Choose model on it', () => {
+  it('opens Choose model on the provider the daemon just created', async () => {
+    mocks.createCustomProvider.mockResolvedValue({
+      data: 'Custom provider added - ID: custom_lab_gateway',
+    });
+    render(
+      <ProviderCatalog
+        providers={[provider('anthropic', {}, 'Anthropic')]}
+        mode="settings"
+        refreshProviders={vi.fn()}
+        configuredProvider={null}
+        initialTab="public"
+      />
+    );
+    fireEvent.click(screen.getByTestId('add-custom-provider-card'));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByPlaceholderText('Your provider name'), {
+      target: { value: 'Lab gateway' },
+    });
+    fireEvent.change(within(dialog).getByPlaceholderText('https://api.example.com/v1'), {
+      target: { value: 'https://lab.example/v1' },
+    });
+    fireEvent.change(within(dialog).getByPlaceholderText('Your API key'), {
+      target: { value: 'sk-lab' },
+    });
+    fireEvent.change(within(dialog).getByPlaceholderText('model-a, model-b, model-c'), {
+      target: { value: 'lab-model' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: customProviderCopy.create }));
+
+    const chooser = await screen.findByTestId('switch-model-modal');
+    expect(mocks.createCustomProvider).toHaveBeenCalledTimes(1);
+    expect(chooser).toHaveAttribute('data-initial-provider', 'custom_lab_gateway');
   });
 });
 

@@ -174,7 +174,7 @@ These variables override the default context window size (token limit) for your 
 
 | Variable | Purpose | Values | Default |
 |----------|---------|---------|---------|
-| `BIOROUTER_CONTEXT_LIMIT` | Override context limit for the main model | Integer (number of tokens) | Model-specific default or 128,000 |
+| `BIOROUTER_CONTEXT_LIMIT` | Override context limit for the main model. Read from the environment Biorouter starts in, not from `config.yaml`. While it is set, the provider list (`GET /config/providers`) reports this window for every listed model of every provider, so the composer's context ring shows the window the chat compacts against | Integer (number of tokens), at least 4096 | Model-specific default or 128,000 |
 | `BIOROUTER_WORKER_CONTEXT_LIMIT` | Override context limit for the [default worker model](#default-worker-model) | Integer (number of tokens) | Falls back to `BIOROUTER_CONTEXT_LIMIT` or model default |
 | `BIOROUTER_PLANNER_CONTEXT_LIMIT` | Override context limit for the planner model | Integer (number of tokens) | Falls back to `BIOROUTER_CONTEXT_LIMIT` or model default |
 

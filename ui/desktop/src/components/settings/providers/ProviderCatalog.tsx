@@ -6,6 +6,7 @@ import {
   DeclarativeProviderConfig,
   getCustomProvider,
   ProviderDetails,
+  removeCustomProvider,
   updateCustomProvider,
   UpdateCustomProviderRequest,
 } from '../../../api';
@@ -72,6 +73,16 @@ import {
 } from '../../onboarding/viewPrimary';
 
 export type ProviderCatalogMode = 'settings' | 'onboarding';
+
+/**
+ * The id `POST /config/custom-providers` names in its answer, `Custom provider added - ID:
+ * custom_x` (the route in `config_management.rs` points back here), or `null` when it names none.
+ */
+export function createdCustomProviderId(answer: unknown): string | null {
+  if (typeof answer !== 'string') return null;
+  const match = /\bID:\s*(\S+)\s*$/.exec(answer);
+  return match ? match[1] : null;
+}
 
 /**
  * The provider catalog: every provider the daemon serves, in three tabs that
@@ -616,13 +627,35 @@ export default function ProviderCatalog({
   const handleCreateCustomProvider = useCallback(
     async (data: UpdateCustomProviderRequest) => {
       const { createCustomProvider } = await import('../../../api');
-      await createCustomProvider({ body: data, throwOnError: true });
+      const created = await createCustomProvider({ body: data, throwOnError: true });
       setShowCustomProviderModal(false);
       refreshProviders?.();
+      // Choose model opens on the provider just added, as it does after an edit or a configure
+      // (W1-34). It used to open on whatever it would have used before, the old default.
+      setSwitchModelProvider(createdCustomProviderId(created.data));
       setShowSwitchModelModal(true);
     },
     [refreshProviders]
   );
+
+  /**
+   * Removal for the custom provider being edited (W1-33). Its dialog was the only way in, and it
+   * had no Remove. Refused while the provider is the one new chats use, as the Configure dialog
+   * refuses it; that dialog asks the same question of the same key.
+   */
+  const customProviderRemoval = useMemo(() => {
+    if (!editingProvider?.isEditable) return undefined;
+    const id = editingProvider.id;
+    return {
+      isInUse: async () => (await read('BIOROUTER_PROVIDER', false)) === id,
+      remove: async () => {
+        await removeCustomProvider({ path: { id }, throwOnError: true });
+        setShowCustomProviderModal(false);
+        setEditingProvider(null);
+        refreshProviders?.();
+      },
+    };
+  }, [editingProvider, read, refreshProviders]);
 
   const handleCloseCustomModal = useCallback(() => {
     setShowCustomProviderModal(false);
@@ -1017,6 +1050,7 @@ export default function ProviderCatalog({
         hasSavedKey={editingProvider?.isConfigured ?? true}
         onSubmit={editingProvider ? handleUpdateCustomProvider : handleCreateCustomProvider}
         onCancel={handleCloseCustomModal}
+        removal={customProviderRemoval}
       />
       {configuringProvider && (
         <ProviderConfigurationModal

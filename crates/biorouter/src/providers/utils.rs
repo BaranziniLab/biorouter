@@ -200,6 +200,14 @@ pub(crate) fn check_context_length_exceeded(text: &str) -> bool {
             ]
             .iter()
             .any(|subject| text_lower.contains(subject)))
+        // Baseten's sentence: "Input length N exceeds the maximum allowed input
+        // length of M tokens" (measured 2026-10-20 and 2026-11-16). It names
+        // neither a context nor a window, so that 400 read as an ordinary bad
+        // request and compaction never ran. Matched by its own phrase and its
+        // unit, not by "input length" alone: "input length exceeds 1024
+        // characters" is a tool description's limit, which compacting cannot
+        // fix. Neither is llama-server's "Context size" collision.
+        || (text_lower.contains("maximum allowed input length") && text_lower.contains("token"))
 }
 
 /// llama-server's structured overflow error type, sent with HTTP 400 by every
@@ -301,6 +309,45 @@ pub(crate) const LLAMA_SERVER_CACHE_FULL_EXPLAINED: &str =
      that runs one request at a time cannot hit this: start it with --parallel 1, as \
      Biorouter's own Llama Server does.";
 
+/// The sentence a 400 refuses the API key with, when its body says the key is
+/// the problem.
+///
+/// Google (`"API key not valid. Please pass a valid API key."`, reason
+/// `API_KEY_INVALID`) and xAI (`"Incorrect API key provided: …"`, carried as a
+/// STRING `error`) answer a bad key with 400, not 401, so the status alone
+/// filed both under "Bad request" and the person never read that the key is
+/// what to fix. Read only from the error's own message, xAI's string `error`
+/// and Google's structured `reason`, never from the rest of the body, which can
+/// echo the request. Google's non-SSE stream wraps the body in an array.
+fn bad_request_key_rejection(payload: &Value) -> Option<String> {
+    let payload = payload
+        .as_array()
+        .and_then(|items| items.first())
+        .unwrap_or(payload);
+    let error = payload.get("error");
+    let text = error
+        .and_then(|error| error.get("message"))
+        .or_else(|| payload.get("message"))
+        .or(error.filter(|error| error.is_string()))
+        .and_then(Value::as_str);
+    let reason_names_key = error
+        .and_then(|error| error.get("details"))
+        .and_then(Value::as_array)
+        .is_some_and(|details| {
+            details.iter().any(|detail| {
+                detail
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .is_some_and(super::errors::names_an_invalid_key)
+            })
+        });
+    if text.is_some_and(super::errors::names_an_invalid_key) || reason_names_key {
+        Some(text.unwrap_or("API_KEY_INVALID").to_string())
+    } else {
+        None
+    }
+}
+
 fn format_server_error_message(status_code: StatusCode, payload: Option<&Value>) -> String {
     match payload {
         Some(Value::Null) | None => format!(
@@ -345,6 +392,14 @@ pub fn map_http_error_to_provider_error(
             // `error.message` lookup can reach.
             if let Some(detail) = payload.as_ref().and_then(llama_server_context_overflow) {
                 return log_provider_failure(status, ProviderError::ContextLengthExceeded(detail));
+            }
+            if let Some(detail) = payload.as_ref().and_then(bad_request_key_rejection) {
+                return log_provider_failure(
+                    status,
+                    ProviderError::Authentication(format!(
+                        "Authentication failed. Status: {status}. Response: {detail}"
+                    )),
+                );
             }
             let payload_str = extract_message();
             let has_context_code = payload.as_ref().is_some_and(|payload| {
@@ -630,6 +685,13 @@ pub async fn handle_response_google_compat(response: Response) -> Result<Value, 
                 Status: {}. Response: {:?}", final_status, payload )))
         }
         StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND => {
+            if let Some(detail) = payload.as_ref().and_then(bad_request_key_rejection) {
+                tracing::debug!(status = final_status.as_u16(), "Provider request failed");
+                return Err(ProviderError::Authentication(format!(
+                    "Authentication failed. Please ensure your API keys are valid and have the \
+                     required permissions. Status: {final_status}. Response: {detail}"
+                )));
+            }
             let mut error_msg = "Unknown error".to_string();
             if let Some(payload) = &payload {
                 if let Some(error) = payload.get("error") {
@@ -1668,6 +1730,125 @@ mod tests {
         );
         assert!(
             matches!(&error, ProviderError::ServerError(message) if message.starts_with("Server error (500")),
+            "{error:?}"
+        );
+    }
+
+    /// Baseten's over-window sentence, measured 2026-10-20 (`model.rs` quotes it
+    /// beside the gpt-oss-120b row) and again by the 2026-11-16 provider QA. It
+    /// names neither a context length nor a window, so it read as an ordinary
+    /// bad request: no `ContextLengthExceeded`, so no compaction, and the turn
+    /// ended on "Retrying will not help". Both envelopes an OpenAI-compatible
+    /// server uses: the nested `error.message`, and vLLM's top-level `message`.
+    #[test]
+    fn baseten_over_window_is_context_length_exceeded() {
+        use crate::providers::errors::ProviderErrorKind;
+
+        let sentence =
+            "Input length 430721 exceeds the maximum allowed input length of 131040 tokens.";
+        assert!(check_context_length_exceeded(sentence));
+        for body in [
+            json!({"error": {"message": sentence, "type": "BadRequestError", "code": 400}}),
+            json!({"object": "error", "message": sentence, "type": "BadRequestError", "code": 400}),
+        ] {
+            let error = map_http_error_to_provider_error(StatusCode::BAD_REQUEST, Some(body));
+            assert_eq!(error, ProviderError::ContextLengthExceeded(sentence.into()));
+            assert_eq!(error.kind(), ProviderErrorKind::ContextLength);
+        }
+    }
+
+    /// The guard the Baseten wording must not break: llama-server's KV-cache
+    /// collision says "Context size has been exceeded." and compacting the chat
+    /// cannot fix it, so it is never an overflow, with or without a status.
+    #[test]
+    fn llama_kv_cache_full_is_still_not_context_length_exceeded() {
+        assert!(!check_context_length_exceeded(LLAMA_SERVER_CACHE_FULL));
+        let error = map_http_error_to_provider_error(
+            StatusCode::BAD_REQUEST,
+            Some(json!({"error": {"message": LLAMA_SERVER_CACHE_FULL}})),
+        );
+        assert_eq!(
+            error,
+            ProviderError::RequestFailed(format!("Bad request (400): {LLAMA_SERVER_CACHE_FULL}"))
+        );
+        // Nor is an input-length rule that is not about the window, even in
+        // Baseten's own words when the unit is characters, not tokens.
+        for message in [
+            "Invalid input length: must be a positive integer.",
+            "Invalid 'tools[0].function.description': input length exceeds 1024 characters.",
+            "Tool description input length exceeds the maximum allowed input length of 1024 characters.",
+        ] {
+            assert!(!check_context_length_exceeded(message), "{message}");
+        }
+    }
+
+    /// Google and xAI answer a bad key with 400, not 401, so the status alone
+    /// filed both under "Bad request" and the person never read that the key is
+    /// the thing to fix. The bodies are the ones each API sends: Google's with
+    /// its `API_KEY_INVALID` reason, and xAI's, whose `error` is a string.
+    #[tokio::test]
+    async fn a_400_naming_an_invalid_key_is_an_authentication_error() {
+        let google = json!({"error": {
+            "code": 400,
+            "message": "API key not valid. Please pass a valid API key.",
+            "status": "INVALID_ARGUMENT",
+            "details": [{
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "reason": "API_KEY_INVALID",
+                "domain": "googleapis.com"
+            }]
+        }});
+        let google_reason_only = json!({"error": {
+            "code": 400,
+            "message": "Request rejected.",
+            "status": "INVALID_ARGUMENT",
+            "details": [{"reason": "API_KEY_INVALID"}]
+        }});
+        let xai = json!({
+            "code": "Client specified an invalid argument",
+            "error": "Incorrect API key provided: xa***yz. You can obtain an API key from https://console.x.ai."
+        });
+        for body in [&google, &google_reason_only, &xai] {
+            let error =
+                map_http_error_to_provider_error(StatusCode::BAD_REQUEST, Some(body.clone()));
+            assert!(
+                matches!(&error, ProviderError::Authentication(_)),
+                "{body}: {error:?}"
+            );
+            assert!(error.kind().is_auth(), "{body}");
+        }
+        // The sentence the provider wrote is kept, not the raw JSON around it.
+        let ProviderError::Authentication(detail) =
+            map_http_error_to_provider_error(StatusCode::BAD_REQUEST, Some(xai.clone()))
+        else {
+            unreachable!()
+        };
+        assert!(detail.contains("Incorrect API key provided"), "{detail}");
+        assert!(!detail.contains("Client specified"), "{detail}");
+
+        // Google's non-streaming path reads its own statuses.
+        let response = axum::http::Response::builder()
+            .status(400)
+            .header("content-type", "application/json")
+            .body(google.to_string())
+            .unwrap();
+        let error = handle_response_google_compat(reqwest::Response::from(response))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&error, ProviderError::Authentication(_)),
+            "{error:?}"
+        );
+
+        // A 400 that is about the request, not the key, is still a bad request.
+        let error = map_http_error_to_provider_error(
+            StatusCode::BAD_REQUEST,
+            Some(
+                json!({"error": {"message": "Invalid 'max_tokens': integer below minimum value."}}),
+            ),
+        );
+        assert!(
+            matches!(error, ProviderError::RequestFailed(_)),
             "{error:?}"
         );
     }
