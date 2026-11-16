@@ -6,7 +6,7 @@ The static site served at <https://biorouter.ucsf.edu/>. It is published from th
 
 | File | Page |
 | ---- | ---- |
-| `index.html` | Introduction: the model routing hub, the three principles, a Slack band and six capability tiles |
+| `index.html` | Introduction: the model routing hub, the three principles, a Slack band and nine capability tiles |
 | `download.html` | Download: the detected installer, every platform, five ways to use Biorouter, first steps, the command line and servers |
 | `docs.html` | Documentation assembled from the tracked shell and fourteen fragments in `docs/website/` |
 | `baam.html` | BAAM, the Biorouter AI Agent Marketplace: extensions, skills and workflows |

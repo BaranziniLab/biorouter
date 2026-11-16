@@ -47,7 +47,7 @@ const CLEAR = /^(transparent|rgba\(\d+, \d+, \d+, 0\))$/;
 // schedule's ring marker, Crew's recipes (the app has not converted Crew), and the
 // composer cards (R-32: the page ground with a resting hairline). On download.html#ways: the
 // Jupyter tile's mention menu, and the desktop app's and browser tile's composer cards.
-const OUTLINE_OK = /hub-pick|wall-pop|sk-picker|apps-ask|sch-dot|crew-|apps-go|is-moving|hub-card|wall-card|sk-composer|acc-pick|acc-gui-comp|acs-card/;
+const OUTLINE_OK = /hub-pick|wall-pop|sk-picker|apps-ask|sch-dot|crew-|apps-go|is-moving|hub-card|wall-card|sk-composer|acc-pick|acc-gui-comp|acs-card|dx-composer/;
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -224,6 +224,14 @@ if (!existsSync(PLAYWRIGHT)) {
       hairline(await paint(page, '.art-skills .sk-composer'), 'the skills composer card');
       assert.equal((await paint(page, '.art-skills .sk-send')).bg, FILL, 'the skills Send rests on the subtle fill');
 
+      // The dictation tile's still frame has the text inserted, so its Send is armed (coral) and is
+      // not read here. Its Dictionary slice is a filled card with no edge.
+      await page.waitForSelector('.art-dictation .dx-composer', { state: 'attached' });
+      hairline(await paint(page, '.art-dictation .dx-composer'), 'the dictation composer card');
+      const dict = await paint(page, '.art-dictation .dx-dict');
+      assert.equal(dict.bg, FILL, "the dictation tile's Dictionary slice is the fill");
+      noEdge(dict, "the dictation tile's Dictionary slice");
+
       await page.waitForSelector('.art-wall .wall-card', { state: 'attached' });
       for (const [i, card] of (await page.locator('.art-wall .wall-card').all()).entries()) {
         const p = await card.evaluate((e) => {
@@ -265,6 +273,15 @@ if (!existsSync(PLAYWRIGHT)) {
       await settle(page);
       assert.equal(await top('.art-skills .sk-composer'), CORAL, 'the skills card takes the focus edge while typing');
       assert.deepEqual(await box('.art-skills .sk-composer'), skillsBefore, 'the skills card does not move when the edge turns');
+
+      // The dictation tile turns its card's edge while the field is focused for recording.
+      await page.waitForSelector('.art-dictation .dx-composer', { state: 'attached' });
+      const dictationBefore = await box('.art-dictation .dx-composer');
+      assert.equal(await top('.art-dictation .dx-composer'), HAIRLINE);
+      await page.evaluate(() => document.querySelector('.art-dictation').classList.add('is-edge'));
+      await settle(page);
+      assert.equal(await top('.art-dictation .dx-composer'), CORAL, 'the dictation card takes the focus edge while recording');
+      assert.deepEqual(await box('.art-dictation .dx-composer'), dictationBefore, 'the dictation card does not move when the edge turns');
       await close();
     });
 

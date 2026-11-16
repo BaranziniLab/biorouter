@@ -59,6 +59,7 @@ const COMPOSER_CARDS = {
   'art/hub.css': '.art-hub .hub-card',
   'art/wall.css': '.art-wall .wall-card',
   'art/skills.css': '.art-skills .sk-composer',
+  'art/dictation.css': '.art-dictation .dx-composer',
   // download.html#ways: the desktop app's composer, and the same composer in the browser tab.
   'art/access-gui.css': '[data-art="access-gui"] .acc-gui-comp',
   'art/access-serve.css': '[data-art="access-serve"] .acs-card',
@@ -170,6 +171,8 @@ const mutants = {
   'the hub composer card back on the fill': ['art/hub.css', (s) => s.replace('background: var(--paper);\n  border: 1px solid var(--line-composer)', 'background: var(--fill);\n  border: 1px solid transparent')],
   'the wall composer card back on the fill': ['art/wall.css', (s) => s.replace('background: var(--paper); border: 1px solid var(--line-composer)', 'background: var(--fill); border: 1px solid transparent')],
   'the skills composer card with a harder line': ['art/skills.css', (s) => s.replace('border: 1px solid var(--line-composer)', 'border: 1px solid var(--line)')],
+  'the dictation composer card back on the fill': ['art/dictation.css', (s) => s.replace('background: var(--paper);\n  border: 1px solid var(--line-composer)', 'background: var(--fill);\n  border: 1px solid transparent')],
+  'the dictation composer card with a harder line': ['art/dictation.css', (s) => s.replace('border: 1px solid var(--line-composer)', 'border: 1px solid var(--line)')],
   'a drawn edge on the art frame': ['site.css', (s) => s + '\n.art { border: 1px solid var(--line); border-radius: var(--r-surface); }'],
   'the desktop app composer card back on the fill': ['art/access-gui.css', (s) => s.replace('background: var(--paper);\n  border: 1px solid var(--line-composer);', 'background: var(--fill);\n  border: 1px solid transparent;')],
   'the browser tile composer card with a harder line': ['art/access-serve.css', (s) => s.replace('border: 1px solid var(--line-composer)', 'border: 1px solid var(--line)')],
