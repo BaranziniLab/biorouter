@@ -57,8 +57,8 @@ record rather than a description of the current runtime.
   never reaches. The fixed ceiling they enforced then was removed on 2026-08-26. A turn now
   has no time limit unless `BIOROUTER_CODING_AGENT_TURN_TIMEOUT_SECS` sets one, and the
   in-stream check applies that same optional limit.
-- **Lead/worker forwarding** (`lead_worker.rs:410-412`): the pair streams only when both
-  halves do.
+- **Lead/worker forwarding** (`LeadWorkerProvider::supports_streaming` in `lead_worker.rs`, a
+  conjunction): a chat saved in the retired lead/worker mode streams only when both halves do.
 - **No schema change was needed.** `metadata` was already a free-form object on
   `ToolRequest` and `ToolResponse` in the generated OpenAPI schema, so the marker rides the
   existing serialized shape and no client regeneration was required.
@@ -133,9 +133,11 @@ The chain has four links, each cited:
    `Err(ProviderError::NotImplemented("streaming not implemented"))` and
    `supports_streaming()` returns `false` (`crates/biorouter/src/providers/base.rs:932-945`).
    Neither `claude_code.rs` (impl at `:574-649`) nor `codex.rs` (impl at `:627-707`)
-   overrides either. `LeadWorkerProvider` forwards `uses_tool_bridge`
-   (`crates/biorouter/src/providers/lead_worker.rs:391-393`) but not `supports_streaming`,
-   so even a future streaming provider wrapped in a lead/worker pair would stay blocking.
+   overrides either. `LeadWorkerProvider` forwarded `uses_tool_bridge` but not
+   `supports_streaming`, so even a streaming provider wrapped in a lead/worker pair stayed
+   blocking. It now forwards both (`crates/biorouter/src/providers/lead_worker.rs`):
+   `uses_tool_bridge` when either half uses the bridge, and `supports_streaming` only when both
+   halves stream, so a pair with a blocking-only half stays blocking.
 2. **The blocking branch.** `reply_parts.rs:256` reads
    `let streaming = provider.supports_streaming();`; the `false` arm calls
    `provider.complete(...)` and wraps the single result:
@@ -567,7 +569,8 @@ riskiest phase is **phase 3** (the loop-adjacent marker skip and the pair contra
   between stream items (`agent.rs:7111-7113`) — so a streaming path shipped without its
   own deadline hangs indefinitely on a wedged child, with user cancel as the only
   recovery.
-  `crates/biorouter/src/providers/lead_worker.rs` — forward `supports_streaming()`/`stream()`.
+  `crates/biorouter/src/providers/lead_worker.rs` — forward `supports_streaming()`/`stream()`
+  (done: `LeadWorkerProvider` forwards both).
 - **New types:** none beyond the stream state struct.
 - **Tests:** fixture-driven unit tests replaying the phase-0 NDJSON through the decoder,
   asserting the yielded `Message` sequence (stable `message_start` id on every text chunk —
