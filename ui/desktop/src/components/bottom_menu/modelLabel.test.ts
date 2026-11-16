@@ -4,7 +4,10 @@ import {
   distinguishModels,
   friendlyModelName,
   modelDisplayName,
+  providerDisplayName,
+  rememberProviderNames,
 } from './modelLabel';
+import displayNameTable from './modelDisplayName.cases.json';
 
 describe('friendlyModelName', () => {
   it.each([
@@ -72,74 +75,19 @@ describe('modelDisplayName', () => {
     vi.unstubAllGlobals();
   });
 
-  it.each([
-    // One model, every provider's spelling of it.
-    ['us.anthropic.claude-haiku-5-5', 'Claude Haiku 5.5'],
-    ['global.anthropic.claude-haiku-5-5', 'Claude Haiku 5.5'],
-    ['claude-haiku-5-5', 'Claude Haiku 5.5'],
-    ['anthropic/claude-haiku-5.5', 'Claude Haiku 5.5'],
-    ['us.anthropic.claude-opus-5-5', 'Claude Opus 5.5'],
-    ['us.anthropic.claude-sonnet-5-5', 'Claude Sonnet 5.5'],
-    ['us.anthropic.claude-sonnet-5', 'Claude Sonnet 5'],
-    ['us.anthropic.claude-opus-4-6-v1', 'Claude Opus 4.6'],
-    ['us.anthropic.claude-opus-4-5-20251101-v1:0', 'Claude Opus 4.5'],
-    ['claude-sonnet-4-5-20250929', 'Claude Sonnet 4.5'],
-    ['claude-fable-5-1', 'Claude Fable 5.1'],
-    ['claude-3-5-sonnet-20241022', 'Claude 3.5 Sonnet'],
-    ['claude-3-haiku', 'Claude 3 Haiku'],
-    // GPT, as OpenAI writes it.
-    ['gpt-5.6-sol-2026-07-09', 'GPT-5.6 Sol'],
-    ['gpt-5.6-sol', 'GPT-5.6 Sol'],
-    ['gpt-6-astra', 'GPT-6 Astra'],
-    ['gpt-5.4-mini-2026-03-17', 'GPT-5.4 mini'],
-    ['gpt-5-nano-2025-08-07', 'GPT-5 nano'],
-    ['gpt-4o-2024-11-20', 'GPT-4o'],
-    ['gpt-5.5-2026-04-24', 'GPT-5.5'],
-    ['gpt-5.3-codex', 'GPT-5.3-Codex'],
-    ['gpt-5.1-codex-max', 'GPT-5.1-Codex-Max'],
-    ['gemini-3-pro-preview', 'Gemini 3 Pro Preview'],
-    ['gemini-2.5-flash', 'Gemini 2.5 Flash'],
-    // Databricks' endpoint names, its dashes read as the vendor's dots.
-    ['databricks-claude-opus-4-8', 'Claude Opus 4.8'],
-    ['databricks-gpt-5-4-mini', 'GPT-5.4 mini'],
-    ['databricks-gpt-5-5-pro', 'GPT-5.5 Pro'],
-    ['databricks-gemini-3-5-flash-lite', 'Gemini 3.5 Flash Lite'],
-    // Vertex AI's `@date`.
-    ['claude-opus-4-5@20251101', 'Claude Opus 4.5'],
-    // The two local models, as Llama Server's catalog and Ollama's recommendation name them.
-    ['qwen3.8-27b', 'Qwen3.8 27B'],
-    ['qwen3.8:27b', 'Qwen3.8 27B'],
-    ['gemma4-31b', 'Gemma 4 31B'],
-    ['gemma4:31b', 'Gemma 4 31B'],
-    ['qwen3:1.7b', 'Qwen3 1.7B'],
-    ['accounts/fireworks/models/qwen3-235b', 'Qwen3 235B'],
-  ])('%s -> %s', (id, name) => {
-    expect(modelDisplayName(id)).toBe(name);
-  });
+  // Every case of the table the daemon's `model_display_name` reads too
+  // (`crates/biorouter/src/providers/model_display.rs`), so the two never name one model two ways.
+  describe('modelDisplayName matches the shared case table', () => {
+    const cases = displayNameTable.groups.flatMap((group) => group.cases);
 
-  // A family whose naming is not regular keeps the short id rather than a guess: no date, no
-  // Bedrock profile, no `vendor/` path. An Ollama tag keeps its `:latest`.
-  it.each([
-    ['gpt-oss-120b', 'gpt-oss-120b'],
-    ['openai/gpt-oss-120b', 'gpt-oss-120b'],
-    ['o4-mini-2025-04-16', 'o4-mini'],
-    ['zai-org/GLM-5.3', 'GLM-5.3'],
-    ['deepseek-ai/DeepSeek-V4.1-Flash', 'DeepSeek-V4.1-Flash'],
-    ['accounts/fireworks/models/kimi-k2-instruct', 'kimi-k2-instruct'],
-    ['qwen3.8:latest', 'qwen3.8:latest'],
-    ['qwen2.5-coder:7b', 'qwen2.5-coder:7b'],
-    ['qwen3.8:27b-q4_K_M', 'qwen3.8:27b-q4_K_M'],
-    ['gemma4:31b-cloud', 'gemma4:31b-cloud'],
-    ['tev1:0.8b', 'tev1:0.8b'],
-    ['databricks-meta-llama-3-3-70b-instruct', 'databricks-meta-llama-3-3-70b-instruct'],
-    // OpenAI's own dash is a date, not a minor version: never "GPT-4.0613".
-    ['gpt-4-0613', 'gpt-4-0613'],
-    ['gemini-2.5-pro-preview-06-05', 'gemini-2.5-pro-preview-06-05'],
-    ['claude-opus-5-5[1m]', 'claude-opus-5-5[1m]'],
-    ['opus', 'opus'],
-    ['', ''],
-  ])('%s keeps %s', (id, name) => {
-    expect(modelDisplayName(id)).toBe(name);
+    it('holds cases', () => {
+      expect(cases.length).toBeGreaterThan(80);
+      for (const entry of cases) expect(entry).toHaveLength(2);
+    });
+
+    it.each(cases)('%j -> %j', (id, name) => {
+      expect(modelDisplayName(id)).toBe(name);
+    });
   });
 
   it('leaves a name as it is, so asking twice changes nothing', () => {
@@ -185,6 +133,64 @@ describe('distinctModelLabels', () => {
         row('anthropic', 'claude-fable-5'),
       ])
     ).toEqual(['GPT-5 · openai', 'GPT-5 · openrouter', 'Claude Fable 5']);
+  });
+
+  describe("with the provider list's names", () => {
+    afterEach(() => rememberProviderNames([]));
+
+    // W1-04: the second step wrote the provider's KEY, so a person read "GPT-5 · openai" in the
+    // cost card while Settings named the same provider "OpenAI".
+    it("two rows that read alike add the provider's display name", () => {
+      rememberProviderNames([
+        { name: 'openai', metadata: { display_name: 'OpenAI' } },
+        { name: 'openrouter', metadata: { display_name: 'OpenRouter' } },
+        { name: 'versa_bedrock', metadata: { display_name: 'Versa API Bedrock' } },
+        { name: 'aws_bedrock', metadata: { display_name: 'Amazon Bedrock' } },
+      ]);
+      expect(
+        distinctModelLabels([
+          row('openai', 'gpt-5'),
+          row('openrouter', 'openai/gpt-5'),
+          row('versa_bedrock', 'us.anthropic.claude-haiku-5-5'),
+          row('aws_bedrock', 'global.anthropic.claude-haiku-5-5'),
+          row('anthropic', 'claude-fable-5'),
+        ])
+      ).toEqual([
+        'GPT-5 · OpenAI',
+        'GPT-5 · OpenRouter',
+        'Claude Haiku 5.5 · Versa API Bedrock',
+        'Claude Haiku 5.5 · Amazon Bedrock',
+        'Claude Fable 5',
+      ]);
+      // The id still follows where one provider served two snapshots.
+      expect(
+        distinctModelLabels([
+          row('openai', 'gpt-5.5-2026-04-24'),
+          row('openai', 'gpt-5.5-2026-07-09'),
+        ])
+      ).toEqual(['GPT-5.5 · OpenAI · gpt-5.5-2026-04-24', 'GPT-5.5 · OpenAI · gpt-5.5-2026-07-09']);
+    });
+
+    it('two providers the list names alike are told apart by the id', () => {
+      rememberProviderNames([
+        { name: 'lab_a', metadata: { display_name: 'Lab' } },
+        { name: 'lab_b', metadata: { display_name: 'Lab' } },
+      ]);
+      // What reads the same gets more, so the raw id follows the shared name.
+      expect(distinctModelLabels([row('lab_a', 'gpt-5'), row('lab_b', 'openai/gpt-5')])).toEqual([
+        'GPT-5 · Lab · gpt-5',
+        'GPT-5 · Lab · openai/gpt-5',
+      ]);
+    });
+
+    it('a list that replaces the names forgets the old ones', () => {
+      rememberProviderNames([{ name: 'openai', metadata: { display_name: 'OpenAI' } }]);
+      expect(providerDisplayName('openai')).toBe('OpenAI');
+      rememberProviderNames([{ name: 'anthropic', metadata: { display_name: ' Anthropic ' } }]);
+      expect(providerDisplayName('openai')).toBeNull();
+      expect(providerDisplayName('anthropic')).toBe('Anthropic');
+      expect(providerDisplayName(null)).toBeNull();
+    });
   });
 
   it('adds the raw id where one provider served two snapshots of one model', () => {

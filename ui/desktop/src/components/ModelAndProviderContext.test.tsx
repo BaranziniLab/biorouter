@@ -13,6 +13,7 @@ import {
 import { subscribeSessionBindingChanges } from '../utils/sessionBindingSync';
 import { BROWSER_SURFACE_MARKER } from '../utils/surface';
 import type Model from './settings/models/modelInterface';
+import { providerDisplayName, rememberProviderNames } from './bottom_menu/modelLabel';
 
 const mocks = vi.hoisted(() => ({
   llamacppStatus: vi.fn(),
@@ -24,6 +25,7 @@ const mocks = vi.hoisted(() => ({
   refreshConfig: vi.fn(),
   toastError: vi.fn(),
   toastSuccess: vi.fn(),
+  providersList: undefined as unknown[] | undefined,
 }));
 
 vi.mock('../api', () => ({
@@ -43,6 +45,7 @@ vi.mock('./ConfigContext', () => ({
     read: mocks.read,
     getProviders: mocks.getProviders,
     refreshConfig: mocks.refreshConfig,
+    providersList: mocks.providersList,
   }),
 }));
 
@@ -841,5 +844,104 @@ describe('ModelAndProviderProvider in a browser', () => {
         msg: switchedModelMessage('Claude Opus', 'Anthropic', { chat: false, newChats: true }),
       })
     );
+  });
+});
+
+/**
+ * W1-04. A toast names the provider as a person reads it, by the catalog's `display_name`. The
+ * success toast fell back to the provider's KEY ("now uses GPT-6 Astra from codex") whenever the
+ * model carried no subtext, and the failure toast's title was always the key
+ * ("versa_bedrock/Claude Haiku 5.5 failed").
+ */
+describe('ModelAndProviderProvider names the provider in its toasts', () => {
+  const catalog = [
+    { name: 'codex', metadata: { display_name: 'Codex' } },
+    { name: 'versa_bedrock', metadata: { display_name: 'Versa API Bedrock' } },
+  ];
+
+  function ModelSwitchHarness({ model }: { model: Model }) {
+    const { changeModel } = useModelAndProvider();
+    const [result, setResult] = useState<string>('pending');
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => void changeModel(null, model).then((ok) => setResult(String(ok)))}
+        >
+          Switch
+        </button>
+        <div data-testid="switch-result">{result}</div>
+      </>
+    );
+  }
+
+  async function switchTo(model: Model, expected: 'true' | 'false') {
+    render(
+      <ModelAndProviderProvider>
+        <ModelSwitchHarness model={model} />
+      </ModelAndProviderProvider>
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Switch' }));
+    await waitFor(() => expect(screen.getByTestId('switch-result')).toHaveTextContent(expected));
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.read.mockImplementation(async (key: string) => {
+      if (key === 'BIOROUTER_MODEL') return 'gpt-5.5';
+      if (key === 'BIOROUTER_PROVIDER') return 'versa_azure';
+      return null;
+    });
+    mocks.getProviders.mockResolvedValue(catalog);
+    mocks.setConfigProvider.mockResolvedValue(undefined);
+    mocks.refreshConfig.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    mocks.providersList = undefined;
+    rememberProviderNames([]);
+  });
+
+  it('the switch toast names the provider by its display name', async () => {
+    await switchTo({ name: 'gpt-6-astra', provider: 'codex' }, 'true');
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      expect.objectContaining({
+        msg: 'New chats in every window now start on GPT-6 Astra from Codex. Existing chats keep their own model.',
+      })
+    );
+  });
+
+  it('the switch toast names the model alone for a provider the catalog does not list', async () => {
+    mocks.getProviders.mockResolvedValue([]);
+    await switchTo({ name: 'gpt-6-astra', provider: 'codex' }, 'true');
+    expect(mocks.toastSuccess).toHaveBeenCalledWith(
+      expect.objectContaining({
+        msg: 'New chats in every window now start on GPT-6 Astra. Existing chats keep their own model.',
+      })
+    );
+  });
+
+  it('the failure toast title names the provider by its display name', async () => {
+    mocks.setConfigProvider.mockImplementation(
+      clientRejecting('Failed to create versa_bedrock provider: no API key configured')
+    );
+    await switchTo({ name: 'us.anthropic.claude-haiku-5-5', provider: 'versa_bedrock' }, 'false');
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Switch to Claude Haiku 5.5 (Versa API Bedrock) failed' })
+    );
+    expect(mocks.toastError).not.toHaveBeenCalledWith(
+      expect.objectContaining({ title: expect.stringContaining('versa_bedrock') })
+    );
+  });
+
+  it("hands the provider list's names to the model lists", async () => {
+    mocks.providersList = catalog;
+    render(
+      <ModelAndProviderProvider>
+        <StatusHarness />
+      </ModelAndProviderProvider>
+    );
+    await waitFor(() => expect(providerDisplayName('versa_bedrock')).toBe('Versa API Bedrock'));
+    expect(providerDisplayName('codex')).toBe('Codex');
   });
 });

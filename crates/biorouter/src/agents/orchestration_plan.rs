@@ -386,22 +386,27 @@ pub enum GateJudgeKind {
 #[serde(rename_all = "camelCase")]
 pub struct GateJudge {
     pub kind: GateJudgeKind,
-    /// The model as a person reads it: a decision model's display name, or
-    /// the chat model's own name. Never a provider id.
+    /// The model that judged, as data: a decision model's name (its alias),
+    /// or the chat model's id as its provider names it (`gpt-5.5-2026-04-24`).
+    /// Never a provider id. A surface shows it by its display name ("GPT-5.5",
+    /// `modelDisplayName` on the desktop, `model_display_name` in the daemon).
     pub model: String,
-    /// Why the chat's own model judged the gate, in one plain sentence
-    /// ("This chat has no decision model it may use, so gpt-5.5, the chat's
-    /// model, judged the gate."). None when a decision model answered.
+    /// Why the chat's own model judged the gate, in one plain sentence that
+    /// names the model by its display name ("This chat has no decision model
+    /// it may use, so GPT-5.5, the chat's model, judged the gate."). None
+    /// when a decision model answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
 }
 
 impl GateJudge {
-    /// "gpt-5.5, the chat's model" or "joey-1, a decision model".
+    /// "GPT-5.5, the chat's model" or "joey-1, a decision model": the model
+    /// by its display name, as the desktop's `gateJudgeWords` names it.
     pub fn words(&self) -> String {
+        let model = crate::providers::model_display::model_display_name(&self.model);
         match self.kind {
-            GateJudgeKind::ChatModel => format!("{}, the chat's model", self.model),
-            GateJudgeKind::DecisionModel => format!("{}, a decision model", self.model),
+            GateJudgeKind::ChatModel => format!("{model}, the chat's model"),
+            GateJudgeKind::DecisionModel => format!("{model}, a decision model"),
         }
     }
 }
@@ -3627,8 +3632,14 @@ async fn judge_with_chat_model(
             None,
         );
     };
-    let name = provider.get_model_config().model_name;
-    let judged_by = format!("{name}, the chat's model");
+    // The record keeps the model's id; every sentence below names it by its
+    // display name, as the gate's own line beside them does (W1-04).
+    let mut judge = GateJudge {
+        kind: GateJudgeKind::ChatModel,
+        model: provider.get_model_config().model_name,
+        reason: None,
+    };
+    let judged_by = judge.words();
     let message =
         crate::conversation::message::Message::user().with_text(chat_gate_prompt(gate, state));
     let reply = tokio::time::timeout(
@@ -3700,11 +3711,7 @@ async fn judge_with_chat_model(
     } else {
         GateVerdict::Failed(answers)
     };
-    let judge = GateJudge {
-        kind: GateJudgeKind::ChatModel,
-        model: name,
-        reason: Some(format!("{why}, so {judged_by}, judged the gate.")),
-    };
+    judge.reason = Some(format!("{why}, so {judged_by}, judged the gate."));
     (verdict, Some(judge))
 }
 
@@ -8514,7 +8521,7 @@ mod tests {
         // decision model may.
         // -------------------------------------------------------------------
 
-        use super::super::gate_chat_stub::ChatStub;
+        use super::super::gate_chat_stub::{ChatStub, STUB_CHAT_MODEL};
 
         fn answer(p: f64) -> String {
             let word = if p >= 0.5 { "yes" } else { "no" };
@@ -8547,13 +8554,13 @@ mod tests {
             assert!(prompt.contains("- a: Is a done?"), "{prompt}");
             let judge = judge.expect("a verdict names who gave it");
             assert_eq!(judge.kind, GateJudgeKind::ChatModel);
-            assert_eq!(judge.model, "stub-chat-model");
-            assert_eq!(judge.words(), "stub-chat-model, the chat's model");
+            assert_eq!(judge.model, STUB_CHAT_MODEL);
+            assert_eq!(judge.words(), "GPT-5.5, the chat's model");
             assert_eq!(
                 judge.reason.as_deref(),
                 Some(
-                    "This chat has no decision model it may use, so stub-chat-model, the \
-                     chat's model, judged the gate."
+                    "This chat has no decision model it may use, so GPT-5.5, the chat's \
+                     model, judged the gate."
                 )
             );
 
@@ -8585,6 +8592,62 @@ mod tests {
             )
             .await;
             assert!(matches!(verdict, GateVerdict::Passed(_)), "{verdict:?}");
+        }
+
+        /// W1-04. The gate's record keeps the chat model's id, as data, and
+        /// every sentence a person reads names the model by its display name,
+        /// as the desktop's phase gate dialog names it beside that sentence:
+        /// it read "so gpt-5.5-2026-04-24, the chat's model, judged the gate"
+        /// under "GPT-5.5, the chat's model".
+        #[tokio::test]
+        async fn the_gate_judge_names_the_chat_model_by_its_display_name() {
+            let svc = service(Vec::new());
+            let gate = gate_with(&[("a", "Is a done?")], false);
+            let chat = ChatStub::answering(&answer(0.92));
+            let (_, judge) = judge_gate(
+                svc,
+                &session(false, true),
+                &gate,
+                "state".into(),
+                Some(chat.provider()),
+            )
+            .await;
+            let judge = judge.expect("a verdict names who gave it");
+            assert_eq!(judge.model, STUB_CHAT_MODEL, "the record keeps the id");
+            assert_eq!(judge.words(), "GPT-5.5, the chat's model");
+            let reason = judge.reason.clone().unwrap_or_default();
+            assert!(reason.contains("so GPT-5.5, the chat's model,"), "{reason}");
+            assert!(!reason.contains(STUB_CHAT_MODEL), "{reason}");
+
+            // An error that names the chat's model names it the same way.
+            for chat in [ChatStub::failing(), ChatStub::answering("not json")] {
+                let (verdict, _) = judge_gate(
+                    svc,
+                    &session(false, true),
+                    &gate,
+                    "state".into(),
+                    Some(chat.provider()),
+                )
+                .await;
+                let GateVerdict::Error(message) = verdict else {
+                    panic!("{verdict:?}")
+                };
+                assert!(message.contains("GPT-5.5, the chat's model"), "{message}");
+                assert!(!message.contains(STUB_CHAT_MODEL), "{message}");
+            }
+
+            // A decision model's name is already its alias; an Ollama
+            // decision model's id reads by its display name too.
+            let decision = |model: &str| GateJudge {
+                kind: GateJudgeKind::DecisionModel,
+                model: model.into(),
+                reason: None,
+            };
+            assert_eq!(decision("joey-1").words(), "joey-1, a decision model");
+            assert_eq!(
+                decision("hf.co/acme/clef-flash:latest").words(),
+                "clef-flash:latest, a decision model"
+            );
         }
 
         /// A private chat whose only decision model is public: the decision
@@ -8694,8 +8757,8 @@ mod tests {
             assert_eq!(
                 judge.reason.as_deref(),
                 Some(
-                    "joey-1 failed on its server (HTTP 500), so stub-chat-model, the chat's \
-                     model, judged the gate."
+                    "joey-1 failed on its server (HTTP 500), so GPT-5.5, the chat's model, \
+                     judged the gate."
                 )
             );
 
@@ -8791,10 +8854,7 @@ mod tests {
                     panic!("{reply}: {verdict:?}")
                 };
                 assert!(message.contains(needle), "{reply}: {message}");
-                assert!(
-                    message.contains("stub-chat-model, the chat's model"),
-                    "{message}"
-                );
+                assert!(message.contains("GPT-5.5, the chat's model"), "{message}");
                 assert!(judge.is_none(), "an error names no judge");
             }
 
@@ -8873,7 +8933,7 @@ mod tests {
                 kind: GateJudgeKind::ChatModel,
                 model: "gpt-5.5".into(),
                 reason: Some(
-                    "This chat has no decision model it may use, so gpt-5.5, the \
+                    "This chat has no decision model it may use, so GPT-5.5, the \
                               chat's model, judged the gate."
                         .into(),
                 ),
@@ -8900,6 +8960,10 @@ pub(crate) mod gate_chat_stub {
     use crate::model::ModelConfig;
     use crate::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
     use crate::providers::errors::ProviderError;
+
+    /// The stub's model: a real id, so a sentence that names it by its id
+    /// reads apart from one that names it by its display name, "GPT-5.5".
+    pub(crate) const STUB_CHAT_MODEL: &str = "gpt-5.5-2026-04-24";
 
     pub(crate) struct ChatStub {
         reply: Option<String>,
@@ -8968,8 +9032,8 @@ pub(crate) mod gate_chat_stub {
                 "stub-chat",
                 "Stub chat",
                 "",
-                "stub-chat-model",
-                vec!["stub-chat-model"],
+                STUB_CHAT_MODEL,
+                vec![STUB_CHAT_MODEL],
                 "",
                 vec![],
             )
@@ -8995,14 +9059,14 @@ pub(crate) mod gate_chat_stub {
             match &self.reply {
                 Some(text) => Ok((
                     Message::assistant().with_text(text),
-                    ProviderUsage::new("stub-chat-model".to_string(), self.usage),
+                    ProviderUsage::new(STUB_CHAT_MODEL.to_string(), self.usage),
                 )),
                 None => Err(ProviderError::ExecutionError("the stub failed".to_string())),
             }
         }
 
         fn get_model_config(&self) -> ModelConfig {
-            ModelConfig::new_or_fail("stub-chat-model")
+            ModelConfig::new_or_fail(STUB_CHAT_MODEL)
         }
     }
 }

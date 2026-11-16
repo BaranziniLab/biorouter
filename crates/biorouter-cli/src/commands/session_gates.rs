@@ -1448,11 +1448,13 @@ mod tests {
         let mut gate = snapshot_gate(GateOwner::Workflow);
         gate.attempts = 1;
         gate.last_passed = Some(true);
+        // The record keeps the model's id; the line names it by its display name
+        // (W1-04), as the daemon's reason now does.
         gate.last_judge = Some(GateJudge {
             kind: GateJudgeKind::ChatModel,
-            model: "gpt-5.5".into(),
+            model: "gpt-5.5-2026-04-24".into(),
             reason: Some(
-                "This chat has no decision model it may use, so gpt-5.5, the chat's model, \
+                "This chat has no decision model it may use, so GPT-5.5, the chat's model, \
                  judged the gate."
                     .into(),
             ),
@@ -1466,16 +1468,17 @@ mod tests {
         };
         let text = render_gates("s1", Some(&plan)).join("\n");
         assert!(
-            text.contains("judged by gpt-5.5, the chat's model"),
+            text.contains("judged by GPT-5.5, the chat's model"),
             "{text}"
         );
         assert!(
             text.contains(
-                "This chat has no decision model it may use, so gpt-5.5, the chat's model, \
+                "This chat has no decision model it may use, so GPT-5.5, the chat's model, \
                  judged the gate."
             ),
             "{text}"
         );
+        assert!(!text.contains("gpt-5.5-2026-04-24"), "{text}");
         assert!(!text.contains("default decision model"), "{text}");
     }
 

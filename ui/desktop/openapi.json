@@ -20682,11 +20682,11 @@
           },
           "model": {
             "type": "string",
-            "description": "The model as a person reads it: a decision model's display name, or\nthe chat model's own name. Never a provider id."
+            "description": "The model that judged, as data: a decision model's name (its alias),\nor the chat model's id as its provider names it (`gpt-5.5-2026-04-24`).\nNever a provider id. A surface shows it by its display name (\"GPT-5.5\",\n`modelDisplayName` on the desktop, `model_display_name` in the daemon)."
           },
           "reason": {
             "type": "string",
-            "description": "Why the chat's own model judged the gate, in one plain sentence\n(\"This chat has no decision model it may use, so gpt-5.5, the chat's\nmodel, judged the gate.\"). None when a decision model answered.",
+            "description": "Why the chat's own model judged the gate, in one plain sentence that\nnames the model by its display name (\"This chat has no decision model\nit may use, so GPT-5.5, the chat's model, judged the gate.\"). None\nwhen a decision model answered.",
             "nullable": true
           }
         }

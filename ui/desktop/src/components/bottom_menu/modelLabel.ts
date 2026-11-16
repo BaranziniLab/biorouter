@@ -84,14 +84,54 @@ export function modelDisplayName(id: string): string {
   return familyName(short) ?? short;
 }
 
+/** A provider as the daemon's provider list gives it: its key and its catalog metadata. */
+export interface ProviderNameEntry {
+  name: string;
+  metadata?: { display_name?: string | null } | null;
+}
+
+/**
+ * Each provider's name as a person reads it, by its key: the catalog's `display_name` ("OpenAI"
+ * for `openai`, "Versa API Bedrock" for `versa_bedrock`). The list is the daemon's, which
+ * `ConfigContext` reads at start; `ModelAndProviderProvider` hands it here each time it changes,
+ * so the list helpers below name a provider without a request of their own.
+ */
+let providerNames: ReadonlyMap<string, string> = new Map();
+
+/** Remember the provider list's names, in place of the ones remembered before. */
+export function rememberProviderNames(providers: readonly ProviderNameEntry[]): void {
+  const names = new Map<string, string>();
+  for (const provider of providers) {
+    const name = provider.metadata?.display_name?.trim();
+    if (provider.name && name) names.set(provider.name, name);
+  }
+  providerNames = names;
+}
+
+/** The provider's catalog name, or `null` while the provider list does not name it. */
+export function providerDisplayName(key: string | null | undefined): string | null {
+  return key ? (providerNames.get(key) ?? null) : null;
+}
+
 /** One row of a list of models, as {@link distinguishModels} reads it. */
 export interface ModelRowName {
   /** What the row reads by: its display name, or the surface's own name for the row. */
   name: string;
-  /** The provider that served it, written after the name when the name alone is not enough. */
+  /**
+   * The key of the provider that served it. Its catalog name is written after the row's name
+   * when the name alone is not enough.
+   */
   provider?: string | null;
   /** The raw id, written last when the name and the provider are still not enough. */
   id?: string | null;
+}
+
+/**
+ * The provider as a row writes it: its catalog name, or its key for a provider the list no
+ * longer names (a custom provider since removed), since only the key then tells two rows apart.
+ */
+function providerWords(row: ModelRowName): string | null {
+  return row.provider ? (providerDisplayName(row.provider) ?? row.provider) : null;
 }
 
 /** For each entry, whether another entry in the list reads the same. */
@@ -112,14 +152,16 @@ export interface ModelRowParts {
  * (a date stamp, a Bedrock region profile, a `vendor/` path), so two rows of one list can read the
  * same: one model through two providers, or two snapshots of one model from one provider
  * (`gpt-5.5-2026-04-24` and `gpt-5.5-2026-07-09` both read "GPT-5.5"), each priced on its own.
- * A row reads by its name alone; where another row reads the same, its provider follows; where
- * that still reads the same, its raw id follows too. Rows keyed by provider and id end apart.
+ * A row reads by its name alone; where another row reads the same, its provider's catalog name
+ * follows ("GPT-5 · OpenAI", never the key `openai`); where that still reads the same, its raw
+ * id follows too. Rows keyed by provider and id end apart, unless two providers share a name.
  */
 export function distinguishModels(rows: readonly ModelRowName[]): ModelRowParts[] {
   const needProvider = repeated(rows.map((row) => row.name));
-  const withProvider = rows.map((row, index) =>
-    needProvider[index] && row.provider ? `${row.name} · ${row.provider}` : row.name
-  );
+  const withProvider = rows.map((row, index) => {
+    const provider = needProvider[index] ? providerWords(row) : null;
+    return provider ? `${row.name} · ${provider}` : row.name;
+  });
   const needId = repeated(withProvider);
   return rows.map((row, index) => ({
     provider: needProvider[index] && !!row.provider,
@@ -128,13 +170,13 @@ export function distinguishModels(rows: readonly ModelRowName[]): ModelRowParts[
 }
 
 /**
- * {@link distinguishModels}' answer as one line per row: "GPT-5.5", "GPT-5.5 · openai", or
- * "GPT-5.5 · openai · gpt-5.5-2026-04-24".
+ * {@link distinguishModels}' answer as one line per row: "GPT-5.5", "GPT-5.5 · OpenAI", or
+ * "GPT-5.5 · OpenAI · gpt-5.5-2026-04-24".
  */
 export function distinctModelLabels(rows: readonly ModelRowName[]): string[] {
   return distinguishModels(rows).map((parts, index) => {
     const row = rows[index];
-    return [row.name, parts.provider && row.provider, parts.id && row.id]
+    return [row.name, parts.provider && providerWords(row), parts.id && row.id]
       .filter(Boolean)
       .join(' · ');
   });

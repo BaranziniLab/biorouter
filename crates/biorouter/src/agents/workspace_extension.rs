@@ -19164,8 +19164,8 @@ pub(crate) mod tests {
         assert!(text.contains("tests_pass: P(yes) 0.20"), "{text}");
         assert!(
             text.contains(
-                "This chat has no decision model it may use, so stub-chat-model, the chat's \
-                 model, judged the gate."
+                "This chat has no decision model it may use, so GPT-5.5, the chat's model, \
+                 judged the gate."
             ),
             "{text}"
         );
@@ -19181,7 +19181,10 @@ pub(crate) mod tests {
         assert_eq!(gate["attempts"], 1);
         assert_eq!(gate["lastPassed"], false);
         assert_eq!(gate["lastJudge"]["kind"], "chat_model");
-        assert_eq!(gate["lastJudge"]["model"], "stub-chat-model");
+        assert_eq!(
+            gate["lastJudge"]["model"],
+            crate::agents::orchestration_plan::gate_chat_stub::STUB_CHAT_MODEL
+        );
 
         let done = ChatStub::answering(r#"{"tests_pass": {"answer": "yes", "p_yes": 0.93}}"#);
         let c = c.with_chat_model(done.provider());
@@ -19273,8 +19276,8 @@ pub(crate) mod tests {
         assert!(text.contains("gate passed on attempt 1 of 2"), "{text}");
         assert!(
             text.contains(
-                "tev1 failed on its server (HTTP 500), so stub-chat-model, the chat's model, \
-                 judged the gate."
+                "tev1 failed on its server (HTTP 500), so GPT-5.5, the chat's model, judged \
+                 the gate."
             ),
             "{text}"
         );

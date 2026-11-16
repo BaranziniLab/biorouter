@@ -3567,14 +3567,17 @@ export type FrontendToolRequest = {
 export type GateJudge = {
     kind: GateJudgeKind;
     /**
-     * The model as a person reads it: a decision model's display name, or
-     * the chat model's own name. Never a provider id.
+     * The model that judged, as data: a decision model's name (its alias),
+     * or the chat model's id as its provider names it (`gpt-5.5-2026-04-24`).
+     * Never a provider id. A surface shows it by its display name ("GPT-5.5",
+     * `modelDisplayName` on the desktop, `model_display_name` in the daemon).
      */
     model: string;
     /**
-     * Why the chat's own model judged the gate, in one plain sentence
-     * ("This chat has no decision model it may use, so gpt-5.5, the chat's
-     * model, judged the gate."). None when a decision model answered.
+     * Why the chat's own model judged the gate, in one plain sentence that
+     * names the model by its display name ("This chat has no decision model
+     * it may use, so GPT-5.5, the chat's model, judged the gate."). None
+     * when a decision model answered.
      */
     reason?: string | null;
 };

@@ -26,6 +26,7 @@ const SURFACES = [
   'components/crew/pane/CrewModelPicker.tsx', // their model list
   'components/BaseChat.tsx', // chat summary rail, monitors dialog
   'components/decisions/DraftMonitorsDialog.tsx',
+  'components/decisions/DecideToolSummary.tsx', // a decide call's models, escalation and vote
   'components/knowledge/IngestPanel/IngestModelPicker.tsx',
   'components/knowledge/IngestPanel/IngestPanel.tsx',
   'components/sessions/HomeUsageCard.tsx',

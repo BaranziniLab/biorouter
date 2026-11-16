@@ -59,7 +59,7 @@ import {
 import { localModelsCopy } from './settings/models/copy';
 import { llamaCopy, splitMemoryWarning } from './onboarding/copy';
 import { homeFolder, tildePath } from '../utils/folderPath';
-import { modelDisplayName } from './bottom_menu/modelLabel';
+import { modelDisplayName, rememberProviderNames } from './bottom_menu/modelLabel';
 
 // titles
 export const UNKNOWN_PROVIDER_TITLE = 'Provider name lookup';
@@ -77,13 +77,16 @@ const CHANGE_MODEL_TOAST_TITLE = 'Model changed';
  * was how a switch made in one chat could quietly become the model every new
  * chat started on. A switch now lands in one of three places (see
  * `ChangeModelOptions`), and the toast names the one it landed in.
+ *
+ * `source` is the provider as a person reads it ("Codex", never the key
+ * `codex`); `null` names the model alone.
  */
 export function switchedModelMessage(
   label: string,
-  source: string,
+  source: string | null,
   scope: { chat: boolean; newChats: boolean }
 ): string {
-  const using = `${label} from ${source}`;
+  const using = source ? `${label} from ${source}` : label;
   if (scope.chat && scope.newChats) {
     return `This chat, and new chats in every window, now use ${using}.`;
   }
@@ -411,7 +414,13 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
     string[] | null
   >(null);
   const [llamaWarmupDialog, setLlamaWarmupDialog] = useState<LlamaWarmupDialogState | null>(null);
-  const { read, getProviders, refreshConfig } = useConfig();
+  const { read, getProviders, refreshConfig, providersList } = useConfig();
+
+  // W1-04. The model lists (the cost card, Usage, Home's usage card) name a provider by its
+  // catalog name, from the list the config read; this hands that list to them as it changes.
+  useEffect(() => {
+    if (providersList) rememberProviderNames(providersList);
+  }, [providersList]);
 
   /**
    * W2-5. Llama Server's catalog names, so the model chip says "Qwen3.8 27B"
@@ -636,6 +645,21 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
           ? localModelNamesRef.current?.get(modelName)
           : undefined) ??
         modelDisplayName(modelName);
+      // W1-04. The provider as a person reads it: what the picker wrote under the
+      // model (the catalog's name, or a deployment's own words for a predefined
+      // model), else the catalog's `display_name`. Never the key: a toast that
+      // said "from codex" or "versa_bedrock/..." named the provider in words no
+      // other surface uses. With neither, the toast names the model alone.
+      const providerLabel = async (): Promise<string | null> => {
+        const subtext = model.subtext?.trim();
+        if (subtext) return subtext;
+        try {
+          const metadata = await getProviderMetadata(providerName, getProviders);
+          return metadata.display_name?.trim() || null;
+        } catch {
+          return null;
+        }
+      };
 
       try {
         if (providerName === LOCAL_PROVIDER) {
@@ -731,7 +755,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         if (!options?.quiet) {
           toastSuccess({
             title: CHANGE_MODEL_TOAST_TITLE,
-            msg: switchedModelMessage(modelLabel(), model.subtext ?? providerName, {
+            msg: switchedModelMessage(modelLabel(), await providerLabel(), {
               chat: bindsChat,
               newChats: setsNewChatDefault,
             }),
@@ -798,8 +822,11 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         // A switch's failure is about the screen it was made on (W2-PRV-16):
         // it goes when the person leaves, instead of lingering over another
         // screen's controls.
+        const provider = await providerLabel();
         toastError({
-          title: `${providerName}/${modelDisplayName(modelName)} failed`,
+          title: provider
+            ? `Switch to ${modelLabel()} (${provider}) failed`
+            : `Switch to ${modelLabel()} failed`,
           msg: `${error}`,
           traceback: error instanceof Error ? error.message : String(error),
           scope: 'screen',
@@ -807,7 +834,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
         return false;
       }
     },
-    [prepareLlamaModel, refreshCachedConfig, publishSelection, takeSelectionTicket]
+    [prepareLlamaModel, refreshCachedConfig, publishSelection, takeSelectionTicket, getProviders]
   );
 
   const getFallbackModelAndProvider = useCallback(async () => {
