@@ -1,0 +1,338 @@
+/* Desktop app tile (Ways to use Biorouter). The app's window, narrow enough
+   that its sidebar is collapsed: the chat header band with the titlebar
+   controls and the chat's tab, the conversation, the one-line composer card,
+   and the artifact side panel that opens on the figure the agent made.
+   Vocabulary from ui/desktop/src: the band on the sidebar ground with its
+   hairline (BaseChat.tsx), the selected tab on the strong fill (.br-tab), the
+   user bubble (UserMessage.tsx: medium fill, 12px radius), the tool row
+   (transcript-row.css: 16px glyph, muted label, chevron at 60%, the running
+   label breathing), the artifact card (tool-call.css: fill, 12px radius, a
+   kind tile on the page ground), and the composer card (R-32: the page ground
+   with its hairline, an accent edge while typing). Coral marks the typing
+   edge, the armed Send and the chart's bars. Everything is scoped under
+   [data-art="access-gui"]. */
+
+[data-art="access-gui"] .acc-gui {
+  position: absolute; inset: 0;
+  container-type: size;
+  font-family: var(--font);
+  color: var(--ink);
+  line-height: 1;
+  -webkit-user-select: none; user-select: none;
+}
+[data-art="access-gui"] .acc-gui svg { display: block; flex: none; }
+
+/* Size tiers, by the tile's width (the tile is 4:3, so width sets the height
+   too). Under 300px (two columns on 600 to 680px pages, 320px phones) the text
+   is 12px; from 300px (the three column desktop tile, phones) it is 13px;
+   wider tiles get more air, and 14px from 480px. access-gui.js sets
+   --acc-gui-pw, the panel's width. */
+[data-art="access-gui"] .acc-gui-in {
+  position: absolute; inset: 0;
+  --acc-gui-band: 26px;
+  --acc-gui-pad: 8px;
+  --acc-gui-t: 12px;
+  --acc-gui-lh: 16px;
+  --acc-gui-ctl: 22px;
+  --acc-gui-cp: 4px;
+  --acc-gui-tile: 24px;
+  --acc-gui-gap: 6px;
+  --acc-gui-card: 4px;
+  --acc-gui-row: 20px;
+  --acc-gui-top: 4px;
+  --acc-gui-bx: 10px;
+  --acc-gui-bgap: 6px;
+  --acc-gui-tx: 6px;
+  --acc-gui-pbx: 4px;
+  --acc-gui-pw: 44%;
+}
+@container (min-width: 300px) {
+  [data-art="access-gui"] .acc-gui-in {
+    --acc-gui-band: 30px;
+    --acc-gui-pad: 12px;
+    --acc-gui-t: 13px;
+    --acc-gui-lh: 18px;
+    --acc-gui-ctl: 28px;
+    --acc-gui-cp: 5px;
+    --acc-gui-tile: 28px;
+    --acc-gui-gap: 10px;
+    --acc-gui-card: 7px;
+    --acc-gui-row: 24px;
+    --acc-gui-top: 6px;
+    --acc-gui-bx: 12px;
+    --acc-gui-bgap: 8px;
+    --acc-gui-tx: 8px;
+    --acc-gui-pbx: 6px;
+  }
+}
+@container (min-width: 400px) {
+  [data-art="access-gui"] .acc-gui-in {
+    --acc-gui-band: 34px;
+    --acc-gui-pad: 16px;
+    --acc-gui-lh: 20px;
+    --acc-gui-ctl: 30px;
+    --acc-gui-cp: 6px;
+    --acc-gui-tile: 30px;
+    --acc-gui-gap: 12px;
+    --acc-gui-card: 8px;
+    --acc-gui-row: 26px;
+  }
+}
+@container (min-width: 480px) {
+  [data-art="access-gui"] .acc-gui-in {
+    --acc-gui-band: 38px;
+    --acc-gui-pad: 20px;
+    --acc-gui-t: 14px;
+    --acc-gui-lh: 20px;
+    --acc-gui-ctl: 32px;
+    --acc-gui-tile: 32px;
+    --acc-gui-gap: 14px;
+  }
+}
+
+/* ── The two panes ──────────────────────────────────────── */
+/* The conversation's right edge and the panel's left edge move together, on
+   the same curve, so the two never part or overlap. */
+[data-art="access-gui"] .acc-gui-chat {
+  position: absolute; left: 0; top: 0; bottom: 0; right: 0;
+  transition: right var(--dur-slow) var(--ease);
+}
+[data-art="access-gui"] .acc-gui.is-open .acc-gui-chat { right: var(--acc-gui-pw); }
+[data-art="access-gui"] .acc-gui-panel {
+  position: absolute; top: 0; right: 0; bottom: 0;
+  width: var(--acc-gui-pw);
+  display: flex; flex-direction: column;
+  background: var(--paper);
+  border-left: 1px solid var(--line);
+  transform: translateX(100%);
+  transition: transform var(--dur-slow) var(--ease);
+}
+[data-art="access-gui"] .acc-gui.is-open .acc-gui-panel { transform: none; }
+
+/* ── The bands: one top edge across both panes ──────────── */
+[data-art="access-gui"] .acc-gui-band {
+  position: relative;
+  height: var(--acc-gui-band);
+  display: flex; align-items: center; gap: var(--acc-gui-bgap);
+  padding: 0 var(--acc-gui-bgap) 0 var(--acc-gui-bx);
+  background: var(--sidebar);
+  border-bottom: 1px solid var(--line);
+}
+[data-art="access-gui"] .acc-gui-pband { flex: none; padding: 0 var(--acc-gui-pbx); }
+[data-art="access-gui"] .acc-gui-dots { display: flex; gap: calc(var(--acc-gui-bgap) - 2px); flex: none; }
+[data-art="access-gui"] .acc-gui-dots i { display: block; width: 7px; height: 7px; border-radius: 50%; background: var(--line-2); }
+[data-art="access-gui"] .acc-gui-tog { width: 14px; height: 14px; margin-left: calc(var(--acc-gui-bgap) - 2px); color: var(--muted); }
+/* The selected tab: a centred chip on the strong fill, a glyph and its name. */
+[data-art="access-gui"] .acc-gui-tab {
+  display: inline-flex; align-items: center; gap: calc(var(--acc-gui-tx) - 2px);
+  min-width: 0; max-width: 100%;
+  height: calc(var(--acc-gui-band) - 8px);
+  padding: 0 var(--acc-gui-tx);
+  border: 1px solid transparent;
+  border-radius: var(--r-element);
+  background: var(--fill-strong);
+  color: var(--ink);
+}
+[data-art="access-gui"] .acc-gui-tab-ic { width: 14px; height: 14px; color: var(--muted); }
+[data-art="access-gui"] .acc-gui-tab-name {
+  min-width: 0; font-size: 12px; line-height: 16px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ── The conversation: one column pinned above the composer ── */
+[data-art="access-gui"] .acc-gui-thread {
+  position: absolute;
+  left: var(--acc-gui-pad); right: var(--acc-gui-pad);
+  top: calc(var(--acc-gui-band) + var(--acc-gui-top));
+  bottom: calc(var(--acc-gui-pad) + var(--acc-gui-ctl) + 2 * var(--acc-gui-cp) + 2px + var(--acc-gui-gap));
+  display: flex; flex-direction: column; justify-content: flex-end;
+  overflow: hidden;
+  /* A short tile scrolls its first lines away under a soft top edge. */
+  -webkit-mask-image: linear-gradient(to bottom, transparent, var(--ink) 8px);
+  mask-image: linear-gradient(to bottom, transparent, var(--ink) 8px);
+  transition: opacity var(--dur-med) var(--ease);
+}
+[data-art="access-gui"] .acc-gui.is-clearing .acc-gui-thread { opacity: 0; }
+
+/* Lines that arrive: the height opens first, pushing the conversation up, then
+   the content fades in. */
+[data-art="access-gui"] .acc-gui-slot {
+  display: grid; grid-template-rows: 0fr;
+  transition: grid-template-rows var(--dur-slow) var(--ease);
+}
+[data-art="access-gui"] .acc-gui-slot.is-open { grid-template-rows: 1fr; }
+[data-art="access-gui"] .acc-gui-slot-in {
+  min-height: 0; overflow: hidden;
+  opacity: 0;
+  transition: opacity var(--dur-med) var(--ease);
+}
+[data-art="access-gui"] .acc-gui-slot.is-shown > .acc-gui-slot-in { opacity: 1; }
+[data-art="access-gui"] .acc-gui-slot[data-k="row"] > .acc-gui-slot-in { padding-top: var(--acc-gui-gap); }
+[data-art="access-gui"] .acc-gui-slot[data-k="card"] > .acc-gui-slot-in { padding-top: 4px; }
+[data-art="access-gui"] .acc-gui-slot[data-k="ans"] > .acc-gui-slot-in { padding-top: var(--acc-gui-gap); }
+
+/* The person's message: right-aligned, on the medium fill. */
+[data-art="access-gui"] .acc-gui-user { display: flex; justify-content: flex-end; }
+[data-art="access-gui"] .acc-gui-bubble {
+  display: inline-block;
+  padding: calc((var(--acc-gui-ctl) - var(--acc-gui-lh)) / 2) 11px;
+  border-radius: var(--r-container);
+  background: var(--medium);
+  font-size: var(--acc-gui-t); line-height: var(--acc-gui-lh);
+  white-space: nowrap;
+}
+
+/* The tool row: one line that ends in an ellipsis, the chevron after it. */
+[data-art="access-gui"] .acc-gui-row {
+  display: flex; align-items: center; gap: 8px;
+  height: var(--acc-gui-row);
+  color: var(--muted);
+}
+[data-art="access-gui"] .acc-gui-row-ic { width: 16px; height: 16px; }
+[data-art="access-gui"] .acc-gui-row-text { display: grid; min-width: 0; }
+[data-art="access-gui"] .acc-gui-r0,
+[data-art="access-gui"] .acc-gui-r1 {
+  grid-area: 1 / 1;
+  font-size: var(--acc-gui-t); line-height: var(--acc-gui-lh);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  transition: opacity var(--dur-med) var(--ease);
+}
+[data-art="access-gui"] .acc-gui-r1 { opacity: 0; }
+/* The running label is almost gone before the settled one arrives, so the two
+   are never read on top of each other. */
+[data-art="access-gui"] .acc-gui-row.is-done .acc-gui-r0 { opacity: 0; transition-duration: var(--dur-fast); }
+[data-art="access-gui"] .acc-gui-row.is-done .acc-gui-r1 { opacity: 1; transition: opacity var(--dur-menu) var(--ease) calc(var(--dur-fast) / 2); }
+[data-art="access-gui"] .acc-gui-chev { width: 14px; height: 14px; margin-left: -2px; opacity: 0.6; }
+/* The running label breathes 1, 0.7, 1, the app's running pulse, only while
+   the tile is on screen. */
+[data-art="access-gui"] .acc-gui.is-live .acc-gui-row.is-run .acc-gui-r0 { animation: acc-gui-breathe calc(var(--dur-slow) * 4) var(--ease) infinite; }
+@keyframes acc-gui-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* The artifact card: it sits on the page, so it rests on the fill with no
+   outline, and its kind tile steps back to the page ground. */
+[data-art="access-gui"] .acc-gui-card {
+  display: flex; align-items: center; gap: 10px;
+  padding: var(--acc-gui-card);
+  border: 1px solid transparent;
+  border-radius: var(--r-container);
+  background: var(--fill);
+}
+[data-art="access-gui"] .acc-gui-card-tile {
+  display: grid; place-items: center; flex: none;
+  width: var(--acc-gui-tile); height: var(--acc-gui-tile);
+  border-radius: var(--r-element);
+  background: var(--paper);
+  color: var(--muted);
+}
+[data-art="access-gui"] .acc-gui-card-ic { width: 16px; height: 16px; }
+[data-art="access-gui"] .acc-gui-card-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+[data-art="access-gui"] .acc-gui-card-title {
+  font-size: var(--acc-gui-t); line-height: 16px; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+[data-art="access-gui"] .acc-gui-card-kind {
+  font-size: 12px; line-height: 14px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* The answer: prose under the card. Room for its line opens before it streams. */
+[data-art="access-gui"] .acc-gui-ans {
+  margin: 0; min-height: var(--acc-gui-lh);
+  font-size: var(--acc-gui-t); line-height: var(--acc-gui-lh); color: var(--ink);
+}
+
+/* ── The composer: one line in the card ─────────────────── */
+[data-art="access-gui"] .acc-gui-comp {
+  position: absolute;
+  left: var(--acc-gui-pad); right: var(--acc-gui-pad); bottom: var(--acc-gui-pad);
+  display: flex; align-items: center; gap: 2px;
+  padding: var(--acc-gui-cp);
+  background: var(--paper);
+  border: 1px solid var(--line-composer);
+  border-radius: var(--r-container);
+  transition: border-color var(--dur-menu) var(--ease);
+}
+/* The focus edge: the same 1px border turns the accent while typing. */
+[data-art="access-gui"] .acc-gui.is-focus .acc-gui-comp { border-color: var(--coral); }
+[data-art="access-gui"] .acc-gui-plus {
+  display: grid; place-items: center; flex: none;
+  width: var(--acc-gui-ctl); height: var(--acc-gui-ctl);
+  color: var(--muted);
+}
+[data-art="access-gui"] .acc-gui-plus-ic { width: 16px; height: 16px; }
+[data-art="access-gui"] .acc-gui-field {
+  position: relative; flex: 1 1 auto; min-width: 0;
+  height: var(--acc-gui-lh);
+  padding-left: 3px;
+  font-size: var(--acc-gui-t); line-height: var(--acc-gui-lh);
+  white-space: nowrap; overflow: hidden;
+}
+/* The placeholder starts just after the caret, as a native field's does. */
+[data-art="access-gui"] .acc-gui-ph {
+  position: absolute; left: 3px; top: 0; right: 0;
+  color: var(--muted);
+  overflow: hidden; text-overflow: ellipsis;
+}
+[data-art="access-gui"] .acc-gui.has-text .acc-gui-ph { visibility: hidden; }
+[data-art="access-gui"] .acc-gui-typed {
+  display: inline-block; vertical-align: top; color: var(--ink);
+  transition: opacity var(--dur-menu) var(--ease), transform var(--dur-menu) var(--ease);
+}
+/* Sent: the text lifts out of the card as the message arrives above. */
+[data-art="access-gui"] .acc-gui.is-lift .acc-gui-typed { opacity: 0; transform: translateY(-6px); }
+[data-art="access-gui"] .acc-gui-caret {
+  display: inline-block; vertical-align: top;
+  width: 1px; height: calc(var(--acc-gui-lh) - 4px); margin: 2px 0 0 1px;
+  background: var(--ink);
+  opacity: 0;
+}
+/* The caret stays solid while typing; nothing in the tile blinks. */
+[data-art="access-gui"] .acc-gui.is-focus .acc-gui-caret { opacity: 1; }
+[data-art="access-gui"] .acc-gui-send {
+  display: grid; place-items: center; flex: none;
+  width: var(--acc-gui-ctl); height: var(--acc-gui-ctl);
+  border-radius: var(--r-element);
+  background: var(--fill); color: var(--subtle);
+  transition: background var(--dur-menu) var(--ease), color var(--dur-menu) var(--ease), transform var(--dur-fast) var(--ease);
+}
+[data-art="access-gui"] .acc-gui-send-ic { width: 16px; height: 16px; }
+[data-art="access-gui"] .acc-gui.has-text .acc-gui-send { background: var(--coral); color: var(--paper); }
+[data-art="access-gui"] .acc-gui.is-press .acc-gui-send { transform: scale(0.98); background: var(--coral-hover); }
+
+/* ── The figure in the panel ────────────────────────────── */
+[data-art="access-gui"] .acc-gui-panel > * { transition: opacity var(--dur-med) var(--ease); }
+[data-art="access-gui"] .acc-gui.is-clearing .acc-gui-panel > * { opacity: 0; }
+[data-art="access-gui"] .acc-gui-fig {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column;
+  padding: var(--acc-gui-pad) var(--acc-gui-pad) calc(var(--acc-gui-pad) + 4px);
+}
+[data-art="access-gui"] .acc-gui-fig-title { font-size: var(--acc-gui-t); line-height: var(--acc-gui-lh); color: var(--ink); }
+[data-art="access-gui"] .acc-gui-plot {
+  position: relative; flex: 1 1 auto; min-height: 0;
+  margin-top: var(--acc-gui-gap);
+  border-bottom: 1px solid var(--line-2);
+}
+[data-art="access-gui"] .acc-gui-grid {
+  position: absolute; left: 0; right: 0; top: var(--y);
+  height: 1px; background: var(--line);
+}
+/* Bars: a pale body under a 2px cap, as the Built apps tile draws a series.
+   They grow in turn, left to right. */
+[data-art="access-gui"] .acc-gui-bar {
+  position: absolute; bottom: 0;
+  left: calc(var(--i) * 20% + 3.5%); width: 13%;
+  height: 0;
+  border-radius: 2px 2px 0 0;
+  background: var(--coral-wash);
+  box-shadow: inset 0 2px 0 var(--coral-bar);
+  transition: height var(--dur-slow) var(--ease) calc(var(--i) * 90ms);
+}
+[data-art="access-gui"] .acc-gui.is-grown .acc-gui-bar { height: var(--h); }
+
+/* Instant state changes (reset, reduced motion). Kept last. */
+[data-art="access-gui"] .acc-gui.acc-gui-still,
+[data-art="access-gui"] .acc-gui.acc-gui-still * { transition: none; }
