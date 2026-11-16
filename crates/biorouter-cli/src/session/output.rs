@@ -545,12 +545,17 @@ fn render_tool_response(resp: &ToolResponse, theme: Theme, debug: bool) {
                     // tag and survives this, which is the point: the frame is
                     // provenance and routine, the warning is a real finding the
                     // user should see.
-                    print_markdown_source(
-                        &biorouter::guardrails::tool_output_display::unframe_tool_output(
-                            &text.text,
-                        ),
-                        theme,
-                    );
+                    //
+                    // A failed result also loses what was written only for the
+                    // model (W1-26, [`failed_result_text`]), as in the TUI.
+                    let unframed =
+                        biorouter::guardrails::tool_output_display::unframe_tool_output(&text.text);
+                    let shown = if result.is_error == Some(true) {
+                        failed_result_text(&unframed)
+                    } else {
+                        std::borrow::Cow::Borrowed(unframed.as_ref())
+                    };
+                    print_markdown_source(&shown, theme);
                 }
             }
             for note in app_launch_notes(result) {
@@ -559,9 +564,9 @@ fn render_tool_response(resp: &ToolResponse, theme: Theme, debug: bool) {
         }
         Err(e) => {
             let shown = failed_call_text(e);
-            let text = biorouter::agents::tool_errors::without_tool_error_header(&shown);
-            print_markdown_source(text, theme);
-            if let Some(line) = spawn_refusal_person_line(was_spawn_call, text) {
+            let text = tool_result_display_text(&shown, true);
+            print_markdown_source(&text, theme);
+            if let Some(line) = spawn_refusal_person_line(was_spawn_call, &text) {
                 if !text.ends_with('\n') {
                     println!();
                 }
@@ -569,6 +574,144 @@ fn render_tool_response(resp: &ToolResponse, theme: Theme, debug: bool) {
             }
         }
     }
+}
+
+/// What a person reads of a tool result's text, in the classic view and the
+/// full-screen one alike (W1-26). The guardrail's frame comes off (see
+/// `unframe_tool_output`), and for a result that `failed` three more steps
+/// apply, in order:
+///
+/// 1. The taxonomy's header, the line written for the model in front of a
+///    failure, comes off ([`without_tool_error_header`]).
+/// 2. A result Biorouter wrote to the model for a call that never ran (the
+///    person declined or stopped it, or its approval expired) becomes the line
+///    the person reads for that ([`agent_written_result_line`]).
+/// 3. A JSON Schema a refusal quotes to the model is folded to one phrase
+///    ([`fold_argument_schemas`]).
+///
+/// A result that did not fail is the tool's answer and keeps its words, even
+/// one that is a schema.
+///
+/// ⚠ Display only, like the frame: what the model reads is the stored result.
+///
+/// [`without_tool_error_header`]: biorouter::agents::tool_errors::without_tool_error_header
+pub(crate) fn tool_result_display_text(text: &str, failed: bool) -> std::borrow::Cow<'_, str> {
+    use std::borrow::Cow;
+    let unframed = biorouter::guardrails::tool_output_display::unframe_tool_output(text);
+    if !failed {
+        return unframed;
+    }
+    match unframed {
+        Cow::Borrowed(inner) => failed_result_text(inner),
+        Cow::Owned(inner) => Cow::Owned(failed_result_text(&inner).into_owned()),
+    }
+}
+
+/// Steps 1 to 3 of [`tool_result_display_text`], for text already unframed.
+fn failed_result_text(text: &str) -> std::borrow::Cow<'_, str> {
+    let text = biorouter::agents::tool_errors::without_tool_error_header(text);
+    match agent_written_result_line(text) {
+        Some(line) => line,
+        None => fold_argument_schemas(text),
+    }
+}
+
+/// The opening words of each result Biorouter writes to the model for a call
+/// that never ran (the constants in `agents/tool_execution.rs`, a module this
+/// crate cannot import). `an_agent_written_tool_result_reads_as_a_person_line`
+/// holds them to the constants, so a reworded constant fails that test rather
+/// than reaching the transcript raw.
+const AGENT_DECLINED: &str = "The user has declined to run this tool.";
+const AGENT_CANCELLED: &str = "The user cancelled this turn before deciding on this tool call";
+const AGENT_CANCELLED_MID_RUN: &str =
+    "The user cancelled this turn while the tool call was still running";
+const AGENT_EXPIRED: &str =
+    "The permission prompt for this tool call expired before the user answered it";
+/// What a hook's denial adds after [`AGENT_DECLINED`]'s text.
+const HOOK_FEEDBACK: &str = "Hook feedback:";
+
+/// What the person reads for a call they declined.
+pub(crate) const PERSON_DECLINED: &str = "You declined this tool call, so it did not run.";
+/// What the person reads for a call they stopped the turn before deciding on.
+pub(crate) const PERSON_CANCELLED: &str =
+    "You stopped the turn before deciding on this tool call, so it did not run.";
+/// What the person reads for a call that was running when they stopped the turn.
+pub(crate) const PERSON_CANCELLED_MID_RUN: &str =
+    "You stopped the turn while this tool call ran. It may have partly finished.";
+
+/// The person's line for a result Biorouter wrote to the model instead of a
+/// tool's answer, or None for any other text. An expired approval reads as the
+/// prompt and `biorouter session send` say it ([`super::APPROVAL_EXPIRED`]).
+fn agent_written_result_line(text: &str) -> Option<std::borrow::Cow<'static, str>> {
+    use std::borrow::Cow;
+    let text = text.trim();
+    if text.starts_with(AGENT_DECLINED) {
+        return Some(match text.split_once(HOOK_FEEDBACK) {
+            Some((_, reason)) if !reason.trim().is_empty() => Cow::Owned(format!(
+                "A hook declined this tool call, so it did not run: {}",
+                reason.trim()
+            )),
+            _ => Cow::Borrowed(PERSON_DECLINED),
+        });
+    }
+    let line = if text.starts_with(AGENT_CANCELLED_MID_RUN) {
+        PERSON_CANCELLED_MID_RUN
+    } else if text.starts_with(AGENT_CANCELLED) {
+        PERSON_CANCELLED
+    } else if text.starts_with(AGENT_EXPIRED) {
+        super::APPROVAL_EXPIRED
+    } else {
+        return None;
+    };
+    Some(Cow::Borrowed(line))
+}
+
+/// Shown in place of a JSON Schema a failed result quotes for the model.
+pub(crate) const SCHEMA_FOLDED: &str = "(argument schema folded)";
+
+/// `text` with each JSON Schema that ends a line folded to [`SCHEMA_FOLDED`].
+/// A refused or invalid call can come back carrying the tool's whole input
+/// schema for the model to correct its call against, one JSON line that wraps
+/// to a dozen rows (the /bug run's `ShellParams`).
+fn fold_argument_schemas(text: &str) -> std::borrow::Cow<'_, str> {
+    if !text.contains("\"properties\"") && !text.contains("\"$schema\"") {
+        return std::borrow::Cow::Borrowed(text);
+    }
+    let mut folded = false;
+    let lines: Vec<String> = text
+        .split('\n')
+        .map(|line| match fold_schema_in_line(line) {
+            Some(line) => {
+                folded = true;
+                line
+            }
+            None => line.to_string(),
+        })
+        .collect();
+    if folded {
+        std::borrow::Cow::Owned(lines.join("\n"))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    }
+}
+
+/// `line` with the JSON Schema that ends it folded, or None when it ends in no
+/// schema. The schema starts at the line's first `{`.
+fn fold_schema_in_line(line: &str) -> Option<String> {
+    let (before, json) = line.split_at_checked(line.find('{')?)?;
+    let value: Value = serde_json::from_str(json.trim_end()).ok()?;
+    is_json_schema(&value).then(|| format!("{before}{SCHEMA_FOLDED}"))
+}
+
+/// An object that names its JSON Schema dialect, or describes an object's
+/// properties the way a tool's input schema does.
+fn is_json_schema(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.contains_key("$schema")
+        || object.get("type").and_then(Value::as_str) == Some("object")
+            && object.get("properties").is_some_and(Value::is_object)
 }
 
 /// What the person reads of a failed call, as the desktop card shows it (`failedCallText` in
@@ -2740,5 +2883,102 @@ mod tests {
             &mut pending,
             &format!("call-{MAX_PENDING_SPAWN_CALLS}")
         ));
+    }
+    /// A `pub const NAME: &str = "…";` from `agents/tool_execution.rs`, as the
+    /// compiler reads it (a `\` at a line's end joins the next line). The
+    /// module is private to the core crate, so this is how a test here holds
+    /// the person lines to the real words.
+    fn agent_constant(name: &str) -> String {
+        let source = include_str!("../../../biorouter/src/agents/tool_execution.rs");
+        let start = format!("pub const {name}: &str = \"");
+        let body = source
+            .split_once(start.as_str())
+            .and_then(|(_, rest)| rest.split_once("\";"))
+            .map(|(body, _)| body)
+            .unwrap_or_else(|| panic!("{name} is not in tool_execution.rs"));
+        let mut text = String::new();
+        let mut lines = body.split('\n');
+        if let Some(first) = lines.next() {
+            text.push_str(first.strip_suffix('\\').unwrap_or(first));
+        }
+        for line in lines {
+            let line = line.trim_start();
+            text.push_str(line.strip_suffix('\\').unwrap_or(line));
+        }
+        text.replace("\\n", "\n")
+    }
+
+    /// W1-26. What Biorouter wrote to the model in place of a result that
+    /// never came reads as one plain line for the person, a failure loses the
+    /// header written for the model, and an argument schema is folded. Each
+    /// agent text is the real constant, so a reworded constant fails here
+    /// instead of reaching the transcript raw again.
+    #[test]
+    fn an_agent_written_tool_result_reads_as_a_person_line() {
+        let declined = agent_constant("DECLINED_RESPONSE");
+        assert!(declined.starts_with("The user has declined to run this tool."));
+        let shown = tool_result_display_text(&declined, true);
+        assert_eq!(shown, PERSON_DECLINED);
+        assert!(!shown.contains("DO NOT"), "{shown}");
+
+        let hooked = format!("{declined}\n\nHook feedback: writes under /etc are blocked");
+        let shown = tool_result_display_text(&hooked, true);
+        assert!(shown.contains("writes under /etc are blocked"), "{shown}");
+        assert!(shown.starts_with("A hook"), "{shown}");
+        assert!(!shown.contains("DO NOT"), "{shown}");
+
+        for (name, line) in [
+            ("CANCELLED_RESPONSE", PERSON_CANCELLED),
+            ("CANCELLED_MID_RUN_RESPONSE", PERSON_CANCELLED_MID_RUN),
+            ("EXPIRED_RESPONSE", super::super::APPROVAL_EXPIRED),
+        ] {
+            let text = agent_constant(name);
+            assert_eq!(tool_result_display_text(&text, true), line, "{name}");
+            // Annotated by the taxonomy first, the same line.
+            let annotated = format!(
+                "[tool_error kind=permission_denied retryable=false] Do not retry.\n{text}"
+            );
+            assert_eq!(tool_result_display_text(&annotated, true), line, "{name}");
+        }
+
+        let failed = "[tool_error kind=tool_failure retryable=false] The tool ran and reported \
+                      a failure. Read the message and address its cause.\nError: cat: /x: No \
+                      such file or directory";
+        assert_eq!(
+            tool_result_display_text(failed, true),
+            "Error: cat: /x: No such file or directory"
+        );
+
+        let schema = "`developer__shell` was refused: you did not approve it.\n\nThis tool's \
+                      input schema was not in your prompt when you called it. The input schema \
+                      is: {\"type\":\"object\",\"properties\":{\"command\":{\"description\":\
+                      \"The command string\",\"type\":\"string\"}},\"required\":[\"command\"],\
+                      \"$schema\":\"https://json-schema.org/draft/2020-12/schema\",\"title\":\
+                      \"ShellParams\"}\nIf your input does not match this schema, correct it.";
+        let shown = tool_result_display_text(schema, true);
+        assert!(shown.contains("refused: you did not approve it"), "{shown}");
+        assert!(!shown.contains("$schema"), "{shown}");
+        assert!(!shown.contains("\"properties\""), "{shown}");
+        assert!(shown.contains(SCHEMA_FOLDED), "{shown}");
+
+        assert_eq!(
+            tool_result_display_text(schema, false),
+            schema,
+            "a result that did not fail is the tool's answer, schema and all"
+        );
+        assert_eq!(
+            tool_result_display_text(&declined, false),
+            declined,
+            "only a failed result is Biorouter's"
+        );
+
+        let ordinary = "total 4\n-rw-r--r-- notes.md";
+        assert_eq!(tool_result_display_text(ordinary, true), ordinary);
+        let json = "{\"rows\":3,\"type\":\"object\"}";
+        assert_eq!(
+            tool_result_display_text(json, true),
+            json,
+            "a JSON result that is no schema is the tool's answer"
+        );
     }
 }

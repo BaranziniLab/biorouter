@@ -41,6 +41,11 @@ pub struct PermissionModal {
 pub const TOOL_APPROVAL_TITLE: &str = "Tool approval";
 /// The title of `/dictionary review`, which is not a tool approval.
 pub const DICTIONARY_REVIEW_TITLE: &str = "Dictionary review";
+/// How many of a turn's replies [`App::turn_replies`] keeps.
+const MAX_TURN_REPLIES: usize = 8;
+
+/// The title of the question `/compact` asks first.
+pub const COMPACT_TITLE: &str = "Compact chat";
 
 /// What category a completion entry is (drives its colored tag in the popup).
 #[derive(Clone, Copy, PartialEq)]
@@ -98,6 +103,10 @@ pub struct StatusInfo {
     /// model's chat public (`public because monitor "Done" uses joey-1 ·
     /// Baseten`), shown after the model on the first line; `None` otherwise.
     pub privacy_reason: Option<String>,
+    /// Whether this chat is classified private, read from its row at start
+    /// and after each turn: the status line then shows a lock marker, as the
+    /// classic banner's privacy row says it (W1-28).
+    pub private: bool,
 }
 
 pub struct App {
@@ -197,6 +206,16 @@ pub struct App {
     /// told from any other failure (owner decision 4). Bounded as the
     /// line-oriented renderer's list is.
     pub pending_spawn_calls: Vec<String>,
+    /// The letter Ctrl inserts a newline with: J, or the letter
+    /// `BIOROUTER_CLI_NEWLINE_KEY` names, read once at start
+    /// (`configure_newline_key` in the parent module), so the TUI and the
+    /// classic REPL take the same key and a test sets it without the
+    /// environment.
+    pub newline_key: char,
+    /// The replies this turn committed, newest last and at most
+    /// [`MAX_TURN_REPLIES`], so a turn's error frame can tell whether a reply
+    /// already said its failure.
+    pub turn_replies: Vec<String>,
 }
 
 impl App {
@@ -252,6 +271,8 @@ impl App {
             decisions: None,
             decision_records: std::collections::HashMap::new(),
             pending_spawn_calls: Vec::new(),
+            newline_key: 'j',
+            turn_replies: Vec::new(),
         }
     }
 
@@ -298,6 +319,17 @@ impl App {
     /// Finalize the streamed message into permanent scrollback. Returns the full
     /// text when non-empty assistant text was streamed (for the session mirror).
     pub fn stream_commit(&mut self) -> Option<String> {
+        self.commit_stream_with(md_lines)
+    }
+
+    /// [`Self::stream_commit`] without the Markdown pass, for text that is
+    /// an error's words rather than a reply's prose: `sk-fake-****real` is a
+    /// masked key, not markup (W1-26).
+    pub fn stream_commit_plain(&mut self) -> Option<String> {
+        self.commit_stream_with(plain_lines)
+    }
+
+    fn commit_stream_with(&mut self, render: fn(&str) -> Vec<Line<'static>>) -> Option<String> {
         let start = self.stream_start.take()?;
         self.stream_id = None;
         self.stream_dirty = false;
@@ -306,9 +338,15 @@ impl App {
         if text.trim().is_empty() {
             return None;
         }
-        for line in md_lines(&text) {
+        for line in render(&text) {
             self.push_line(line);
         }
+        // A subagent's chat is drawn with an `App` too and is never cleared
+        // per turn, so the list keeps only the newest few.
+        if self.turn_replies.len() >= MAX_TURN_REPLIES {
+            self.turn_replies.remove(0);
+        }
+        self.turn_replies.push(text.clone());
         Some(text)
     }
 
@@ -549,6 +587,7 @@ impl App {
                     if let Ok(result) = &resp.tool_result {
                         let start = self.scrollback.len();
                         let mut has_artifact = false;
+                        let failed = result.is_error == Some(true);
                         for c in &result.content {
                             // The TUI surfaces artifact HTML and launch targets as
                             // browser URLs instead of attempting an inline panel.
@@ -565,7 +604,7 @@ impl App {
                                 continue;
                             }
                             if let Some(text) = c.as_text() {
-                                let preview = tool_output_preview(&text.text, debug);
+                                let preview = tool_output_preview(&text.text, debug, failed);
                                 for l in preview.lines() {
                                     self.push_line(Line::from(Span::styled(l.to_string(), DIM)));
                                 }
@@ -1123,7 +1162,10 @@ impl App {
     // ── paste/drop normalization ──────────────────────────────────────────
 
     fn normalize_pasted_text(text: &str) -> String {
-        let clean = text.replace('\r', "");
+        // A CRLF is one break, and so is a lone CR: a bracketed paste from an
+        // xterm-style terminal or tmux's `paste-buffer` without `-r` breaks
+        // lines with CR alone, and deleting it ran the lines together (W1-23).
+        let clean = text.replace("\r\n", "\n").replace('\r', "\n");
         match Self::dragged_file_paths(&clean) {
             Some(paths) => paths
                 .into_iter()
@@ -1248,6 +1290,13 @@ pub fn md_lines(text: &str) -> Vec<Line<'static>> {
     out
 }
 
+/// `text` as it was written, one unstyled line per line: no Markdown pass.
+pub fn plain_lines(text: &str) -> Vec<Line<'static>> {
+    text.lines()
+        .map(|line| Line::from(line.to_string()))
+        .collect()
+}
+
 /// Split one `| a | b |` table row into trimmed cell strings.
 fn split_table_row(line: &str) -> Vec<String> {
     let t = line.trim();
@@ -1360,23 +1409,31 @@ fn inline_spans(s: &str, base: Style) -> Vec<Span<'static>> {
                     .add_modifier(Modifier::DIM),
             ));
         } else if c == '*' && chars.peek() == Some(&'*') {
-            chars.next();
-            flush(&mut buf, base, &mut spans);
-            let mut bold = String::new();
-            while let Some(&cc) = chars.peek() {
-                if cc == '*' {
-                    chars.next();
-                    if chars.peek() == Some(&'*') {
-                        chars.next();
-                        break;
-                    }
-                    bold.push('*');
-                } else {
-                    bold.push(cc);
-                    chars.next();
-                }
+            // Bold is `**text**`: a pair, some text, a closing pair. Anything
+            // else is the characters themselves: a run of three or more (a
+            // masked key reads `sk-fake-****real`) or a pair that never closes.
+            // A masked key's `****` used to vanish as an empty bold.
+            let mut run = 1;
+            while chars.peek() == Some(&'*') {
+                chars.next();
+                run += 1;
             }
-            spans.push(Span::styled(bold, base.add_modifier(Modifier::BOLD)));
+            let bold = (run == 2)
+                .then(|| chars.clone().collect::<String>())
+                .and_then(|rest| {
+                    let end = rest.find("**").filter(|end| *end > 0)?;
+                    rest.get(..end).map(str::to_string)
+                });
+            match bold {
+                Some(bold) => {
+                    flush(&mut buf, base, &mut spans);
+                    for _ in 0..bold.chars().count() + 2 {
+                        chars.next();
+                    }
+                    spans.push(Span::styled(bold, base.add_modifier(Modifier::BOLD)));
+                }
+                None => buf.push_str(&"*".repeat(run)),
+            }
         } else {
             buf.push(c);
         }
@@ -1418,8 +1475,12 @@ fn compact_value(v: &serde_json::Value) -> String {
 /// A `[BIOROUTER GUARDRAIL]` warning sits ABOVE the opening tag and therefore
 /// survives untouched, which is the intent: the frame is routine provenance,
 /// the warning is a real finding the user needs.
-fn tool_output_preview(text: &str, debug: bool) -> String {
-    let shown = biorouter::guardrails::tool_output_display::unframe_tool_output(text);
+///
+/// A result that `failed` reads as the classic view prints it (W1-26,
+/// `output::tool_result_display_text`): no header written for the model, a
+/// person's line for a call that never ran, and an argument schema folded.
+fn tool_output_preview(text: &str, debug: bool, failed: bool) -> String {
+    let shown = crate::session::output::tool_result_display_text(text, failed);
     if debug {
         shown.into_owned()
     } else {
@@ -1547,7 +1608,7 @@ mod tests {
     fn the_pane_shows_the_tool_output_not_the_guardrail_envelope() {
         let framed = "<tool-output untrusted=\"true\" tool=\"shell\">\ntotal 4\n</tool-output>";
 
-        let shown = tool_output_preview(framed, false);
+        let shown = tool_output_preview(framed, false, false);
         assert!(
             !shown.contains("tool-output"),
             "the frame must not reach the pane: {shown}"
@@ -1557,14 +1618,14 @@ mod tests {
             "the real output must survive: {shown}"
         );
 
-        let debugged = tool_output_preview(framed, true);
+        let debugged = tool_output_preview(framed, true, false);
         assert!(
             !debugged.contains("tool-output"),
             "debug means do not truncate, not show the wire format: {debugged}"
         );
 
         let warned = format!("[BIOROUTER GUARDRAIL] looks like an injection attempt\n{framed}");
-        let shown = tool_output_preview(&warned, false);
+        let shown = tool_output_preview(&warned, false, false);
         assert!(
             shown.contains("[BIOROUTER GUARDRAIL]"),
             "the warning is a finding for the user and must be kept: {shown}"
@@ -1588,7 +1649,7 @@ mod tests {
             "<tool-output untrusted=\"true\" tool=\"shell\">\n{}\n</tool-output>",
             body.join("\n")
         );
-        let shown = tool_output_preview(&framed, false);
+        let shown = tool_output_preview(&framed, false, false);
         assert!(
             shown.contains("line 12"),
             "all twelve real lines must fit in a twelve-line budget: {shown}"

@@ -92,8 +92,9 @@ fn dictation_key_first(app: &mut App, key: KeyEvent) -> bool {
     if app.dictation.is_some() {
         return dictation_key(app, key);
     }
+    let offered = offered_dictation_chord(app);
     let chord = key.modifiers.contains(KeyModifiers::CONTROL)
-        && matches!(key.code, KeyCode::Char(c) if Some(c.to_ascii_lowercase()) == dictation_chord());
+        && matches!(key.code, KeyCode::Char(c) if Some(c.to_ascii_lowercase()) == offered);
     if chord && app.child.is_none() {
         app.subagents.focused = false;
         return dictation_key(app, key);
@@ -106,9 +107,18 @@ fn key_collision(dictation: Option<char>, newline: char) -> bool {
     dictation == Some(newline)
 }
 
+/// The dictation chord as this screen offers it: the configured letter, unless
+/// the newline key took it. The newline chord wins (MSG-KEY-CLASH says so at
+/// start), and `/dictate` still records.
+#[cfg(feature = "dictation")]
+fn offered_dictation_chord(app: &App) -> Option<char> {
+    dictation_chord().filter(|key| !key_collision(Some(*key), app.newline_key))
+}
+
 #[cfg(feature = "dictation")]
 fn dictation_key(app: &mut App, key: KeyEvent) -> bool {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let offered = offered_dictation_chord(app);
     if app.dictation.is_some() {
         match key.code {
             KeyCode::Enter
@@ -122,7 +132,7 @@ fn dictation_key(app: &mut App, key: KeyEvent) -> bool {
             }
             KeyCode::Esc => app.cancel_dictation(),
             KeyCode::Char('c') if ctrl => app.cancel_dictation(),
-            KeyCode::Char(c) if ctrl && Some(c.to_ascii_lowercase()) == dictation_chord() => {
+            KeyCode::Char(c) if ctrl && Some(c.to_ascii_lowercase()) == offered => {
                 app.stop_dictation()
             }
             _ if app
@@ -138,15 +148,13 @@ fn dictation_key(app: &mut App, key: KeyEvent) -> bool {
         return true;
     }
     let slash = key.code == KeyCode::Enter && app.input.trim() == "/dictate";
-    let chord = ctrl
-        && matches!(key.code, KeyCode::Char(c) if Some(c.to_ascii_lowercase()) == dictation_chord());
+    let chord =
+        ctrl && matches!(key.code, KeyCode::Char(c) if Some(c.to_ascii_lowercase()) == offered);
     if slash {
         app.clear_input();
     }
     if slash || chord {
-        if !chord || !key_collision(dictation_chord(), crate::session::input::get_newline_key()) {
-            app.start_dictation();
-        }
+        app.start_dictation();
         return true;
     }
     false
@@ -307,9 +315,7 @@ async fn prepare_dictation(session: &CliSession, app: &mut App) {
 /// Say so at startup when the dictation key is also the newline key.
 #[cfg(feature = "dictation")]
 fn note_dictation_key_clash(app: &mut App) {
-    if let Some(key) = dictation_chord()
-        .filter(|key| key_collision(Some(*key), crate::session::input::get_newline_key()))
-    {
+    if let Some(key) = dictation_chord().filter(|key| key_collision(Some(*key), app.newline_key)) {
         app.push_note(&crate::dictation::messages::msg_key_clash(key));
     }
 }
@@ -337,6 +343,7 @@ pub async fn run(session: &mut CliSession, initial_prompt: Option<String>) -> Re
     app.set_catalog(build_catalog(session).await);
     greeting_into(&mut app);
     push_startup_notices(&mut app).await;
+    configure_newline_key(&mut app, crate::session::input::get_newline_key());
     #[cfg(feature = "dictation")]
     note_dictation_key_clash(&mut app);
     refresh_context(session, &mut app).await;
@@ -803,7 +810,7 @@ fn on_key(app: &mut App, key: KeyEvent) -> Option<String> {
             }
         }
         KeyCode::Char('d') if ctrl => app.should_quit = true,
-        KeyCode::Char('j') if ctrl => app.insert_newline(),
+        KeyCode::Char(c) if ctrl && c == app.newline_key => app.insert_newline(),
         KeyCode::Enter
             if key.modifiers.contains(KeyModifiers::SHIFT)
                 || key.modifiers.contains(KeyModifiers::ALT) =>
@@ -833,7 +840,7 @@ fn on_key(app: &mut App, key: KeyEvent) -> Option<String> {
         KeyCode::Down => move_cursor_vertical(app, 1, shift),
         KeyCode::PageUp => app.scroll_up(10),
         KeyCode::PageDown => app.scroll_down(10),
-        KeyCode::Char(c) => app.insert_char(c),
+        KeyCode::Char(c) if types_text(key) => app.insert_char(c),
         _ => {}
     }
     // Recompute the popup against the (possibly edited) input.
@@ -915,7 +922,7 @@ fn on_key_streaming(app: &mut App, key: KeyEvent) -> StreamAction {
 
     match key.code {
         KeyCode::Char('c') if ctrl => return StreamAction::Cancel,
-        KeyCode::Char('j') if ctrl => app.insert_newline(),
+        KeyCode::Char(c) if ctrl && c == app.newline_key => app.insert_newline(),
         KeyCode::Enter
             if key.modifiers.contains(KeyModifiers::SHIFT)
                 || key.modifiers.contains(KeyModifiers::ALT) =>
@@ -943,11 +950,70 @@ fn on_key_streaming(app: &mut App, key: KeyEvent) -> StreamAction {
         KeyCode::Down => move_cursor_vertical(app, 1, shift),
         KeyCode::PageUp => app.scroll_up(10),
         KeyCode::PageDown => app.scroll_down(10),
-        KeyCode::Char(c) => app.insert_char(c),
+        KeyCode::Char(c) if types_text(key) => app.insert_char(c),
         _ => {}
     }
     app.refresh_completion();
     StreamAction::None
+}
+
+/// Whether a `Char` key types its character into the composer (W1-22). A
+/// Ctrl, Alt, Super or Meta chord this screen does not bind does nothing; it
+/// used to type its letter, so Ctrl+U typed `u`. AltGr is the exception:
+/// Windows reports an AltGr character as Control+Alt with the character it
+/// made, so that pair types. Elsewhere AltGr arrives as the plain character,
+/// and a Control+Alt ASCII letter can only be the chord.
+fn types_text(key: KeyEvent) -> bool {
+    let chord = KeyModifiers::CONTROL
+        | KeyModifiers::ALT
+        | KeyModifiers::SUPER
+        | KeyModifiers::META
+        | KeyModifiers::HYPER;
+    if !key.modifiers.intersects(chord) {
+        return true;
+    }
+    let altgr = key
+        .modifiers
+        .contains(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        && !key
+            .modifiers
+            .intersects(KeyModifiers::SUPER | KeyModifiers::META | KeyModifiers::HYPER);
+    altgr
+        && matches!(key.code, KeyCode::Char(c)
+            if !c.is_control() && (cfg!(windows) || !c.is_ascii_alphabetic()))
+}
+
+/// Ctrl letters the newline key may not take here, whatever the configuration:
+/// select all, the subagent pane, stop or clear, quit, focus into the pane,
+/// paste and cut.
+fn newline_key_taken(key: char) -> bool {
+    matches!(key, 'a' | 'b' | 'c' | 'd' | 'o' | 'v' | 'x')
+}
+
+/// Take the newline key `BIOROUTER_CLI_NEWLINE_KEY` names (`configured`, as
+/// `input::get_newline_key` reads it), so the TUI and the classic REPL insert a
+/// newline with the same chord (W1-25). A letter this screen already binds, or
+/// anything but a letter, leaves Ctrl+J, with one note that says so.
+fn configure_newline_key(app: &mut App, configured: char) {
+    let configured = configured.to_ascii_lowercase();
+    if configured.is_ascii_lowercase() && !newline_key_taken(configured) {
+        app.newline_key = configured;
+        return;
+    }
+    app.newline_key = 'j';
+    let note = if configured.is_ascii_lowercase() {
+        let key = configured.to_ascii_uppercase();
+        format!(
+            "Ctrl+{key} already does something else here, so Ctrl+J inserts a newline \
+             (BIOROUTER_CLI_NEWLINE_KEY names Ctrl+{key})."
+        )
+    } else {
+        format!(
+            "BIOROUTER_CLI_NEWLINE_KEY names `{configured}`, which is not a letter, so Ctrl+J \
+             inserts a newline."
+        )
+    };
+    app.push_note(&note);
 }
 
 fn shortcut_modifier(key: KeyEvent) -> bool {
@@ -1076,6 +1142,13 @@ async fn submit(
     // /compact runs a normal turn whose trigger tells the agent to condense the
     // history (mirrors the classic `/compact`).
     if text.trim() == "/compact" {
+        // Asked first, as the classic REPL asks (W1-28).
+        if let Some(modal) = compact_modal(&app.status.provider) {
+            if run_choice_modal(app, tui, rx, modal).await? != Some(COMPACT_CHOICE) {
+                app.push_note("Compaction cancelled.");
+                return Ok(());
+            }
+        }
         if let Some(note) = compact_note(&app.status.provider) {
             app.push_note(note);
         }
@@ -1152,6 +1225,7 @@ async fn drive_response(
     };
     let debug = session.debug;
     let cancel = CancellationToken::new();
+    app.turn_replies.clear();
     app.thinking = Some(super::thinking::get_random_thinking_message().to_string());
 
     // Consume the raw reply stream so assistant text shows token-by-token: each
@@ -1343,11 +1417,9 @@ async fn drive_response(
                     // #59: persisted-id bookkeeping; nothing for the TUI to draw.
                     Some(Ok(AgentEvent::MessagesPersisted(_))) => {}
                     Some(Ok(AgentEvent::TurnAborted { code, message })) => {
-                        // The assistant Message carrying the human-readable text was
-                        // already pushed; add a real error line so the turn does not
-                        // look like it simply finished.
-                        commit_stream_to_session(app, &mut session.messages);
-                        app.push_error(&format!("{}: {message}", code.wire_code()));
+                        if let Some(text) = on_turn_aborted(app, code.wire_code(), &message) {
+                            session.messages.push(Message::assistant().with_text(text));
+                        }
                         session.last_abort = Some(code);
                         cancel.cancel();
                         break;
@@ -1400,6 +1472,26 @@ fn stop_turn(cancel: &CancellationToken, parent_id: &str, stopped: &mut Vec<Stri
             stopped.push(child);
         }
     }
+}
+
+/// End a turn the agent aborted (`AgentEvent::TurnAborted`), returning the
+/// streamed text this committed, for the session mirror. The agent has usually
+/// said why already: a provider failure arrives as its "Ran into this error"
+/// reply, then this frame with the same failure, and both used to print. One
+/// copy stays (W1-26): the reply, which says what to do next, as plain text so
+/// a masked key keeps its asterisks. A failure no reply this turn has said gets
+/// its error line, so the turn does not look like it simply finished.
+fn on_turn_aborted(app: &mut App, code: &str, message: &str) -> Option<String> {
+    let failure = message.trim();
+    let says = |text: &str| !failure.is_empty() && text.contains(failure);
+    if app.stream_start.is_some() && says(&app.stream_text) {
+        return app.stream_commit_plain();
+    }
+    let committed = app.stream_commit();
+    if !app.turn_replies.iter().any(|reply| says(reply)) {
+        app.push_error(&format!("{code}: {message}"));
+    }
+    committed
 }
 
 /// A message that is a streamable assistant-text delta (text only, no tool
@@ -1519,6 +1611,65 @@ async fn run_permission_modal(
     };
     app.modal = None;
     Ok(result)
+}
+
+/// Show `modal` until the person chooses: the chosen option's index, or None
+/// for Esc or Ctrl+C. Up and Down move, PgUp and PgDn read a long prompt.
+async fn run_choice_modal(
+    app: &mut App,
+    tui: &mut Tui,
+    rx: &mut Events,
+    modal: PermissionModal,
+) -> Result<Option<usize>> {
+    let len = modal.options.len().max(1);
+    app.modal = Some(modal);
+    let chosen = loop {
+        tui.draw(app)?;
+        let key = match rx.recv().await {
+            Some(Event::Key(key)) => key,
+            Some(_) => continue,
+            None => break None,
+        };
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        let Some(modal) = app.modal.as_mut() else {
+            break None;
+        };
+        match key.code {
+            KeyCode::PageDown => modal.scroll = modal.scroll.saturating_add(5),
+            KeyCode::PageUp => modal.scroll = modal.scroll.saturating_sub(5),
+            KeyCode::Up => modal.selected = (modal.selected + len - 1) % len,
+            KeyCode::Down => modal.selected = (modal.selected + 1) % len,
+            KeyCode::Enter => break Some(modal.selected),
+            KeyCode::Esc => break None,
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => break None,
+            _ => {}
+        }
+    };
+    app.modal = None;
+    Ok(chosen)
+}
+
+/// The option of [`compact_modal`] that compacts.
+const COMPACT_CHOICE: usize = 0;
+
+/// What `/compact` asks first (W1-28): the classic REPL's question
+/// (`session::compact_confirmation`) in the TUI's modal, with Compact chosen
+/// as classic's Yes is. None in a decision chat, which asks nothing there
+/// either: the agent answers that there is no context to compact.
+fn compact_modal(provider_name: &str) -> Option<PermissionModal> {
+    let question = super::compact_confirmation(provider_name)?;
+    Some(PermissionModal {
+        title: app::COMPACT_TITLE,
+        prompt: Some(question.to_string()),
+        options: vec![
+            ("Compact", "condense the message history"),
+            ("Keep", "leave the chat as it is"),
+        ],
+        selected: COMPACT_CHOICE,
+        scroll: 0,
+    })
 }
 
 fn label_to_permission(label: &str) -> Permission {
@@ -2313,6 +2464,10 @@ pub(super) fn wrap_line(line: &Line<'static>, width: u16) -> Vec<Line<'static>> 
         .collect()
 }
 
+/// The status line's mark of a private chat, with the lock the subagent rows
+/// carry for a private child.
+const PRIVATE_MARKER: &str = "🔒 Private";
+
 fn draw_status(f: &mut Frame, app: &App, area: Rect) {
     let dim = Style::new().add_modifier(Modifier::DIM);
     let sep = || Span::styled("  ·  ", dim);
@@ -2329,6 +2484,11 @@ fn draw_status(f: &mut Frame, app: &App, area: Rect) {
         sep(),
         Span::styled(status_provider_text(&s.provider, &s.model), dim),
     ];
+    // W1-28: a private chat says so, as the classic banner's privacy row does.
+    if s.private {
+        line1.push(sep());
+        line1.push(Span::raw(PRIVATE_MARKER));
+    }
     // DR-33: the chat's tier, in its one case that the model beside it does
     // not explain: a private model's chat made public by its decision models.
     if let Some(reason) = s.privacy_reason.as_deref() {
@@ -2418,9 +2578,11 @@ fn draw_hints(f: &mut Frame, app: &App, area: Rect) {
 
 /// The hints line: the longest candidate for what has focus that fits.
 fn hint_text(app: &App, width: usize) -> String {
-    const COMPACT: &str = "↵ send · ^J newline · / commands · ↑↓ history · ^C stop";
+    // The newline chord the composer takes (W1-25).
+    let newline = format!("^{} newline", app.newline_key.to_ascii_uppercase());
+    let shortest = format!("↵ send · {newline} · / commands · ↑↓ history · ^C stop");
     let dictate = dictation_hint(app);
-    let compact = format!("↵ send · ^J newline{dictate} · / commands · ↑↓ history · ^C stop");
+    let compact = format!("↵ send · {newline}{dictate} · / commands · ↑↓ history · ^C stop");
     let candidates: Vec<String> = if let Some(overlay) = &app.decisions {
         if overlay.calls.is_some() {
             vec![
@@ -2450,21 +2612,21 @@ fn hint_text(app: &App, width: usize) -> String {
             format!("{summary} · ^B show · ↵ send · / commands · ^C stop"),
             format!("{summary} · ^B show · ^C stop"),
             compact,
-            COMPACT.into(),
+            shortest,
         ]
     } else if !app.subagents.model.rows.is_empty() {
         vec![
-            format!("↵ send · ^J newline{dictate} · / commands · ↑↓ history · ^C stop · ^O select a subagent · ^B hide"),
+            format!("↵ send · {newline}{dictate} · / commands · ↑↓ history · ^C stop · ^O select a subagent · ^B hide"),
             format!("↵ send{dictate} · / commands · ↑↓ history · ^C stop · ^O select · ^B hide"),
             compact,
-            COMPACT.into(),
+            shortest,
         ]
     } else {
         vec![
-            format!("↵ send · ^J newline{dictate} · / commands · ↑↓ history · ^C stop · ^B subagents · type anytime"),
-            format!("↵ send · ^J newline{dictate} · / commands · ↑↓ history · ^C stop · ^B subagents"),
+            format!("↵ send · {newline}{dictate} · / commands · ↑↓ history · ^C stop · ^B subagents · type anytime"),
+            format!("↵ send · {newline}{dictate} · / commands · ↑↓ history · ^C stop · ^B subagents"),
             compact,
-            COMPACT.into(),
+            shortest,
         ]
     };
     let last = candidates.last().cloned().unwrap_or_default();
@@ -2479,8 +2641,7 @@ fn hint_text(app: &App, width: usize) -> String {
 fn dictation_hint(app: &App) -> String {
     #[cfg(feature = "dictation")]
     {
-        dictation_chord()
-            .filter(|key| *key != crate::session::input::get_newline_key())
+        offered_dictation_chord(app)
             .filter(|_| app.dictation_available)
             .map(|key| format!(" · ^{} dictate", key.to_ascii_uppercase()))
             .unwrap_or_default()
@@ -2791,15 +2952,40 @@ fn input_rows(input: &str, text_w: u16) -> u16 {
     n.max(1)
 }
 
+/// A modal sized to what it holds (W1-32): its prompt's rows, a gap and the
+/// options, within the old cap of 26 rows. The title says "PgUp/PgDn to read"
+/// only when the prompt is taller than its room. The prompt is wrapped here
+/// ([`wrap_line`]) and drawn a row per line, so the rows counted for the size
+/// and the scroll are the rows drawn.
 fn draw_modal(f: &mut Frame, app: &App) {
     let Some(modal) = &app.modal else { return };
     let area = f.area();
     let w = 80u16.min(area.width.saturating_sub(4));
-    let h = if modal.prompt.is_some() {
+    let prompt = modal
+        .prompt
+        .as_deref()
+        .unwrap_or("Biorouter would like to call the above tool.");
+    // The borders and a one-cell margin on each side.
+    let text_w = w.saturating_sub(4).max(1);
+    let rows: Vec<Line<'static>> = prompt
+        .split('\n')
+        .flat_map(|line| wrap_line(&Line::from(line.to_string()), text_w))
+        .collect();
+    let rows_h = u16::try_from(rows.len()).unwrap_or(u16::MAX);
+    let options_h = modal.options.len() as u16 + 1;
+    let cap = if modal.prompt.is_some() {
         area.height.saturating_sub(4).min(26)
     } else {
-        (modal.options.len() as u16 + 4).min(area.height)
+        area.height
     };
+    let h = rows_h.saturating_add(options_h).saturating_add(2).min(cap);
+    let prompt_h = h.saturating_sub(2).saturating_sub(options_h);
+    let title = if rows_h > prompt_h {
+        format!(" {} · PgUp/PgDn to read ", modal.title)
+    } else {
+        format!(" {} ", modal.title)
+    };
+    let scroll = modal.scroll.min(rows_h.saturating_sub(prompt_h));
     let rect = Rect {
         x: area.width.saturating_sub(w) / 2,
         y: area.height.saturating_sub(h) / 2,
@@ -2811,7 +2997,7 @@ fn draw_modal(f: &mut Frame, app: &App) {
         .borders(Borders::ALL)
         .border_style(Style::new().fg(ACCENT))
         .title(Span::styled(
-            format!(" {} · PgUp/PgDn to read ", modal.title),
+            title,
             Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
         ));
     let inner = block.inner(rect).inner(Margin::new(1, 0));
@@ -2821,16 +3007,7 @@ fn draw_modal(f: &mut Frame, app: &App) {
         Constraint::Length(modal.options.len() as u16 + 1),
     ])
     .split(inner);
-    let prompt = modal
-        .prompt
-        .as_deref()
-        .unwrap_or("Biorouter would like to call the above tool.");
-    f.render_widget(
-        Paragraph::new(prompt)
-            .wrap(Wrap { trim: false })
-            .scroll((modal.scroll, 0)),
-        regions[0],
-    );
+    f.render_widget(Paragraph::new(rows).scroll((scroll, 0)), regions[0]);
     let mut lines = vec![Line::default()];
     for (i, (label, desc)) in modal.options.iter().enumerate() {
         let selected = i == modal.selected;
@@ -3183,14 +3360,20 @@ async fn push_startup_notices(app: &mut App) {
 
 /// `/help`'s Navigation keys, in order, with the dictation key as the footer names it. Split out
 /// of [`help_into`] only to keep that function under the line limit.
-fn navigation_keys(app: &App) -> Vec<(String, &'static str)> {
-    let mut keys: Vec<(String, &'static str)> = vec![
-        ("↵".into(), "send · ⇧↵ or ^J for a newline"),
+fn navigation_keys(app: &App) -> Vec<(String, String)> {
+    let mut keys: Vec<(String, String)> = vec![
+        (
+            "↵".into(),
+            format!(
+                "send · ⇧↵ or ^{} for a newline",
+                app.newline_key.to_ascii_uppercase()
+            ),
+        ),
         (
             "↑ / ↓".into(),
-            "history · scroll with PageUp/Down or the mouse",
+            "history · scroll with PageUp/Down or the mouse".into(),
         ),
-        ("^C".into(), "clear the line, or quit when empty"),
+        ("^C".into(), "clear the line, or quit when empty".into()),
     ];
     // The dictation key, as the footer names it (`dictation_hint`): the configured letter,
     // offered only where dictation can run and the key is free.
@@ -3198,14 +3381,14 @@ fn navigation_keys(app: &App) -> Vec<(String, &'static str)> {
         if let Some(key) = dictate.strip_suffix(" dictate") {
             keys.push((
                 key.to_string(),
-                "dictate · ↵ or the same key inserts the text, esc cancels",
+                "dictate · ↵ or the same key inserts the text, esc cancels".into(),
             ));
         }
     }
-    keys.push(("^B".into(), "show or hide the subagent pane"));
+    keys.push(("^B".into(), "show or hide the subagent pane".into()));
     keys.push((
         "^O".into(),
-        "select a subagent: ↑↓ choose, ↵ opens its chat, esc back",
+        "select a subagent: ↑↓ choose, ↵ opens its chat, esc back".into(),
     ));
     keys
 }
@@ -3346,6 +3529,7 @@ fn status_from_session(_session: &CliSession) -> StatusInfo {
         used_tokens: 0,
         context_limit: 0,
         privacy_reason: None,
+        private: false,
     }
 }
 
@@ -3382,6 +3566,7 @@ async fn refresh_context(session: &CliSession, app: &mut App) {
             meta.provider_name.as_deref(),
             meta.model_config.as_ref().map(|m| m.model_name.as_str()),
         );
+        status_follow_privacy(&mut app.status, meta.privacy_tier);
         app.status.privacy_reason = crate::session::output::decision_privacy_reason(
             &meta,
             session.agent.bound_model_tier().await,
@@ -3420,6 +3605,16 @@ fn gauge_limit(provider_name: &str, limit: usize) -> usize {
 /// default: `--provider`/`--model` and a decision chat bind something else, and
 /// the line used to keep naming the default (`gpt-5.5 · versa_azure` over a
 /// chat answering with `tev1:0.8b`).
+/// The status line's privacy marker follows the chat's classification, as read
+/// from its row (W1-28). The classification only rises, so a chat that turned
+/// private on a turn shows the marker from the next redraw on.
+fn status_follow_privacy(
+    status: &mut StatusInfo,
+    classification: biorouter::privacy::SessionClassification,
+) {
+    status.private = classification == biorouter::privacy::SessionClassification::Private;
+}
+
 fn status_follow_binding(status: &mut StatusInfo, provider: Option<&str>, model: Option<&str>) {
     if let Some(provider) = provider.filter(|p| !p.is_empty()) {
         status.provider = provider.to_string();
@@ -3613,9 +3808,7 @@ mod tests {
         let mut app = App::new(StatusInfo::default());
         app.dictation_available = false;
         assert!(!buffer_text(&mut app, 100, 25).contains("dictate"));
-        if let Some(key) = dictation_chord()
-            .filter(|key| !key_collision(Some(*key), crate::session::input::get_newline_key()))
-        {
+        if let Some(key) = offered_dictation_chord(&app) {
             app.dictation_available = true;
             assert!(buffer_text(&mut app, 100, 25)
                 .contains(&format!("^{} dictate", key.to_ascii_uppercase())));
@@ -3922,7 +4115,7 @@ mod tests {
         let mut app = App::new(StatusInfo::default());
         app.insert_char('a');
         app.paste("line1\r\nline2");
-        // \r stripped, \n kept literal (no submit), inserted at the cursor.
+        // A CRLF is one \n, kept literal (no submit), inserted at the cursor.
         assert_eq!(app.input, "aline1\nline2");
         assert_eq!(app.cursor, app.input.len());
     }
@@ -5740,5 +5933,340 @@ mod tests {
             app.insert_char(c);
         }
         assert_eq!(app.ghost(), Some("isions"));
+    }
+    /// W1-22. A Ctrl or Alt chord the TUI does not bind does nothing, idle or
+    /// while a turn streams; it used to type its letter (Ctrl+U typed `u`).
+    /// AltGr text, which Windows reports as Control+Alt with the character
+    /// typed, still types, and so do plain and shifted letters.
+    #[test]
+    fn an_unbound_ctrl_letter_types_nothing() {
+        for streaming in [false, true] {
+            let mut app = App::new(StatusInfo::default());
+            app.set_input("abcdef".into());
+            let send = |app: &mut App, key: KeyEvent| {
+                if streaming {
+                    on_key_streaming(app, key);
+                } else {
+                    on_key(app, key);
+                }
+            };
+            for c in ['u', 'w', 'e', 'r', 'k', 'l'] {
+                send(&mut app, ctrl(c));
+                send(&mut app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT));
+                send(
+                    &mut app,
+                    KeyEvent::new(
+                        KeyCode::Char(c.to_ascii_uppercase()),
+                        KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                    ),
+                );
+            }
+            assert_eq!(app.input, "abcdef", "streaming: {streaming}");
+            send(
+                &mut app,
+                KeyEvent::new(
+                    KeyCode::Char('@'),
+                    KeyModifiers::CONTROL | KeyModifiers::ALT,
+                ),
+            );
+            send(&mut app, press(KeyCode::Char('g')));
+            send(
+                &mut app,
+                KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT),
+            );
+            assert_eq!(app.input, "abcdef@gG", "streaming: {streaming}");
+        }
+    }
+
+    /// W1-23. A paste whose line breaks are a lone CR (xterm-style bracketed
+    /// paste, tmux `paste-buffer` without `-r`) keeps them; CRLF is still one
+    /// break each, and a dropped file list split by CR is still a path list.
+    #[test]
+    fn a_lone_cr_paste_keeps_its_line_breaks() {
+        for (pasted, typed) in [
+            ("first\rsecond\rthird", "first\nsecond\nthird"),
+            ("first\r\nsecond\r\nthird", "first\nsecond\nthird"),
+            ("first\r\rthird", "first\n\nthird"),
+            (
+                "file:///tmp/a.txt\rfile:///tmp/b.txt\r",
+                "/tmp/a.txt /tmp/b.txt",
+            ),
+        ] {
+            let mut app = App::new(StatusInfo::default());
+            app.paste(pasted);
+            assert_eq!(app.input, typed, "pasted {pasted:?}");
+        }
+    }
+
+    /// W1-25. The newline chord is the key `BIOROUTER_CLI_NEWLINE_KEY` names,
+    /// as in the classic REPL, and the footer and `/help` name it. A dictation
+    /// key on the same letter is off with MSG-KEY-CLASH (the newline chord
+    /// wins). A letter this screen already binds falls back to J, with one note.
+    #[test]
+    fn the_tui_newline_follows_the_configured_key() {
+        let mut app = App::new(StatusInfo::default());
+        assert_eq!(app.newline_key, 'j');
+        assert!(hint_text(&app, 200).contains("^J newline"));
+        app.set_input("ab".into());
+        on_key(&mut app, ctrl('j'));
+        assert_eq!(app.input, "ab\n");
+
+        let mut app = App::new(StatusInfo::default());
+        configure_newline_key(&mut app, 't');
+        assert_eq!(app.newline_key, 't');
+        assert!(app.scrollback.is_empty(), "a free letter needs no note");
+        let hints = hint_text(&app, 200);
+        assert!(hints.contains("^T newline"), "{hints}");
+        assert!(!hints.contains("^J"), "{hints}");
+        help_into(&mut app);
+        let help = scrollback_text(&app);
+        assert!(help.contains("^T for a newline"), "{help}");
+        assert!(!help.contains("^J"), "{help}");
+
+        app.set_input("ab".into());
+        on_key(&mut app, ctrl('t'));
+        on_key_streaming(&mut app, ctrl('t'));
+        on_key(&mut app, ctrl('j'));
+        assert_eq!(app.input, "ab\n\n", "Ctrl+T inserts; Ctrl+J is unbound now");
+        #[cfg(feature = "dictation")]
+        {
+            assert!(app.dictation.is_none(), "the newline chord wins");
+            if dictation_chord() == Some('t') {
+                app.dictation_available = true;
+                assert!(!hint_text(&app, 200).contains("dictate"));
+                app.scrollback.clear();
+                note_dictation_key_clash(&mut app);
+                assert_eq!(
+                    scrollback_text(&app),
+                    crate::dictation::messages::msg_key_clash('t')
+                );
+            }
+        }
+
+        for taken in ['b', 'c', 'd', 'o', 'a', 'x', 'v', '1'] {
+            let mut app = App::new(StatusInfo::default());
+            configure_newline_key(&mut app, taken);
+            assert_eq!(app.newline_key, 'j', "{taken}");
+            assert_eq!(app.scrollback.len(), 1, "one note for {taken}");
+            assert!(scrollback_text(&app).contains("Ctrl+J"), "{taken}");
+        }
+        let mut app = App::new(StatusInfo::default());
+        configure_newline_key(&mut app, 'x');
+        assert_eq!(
+            scrollback_text(&app),
+            "Ctrl+X already does something else here, so Ctrl+J inserts a newline \
+             (BIOROUTER_CLI_NEWLINE_KEY names Ctrl+X)."
+        );
+    }
+
+    fn failed_tool_message(text: &str) -> Message {
+        use rmcp::model::{CallToolResult, Content};
+        Message::user().with_tool_response(
+            "call-1",
+            Ok(CallToolResult {
+                content: vec![Content::text(text)],
+                structured_content: None,
+                is_error: Some(true),
+                meta: None,
+            }),
+        )
+    }
+
+    /// W1-26. A failed tool's text shows without the header written for the
+    /// model, as the classic view and the desktop card show it, and an
+    /// argument schema a refusal carries is folded.
+    #[test]
+    fn a_failed_tool_shows_no_model_header_in_the_tui() {
+        let mut app = App::new(StatusInfo::default());
+        app.push_message(
+            &failed_tool_message(
+                "[tool_error kind=tool_failure retryable=false] The tool ran and reported a \
+                 failure. Read the message and address its cause.\nError: Module error: cat: \
+                 /nonexistent: No such file or directory\n[shell: command exited with status 1]",
+            ),
+            false,
+        );
+        app.push_message(
+            &failed_tool_message(
+                "`developer__shell` was refused: you did not approve it.\n\nThe input schema \
+                 is: {\"type\":\"object\",\"properties\":{\"command\":{\"type\":\"string\"}},\
+                 \"$schema\":\"https://json-schema.org/draft/2020-12/schema\"}",
+            ),
+            false,
+        );
+        let text = scrollback_text(&app);
+        assert!(!text.contains("[tool_error"), "{text}");
+        assert!(!text.contains("address its cause"), "{text}");
+        assert!(text.contains("No such file or directory"), "{text}");
+        assert!(text.contains("refused: you did not approve it"), "{text}");
+        assert!(!text.contains("$schema"), "{text}");
+    }
+
+    /// W1-26. A call the person declined or stopped reads as what happened to
+    /// them, not as the order Biorouter gave the model about it.
+    #[test]
+    fn a_declined_tool_shows_the_person_line() {
+        for (agent_text, person) in [
+            (
+                "The user has declined to run this tool. DO NOT attempt to call this tool \
+                 again. If there are no alternative methods to proceed, clearly explain the \
+                 situation and STOP.",
+                crate::session::output::PERSON_DECLINED,
+            ),
+            (
+                "The user cancelled this turn before deciding on this tool call, so the tool \
+                 was NOT run.",
+                crate::session::output::PERSON_CANCELLED,
+            ),
+            (
+                "The user cancelled this turn while the tool call was still running, so it was \
+                 interrupted and produced no result. It may have partially completed. Do not \
+                 assume it succeeded, and do not silently retry it.",
+                crate::session::output::PERSON_CANCELLED_MID_RUN,
+            ),
+        ] {
+            let mut app = App::new(StatusInfo::default());
+            app.push_message(&failed_tool_message(agent_text), false);
+            let text = scrollback_text(&app);
+            assert!(!person.is_empty() && text.contains(person), "{text}");
+            assert!(!text.contains("DO NOT"), "{text}");
+            assert!(!text.contains("The user"), "{text}");
+        }
+    }
+
+    /// W1-26. A provider failure prints once. The agent's "Ran into this
+    /// error" notice and the turn's error frame carry the same failure, and the
+    /// notice, which says what to do, is the one kept, as plain text, so a
+    /// masked key keeps its asterisks. A failure nothing has said yet still gets
+    /// its error line.
+    #[test]
+    fn a_provider_error_prints_once_and_keeps_its_mask() {
+        let failure = "Authentication error: Authentication failed. Status: 401 Unauthorized. \
+                       Response: Incorrect API key provided: sk-fake-****real. You can find your \
+                       API key at https://platform.openai.com/account/api-keys.";
+        let notice = format!(
+            "Ran into this error: {failure}\n\nRetrying will not help until the key or sign-in \
+             is fixed. Once it is, send your message again: this chat reads the new credentials \
+             with its next message."
+        );
+        let mut app = App::new(StatusInfo::default());
+        app.stream_delta(Some("m1".into()), &notice);
+        app.render_stream_if_dirty();
+        let committed = on_turn_aborted(&mut app, "provider_failure", failure);
+        assert_eq!(committed.as_deref(), Some(notice.as_str()));
+        let text = scrollback_text(&app);
+        assert_eq!(
+            text.matches("Incorrect API key provided").count(),
+            1,
+            "{text}"
+        );
+        assert!(text.contains("sk-fake-****real"), "{text}");
+        assert!(text.contains("Retrying will not help"), "{text}");
+
+        let mut app = App::new(StatusInfo::default());
+        assert_eq!(
+            on_turn_aborted(&mut app, "max_turns", "Stopped after 25 steps."),
+            None
+        );
+        assert!(scrollback_text(&app).contains("max_turns: Stopped after 25 steps."));
+
+        let quoted: String = app::md_lines("the key sk-fake-****real, and **bold**")
+            .iter()
+            .flat_map(|line| line.spans.iter().map(|span| span.content.to_string()))
+            .collect();
+        assert_eq!(quoted, "the key sk-fake-****real, and bold");
+    }
+
+    /// W1-28. A private chat says so on the TUI's status line, as the classic
+    /// banner's privacy row does; a public chat adds nothing.
+    #[test]
+    fn a_private_chat_shows_its_marker_in_the_tui() {
+        use biorouter::privacy::SessionClassification;
+        let mut status = StatusInfo {
+            provider: "versa_azure".into(),
+            model: "gpt-5.5".into(),
+            ..Default::default()
+        };
+        status_follow_privacy(&mut status, SessionClassification::Private);
+        let mut app = App::new(status);
+        let lines = buffer_lines(&mut app, 120, 30);
+        let (_, model_line) = line_with(&lines, "gpt-5.5").expect("the model line");
+        assert!(model_line.contains("Private"), "{model_line}");
+        assert!(model_line.contains('🔒'), "{model_line}");
+
+        status_follow_privacy(&mut app.status, SessionClassification::Public);
+        let lines = buffer_lines(&mut app, 120, 30);
+        assert!(!lines.join("\n").contains("Private"));
+    }
+
+    /// W1-28. `/compact` asks first, the classic REPL's question in the TUI's
+    /// modal, with Compact chosen as classic's Yes is; a decision chat asks
+    /// nothing, as there.
+    #[test]
+    fn tui_compact_asks_before_compacting() {
+        let modal = compact_modal("openai").expect("a chat with a context asks first");
+        assert_eq!(modal.title, app::COMPACT_TITLE);
+        assert_eq!(
+            modal.prompt.as_deref(),
+            super::super::compact_confirmation("openai")
+        );
+        assert_eq!(modal.options[modal.selected].0, "Compact");
+        assert!(compact_modal("ollama_decision").is_none());
+
+        let source = include_str!("mod.rs");
+        let compact = source
+            .split("if text.trim() == \"/compact\"")
+            .nth(1)
+            .and_then(|branch| branch.split("drive_response(").next())
+            .expect("submit's /compact branch");
+        assert!(compact.contains("compact_modal("), "{compact}");
+    }
+
+    /// W1-32. A modal is as tall as what it holds: the dictionary review's
+    /// two-line prompt opens a short box, with no PgUp/PgDn hint since nothing
+    /// scrolls. A long prompt still gets the tall box and the hint.
+    #[test]
+    fn the_dictionary_review_modal_fits_its_prompt() {
+        let height_of = |app: &mut App| {
+            let lines = buffer_lines(app, 100, 40);
+            let top = lines
+                .iter()
+                .position(|l| l.contains('┌') && l.contains("Dictionary review"))
+                .expect("the modal's top border");
+            let column = lines[top].chars().position(|c| c == '┌').unwrap();
+            let bottom = lines
+                .iter()
+                .enumerate()
+                .skip(top + 1)
+                .find(|(_, l)| l.chars().nth(column) == Some('└'))
+                .map(|(at, _)| at)
+                .expect("the modal's bottom border");
+            (bottom - top + 1, lines[top].contains("PgUp"))
+        };
+        let mut app = App::new(StatusInfo::default());
+        app.modal = Some(PermissionModal {
+            title: DICTIONARY_REVIEW_TITLE,
+            prompt: Some(
+                "Dictionary term: EPAS1 (public)\nKeep, dismiss, or skip this suggestion?".into(),
+            ),
+            options: vec![
+                ("Keep", "add to active dictionary"),
+                ("Dismiss", "remove this suggestion"),
+                ("Skip", "leave for later"),
+            ],
+            selected: 2,
+            scroll: 0,
+        });
+        let (rows, hint) = height_of(&mut app);
+        assert!(
+            rows <= 8,
+            "two prompt lines, a gap and three options: {rows} rows"
+        );
+        assert!(!hint, "nothing scrolls");
+
+        app.modal.as_mut().unwrap().prompt = Some("A line to read.\n".repeat(60));
+        let (rows, hint) = height_of(&mut app);
+        assert_eq!(rows, 26, "a long prompt keeps the capped box");
+        assert!(hint, "and says how to read it");
     }
 }
