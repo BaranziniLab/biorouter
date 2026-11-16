@@ -1871,9 +1871,13 @@ Run Biorouter and reach it from a browser. `serve` starts the `biorouterd` daemo
 - **`-p, --port <PORT>`**: Port to listen on. Default is `8765` — deliberately not `3000`, which is `biorouterd`'s own default
 - **`--token <TOKEN>`**: Use this access token instead of generating a fresh one. The flag stays on the command line while `serve` runs, where other accounts on the machine can read it, so `serve` prints a note saying so. To keep a token private, set `BIOROUTER_BROWSER_TOKEN` in the environment instead
 - **`--no-token`**: Serve without an access token. Refused for a non-loopback bind, and cannot be combined with `--token`
+- **`--no-dictation-install`**: Stop browsers on this daemon from installing speech models. The host can still run `biorouter dictation install`. `BIOROUTER_DICTATION_BROWSER_INSTALL=false` and managed policy also stop browser installs
 - **`--web-dir <DIR>`**: Directory holding the built interface. Takes precedence over `BIOROUTER_SERVE_UI`; whichever of the two is used must contain an `index.html`, or `serve` refuses to start. Located automatically when neither is set
+- **`--public-url <URL>`**: The `https://` address a reverse proxy serves the interface at, path prefix included, for example `https://hub.example.org/user/me/proxy/8765/`. The proxy must strip the prefix. It is printed with the access token and admitted by the live views' origin check. Takes precedence over `BIOROUTER_PUBLIC_URL`
 - **`--computer-use-approval`**: Interactively set a Biorouter Copilot approval key for the browser session. Requires a terminal
+- **`--folder-access-approval`**: Interactively set a folder-access approval key, a separate key for external-folder decisions in the browser. Requires a terminal
 - **`--open`**: Open a browser once the server is ready. The browser is handed a page only your account can read, which carries the address, and never the address itself: the address holds the access token, and a browser's command line can be read by other accounts on the machine. The page is removed two minutes later, or when `serve` stops
+- **`--allow-public-decision-models`**: Let a person in the browser make a new chat public by choosing a public decision model (such as one on Baseten) before its first message. Without it, this server refuses such a choice, because it cannot tell a person from a program holding its secret ([SD-16](../deployment/serve-decisions.md#sd-16-a-keyless-daemon-makes-no-chat-public-by-a-decision-model-unless-its-operator-allows-it))
 
 **Usage:**
 
@@ -1893,7 +1897,7 @@ BIOROUTER_BROWSER_TOKEN="$(openssl rand -hex 32)" biorouter serve --host 0.0.0.0
 
 The printed URL carries an access token as `?t=<token>`, minted per launch and shown once. Opening it exchanges the token for a session cookie and answers a short page that moves on to the interface, so the token leaves the address bar. It is not used up, and opens the interface again for anyone who has it until the daemon stops. Use `Ctrl+C` to stop the server, or send `serve` `SIGTERM` (`kill <pid>`); either way it stops the daemon it started and frees the port.
 
-> **Note.** A browser session cannot change its model or provider, deliberately — run `biorouter configure` to choose them **before** starting `serve`. [Reaching Biorouter from a browser](../deployment/browser-access.md) explains why, and covers the access token, remote access and troubleshooting.
+> **Note.** A browser session cannot move an open chat to another model, and a program that holds only the daemon's secret (such as an agent in a chat) cannot change the provider. The person in the served page can choose, add and edit the host's providers and default model, including on the first page when nothing is configured yet, but only over an `https` address or on the serving machine itself, and not with `--no-token` ([SD-18](../deployment/serve-decisions.md#sd-18-the-person-in-the-served-page-sets-up-providers-and-an-agent-still-cannot)). `biorouter configure` still works before or while `serve` runs; its changes reach new chats after `serve` restarts, while changes made in the browser apply at once. When a new release is out, the page can also update `serve` and restart it on the same address ([SD-19](../deployment/serve-decisions.md#sd-19-the-person-on-the-page-updates-serve-and-it-comes-back-on-the-same-address)). [Reaching Biorouter from a browser](../deployment/browser-access.md) covers the access token, remote access and troubleshooting.
 
 ### web
 
@@ -2028,7 +2032,9 @@ start of the message. The chip is only how the composer draws it: the message is
 sent as `/bug <text>`.
 
 The TUI and classic CLI additionally support `/help` (alias `/?`), `/exit` (alias `/quit`),
-`/rename <name>`, and `/diverge [name]`. The TUI also has `/decisions`, an overlay listing the
+`/rename <name>`, `/diverge [name]`, `/dictate` (record into the prompt, same as Ctrl+T; also
+`status` and `retry`) and `/dictionary add|review|scan`; see
+[Dictation in terminal chats](#dictation-in-terminal-chats). The TUI also has `/decisions`, an overlay listing the
 chat's decision-model calls by source and by recent turn; ↑↓ selects a source, Enter shows its
 last calls and Esc goes back. In the TUI and the classic CLI a turn's decision calls show as one
 line per source (`◇ Monitor 'Form reached': 18 checks this turn · 18 quiet · last P 0.31`), never
@@ -2099,6 +2105,7 @@ biorouter session --name use-custom-theme
 
 - **`Ctrl+C`** - Interrupt the current request
 - **`Ctrl+J`** - Add a newline
+- **`Ctrl+T`** - Start or stop dictation into the prompt. Change the letter with `BIOROUTER_CLI_DICTATION_KEY`; an empty value turns the chord off, and `/dictate` still works. See [Dictation in terminal chats](#dictation-in-terminal-chats).
 
 **Navigation:**
 
