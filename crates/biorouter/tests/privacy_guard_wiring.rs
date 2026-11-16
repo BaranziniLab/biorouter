@@ -2304,6 +2304,7 @@ const TURN_PROVIDER_HOLDERS: &[TurnProviderHolder] = &[
             ("issue_tool_bridge", HandOff::Follow, ""),
             ("persist_composite_provider_state", HandOff::Follow, ""),
             ("stream_response_from_provider", HandOff::Follow, ""),
+            ("note_spawning_request", HandOff::Follow, ""),
         ],
     },
     TurnProviderHolder {
@@ -2413,6 +2414,16 @@ const TURN_PROVIDER_HOLDERS: &[TurnProviderHolder] = &[
             HandOff::Carry,
             "re-binds the same provider under the same name to move it into the stream",
         )],
+    },
+    // Asks the provider only its `get_name()`, the label the spawn's usage-limit
+    // gate prices the not-yet-recorded request by (`UnrecordedRequest::provider`,
+    // read by `price_request`), and only when the usage names no provider.
+    // Followed rather than excused, so a tier read added here fails the census.
+    TurnProviderHolder {
+        file: "crates/biorouter/src/agents/agent.rs",
+        signature: "async fn note_spawning_request(",
+        names: &["provider"],
+        hand_offs: &[],
     },
 ];
 
