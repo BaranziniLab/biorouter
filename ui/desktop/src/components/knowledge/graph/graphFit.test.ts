@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { fittedAxisFill, graphFitPadding, NODE_REL_SIZE } from './graphFit';
+import {
+  fittedAxisFill,
+  graphFitPadding,
+  graphFitView,
+  MAX_FIT_ZOOM,
+  NODE_REL_SIZE,
+} from './graphFit';
 
 /**
  * The canvas cannot be rendered in jsdom — force-graph calls
@@ -106,5 +112,69 @@ describe('fittedAxisFill', () => {
 
   it('never goes negative on a padding wider than the pane', () => {
     expect(fittedAxisFill(100, 200)).toBe(0);
+  });
+});
+
+/**
+ * W1-45: a fit scales the graph's box to the pane, and nothing capped it, so a knowledge base with
+ * one page drew that page as one circle about 730px across, its label clipped at the pane edge.
+ */
+describe('graphFitView', () => {
+  /** force-graph's `getGraphBbox` for nodes at these points: each one padded by `NODE_REL_SIZE`. */
+  const boxOf = (...points: Array<[number, number]>) => ({
+    x: [
+      Math.min(...points.map(([x]) => x)) - NODE_REL_SIZE,
+      Math.max(...points.map(([x]) => x)) + NODE_REL_SIZE,
+    ] as [number, number],
+    y: [
+      Math.min(...points.map(([, y]) => y)) - NODE_REL_SIZE,
+      Math.max(...points.map(([, y]) => y)) + NODE_REL_SIZE,
+    ] as [number, number],
+  });
+
+  it('a lone node is not zoomed past the cap', () => {
+    for (const [w, h] of CANVAS_BOXES) {
+      const padding = graphFitPadding(w, h, NODE_REL_SIZE);
+      const view = graphFitView(w, h, padding, boxOf([3, -2]));
+      // `zoomToFit` alone would choose (h - 2p) / 11.2, over 20x here.
+      expect(view, `${w}x${h}`).toEqual({ x: 3, y: -2, zoom: MAX_FIT_ZOOM });
+      // Drawn at a normal size, centred: the mark is a small part of the pane, not all of it.
+      expect(2 * NODE_REL_SIZE * view!.zoom, `${w}x${h}`).toBeLessThan(Math.min(w, h) * 0.1);
+    }
+  });
+
+  it('caps two close nodes as well, and keeps them centred', () => {
+    const view = graphFitView(
+      880,
+      486,
+      graphFitPadding(880, 486, NODE_REL_SIZE),
+      boxOf([0, 0], [40, 10])
+    );
+    expect(view).toEqual({ x: 20, y: 5, zoom: MAX_FIT_ZOOM });
+  });
+
+  it('leaves a graph that fills the pane at the zoom zoomToFit would choose', () => {
+    // A cluster 600 by 330 world units, the size a few dozen pages settle to.
+    const box = boxOf([-300, -165], [300, 165]);
+    const padding = graphFitPadding(880, 486, 13.4);
+    const view = graphFitView(880, 486, padding, box)!;
+    const zoomToFit = Math.min(
+      (880 - 2 * padding) / (box.x[1] - box.x[0]),
+      (486 - 2 * padding) / (box.y[1] - box.y[0])
+    );
+    expect(zoomToFit).toBeLessThan(MAX_FIT_ZOOM);
+    expect(view.zoom).toBeCloseTo(zoomToFit, 9);
+    expect([view.x, view.y]).toEqual([0, 0]);
+  });
+
+  it('answers nothing for a box it cannot read, so the caller fits as before', () => {
+    expect(graphFitView(880, 486, 40, null)).toBeNull();
+    expect(graphFitView(880, 486, 40, { x: [0, Number.NaN], y: [0, 1] })).toBeNull();
+    expect(graphFitView(60, 486, 40, boxOf([0, 0]))).toBeNull();
+  });
+
+  /** Labels show from a zoom of 1.55 (`ForceGraphCanvas`'s label pass), so a lone page is named. */
+  it('caps at a zoom where an ordinary node is labelled', () => {
+    expect(MAX_FIT_ZOOM).toBeGreaterThanOrEqual(1.55);
   });
 });

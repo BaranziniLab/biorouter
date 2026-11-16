@@ -65,6 +65,19 @@ async function fetchVisibleSessions(): Promise<Session[]> {
 }
 
 /**
+ * The private chats the migration did not mark, with their own cause (W1-43). A `turn:`, `mcp:`,
+ * `kb:`, `decision:`, `inherited:` or `diverged:` tier records something that happened in the chat,
+ * so "the model each of them was last using" is not why they are private.
+ */
+function otherPrivateHelp(count: number): string {
+  return `${count} other ${count === 1 ? 'chat is' : 'chats are'} private because of something that happened in ${
+    count === 1 ? 'it' : 'them'
+  }, such as a reply from a private model, a private extension or knowledge base, or the private chat ${
+    count === 1 ? 'it' : 'they'
+  } came from.`;
+}
+
+/**
  * The id the count sentence carries, so the dialog's `aria-describedby` can name it. Whichever of
  * the three stand-ins renders (could not count, counting, the headline) wears it, and never two at
  * once, so the id is unique.
@@ -171,6 +184,9 @@ export function FirstRunPrivacyNotice({
   }, [open, counts]);
 
   const resolved = counts ?? fetched;
+  const otherPrivate = resolved
+    ? Math.max(0, resolved.privateVisible - resolved.backfilledVisible)
+    : 0;
 
   return (
     <ModalShell
@@ -216,18 +232,35 @@ export function FirstRunPrivacyNotice({
 
         {!failed && resolved && (
           <>
-            <DialogDescription
-              id={SUMMARY_ID}
-              data-testid="notice-headline"
-              className="text-body text-text-default"
-            >
-              {/* The total is every chat in History, all time; Home's tile counts
-                  the chats active in its range. So the headline names its own
-                  scope rather than read as Home's number (E-10). */}
-              <strong className="font-semibold">{resolved.privateVisible}</strong> of the{' '}
-              <strong className="font-semibold">{resolved.totalVisible}</strong> chats in your
-              History are now marked private, because that is the model each of them was last using.
-            </DialogDescription>
+            <p className="text-body text-text-default">
+              <DialogDescription
+                asChild
+                id={SUMMARY_ID}
+                data-testid="notice-headline"
+                className="text-body text-text-default"
+              >
+                {/* The total is every chat in History, all time; Home's tile counts
+                    the chats active in its range. So the headline names its own
+                    scope rather than read as Home's number (E-10). The cause it
+                    gives is the migration's, so it counts only the chats the
+                    migration marked (W1-43, `noticeCounts.ts`'s warning). */}
+                <span>
+                  <strong className="font-semibold">{resolved.backfilledVisible}</strong> of the{' '}
+                  <strong className="font-semibold">{resolved.totalVisible}</strong> chats in your
+                  History are now marked private, because that is the model each of them was last
+                  using.
+                </span>
+              </DialogDescription>
+              {/* A chat a private turn, extension, knowledge base or parent marked is private
+                  because of what happened in it, not because of its last model: counted apart,
+                  in the info icon, so the line stays one line. */}
+              {otherPrivate > 0 && (
+                <>
+                  {' '}
+                  <InfoTip label="the other private chats" help={otherPrivateHelp(otherPrivate)} />
+                </>
+              )}
+            </p>
 
             {/* The breakdown behind the count folds (owner, 2026-11-13: one line up
                 front, the detail on click). */}

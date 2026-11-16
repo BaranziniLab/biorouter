@@ -81,3 +81,48 @@ export function fittedAxisFill(dimension: number, padding: number): number {
   if (dimension <= 0) return 0;
   return Math.max(0, (dimension - 2 * padding) / dimension);
 }
+
+/**
+ * The most a fit may magnify the graph (W1-45).
+ *
+ * `zoomToFit` scales the graph's box to the pane and nothing capped it, so a knowledge base with
+ * one page, the state every new base passes through, drew that page as one circle about 730px
+ * across with its label clipped at the pane edge. Real graphs fit well under this (a few dozen
+ * pages settle near 1), so the cap only binds on a lone node or a few close ones. At 2 an ordinary
+ * node draws about 22px across, the size a hub draws in a fitted graph, and its label shows,
+ * because labels appear from a zoom of 1.55. A person can still zoom in further by hand.
+ */
+export const MAX_FIT_ZOOM = 2;
+
+/** force-graph's `getGraphBbox()`: the world box its own fit reads, each node padded by `NODE_REL_SIZE`. */
+export interface GraphBox {
+  x: [number, number];
+  y: [number, number];
+}
+
+/** Where a fit leaves the camera: the world point at the pane's centre, and the zoom. */
+export interface FitView {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+/**
+ * The fit `zoomToFit` makes, `min((W - 2p) / boxW, (H - 2p) / boxH)` centred on the box, with the
+ * zoom capped at {@link MAX_FIT_ZOOM}. `null` for a box it cannot read or a pane too small for the
+ * padding, and the caller then fits as `zoomToFit` does.
+ */
+export function graphFitView(
+  width: number,
+  height: number,
+  padding: number,
+  box: GraphBox | null | undefined
+): FitView | null {
+  if (!box) return null;
+  const [x0, x1] = box.x;
+  const [y0, y1] = box.y;
+  if (![x0, x1, y0, y1, width, height, padding].every(Number.isFinite)) return null;
+  const fit = Math.min((width - 2 * padding) / (x1 - x0), (height - 2 * padding) / (y1 - y0));
+  if (Number.isNaN(fit) || fit <= 0) return null;
+  return { x: (x0 + x1) / 2, y: (y0 + y1) / 2, zoom: Math.min(fit, MAX_FIT_ZOOM) };
+}

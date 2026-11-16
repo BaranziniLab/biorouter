@@ -1082,6 +1082,17 @@ describe('HostDialog', () => {
       `"$HOME/.local/bin/biorouter-crew" start --state-dir "$HOME/.local/share/biorouter-crew/lab-data" --name lab-data --bootstrap-key ${HOSTING_KEY}`,
       '"$HOME/.local/bin/biorouter-crew" status --state-dir "$HOME/.local/share/biorouter-crew/lab-data"',
     ].join('\n');
+    /**
+     * What a setup job really runs and reports as `hostCommand` (AO-9, `setup_start_command`):
+     * the same commands with `--create` on the start line. Written out, not derived, so the test
+     * does not lean on the helper it checks.
+     */
+    const SETUP = [
+      'umask 077',
+      'mkdir -p "$HOME/.local/share/biorouter-crew"',
+      `"$HOME/.local/bin/biorouter-crew" start --state-dir "$HOME/.local/share/biorouter-crew/lab-data" --name lab-data --bootstrap-key ${HOSTING_KEY} --create`,
+      '"$HOME/.local/bin/biorouter-crew" status --state-dir "$HOME/.local/share/biorouter-crew/lab-data"',
+    ].join('\n');
     const LINE = 'brcrew1:eyJ2IjoxfQ';
     const DRAFT = '# hpc.ucsf.edu\n\nUbuntu 22.04, 16 CPUs, no job scheduler.';
 
@@ -1110,7 +1121,7 @@ describe('HostDialog', () => {
           previousKept: false,
           replacedVersion: null,
           host: { kind: 'found', text: LINE },
-          hostCommand: SHOWN,
+          hostCommand: SETUP,
           connectionId: null,
           workFolder: '/home/alice/crew-work/lab-data',
           remoteAccess: null,
@@ -1288,8 +1299,22 @@ describe('HostDialog', () => {
       );
     });
 
+    it('a setup that ran the --create start is read, not refused', async () => {
+      // The daemon's setup job adds `--create` to the start line (AO-9) and reports exactly what it
+      // ran. The Start step shows that text, so the tripwire passes and the result is read.
+      mocks.startSetup.mockResolvedValue(finished({ hostCommand: SETUP }));
+      renderHost();
+      await toStart();
+      runItYourself();
+      expect(screen.getByText(/--name lab-data --bootstrap-key c{64}/).textContent).toBe(SETUP);
+      fireEvent.click(screen.getByRole('button', { name: hostCopy.setUpAndStart }));
+      await screen.findByText(hostCopy.createHeading('lab-data', 'hpc.ucsf.edu'));
+      expect(mocks.previewInvitation).toHaveBeenCalledWith(LINE);
+      expect(screen.queryByTestId('crew-host-start-problem')).toBeNull();
+    });
+
     it('never reads a setup whose start command is not the one shown', async () => {
-      mocks.startSetup.mockResolvedValue(finished({ hostCommand: `${SHOWN}\nrm -rf ~` }));
+      mocks.startSetup.mockResolvedValue(finished({ hostCommand: `${SETUP}\nrm -rf ~` }));
       renderHost();
       await toStart();
       fireEvent.click(screen.getByRole('button', { name: hostCopy.setUpAndStart }));

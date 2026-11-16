@@ -9,7 +9,8 @@ import { withAlpha } from './graphStyle';
 import { useCanvasTheme } from './useCanvasTheme';
 import type { CanvasTheme } from './useCanvasTheme';
 import { NODE_RING_ALPHA } from './graphStyle';
-import { graphFitPadding, NODE_REL_SIZE } from './graphFit';
+import { graphFitPadding, graphFitView, NODE_REL_SIZE } from './graphFit';
+import type { GraphBox } from './graphFit';
 import { isWindowResizing, motionDuration } from '../../../styles/motion';
 import {
   announce,
@@ -183,6 +184,30 @@ function fitDurationMs(): number {
   return isWindowResizing() ? 0 : motionDuration('med');
 }
 
+/** The camera methods a fit uses, beyond the shim's `ForceGraphMethods`. */
+type FitMethods = ForceGraphMethods & {
+  zoom?: (scale: number, durationMs?: number) => unknown;
+  zoomToFit?: (durationMs?: number, paddingPx?: number) => void;
+  getGraphBbox?: () => GraphBox | null;
+};
+
+/**
+ * Fit the whole graph in the pane, as `zoomToFit` does, but never magnified past
+ * `MAX_FIT_ZOOM` (W1-45): a lone page draws at a normal size, centred, instead of filling the
+ * pane. Falls back to `zoomToFit` when the box cannot be read.
+ */
+function fitToPane(fg: FitMethods | undefined, width: number, height: number, padding: number) {
+  if (!fg) return;
+  const duration = fitDurationMs();
+  const view = graphFitView(width, height, padding, fg.getGraphBbox?.());
+  if (view && fg.centerAt && fg.zoom) {
+    fg.centerAt(view.x, view.y, duration);
+    fg.zoom(view.zoom, duration);
+    return;
+  }
+  fg.zoomToFit?.(duration, padding);
+}
+
 export function ForceGraphCanvas({
   graph,
   model,
@@ -293,13 +318,12 @@ export function ForceGraphCanvas({
 
   useEffect(() => {
     const fg = fgRef.current as
-      | (ForceGraphMethods & {
+      | (FitMethods & {
           d3Force?: (name: string) => {
             strength?: (value: number) => unknown;
             distance?: (value: number) => unknown;
             distanceMax?: (value: number) => unknown;
           };
-          zoomToFit?: (durationMs?: number, paddingPx?: number) => void;
         })
       | undefined;
 
@@ -333,7 +357,7 @@ export function ForceGraphCanvas({
     }
 
     const timeout = window.setTimeout(() => {
-      fg.zoomToFit?.(fitDurationMs(), graphFitPadding(size.width, size.height, maxRadius));
+      fitToPane(fg, size.width, size.height, graphFitPadding(size.width, size.height, maxRadius));
     }, 900);
 
     return () => window.clearTimeout(timeout);
@@ -846,8 +870,10 @@ export function ForceGraphCanvas({
           e.preventDefault();
           const top = highestDegree(positioned, degreeOf);
           land(top);
-          fgRef.current?.zoomToFit?.(
-            fitDurationMs(),
+          fitToPane(
+            fgRef.current as FitMethods | undefined,
+            size.width,
+            size.height,
             graphFitPadding(size.width, size.height, NODE_REL_SIZE)
           );
           return;

@@ -63,6 +63,7 @@ import { updateJoinContext, useJoinContext } from './joinContext';
 import { advancedInvalid, WORKSPACE_KEY_PATTERN } from './JoinDialog';
 import {
   groupWorkspaceFingerprint,
+  hostSetupStartCommands,
   hostStartCommands,
   isWorkspaceName,
   readStartOutput,
@@ -734,8 +735,17 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
   };
 
   // ── Set up and start Crew (OW-9), and the older start it falls back to (D-HOST) ────────────
-  /** The commands the Start step shows: what the daemon must run, character for character. */
-  const shownCommands = prepared ? hostStartCommands(slug, prepared.public_key) : '';
+  /**
+   * The commands the Start step shows: what its button makes the daemon run, character for
+   * character. Setup runs the start line with `--create` (AO-9, `setup_start_command`); the older
+   * start, on a daemon before setup, runs it without (`host_start_command`). Either text works
+   * pasted into a terminal: `--bootstrap-key` alone already lets the broker create the workspace.
+   */
+  const shownCommands = prepared
+    ? setupUnavailable
+      ? hostStartCommands(slug, prepared.public_key)
+      : hostSetupStartCommands(slug, prepared.public_key)
+    : '';
   /** The commands shown when Set up and start Crew was pressed: the job's tripwire. */
   const shownAtSetup = useRef('');
   /** A run that didn't get there: say why, and open the manual path, which always works. */
@@ -823,7 +833,9 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
    */
   const startForMe = async () => {
     if (!prepared || run.phase === 'starting' || run.phase === 'running' || busy) return;
-    const shown = shownCommands;
+    // What the older start runs: no `--create`. Not `shownCommands`, which still shows setup's
+    // text in the render that found the daemon too old for setup and fell back to this start.
+    const shown = hostStartCommands(slug, prepared.public_key);
     setRun({ phase: 'starting' });
     let status: HostStartRun;
     try {
@@ -1560,7 +1572,8 @@ function HostDialogView({ open, onClose }: { open: boolean; onClose: () => void 
                         {hostCopy.runThis(server, sshUsername(serverLogin))}
                       </p>
                       {/* One command per line, scrolling sideways rather than wrapping mid-flag.
-                          The same text every way: setup and the older start run exactly this. */}
+                          Exactly what the button above runs: setup's start, or the older start's
+                          on a daemon before setup. */}
                       <CopyField
                         multiline
                         className="crew-onboard-command"

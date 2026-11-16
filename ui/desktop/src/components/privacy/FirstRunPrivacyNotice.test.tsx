@@ -198,6 +198,45 @@ describe('FirstRunPrivacyNotice', () => {
     );
   });
 
+  // W1-43: the headline gave every private chat the migration's cause, "the model each of them was
+  // last using". Only a backfilled row was marked that way; a chat a private turn, extension or
+  // parent marked is private because of what happened in it, and is counted apart.
+  it('the last-used clause counts only backfilled chats', () => {
+    const many = (count: number, make: (index: number) => Session) =>
+      Array.from({ length: count }, (_, index) => make(index));
+    const sessions = [
+      ...many(644, (i) => row(`b${i}`, 'private', 'versa_azure', 'backfill:versa_azure')),
+      ...many(100, (i) => row(`t${i}`, 'private', 'versa_azure', 'turn:versa_azure')),
+      ...many(30, (i) => row(`m${i}`, 'private', 'anthropic', 'mcp:ucsfomopagent')),
+      ...many(17, (i) => row(`i${i}`, 'private', 'anthropic', 'inherited:parent-1')),
+      ...many(3000, (i) => row(`p${i}`, 'public', 'anthropic')),
+    ];
+    render(
+      <FirstRunPrivacyNotice open onDismiss={vi.fn()} counts={computeNoticeCounts(sessions)} />
+    );
+
+    const headline = screen.getByTestId('notice-headline').textContent ?? '';
+    expect(headline).toBe(
+      '644 of the 3791 chats in your History are now marked private, because that is the model each of them was last using.'
+    );
+    expect(headline).not.toContain('791 of');
+    // The other 147 are named, with their own cause, one click or hover away.
+    expect(
+      screen.getByRole('button', { name: 'About the other private chats' })
+    ).toHaveAccessibleDescription(
+      '147 other chats are private because of something that happened in them, such as a reply from a private model, a private extension or knowledge base, or the private chat they came from.'
+    );
+    // The dialog is still described by the count sentence alone.
+    expect(screen.getByRole('dialog')).toHaveAccessibleDescription(headline);
+  });
+
+  it('names no other private chats when every private chat was backfilled', () => {
+    render(
+      <FirstRunPrivacyNotice open onDismiss={vi.fn()} counts={computeNoticeCounts(FIXTURE)} />
+    );
+    expect(screen.queryByRole('button', { name: 'About the other private chats' })).toBeNull();
+  });
+
   it('lists the private chats by the model that marked them', async () => {
     mocks.listSessions.mockResolvedValue(served(FIXTURE));
     render(<FirstRunPrivacyNotice open onDismiss={vi.fn()} />);

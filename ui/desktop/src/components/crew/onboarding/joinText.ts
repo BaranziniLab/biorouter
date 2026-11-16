@@ -151,6 +151,19 @@ export function hostStartCommands(slug: string, bootstrapKey: string): string {
   ].join('\n');
 }
 
+/**
+ * The commands Set up and start Crew runs (AO-9): {@link hostStartCommands} with `--create` on the
+ * start line, so a broker that knows the flag creates the workspace only on purpose (one from
+ * before it ignores the flag, and `--bootstrap-key` already lets it create). The daemon's setup
+ * job builds the same text, `setup_start_command` in `crew/host_start.rs`, and reports what it ran
+ * as `hostCommand`; `host_start_tests.rs` fills this template and compares the two.
+ */
+export function hostSetupStartCommands(slug: string, bootstrapKey: string): string {
+  const start = `--bootstrap-key ${bootstrapKey}\n`;
+  const create = `--bootstrap-key ${bootstrapKey} --create\n`;
+  return hostStartCommands(slug, bootstrapKey).replace(start, () => create);
+}
+
 /** A workspace's folder name as `start` wrote it: the workspace name rule, and nothing else. */
 const WORKSPACE_FOLDER = /^[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?$/;
 
