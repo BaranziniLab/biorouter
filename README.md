@@ -46,6 +46,7 @@ You can also add compatible custom endpoints. Local models are private when they
 Privacy protection is on by default and applies across chats, knowledge bases, extensions, and subagents.
 
 - **Private chats stay private.** Once a chat uses a private model or data source, Biorouter prevents it from switching to a public model. Changing its classification requires a deliberate user action.
+- **Decision models count toward a chat's privacy.** The least private model a chat names decides: a private language model plus a public decision model (for example one on Baseten) makes a new chat public, a decision model on your computer changes nothing, and a chat that is already private refuses a public decision model. Biorouter never widens what a running turn can reach. See [how a chat's tier is set](docs/security/privacy-tiers.md#what-shipped-and-what-did-not).
 - **Public models cannot retrieve private context.** Biorouter blocks access to private chats and knowledge bases, and refuses extensions marked private.
 - **Delegation respects the boundary.** An agent cannot use a subagent to move work between private and public models.
 
@@ -74,6 +75,11 @@ Work with papers, genes, diseases, drugs, cohorts, and experimental data in the 
 | **Work with desktop software** | Biorouter Copilot can inspect and operate applications on the backend computer, with your approval for each request. |
 | **Build and reuse tools** | Create small research apps with Agent Drafter, run parallel chats, and save or schedule recurring tasks as workflows. |
 | **Work with your lab** | In Crew, chat in channels, share files and give AI agents tasks the whole channel can see, in a workspace one lab member hosts on a shared Linux server. |
+| **Dictate and keep your words** | Speak into the composer, the terminal (`Ctrl+T`) or a `biorouter serve` browser. A speech model that Biorouter's own engine runs on the computer hosting your session turns the speech into text, and nothing goes to a third-party speech service. The model is a one-time download of the one you choose from the Baranzini Lab's GitHub, and the Dictionary teaches it your lab's terms. In a browser the microphone needs `localhost` or HTTPS. See [voice dictation](docs/dictation/README.md). |
+| **Set a spending limit** | Cap a chat, every chat or the month, in tokens or dollars. A chat stops before the request that would pass the limit. All limits are off until you set one. See [usage limits](docs/agent-loop/usage-limits.md). |
+| **Screen and gate with decision models** | Optional fast models that return a yes or no, a choice or a score with probabilities. They can watch a chat, screen many texts, or gate a phase of delegated work. See [decision models](docs/agent-loop/decision-models.md). |
+
+Dictation, usage limits and decision models are on `main` and arrive in the first release after 1.94.1.
 
 Biorouter Copilot keeps observations and approvals separate for each chat. The applications themselves share a desktop, so choose the model before opening sensitive records or research data. See [Biorouter Copilot setup and limits](docs/extensions/built-in/computer-controller.md).
 
