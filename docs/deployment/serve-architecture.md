@@ -176,9 +176,10 @@ reads the cookie. See
 
 ## What the person on the page can change
 
-On a daemon that holds no user-action key, three things the desktop gates behind its proof are
-open to the person in the served page, and to nobody else. Everything else that needs a person
-(approvals, declassify, reset, steering) still asks the desktop's proof, so SD-8 and SD-11 stand.
+A `serve` daemon holds no user-action key, so it cannot ask for the desktop's proof of a person.
+Three things are still open to the person in the served page, and to nobody else. Everything else
+that needs a person (approvals, declassify, reset, steering) still asks the desktop's proof, so SD-8
+and SD-11 stand.
 
 **Providers and the default model ([SD-18](serve-decisions.md#sd-18-the-person-in-the-served-page-sets-up-providers-and-an-agent-still-cannot)).**
 `auth::provider_choice_proof` counts a request as the person when it carries all three of:
