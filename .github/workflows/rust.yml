@@ -713,7 +713,7 @@ jobs:
           # file: page started (routes::web_ui::exchange_bounce).
           curl -s -o "$RUNNER_TEMP/bounce.html" -D "$RUNNER_TEMP/h" "http://127.0.0.1:18777/?t=citoken"
           grep -qi '^HTTP/1.1 200' "$RUNNER_TEMP/h" || fail 'the token exchange did not answer its page'
-          grep -qi 'set-cookie: biorouter_session=' "$RUNNER_TEMP/h" || fail 'no session cookie'
+          grep -qi 'set-cookie: biorouter_session_18777=' "$RUNNER_TEMP/h" || fail 'no session cookie'
           grep -qi 'HttpOnly' "$RUNNER_TEMP/h" || fail 'the session cookie is readable from script'
           grep -qi 'SameSite=Strict' "$RUNNER_TEMP/h" || fail 'the session cookie is sent cross-site'
           grep -qi 'cache-control: no-store' "$RUNNER_TEMP/h" || fail 'the exchange page is cacheable'
@@ -722,15 +722,19 @@ jobs:
             || fail 'the exchange page does not move on to the interface'
           ! grep -q citoken "$RUNNER_TEMP/bounce.html" || fail 'the exchange page carries the token'
 
-          # With the cookie, the shell and its runtime configuration.
-          curl -fsS -b 'biorouter_session=citoken' http://127.0.0.1:18777/ > "$RUNNER_TEMP/shell.html"
+          # With the cookie, the shell and its runtime configuration. The cookie is
+          # named for the daemon's port, so a second serve on this host would not
+          # replace it; the plain name an earlier version set still opens it.
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -b 'biorouter_session=citoken' http://127.0.0.1:18777/)" = 200 ] \
+            || fail 'the cookie an earlier version set no longer opens the shell'
+          curl -fsS -b 'biorouter_session_18777=citoken' http://127.0.0.1:18777/ > "$RUNNER_TEMP/shell.html"
           grep -q '__BIOROUTER_HEADLESS_CONFIG__' "$RUNNER_TEMP/shell.html" || fail 'no runtime config'
           grep -qE '"secretKey":"[0-9a-f]{64}"' "$RUNNER_TEMP/shell.html" || fail 'no daemon secret'
           # ABSENT, not empty: empty is falsy in the renderer and sends the
           # browser to a hardcoded 127.0.0.1:3000.
           ! grep -q 'apiBaseUrl' "$RUNNER_TEMP/shell.html" \
             || fail 'apiBaseUrl is present; the renderer will not use its own origin'
-          grep -q 'no-store' <(curl -s -D - -o /dev/null -b 'biorouter_session=citoken' http://127.0.0.1:18777/) \
+          grep -q 'no-store' <(curl -s -D - -o /dev/null -b 'biorouter_session_18777=citoken' http://127.0.0.1:18777/) \
             || fail 'the shell is cacheable and it carries the secret'
           # The shell names its mount, relative to where the request landed, so
           # the relative bundle resolves under a proxy's path prefix and on a
@@ -738,7 +742,7 @@ jobs:
           grep -q '<head><base href="./">' "$RUNNER_TEMP/shell.html" || fail 'the shell names no mount'
           # To a file first: under pipefail, `grep -q` exiting early can kill
           # curl mid-write and fail the step at random.
-          curl -fsS -b 'biorouter_session=citoken' -o "$RUNNER_TEMP/deep.html" http://127.0.0.1:18777/a/b/c \
+          curl -fsS -b 'biorouter_session_18777=citoken' -o "$RUNNER_TEMP/deep.html" http://127.0.0.1:18777/a/b/c \
             || fail 'a deep path did not answer'
           grep -q '<base href="../../">' "$RUNNER_TEMP/deep.html" || fail 'a deep path does not lead back to the mount'
 
@@ -748,11 +752,11 @@ jobs:
           # `https,http`. Without the metadata, a network address is refused.
           nav=(-H 'Sec-Fetch-Mode: navigate' -H 'Sec-Fetch-Dest: document')
           for proto in https 'https,http' http; do
-            [ "$(curl -s -o /dev/null -w '%{http_code}' -b 'biorouter_session=citoken' "${nav[@]}" \
+            [ "$(curl -s -o /dev/null -w '%{http_code}' -b 'biorouter_session_18777=citoken' "${nav[@]}" \
                 -H 'Host: hub.example.org' -H "X-Forwarded-Proto: $proto" http://127.0.0.1:18777/)" = 200 ] \
               || fail "a proxied navigation with X-Forwarded-Proto: $proto was refused"
           done
-          [ "$(curl -s -o /dev/null -w '%{http_code}' -b 'biorouter_session=citoken' \
+          [ "$(curl -s -o /dev/null -w '%{http_code}' -b 'biorouter_session_18777=citoken' \
               -H 'Host: 192.168.1.5:18777' -H 'X-Forwarded-Proto: https' http://127.0.0.1:18777/)" = 403 ] \
             || fail 'a network address without Fetch Metadata was served the shell'
 

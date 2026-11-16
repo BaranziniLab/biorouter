@@ -67,7 +67,7 @@ biorouter serve [--host <addr>] [--port <n>] [--token <t>] [--no-token] [--no-di
 |---|---|---|
 | `--host <addr>` | Address to bind. Anything reachable from another machine requires a token. | `127.0.0.1` |
 | `-p, --port <n>` | Port to listen on. | `8765` |
-| `--token <t>` | Use this access token instead of generating a fresh one. The flag stays on the command line, where other accounts can read it, and `serve` prints a note saying so; `BIOROUTER_BROWSER_TOKEN` does not. | A new random token each launch |
+| `--token <t>` | Use this access token instead of generating a fresh one. It is trimmed, and an empty or blank value is refused before anything starts. The flag stays on the command line, where other accounts can read it, and `serve` prints a note saying so; `BIOROUTER_BROWSER_TOKEN` does not. | A new random token each launch |
 | `--no-token` | Serve with no access token. Refused for a non-loopback bind, and cannot be combined with `--token`. | Off |
 | `--no-dictation-install` | Stop browsers on this daemon from installing speech models. The host can still install them with `biorouter dictation install`. `BIOROUTER_DICTATION_BROWSER_INSTALL=false` and managed policy also stop browser installs. | Off |
 | `--web-dir <dir>` | Directory holding the built interface. It must contain an `index.html`, or `serve` refuses to start. Takes precedence over `BIOROUTER_SERVE_UI`. | `BIOROUTER_SERVE_UI` if set, otherwise found automatically — see [When the interface cannot be found](#when-the-interface-cannot-be-found) |
@@ -116,12 +116,16 @@ carries a credential instead.
   `?t=` parameter, and different every time. It is shown once, in the terminal; there is nowhere
   else to read it back from.
 - **Opening the address exchanges it for a cookie.** The daemon validates the token, sets an
-  `HttpOnly`, `SameSite=Strict` session cookie named `biorouter_session` (also `Secure` when the
-  browser reached the address over `https`), and answers a short page that moves the browser on
-  to `/`. The token then disappears from the address bar and from the
+  `HttpOnly`, `SameSite=Strict` session cookie named for its port, `biorouter_session_<port>`
+  (also `Secure` when the browser reached the address over `https`), and answers a short page
+  that moves the browser on to `/`. The token then disappears from the address bar and from the
   tab's back and forward list, and it is not in the `Referer` of anything the page later loads. A
   page rather than a redirect, because a redirect would lose the cookie when the address was opened
-  from a file, which is how `--open` opens it.
+  from a file, which is how `--open` opens it. The port is in the name because a browser keeps
+  cookies by host, not by port: with one fixed name, a second `serve` on the same machine replaced
+  the first one's cookie, and the first page then asked for its token again. The daemon still
+  accepts the plain `biorouter_session` that earlier versions set, so a browser keeps its session
+  across an upgrade when the token stays the same.
 - **It is not used up.** The exchange works every time the token is presented, from any browser,
   until the daemon stops — so a second browser, a colleague, or the same browser after it has
   discarded the cookie can all open the same address. Anyone holding the address can do the same,
@@ -138,8 +142,12 @@ carries a credential instead.
 
 To keep one address working across restarts — a bookmark, or a service that restarts — pass the
 same token each time with `--token <t>`, or set `BIOROUTER_BROWSER_TOKEN` in the environment `serve`
-runs in. `serve` uses it as given (trimmed), hands it to the daemon, and says on the banner that the
-token came from there rather than claiming it is new; `--token` wins when both are set. A service
+runs in. `serve` trims it, hands it to the daemon, and says on the banner that the token came from
+there rather than claiming it is new; `--token` wins when both are set. A blank `--token` is
+refused, while a blank variable reads as unset and a fresh token is made. A token holding a `;` or
+a control character is refused from either place, because the browser keeps the token in a cookie
+that cannot carry those. The printed address percent-encodes the token, so a space, `&`, `#` or `+`
+in it reaches the daemon intact. A service
 unit should use the variable, from a file only the service user can read, rather than the flag,
 which `ps` shows to every user on the host. Treat that value like a password: anyone who has it has
 the same access you do.
@@ -416,7 +424,8 @@ whatever listens on that port to read. On a shared machine, another account list
 loopback port could collect them that way and use them until the daemon stops. App cookies change
 each time the daemon starts (and deleting an app retires its cookie), and so does the interface's
 unless you fixed its token with `--token` or `BIOROUTER_BROWSER_TOKEN`; stopping `biorouter serve`
-revokes them all.
+revokes them all. The port in the interface cookie's name only keeps two daemons on one host from
+replacing each other's cookie; the browser still sends both cookies to either port.
 
 ## Updating from the page
 

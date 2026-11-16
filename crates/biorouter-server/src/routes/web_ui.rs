@@ -27,9 +27,10 @@
 //!
 //! 1. `biorouter serve` mints a browser token for the launch and prints it in
 //!    the URL it shows the user.
-//! 2. `GET /?t=<token>` validates it, sets a session cookie, and answers a
-//!    short page of this origin that moves the browser on to the interface's
-//!    mount, so the token leaves the address bar ([`exchange_bounce`]).
+//! 2. `GET /?t=<token>` validates it, sets a session cookie named for the
+//!    daemon's port ([`cookie_name`]), and answers a short page of this origin
+//!    that moves the browser on to the interface's mount, so the token leaves
+//!    the address bar ([`exchange_bounce`]).
 //! 3. `GET /` with that cookie returns the shell, with the daemon's secret
 //!    injected into it.
 //! 4. From then on the application presents `X-Secret-Key` exactly as the
@@ -110,13 +111,43 @@ use axum::{
 use serde::Deserialize;
 use tower_http::services::ServeDir;
 
-/// The name of the session cookie the token exchange sets.
+/// The stem of the session cookie's name. The token exchange sets it as
+/// [`cookie_name`] spells it for this daemon's port.
 const SESSION_COOKIE: &str = "biorouter_session";
 
-/// The name of the cookie that says a browser redeemed a valid token at the
-/// address it is on, set beside the session cookie when that one is scoped to a
-/// declared path ([`WebUi::wrong_address`]).
+/// The stem of the name of the cookie that says a browser redeemed a valid
+/// token at the address it is on, set beside the session cookie when that one
+/// is scoped to a declared path ([`WebUi::wrong_address`]).
 const EXCHANGED_COOKIE: &str = "biorouter_exchanged";
+
+/// The name a cookie with the stem `stem` takes on a daemon listening on
+/// `port`: `<stem>_<port>`, or the stem alone when the port is not known.
+///
+/// A browser keeps cookies by host, not by port, so two `biorouter serve`
+/// daemons on one host that set one fixed name replaced each other's cookie,
+/// and the first one's page asked for its token again (W1-41). The port in the
+/// name keeps the two apart. It does not isolate them: the browser still sends
+/// both cookies to either port, which is why a cookie's value, never its name,
+/// is what admits a request.
+fn cookie_name(stem: &str, port: Option<u16>) -> String {
+    match port {
+        Some(port) => format!("{stem}_{port}"),
+        None => stem.to_string(),
+    }
+}
+
+/// Is `name` one a session cookie is set under: [`SESSION_COOKIE`] alone, as
+/// versions before the port was in the name set it, or with a port
+/// ([`cookie_name`])? Nothing else: not a name that merely contains it.
+fn is_session_cookie_name(name: &str) -> bool {
+    match name.strip_prefix(SESSION_COOKIE) {
+        Some("") => true,
+        Some(rest) => rest.strip_prefix('_').is_some_and(|port| {
+            (1..=5).contains(&port.len()) && port.bytes().all(|b| b.is_ascii_digit())
+        }),
+        None => false,
+    }
+}
 
 /// Everything the serving path needs, resolved once at startup.
 #[derive(Clone)]
@@ -141,6 +172,10 @@ pub struct WebUi {
     /// The value of [`EXCHANGED_COOKIE`]: random per daemon run, so the cookie a
     /// previous daemon set does not count, and it carries nothing of the token.
     exchange_marker: String,
+    /// The name the exchange sets the session cookie under ([`cookie_name`]).
+    session_cookie: String,
+    /// The name the exchange sets the [`EXCHANGED_COOKIE`] marker under.
+    exchanged_cookie: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -163,6 +198,10 @@ impl WebUi {
     /// The rest of that declaration is read from where `commands::agent` read
     /// the path, [`super::declared_public_url`], because the path alone does not
     /// carry the scheme or the address to name.
+    ///
+    /// The cookies' names carry the port this daemon listens on
+    /// ([`cookie_name`]), read from its settings (`BIOROUTER_PORT`) as
+    /// `commands::agent` reads the address it binds.
     pub fn new(
         web_dir: &Path,
         secret_key: &str,
@@ -170,6 +209,9 @@ impl WebUi {
         public_path: Option<&str>,
     ) -> std::io::Result<Self> {
         let raw = std::fs::read_to_string(web_dir.join("index.html"))?;
+        let port = crate::configuration::Settings::new()
+            .ok()
+            .map(|settings| settings.port);
         Ok(Self {
             index_html: inject_runtime_config(&raw, secret_key),
             browser_token,
@@ -178,6 +220,8 @@ impl WebUi {
                 .filter(|declared| public_path == Some(declared.path()))
                 .cloned(),
             exchange_marker: hex::encode(rand::random::<[u8; 16]>()),
+            session_cookie: cookie_name(SESSION_COOKIE, port),
+            exchanged_cookie: cookie_name(EXCHANGED_COOKIE, port),
         })
     }
 
@@ -197,13 +241,13 @@ impl WebUi {
     /// [`WebUi::wrong_address`]'s evidence.
     fn exchange_cookies(&self, token: &str, secure: &str) -> Vec<String> {
         let mut cookies = vec![format!(
-            "{SESSION_COOKIE}={token}; Path={}; HttpOnly; SameSite=Strict{secure}",
-            self.cookie_path
+            "{}={token}; Path={}; HttpOnly; SameSite=Strict{secure}",
+            self.session_cookie, self.cookie_path
         )];
         if self.cookie_path != "/" {
             cookies.push(format!(
-                "{EXCHANGED_COOKIE}={}; Max-Age=300; HttpOnly; SameSite=Strict{secure}",
-                self.exchange_marker
+                "{}={}; Max-Age=300; HttpOnly; SameSite=Strict{secure}",
+                self.exchanged_cookie, self.exchange_marker
             ));
         }
         cookies
@@ -217,7 +261,7 @@ impl WebUi {
     /// are the only witness the daemon has.
     fn wrong_address(&self, headers: &HeaderMap) -> Option<&super::PublicUrl> {
         let public = self.public.as_ref()?;
-        cookie_values(headers, EXCHANGED_COOKIE)
+        cookie_values(headers, &self.exchanged_cookie)
             .any(|presented| super::secret_matches(presented, &self.exchange_marker))
             .then_some(public)
     }
@@ -311,21 +355,33 @@ fn inject_runtime_config(raw: &str, secret_key: &str) -> String {
 /// the browser then sends the stale, longer-path value first. Reading only the
 /// first refused every new link with "This link needs its access token".
 fn cookie_values<'a>(headers: &'a HeaderMap, name: &'a str) -> impl Iterator<Item = &'a str> {
+    cookie_pairs(headers)
+        .filter(move |(k, _)| *k == name)
+        .map(|(_, v)| v)
+}
+
+/// Every `(name, value)` a request's cookies carry, trimmed, in the order sent.
+fn cookie_pairs(headers: &HeaderMap) -> impl Iterator<Item = (&str, &str)> {
     headers
         .get_all(header::COOKIE)
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(';'))
         .filter_map(|pair| pair.split_once('='))
-        .filter(move |(k, _)| k.trim() == name)
-        .map(|(_, v)| v.trim())
+        .map(|(k, v)| (k.trim(), v.trim()))
 }
 
-/// The session cookies the request carries: every value of the cookie the
-/// token exchange sets. A caller asks whether ANY of them is the token, never
-/// reads one (see [`cookie_values`]).
+/// The session cookies the request carries: every value of a cookie under a
+/// name the token exchange sets ([`is_session_cookie_name`]). A caller asks
+/// whether ANY of them is the token, never reads one (see [`cookie_values`]).
 ///
-/// The one reader of [`SESSION_COOKIE`]: the shell below asks it whether to
+/// Every port's name counts, not only this daemon's. The value is compared
+/// with this daemon's token, so another port's cookie admits nothing that token
+/// does not; the readers in `auth` hold no daemon state to name the port with;
+/// and a browser that kept the cookie an earlier version set under the plain
+/// name is still let in while the token is the same.
+///
+/// The one reader of the session cookie: the shell below asks it whether to
 /// serve the document, and `auth::served_operator_capability` asks it whether a
 /// request came from that document — which earns a serve daemon's own interface
 /// the operator's tier on the listing and knowledge-base gates; and
@@ -335,7 +391,9 @@ fn cookie_values<'a>(headers: &'a HeaderMap, name: &'a str) -> impl Iterator<Ite
 /// there, so the cookie can only narrow a caller that already holds the secret,
 /// never admit one that does not.
 pub(crate) fn session_cookies(headers: &HeaderMap) -> impl Iterator<Item = &str> {
-    cookie_values(headers, SESSION_COOKIE)
+    cookie_pairs(headers)
+        .filter(|(name, _)| is_session_cookie_name(name))
+        .map(|(_, value)| value)
 }
 
 /// The application shell, and the token-for-cookie exchange that gates it.
@@ -599,7 +657,8 @@ fn unauthorized() -> Response<Body> {
          <body style=\"font:15px system-ui;margin:3rem auto;max-width:32rem\">\
          <h1 style=\"font-size:1.2rem\">This link needs its access token</h1>\
          <p>Open the full address <code>biorouter serve</code> printed, including \
-         the <code>?t=</code> part. It is shown once per launch.</p>",
+         the <code>?t=</code> part. It works until this <code>biorouter serve</code> \
+         stops.</p>",
     )
         .into_response()
 }
@@ -685,6 +744,17 @@ mod tests {
             cookie_path: "/".to_string(),
             public: None,
             exchange_marker: "marker".to_string(),
+            session_cookie: cookie_name(SESSION_COOKIE, None),
+            exchanged_cookie: cookie_name(EXCHANGED_COOKIE, None),
+        }
+    }
+
+    /// [`ui_with`] on a daemon listening on `port`.
+    fn ui_on_port(token: &str, port: u16) -> WebUi {
+        WebUi {
+            session_cookie: cookie_name(SESSION_COOKIE, Some(port)),
+            exchanged_cookie: cookie_name(EXCHANGED_COOKIE, Some(port)),
+            ..ui_with(Some(token))
         }
     }
 
@@ -761,6 +831,103 @@ mod tests {
             "evil_biorouter_session=tok".parse().unwrap(),
         );
         assert_eq!(cookie_values(&headers, SESSION_COOKIE).next(), None);
+        assert_eq!(session_cookies(&headers).next(), None);
+    }
+
+    /// W1-41: a browser keeps cookies by host, not by port, so two `biorouter
+    /// serve` daemons on one host that set one fixed name overwrote each
+    /// other's cookie, and the first one's page answered 401 until its link was
+    /// opened again. Each port now sets a name of its own, and a browser that
+    /// holds both cookies is let in by each daemon.
+    #[tokio::test]
+    async fn two_ports_use_two_cookie_names() {
+        let redeem = |ui: WebUi, token: &'static str| async move {
+            let res = index(
+                State(ui),
+                HeaderMap::new(),
+                Query(IndexQuery {
+                    t: Some(token.into()),
+                }),
+                Uri::default(),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::OK);
+            let cookie = set_cookies(&res).remove(0);
+            cookie.split_once(';').unwrap().0.to_string()
+        };
+        let first = ui_on_port("token-of-the-first", 18777);
+        let second = ui_on_port("token-of-the-second", 18778);
+        let first_pair = redeem(first.clone(), "token-of-the-first").await;
+        let second_pair = redeem(second.clone(), "token-of-the-second").await;
+        assert_eq!(first_pair, "biorouter_session_18777=token-of-the-first");
+        assert_eq!(second_pair, "biorouter_session_18778=token-of-the-second");
+
+        // The jar after both exchanges, as the browser sends it to either port.
+        let mut jar = HeaderMap::new();
+        jar.insert(
+            header::COOKIE,
+            format!("{first_pair}; {second_pair}").parse().unwrap(),
+        );
+        for (label, ui) in [("first", first), ("second", second)] {
+            let res = index(
+                State(ui),
+                jar.clone(),
+                Query(IndexQuery { t: None }),
+                Uri::default(),
+            )
+            .await;
+            assert_eq!(
+                res.status(),
+                StatusCode::OK,
+                "the {label} daemon lost its browser to the other one's cookie"
+            );
+        }
+    }
+
+    /// The session cookie under every name a `biorouter serve` sets it: the
+    /// plain name an earlier version used, and the plain name with a port. Its
+    /// value is what is checked, against this daemon's token, so reading another
+    /// port's cookie admits nothing that token does not; and a browser that
+    /// kept the earlier cookie of a token that did not change is still let in.
+    #[test]
+    fn the_session_cookie_is_read_under_every_name_serve_sets_and_no_other() {
+        let read = |cookie: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(header::COOKIE, cookie.parse().unwrap());
+            session_cookies(&headers)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(read("biorouter_session=a"), ["a"]);
+        assert_eq!(read("biorouter_session_8765=b"), ["b"]);
+        assert_eq!(
+            read("biorouter_session_1=c; x=1; biorouter_session_65535=d"),
+            ["c", "d"]
+        );
+        for lookalike in [
+            "biorouter_session_=e",
+            "biorouter_session_x=e",
+            "biorouter_session_123456=e",
+            "biorouter_sessions=e",
+            "evil_biorouter_session_8765=e",
+            "biorouter_exchanged_8765=e",
+        ] {
+            assert_eq!(read(lookalike), Vec::<String>::new(), "{lookalike}");
+        }
+    }
+
+    /// W1-36: the page used to say the address "is shown once per launch",
+    /// which reads as single use. The token works until the daemon stops
+    /// (SD-9), so the page says that.
+    #[tokio::test]
+    async fn the_unauthorized_page_does_not_say_shown_once() {
+        let body = body_text(unauthorized()).await;
+        assert!(!body.contains("shown once"), "{body}");
+        assert!(
+            body.contains("It works until this <code>biorouter serve</code> stops."),
+            "{body}"
+        );
+        assert!(body.contains("<code>?t=</code>"), "{body}");
     }
 
     /// The daemon secret rides in the document. A cache anywhere between the
@@ -948,6 +1115,8 @@ mod tests {
             cookie_path: "/".to_string(),
             public: None,
             exchange_marker: "marker".to_string(),
+            session_cookie: cookie_name(SESSION_COOKIE, None),
+            exchanged_cookie: cookie_name(EXCHANGED_COOKIE, None),
         };
         for forwarded in [None, Some("https")] {
             for token in [None, Some("tok")] {
@@ -1044,6 +1213,8 @@ mod tests {
             cookie_path: "/".to_string(),
             public: None,
             exchange_marker: "marker".to_string(),
+            session_cookie: cookie_name(SESSION_COOKIE, None),
+            exchanged_cookie: cookie_name(EXCHANGED_COOKIE, None),
         };
         for (uri, mount) in [("/", "./"), ("/x/y/z", "../../")] {
             let res = index(
@@ -1393,6 +1564,8 @@ mod tests {
             cookie_path: "/".to_string(),
             public: None,
             exchange_marker: "marker".to_string(),
+            session_cookie: cookie_name(SESSION_COOKIE, None),
+            exchanged_cookie: cookie_name(EXCHANGED_COOKIE, None),
         };
         for (mode, dest) in [
             (Some("cors"), Some("empty")),
