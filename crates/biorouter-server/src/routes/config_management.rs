@@ -1505,11 +1505,35 @@ fn declared_model_names(metadata: &biorouter::providers::base::ProviderMetadata)
         .collect()
 }
 
+/// `metadata` with every listed model's window replaced by the one its chat
+/// would get, when the person pinned one with `BIOROUTER_CONTEXT_LIMIT`.
+///
+/// The composer's context ring reads its window from this listing, and a chat
+/// compacts against its `ModelConfig`. A catalog built through `ModelConfig`
+/// (Versa's) already agreed; a declarative provider's comes from its feed, so a
+/// Baseten chat's ring drew "43.2k of 1.0M" while the chat compacted against
+/// 20k (W1-47). Asked of `ModelConfig` itself rather than parsed again here, so
+/// the two read the variable one way. Without an override the provider's own
+/// windows stand, and a value `ModelConfig` refuses changes nothing, since no
+/// chat can be built with it either.
+fn with_context_override(mut metadata: ProviderMetadata) -> ProviderMetadata {
+    if std::env::var_os("BIOROUTER_CONTEXT_LIMIT").is_none() {
+        return metadata;
+    }
+    for model in &mut metadata.known_models {
+        if let Ok(config) = ModelConfig::new(&model.name) {
+            model.context_limit = config.context_limit();
+        }
+    }
+    metadata
+}
+
 /// One row of `GET /config/providers`.
 async fn provider_details(
     metadata: ProviderMetadata,
     provider_type: ProviderType,
 ) -> ProviderDetails {
+    let metadata = with_context_override(metadata);
     let (is_configured, unavailable_reason) = match provider_readiness(&metadata, provider_type) {
         ProviderReadiness::Configured => (true, None),
         ProviderReadiness::NotConfigured => (false, None),
@@ -2099,6 +2123,9 @@ pub async fn create_custom_provider(
         tracing::warn!("Failed to refresh custom providers after creation: {}", e);
     }
 
+    // ⚠ The desktop reads the new id off the end of this sentence
+    // (`createdCustomProviderId` in `ProviderCatalog.tsx`) to open Choose model
+    // on the provider just added. Reword it there too.
     Ok(Json(format!("Custom provider added - ID: {}", config.id())))
 }
 
@@ -4989,6 +5016,58 @@ mod readiness_wire_tests {
         let json = serde_json::to_value(row).unwrap();
         assert!(json.as_object().unwrap().contains_key("unavailable_reason"));
         assert!(json["unavailable_reason"].is_null());
+    }
+}
+
+/// W1-47: the composer's context ring reads its window off this route's
+/// `known_models`, and compaction reads it off the chat's `ModelConfig`. Versa's
+/// catalog is built through `ModelConfig`, so `BIOROUTER_CONTEXT_LIMIT` reached
+/// both; Baseten's comes from its feed, so the ring drew "43.2k of 1.0M" while
+/// the chat compacted against 20k. Driven through `provider_details`, the one
+/// function `providers()` maps over, with the variable pinned under `env_lock`.
+#[cfg(test)]
+mod context_override_tests {
+    use super::*;
+
+    async fn baseten_row() -> ProviderDetails {
+        let (metadata, provider_type) = get_providers()
+            .await
+            .into_iter()
+            .find(|(metadata, _)| metadata.name == "baseten")
+            .expect("Baseten is a bundled declarative provider");
+        assert_eq!(provider_type, ProviderType::Declarative);
+        provider_details(metadata, provider_type).await
+    }
+
+    #[tokio::test]
+    async fn the_provider_list_honours_the_context_override_for_a_declarative_provider() {
+        {
+            let _env = env_lock::lock_env([("BIOROUTER_CONTEXT_LIMIT", None::<&str>)]);
+            let row = baseten_row().await;
+            // The control: without an override the feed's windows stand, and
+            // they are larger than the override below, so the test can fail.
+            assert!(
+                row.metadata
+                    .known_models
+                    .iter()
+                    .any(|model| model.context_limit > 20_000),
+                "{:?}",
+                row.metadata.known_models
+            );
+        }
+
+        let _env = env_lock::lock_env([("BIOROUTER_CONTEXT_LIMIT", Some("20000"))]);
+        let row = baseten_row().await;
+        assert!(!row.metadata.known_models.is_empty());
+        for model in &row.metadata.known_models {
+            assert_eq!(
+                model.context_limit,
+                ModelConfig::new(&model.name).unwrap().context_limit(),
+                "{} must report the window its chat compacts against",
+                model.name
+            );
+            assert_eq!(model.context_limit, 20_000, "{}", model.name);
+        }
     }
 }
 

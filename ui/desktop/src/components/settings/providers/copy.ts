@@ -87,6 +87,9 @@ export function providerRowLine(description: string): string {
   return oneSentence && text.endsWith('.') && !text.endsWith('..') ? text.slice(0, -1) : text;
 }
 
+/** Said by both removal paths when the provider is the one new chats use. */
+const PROVIDER_IN_USE = 'This provider is in use. Switch to a different model first.';
+
 export const customProviderCopy = {
   add: 'Add provider',
   setUp: (name: string) => `Set up ${name}`,
@@ -110,6 +113,15 @@ export const customProviderCopy = {
   create: 'Create provider',
   update: 'Update provider',
   save: 'Save',
+  /** The edit dialog's removal (W1-33): the button, then a confirmation of one line. */
+  remove: 'Remove provider',
+  removeTitle: (name: string) => `Remove ${name}`,
+  removeConsequence: 'Its address, model list and saved key are deleted from this computer.',
+  removeConfirm: 'Remove',
+  /** The same refusal the built-in providers' dialog gives. */
+  inUse: PROVIDER_IN_USE,
+  ok: 'OK',
+  removeFailed: 'The provider was not removed. Try again.',
 } as const;
 
 export const providerSetupCopy = {
@@ -123,8 +135,15 @@ export const providerSetupCopy = {
   /** A provider that declares no secret: the one sentence that says why there is no key field. */
   noKey: (name: string) => `${name} needs no API key. Adjust how Biorouter reaches it.`,
   /** The delete states are consequences, so they stay visible at the moment of decision. */
-  inUse: 'This provider is in use. Switch to a different model first.',
+  inUse: PROVIDER_IN_USE,
   deleteConsequence: 'This will permanently delete the current provider configuration.',
+  /**
+   * After Remove, a provider the daemon still reads as configured (W1-35): Biorouter's own copy is
+   * gone, so what is left is the environment Biorouter was started in, which it cannot change.
+   */
+  stillSetUp: (name: string) => `${name} is still set up`,
+  setFromEnvironment: (keys: readonly string[]) =>
+    `Set by ${keys.join(' and ')} in the environment. Remove ${keys.length > 1 ? 'them' : 'it'} outside Biorouter.`,
   needsAttention: 'Configuration needs attention',
   /** The setup steps are on screen below it, so the subtitle does not point at them. */
   agentCheckFailed: 'The configuration check did not complete.',

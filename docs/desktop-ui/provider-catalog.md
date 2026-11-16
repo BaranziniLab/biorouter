@@ -130,6 +130,26 @@ actions in ModalShell's footer under its rule.
 - **No subtitle paragraph.** Why a form has no key field ("Amazon Bedrock needs no API key. Adjust how Biorouter
   reaches it.", and a coding agent's "No API key is needed here") is the title's InfoTip (`titleInfo`). The delete
   states keep their visible line, because a destructive consequence is said at the moment of decision.
+- **A custom provider is removed from its edit dialog.** A custom provider opens in `CustomProviderDialog`, never
+  in the Configure dialog, so the Remove that dialog has never reached it and a provider added by mistake could
+  not be removed in the app (W1-33). Its edit now has the Configure dialog's three states: "Remove provider" on
+  the left of the actions; a confirmation titled "Remove" and the provider's name, in the danger ink, with one line of
+  consequence under it ("Its address, model list and saved key are deleted from this computer.") and Cancel and
+  Remove in the footer; and, while it is the provider new chats use (`BIOROUTER_PROVIDER`), the Configure dialog's
+  refusal with OK. The form stays mounted and hidden during the confirmation, so Cancel returns to it with
+  everything typed. Remove calls `DELETE /config/custom-providers/{id}`. A bundled declarative provider
+  (DeepSeek, Groq, Baseten) is not removable there, since it is part of the app. The "This is a local model" tick
+  is on Add provider only, and on an edit a blank key keeps the saved one.
+- **Choose model opens on the provider just added.** After Create provider, as after an edit or a Configure, the
+  model dialog opens on the new provider (W1-34). The id comes from the end of the create route's answer,
+  "Custom provider added - ID: custom_x" (`createdCustomProviderId`).
+- **A key in the environment outlives Remove.** Remove clears what Biorouter saved for a built-in provider, but a
+  key such as `ANTHROPIC_API_KEY` in the environment Biorouter was started in keeps the provider configured, and
+  Biorouter cannot change that environment (W1-35). After Remove the dialog asks the provider list again; when the
+  provider still reads configured it stays open, titled with the provider's name and "is still set up", with one neutral line naming the
+  variables that still read ("Set by ANTHROPIC_API_KEY in the environment. Remove it outside Biorouter.") and OK.
+  It names the secret keys that still read, or the required ones when no secret does. Nothing in the daemon
+  changed for this.
 - **InfoTips where a name is not enough.** Configure's labels carry the config key they write; Add provider's
   carry what Provider type, API URL, Available models and its two checkboxes mean. A checkbox's InfoTip is the
   label's sibling (a click on it must not toggle the box) and describes the box. The two checkbox squares start
@@ -639,6 +659,7 @@ renders normally.
 | `ui/desktop/src/components/settings/providers/providerOrdering.ts` | Groups, sections, ordering, `institutionsForProvider` |
 | `ui/desktop/src/components/settings/providers/subcomponents/ProviderCard.tsx` | One row definition, click-to-configure or accordion |
 | `ui/desktop/src/components/settings/providers/copy.ts`, `providers.css` | The catalog's words (tests import them) and its row geometry |
+| `ui/desktop/src/components/settings/providers/modal/subcomponents/forms/CustomProviderForm.tsx` | Add provider and a custom provider's edit, with its removal states |
 | `ui/desktop/src/components/settings/providers/ProviderSettingsPage.tsx` | The `configure-providers` and `welcome` routes |
 | `ui/desktop/src/components/ProviderGuard.tsx` | The first-run page (its band, the catalog under it) and the way past it |
 | `ui/desktop/src/components/onboarding/copy.ts` | The words of first run (tests import them) |
@@ -649,7 +670,7 @@ renders normally.
 | `ui/desktop/src/components/composerNoProvider.ts` | The no-model decision and copy |
 | `crates/biorouter/src/providers/base.rs` | `ProviderMetadata::institutions`, `with_institution` |
 
-Tests: `ProviderCatalog.test.tsx`, `ProviderCatalog.privacy.test.tsx`, `copy.test.ts`, `firstRunFill.browser.test.tsx`,
+Tests: `ProviderCatalog.test.tsx`, `ProviderCatalog.privacy.test.tsx`, `ProviderConfigurationModal.remove.test.tsx`, `copy.test.ts`, `firstRunFill.browser.test.tsx`,
 `customProviderForm.browser.test.tsx` and `providerBand.browser.test.tsx` (Chromium),
 `ProviderCatalog.browserSurface.test.tsx`, `providerOrdering.test.ts`,
 `ProviderGuard.test.tsx`, `ProviderGuard.browserSurface.test.tsx`,

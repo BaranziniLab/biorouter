@@ -40,7 +40,25 @@ import CustomProviderForm, {
 
 const view = (window as unknown as { __view?: string }).__view;
 createRoot(document.getElementById('root')!).render(
-  view === 'dialog' ? (
+  view === 'edit' ? (
+    <CustomProviderDialog
+      open
+      onOpenChange={() => {}}
+      title="Edit Lab gateway"
+      initialData={{
+        engine: 'openai',
+        display_name: 'Lab gateway',
+        api_url: 'https://lab.example/v1',
+        api_key: '',
+        models: ['lab-model'],
+        supports_streaming: true,
+      }}
+      isEditable
+      onSubmit={() => {}}
+      onCancel={() => {}}
+      removal={{ isInUse: async () => false, remove: async () => {} }}
+    />
+  ) : view === 'dialog' ? (
     <CustomProviderDialog
       open
       onOpenChange={() => {}}
@@ -117,7 +135,7 @@ describe('the Add provider form (V4-R4-5)', () => {
   async function open(
     mode: 'light' | 'dark',
     extraCss = '',
-    view: 'form' | 'dialog' = 'form',
+    view: 'form' | 'dialog' | 'edit' = 'form',
     viewport = { width: 640, height: 900 }
   ): Promise<Page> {
     const tab = await browser!.newPage({ viewport });
@@ -249,6 +267,56 @@ describe('the Add provider form (V4-R4-5)', () => {
       }
     });
   }
+
+  // W1-33: a custom provider's edit removes it, in the Configure dialog's layout. jsdom lays nothing
+  // out, so where Remove sits and that the form is really gone while it confirms are read here.
+  it('puts Remove provider on the left of an edit, and hides the form while it confirms', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open('light', '', 'edit', { width: 1048, height: 900 });
+    try {
+      await tab.waitForSelector('[data-testid="custom-provider-actions"] button[type="submit"]');
+      await tab.waitForTimeout(400);
+      const atRest = await tab.evaluate(() => {
+        const actions = document.querySelector('[data-testid="custom-provider-actions"]')!;
+        const buttons = Array.from(actions.querySelectorAll('button'));
+        const left = (el: Element) => el.getBoundingClientRect().left;
+        return {
+          labels: buttons.map((button) => button.textContent),
+          removeLeft: left(buttons[0]),
+          cancelLeft: left(buttons[1]),
+          actionsLeft: left(actions),
+        };
+      });
+      expect(atRest.labels).toEqual(['Remove provider', 'Cancel', 'Update provider']);
+      expect(atRest.removeLeft).toBeCloseTo(atRest.actionsLeft, 0);
+      expect(atRest.cancelLeft - atRest.removeLeft).toBeGreaterThan(200);
+
+      await tab.click('text=Remove provider');
+      await tab.waitForSelector('text=Its address, model list and saved key are deleted');
+      const confirming = await tab.evaluate(() => ({
+        form: getComputedStyle(document.querySelector('[role="dialog"] form')!).display,
+        title: document.querySelector('[role="dialog"] h2')?.textContent,
+        labels: Array.from(
+          document.querySelectorAll('[data-testid="custom-provider-actions"] button')
+        ).map((button) => button.textContent),
+      }));
+      expect(confirming.form).toBe('none');
+      expect(confirming.title).toBe('Remove Lab gateway');
+      expect(confirming.labels).toEqual(['Cancel', 'Remove']);
+      await shot(tab, 'edit-provider-remove-confirm');
+
+      await tab.click('[data-testid="custom-provider-actions"] >> text=Cancel');
+      await tab.waitForSelector('text=Update provider');
+      expect(
+        await tab.evaluate(() => ({
+          form: getComputedStyle(document.querySelector('[role="dialog"] form')!).display,
+          url: (document.getElementById('api-url') as HTMLInputElement).value,
+        }))
+      ).toEqual({ form: 'flex', url: 'https://lab.example/v1' });
+    } finally {
+      await tab.close();
+    }
+  });
 
   it('clicking a checkbox InfoTip opens its help and leaves the box alone', async (ctx) => {
     if (!browser) return ctx.skip();

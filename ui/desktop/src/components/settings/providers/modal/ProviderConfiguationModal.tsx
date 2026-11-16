@@ -37,11 +37,18 @@ export default function ProviderConfigurationModal({
   onConfigured,
 }: ProviderConfigurationModalProps) {
   const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
-  const { upsert, remove } = useConfig();
+  const { upsert, remove, read, getProviders } = useConfig();
   const { getCurrentModelAndProvider } = useModelAndProvider();
   const [configValues, setConfigValues] = useState<Record<string, ConfigInput>>({});
   const [showDeleteConfirmation, setShowDeleteConfirmation] = useState(false);
   const [isActiveProvider, setIsActiveProvider] = useState(false);
+  /**
+   * The keys the environment still supplies after Remove (W1-35), or `null`. Remove clears what
+   * Biorouter saved, but a key in the environment Biorouter was started in keeps the provider
+   * configured, and Biorouter cannot change that environment; the row stayed "Configured" and
+   * nothing said why.
+   */
+  const [setFromEnvironment, setSetFromEnvironment] = useState<string[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const submittingRef = useRef(false);
@@ -88,29 +95,39 @@ export default function ProviderConfigurationModal({
   // `is_configured: false` with a reason. Removing that saved key is still the
   // user's to do; keying "Remove" on `is_configured` alone would strand it.
   const hasSavedSetup = isConfigured || Boolean(provider.unavailable_reason);
-  const headerText = showDeleteConfirmation
-    ? providerSetupCopy.deleteTitle(provider.metadata.display_name)
-    : providerSetupCopy.configure(provider.metadata.display_name);
+  const headerText = setFromEnvironment
+    ? providerSetupCopy.stillSetUp(provider.metadata.display_name)
+    : showDeleteConfirmation
+      ? providerSetupCopy.deleteTitle(provider.metadata.display_name)
+      : providerSetupCopy.configure(provider.metadata.display_name);
 
   // A line under the title only for the delete states: they are consequences, said at the moment
   // of decision (principle 2), so they stay visible. A provider with a key field needs no line
   // ("Add your API keys…" restated the field).
-  const descriptionText = showDeleteConfirmation
-    ? isActiveProvider
-      ? providerSetupCopy.inUse
-      : providerSetupCopy.deleteConsequence
-    : undefined;
+  // The environment line is neutral: nothing failed, and nothing here can change it.
+  const descriptionText = setFromEnvironment ? (
+    <span data-testid="provider-still-set-from-environment">
+      {providerSetupCopy.setFromEnvironment(setFromEnvironment)}
+    </span>
+  ) : showDeleteConfirmation ? (
+    isActiveProvider ? (
+      providerSetupCopy.inUse
+    ) : (
+      providerSetupCopy.deleteConsequence
+    )
+  ) : undefined;
   // Why a form has no key field is an explanation, so it is the title's InfoTip, not a line under
   // it: Configure Amazon Bedrock was the one dialog on the first-run path with a subtitle (vision
   // FR-R3-2). Llama Server and Ollama declare no secret and were once asked for "API key(s)"
   // (W2-PRV-13); a coding agent's form is a command path, not a key.
-  const titleHelp = showDeleteConfirmation
-    ? undefined
-    : codingAgentKind
-      ? providerSetupCopy.agentIntro(provider.metadata.display_name)
-      : provider.metadata.config_keys.some((key) => key.secret)
-        ? undefined
-        : providerSetupCopy.noKey(provider.metadata.display_name);
+  const titleHelp =
+    showDeleteConfirmation || setFromEnvironment
+      ? undefined
+      : codingAgentKind
+        ? providerSetupCopy.agentIntro(provider.metadata.display_name)
+        : provider.metadata.config_keys.some((key) => key.secret)
+          ? undefined
+          : providerSetupCopy.noKey(provider.metadata.display_name);
 
   const handleSubmitForm = async (e?: React.SyntheticEvent) => {
     e?.preventDefault();
@@ -230,9 +247,42 @@ export default function ProviderConfigurationModal({
       for (const param of params) {
         await remove(param.name, param.secret);
       }
+      const supplied = await keysStillSupplied();
+      if (supplied.length > 0) {
+        setShowDeleteConfirmation(false);
+        setSetFromEnvironment(supplied);
+        return;
+      }
     }
 
     onClose();
+  };
+
+  /**
+   * After Remove, the keys that still read when the daemon still calls the provider configured.
+   * Biorouter's own copy is gone by then, so a key that still reads is the environment's. The
+   * secret keys are named first, since one of them is what a person exported; a provider kept set
+   * up by a plain setting alone names its required ones. Asked, never assumed: a check that fails
+   * names nothing and the dialog closes as before.
+   */
+  const keysStillSupplied = async (): Promise<string[]> => {
+    try {
+      const refreshed = await getProviders(true);
+      if (!refreshed.find((row) => row.name === provider.name)?.is_configured) return [];
+      const stillRead = async (keys: typeof provider.metadata.config_keys) => {
+        const named: string[] = [];
+        for (const key of keys) {
+          const value = await read(key.name, key.secret);
+          if (value !== null && value !== undefined && value !== '') named.push(key.name);
+        }
+        return named;
+      };
+      const keys = provider.metadata.config_keys;
+      const secret = await stillRead(keys.filter((key) => key.secret));
+      return secret.length > 0 ? secret : await stillRead(keys.filter((key) => key.required));
+    } catch {
+      return [];
+    }
   };
 
   // The delete states say what they are in the title's ink (a status colour, never a glyph).
@@ -344,26 +394,34 @@ export default function ProviderConfigurationModal({
         }
         subtitle={descriptionText}
         footer={
-          <ProviderSetupActions
-            requiredParameters={requiredParameters}
-            onCancel={handleCancel}
-            onSubmit={handleSubmitForm}
-            onDelete={handleDelete}
-            showDeleteConfirmation={showDeleteConfirmation}
-            onConfirmDelete={handleConfirmDelete}
-            onCancelDelete={() => {
-              setIsActiveProvider(false);
-              setShowDeleteConfirmation(false);
-            }}
-            canDelete={hasSavedSetup && !isActiveProvider}
-            providerName={provider.metadata.display_name}
-            isActiveProvider={isActiveProvider}
-            isSubmitting={isSubmitting}
-            ready={requiredReady}
-          />
+          setFromEnvironment ? (
+            <div className="flex w-full justify-end">
+              <Button variant="secondary" onClick={onClose}>
+                {providerSetupCopy.ok}
+              </Button>
+            </div>
+          ) : (
+            <ProviderSetupActions
+              requiredParameters={requiredParameters}
+              onCancel={handleCancel}
+              onSubmit={handleSubmitForm}
+              onDelete={handleDelete}
+              showDeleteConfirmation={showDeleteConfirmation}
+              onConfirmDelete={handleConfirmDelete}
+              onCancelDelete={() => {
+                setIsActiveProvider(false);
+                setShowDeleteConfirmation(false);
+              }}
+              canDelete={hasSavedSetup && !isActiveProvider}
+              providerName={provider.metadata.display_name}
+              isActiveProvider={isActiveProvider}
+              isSubmitting={isSubmitting}
+              ready={requiredReady}
+            />
+          )
         }
       >
-        {!showDeleteConfirmation && (
+        {!showDeleteConfirmation && !setFromEnvironment && (
           <div className="flex flex-col gap-3 py-3">
             <DefaultProviderSetupForm
               configValues={configValues}

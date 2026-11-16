@@ -3027,6 +3027,52 @@ fn provider_retry_notice(error: &ProviderError, attempt: u32, limit: u32) -> Str
     format!("The model call failed: {reason}. Trying again ({attempt}/{limit})…")
 }
 
+/// The reply shown when an automatic compaction fails, with one closing mark:
+/// most provider errors already end in a full stop, and the sentence used to
+/// add a second ("...131040 tokens.."). The same rule as
+/// [`provider_retry_notice`].
+fn compaction_failure_text(error: &dyn std::fmt::Display) -> String {
+    let said = error.to_string();
+    let said = said.trim_end();
+    let stop = if said.ends_with(['.', '!', '?']) {
+        ""
+    } else {
+        "."
+    };
+    format!("Ran into this error trying to compact: {said}{stop}\n\nPlease try again or create a new chat")
+}
+
+#[cfg(test)]
+mod compaction_failure_text_tests {
+    use super::*;
+
+    /// Most provider errors already end in a full stop (Baseten's over-window
+    /// 400 does), and the sentence added one of its own: "...131040 tokens..".
+    #[test]
+    fn a_compaction_error_ends_with_one_full_stop() {
+        let error = ProviderError::RequestFailed(
+            "Bad request (400): Input length 397637 exceeds the maximum allowed input length \
+             of 131040 tokens."
+                .into(),
+        );
+        assert_eq!(
+            compaction_failure_text(&error),
+            "Ran into this error trying to compact: Request failed: Bad request (400): Input \
+             length 397637 exceeds the maximum allowed input length of 131040 tokens.\n\n\
+             Please try again or create a new chat"
+        );
+        // An error with no closing mark gets one; one ending in another mark
+        // keeps it rather than gaining a second.
+        assert_eq!(
+            compaction_failure_text(&"the summary was empty"),
+            "Ran into this error trying to compact: the summary was empty.\n\n\
+             Please try again or create a new chat"
+        );
+        assert!(compaction_failure_text(&"was it cancelled? ")
+            .starts_with("Ran into this error trying to compact: was it cancelled?\n\n"));
+    }
+}
+
 /// What becomes of text a local provider held back as a possible tool call
 /// and released only because an error cut it
 /// (`text_tool_calls::is_released_at_error`), once `next`, that error, is read.
@@ -13027,7 +13073,7 @@ impl Agent {
                         // context gauge, since the history did not change.
                         self.record_failed_compaction_spend(&session_config.id, &e).await;
                         yield AgentEvent::Message(
-                            assistant_text(format!("Ran into this error trying to compact: {e}.\n\nPlease try again or create a new chat"))
+                            assistant_text(compaction_failure_text(&e))
                         );
                         return;
                     }

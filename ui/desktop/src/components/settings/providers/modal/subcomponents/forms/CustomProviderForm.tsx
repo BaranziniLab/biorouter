@@ -29,6 +29,17 @@ export function customProviderSaveFailure(error: unknown): string {
   return 'The provider was not saved. Try again.';
 }
 
+/** A custom provider the edit dialog can remove (W1-33). */
+export interface CustomProviderRemoval {
+  /**
+   * Whether it is the provider new chats use. Removal is refused then, as the built-in providers'
+   * dialog refuses it.
+   */
+  isInUse: () => Promise<boolean>;
+  /** Remove it. A rejection is shown in the dialog, which stays open. */
+  remove: () => Promise<void>;
+}
+
 interface CustomProviderFormProps {
   /**
    * Save the provider. A rejection is shown in the form, which stays open with
@@ -55,6 +66,16 @@ interface CustomProviderFormProps {
    * the buttons close the form itself.
    */
   actionsHost?: HTMLElement | null;
+  /**
+   * Start removing the provider being edited. Given, the actions open with "Remove provider" on
+   * the left, where the Configure dialog has its Remove.
+   */
+  onRemove?: () => void;
+  /**
+   * Hidden but kept mounted, with everything typed, while the dialog asks about removal. On the
+   * form element itself, so the dialog's body stays the form's parent and its scroll container.
+   */
+  hidden?: boolean;
 }
 
 /** The form's engine choice for a saved definition's engine. */
@@ -74,6 +95,8 @@ export default function CustomProviderForm({
   isEditable,
   hasSavedKey = true,
   actionsHost,
+  onRemove,
+  hidden = false,
 }: CustomProviderFormProps) {
   // The submit button names the form with `form=` because, in the dialog, it is not inside it.
   const formId = `custom-provider-form-${useId().replace(/[^a-zA-Z0-9_-]/g, '')}`;
@@ -193,6 +216,11 @@ export default function CustomProviderForm({
 
   const actions = (
     <>
+      {onRemove && (
+        <Button type="button" variant="destructive" onClick={onRemove} className="mr-auto">
+          {customProviderCopy.remove}
+        </Button>
+      )}
       <Button type="button" variant="secondary" onClick={onCancel}>
         {customProviderCopy.cancel}
       </Button>
@@ -213,7 +241,12 @@ export default function CustomProviderForm({
 
   return (
     <>
-      <form id={formId} onSubmit={handleSubmit} className="flex flex-col gap-4 py-3">
+      <form
+        id={formId}
+        onSubmit={handleSubmit}
+        className="flex flex-col gap-4 py-3"
+        hidden={hidden}
+      >
         {isEditable && (
           <>
             <Field
@@ -359,11 +392,23 @@ export default function CustomProviderForm({
   );
 }
 
-type CustomProviderDialogProps = Omit<CustomProviderFormProps, 'actionsHost'> & {
+type CustomProviderDialogProps = Omit<
+  CustomProviderFormProps,
+  'actionsHost' | 'onRemove' | 'hidden'
+> & {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
+  /** Given for a custom provider being edited: the dialog then offers "Remove provider". */
+  removal?: CustomProviderRemoval;
 };
+
+/** What a failed removal says: the daemon's sentence when it sent one, else a plain retry. */
+function customProviderRemoveFailure(error: unknown): string {
+  if (typeof error === 'string' && error.trim()) return error.trim();
+  if (error instanceof Error && error.message.trim()) return error.message.trim();
+  return customProviderCopy.removeFailed;
+}
 
 /**
  * Add provider (and a custom or declarative provider's edit) as a dialog with the catalog's one
@@ -371,14 +416,57 @@ type CustomProviderDialogProps = Omit<CustomProviderFormProps, 'actionsHost'> & 
  * button in the footer under its rule, as the Configure dialog has them (vision FR-R3-2, ruling 7).
  * The form keeps its own state and buttons; the footer is only where they are drawn, so the form
  * still unmounts with the dialog's content and opens empty the next time.
+ *
+ * A custom provider's edit also removes it (W1-33), in the Configure dialog's three states: Remove
+ * on the left of the actions; a confirmation that names its consequence under the title; and the
+ * refusal while the provider is the one new chats use. The form stays mounted, hidden, while the
+ * confirmation shows, so Cancel returns to it with everything typed.
  */
 export function CustomProviderDialog({
   open,
   onOpenChange,
   title,
+  removal,
   ...formProps
 }: CustomProviderDialogProps) {
   const [actionsHost, setActionsHost] = useState<HTMLDivElement | null>(null);
+  const [removeStep, setRemoveStep] = useState<'form' | 'confirm' | 'inUse'>('form');
+  const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open) {
+      setRemoveStep('form');
+      setRemoveError(null);
+      setRemoving(false);
+    }
+  }, [open]);
+
+  const startRemove = removal
+    ? async () => {
+        const inUse = await removal.isInUse().catch(() => false);
+        setRemoveError(null);
+        setRemoveStep(inUse ? 'inUse' : 'confirm');
+      }
+    : undefined;
+  const confirmRemove = async () => {
+    if (!removal || removing) return;
+    setRemoving(true);
+    setRemoveError(null);
+    try {
+      await removal.remove();
+    } catch (error) {
+      setRemoveError(customProviderRemoveFailure(error));
+    } finally {
+      setRemoving(false);
+    }
+  };
+  const backToForm = () => {
+    setRemoveStep('form');
+    setRemoveError(null);
+  };
+
+  const name = formProps.initialData?.display_name || title;
+  const removingStep = removeStep !== 'form';
   return (
     <ModalShell
       open={open}
@@ -386,16 +474,66 @@ export function CustomProviderDialog({
       size="md"
       purpose="form"
       scrollBody
-      title={title}
+      title={removingStep ? customProviderCopy.removeTitle(name) : title}
+      // The removal states say what they are in the title's ink, as the Configure dialog's do.
+      titleClassName={
+        removeStep === 'confirm'
+          ? 'text-text-danger'
+          : removeStep === 'inUse'
+            ? 'text-text-warning'
+            : undefined
+      }
+      subtitle={
+        removeStep === 'confirm'
+          ? customProviderCopy.removeConsequence
+          : removeStep === 'inUse'
+            ? customProviderCopy.inUse
+            : undefined
+      }
       footer={
         <div
           ref={setActionsHost}
-          className="flex flex-wrap items-center justify-end gap-2"
+          className="flex w-full flex-wrap items-center justify-end gap-2"
           data-testid="custom-provider-actions"
-        />
+        >
+          {removeStep === 'confirm' && (
+            <>
+              {removeError && (
+                <p
+                  role="alert"
+                  className="mr-auto min-w-0 text-secondary text-text-muted"
+                  data-testid="custom-provider-remove-error"
+                >
+                  {removeError}
+                </p>
+              )}
+              <Button type="button" variant="secondary" onClick={backToForm}>
+                {customProviderCopy.cancel}
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={() => void confirmRemove()}
+                disabled={removing}
+              >
+                {customProviderCopy.removeConfirm}
+              </Button>
+            </>
+          )}
+          {removeStep === 'inUse' && (
+            <Button type="button" variant="secondary" onClick={backToForm}>
+              {customProviderCopy.ok}
+            </Button>
+          )}
+        </div>
       }
     >
-      <CustomProviderForm {...formProps} actionsHost={actionsHost} />
+      <CustomProviderForm
+        {...formProps}
+        actionsHost={removingStep ? null : actionsHost}
+        onRemove={startRemove ? () => void startRemove() : undefined}
+        hidden={removingStep}
+      />
     </ModalShell>
   );
 }
