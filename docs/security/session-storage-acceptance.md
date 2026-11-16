@@ -1,5 +1,12 @@
 # Rebuilt Linux session-storage acceptance
 
+> **What this is.** The test procedure behind the `Rebuilt session storage acceptance` workflow: how
+> it builds the real `biorouterd`, the 13 cases it runs per repetition across an owner and an
+> observer account, and what it does not validate.
+> **Status:** Current (test procedure). It is not a shipped artifact and does not verify the
+> package's glibc floor.
+> **Audience:** developers and maintainers.
+
 The `Rebuilt session storage acceptance` workflow builds the actual `biorouterd` binary from the checked-out source with the repository's normal pinned Rust 1.92 toolchain. It tests the real daemon's SQLite history and restart behavior, rather than compiling an extracted permission helper. The build profile is `dev` with debug symbols disabled; it is not a newly shipped release artifact. Source preparation alone is not a passing runtime result.
 
 The build runner and new runtime image both use Ubuntu 24.04. This avoids loading a host-built glibc 2.39 binary in an older Ubuntu 22.04 image. It does not change or verify the shipped package's separate glibc floor. The runtime includes Python and the daemon's expected shared libraries; each repetition records `ldd`, glibc and daemon-version output and fails on a loader error. Image ID, architecture, source SHA, daemon SHA-256 and compiler version are retained. The image's package installation needs setup connectivity; fixture containers run with networking disabled.
@@ -32,3 +39,8 @@ python3 scripts/security-assessment/session_storage_rebuilt.py \
 The output directory must be new. The helper's source SHA is operator-supplied; CI independently checks `git rev-parse HEAD` against the workflow SHA before building. On pull requests, it records both the tested merge commit and contributor head. Do not relabel this deterministic acceptance suite as independent attack trials or add its assertion count to the original audit denominator.
 
 This lane does not validate Windows ACLs, macOS ACLs, unrestricted shell containment, same-UID hostile processes, administrators/root, descriptors opened before privacy repair, every filesystem, or a released application build. Existing Windows unit CI exercises its platform-specific storage tests without a redundant Windows daemon build in this workflow. Broader application and platform acceptance remains separate. The original `assessment-2026-10` logs and Dockerfile remain unchanged.
+
+## Related documentation
+
+- [Private session history and deliberate relocation](session-storage.md) — the storage rules this procedure checks.
+- [Session-storage acceptance: retained failed evidence](session-storage-acceptance-failures.md) — the first run, which failed and is kept as evidence.

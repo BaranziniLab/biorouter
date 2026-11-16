@@ -1,5 +1,11 @@
 # Rebuilt session-storage acceptance: retained failed evidence
 
+> **What this is.** The record of the first rebuilt session-storage acceptance run, which failed its
+> legacy positive control in all three repetitions, and of the harness correction that followed.
+> **Status:** Historical record (failed run of 2026-10-23, GitHub Actions run `40067193480`). Retained
+> evidence, not superseded by any later passing run.
+> **Audience:** maintainers.
+
 The initial [GitHub Actions run `40067193480`](https://github.com/BaranziniLab/biorouter/actions/runs/40067193480), job `120792813193`, tested an actual rebuilt daemon at declared source merge commit `21cff03912a778da360a46dea904879a5c3b867e`. The corresponding PR #454 branch head was `22e9f84371a2da95ef79a25a9a524c3371523d03`. These are separate provenance fields, not interchangeable source revisions.
 
 All three repetitions failed in phase `legacy_positive_control`, case `observer_legacy_readable_control`. Each had eight earlier passing case records: container isolation, owner/observer public controls, runtime compatibility, owner/observer fresh history, and owner/observer fresh Developer undo. The deliberately readable source database allowed the observer's raw-file open, but the direct read-only SQLite query raised `OperationalError` and did not recover the synthetic title. The SQLite error message was not recorded. The run therefore has 24 passing case records, three failed positive controls, and 12 later unexercised cases. Persisted history repair and reopened undo were not established by this run.
@@ -11,3 +17,8 @@ The harness correction requires a successful, complete owner checkpoint, then ha
 The focused offline regression uses a real WAL-mode SQLite fixture without sidecars, verifies the observer probe queries only its private copy and leaves source bytes/modes/entries unchanged, and rejects busy/incomplete checkpoints before readable file modes are applied. UID values are mocked for this offline protocol test; it is not separate-account or rebuilt-daemon acceptance.
 
 Retain the original run/logs alongside any later passing run. Do not replace these failures with new outcomes or count the unexercised restart/repair cases as passes.
+
+## Related documentation
+
+- [Session-storage acceptance](session-storage-acceptance.md) — the corrected procedure and how to run it.
+- [Private session history and deliberate relocation](session-storage.md) — the storage rules the run was testing.
