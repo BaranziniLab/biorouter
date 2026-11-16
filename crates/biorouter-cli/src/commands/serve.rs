@@ -169,6 +169,17 @@ async fn serve_resumed(
     settled: &AtomicBool,
 ) -> Result<()> {
     let post_update = resume.and_then(|r| r.post_update.clone());
+    // First, before the approval prompts and before anything starts, so a blank
+    // `--token` is a message here rather than a gate anyone opens with `?t=`.
+    let resumed_token = resume.and_then(|r| r.token.clone());
+    let browser_token = choose_browser_token(
+        token,
+        no_token,
+        std::env::var("BIOROUTER_BROWSER_TOKEN").ok(),
+        // SD-19: the token a restart for an update carried over, so the page that
+        // asked for the update opens again with the cookie it already holds.
+        || resumed_token.unwrap_or_else(|| random_hex(32)),
+    )?;
     let (computer_use_digest, folder_access_digest) =
         scoped_digests(resume, computer_use_approval, folder_access_approval)?;
     let bind_is_loopback = host_is_loopback(&host);
@@ -189,15 +200,6 @@ async fn serve_resumed(
 
     let web_dir = resolve_web_dir(web_dir)?;
 
-    let resumed_token = resume.and_then(|r| r.token.clone());
-    let browser_token = choose_browser_token(
-        token,
-        no_token,
-        std::env::var("BIOROUTER_BROWSER_TOKEN").ok(),
-        // SD-19: the token a restart for an update carried over, so the page that
-        // asked for the update opens again with the cookie it already holds.
-        || resumed_token.unwrap_or_else(|| random_hex(32)),
-    );
     let carried = carried_over(&browser_token, &computer_use_digest, &folder_access_digest);
     token_flag_warning(&browser_token).inspect(|note| eprintln!("{note}"));
     let secret_key = random_hex(32);
@@ -712,7 +714,7 @@ fn banner_text(
     if !bind_is_loopback && proxied_to.is_none() {
         let token_suffix = browser_token
             .value()
-            .map_or(String::new(), |value| format!("?t={value}"));
+            .map_or(String::new(), |value| format!("?t={}", query_value(value)));
         if container {
             out.push_str(&format!("  This runs in a container. On the computer that publishes its port, open http://127.0.0.1:<host port>/{token_suffix}, where <host port> is the port published for container port {port} (with Docker: -p 127.0.0.1:<host port>:{port}). Browsers refuse the microphone on other plain http addresses.\n\n"));
         } else {
@@ -993,30 +995,67 @@ impl BrowserToken {
 /// [`choose_web_dir`] gives: other tests in this binary read the process
 /// environment, and a test that sets one races them.
 ///
-/// A blank variable reads as unset, exactly as `BIOROUTER_SERVE_UI`'s does. The
-/// value is trimmed: it arrives from an environment file, where a stray newline
-/// or a trailing space is a typo rather than part of a credential, and a token
-/// that differs from the published one by an invisible byte fails as a flat 401
-/// with nothing on screen to explain it.
+/// Both sources are trimmed, by one rule: a stray newline from an environment
+/// file, or a space pasted around a flag, is a typo rather than part of a
+/// credential, and a token that differs from the published one by an invisible
+/// byte fails as a flat 401 with nothing on screen to explain it.
+///
+/// What is left blank differs by source. A blank variable reads as unset,
+/// exactly as `BIOROUTER_SERVE_UI`'s does, so a token is minted. A blank flag
+/// is refused (W1-37): it used to be taken as the token, so `--host 0.0.0.0
+/// --token "$UNSET"` passed the rule that an exposed port needs a token with a
+/// gate anyone opened with `?t=`. `--auth-token` refuses the same mistake
+/// (`cli::parse_auth_token`).
+///
+/// A token the session cookie cannot carry is refused from either source
+/// ([`refuse_a_token_no_cookie_carries`]).
 pub(crate) fn choose_browser_token(
     flag: Option<String>,
     no_token: bool,
     variable: Option<String>,
     mint: impl FnOnce() -> String,
-) -> BrowserToken {
+) -> Result<BrowserToken> {
     // ⚠ First, and before the variable is even looked at. `--no-token` is a
     // refusal to have a gate; a token this shell happens to export is not a
     // reason to put one back that the printed URL would not carry.
     if no_token {
-        return BrowserToken::Off;
+        return Ok(BrowserToken::Off);
     }
     if let Some(token) = flag {
-        return BrowserToken::Flag(token);
+        let token = token.trim();
+        if token.is_empty() {
+            bail!(
+                "an empty --token is not a token; omit the flag to get a new one each launch, or \
+                 pass a real secret"
+            );
+        }
+        refuse_a_token_no_cookie_carries(token, "--token")?;
+        return Ok(BrowserToken::Flag(token.to_string()));
     }
     match variable.map(|t| t.trim().to_string()) {
-        Some(token) if !token.is_empty() => BrowserToken::Variable(token),
-        _ => BrowserToken::Minted(mint()),
+        Some(token) if !token.is_empty() => {
+            refuse_a_token_no_cookie_carries(&token, "BIOROUTER_BROWSER_TOKEN")?;
+            Ok(BrowserToken::Variable(token))
+        }
+        _ => Ok(BrowserToken::Minted(mint())),
     }
+}
+
+/// Refuse a token holding a `;` or a control character, naming `source`.
+///
+/// The daemon sets the token as the session cookie's value. A browser keeps
+/// only the part of a cookie before a `;`, and a control character makes the
+/// `Set-Cookie` header invalid, so such a token is accepted by the exchange and
+/// then fails every open of the printed address as a 401. Anything else is
+/// carried: the address percent-encodes the token ([`query_value`]).
+fn refuse_a_token_no_cookie_carries(token: &str, source: &str) -> Result<()> {
+    if token.chars().any(|c| c == ';' || c.is_control()) {
+        bail!(
+            "{source} holds a semicolon or a control character, which the browser's session \
+             cookie cannot carry; choose a token without them"
+        );
+    }
+    Ok(())
 }
 
 /// The URL to open, with the browser token in it.
@@ -1034,10 +1073,23 @@ fn browser_url(host: &str, port: u16, token: Option<&str>) -> String {
     } else {
         host.to_string()
     };
-    match token {
-        Some(t) => format!("http://{host}:{port}/?t={t}"),
-        None => format!("http://{host}:{port}/"),
+    with_token(&format!("http://{host}:{port}/"), token)
+}
+
+/// `value` as a URL query value: every byte but the unreserved letters, digits
+/// and `- . _ ~` percent-encoded, so a token holding a space, `&`, `#`, `+` or
+/// `%` reaches the daemon as it was given. Pasted in raw, a `#` ended the query
+/// and an `&` the value, and the printed address answered 401.
+fn query_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
     }
+    out
 }
 
 /// The variable `biorouter serve` hands the daemon the public address in
@@ -1116,10 +1168,11 @@ pub(crate) fn choose_public_url(
     Ok(Some(url.to_string()))
 }
 
-/// `url` with the browser token as its query, or unchanged without one.
+/// `url` with the browser token as its query ([`query_value`]), or unchanged
+/// without one.
 fn with_token(url: &str, token: Option<&str>) -> String {
     match token {
-        Some(t) => format!("{url}?t={t}"),
+        Some(t) => format!("{url}?t={}", query_value(t)),
         None => url.to_string(),
     }
 }
@@ -1781,15 +1834,15 @@ mod tests {
     #[test]
     fn the_token_comes_from_the_flag_then_the_variable_then_a_fresh_one() {
         assert_eq!(
-            choose_browser_token(Some("from-the-flag".into()), false, None, minted),
+            choose_browser_token(Some("from-the-flag".into()), false, None, minted).unwrap(),
             BrowserToken::Flag("from-the-flag".into())
         );
         assert_eq!(
-            choose_browser_token(None, false, Some("from-the-file".into()), minted),
+            choose_browser_token(None, false, Some("from-the-file".into()), minted).unwrap(),
             BrowserToken::Variable("from-the-file".into())
         );
         assert_eq!(
-            choose_browser_token(None, false, None, minted),
+            choose_browser_token(None, false, None, minted).unwrap(),
             BrowserToken::Minted("minted".into())
         );
     }
@@ -1804,7 +1857,8 @@ mod tests {
                 false,
                 Some("from-the-file".into()),
                 minted
-            ),
+            )
+            .unwrap(),
             BrowserToken::Flag("from-the-flag".into())
         );
     }
@@ -1819,7 +1873,8 @@ mod tests {
     fn an_operator_supplied_token_is_used_rather_than_overwritten() {
         let chosen = choose_browser_token(None, false, Some("token-from-the-file".into()), || {
             panic!("a token was named; nothing may be minted over it")
-        });
+        })
+        .unwrap();
         assert_eq!(chosen.value(), Some("token-from-the-file"));
         assert!(
             chosen.provenance().contains("BIOROUTER_BROWSER_TOKEN"),
@@ -1835,7 +1890,7 @@ mod tests {
     fn a_blank_token_variable_is_not_a_choice() {
         for blank in ["", "  ", "\n"] {
             assert_eq!(
-                choose_browser_token(None, false, Some(blank.into()), minted),
+                choose_browser_token(None, false, Some(blank.into()), minted).unwrap(),
                 BrowserToken::Minted("minted".into()),
                 "{blank:?}"
             );
@@ -1846,9 +1901,144 @@ mod tests {
     #[test]
     fn a_token_from_the_environment_is_trimmed() {
         assert_eq!(
-            choose_browser_token(None, false, Some("  tok\n".into()), minted),
+            choose_browser_token(None, false, Some("  tok\n".into()), minted).unwrap(),
             BrowserToken::Variable("tok".into())
         );
+    }
+
+    /// W1-37: an empty `--token` is not a token. It used to be accepted, so the
+    /// banner printed `?t=` and `?t=` minted a session cookie, the same defect
+    /// `--auth-token` had (`cli::parse_auth_token`).
+    #[test]
+    fn a_blank_token_flag_is_refused() {
+        let error = choose_browser_token(Some(String::new()), false, None, || {
+            panic!("a refused flag mints nothing")
+        })
+        .expect_err("an empty --token must be refused")
+        .to_string();
+        assert!(error.contains("--token"), "{error}");
+        assert!(error.contains("not a token"), "{error}");
+    }
+
+    /// W1-38: whitespace is no more a token than nothing is, and the refusal
+    /// comes before anything starts, so it holds on a wildcard bind, where an
+    /// empty token used to satisfy the rule that an exposed port needs one
+    /// (SD-2). The interface folder named here does not exist: a launch that
+    /// got past the token would be refused for that instead, so the message
+    /// says which check ran first.
+    #[tokio::test]
+    async fn a_whitespace_token_flag_is_refused_even_on_a_wildcard_host() {
+        let free_port = || {
+            TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let restartable = Restartable::capture();
+        let settled = AtomicBool::new(true);
+        let error = serve_resumed(
+            "0.0.0.0".to_string(),
+            free_port(),
+            Some("   ".to_string()),
+            false,
+            false,
+            Some(tmp.path().join("no-interface-here")),
+            None,
+            false,
+            false,
+            false,
+            false,
+            &restartable,
+            None,
+            &settled,
+        )
+        .await
+        .expect_err("a whitespace --token must be refused")
+        .to_string();
+        assert!(error.contains("an empty --token is not a token"), "{error}");
+    }
+
+    /// W1-39: one rule for both sources. The flag is trimmed as the variable
+    /// is, so `--token "  tok "` and `BIOROUTER_BROWSER_TOKEN="  tok "` name the
+    /// same credential, and the banner carries no spaces the daemon would then
+    /// insist on.
+    #[test]
+    fn the_token_flag_is_trimmed_like_the_variable() {
+        let from_flag = choose_browser_token(Some("  tok\n".into()), false, None, minted).unwrap();
+        let from_variable =
+            choose_browser_token(None, false, Some("  tok\n".into()), minted).unwrap();
+        assert_eq!(from_flag, BrowserToken::Flag("tok".into()));
+        assert_eq!(from_flag.value(), from_variable.value());
+    }
+
+    /// A token with characters a query must escape still reaches the daemon
+    /// whole from the address the banner prints. It used to be pasted in raw,
+    /// so a space, `&`, `#` or `+` cut it short or changed it, and the printed
+    /// address answered 401.
+    #[test]
+    fn the_banner_url_carries_a_token_with_reserved_characters() {
+        let token = "a b&c#d+e%f=g?h/i";
+        for printed in [
+            browser_url("127.0.0.1", 8765, Some(token)),
+            with_token("https://hub.example.org/p/", Some(token)),
+        ] {
+            let url = url::Url::parse(&printed).unwrap();
+            assert_eq!(url.fragment(), None, "{printed}");
+            let carried: Vec<(String, String)> = url.query_pairs().into_owned().collect();
+            assert_eq!(carried, [("t".to_string(), token.to_string())], "{printed}");
+        }
+        // A token without such characters is printed exactly as before.
+        assert_eq!(
+            browser_url("127.0.0.1", 8765, Some("c0ffee-_.~")),
+            "http://127.0.0.1:8765/?t=c0ffee-_.~"
+        );
+    }
+
+    /// The address a wildcard bind prints, on the container line and on the
+    /// SSH-tunnel line, carries such a token whole too. Those two lines built
+    /// their own `?t=` and pasted the token in raw after the other builders
+    /// were fixed.
+    #[test]
+    fn the_network_banner_lines_carry_a_token_with_reserved_characters() {
+        let token = BrowserToken::Flag("a b&c#d".into());
+        for (container, ssh_target) in [(true, "container"), (false, "lab.example")] {
+            let banner = banner_text(
+                "http://0.0.0.0:8765/?t=a%20b%26c%23d",
+                "0.0.0.0",
+                8765,
+                &token,
+                false,
+                None,
+                "Dictation: ready (whisper-small.en-q8_0)",
+                container,
+                ssh_target,
+            );
+            assert!(banner.contains("/?t=a%20b%26c%23d"), "{banner}");
+            assert!(!banner.contains("?t=a b&c#d"), "{banner}");
+        }
+    }
+
+    /// A token the session cookie cannot hold cannot work: the browser would
+    /// keep only the part before a `;`, and a control character makes the
+    /// cookie header invalid, so every open of the printed address would be a
+    /// 401. Refused up front, from either source.
+    #[test]
+    fn a_token_a_cookie_cannot_carry_is_refused() {
+        for bad in ["abc;def", "abc\ndef", "abc\tdef"] {
+            let error = choose_browser_token(Some(bad.into()), false, None, minted)
+                .expect_err(bad)
+                .to_string();
+            assert!(error.contains("--token"), "{bad:?}: {error}");
+            let error = choose_browser_token(None, false, Some(bad.into()), minted)
+                .expect_err(bad)
+                .to_string();
+            assert!(
+                error.contains("BIOROUTER_BROWSER_TOKEN"),
+                "{bad:?}: {error}"
+            );
+        }
     }
 
     /// `--no-token` is a refusal to have a gate. An inherited token must not put
@@ -1858,7 +2048,8 @@ mod tests {
     fn no_token_beats_a_token_this_shell_happens_to_export() {
         let chosen = choose_browser_token(None, true, Some("inherited".into()), || {
             panic!("--no-token mints nothing")
-        });
+        })
+        .unwrap();
         assert_eq!(chosen, BrowserToken::Off);
         assert_eq!(chosen.value(), None);
     }
@@ -1878,7 +2069,8 @@ mod tests {
             false,
             std::env::var("BIOROUTER_BROWSER_TOKEN").ok(),
             minted,
-        );
+        )
+        .unwrap();
         assert_eq!(chosen.value(), Some("token-from-the-environment"));
     }
 

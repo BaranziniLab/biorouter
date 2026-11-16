@@ -116,6 +116,16 @@ should have said so.
 Making the token mandatory on that path rather than merely available is the load-bearing half.
 An optional credential on an exposed port is not a credential; it is a setting nobody changed.
 
+**An empty token is not a token.** Until 2026-11-16 `--token ''` and `--token '   '` were accepted,
+so `serve --host 0.0.0.0 --token "$UNSET"` satisfied this rule with a gate anyone opened with
+`?t=`: the banner printed that address and it set a session cookie. `serve` now trims the flag,
+exactly as it trims `BIOROUTER_BROWSER_TOKEN`, and refuses a blank one before anything starts, the
+way `biorouter web` refuses an empty `--auth-token` (SD-13). A blank variable still reads as unset,
+so a token is minted, because an environment file is where a stray blank line is a typo rather
+than a choice. A token holding a `;` or a control character is refused from either place: the
+browser keeps the token in a cookie, which cannot carry those, so the printed address would never
+work.
+
 **Consequence to accept.** There is no configuration that exposes the port without a token. An
 operator who wants an unauthenticated LAN service has to put something else in front of it, and
 that is the correct amount of friction.
@@ -483,6 +493,16 @@ this record is unchanged by that.)
 - *Keep the word "spent".* Rejected. In a section about security it reads as single use, and an
   operator who believes a leaked address stopped working after its first use has the wrong
   picture of their exposure.
+
+**The cookie is named for the daemon's port.** The session cookie's value is the token, and since
+2026-11-16 its name is `biorouter_session_<port>`. A browser keeps cookies by host, not by port, so
+with the one fixed name `biorouter_session` a second `serve` on the same host replaced the first
+one's cookie and the first page asked for its token again. The daemon accepts its token under the
+plain name earlier versions set and under any port's name, because the value is what is compared:
+reading another port's cookie admits nothing the token does not, and a browser keeps its session
+across an upgrade when the token stays the same. The page a browser without the cookie gets says
+the address works until `serve` stops; it said the address "is shown once per launch" until the
+same date, which read as single use.
 
 **Consequence to accept.** The address `serve` prints is a bearer credential for as long as the
 daemon runs. Revoking it means stopping `serve` — which is why SD-7 requires that the daemon never

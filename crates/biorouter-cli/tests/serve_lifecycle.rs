@@ -119,10 +119,11 @@ fn http_status(port: u16, path: &str) -> Option<u16> {
 }
 
 /// The status of `GET /?t=<token>` and whether the answer set the session
-/// cookie: what a browser gets for the address `serve` printed. A token the
-/// daemon holds is a `200` page that sets the cookie and moves on to `/` (a
-/// page, not a `303`, so the cookie survives a navigation `serve --open`'s
-/// `file:` page started); any other token is a `401`.
+/// cookie under the name that carries the daemon's port: what a browser gets
+/// for the address `serve` printed. A token the daemon holds is a `200` page
+/// that sets the cookie and moves on to `/` (a page, not a `303`, so the cookie
+/// survives a navigation `serve --open`'s `file:` page started); any other
+/// token is a `401`.
 fn exchange(port: u16, token: &str) -> Option<(u16, bool)> {
     let mut stream = TcpStream::connect_timeout(
         &SocketAddr::from((Ipv4Addr::LOCALHOST, port)),
@@ -142,7 +143,7 @@ fn exchange(port: u16, token: &str) -> Option<(u16, bool)> {
     let status = head.split_whitespace().nth(1)?.parse().ok()?;
     let cookie = head.lines().any(|line| {
         line.to_ascii_lowercase()
-            .starts_with(&format!("set-cookie: biorouter_session={token};"))
+            .starts_with(&format!("set-cookie: biorouter_session_{port}={token};"))
     });
     Some((status, cookie))
 }
