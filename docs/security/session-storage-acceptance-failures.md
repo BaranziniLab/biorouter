@@ -2,8 +2,8 @@
 
 > **What this is.** The record of the first rebuilt session-storage acceptance run, which failed its
 > legacy positive control in all three repetitions, and of the harness correction that followed.
-> **Status:** Historical record (failed run of 2026-10-23, GitHub Actions run `40067193480`). Retained
-> evidence, not superseded by any later passing run.
+> **Status:** Current. Retained evidence of the failed run of 2026-10-23 (GitHub Actions run
+> `40067193480`), kept beside the acceptance procedure on purpose and not superseded by any later passing run.
 > **Audience:** maintainers.
 
 The initial [GitHub Actions run `40067193480`](https://github.com/BaranziniLab/biorouter/actions/runs/40067193480), job `120792813193`, tested an actual rebuilt daemon at declared source merge commit `21cff03912a778da360a46dea904879a5c3b867e`. The corresponding PR #454 branch head was `22e9f84371a2da95ef79a25a9a524c3371523d03`. These are separate provenance fields, not interchangeable source revisions.
