@@ -8,8 +8,17 @@
 <code>BIOROUTER_PROVIDER: llamacpp
 BIOROUTER_MODEL: qwen3.8-27b
 BIOROUTER_MODE: smart_approve
-BIOROUTER_MAX_TURNS: 0</code></pre>
+BIOROUTER_MAX_TURNS: 0
+BIOROUTER_MAX_TOOL_CALLS: 0</code></pre>
 <p>Credentials are kept elsewhere; see <a href="#vaulting-secrets">Security</a>. <code>biorouter info -v</code> prints the values stored in <code>config.yaml</code>.</p>
+<p>The <code>usage</code> section holds the spending limits that pause chats once they are reached. <strong>Settings&nbsp;→&nbsp;App&nbsp;→&nbsp;Usage</strong> writes the same section. A missing, zero or negative value means unlimited.</p>
+<pre>
+<code>usage:
+  monthly_token_limit: 66000000
+  monthly_dollar_limit: 250.0
+  default_session_token_limit: 5000000
+  default_session_dollar_limit: 20.0</code></pre>
+<p>The <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/agent-loop/usage-limits.md">usage limits guide</a> explains what each limit counts.</p>
 
 <h2 id="config-files">Where files live</h2>
 <p>The paths below are for macOS and Linux. On Windows, the settings sit in <code>%APPDATA%\UCSF\biorouter\config</code>, everything else, logs included, in <code>%APPDATA%\UCSF\biorouter\data</code>, and the cache in <code>%LOCALAPPDATA%\UCSF\biorouter\cache</code>. Earlier releases used a different folder on Windows. The desktop app moves it there when it starts, once no other Biorouter program is using it, and updates the paths saved inside it. If both folders exist, Biorouter uses the new one, leaves the old one as it was, and says so when it starts. <code>biorouter info</code> prints the paths on your computer.</p>
@@ -25,13 +34,15 @@ BIOROUTER_MAX_TURNS: 0</code></pre>
     <tr><td><strong>Installed extensions</strong></td><td><code>~/.config/biorouter/extensions/</code></td></tr>
     <tr><td><strong>Knowledge bases</strong></td><td><code>~/.config/biorouter/knowledge/</code></td></tr>
     <tr><td><strong>Global memories</strong></td><td><code>~/.config/biorouter/memory/</code></td></tr>
+    <tr><td><strong>Dictionary</strong></td><td><code>~/.config/biorouter/dictionary/</code> (<code>dictionary.json</code>, <code>usage.json</code>): the words dictation spells your way. On macOS and Linux only your account can read it.</td></tr>
     <tr><td><strong>Built apps</strong></td><td><code>~/.config/biorouter/agent_drafter/</code></td></tr>
     <tr><td><strong>Chats</strong></td><td><code>~/.local/share/biorouter/sessions/sessions.db</code></td></tr>
+    <tr><td><strong>Speech models</strong></td><td><code>~/.local/share/biorouter/dictation/models/&lt;id&gt;/</code>. On Windows they sit in <code>%LOCALAPPDATA%\UCSF\biorouter\data\dictation\models\</code>, beside the cache, so they never roam.</td></tr>
     <tr><td><strong>Schedules</strong></td><td><code>~/.local/share/biorouter/schedule.json</code>, with a copy of each scheduled workflow in <code>scheduled_workflows/</code> beside it</td></tr>
     <tr><td><strong>Logs</strong></td><td><code>~/.local/state/biorouter/logs/</code></td></tr>
   </tbody>
 </table></div>
-<p>An administrator's policy file sits outside your profile; see <a href="#vaulting-managed-policy">Managed policy</a>. <code class="code-token">BIOROUTER_PATH_ROOT</code> moves everything above under one folder, in <code>config/</code>, <code>data/</code> and <code>state/</code>.</p>
+<p>Speech models are installed from <strong>Settings&nbsp;→&nbsp;Models&nbsp;→&nbsp;Speech models</strong> or with <code>biorouter dictation install</code>, and Settings shows the model folder. Managed policy can turn dictation off or narrow it with its <code>dictation</code> block. An administrator's policy file sits outside your profile; see <a href="#vaulting-managed-policy">Managed policy</a>. <code class="code-token">BIOROUTER_PATH_ROOT</code> moves everything above under one folder, in <code>config/</code>, <code>data/</code> and <code>state/</code>.</p>
 
 <h2 id="config-precedence">Which setting wins</h2>
 <p>When the same setting comes from several places, the first of these wins:</p>
@@ -59,16 +70,21 @@ BIOROUTER_MAX_TURNS: 0</code></pre>
   <tbody>
     <tr><td><code class="code-token">BIOROUTER_PROVIDER</code></td><td>The provider, for example <code>llamacpp</code>. Names are on <a href="#providers">Models and providers</a>.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_MODEL</code></td><td>The model, for example <code>qwen3.8-27b</code>.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_WORKER_PROVIDER</code></td><td>The provider of the default worker model, the model subagents run on when the agent names none. <code class="code-token">BIOROUTER_WORKER_MODEL</code> is its model; set both, or neither applies. Unset by default, so subagents run on the chat's model. Settings&nbsp;→&nbsp;Models writes both.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_DECISION_PROVIDER</code></td><td>With <code class="code-token">BIOROUTER_DECISION_MODEL</code>, the default decision model for monitors, phase gates and <code>decide</code>. The model can also be written <code>provider/model</code> on its own. Without them, the first decision model the chat may use, local first.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_MODE</code></td><td>The permission mode: <code>auto</code> (the default), <code>approve</code>, <code>smart_approve</code> or <code>chat</code>. See <a href="#vaulting-modes">Permission modes</a>.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_MAX_TURNS</code></td><td>Turns the agent may take without you. Default <code>0</code> means Unlimited; a positive value sets a limit.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_MAX_TOOL_CALLS</code></td><td>Tool calls the agent may make without you. Default <code>0</code> means Unlimited; a positive value sets a limit.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_AUTO_COMPACT_THRESHOLD</code></td><td>The share of the context window at which a chat is summarized. Default <code>0.8</code>; <code>0</code> turns it off.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_AUTO_COMPACT_MAX_TOKENS</code></td><td>The token count at which a chat is summarized whatever the window size; the lower of this and the threshold wins. Default <code>200000</code>; <code>0</code> removes the ceiling.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_DICTATION_MODEL</code></td><td>The speech model dictation uses, by its id; <code>biorouter dictation use</code> writes it. When it is unset, or that model is not installed, the default for this computer is used.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_DICTATION_IDLE_UNLOAD_SECS</code></td><td>Seconds without dictation before the speech worker stops and frees its memory. Default <code>300</code>.</td></tr>
   </tbody>
 </table></div>
 <p>These work only as environment variables. Written in <code>config.yaml</code>, they have no effect.</p>
 <div class="doc-table-scroll"><table class="doc-options">
   <thead><tr><th>Variable</th><th>What it does</th></tr></thead>
   <tbody>
-    <tr><td><code class="code-token">BIOROUTER_MAX_TOOL_CALLS</code></td><td>Tool calls the agent may make without you. Default <code>0</code> means Unlimited; a positive value sets a limit.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_SUBAGENT_MAX_TURNS</code></td><td>The turn limit for a subagent. Default <code>25</code>.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_CONTEXT_LIMIT</code></td><td>Overrides the model's context window, in tokens. Useful for a model Biorouter does not know.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_DISABLE_KEYRING</code></td><td>Any value keeps secrets in <code>secrets.yaml</code> instead of the credential store.</td></tr>
@@ -79,6 +95,7 @@ BIOROUTER_MAX_TURNS: 0</code></pre>
     <tr><td><code class="code-token">BIOROUTER_PORT</code></td><td>The port of the <code>biorouterd</code> that live <code>session</code> commands reach. Default <code>3000</code>.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_SERVER__SECRET_KEY</code></td><td>The API key those commands and that service share. See <a href="#cli-sessions">Sessions</a>.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_PATH_ROOT</code></td><td>Keeps all settings, data and logs under one folder. Useful for tests and for separate setups.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_CLI_DICTATION_KEY</code></td><td>The <kbd>Ctrl</kbd> letter that starts and stops dictation in a terminal chat, <code>t</code> by default; an empty value turns the chord off. See <a href="#cli-ref-env">terminal settings</a>.</td></tr>
   </tbody>
 </table></div>
 <p>The variables for browser access are on <a href="#cli-serve">Browser access</a>. Settings for single providers, such as <code>OLLAMA_HOST</code>, are on <a href="#providers">Models and providers</a>.</p>

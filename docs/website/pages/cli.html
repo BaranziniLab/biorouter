@@ -45,6 +45,7 @@ biorouter dictate --copy
 
 # Turn a recording into text on this computer
 biorouter transcribe memo.m4a</code></pre>
+<p>In a chat, <code>/dictate status</code> shows the state and <code>/dictate retry</code> tries a failed transcription again. After three failures within ten seconds, dictation pauses for that chat. <code class="code-token">BIOROUTER_CLI_DICTATION_KEY</code> changes the <kbd>Ctrl</kbd> letter (<a href="#cli-ref-env">terminal settings</a>). <code>/dictionary add &lt;term&gt;</code> adds a term to your dictionary, <code>/dictionary review</code> opens the suggested terms, and <code>/dictionary scan</code> looks for words in your recent chats on public models; <kbd>Esc</kbd> in the full screen chat or <kbd>Ctrl+C</kbd> in the classic prompt stops the scan and keeps what it found.</p>
 <p>Over SSH there is no microphone to reach, so <code>biorouter dictate</code> says what works instead: <code>biorouter serve</code> on that computer with an SSH tunnel, dictating on your own computer and pasting, or copying a recording over and running <code>biorouter transcribe</code>.</p>
 
 <h3 id="cli-slash">Slash commands</h3>
@@ -63,10 +64,10 @@ biorouter transcribe memo.m4a</code></pre>
     <tr><td><code>/&lt;shortcut&gt;</code></td><td>Run a workflow you gave a slash shortcut.</td></tr>
   </tbody>
 </table></div>
-<p>The terminal adds <code>/rename &lt;name&gt;</code>, <code>/diverge [name]</code> to copy the chat into a new one, <code>/help</code> and <code>/exit</code>. The classic prompt also has <code>/mode auto|approve|smart_approve|chat</code>, <code>/plan</code> and <code>/endplan</code>, <code>/workflow [file.yaml]</code> to save the chat as a workflow, <code>/builtin</code> and <code>/extension</code> to add extensions, <code>/t</code> for the color theme and <code>/r</code> for full tool output.</p>
+<p>The terminal adds <code>/rename &lt;name&gt;</code>, <code>/diverge [name]</code> to copy the chat into a new one, <code>/dictate</code> and <code>/dictionary</code> (see <a href="#cli-dictate">Dictate</a>), <code>/help</code> and <code>/exit</code>. The classic prompt also has <code>/mode auto|approve|smart_approve|chat</code>, <code>/plan</code> and <code>/endplan</code>, <code>/workflow [file.yaml]</code> to save the chat as a workflow, <code>/builtin</code> and <code>/extension</code> to add extensions, <code>/t</code> for the color theme and <code>/r</code> for full tool output.</p>
 
 <h3 id="cli-sessions">Sessions</h3>
-<p>Every chat is a session in one local store that the app and the command line share. The <code>session</code> commands come in two kinds.</p>
+<p>Every chat is a session in one local store that the app and the command line share. The <code>session</code> commands come in two kinds. Four of them, <code>subagents</code>, <code>decisions</code>, <code>monitors</code> and <code>gates</code>, work either way: they read the running service when there is one, and the stored chat otherwise.</p>
 <figure class="doc-figure">
   <div class="split">
     <div>
@@ -76,6 +77,7 @@ biorouter transcribe memo.m4a</code></pre>
         <li><code>session rename</code>, <code>diverge</code></li>
         <li><code>session remove</code>, <code>diagnostics</code></li>
         <li><code>session declassify</code></li>
+        <li><code>session subagents</code>, <code>decisions</code>, <code>monitors</code>, <code>gates</code>: live when a service runs</li>
       </ul>
     </div>
     <div>
@@ -85,6 +87,7 @@ biorouter transcribe memo.m4a</code></pre>
         <li><code>session send</code>: send a message</li>
         <li><code>session attach</code>: join and type</li>
         <li><code>session cancel</code>: stop the turn</li>
+        <li><code>session subagents --watch</code>: follow a chat's subagents</li>
       </ul>
     </div>
   </div>
@@ -146,7 +149,7 @@ biorouter doctor --fix
 biorouter doctor --fix uv</code></pre>
 
 <h2 id="cli-reference">Reference</h2>
-<p>Short names: <code>s</code> and <code>sessions</code> for <code>session</code>, <code>kb</code> for <code>knowledge</code>, <code>ext</code> for <code>extension</code>, <code>sched</code> for <code>schedule</code>, <code>p</code> and <code>ps</code> for <code>project</code> and <code>projects</code>, <code>install-cli</code> for <code>setup-path</code>, <code>headless</code> for <code>serve</code>. The <code>workflow</code>, <code>schedule</code> and <code>doctor</code> commands are covered above. Environment variables are on <a href="#config-env">Configuration</a>, except <a href="#cli-ref-env">terminal settings</a> only the command line reads and the three under <a href="#cli-serve">Browser access</a>.</p>
+<p>Short names: <code>s</code> and <code>sessions</code> for <code>session</code>, <code>kb</code> for <code>knowledge</code>, <code>ext</code> for <code>extension</code>, <code>sched</code> for <code>schedule</code>, <code>p</code> and <code>ps</code> for <code>project</code> and <code>projects</code>, <code>install-cli</code> for <code>setup-path</code>, <code>headless</code> for <code>serve</code>. The <code>workflow</code>, <code>schedule</code> and <code>doctor</code> commands are covered above. Environment variables are on <a href="#config-env">Configuration</a>, except <a href="#cli-ref-env">terminal settings</a> only the command line reads and the ones under <a href="#cli-serve">Browser access</a>.</p>
 
 <h3 id="cli-ref-session"><code>session</code></h3>
 <div class="doc-table-scroll"><table class="ref doc-options">
@@ -158,12 +161,15 @@ biorouter doctor --fix uv</code></pre>
     <tr><td><code class="code-token">--resume</code></td><td>Continue the last chat, or the one named (<code>-r</code>).</td></tr>
     <tr><td><code class="code-token">--history</code></td><td>Show earlier messages when resuming.</td></tr>
     <tr><td><code class="code-token">--provider</code></td><td>Use this provider for this chat. <code class="code-token">--model</code> picks its model.</td></tr>
+    <tr><td><code class="code-token">--local</code></td><td>Run the chat in this terminal only. Without it, an interactive chat runs on the shared Biorouter service when one is running, so it can use Crew as you and shows in the desktop app. Not with <code class="code-token">--shared-daemon</code>.</td></tr>
+    <tr><td><code class="code-token">--decision-model</code></td><td>The chat's default decision model, by name (<code>tev1:0.8b</code>, <code>joey-1</code>) or as <code>provider/model</code>, set before the first message. A chat is as private as its least private model, so a public decision model (such as <code>joey-1</code> on Baseten) makes a chat on a private model public. That asks for a confirmation typed at this terminal; without a terminal nothing is set and the chat does not start.</td></tr>
+    <tr><td><code class="code-token">--monitors</code></td><td>Monitors, and optionally a default decision model, from a YAML or JSON file in the shape of a workflow's <code>decision_settings</code>, set before the first message. A public decision model among them is asked about as for <code class="code-token">--decision-model</code>.</td></tr>
     <tr><td><code class="code-token">--with-builtin</code></td><td>Turn on built in extensions by name, as <code>developer,memory</code>.</td></tr>
     <tr><td><code class="code-token">--with-extension</code></td><td>A local extension from a command, as <code>"ENV=value command args"</code>, or a remote one with <code>--with-streamable-http-extension URL</code>. Both repeat.</td></tr>
     <tr><td><code class="code-token">--max-turns</code></td><td>Turns the agent may take without your input. Default 0 means Unlimited; a positive value sets a limit.</td></tr>
     <tr><td><code class="code-token">--max-tool-repetitions</code></td><td>Limit identical calls to one tool in a row.</td></tr>
     <tr><td><code class="code-token">--debug</code></td><td>Show full tool output and full paths.</td></tr>
-    <tr><td><code class="code-token">--shared-daemon</code></td><td>Run in the shared background service the desktop app and <code>biorouter crew</code> use. It starts the service when needed and connects silently. <code class="code-token">--no-start</code> requires an existing service; <code class="code-token">--create-only</code> creates the chat without running it. The older <code class="code-token">--approval-key-stdin</code> option reads and ignores the first input line.</td></tr>
+    <tr><td><code class="code-token">--shared-daemon</code></td><td>Use your profile's shared background service, the one the desktop app and <code>biorouter crew</code> use, starting it when needed. It does not grant Crew access. <code class="code-token">--no-start</code> requires a service that is already running; <code class="code-token">--create-only</code> creates the chat without sending a prompt. The older <code class="code-token">--approval-key-stdin</code> is accepted for compatibility and reads and ignores the first input line.</td></tr>
   </tbody>
 </table></div>
 <div class="doc-table-scroll"><table class="ref">
@@ -181,9 +187,13 @@ biorouter doctor --fix uv</code></pre>
     <tr><td><code>send</code></td><td>Send a message and stream the turn. <code class="code-token">--no-wait</code> returns once the turn starts.</td></tr>
     <tr><td><code>attach</code></td><td>Follow a running chat and send what you type. <code>--name NAME</code> instead of an ID, <code>--of PARENT_ID</code> for its running subagent, <code class="code-token">--read-only</code> to only watch. <kbd>Ctrl+C</kbd> leaves the turn running, after a warning if you sent it from here.</td></tr>
     <tr><td><code>cancel</code></td><td>Stop the running turn, like Stop in the app.</td></tr>
+    <tr><td><code>subagents</code></td><td>A parent chat's subagent runs, oldest first: status, model, extensions, skills, knowledge bases, tool calls, run time and the first line of the result. A phase plan, with each phase's progress, comes first when there is one. <code>--format json</code> or <code class="code-token">--json</code>; <code class="code-token">--watch</code> redraws every 2 seconds. Without a running service, a subagent that was running reads as interrupted or unknown.</td></tr>
+    <tr><td><code>decisions</code></td><td>The decision-model calls a chat made: one line per source (monitor, tool, gate, chat, adhoc) and criterion, then a page of calls, newest first, with filters such as <code class="code-token">--source</code>, <code class="code-token">--outcome</code> and <code class="code-token">--errors</code>, and a cursor for the next page. <code class="code-token">--json</code> or <code>--format json</code>.</td></tr>
+    <tr><td><code>monitors</code></td><td><code>list</code>, <code>add</code> or <code>remove</code> the decision-model monitors that watch a chat, or set its <code>default</code> decision model. A monitor asks a decision model one question after each agent iteration, or once as the turn ends (<code class="code-token">--timing</code>). When the answer passes <code class="code-token">--threshold</code>, or falls below it with <code class="code-token">--below</code>, it stops the turn, shows a notice or tells the model (<code>--action stop</code>, <code>notify</code> or <code>steer</code>). <code>add</code> also takes <code class="code-token">--rearm-below</code>, <code class="code-token">--rearm-above</code>, <code class="code-token">--on-error</code>, <code class="code-token">--max-checks</code> and <code class="code-token">--subagents</code>.</td></tr>
+    <tr><td><code>gates</code></td><td>List a chat's phase gates, or <code>set</code>, <code>remove</code>, <code>pass</code>, <code>skip</code> or <code>retry</code> one. Whoever set a gate (the agent, you, or the workflow), the agent cannot change, remove or skip it. Only you can, here or in the app.</td></tr>
   </tbody>
 </table></div>
-<p><code>export</code>, <code>rename</code>, <code>diverge</code>, <code>remove</code> and <code>diagnostics</code> take the chat as <code>--session-id ID</code> or <code>-n NAME</code>, and ask you to pick one when you give neither. <code>send</code>, <code>attach</code> and <code>cancel</code> take <code class="code-token">--user-action-key-stdin</code> for a service started with a user action key.</p>
+<p><code>export</code>, <code>rename</code>, <code>diverge</code>, <code>remove</code> and <code>diagnostics</code> take the chat as <code>--session-id ID</code> or <code>-n NAME</code>, and ask you to pick one when you give neither. <code>send</code>, <code>attach</code>, <code>cancel</code>, <code>subagents</code>, <code>decisions</code>, <code>monitors</code> and <code>gates</code> take <code class="code-token">--user-action-key-stdin</code> for a service started with a user action key.</p>
 
 <h3 id="cli-ref-run"><code>run</code></h3>
 <div class="doc-table-scroll"><table class="ref doc-options">
@@ -202,7 +212,7 @@ biorouter doctor --fix uv</code></pre>
     <tr><td><code class="code-token">--output-format</code></td><td><code>text</code>, <code>json</code> for one result at the end, or <code>stream-json</code> for events as they happen.</td></tr>
   </tbody>
 </table></div>
-<p>The model, limit and extension flags work as they do for <code>session</code>.</p>
+<p>The model, limit and extension flags, <code class="code-token">--decision-model</code> and <code class="code-token">--monitors</code> work as they do for <code>session</code>. <code class="code-token">--local</code> is for <code>session</code> only.</p>
 
 <h3 id="cli-ref-models"><code>models</code></h3>
 <div class="doc-table-scroll"><table class="ref">
@@ -216,6 +226,8 @@ biorouter doctor --fix uv</code></pre>
     <tr><td><code>local list</code></td><td>The Llama Server catalog, what is downloaded, and which copy it starts from. Also <code>ls</code>.</td></tr>
     <tr><td><code>local pull</code></td><td>Download a model ahead of time: a catalog name, <code>qwen3.8-27b</code> or <code>gemma4-31b</code>, or a Hugging Face <code>owner/repo:QUANT</code>. A name from an earlier version downloads the model it now runs.</td></tr>
     <tr><td><code>local rm</code></td><td>Delete a downloaded model. Also <code>delete</code>.</td></tr>
+    <tr><td><code>decision list</code></td><td>The decision models available now, local first, with tier, context, kinds and adapter. Also <code>ls</code>.</td></tr>
+    <tr><td><code>decision pull</code></td><td>Install a decision model into the Ollama on this computer: <code>tev1:0.8b</code>, the default, about 1.5&nbsp;GB, or <code>clef-flash:latest</code>, about 12&nbsp;GB. Ollama must run on this computer. A decision model on this computer is the only kind that may read a private chat.</td></tr>
   </tbody>
 </table></div>
 <p>The listing commands take <code>--format json</code>. <a href="#providers">Models and providers</a> lists every provider and its default model.</p>
@@ -263,7 +275,7 @@ biorouter doctor --fix uv</code></pre>
 <p>The ingest, query and lint commands take <code class="code-token">--provider</code> and <code class="code-token">--model</code>. See <a href="#knowledge">Knowledge bases</a>.</p>
 
 <h3 id="cli-ref-env">Settings only the command line reads</h3>
-<p>The first three settings can be written in <code>config.yaml</code> or set as a variable. The variable wins. <code class="code-token">BIOROUTER_CLI_CLASSIC</code> works only from the environment.</p>
+<p>The first three settings can be written in <code>config.yaml</code> or set as a variable. The variable wins. <code class="code-token">BIOROUTER_CLI_CLASSIC</code> and <code class="code-token">BIOROUTER_CLI_DICTATION_KEY</code> work only from the environment.</p>
 <div class="doc-table-scroll"><table class="ref doc-options">
   <colgroup><col style="width: min(208px, 32vw)"><col></colgroup>
   <thead><tr><th>Setting</th><th>What it does</th></tr></thead>
@@ -272,6 +284,7 @@ biorouter doctor --fix uv</code></pre>
     <tr><td><code class="code-token">BIOROUTER_CLI_SHOW_COST</code></td><td><code>true</code> adds an estimated cost to the classic prompt's context line.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_WORKFLOW_GITHUB_REPO</code></td><td>A GitHub <code>owner/repo</code> to find workflows in by name. It needs the <code>gh</code> command, signed in. <code>configure</code> can set it.</td></tr>
     <tr><td><code class="code-token">BIOROUTER_CLI_CLASSIC</code></td><td>Any value selects the classic terminal prompt instead of the full screen chat.</td></tr>
+    <tr><td><code class="code-token">BIOROUTER_CLI_DICTATION_KEY</code></td><td>The <kbd>Ctrl</kbd> letter that starts and stops dictation in a terminal chat, <code>t</code> by default. An empty value turns the chord off, and <code>/dictate</code> still works. The full screen chat does not offer a letter it already uses (B, C, D or O). When it matches <code class="code-token">BIOROUTER_CLI_NEWLINE_KEY</code>, the newline key wins.</td></tr>
   </tbody>
 </table></div>
 
@@ -306,7 +319,7 @@ sudo apt install ./biorouter-cli_*_amd64.deb
 
 # Rocky, RHEL, Fedora
 sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
-  <li><strong>Choose the model</strong> Run <code>biorouter configure</code>, as the account that will run <code>serve</code>. The browser cannot change the model later; see <a href="#serve-fixed-model">The model is fixed</a>.</li>
+  <li><strong>Choose the model</strong> Run <code>biorouter configure</code> on the host, as the account that will run <code>serve</code>, or skip it and choose a provider and model in the browser. When nothing is configured, the first page is the provider list the desktop app shows on first run (Local, Institutional and Public). See <a href="#cli-serve-model">Choosing the model</a>.</li>
   <li><strong>Start it</strong> Run <code>biorouter serve --open</code>. It opens your browser and stays in the foreground. Without <code class="code-token">--open</code>, copy the whole address from these lines of its output:
 <pre>
 <code>  Biorouter is serving at
@@ -324,7 +337,8 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
     <tr><td><code class="code-token">--token</code></td><td>Use a fixed token instead of a new one. Other accounts can read it in <code>ps</code>; <a href="#cli-serve-token">The access token</a> has a safer way.</td></tr>
     <tr><td><code class="code-token">--no-token</code></td><td>Serve with no token. Refused unless the address is local.</td></tr>
     <tr><td><code class="code-token">--web-dir</code></td><td>The folder holding the built interface, when <code>serve</code> cannot find it. It must contain an <code>index.html</code>. <code class="code-token">BIOROUTER_SERVE_UI</code> does the same.</td></tr>
-    <tr><td><code class="code-token">--public-url</code></td><td>The <code>https://</code> address a reverse proxy serves the interface at, path included. <code>serve</code> prints it with the token. <code class="code-token">BIOROUTER_PUBLIC_URL</code> does the same. Added after v1.93.0.</td></tr>
+    <tr><td><code class="code-token">--public-url</code></td><td>The <code>https://</code> address a reverse proxy serves the interface at, path included. <code>serve</code> prints it with the token. <code class="code-token">BIOROUTER_PUBLIC_URL</code> does the same.</td></tr>
+    <tr><td><code class="code-token">--no-dictation-install</code></td><td>Stop browsers on this service from installing speech models. The host can still run <code>biorouter dictation install</code>. <code class="code-token">BIOROUTER_DICTATION_BROWSER_INSTALL=false</code> and managed policy also stop browser installs.</td></tr>
     <tr><td><code class="code-token">--computer-use-approval</code></td><td>Set a Biorouter Copilot approval key of at least 16 characters, typed at the terminal. It is never saved.</td></tr>
   </tbody>
 </table></div>
@@ -341,7 +355,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
 <p>For one person, keep the local address and forward the port over SSH, then open the printed address in a browser on your own computer.</p>
 <pre>
 <code>ssh -N -L 8765:127.0.0.1:8765 user@remote-host</code></pre>
-<p>To reach it without SSH, put an HTTPS reverse proxy in front of it. The proxy must pass WebSocket connections through and keep the browser's <code>Sec-Fetch-*</code> headers. It must also forward the original <code>Host</code> and set <code>X-Forwarded-Proto: https</code>, unless you give <code>serve</code> the address people open with <code class="code-token">--public-url</code>, added after v1.93.0. That address may include a path on a shared hostname, which the proxy removes before it forwards a request.</p>
+<p>To reach it without SSH, put an HTTPS reverse proxy in front of it. The proxy must pass WebSocket connections through and keep the browser's <code>Sec-Fetch-*</code> headers. It must also forward the original <code>Host</code> and set <code>X-Forwarded-Proto: https</code>, unless you give <code>serve</code> the address people open with <code class="code-token">--public-url</code>. That address may include a path on a shared hostname, which the proxy removes before it forwards a request.</p>
 <pre>
 <code>biorouter serve --port 8765 \
   --public-url https://hub.example.org/biorouter/</code></pre>
@@ -349,9 +363,14 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
 <div class="note warn"><p><strong>Exposing the port exposes the agent.</strong> The browser can do what the desktop app does: run shell commands, read and write files, and spend your model credits, on the serving machine, as the account that started <code>serve</code>. There is one token and no user accounts. <code>serve</code> itself speaks plain HTTP, so limit who can reach the port and the proxy.</p></div>
 <p>For a service that restarts on its own, keep the fixed token in an environment file that only the service account can read. The <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/deployment/headless-linux.md">headless Linux guide</a> has a systemd unit.</p>
 
-<h3 id="serve-fixed-model">The model is fixed</h3>
-<p>A browser session cannot change its model or provider. This is deliberate. A chat that has used a private model may never reach a public one, and the desktop app can switch models only because it holds proof that a person asked. A browser tab cannot hold that proof.</p>
-<p>So the model is chosen once, at the terminal, and every chat in that <code>serve</code> runs on it: private for its whole life on a private model, public on a public one. A private chat started in the desktop app opens in the browser only when the host's model is private too. To change the model, stop <code>serve</code>, run <code>biorouter configure</code> and start it again.</p>
+<h3 id="cli-serve-model">Choosing the model</h3>
+<p>The person in the page <code>serve</code> printed can choose, add and edit the host's providers and its default model, in the same catalog as the desktop app: on the first page when nothing is configured, and later in <strong>Settings&nbsp;→&nbsp;Models</strong>. Keys typed there go to the serving machine's secret store and are never shown again. <code>biorouter configure</code> still works before or while <code>serve</code> runs. A change made at the terminal reaches new chats after <code>serve</code> restarts; a change made in the browser applies at once.</p>
+<ul>
+  <li><strong>Only the page itself can do it.</strong> A program that holds only the service's secret, such as an agent in one of your chats, cannot change the provider.</li>
+  <li><strong>Only at a secure address</strong>, https or this machine, so a typed key never crosses a network unencrypted. Elsewhere the page points you to <code>biorouter configure</code>.</li>
+  <li><strong>Not with <code class="code-token">--no-token</code>.</strong> The page then tells you to run <code>biorouter configure</code> on the host.</li>
+</ul>
+<p>A new chat starts on the host's default model. An open chat keeps its model: in the browser the model menu changes the default for new chats. A chat on a private model is private for its whole life, and a private chat, including one started in the desktop app, opens in the browser only while the host's default model is private. The <a href="https://github.com/BaranziniLab/biorouter/blob/main/docs/deployment/browser-access.md#choosing-the-provider-and-model">browser access guide</a> has the details.</p>
 
 <h3 id="cli-serve-works">What works in a browser</h3>
 <div class="doc-table-scroll"><table>
@@ -363,16 +382,32 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
     <tr><td>Stop, and Stop &amp; send</td><td>Yes</td></tr>
     <tr><td>Steering a turn while it runs</td><td>No. What you type waits and is sent when the turn ends.</td></tr>
     <tr><td>A subagent's own tab</td><td>Read only.</td></tr>
-    <tr><td>Changing the model or provider</td><td>No, by design. See above.</td></tr>
+    <tr><td>Model and provider selection</td><td>Yes, for the host's providers and its default model, from the page <code>serve</code> printed at a secure address. An open chat keeps its model. See <a href="#cli-serve-model">Choosing the model</a>.</td></tr>
+    <tr><td>Dictation and Dictionary</td><td>Yes. The browser records from its own microphone and sends the audio to the machine running <code>serve</code>, which transcribes it. <strong>Settings&nbsp;→&nbsp;Models&nbsp;→&nbsp;Speech models</strong> installs a speech model on that machine, unless <code>serve</code> started with <code class="code-token">--no-dictation-install</code>, <code class="code-token">BIOROUTER_DICTATION_BROWSER_INSTALL=false</code> is set, or managed policy stops it. The Dictionary page adds, edits, accepts and deletes terms. Making a term public or private, and the settings that raise agent writes or turn learning from chats on, are done on the host with <code>biorouter dictionary</code>. A private add needs private standing. <strong>Show in Finder</strong> is unavailable, because the model folder belongs to the host.</td></tr>
+    <tr><td>Usage and limits</td><td>No. <strong>Settings&nbsp;→&nbsp;App&nbsp;→&nbsp;Usage</strong> reads nothing and says this month's usage and limits are in the desktop app.</td></tr>
+    <tr><td>Updating Biorouter</td><td>Yes. An <strong>Update</strong> row appears at the lower left when a release is out. See <a href="#cli-serve-update">Updating from the page</a>.</td></tr>
     <tr><td>Crew</td><td>No, and it says so before you try: opening Crew shows &ldquo;Crew needs the Biorouter desktop app&rdquo;. Every Crew action needs proof that a person is at this computer, which the desktop app and <code>biorouter crew</code> supply themselves; the daemon <code>serve</code> starts never holds it. Use Crew in the desktop app or with <code>biorouter crew</code> in a terminal on your own computer.</td></tr>
     <tr><td>Approvals that need proof a person acted</td><td>A note takes the place of the buttons, and the agent is not offered skill or extension installs and removals. Run <code>biorouter skill</code> and <code>biorouter extension</code> on the host instead.</td></tr>
-    <tr><td>Browsing the marketplace</td><td>Yes. After v1.93.0 the browser reads the live catalog from biorouter.ucsf.edu itself; when it cannot, it shows the catalog bundled with Biorouter. Installs download on the serving machine.</td></tr>
+    <tr><td>Browsing the marketplace</td><td>Yes. The browser reads the live catalog from biorouter.ucsf.edu itself; when it cannot, it shows the catalog bundled with Biorouter, and the dialog says <em>showing bundled catalog (offline)</em>. Installs download on the serving machine.</td></tr>
     <tr><td>Resetting app data</td><td>No. On the host, use <code>biorouter session remove</code> and the other remove commands.</td></tr>
     <tr><td>File and folder pickers</td><td>No dialog. Type a path on the serving machine, not on the computer running the browser.</td></tr>
     <tr><td>Biorouter Copilot</td><td>Only when <code>serve</code> started with <code class="code-token">--computer-use-approval</code>. It controls the serving machine's desktop.</td></tr>
-    <tr><td>The app's terminal, updates, notifications, dock and menu bar icons, a second window</td><td>No</td></tr>
+    <tr><td>The app's terminal, notifications, dock and menu bar icons, a second window</td><td>No</td></tr>
   </tbody>
 </table></div>
+
+<h3 id="cli-serve-update">Updating from the page</h3>
+<p>When a new release is out, Biorouter downloads it in the background and checks it against the SHA-256 the release publishes. Click the <strong>Update</strong> row, then <strong>Restart &amp; update</strong>: <code>serve</code> restarts on the same address and token, and the page reloads on the new version. Chats, settings and extensions are kept.</p>
+<div class="doc-table-scroll"><table>
+  <colgroup><col style="width: min(208px, 32vw)"><col></colgroup>
+  <thead><tr><th>Installed as</th><th>What the update takes</th></tr></thead>
+  <tbody>
+    <tr><td>The <code>biorouter-cli</code> deb or rpm</td><td>One click when <code>serve</code> runs as root or with passwordless <code>sudo</code>. As an ordinary user, the page shows one command for an administrator to run, then <strong>Check again</strong>.</td></tr>
+    <tr><td>The macOS app, in a folder your account can write</td><td>One click, unless the desktop app is open from the same place.</td></tr>
+    <tr><td>A source build, or Windows</td><td>One line saying how to update. Nothing installs from the browser.</td></tr>
+  </tbody>
+</table></div>
+<p>A chat that is still working stops at the restart, and the dialog says how many before you click. A version that fails to start is rolled back, with the reason shown. Only the person on the page can install an update; an agent holding the service's secret cannot. To update from a mirror, set <code class="code-token">BIOROUTER_SERVE_UPDATE_FEED_URL</code> where <code>serve</code> starts, to an <code>https</code> address (or <code>http</code> on the serving machine itself) that serves <code>latest</code> and <code>tags/v&lt;version&gt;</code> in the shape of GitHub's release API. It is read once when the service starts, and any other value turns browser updates off. <code>serve</code> also sets <code class="code-token">BIOROUTER_SERVE_SUPERVISOR</code> on its service (Unix only; a service without it never offers a browser update) and <code class="code-token">BIOROUTER_SERVE_RESUME</code> on itself after an update restart. Neither is for setting by hand.</p>
 
 <h2 id="cli-other">Other commands</h2>
 <div class="doc-table-scroll"><table class="ref">
@@ -391,7 +426,13 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
     <tr><td><code>acp</code></td><td>An Agent Client Protocol server for editors such as Zed. <code class="code-token">--ws</code> serves a WebSocket on <code>127.0.0.1:11577</code>.</td></tr>
     <tr><td><code>completion</code></td><td>A completion script for bash, zsh, fish, powershell or elvish.</td></tr>
     <tr><td><code>bench</code></td><td>Benchmark a model setup on a set of tasks.</td></tr>
+    <tr><td><code>decide</code></td><td>Ask a decision model one question about a text. <code class="code-token">--ask</code> is required; <code class="code-token">--model</code>, <code class="code-token">--choice</code> for named options or <code class="code-token">--levels</code> for a score, <code class="code-token">--threshold</code> and <code class="code-token">--threshold-on</code>, <code class="code-token">--text</code> (standard input otherwise) or <code>--batch DIR</code>, <code>--session ID</code> to record it in that chat's decision log, <code class="code-token">--name</code> and <code class="code-token">--json</code>. It prints a probability bar per outcome, the answer with its probability, whether it is calibrated, the model and the latency.</td></tr>
+    <tr><td><code>dictation</code></td><td>The speech models dictation runs: <code>status</code>, <code>list</code> (also <code>ls</code>), <code>install</code> (also <code>pull</code>), <code>remove</code> (also <code>rm</code>), <code>use</code>, <code>urls</code>, <code>verify</code>, <code>bench</code>, <code>devices</code> and <code>test</code>. No model comes with Biorouter; <code>install</code> puts one in your data folder and checks every file against a pin.</td></tr>
+    <tr><td><code>dictionary</code></td><td>Your dictionary, the words dictation spells your way: <code>list</code>, <code>add</code>, <code>edit</code>, <code>remove</code>, <code>review</code>, <code>accept</code>, <code>dismiss</code>, <code>import</code>, <code>export</code>, <code>publicize</code>, <code>privatize</code>, <code>settings</code>, <code>clear</code> and <code>suggestions</code>. Every change except <code>import</code> needs you at an interactive terminal, and every change is refused in an agent's shell. Without a terminal, <code>list</code> and <code>export</code> show public terms only.</td></tr>
+    <tr><td><code>dictate</code></td><td>Record, check the text, then print it. See <a href="#cli-dictate">Dictate</a>.</td></tr>
+    <tr><td><code>transcribe</code></td><td>Turn a recording into text on this computer, with your dictionary. It reads WAV, AIFF, FLAC, MP3, M4A and MP4 audio (AAC or Apple Lossless), raw AAC and Ogg (Vorbis or FLAC), or <code>-</code> for standard input. Opus and WebM are refused with an <code>ffmpeg</code> line that converts them. <code>--format text</code>, <code>json</code>, <code>srt</code> or <code>vtt</code>; <code>-o FILE</code>.</td></tr>
   </tbody>
 </table></div>
+<p>Chats pause when they reach a limit. A chat's own limit is set from the cost at the lower right of its composer; the default per-chat and monthly limits in <strong>Settings&nbsp;→&nbsp;App&nbsp;→&nbsp;Usage</strong> or in the <code>usage</code> section of <code>config.yaml</code> (see <a href="#config-file">Configuration</a>). <code>biorouter usage</code> only reports spend and has no flags to read or change limits.</p>
 
 </div>
