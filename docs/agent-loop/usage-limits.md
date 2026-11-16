@@ -120,7 +120,11 @@ while it runs.
 Other spending doors follow the same rule:
 
 - **Subagents.** A chat at its limit, or any chat once the month is at its limit, starts
-  no subagent; the tool call is refused with a sentence telling the model not to retry. A
+  no subagent; the tool call is refused with a sentence telling the model not to retry. The
+  model request that asks for the subagent counts too, although it is recorded only once
+  its response ends: a request that carries the chat to its limit starts no subagent and
+  leaves no subagent chat behind. A host that sends that request's usage after its tool
+  calls (an OpenAI-compatible stream) is read on for it before the subagent is started. A
   running subagent is held to its parent chat's limit at each of its own model requests.
 - **Scheduled runs.** A run that would start while the month is at its limit is refused
   before it creates anything. The refusal shows as the schedule's last error, and the

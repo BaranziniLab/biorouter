@@ -1,4 +1,5 @@
 use crate::agents::session_skills::SessionSkillOverride;
+use crate::agents::usage_limit::UnrecordedRequest;
 use crate::agents::ExtensionConfig;
 use crate::decision::DecisionService;
 use crate::privacy::{CallCapability, SessionClassification};
@@ -95,6 +96,14 @@ pub struct TaskConfig {
     /// statement that links it to its parent, so its first read of its skills
     /// finds them. Empty means the machine-wide answer, as for any chat.
     pub skill_override: SessionSkillOverride,
+    /// The parent's model request that asked for this child, when its usage
+    /// is known but not recorded yet: the reply loop records a request's usage
+    /// once its stream ends, after the calls it asked for are handed over. The
+    /// spawn's usage-limit gate adds it to the chat's spend, so the request
+    /// that carries a chat past its limit starts no child. `None` (a
+    /// coding-agent bridge spawn, a test, an embedder) checks the recorded
+    /// spend alone.
+    pub unrecorded_request: Option<UnrecordedRequest>,
 }
 
 /// One spawn's changes to the extensions a child inherits from its parent's
@@ -141,6 +150,7 @@ impl fmt::Debug for TaskConfig {
             .field("spawn_capability", &self.spawn_capability)
             .field("extension_changes", &self.extension_changes)
             .field("skill_override", &self.skill_override)
+            .field("unrecorded_request", &self.unrecorded_request)
             .finish()
     }
 }
@@ -176,6 +186,7 @@ impl TaskConfig {
             spawn_capability: None,
             extension_changes: ChildExtensionChanges::default(),
             skill_override: SessionSkillOverride::default(),
+            unrecorded_request: None,
         }
     }
 
@@ -190,6 +201,13 @@ impl TaskConfig {
     /// capability the spawning call was admitted on.
     pub fn with_spawn_capability(mut self, capability: Option<CallCapability>) -> Self {
         self.spawn_capability = capability;
+        self
+    }
+
+    /// The same config, its usage-limit gate counting `request`: the parent's
+    /// request that asked for the child, billed and not recorded yet.
+    pub fn with_unrecorded_request(mut self, request: Option<UnrecordedRequest>) -> Self {
+        self.unrecorded_request = request;
         self
     }
 }

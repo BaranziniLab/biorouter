@@ -5496,6 +5496,94 @@ where
     }
 }
 
+/// Whether a batch asks for a subagent.
+fn asks_for_a_subagent(requests: &[ToolRequest]) -> bool {
+    requests.iter().any(|request| {
+        request
+            .tool_call
+            .as_ref()
+            .is_ok_and(|call| is_spawn_tool_call(call.name.as_ref()))
+    })
+}
+
+/// What a provider stream held right after a reply that asks for a subagent
+/// ([`read_usage_after_spawn_call`]).
+struct UsageReadAhead {
+    items: Vec<std::result::Result<crate::providers::base::ProviderStreamItem, ProviderError>>,
+    /// The stream ended after `items`.
+    ended: bool,
+}
+
+impl UsageReadAhead {
+    /// The last usage the items carried.
+    fn latest_usage(&self) -> Option<&crate::providers::base::ProviderUsage> {
+        self.items.iter().rev().find_map(|item| match item {
+            Ok((_, Some(usage), _)) => Some(usage),
+            _ => None,
+        })
+    }
+
+    /// `rest` with the items read put back in front, in their order.
+    fn in_front_of(
+        self,
+        rest: crate::providers::base::MessageStream,
+    ) -> crate::providers::base::MessageStream {
+        let read = futures::stream::iter(self.items);
+        if self.ended {
+            Box::pin(read)
+        } else {
+            Box::pin(read.chain(rest))
+        }
+    }
+}
+
+/// Read a provider stream on, right after a reply that asks for a subagent,
+/// while it carries only usage (Phase C, T4 U-3).
+///
+/// The spawn's usage-limit gate counts the request that asked for the child,
+/// so a request that carries the chat past its limit starts nothing, as a chat
+/// already there starts nothing. An OpenAI-compatible host (Versa's chat
+/// completions route among them) sends a request's usage in a chunk of its own
+/// after the one that ends its tool calls, so without this the spawn was handed
+/// over before its request's usage was known: the child was born and stopped by
+/// its own first request, leaving a Stopped row.
+///
+/// Stops at the first item that carries a message or a pending call, at the end
+/// of the stream, on Stop, and when the person steers. Nothing is consumed:
+/// [`UsageReadAhead::in_front_of`] puts every item back, so the loop reads them
+/// in order once the batch is done, as it would have.
+async fn read_usage_after_spawn_call(
+    stream: &mut crate::providers::base::MessageStream,
+    cancel_token: &Option<CancellationToken>,
+    agent: &Agent,
+) -> UsageReadAhead {
+    let mut items = Vec::new();
+    loop {
+        let next = tokio::select! {
+            biased;
+            _ = async {
+                match cancel_token.as_ref() {
+                    Some(token) => token.cancelled().await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => return UsageReadAhead { items, ended: false },
+            _ = agent.user_steer_waiting() => return UsageReadAhead { items, ended: false },
+            next = stream.next() => next,
+        };
+        let Some(item) = next else {
+            return UsageReadAhead { items, ended: true };
+        };
+        let usage_only = matches!(&item, Ok((None, Some(_), None)));
+        items.push(item);
+        if !usage_only {
+            return UsageReadAhead {
+                items,
+                ended: false,
+            };
+        }
+    }
+}
+
 /// How the provider request came back — or didn't need to (D6).
 enum ProviderOpen<S> {
     Opened(S),
@@ -6852,6 +6940,36 @@ impl Agent {
                 return std::future::pending().await;
             }
         }
+    }
+
+    /// Before a batch that asks for a subagent is handed over: note the model
+    /// request that asked as billed and not recorded yet, for the spawn's
+    /// usage-limit gate (`TaskConfig::unrecorded_request`). Its usage is
+    /// `usage_so_far`, or what the stream sends right after the batch
+    /// ([`read_usage_after_spawn_call`]). Returns the stream with every item
+    /// read put back in front of it.
+    async fn note_spawning_request(
+        &self,
+        session_id: &str,
+        provider: &Arc<dyn Provider>,
+        usage_so_far: Option<&crate::providers::base::ProviderUsage>,
+        mut stream: crate::providers::base::MessageStream,
+        cancel_token: &Option<CancellationToken>,
+    ) -> crate::providers::base::MessageStream {
+        let ahead = read_usage_after_spawn_call(&mut stream, cancel_token, self).await;
+        if let Some(usage) = ahead.latest_usage().or(usage_so_far) {
+            self.usage_limit_reply.note_unrecorded(
+                session_id,
+                crate::agents::usage_limit::UnrecordedRequest {
+                    provider: usage
+                        .provider
+                        .clone()
+                        .unwrap_or_else(|| provider.get_name().to_string()),
+                    usage: usage.clone(),
+                },
+            );
+        }
+        ahead.in_front_of(stream)
     }
 
     /// Resolves once a steer is queued that no `SteerWaiting` frame has been sent
@@ -10833,10 +10951,13 @@ impl Agent {
             // The child asks the decision models this agent asks, and a spawn's
             // `add_extensions` is judged on the capability this call was admitted
             // on, as `workspace_set_tools` judges its own adds.
+            // The request that asked for this child counts toward the chat's
+            // usage limit before it is recorded (`note_spawning_request`).
             let task_config =
                 TaskConfig::new(provider, &session.id, &session.working_dir, extensions)
                     .with_decision_service(self.decisions.service.custom())
-                    .with_spawn_capability(Some(turn_call.admitted));
+                    .with_spawn_capability(Some(turn_call.admitted))
+                    .with_unrecorded_request(self.usage_limit_reply.unrecorded(&session.id));
             let sub_workflows = self.sub_workflows.lock().await.clone();
 
             let arguments = tool_call
@@ -15495,6 +15616,9 @@ impl Agent {
                 // one chunk. Last snapshot wins; a cancelled turn keeps whatever the
                 // provider had reported so far.
                 let mut turn_usage: Option<crate::providers::base::ProviderUsage> = None;
+                // A request whose usage was noted for the spawn gate and never
+                // recorded is not this one.
+                self.usage_limit_reply.forget_unrecorded(&session_config.id);
                 // Set by an enforcing loop denial or a non-recoverable provider
                 // failure. The terminal event is emitted only after usage and
                 // conversation state are durable.
@@ -15807,6 +15931,24 @@ impl Agent {
                                 // cumulative total is checked against `max_tool_calls`
                                 // at the top of the next iteration.
                                 tool_calls_taken = tool_calls_taken.saturating_add(num_tool_requests as u32);
+
+                                // The spawn's usage-limit gate counts the request
+                                // that asks for the child, whose usage an
+                                // OpenAI-compatible host sends after its tool calls.
+                                // Boxed, like every wait here, so it stays out of
+                                // this frame.
+                                if biorouter_mode != BioRouterMode::Chat
+                                    && asks_for_a_subagent(&remaining_requests)
+                                {
+                                    stream = Box::pin(self.note_spawning_request(
+                                        &session_config.id,
+                                        &reply_provider,
+                                        turn_usage.as_ref(),
+                                        stream,
+                                        &cancel_token,
+                                    ))
+                                    .await;
+                                }
 
                                 // Built in `build_tool_request_maps` rather than
                                 // here so this generator's `poll` frame does not
@@ -16745,6 +16887,8 @@ impl Agent {
                         &usage_event_key,
                     )
                     .await?;
+                // Recorded now, so the spawn gate reads it with the rest.
+                self.usage_limit_reply.forget_unrecorded(&session_config.id);
 
                 // BR-52: the counters just moved — publish them so downstream
                 // consumers (the SSE route) can attach a fresh `TokenState` to

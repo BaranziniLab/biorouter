@@ -2379,14 +2379,29 @@ async fn execute_subagent(
     // A chat or a month at its usage limit starts no subagent: a child is spend
     // against a limit the person set. Before anything exists, like the phase
     // check below. (A running child is also held to its parent's limit at each
-    // of its own model requests, `usage_limit::billing_session_id`.)
-    if crate::agents::usage_limit::reached_limit(
-        &config.session_manager,
-        &task_config.parent_session_id,
-    )
-    .await
-    .is_some()
-    {
+    // of its own model requests, `usage_limit::billing_session_id`.) The
+    // request that asked for the child counts although it is not recorded yet
+    // (`TaskConfig::unrecorded_request`): one that carried the chat past its
+    // limit used to start a child that its own first request then stopped,
+    // leaving a Stopped row behind (Phase C, T4 U-3).
+    let reached = match &task_config.unrecorded_request {
+        Some(request) => {
+            crate::agents::usage_limit::reached_limit_with_unrecorded(
+                &config.session_manager,
+                &task_config.parent_session_id,
+                request,
+            )
+            .await
+        }
+        None => {
+            crate::agents::usage_limit::reached_limit(
+                &config.session_manager,
+                &task_config.parent_session_id,
+            )
+            .await
+        }
+    };
+    if reached.is_some() {
         return Err(ErrorData {
             code: ErrorCode::INVALID_REQUEST,
             message: Cow::from(crate::agents::usage_limit::SUBAGENT_LIMIT_REFUSAL),

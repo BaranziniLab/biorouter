@@ -2062,6 +2062,7 @@ mod tests {
             spawn_capability: None,
             extension_changes: Default::default(),
             skill_override: Default::default(),
+            unrecorded_request: None,
         };
 
         // The sentinel: an agent nobody else owns, parked under the child's id.
@@ -2859,6 +2860,7 @@ mod tests {
             spawn_capability: None,
             extension_changes: Default::default(),
             skill_override: Default::default(),
+            unrecorded_request: None,
         };
 
         let _result =
@@ -3065,6 +3067,7 @@ mod tests {
             spawn_capability: None,
             extension_changes: Default::default(),
             skill_override: Default::default(),
+            unrecorded_request: None,
         };
         (config, workflow, task_config)
     }
