@@ -1,7 +1,7 @@
 # Hosting a workspace
 
 > **What this is.** The host's tasks as numbered steps: setting Crew up and starting it on the lab server, creating the workspace, choosing who manages it, inviting people, managing it afterwards, keeping Crew current on the server, and deleting it.
-> **Status:** Current. Checked against the Crew code on 2026-11-07, after the account ownership change ([design](design/account-ownership.md)) and the second part of the chat-parity build.
+> **Status:** Current. Checked against the Crew code on 2026-11-07, after the account ownership change ([design](design/account-ownership.md)) and the second part of the chat-parity build. Edited since for the account ownership follow-ups and the agent-grant and host-restart wording, last on 2026-11-14, without a fresh line-by-line check; its quoted strings, codes and data paths pass `node scripts/check-crew-manual.mjs` as of 2026-11-15.
 > **Audience:** The lab member who hosts a Crew workspace, including people who have never used SSH or a terminal.
 
 A Crew workspace runs in the host's account on a Linux server. Biorouter installs Crew's server program in your account and starts the workspace for you, so you need no terminal. Braces mark a name Crew fills in, such as {workspace}, {server}, or {first}, the first name of the person you invite.

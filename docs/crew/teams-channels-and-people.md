@@ -1,7 +1,7 @@
 # Teams, channels and people
 
 > **What this is.** Who may do what in an open or a managed workspace, how to use the Crew sidebar, create, join, manage and delete teams and channels, add and remove people, and set your name.
-> **Status:** Current. Checked against the Crew code on 2026-11-06, after the account ownership change ([design](design/account-ownership.md)).
+> **Status:** Current. Checked against the Crew code on 2026-11-06, after the account ownership change ([design](design/account-ownership.md)). Edited since for the account ownership follow-ups, last on 2026-11-13, without a fresh line-by-line check; its quoted strings, codes and data paths pass `node scripts/check-crew-manual.mjs` as of 2026-11-15.
 > **Audience:** Lab members who use Crew in the Biorouter desktop app. No terminal experience is needed.
 
 A workspace holds teams, and each team holds channels where you post messages and share files. Crew has no direct messages. Text in braces stands for a name Crew fills in, such as {team}.
