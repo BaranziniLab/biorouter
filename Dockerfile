@@ -44,18 +44,28 @@ WORKDIR /build
 # Copy source code
 COPY . .
 
-# Build release binaries with optimizations
+# Build release binaries with optimizations.
+# ⚠ Thin LTO, and only the two binaries the runtime stage copies. Fat LTO
+# (`CARGO_PROFILE_RELEASE_LTO=true`) held 17 GB to 18 GB in ONE rustc process for
+# each of biorouter and biorouterd on linux/arm64, and without `--bin` the
+# server package also linked generate_schema and knowledge_ingest_probe, so up
+# to three of those links overlapped: 24.6 GB measured in a 4 CPU builder on
+# 2026-11-16. The 16 GB arm64 runner was killed there in every nightly run.
+# With thin LTO the same builder peaked at 12.3 GB (the core crate's own compile;
+# the largest link held 8.4 GB), and the two binaries came out 12% larger.
+# scripts/check-docker-build.sh holds both lines.
 ENV CARGO_REGISTRIES_CRATES_IO_PROTOCOL=sparse
 ENV CARGO_BUILD_JOBS=3
 ENV CMAKE_BUILD_PARALLEL_LEVEL=3
 ENV CARGO_INCREMENTAL=0
 ENV CARGO_PROFILE_RELEASE_DEBUG=0
-ENV CARGO_PROFILE_RELEASE_LTO=true
+ENV CARGO_PROFILE_RELEASE_LTO=thin
 ENV CARGO_PROFILE_RELEASE_CODEGEN_UNITS=1
 ENV CARGO_PROFILE_RELEASE_OPT_LEVEL=z
 ENV CARGO_PROFILE_RELEASE_STRIP=true
 RUN printf 'CMAKE_BUILD_TYPE=Release (checked by scripts/check-dictation-build-prereqs.sh)\n' && \
-    cargo build --release --locked --package biorouter-cli --package biorouter-server && \
+    cargo build --release --locked --package biorouter-cli --package biorouter-server \
+      --bin biorouter --bin biorouterd && \
     touch /build/rust.ready
 
 FROM node:24-bookworm AS web-builder

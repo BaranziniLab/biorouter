@@ -27,10 +27,14 @@ jobs:
             runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
-      - name: Check build inputs and available disk
+      - name: Check build inputs, memory and available disk
         run: |
           set -euo pipefail
           ./scripts/check-dictation-build-prereqs.sh
+          ./scripts/check-docker-build.sh
+          nproc
+          free -h
+          swapon --show || true
           df -h .
           docker system df
       - name: Build the native image
@@ -65,6 +69,9 @@ jobs:
             '67a179f608ea6114bd3fdb9060e762b588a3fb3bd00c4387971be4d177958067  ggml-small.en-q8_0.bin' \
             '2aa269b785eeb53a82983a20501ddf7c1d9c48e33ab63a41391ac6c9f7fb6987  ggml-silero-v6.2.0.bin' \
             | sha256sum --check
+      # The check launches Playwright's full Chromium (its `chromium` channel). The headless
+      # shell this also installs answers getUserMedia with NotSupportedError, so it never
+      # reaches recording (run 43612265532).
       - name: Install Chromium for the loopback microphone check
         if: matrix.arch == 'amd64'
         working-directory: ui/desktop

@@ -4,7 +4,7 @@ set -euo pipefail
 set +x
 
 usage() {
-  echo 'usage: check-docker-dictation.sh --image TAG --model-cache DIR --run-root DIR [--browser]' >&2
+  echo 'usage: check-docker-dictation.sh --image TAG --model-cache DIR --run-root DIR [--port N] [--browser]' >&2
   exit 2
 }
 
@@ -12,16 +12,20 @@ IMAGE=''
 MODEL_CACHE=''
 RUN_ROOT=''
 BROWSER=0
+# The host loopback port the serve container publishes; 8765 unless another server holds it.
+PORT=8765
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --image) [ "$#" -ge 2 ] || usage; IMAGE="$2"; shift 2 ;;
     --model-cache) [ "$#" -ge 2 ] || usage; MODEL_CACHE="$2"; shift 2 ;;
     --run-root) [ "$#" -ge 2 ] || usage; RUN_ROOT="$2"; shift 2 ;;
+    --port) [ "$#" -ge 2 ] || usage; PORT="$2"; shift 2 ;;
     --browser) BROWSER=1; shift ;;
     *) usage ;;
   esac
 done
 [ -n "$IMAGE" ] && [ -n "$MODEL_CACHE" ] && [ -n "$RUN_ROOT" ] || usage
+case "$PORT" in ''|*[!0-9]*) usage ;; esac
 [ ! -e "$RUN_ROOT" ] || { echo "run root exists: $RUN_ROOT" >&2; exit 2; }
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MODEL_CACHE="$(cd "$MODEL_CACHE" && pwd -P)"
@@ -111,7 +115,7 @@ assert all(fragment in words for fragment in fragments), 'JFK sentence was incom
 assert result['bias_scope'] == 'public'
 PY
 
-docker run --rm -d --name "$CONTAINER" -p 127.0.0.1:8765:8765 \
+docker run --rm -d --name "$CONTAINER" -p "127.0.0.1:$PORT:8765" \
   -e BIOROUTER_PROVIDER=versa_azure -e BIOROUTER_MODEL=gpt-5.5-2026-04-24 \
   -e VERSA_AZURE_API_KEY=pr31-unused-test-key \
   --mount "type=volume,src=$DATA_VOLUME,dst=/home/biorouter/.local/share/biorouter" \
@@ -124,19 +128,19 @@ trap stop_serve EXIT
 # with it, the way a browser follows the bounce.
 for _ in $(seq 1 90); do
   if curl -fsS -c "$RUN_ROOT/cookies.txt" -o "$RUN_ROOT/exchange.html" \
-    'http://127.0.0.1:8765/?t=pr31-local-check'; then break; fi
+    "http://127.0.0.1:$PORT/?t=pr31-local-check"; then break; fi
   sleep 1
 done
 test -s "$RUN_ROOT/exchange.html"
 grep -q 'Opening Biorouter' "$RUN_ROOT/exchange.html"
-curl -fsS -b "$RUN_ROOT/cookies.txt" -o "$RUN_ROOT/shell.html" 'http://127.0.0.1:8765/'
+curl -fsS -b "$RUN_ROOT/cookies.txt" -o "$RUN_ROOT/shell.html" "http://127.0.0.1:$PORT/"
 test -s "$RUN_ROOT/shell.html"
 grep -q '__BIOROUTER_HEADLESS_CONFIG__' "$RUN_ROOT/shell.html"
 docker logs "$CONTAINER" > "$RUN_ROOT/serve.log" 2>&1
 grep -q 'This runs in a container. On the computer that publishes its port' "$RUN_ROOT/serve.log"
 if [ "$BROWSER" -eq 1 ]; then
   PR31_UI_DIR="$ROOT/ui/desktop" \
-    PR31_URL='http://127.0.0.1:8765/' \
+    PR31_URL="http://127.0.0.1:$PORT/" \
     PR31_WAV="$FIXTURES/samples/jfk.wav" \
     PR31_RUN_ROOT="$RUN_ROOT" \
     node "$ROOT/scripts/check-docker-dictation-browser.mjs"
