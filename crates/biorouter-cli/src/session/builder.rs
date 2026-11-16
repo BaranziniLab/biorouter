@@ -303,7 +303,9 @@ pub const WORKFLOW_SETS_ITS_OWN_DECISIONS: &str =
 
 /// The settings a `--monitors` file holds: bare, or under `decision_settings`
 /// (`decisionSettings`) as a workflow file writes them. YAML or JSON (JSON is
-/// YAML).
+/// YAML). A question's kind may be written in the documented map form
+/// (`kind: {binary: {}}`) or as the legacy tag (`kind: !binary {}`), as in a
+/// workflow file.
 pub fn parse_monitors_file(
     text: &str,
 ) -> anyhow::Result<biorouter::decision::settings::DecisionSettings> {
@@ -317,12 +319,45 @@ pub fn parse_monitors_file(
             .unwrap_or(value),
         _ => value,
     };
-    let settings: biorouter::decision::settings::DecisionSettings = serde_yaml::from_value(inner)
-        .map_err(|error| {
+    // serde_yaml reads an enum only from a tag (`kind: !binary {}`), from a
+    // value and from text alike, and refused the map form the docs write with
+    // "expected a Value::Tagged enum". A workflow's `decision_settings` reads
+    // both (`workflow::supervision::deserialize_decision_settings`): each tag
+    // becomes a one-key map and the result is read as JSON. This does the same,
+    // so the record's own checks (every unknown key refused) apply unchanged.
+    let not_settings = |error: &dyn std::fmt::Display| {
         anyhow::anyhow!("The monitors file is not decision settings: {error}")
-    })?;
+    };
+    let json = serde_json::to_value(tags_as_maps(inner)).map_err(|error| not_settings(&error))?;
+    let settings: biorouter::decision::settings::DecisionSettings =
+        serde_json::from_value(json).map_err(|error| not_settings(&error))?;
     biorouter::decision::settings::validate(&settings).map_err(|e| anyhow::anyhow!("{e}"))?;
     Ok(settings)
+}
+
+/// `value` with every YAML tag (`!binary {}`) written as the one-key map
+/// (`{binary: {}}`) serde reads the same enum from as JSON. The same rule as
+/// the workflow reader's `untag` in `workflow/supervision.rs`, which is private
+/// to that crate.
+fn tags_as_maps(value: serde_yaml::Value) -> serde_yaml::Value {
+    use serde_yaml::Value as Yaml;
+    match value {
+        Yaml::Tagged(tagged) => {
+            let serde_yaml::value::TaggedValue { tag, value } = *tagged;
+            let name = tag.to_string();
+            let name = name.strip_prefix('!').unwrap_or(&name).to_string();
+            let mut map = serde_yaml::Mapping::new();
+            map.insert(Yaml::String(name), tags_as_maps(value));
+            Yaml::Mapping(map)
+        }
+        Yaml::Mapping(map) => Yaml::Mapping(
+            map.into_iter()
+                .map(|(key, value)| (key, tags_as_maps(value)))
+                .collect(),
+        ),
+        Yaml::Sequence(items) => Yaml::Sequence(items.into_iter().map(tags_as_maps).collect()),
+        other => other,
+    }
 }
 
 /// The settings a start stores: what the chat holds, with the file's monitors
@@ -1677,10 +1712,13 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 ///
 /// The question is asked of the provider's own declared config keys rather than
 /// of a list of names kept here, so a provider added later is classified by
-/// what it declares. A provider the registry cannot describe — including one it
-/// has never heard of, which is one of the ways `create` fails — keeps the
-/// advice: it may well have secrets, and an unnecessary paragraph is a much
-/// smaller failure than withholding the one that would have helped.
+/// what it declares. A provider the registry cannot describe is one it has
+/// never heard of: `providers()` and `create` read the same registry, custom
+/// providers included, so that is the `Unknown provider` failure (a misspelt
+/// name, or `nosuchprov` in a bench config). A name nobody registered has no
+/// stored secret, and the keychain paragraph sent its reader to look for one;
+/// it is told how to list the names that work instead
+/// ([`unknown_provider_advice`]).
 /// ⚠ **And it is withheld when the credential was never set at all**, which the
 /// provider says in `detail`. Three lines about the system keychain answer the
 /// question "why can't the store give me the key I saved?" — they are the wrong
@@ -1697,13 +1735,13 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 /// because the `anyhow::Error` leaving `from_env` has already discarded the
 /// `ConfigError` that knew. That constant is what both ends share so the two
 /// cannot drift apart.
-async fn keyring_advice(provider_name: &str, detail: &str) -> &'static str {
+async fn keyring_advice(provider_name: &str, detail: &str) -> String {
     const ADVICE: &str = "\n\
         Please check your system keychain and run 'biorouter configure' again.\n\
         If your system is unable to use the keyring, please try setting secret key(s) via environment variables.\n\
         For more info, see: https://BaranziniLab.github.io/biorouter/docs/troubleshooting/#keychainkeyring-errors";
     if biorouter::providers::says_credential_never_set(detail) {
-        return "";
+        return String::new();
     }
     let has_secrets = biorouter::providers::providers()
         .await
@@ -1711,8 +1749,21 @@ async fn keyring_advice(provider_name: &str, detail: &str) -> &'static str {
         .find(|(metadata, _)| metadata.name == provider_name)
         .map(|(metadata, _)| metadata.config_keys.iter().any(|key| key.secret));
     match has_secrets {
-        Some(false) => "",
-        _ => ADVICE,
+        Some(true) => ADVICE.to_string(),
+        Some(false) => String::new(),
+        None => unknown_provider_advice(provider_name, detail),
+    }
+}
+
+/// What follows the error for a provider name the registry does not know: how
+/// to list the names it does, and, when the error itself did not say so, that
+/// this name is not one of them.
+fn unknown_provider_advice(provider_name: &str, detail: &str) -> String {
+    const LIST: &str = "`biorouter models providers` lists the providers you can use.";
+    if detail.to_ascii_lowercase().contains("unknown provider") {
+        format!("\n{LIST}")
+    } else {
+        format!("\nNo provider is named '{provider_name}'. {LIST}")
     }
 }
 
@@ -2369,12 +2420,98 @@ mod tests {
         assert!(!rendered.starts_with("Error "), "{rendered}");
     }
 
-    /// …and the advice is kept for everything that does hold one, including a
-    /// provider the registry cannot describe: an unnecessary paragraph is a far
-    /// smaller failure than withholding the one that would have helped.
+    /// A provider name the registry has never heard of has no stored secret,
+    /// so three lines about the system keychain answer a question nobody
+    /// asked: the name is wrong. The reader is told how to list the names
+    /// that work instead (W1-10, a bench run on `nosuchprov`).
+    #[tokio::test]
+    async fn an_unknown_provider_gets_no_keychain_advice() {
+        for detail in [
+            "Unknown provider: no_such_provider_exists",
+            "something else went wrong",
+        ] {
+            let advice = keyring_advice("no_such_provider_exists", detail).await;
+            assert!(!advice.contains("keychain"), "{advice}");
+            assert!(!advice.contains("biorouter configure"), "{advice}");
+            assert!(advice.contains("biorouter models providers"), "{advice}");
+        }
+        // The rendered line names the provider as unknown once.
+        let detail = "Unknown provider: no_such_provider_exists";
+        let rendered = format!(
+            "{}{}",
+            biorouter::agents::mistakes::end_sentence(detail),
+            keyring_advice("no_such_provider_exists", detail).await
+        );
+        assert_eq!(
+            rendered.matches("no_such_provider_exists").count(),
+            1,
+            "{rendered}"
+        );
+        // A detail that does not say so gets the sentence that does.
+        let other = keyring_advice("no_such_provider_exists", "something else went wrong").await;
+        assert!(other.contains("'no_such_provider_exists'"), "{other}");
+    }
+
+    /// W1-09: the documented way to write a question's kind is the map form,
+    /// `kind: {binary: {}}`, and a workflow's `decision_settings` reads it.
+    /// `--monitors` read the file through `serde_yaml::from_value`, which takes
+    /// only the legacy tag (`kind: !binary {}`), and refused the map form in
+    /// YAML and in JSON with "expected a Value::Tagged enum".
+    #[test]
+    fn a_monitors_file_takes_the_map_form() {
+        let yaml = "defaultModel: {provider: ollama_decision, model: \"tev1:0.8b\"}\n\
+                    monitors:\n\
+                    \x20 - id: always\n\
+                    \x20   name: Always\n\
+                    \x20   question:\n\
+                    \x20     instructions: \"Does the conversation mention bananas?\"\n\
+                    \x20     kind: {binary: {}}\n\
+                    \x20   threshold: 0.3\n\
+                    \x20   action: stop\n\
+                    \x20   timing: post_iteration\n";
+        let json = r#"{"defaultModel": {"provider": "ollama_decision", "model": "tev1:0.8b"},
+            "monitors": [{"id": "always", "name": "Always", "question": {"instructions":
+            "Does the conversation mention bananas?", "kind": {"binary": {}}},
+            "threshold": 0.3, "action": "stop"}]}"#;
+        let tagged = yaml.replace("kind: {binary: {}}", "kind: !binary {}");
+        let nested = format!(
+            "decision_settings:\n{}",
+            yaml.lines()
+                .map(|line| format!("  {line}\n"))
+                .collect::<String>()
+        );
+        let choice = yaml
+            .replace(
+                "kind: {binary: {}}",
+                "kind: {choice: {options: {red: null, blue: null}}}",
+            )
+            .replace("threshold: 0.3", "option: red\n    threshold: 0.3");
+        for (form, text) in [
+            ("YAML map form", yaml.to_string()),
+            ("JSON map form", json.to_string()),
+            ("legacy tag", tagged),
+            ("under decision_settings", nested),
+            ("a choice in the map form", choice),
+        ] {
+            let settings = parse_monitors_file(&text)
+                .unwrap_or_else(|error| panic!("{form} did not parse: {error}"));
+            assert_eq!(settings.monitors.len(), 1, "{form}");
+            assert_eq!(settings.monitors[0].id, "always", "{form}");
+        }
+        let settings = parse_monitors_file(yaml).unwrap();
+        assert_eq!(
+            settings.monitors[0].question.kind,
+            biorouter::decision::DecisionKind::Binary {}
+        );
+        assert!(parse_monitors_file("monitors: [{id: x, kind: {nope: {}}}]").is_err());
+    }
+
+    /// …and the advice is kept for every provider that does hold a secret.
+    /// (A name the registry does not know holds none; see
+    /// `an_unknown_provider_gets_no_keychain_advice`.)
     #[tokio::test]
     async fn a_provider_with_secrets_still_gets_the_keychain_advice() {
-        for provider in ["anthropic", "openai", "no_such_provider_exists"] {
+        for provider in ["anthropic", "openai"] {
             assert!(
                 keyring_advice(provider, "the credential store refused the read")
                     .await

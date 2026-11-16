@@ -130,11 +130,16 @@ fn fmt_optional_tokens(tokens: Option<i64>) -> String {
     tokens.map_or_else(|| "—".to_string(), fmt_tokens)
 }
 
+/// Billed, but below what four places show: printed `<$0.0001`, never
+/// `$0.0000`, which reads as free (one decision request on Baseten costs
+/// about that).
+fn below_four_places(cost: f64) -> bool {
+    cost > 0.0 && cost < 0.000_05
+}
+
 fn fmt_cost(cost: Option<f64>) -> String {
     match cost {
-        // Below what four places show, but billed: never "$0.0000", which
-        // reads as free (one decision request on Baseten costs about that).
-        Some(c) if c > 0.0 && c < 0.000_05 => "<$0.0001".to_string(),
+        Some(c) if below_four_places(c) => "<$0.0001".to_string(),
         // Sub-cent but non-zero: show enough precision to not read as $0.00.
         Some(c) if c > 0.0 && c < 0.01 => format!("${c:.4}"),
         Some(c) => format!("${c:.2}"),
@@ -142,9 +147,13 @@ fn fmt_cost(cost: Option<f64>) -> String {
     }
 }
 
+/// A cost, with `≥` when it is a known subtotal of a partial row. An amount
+/// already written as a bound (`<$0.0001`) keeps that one marker: `≥<$0.0001`
+/// said "at least" and "less than" at once. The report's note says shown costs
+/// are known subtotals.
 fn fmt_cost_with_completeness(cost: Option<f64>, partial: bool) -> String {
     let formatted = fmt_cost(cost);
-    if partial && cost.is_some() {
+    if partial && cost.is_some_and(|c| !below_four_places(c)) {
         format!("≥{formatted}")
     } else {
         formatted
@@ -467,6 +476,22 @@ mod tests {
         // A billed fraction too small for four places is not "$0.0000".
         assert_eq!(fmt_cost(Some(0.000_000_12)), "<$0.0001");
         assert_eq!(fmt_cost(Some(0.0)), "$0.00");
+    }
+
+    /// W1-15: a tiny cost that is also a partial subtotal printed `≥<$0.0001`,
+    /// a lower bound and an upper bound at once. It gets one marker; the
+    /// report's note says shown costs are known subtotals.
+    #[test]
+    fn a_tiny_partial_cost_has_one_marker() {
+        let cell = fmt_cost_with_completeness(Some(0.000_000_12), true);
+        assert_eq!(cell, "<$0.0001");
+        // A partial amount four places can show keeps its lower-bound marker.
+        assert_eq!(fmt_cost_with_completeness(Some(0.0034), true), "≥$0.0034");
+        assert_eq!(fmt_cost_with_completeness(Some(1.4), true), "≥$1.40");
+        assert_eq!(
+            fmt_cost_with_completeness(Some(0.000_000_12), false),
+            "<$0.0001"
+        );
     }
 
     #[test]

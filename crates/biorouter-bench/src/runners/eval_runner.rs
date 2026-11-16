@@ -10,7 +10,6 @@ use std::fs;
 use std::future::Future;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
 use tracing;
 
 #[derive(Clone)]
@@ -55,10 +54,12 @@ impl EvalRunner {
         Ok(work_dir)
     }
 
+    /// Runs the eval in a chat `agent_generator` creates and names after the
+    /// eval's selector.
     pub async fn run<F, Fut>(&mut self, agent_generator: F) -> Result<()>
     where
         F: Fn(ExtensionRequirements, String) -> Fut,
-        Fut: Future<Output = BenchAgent> + Send,
+        Fut: Future<Output = Result<BenchAgent>> + Send,
     {
         let mut work_dir = self
             .create_work_dir(&self.config)
@@ -82,13 +83,13 @@ impl EvalRunner {
         tracing::info!("Set evaluation directory for {}", bench_eval.selector);
 
         if let Some(eval) = EvaluationSuite::from(&bench_eval.selector) {
-            let now_stamp = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .context("Failed to get current timestamp")?
-                .as_nanos();
-
-            let session_id = format!("{}-{}", bench_eval.selector.clone(), now_stamp);
-            let mut agent = agent_generator(eval.required_extensions(), session_id).await;
+            // The generator creates the chat and its id; an id invented here
+            // named a chat nothing had created, and every run panicked
+            // "Session not found" as it opened it.
+            let mut agent =
+                agent_generator(eval.required_extensions(), bench_eval.selector.clone())
+                    .await
+                    .with_context(|| format!("Could not start the eval {}", bench_eval.selector))?;
             tracing::info!("Agent created for {}", eval.name());
 
             let mut result = EvaluationResult::new(eval.name().to_string());
@@ -135,7 +136,9 @@ impl EvalRunner {
             self.config.save("config.cfg".to_string());
             work_dir.save();
 
-            // handle running post-process cmd if configured
+            // handle running post-process cmd if configured. A failure is
+            // reported after the session is saved, so the eval dir is complete.
+            let mut post_processed: Result<()> = Ok(());
             if let Some(cmd) = &bench_eval.post_process_cmd {
                 tracing::info!("Running post-process command: {:?}", cmd);
 
@@ -146,7 +149,8 @@ impl EvalRunner {
                         format!("Failed to execute post-process command: {:?}", cmd)
                     })?;
 
-                await_process_exits(&mut [handle], Vec::new());
+                post_processed = await_process_exits(&mut [handle], Vec::new())
+                    .with_context(|| format!("The post-process command {:?} failed", cmd));
             }
 
             // copy session file into eval-dir
@@ -163,6 +167,7 @@ impl EvalRunner {
             fs::write(here.join("session.json"), session_json)
                 .context("Failed to write session JSON to evaluation directory")?;
 
+            post_processed?;
             tracing::info!("Evaluation completed successfully");
         } else {
             tracing::error!("No evaluation found for selector: {}", bench_eval.selector);
