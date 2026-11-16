@@ -58,6 +58,6 @@ the provider's message is logged.
 
 ## Related documentation
 
-- [Choosing a model provider](../getting-started/choosing-a-model-provider.md) — the provider list, including Versa API Azure and Versa API Bedrock, their default models and prices.
-- [Common problems and fixes](../troubleshooting/common-problems-and-fixes.md) — what to do about other provider errors.
-- [Model provider integration references](README.md) — the index of this folder.
+- [Choosing a model provider](../getting-started/choosing-a-model-provider.md): the provider list, including Versa API Azure and Versa API Bedrock, their default models and prices.
+- [Common problems and fixes](../troubleshooting/common-problems-and-fixes.md): what to do about other provider errors.
+- [Model provider integration references](README.md): the index of this folder.

@@ -328,8 +328,8 @@ deployment:
 - [Reaching Biorouter from a browser](browser-access.md) — the command, the access token, and what a browser session can and cannot do.
 - [Decisions behind `biorouter serve`](serve-decisions.md) — why an agent cannot change the provider, why a token is mandatory off loopback, why the standalone binary was retired, and how `serve` updates itself.
 - [How browser-served Biorouter is built](serve-architecture.md) — the architecture, for developers.
-- [Building and running Biorouter with Docker](../../BUILDING_DOCKER.md) — the container image, including `serve` and browser dictation.
-- [Voice dictation](../dictation/README.md) — speech models, `biorouter dictation install` and the dictionary.
+- [Building and running Biorouter with Docker](../../BUILDING_DOCKER.md): the container image, including `serve` and browser dictation.
+- [Voice dictation](../dictation/README.md): speech models, `biorouter dictation install` and the dictionary.
 - [Secret storage](../security/secret-storage.md) — what `BIOROUTER_DISABLE_KEYRING=true` switches to, and why a host with no desktop keyring needs it.
 - [Environment variables](../configuration/environment-variables.md) — every variable the daemon and `biorouter serve` read.
 - [Config file reference](../configuration/config-file-reference.md) — the configuration directory a deployment points Biorouter at.

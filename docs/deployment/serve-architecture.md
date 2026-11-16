@@ -411,6 +411,6 @@ argv, environment variables, a file, or piped input.
 - [Reaching a private chat from a script](programmatic-session-access.md) — what `X-Secret-Key` does *not* prove, and the capability header a private session additionally requires.
 - [Decisions behind `biorouter serve`](serve-decisions.md) — why each of the above was chosen.
 - [Browser access](browser-access.md) — using the command.
-- [Choosing the provider and model](browser-access.md#choosing-the-provider-and-model) and [updating from the page](browser-access.md#updating-from-the-page) — the same two mechanisms as the person on the page sees them.
+- [Choosing the provider and model](browser-access.md#choosing-the-provider-and-model) and [updating from the page](browser-access.md#updating-from-the-page): the same two mechanisms as the person on the page sees them.
 - [Privacy tiers](../security/privacy-tiers.md) — the classification the serving path must not weaken.
 - [Environment variables](../configuration/environment-variables.md) — `BIOROUTER_SERVE_UI` and neighbours.

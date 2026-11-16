@@ -20,5 +20,5 @@ Retain the original run/logs alongside any later passing run. Do not replace the
 
 ## Related documentation
 
-- [Session-storage acceptance](session-storage-acceptance.md) — the corrected procedure and how to run it.
-- [Private session history and deliberate relocation](session-storage.md) — the storage rules the run was testing.
+- [Session-storage acceptance](session-storage-acceptance.md): the corrected procedure and how to run it.
+- [Private session history and deliberate relocation](session-storage.md): the storage rules the run was testing.

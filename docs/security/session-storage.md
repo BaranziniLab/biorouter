@@ -29,6 +29,6 @@ The integration tests are `cargo test -p biorouter --test session_storage_securi
 
 ## Related documentation
 
-- [Secret storage](secret-storage.md) — where credentials live, which this page does not cover.
-- [Privacy tiers](privacy-tiers.md) — the classification that decides which model may read a chat, separate from who may read its files.
-- [Session-storage acceptance](session-storage-acceptance.md) — the rebuilt-daemon test that checks this behaviour across two Linux accounts.
+- [Secret storage](secret-storage.md): where credentials live, which this page does not cover.
+- [Privacy tiers](privacy-tiers.md): the classification that decides which model may read a chat, separate from who may read its files.
+- [Session-storage acceptance](session-storage-acceptance.md): the rebuilt-daemon test that checks this behaviour across two Linux accounts.
