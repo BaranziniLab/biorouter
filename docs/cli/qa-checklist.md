@@ -40,9 +40,15 @@ Run `biorouter session`, then work through the four groups below.
 
 - [audited] Type text; **blinking bar (I-beam) cursor** sits at the insertion point.
 - [audited] **CJK / wide chars** (e.g. `你好世界`) keep the caret at the true end.
-- [audited] `Ctrl+J` inserts a newline; multi-line compose grows the input box (≤6 rows).
+- [audited] `Ctrl+J` (or the key `BIOROUTER_CLI_NEWLINE_KEY` names) inserts a newline, and
+  the footer and `/help` name that key; multi-line compose grows the input box (≤6 rows). A
+  newline key on a letter the TUI already binds (A, B, C, D, O, V or X) stays `Ctrl+J`, with
+  one note at start.
+- [audited] A Ctrl or Alt chord the TUI does not bind (`Ctrl+U`, `Ctrl+W`, `Ctrl+E`,
+  `Ctrl+R`) does nothing; it does not type its letter. AltGr characters on Windows still type.
 - [verified] **Paste** of multi-line text inserts as one chunk and does **not**
-  submit prematurely (bracketed paste; unit-tested).
+  submit prematurely (bracketed paste; unit-tested). Line breaks sent as a lone CR
+  (tmux `paste-buffer` without `-r`) stay line breaks.
 - [audited] `←/→/Home/End` move by character; `Backspace` deletes by character.
 - [audited] `↑/↓` recall input history (single-line buffer).
 - [audited] Slash **ghost autofill**: typing `/co` dims in `mpact`; `Tab` accepts.
@@ -52,9 +58,10 @@ Run `biorouter session`, then work through the four groups below.
 
 - [audited] Greeting shows the coral-brown `BIOROUTER` wordmark, tagline, and
   **working directory** line.
-- [audited] **Two-line status**: line 1 = model · provider; line 2 = N skills ·
-  N extensions · N knowledge bases · context meter (right-aligned).
-- [audited] **Context meter** updates after each turn; warns red ≥85%.
+- [audited] **Two-line status**: line 1 = model · provider, then `🔒 Private` for a private
+  chat (read at start and after each turn); line 2 = N skills · N extensions · N knowledge
+  bases · context meter (right-aligned).
+- [audited] **Context meter** updates after each turn; turns yellow at 85% or more (never red).
 - [audited] ~2-row **gap** separates the response from the input box.
 - [audited] Window starts compact and **grows downward** as the chat fills, then scrolls.
 - [manual] Mouse wheel / PageUp / PageDown scroll the history; latest output stays visible.
@@ -69,13 +76,22 @@ Run `biorouter session`, then work through the four groups below.
   pick Allow / Always allow / Deny / Cancel; `Esc`/`Ctrl+C` cancels.
 - [manual] **Ctrl-C mid-stream** cancels the in-flight response promptly (event-channel fix).
 - [audited] Markdown rendering: headings, **bold**, `inline code`, bullets, code fences.
+  A masked key such as `sk-fake-****real` keeps its asterisks.
+- [audited] A failed tool's text shows without the `[tool_error …]` header written for the
+  model; a declined or stopped call reads "You declined this tool call, so it did not run."
+  (or its stopped form); an argument schema in a refusal is folded.
+- [audited] A provider failure prints once: the "Ran into this error" reply, as plain text,
+  with no second `error: provider_failure:` line.
+- [audited] A modal is as tall as its prompt and options (capped at 26 rows), and says
+  "PgUp/PgDn to read" only when the prompt scrolls.
 
 ### Slash commands in the TUI
 
 - [audited] `/help`, `/?` → in-TUI command + navigation help (now lists `/compact`).
 - [verified-by-code] `/clear` clears the **persisted** conversation + token counts +
   scrollback (no desync; shared `clear_conversation`).
-- [manual] `/compact` → condenses the conversation via a normal turn.
+- [manual] `/compact` → asks the classic REPL's question in a modal first (Compact or Keep;
+  none in a decision chat), then condenses the conversation via a normal turn.
 - [audited] `/exit`, `/quit` → leave; `Ctrl+C` on empty input quits.
 - [audited] Other slash commands show a "use BIOROUTER_CLI_CLASSIC=1" note.
 - [audited] `/bug` is listed in the `/` palette and `/help`, and is forwarded to the agent like
