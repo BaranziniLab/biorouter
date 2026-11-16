@@ -124,6 +124,128 @@ pub struct Device {
     pub default: bool,
 }
 
+/// A capture device as the shim listed it, with the `type` ALSA's configuration gives its
+/// PCM on the ALSA backend (`None` on every other backend, or when the configuration does
+/// not say).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Listed {
+    device: Device,
+    pcm_type: Option<String>,
+}
+
+/// The probe for what `backend` listed. `listed_ok` is false when the listing itself
+/// failed. `var` reads the environment and `is_socket` asks whether a path is a socket, so
+/// the tests can stand in for the machine.
+///
+/// On the ALSA backend a PCM whose configured type hands its samples to a sound server
+/// counts as a microphone only while that server is there ([`alsa_route_answers`]).
+/// ALSA lists such PCMs from its configuration whether or not the server runs:
+/// `rockylinux:9` with the CLI rpm installed offers "PipeWire Sound Server" and "Default
+/// ALSA Output (currently PipeWire Media Server)" with no PipeWire in the container, and
+/// neither can record. Left in, they made the status say a microphone was available where
+/// no audio system exists. With every device dropped, the probe answers `no_device` from
+/// ALSA, which the status reads as `no_audio_system`, as it does where ALSA lists nothing.
+#[cfg_attr(br_no_capture, allow(dead_code))]
+fn probe_from_listing(
+    compiled: Vec<String>,
+    backend: String,
+    listed_ok: bool,
+    listed: Vec<Listed>,
+    var: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+    is_socket: &dyn Fn(&std::path::Path) -> bool,
+) -> Probe {
+    let alsa = backend == "ALSA";
+    let devices: Vec<Device> = listed
+        .into_iter()
+        .filter(|l| !alsa || alsa_route_answers(l.pcm_type.as_deref(), var, is_socket))
+        .map(|l| l.device)
+        .collect();
+    let error = (!listed_ok || devices.is_empty()).then_some(ErrorCode::NoDevice);
+    Probe {
+        compiled,
+        backend: Some(backend),
+        devices,
+        error,
+        test_source: false,
+    }
+}
+
+/// Whether an ALSA PCM of `pcm_type`, listed on the ALSA backend, reaches something that
+/// records. Only the two sound server types are judged; a sound card (`hw`, `plug` and the
+/// rest) and a PCM whose type the configuration does not give are kept.
+///
+/// * `pulse`: miniaudio tries PulseAudio before ALSA, through the same libpulse the ALSA
+///   plugin loads and without starting a server, so on the ALSA backend no PulseAudio
+///   server answered and the route cannot reach one either.
+/// * `pipewire`: PipeWire has its own socket, which a PipeWire running without its
+///   PulseAudio service still serves, so the route counts while a socket is where a
+///   PipeWire client would connect ([`pipewire_sockets`]). Nothing connects to it.
+#[cfg_attr(br_no_capture, allow(dead_code))]
+fn alsa_route_answers(
+    pcm_type: Option<&str>,
+    var: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+    is_socket: &dyn Fn(&std::path::Path) -> bool,
+) -> bool {
+    match pcm_type {
+        Some("pulse") => false,
+        Some("pipewire") => pipewire_sockets(var).iter().any(|p| is_socket(p)),
+        _ => true,
+    }
+}
+
+/// Where a PipeWire client connects, in PipeWire's own order (`local-socket.c` of its
+/// native protocol): each name in `PIPEWIRE_REMOTE` (one name, or a list such as
+/// `[ pipewire-0-manager pipewire-0 ]`; `pipewire-0` when unset or empty), an absolute one
+/// as it is, any other in the first of `PIPEWIRE_RUNTIME_DIR`, `XDG_RUNTIME_DIR` and
+/// `USERPROFILE` that is set, then in the system folder `/run/pipewire`.
+#[cfg_attr(br_no_capture, allow(dead_code))]
+fn pipewire_sockets(var: &dyn Fn(&str) -> Option<std::ffi::OsString>) -> Vec<std::path::PathBuf> {
+    let remote = var("PIPEWIRE_REMOTE")
+        .map(|v| v.to_string_lossy().trim().to_string())
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "pipewire-0".to_string());
+    let names: Vec<String> = match remote.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+        Some(list) => list
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .map(|n| n.trim_matches('"'))
+            .filter(|n| !n.is_empty())
+            .map(str::to_string)
+            .collect(),
+        None => vec![remote],
+    };
+    let runtime_dir = ["PIPEWIRE_RUNTIME_DIR", "XDG_RUNTIME_DIR", "USERPROFILE"]
+        .into_iter()
+        .find_map(var)
+        .map(|dir| dir.to_string_lossy().into_owned());
+    let mut sockets = Vec::new();
+    for name in names {
+        if name.starts_with('/') {
+            sockets.push(std::path::PathBuf::from(name));
+            continue;
+        }
+        if let Some(dir) = &runtime_dir {
+            sockets.push(std::path::PathBuf::from(format!("{dir}/{name}")));
+        }
+        sockets.push(std::path::PathBuf::from(format!("/run/pipewire/{name}")));
+    }
+    sockets
+}
+
+/// Whether `path` is a socket's file. Reads its metadata only: nothing connects to it.
+#[cfg_attr(br_no_capture, allow(dead_code))]
+fn is_socket_file(path: &std::path::Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        std::fs::metadata(path).is_ok_and(|m| m.file_type().is_socket())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        false
+    }
+}
+
 /// The stream is open.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ready {
@@ -476,7 +598,12 @@ mod ffi {
     }
 
     pub type OnSamples = extern "C" fn(user: *mut c_void, samples: *const f32, frames: u32);
-    pub type OnDevice = extern "C" fn(user: *mut c_void, name: *const c_char, is_default: c_int);
+    pub type OnDevice = extern "C" fn(
+        user: *mut c_void,
+        name: *const c_char,
+        is_default: c_int,
+        pcm_type: *const c_char,
+    );
 
     extern "C" {
         pub fn br_capture_compiled_backends() -> *const c_char;
@@ -540,18 +667,26 @@ extern "C" fn on_device(
     user: *mut std::ffi::c_void,
     name: *const std::ffi::c_char,
     is_default: std::ffi::c_int,
+    pcm_type: *const std::ffi::c_char,
 ) {
     let _ = std::panic::catch_unwind(|| {
         if user.is_null() || name.is_null() {
             return;
         }
-        // SAFETY: `user` is the `Vec<Device>` `probe` passed, alive for the call; `name`
-        // is miniaudio's NUL terminated device name.
-        let devices = unsafe { &mut *(user as *mut Vec<Device>) };
+        // SAFETY: `user` is the `Vec<Listed>` `probe` passed, alive for the call; `name`
+        // is miniaudio's NUL terminated device name, and `pcm_type` is null or a NUL
+        // terminated string the shim holds for the call.
+        let listed = unsafe { &mut *(user as *mut Vec<Listed>) };
         let name = unsafe { std::ffi::CStr::from_ptr(name) };
-        devices.push(Device {
-            name: name.to_string_lossy().into_owned(),
-            default: is_default != 0,
+        let pcm_type = (!pcm_type.is_null())
+            .then(|| unsafe { std::ffi::CStr::from_ptr(pcm_type) })
+            .map(|t| t.to_string_lossy().into_owned());
+        listed.push(Listed {
+            device: Device {
+                name: name.to_string_lossy().into_owned(),
+                default: is_default != 0,
+            },
+            pcm_type,
         });
     });
 }
@@ -586,24 +721,24 @@ impl Backend for Miniaudio {
             unsafe { std::ffi::CStr::from_ptr(ffi::br_capture_backend_name(self.capture)) }
                 .to_string_lossy()
                 .into_owned();
-        let mut devices: Vec<Device> = Vec::new();
-        // SAFETY: a live context; `devices` outlives the call, which runs the callback
+        let mut listed: Vec<Listed> = Vec::new();
+        // SAFETY: a live context; `listed` outlives the call, which runs the callback
         // only while it lasts.
         let result = unsafe {
             ffi::br_capture_devices(
                 self.capture,
                 on_device,
-                &mut devices as *mut Vec<Device> as *mut std::ffi::c_void,
+                &mut listed as *mut Vec<Listed> as *mut std::ffi::c_void,
             )
         };
-        let error = (result != 0 || devices.is_empty()).then_some(ErrorCode::NoDevice);
-        Probe {
+        probe_from_listing(
             compiled,
-            backend: Some(backend),
-            devices,
-            error,
-            test_source: false,
-        }
+            backend,
+            result == 0,
+            listed,
+            &|name| std::env::var_os(name),
+            &is_socket_file,
+        )
     }
 
     fn start(
