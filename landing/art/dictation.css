@@ -1,0 +1,230 @@
+/* Voice dictation tile. Every rule is scoped to the artifact. Values follow the
+   app, a size down to sit with the tile's 13px text:
+   - the composer card (composer/composer.css "The one-line card"): the page
+     ground with its resting hairline, the edge that turns accent while the
+     field is focused, one row of [+] [text] [mic] [Send] on a 32px line;
+   - the microphone (`.br-dictation-*`): a ghost round 28px button; while
+     recording a 28px pill in the accent on its wash, five 2px level bars 14px
+     tall scaled by the level (weights .55 .85 1 .75 .45) and the m:ss timer in
+     tabular figures; the spinner in the bars' place while transcribing;
+   - the preview of what has been heard: the card's notice row, inset to start
+     16px in, muted italic supporting text on one line, ellipsized;
+   - the Dictionary rows (DictionaryRow.tsx): the term over its second line,
+     the uses meta at the right, on a filled card with no outline. */
+
+.art-dictation {
+  position: absolute; inset: 0;
+  container-type: size;
+  --pad: clamp(12px, 4.8cqw, 18px);
+  font-family: var(--font);
+  color: var(--ink);
+  -webkit-user-select: none; user-select: none;
+}
+.art-dictation svg { display: block; flex: none; }
+
+/* ── The Dictionary slice and the disclosure, pinned to the top ── */
+.art-dictation .dx-top {
+  position: absolute; left: var(--pad); right: var(--pad); top: var(--pad);
+  transition: opacity var(--dur-slow) var(--ease);
+}
+.art-dictation .dx-dict {
+  background: var(--fill);
+  border: 1px solid transparent; border-radius: var(--r-container);
+  padding: 8px 10px;
+  opacity: 0; transform: translateY(4px);
+  transition: opacity var(--dur-med) var(--ease), transform var(--dur-med) var(--ease);
+}
+.art-dictation.show-dict .dx-dict { opacity: 1; transform: none; }
+.art-dictation .dx-dict-head {
+  display: flex; align-items: center; gap: 6px;
+  height: 20px; font-size: 13px; line-height: 20px; color: var(--ink); white-space: nowrap;
+}
+.art-dictation .dx-head-ic { width: 16px; height: 16px; color: var(--muted); }
+
+.art-dictation .dx-terms { display: grid; gap: 4px; margin-top: 6px; }
+.art-dictation .dx-term { display: flex; align-items: center; gap: 12px; min-width: 0; }
+/* The third row shows only where the tile is tall enough (below). */
+.art-dictation .dx-term[data-i="2"] { display: none; }
+.art-dictation .dx-term-text { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.art-dictation .dx-term-name { font-size: 13px; line-height: 18px; color: var(--ink); white-space: nowrap; }
+.art-dictation .dx-term-line,
+.art-dictation .dx-term-uses { font-size: 12px; line-height: 16px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.art-dictation .dx-term-uses { flex: none; font-variant-numeric: tabular-nums; }
+
+/* The app's disclosure, in the Dictionary slice's place. */
+.art-dictation .dx-note {
+  position: absolute; left: 0; right: 0; top: 0;
+  background: var(--fill);
+  border: 1px solid transparent; border-radius: var(--r-container);
+  padding: 9px 12px;
+  font-size: 13px; line-height: 20px; color: var(--muted); text-wrap: balance;
+  opacity: 0; transform: translateY(4px);
+  transition: opacity var(--dur-med) var(--ease), transform var(--dur-med) var(--ease);
+}
+/* The slice is almost gone before the note arrives, so the two are never read
+   on top of each other. */
+.art-dictation.show-note .dx-dict { opacity: 0; transition: opacity var(--dur-menu) var(--ease); }
+.art-dictation.show-note .dx-note {
+  opacity: 1; transform: none;
+  transition: opacity var(--dur-med) var(--ease) var(--dur-fast), transform var(--dur-med) var(--ease) var(--dur-fast);
+}
+.art-dictation.is-clearing .dx-top { opacity: 0; }
+
+/* The one moment the tile adds to the app: the dictated term and its row
+   share a brief accent wash. */
+.art-dictation .dx-mark,
+.art-dictation .dx-hit {
+  border-radius: var(--r-inner);
+  padding: 0 2px; margin: 0 -2px;
+  background-color: transparent;
+  transition: background-color calc(var(--dur-slow) * 2) var(--ease);
+}
+.art-dictation.is-hit .dx-term[data-i="0"] .dx-mark,
+.art-dictation.is-hit .dx-hit {
+  background-color: var(--coral-wash);
+  transition-duration: var(--dur-menu);
+}
+
+/* ── The composer ───────────────────────────────────────── */
+.art-dictation .dx-composer {
+  position: absolute; left: var(--pad); right: var(--pad); bottom: var(--pad);
+  background: var(--paper);
+  border: 1px solid var(--line-composer); border-radius: var(--r-container);
+  padding: 6px;
+  transition: border-color var(--dur-menu) var(--ease);
+}
+/* The app's focus edge (--border-accent): the card rests on the page ground
+   with its hairline (R-32), and the edge turns accent while the field is
+   focused. */
+.art-dictation.is-edge .dx-composer { border-color: var(--coral); }
+
+/* The notice row above the row: the muted line of what has been heard so far,
+   shown only while recording. It opens before its words fade in; on stop its
+   words clear as it closes. */
+.art-dictation .dx-heard { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur-med) var(--ease); }
+.art-dictation.has-heard .dx-heard { grid-template-rows: 1fr; }
+.art-dictation .dx-heard-in { min-height: 0; overflow: hidden; }
+.art-dictation .dx-partial {
+  margin: 4px 4px 0 10px;
+  font-size: 12px; line-height: 16px; font-style: italic; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  opacity: 0;
+  transition: opacity var(--dur-menu) var(--ease);
+}
+.art-dictation.has-heard .dx-partial { opacity: 1; transition-delay: var(--dur-fast); }
+.art-dictation .dx-new { animation: dictation-word var(--dur-menu) var(--ease) both; }
+@keyframes dictation-word { from { opacity: 0; } to { opacity: 1; } }
+
+/* ONE ROW: [+] [text] [mic] [Send], on a 32px line. The + glyph hangs back
+   onto the card's text edge, as in the app. */
+.art-dictation .dx-row { display: flex; align-items: center; gap: 2px; height: 32px; min-width: 0; }
+.art-dictation .dx-plus { display: grid; place-items: center; flex: none; width: 28px; height: 28px; color: var(--muted); }
+.art-dictation .dx-row-ic { width: 16px; height: 16px; }
+
+.art-dictation .dx-field {
+  position: relative; flex: 1; min-width: 0;
+  height: 20px; padding-left: 4px;
+  font-size: 13px; line-height: 20px; white-space: nowrap; overflow: hidden;
+}
+/* The placeholder starts just after the caret, as a native field's does. */
+.art-dictation .dx-ph { position: absolute; left: 7px; top: 0; color: var(--muted); }
+.art-dictation.has-text .dx-ph { visibility: hidden; }
+.art-dictation .dx-text { color: var(--ink); opacity: 0; transition: opacity var(--dur-fast) var(--ease); }
+.art-dictation.has-text .dx-text { opacity: 1; }
+.art-dictation .dx-caret { display: inline-block; width: 1px; height: 15px; margin-left: 1px; vertical-align: -3px; background: var(--ink); opacity: 0; }
+.art-dictation.is-focus .dx-caret { opacity: 1; }
+
+/* The microphone: a ghost round button that opens into the recording pill. */
+.art-dictation .dx-mic {
+  --dx-pill-w: 64px;
+  position: relative; flex: none;
+  width: 28px; height: 28px; border-radius: 14px;
+  overflow: hidden;
+  color: var(--muted); background: transparent;
+  transition: width var(--dur-med) var(--ease), background-color var(--dur-menu) var(--ease), color var(--dur-menu) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.art-dictation.is-press .dx-mic { background-color: var(--fill); transform: scale(0.98); }
+.art-dictation.is-rec .dx-mic { width: var(--dx-pill-w); color: var(--coral); background-color: var(--coral-wash); }
+.art-dictation.is-rec.is-press .dx-mic { background-color: var(--coral-wash); }
+.art-dictation .dx-mic-ic {
+  position: absolute; left: 6px; top: 6px;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.art-dictation.is-rec .dx-mic-ic { opacity: 0; }
+.art-dictation .dx-pill {
+  position: absolute; left: 8px; top: 0; height: 28px;
+  display: flex; align-items: center; gap: 6px; white-space: nowrap;
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease);
+}
+.art-dictation.is-rec .dx-pill { opacity: 1; transition: opacity var(--dur-menu) var(--ease) var(--dur-fast); }
+
+/* The bars and the spinner share one 18px cell. */
+.art-dictation .dx-meter { display: grid; place-items: center; width: 18px; height: 14px; }
+.art-dictation .dx-bars,
+.art-dictation .dx-spin { grid-area: 1 / 1; transition: opacity var(--dur-fast) var(--ease); }
+.art-dictation .dx-bars { display: inline-flex; align-items: center; gap: 2px; height: 14px; }
+.art-dictation .dx-bar {
+  display: block; width: 2px; height: 14px; border-radius: 1px;
+  background-color: currentColor;
+  transform-origin: center;
+  transform: scaleY(calc(0.2 + 0.8 * var(--dx-level, 0) * var(--w, 1)));
+  transition: transform var(--dur-fast) var(--ease);
+}
+.art-dictation .dx-bar[data-bar="0"] { --w: 0.55; }
+.art-dictation .dx-bar[data-bar="1"] { --w: 0.85; }
+.art-dictation .dx-bar[data-bar="2"] { --w: 1; }
+.art-dictation .dx-bar[data-bar="3"] { --w: 0.75; }
+.art-dictation .dx-bar[data-bar="4"] { --w: 0.45; }
+.art-dictation .dx-spin { width: 14px; height: 14px; opacity: 0; }
+.art-dictation.is-busy .dx-bars { opacity: 0; }
+.art-dictation.is-busy .dx-spin { opacity: 1; }
+/* The spinner turns once per two slow units, linear, as the app's does, and
+   only while the tile is on screen. */
+.art-dictation.is-live.is-busy .dx-spin { animation: dictation-spin calc(var(--dur-slow) * 2) linear infinite; }
+@keyframes dictation-spin { to { transform: rotate(360deg); } }
+
+.art-dictation .dx-timer { font-size: 12px; line-height: 16px; font-variant-numeric: tabular-nums; }
+
+.art-dictation .dx-send {
+  display: grid; place-items: center; flex: none;
+  width: 32px; height: 32px; border-radius: var(--r-element);
+  background: var(--fill); color: var(--muted);
+  transition: background var(--dur-menu) var(--ease), color var(--dur-menu) var(--ease);
+}
+.art-dictation .dx-send-ic { width: 16px; height: 16px; }
+.art-dictation.has-text .dx-send { background: var(--coral); color: var(--paper); }
+
+/* The loop ends with the draft and the note fading together. */
+.art-dictation.is-clearing .dx-text { opacity: 0; transition: opacity var(--dur-slow) var(--ease); }
+.art-dictation.is-clearing .dx-send { background: var(--fill); color: var(--muted); transition-duration: var(--dur-slow); }
+.art-dictation.is-clearing .dx-caret { opacity: 0; }
+
+/* Short tiles (the 289 by 216 tile at 1024): the Dictionary slice sits a
+   little tighter so the composer's preview line clears it. */
+@container (max-height: 225px) {
+  .art-dictation .dx-dict { padding: 6px 10px; }
+  .art-dictation .dx-terms { gap: 2px; margin-top: 4px; }
+}
+
+/* The smallest tiles (two columns just above a 600px window, 258 by 194):
+   one dictionary row, the one that is dictated, and a row with less air
+   between its controls, so the dictated line still fits beside them. */
+@container (max-height: 205px) {
+  .art-dictation .dx-term[data-i="1"] { display: none; }
+}
+@container (max-width: 270px) {
+  .art-dictation .dx-composer { padding: 6px 5px; }
+  .art-dictation .dx-row { gap: 0; }
+  .art-dictation .dx-field { padding-left: 2px; }
+  .art-dictation .dx-ph { left: 5px; }
+}
+
+/* Tall tiles (two columns, 429 by 322): a third row. */
+@container (min-height: 280px) {
+  .art-dictation .dx-term[data-i="2"] { display: flex; }
+}
+
+/* Resets between loops happen with no transition at all. Kept last. */
+[data-art="dictation"] .art-dictation.dx-instant,
+[data-art="dictation"] .art-dictation.dx-instant * { transition: none; }
