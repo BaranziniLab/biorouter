@@ -1,0 +1,90 @@
+/* Command line tile (Ways to use Biorouter). A plain terminal pane with a $
+   prompt, two one-shot runs and their exit codes (art/access-cli.js). The pane
+   is recessed into the frame, as the app's own terminal is: the subtle fill,
+   a transparent edge, no title bar. Mono for everything typed and printed,
+   a quiet $ prompt, ink for commands, muted for what the shell prints.
+   Every rule is scoped under [data-art="access-cli"]. */
+
+[data-art="access-cli"] .acli {
+  position: absolute; inset: 0;
+  container-type: inline-size;
+  font-family: var(--font);
+  color: var(--ink);
+  -webkit-user-select: none; user-select: none;
+}
+[data-art="access-cli"] .acli.acli-still,
+[data-art="access-cli"] .acli.acli-still * { transition: none; }
+
+[data-art="access-cli"] .acli-pane {
+  position: absolute; inset: clamp(8px, 3.6cqi, 20px);
+  padding: clamp(10px, 3.3cqi, 18px);
+  background: var(--fill);
+  border: 1px solid transparent;
+  border-radius: var(--r-container);
+  overflow: hidden;
+}
+[data-art="access-cli"] .acli-view {
+  position: relative; width: 100%; height: 100%;
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: var(--acli-lh);
+  --acli-lh: 15px;
+}
+/* One glyph run, measured for the column count and never seen. */
+[data-art="access-cli"] .acli-probe {
+  position: absolute; left: 0; top: 0;
+  white-space: pre; visibility: hidden;
+}
+
+/* The transcript scrolls as one block, by whole lines (access-cli.js), at the
+   pace the other tiles move rows. */
+[data-art="access-cli"] .acli-lines {
+  transition: transform var(--dur-slow) var(--ease), opacity var(--dur-med) var(--ease);
+}
+[data-art="access-cli"] .acli.is-out .acli-lines { opacity: 0; }
+
+[data-art="access-cli"] .acli-row { transition: opacity var(--dur-fast) var(--ease); }
+[data-art="access-cli"] .acli-row.is-gone { opacity: 0; }
+[data-art="access-cli"] .acli-ln {
+  display: flex; align-items: center;
+  height: var(--acli-lh);
+  white-space: pre;
+  color: var(--muted);
+}
+[data-art="access-cli"] .acli-row.is-cmd .acli-ln { color: var(--ink); }
+[data-art="access-cli"] .acli-ln.is-cont { padding-left: 2ch; }
+/* The shell's own $ stays quiet; coral marks Biorouter's prompt (the terminal
+   chat tile), not the person's shell. */
+[data-art="access-cli"] .acli-p { color: var(--subtle); }
+/* A printed answer and the next prompt arrive whole, softened by one quick fade. */
+[data-art="access-cli"] .acli-row.is-new { animation: access-cli-in var(--dur-fast) var(--ease) backwards; }
+@keyframes access-cli-in { from { opacity: 0; } }
+
+/* The cursor: solid, as in every tile; nothing here blinks. */
+[data-art="access-cli"] .acli-caret {
+  display: block; flex: none;
+  width: 1.5px; height: calc(var(--acli-lh) - 2px);
+  background: var(--ink);
+}
+
+/* Size tiers by the tile's own width, on the workflow tile's scale (the
+   tile is 4:3, so width also sets the height): the inset and padding grow with
+   cqi, the line height steps from 15 to 17px at 12px, and the widest tiles (a
+   single column between 440 and 600px, two columns near 980px) set the
+   terminal at 13 and then 14px. */
+@container (min-width: 300px) {
+  [data-art="access-cli"] .acli-view { --acli-lh: 16px; }
+}
+@container (min-width: 340px) {
+  [data-art="access-cli"] .acli-view { --acli-lh: 17px; }
+}
+@container (min-width: 370px) {
+  [data-art="access-cli"] .acli-view { font-size: 13px; --acli-lh: 18px; }
+}
+@container (min-width: 420px) {
+  [data-art="access-cli"] .acli-view { --acli-lh: 19px; }
+}
+@container (min-width: 480px) {
+  [data-art="access-cli"] .acli-view { font-size: 14px; --acli-lh: 21px; }
+}
