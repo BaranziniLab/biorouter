@@ -1,5 +1,11 @@
 # Private session history and deliberate relocation
 
+> **What this is.** How Biorouter keeps session history private to the account that owns it, what
+> storage it refuses before SQLite opens, and how to move the whole app root deliberately with
+> `BIOROUTER_PATH_ROOT`.
+> **Status:** Current.
+> **Audience:** operators and developers.
+
 BioRouter keeps session history in the app data directory's `sessions` folder. Before connecting to SQLite, it requires a real directory owned by the current account. Existing `sessions.db`, `sessions.db-wal`, and `sessions.db-shm` entries must be regular files owned by that account, with no symbolic-link, junction, reparse-point, or hard-link aliases. BioRouter refuses unsuitable entries before opening SQLite, without changing the linked outside file's contents or permissions. It restricts Unix directory access to that account and the known database files to mode `0600`, clears extended ACLs, and applies a protected current-user DACL to Windows session storage, including existing history files and sidecars. New database files are checked again after initialization. Filesystems that cannot enforce these permissions produce a recovery message; BioRouter does not silently continue with public history.
 
 Unix file permission checks preserve SQLite's process locks even when another session manager or an external SQLite client opens the same store. macOS uses nofollow permission and ACL operations without opening the database files. Linux pins each inode with an `O_PATH` descriptor and changes permissions through `/proc/self/fd`; closing that descriptor preserves POSIX locks. Linux storage preparation requires that procfs descriptor path to be available and fails closed if it is unavailable.
@@ -20,3 +26,9 @@ The child-link checks address a pre-existing storage configuration hazard: a del
 These permissions isolate ordinary separate local accounts. They do not revoke an already-open descriptor, isolate processes running as the same account, or protect against an administrator controlling the host. Existing audit evidence remains tied to its recorded version and environment; the Windows implementation and rebuilt-application behavior need their own validation.
 
 The integration tests are `cargo test -p biorouter --test session_storage_security --test security_assessment`. Windows also runs `cargo test -p biorouter --lib session::storage_permissions::tests`; macOS exercises an explicit extended-ACL fixture. To verify a rebuilt Linux daemon, run `python3 scripts/security-assessment/session_storage_rebuilt.py --daemon /absolute/path/to/biorouterd --image <existing-compatible-runtime-image> --source-commit <build-commit> --output <new-evidence-directory>`. That runner uses isolated read-only containers, synthetic history, two non-root accounts, and a read-only mount of the supplied binary. It checks fresh storage and repair/reopening of an intentionally permissive legacy fixture. It does not reuse or overwrite frozen audit evidence.
+
+## Related documentation
+
+- [Secret storage](secret-storage.md) — where credentials live, which this page does not cover.
+- [Privacy tiers](privacy-tiers.md) — the classification that decides which model may read a chat, separate from who may read its files.
+- [Session-storage acceptance](session-storage-acceptance.md) — the rebuilt-daemon test that checks this behaviour across two Linux accounts.
