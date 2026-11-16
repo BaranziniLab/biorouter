@@ -17,6 +17,8 @@ Load bearing claims carry a label:
 | [R] | Reported by a third party's source code, documentation or issue tracker (upstream whisper.cpp and the `cmake` crate included), not measured here |
 | [I] | Inferred; the text names the measurement that settles it when it matters |
 
+Statements about `main` in this document describe the tree at `52917f33e`, before the dictation pull requests; the current tree is the reference for how dictation behaves.
+
 Identifier schemes, all indexed in the plan:
 
 | Scheme | Meaning |
@@ -650,13 +652,13 @@ The model loader of [Inside the worker](#inside-the-worker) removes the one beha
 MACOSX_DEPLOYMENT_TARGET = "12.0"
 ```
 
-With the variable set, rustc stamps `minos 12.0` and `cc` compiles C and C++ with `-mmacosx-version-min=12.0`, on both architectures [M]. Unset, `cc` 1.2.64 compiles at the SDK version (27.2 on the design machine) while rustc stamps 11.0, and the engine linked binary strongly imports `_OBJC_CLASS_$_MTLResidencySetDescriptor`, a macOS 15 class [M]. dyld would then refuse to start the whole `biorouterd` and `biorouter` on macOS 12 to 14 [I from dyld semantics], which no worker can isolate, because it is the same binary. Nothing sets the variable at `main` [C], and the shipped `biorouterd` is `minos 11.0, sdk 27.0` [M]. The bundled `llama-server` is `minos 13.3` [M], so local chat models already need 13.3 while the app claims 12.0; dictation does not.
+With the variable set, rustc stamps `minos 12.0` and `cc` compiles C and C++ with `-mmacosx-version-min=12.0`, on both architectures [M]. Unset, `cc` 1.2.64 compiles at the SDK version (27.2 on the design machine) while rustc stamps 11.0, and the engine linked binary strongly imports `_OBJC_CLASS_$_MTLResidencySetDescriptor`, a macOS 15 class [M]. dyld would then refuse to start the whole `biorouterd` and `biorouter` on macOS 12 to 14 [I from dyld semantics], which no worker can isolate, because it is the same binary. Nothing set the variable before PR-02 [C], and the then-shipped `biorouterd` was `minos 11.0, sdk 27.0` [M]. The bundled `llama-server` is `minos 13.3` [M], so local chat models already need 13.3 while the app claims 12.0; dictation does not.
 
 `scripts/check-macos-deployment.sh <binary>…` reads the minimum with `vtool -show-build`, or from `LC_BUILD_VERSION` or `LC_VERSION_MIN_MACOSX`, and requires 12.0. `xcrun dyld_info` refuses binaries built with `strip = true` [M], so the strong import check runs on the unstripped test executable inside the leaf crate's `--lib` tests, which also asserts that `MTLResidencySetDescriptor` is a weak import.
 
 ### The Docker builder
 
-At `main` the builder was `rust:1.92-bookworm` with no `cmake`, it built only `--package biorouter-cli`, it set `CARGO_PROFILE_RELEASE_OPT_LEVEL=z`, LTO and one codegen unit, and the runtime stage was `debian:bookworm-slim` [C `Dockerfile`]. PR-09 added `cmake` to the builder (rule 10). As PR-31 (`8c865d11d`) left the `Dockerfile`: the `rust:1.92-bookworm` builder installs `cmake` and builds `--package biorouter-cli --package biorouter-server` with the same release settings; a `node:24-bookworm` stage runs `npm ci && npm run build:web`; the `debian:bookworm-slim` runtime holds `biorouter` and `biorouterd` in `/usr/local/bin`, the web bundle at `/usr/share/biorouter/web`, and runs as the user `biorouter` with `EXPOSE 8765`. Rule 7 matters most here, because of `opt-level = "z"`; rule 2 matters too, because a Docker build is a native build on whatever machine runs it. With Debian's `cmake` 3.25.1 the engine built in 15 s and transcribed in `debian:bookworm-slim` on arm64, with `DT_NEEDED` of `libgcc_s`, `libm` and `libc` [M]. Without `GGML_CPU_ARM_ARCH`, Linux arm64 gets the NEON only baseline [M], so rule 2 sets `armv8.2-a+dotprod` and the CPU gate checks `dotprod`. How the image serves dictation is in [surfaces](surfaces.md#s16-docker-image); the native image gate of 2026-11-10 is in the [checklist](../releases/dictation-test-checklist.md#s16-docker-image).
+Before PR-01 the builder was `rust:1.92-bookworm` with no `cmake`, it built only `--package biorouter-cli`, it set `CARGO_PROFILE_RELEASE_OPT_LEVEL=z`, LTO and one codegen unit, and the runtime stage was `debian:bookworm-slim` [C `Dockerfile`]. PR-09 added `cmake` to the builder (rule 10). As PR-31 (`8c865d11d`) left the `Dockerfile`: the `rust:1.92-bookworm` builder installs `cmake` and builds `--package biorouter-cli --package biorouter-server` with the same release settings; a `node:24-bookworm` stage runs `npm ci && npm run build:web`; the `debian:bookworm-slim` runtime holds `biorouter` and `biorouterd` in `/usr/local/bin`, the web bundle at `/usr/share/biorouter/web`, and runs as the user `biorouter` with `EXPOSE 8765`. Rule 7 matters most here, because of `opt-level = "z"`; rule 2 matters too, because a Docker build is a native build on whatever machine runs it. With Debian's `cmake` 3.25.1 the engine built in 15 s and transcribed in `debian:bookworm-slim` on arm64, with `DT_NEEDED` of `libgcc_s`, `libm` and `libc` [M]. Without `GGML_CPU_ARM_ARCH`, Linux arm64 gets the NEON only baseline [M], so rule 2 sets `armv8.2-a+dotprod` and the CPU gate checks `dotprod`. How the image serves dictation is in [surfaces](surfaces.md#s16-docker-image); the native image gate of 2026-11-10 is in the [checklist](../releases/dictation-test-checklist.md#s16-docker-image).
 
 ### The `cross_windows` toolchain
 
@@ -1529,7 +1531,7 @@ The inherited cloud dictation was a daemon route that forwarded audio to OpenAI 
 
 What was deleted:
 
-| Item | At `main` |
+| Item | Before PR-01 (at `52917f33e`) |
 |---|---|
 | `crates/biorouter-server/src/routes/audio.rs` | `POST /audio/transcribe` (OpenAI `whisper-1`), `POST /audio/transcribe/elevenlabs` and `GET /audio/config` [C] |
 | Two lines of `routes/mod.rs` | `pub mod audio;` (`:1015`) and `.merge(audio::routes(state.clone()))` (`:1069`) [C] |
