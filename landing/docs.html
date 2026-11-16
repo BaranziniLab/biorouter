@@ -678,7 +678,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
 
 <div class="doc-page" id="doc-providers">
 <h1>Models and providers</h1>
-<p class="doc-lede">Biorouter runs local models, models your institution hosts, and public cloud models. Each chat has its own model, and you can change it; a private chat can switch only among private models.</p>
+<p class="doc-lede">Biorouter runs local models, models your institution hosts, and public cloud models. Each chat has its own model, and you can change it; a private chat can switch only among private models and refuses public decision models.</p>
 
 <h2 id="providers-tabs">The three tabs</h2>
 <p>Open <strong>Settings → Models</strong> and choose <strong>Manage…</strong> beside Providers. Every provider sits on one of three tabs, always in this order. A one line note under the tabs gives the tab's privacy, quoted here in the app's own words.</p>
@@ -693,9 +693,10 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
 <p>Choose a provider's row, then <strong>Configure</strong>, and enter its credentials. Biorouter checks them with the provider before it saves them. In a terminal, <code>biorouter configure</code> lists the same providers as one list. <a href="#vaulting">Security</a> explains where credentials are kept.</p>
 <p>A chat becomes private once a turn runs on a private model. <a href="#privacy">Private and public</a> explains what that changes.</p>
 <div class="note"><p>The model picker reads each provider's live list of models, so it is the place to see what you can use today. The defaults below are what Biorouter picks when you configure a provider without naming a model. The newest release is v1.94.1; where a default changed after v1.92.1, the page names both. An existing setup keeps its saved main model.</p></div>
+<p>The app shows each model by one readable name, such as Claude Haiku 5.5 or GPT-5.6 Sol, in the composer, Settings and the usage tables, and keeps the exact id in the model's tooltip and under its name in lists. A name you set in <code>BIOROUTER_PREDEFINED_MODELS</code> is shown instead, and where two models would read the same, the provider and then the id follow. The ids in this page's tables are what the CLI, workflows and config files use; they do not change.</p>
 
 <h2 id="providers-local">Local</h2>
-<p><strong>Llama Server</strong> (<code>llamacpp</code>) comes with the desktop app and needs no setup and no key. Choose a model, then <strong>Download &amp; run</strong>. The model downloads once, or starts from a copy already on your computer; after that, nothing leaves your computer.</p>
+<p><strong>Llama Server</strong> (<code>llamacpp</code>) comes with the desktop app and needs no setup and no key. Choose a model, then <strong>Download and start</strong>. The button shows the download size, as in <strong>Download and start (19 GB)</strong>; it reads <strong>Resume and start</strong> after a partial download, and <strong>Start</strong> once the model is on your computer. The model downloads once, or starts from a copy already on your computer; after that, nothing leaves your computer.</p>
 <div class="doc-table-scroll"><table>
   <thead><tr><th>Model and CLI name</th><th>Download</th><th>Notes</th></tr></thead>
   <tbody>
@@ -736,7 +737,7 @@ biorouter models local list</code></pre>
     <tr><td><strong>Versa API Bedrock</strong><br><code>versa_bedrock</code></td><td><code>us.anthropic.claude-opus-5-5</code> after v1.94.1<br><code>us.anthropic.claude-opus-4-8</code> in v1.94.1 and earlier</td></tr>
   </tbody>
 </table></div>
-<p><strong>Versa API Azure</strong> takes your Versa API key and serves the UCSF ChatGPT models, only those UCSF has deployed. <strong>Versa API Bedrock</strong> takes your Versa access key ID and secret access key and serves the Anthropic models UCSF hosts on Amazon Bedrock.</p>
+<p><strong>Versa API Azure</strong> takes your Versa API key and serves the UCSF ChatGPT models, only those UCSF has deployed. <strong>Versa API Bedrock</strong> takes your Versa access key ID and secret access key and serves the Anthropic models UCSF hosts on Amazon Bedrock. Its model list offers Claude Opus 5.5 (the default), Sonnet 5.5 and Haiku 5.5, then Opus 4.8, Sonnet 5, Opus 4.6, Sonnet 4.6, Opus 4.5 and Haiku 4.5. <code>biorouter configure</code> and <code>biorouter models list versa_bedrock</code> show the same list. For any other model the gateway has enabled for your account, choose <strong>Enter a model not listed…</strong> in <strong>Switch models</strong> or in <code>biorouter configure</code>.</p>
 <div class="note"><p><strong>UCSF researchers:</strong> use these two. Azure OpenAI and Amazon Bedrock on the Public tab are for your own Azure or AWS account, and they stay public even if you point them at a UCSF address.</p></div>
 <p>Another institution's gateway appears on this tab once Biorouter recognizes its endpoint as private.</p>
 
@@ -749,6 +750,7 @@ biorouter models local list</code></pre>
     <tr><td><strong>Codex</strong><br><code>codex</code></td><td><code>gpt-6-astra</code></td><td>A ChatGPT plan</td></tr>
   </tbody>
 </table></div>
+<p>The Claude Code picker lists Claude Opus 5.5 (the default), Fable 5.1, Sonnet 5.5, Haiku 5.5, Sonnet 5 and Haiku 4.5. Older models such as <code>claude-opus-5</code> are not listed but still work: choose <strong>Enter a model not listed…</strong> and type the name.</p>
 <ol class="steps">
   <li><strong>Install the tool yourself</strong> Biorouter shows the command for your system but does not run it. The defaults above need <code>claude</code> 2.1.280 or newer and <code>codex-cli</code> 0.153.4 or newer.
 <pre><code># Claude Code on macOS and Linux
@@ -805,6 +807,7 @@ npm install -g @openai/codex@latest</code></pre></li>
   <li><strong>Tetrate Agent Router Service</strong> opens a browser sign in, or takes <code>TETRATE_API_KEY</code>.</li>
 </ul>
 <p>The SageMaker TGI and LiteLLM defaults are placeholders: the model is whatever your endpoint or gateway serves. Run <code>biorouter models providers</code> for the list on your computer and <code>biorouter models list &lt;provider&gt;</code> for a provider's models.</p>
+<p><strong>Decision models.</strong> Baseten and Ollama also serve decision models, the fast models behind a chat's monitors, gates and <code>decide</code> tool. The decision models a chat keeps count toward its privacy, and the least private model sets it: Versa with a Baseten decision model is a public chat, and Versa with an Ollama decision model on this computer stays private. A public decision model, such as a Baseten one, makes a chat public only after you accept that, before the chat's first message or on a chat you made public from History. A chat that is already private refuses public decision models. <a href="#privacy">Private and public</a> explains what a public chat cannot reach.</p>
 
 <h2 id="providers-custom">Add a custom provider</h2>
 <p>Any endpoint that speaks the OpenAI, Anthropic or Ollama API can be added.</p>
