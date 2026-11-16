@@ -162,10 +162,13 @@ What streaming does **not** change:
   `stream()` applies the same limit inside itself, read from the same
   `coding_agent::turn_timeout()`. With the key unset, which is the default, neither path has one,
   and Stop is how a wedged turn ends.
-- **A lead/worker pair streams only if both halves do.** `LeadWorkerProvider` forwards
-  `supports_streaming()` as the **conjunction** of the two providers
-  (`crates/biorouter/src/providers/lead_worker.rs:410-412`), so pairing a coding agent with a
-  non-streaming provider gives a blocking turn.
+- **A chat saved in the retired lead/worker mode streams only if both halves do.** Lead/worker
+  mode is retired for new setups and replaced by the default worker model
+  ([subagents](../../agent-loop/subagents.md#model-control)), but a chat saved as a pair still restores as one.
+  `LeadWorkerProvider::supports_streaming` (`crates/biorouter/src/providers/lead_worker.rs`) is the
+  **conjunction** of the two providers, so a coding agent paired with a non-streaming provider
+  gives a blocking turn. `LeadWorkerProvider::uses_tool_bridge` is the disjunction: the pair uses
+  the tool bridge if either half does.
 
 Two limits remain, and both are explicit rather than accidental:
 
