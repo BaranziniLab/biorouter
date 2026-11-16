@@ -84,6 +84,62 @@ export function modelDisplayName(id: string): string {
   return familyName(short) ?? short;
 }
 
+/** One row of a list of models, as {@link distinguishModels} reads it. */
+export interface ModelRowName {
+  /** What the row reads by: its display name, or the surface's own name for the row. */
+  name: string;
+  /** The provider that served it, written after the name when the name alone is not enough. */
+  provider?: string | null;
+  /** The raw id, written last when the name and the provider are still not enough. */
+  id?: string | null;
+}
+
+/** For each entry, whether another entry in the list reads the same. */
+function repeated(labels: readonly string[]): boolean[] {
+  const counts = new Map<string, number>();
+  for (const label of labels) counts.set(label, (counts.get(label) ?? 0) + 1);
+  return labels.map((label) => (counts.get(label) ?? 0) > 1);
+}
+
+/** What a row of a list needs written after its name to read apart from the others. */
+export interface ModelRowParts {
+  provider: boolean;
+  id: boolean;
+}
+
+/**
+ * What tells a list's models apart. A display name drops what only says where a model is served
+ * (a date stamp, a Bedrock region profile, a `vendor/` path), so two rows of one list can read the
+ * same: one model through two providers, or two snapshots of one model from one provider
+ * (`gpt-5.5-2026-04-24` and `gpt-5.5-2026-07-09` both read "GPT-5.5"), each priced on its own.
+ * A row reads by its name alone; where another row reads the same, its provider follows; where
+ * that still reads the same, its raw id follows too. Rows keyed by provider and id end apart.
+ */
+export function distinguishModels(rows: readonly ModelRowName[]): ModelRowParts[] {
+  const needProvider = repeated(rows.map((row) => row.name));
+  const withProvider = rows.map((row, index) =>
+    needProvider[index] && row.provider ? `${row.name} · ${row.provider}` : row.name
+  );
+  const needId = repeated(withProvider);
+  return rows.map((row, index) => ({
+    provider: needProvider[index] && !!row.provider,
+    id: needId[index] && !!row.id,
+  }));
+}
+
+/**
+ * {@link distinguishModels}' answer as one line per row: "GPT-5.5", "GPT-5.5 · openai", or
+ * "GPT-5.5 · openai · gpt-5.5-2026-04-24".
+ */
+export function distinctModelLabels(rows: readonly ModelRowName[]): string[] {
+  return distinguishModels(rows).map((parts, index) => {
+    const row = rows[index];
+    return [row.name, parts.provider && row.provider, parts.id && row.id]
+      .filter(Boolean)
+      .join(' · ');
+  });
+}
+
 const VERTEX_DATE = /@(?:\d{8}|\d{4}-\d{2}-\d{2})$/;
 
 /**

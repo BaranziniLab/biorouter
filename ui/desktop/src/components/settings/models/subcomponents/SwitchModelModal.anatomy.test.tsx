@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   read: vi.fn(),
   changeModel: vi.fn(),
   predefined: false,
+  predefinedModels: null as null | { id: string; name: string; alias?: string; provider: string }[],
 }));
 
 vi.mock('../../../ConfigContext', () => ({
@@ -43,16 +44,17 @@ vi.mock('../../../crew/access/chatCrewAccess', () => ({
 }));
 
 vi.mock('../predefinedModelsUtils', () => ({
-  getPredefinedModelsFromEnv: () => [
-    {
-      id: 'a',
-      name: 'model-a',
-      alias: 'Model A (recommended)',
-      provider: 'Versa',
-      subtext: 'Fast',
-    },
-    { id: 'b', name: 'model-b', alias: 'Model B', provider: 'Versa' },
-  ],
+  getPredefinedModelsFromEnv: () =>
+    mocks.predefinedModels ?? [
+      {
+        id: 'a',
+        name: 'model-a',
+        alias: 'Model A (recommended)',
+        provider: 'Versa',
+        subtext: 'Fast',
+      },
+      { id: 'b', name: 'model-b', alias: 'Model B', provider: 'Versa' },
+    ],
   shouldShowPredefinedModels: () => mocks.predefined,
 }));
 
@@ -74,6 +76,7 @@ describe('SwitchModelModal anatomy', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.predefined = false;
+    mocks.predefinedModels = null;
     mocks.getProviders.mockResolvedValue([provider]);
     mocks.getProviderModels.mockResolvedValue(['gpt-5.6-sol']);
     mocks.read.mockResolvedValue('');
@@ -191,6 +194,30 @@ describe('SwitchModelModal anatomy', () => {
       fireEvent.click(radios[1]);
       expect(radios[1]).toBeChecked();
       await waitFor(() => expect(confirm).toBeEnabled());
+    });
+
+    it('names a model with no alias by its display name, with its id under it', async () => {
+      // T1 F2: the name the chip, Settings and every other surface show, never the raw id alone.
+      mocks.predefinedModels = [
+        { id: 'h', name: 'us.anthropic.claude-haiku-5-5', provider: 'versa_bedrock' },
+        { id: 'b', name: 'model-b', alias: 'Model B', provider: 'versa_bedrock' },
+      ];
+      render(<SwitchModelModal sessionId={null} onClose={vi.fn()} setView={vi.fn()} />);
+      const group = await screen.findByRole('radiogroup', { name: switchModelCopy.model });
+      const [haiku, aliased] = within(group)
+        .getAllByRole('radio')
+        .map((radio) => radio.closest('label')!);
+      expect(within(haiku).getByText('Claude Haiku 5.5')).toHaveClass('text-label');
+      expect(within(haiku).getByTestId('predefined-model-id')).toHaveTextContent(
+        'us.anthropic.claude-haiku-5-5'
+      );
+      expect(within(haiku).getByTestId('predefined-model-id')).toHaveClass(
+        'font-mono',
+        'text-code'
+      );
+      // An alias is the deployment's own name for it; its id sits under it the same way.
+      expect(within(aliased).getByText('Model B')).toBeInTheDocument();
+      expect(within(aliased).getByTestId('predefined-model-id')).toHaveTextContent('model-b');
     });
 
     it('marks a recommended alias with a quiet word, not a badge', async () => {

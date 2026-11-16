@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
-import { labelsNeedProvider, ModelBreakdownTable, modelLabel } from './ModelBreakdownTable';
+import { ModelBreakdownTable, modelLabel, modelLabels } from './ModelBreakdownTable';
 import { MODEL_NOT_RECORDED } from './copy';
 import { homeUsageCopy } from '../usage/copy';
 import { UNKNOWN_MODEL_LABEL, type ModelCostRow } from '../../hooks/useCostTracking';
@@ -53,14 +53,13 @@ describe('modelLabel', () => {
     expect(modelLabel({ provider: 'openai', model: 'gpt-5' })).toBe('GPT-5');
     expect(modelLabel({ provider: undefined, model: 'gpt-5' })).toBe('GPT-5');
     // The provider follows only where two rows would otherwise read the same.
-    expect(modelLabel({ provider: 'openai', model: 'gpt-5' }, true)).toBe('GPT-5 · openai');
     expect(
-      labelsNeedProvider([
+      modelLabels([
         { provider: 'openai', model: 'gpt-5' },
         { provider: 'openrouter', model: 'openai/gpt-5' },
         { provider: 'anthropic', model: 'claude-fable-5' },
       ])
-    ).toEqual([true, true, false]);
+    ).toEqual(['GPT-5 · openai', 'GPT-5 · openrouter', 'Claude Fable 5']);
     // Home's usage card's name for the bucket, not a second one (usage/copy.test.ts).
     expect(MODEL_NOT_RECORDED).toBe(homeUsageCopy.notRecorded);
     expect(modelLabel({ provider: undefined, model: undefined })).toBe(MODEL_NOT_RECORDED);
@@ -80,6 +79,28 @@ describe('modelLabel', () => {
     expect(modelLabel({ provider: 'ollama_decision', model: 'tev1:0.8b' })).toBe(
       'Decision model: tev1:0.8b'
     );
+  });
+});
+
+describe('modelLabels', () => {
+  it('tells apart two snapshots of one model from one provider by their ids', () => {
+    // Both read "GPT-5.5" and are priced on their own; the provider alone cannot tell them apart.
+    expect(
+      modelLabels([
+        { provider: 'openai', model: 'gpt-5.5-2026-04-24' },
+        { provider: 'openai', model: 'gpt-5.5-2026-07-09' },
+      ])
+    ).toEqual(['GPT-5.5 · openai · gpt-5.5-2026-04-24', 'GPT-5.5 · openai · gpt-5.5-2026-07-09']);
+    // Two Bedrock inference profiles of one model, priced differently.
+    expect(
+      modelLabels([
+        { provider: 'aws_bedrock', model: 'us.anthropic.claude-haiku-5-5' },
+        { provider: 'aws_bedrock', model: 'global.anthropic.claude-haiku-5-5' },
+      ])
+    ).toEqual([
+      'Claude Haiku 5.5 · aws_bedrock · us.anthropic.claude-haiku-5-5',
+      'Claude Haiku 5.5 · aws_bedrock · global.anthropic.claude-haiku-5-5',
+    ]);
   });
 });
 
@@ -180,6 +201,25 @@ describe('ModelBreakdownTable', () => {
       '3',
       'Unavailable',
     ]);
+  });
+
+  it('gives two snapshots of one model from one provider rows that read apart', () => {
+    const snapshot = (model: string, totalCost: number): ModelCostRow => ({
+      ...rows[0],
+      provider: 'openai',
+      model,
+      totalCost,
+      costIsPartial: false,
+    });
+    render(
+      <ModelBreakdownTable
+        rows={[snapshot('gpt-5.5-2026-04-24', 1.5), snapshot('gpt-5.5-2026-07-09', 0.25)]}
+      />
+    );
+    const april = screen.getByText('GPT-5.5 · openai · gpt-5.5-2026-04-24').closest('tr')!;
+    expect(within(april).getAllByRole('cell')[7].textContent).toBe('$1.50');
+    const july = screen.getByText('GPT-5.5 · openai · gpt-5.5-2026-07-09').closest('tr')!;
+    expect(within(july).getAllByRole('cell')[7].textContent).toBe('$0.25');
   });
 
   it('renders nothing for an empty payload', () => {
