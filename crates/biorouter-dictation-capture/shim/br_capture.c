@@ -21,7 +21,7 @@
 #endif
 
 typedef void (*br_capture_on_samples)(void *user, const float *samples, uint32_t frames);
-typedef void (*br_capture_on_device)(void *user, const char *name, int is_default);
+typedef void (*br_capture_on_device)(void *user, const char *name, int is_default, const char *pcm_type);
 
 typedef struct br_capture {
     ma_context context;
@@ -137,7 +137,65 @@ static int br_is_null_device(const br_capture *capture, const ma_device_info *in
     return 0;
 }
 
-/* Lists the capture devices without opening any; returns a ma_result. */
+#if defined(MA_HAS_ALSA)
+typedef struct br_snd_config br_snd_config;
+typedef int (*br_snd_config_update_ref_proc)(br_snd_config **top);
+typedef void (*br_snd_config_unref_proc)(br_snd_config *top);
+typedef int (*br_snd_config_search_definition_proc)(br_snd_config *config, const char *base, const char *key,
+                                                    br_snd_config **result);
+typedef int (*br_snd_config_search_proc)(br_snd_config *config, const char *key, br_snd_config **result);
+typedef int (*br_snd_config_get_string_proc)(const br_snd_config *config, const char **value);
+typedef int (*br_snd_config_delete_proc)(br_snd_config *config);
+
+/* Copies the `type` ALSA's configuration gives the PCM `id` into `out` (`pipewire` or
+ * `pulse` for a PCM that hands its samples to a sound server, `hw`, `plug` and so on
+ * otherwise), or leaves `out` empty when the configuration does not say. It reads the
+ * configuration, as `snd_pcm_open` would before opening, and opens nothing. The functions
+ * come from the libasound miniaudio opened, so the binary still links no sound library. */
+static void br_alsa_pcm_type(const br_capture *capture, const char *id, char *out, size_t size)
+{
+    void *so = (void *)capture->context.alsa.asoundSO;
+    br_snd_config_update_ref_proc update_ref;
+    br_snd_config_unref_proc unref;
+    br_snd_config_search_definition_proc search_definition;
+    br_snd_config_search_proc search;
+    br_snd_config_get_string_proc get_string;
+    br_snd_config_delete_proc delete_config;
+    br_snd_config *top = NULL;
+    br_snd_config *pcm = NULL;
+    br_snd_config *type = NULL;
+    const char *value = NULL;
+    out[0] = '\0';
+    if (so == NULL || id == NULL || id[0] == '\0' || size == 0) {
+        return;
+    }
+    update_ref = (br_snd_config_update_ref_proc)dlsym(so, "snd_config_update_ref");
+    unref = (br_snd_config_unref_proc)dlsym(so, "snd_config_unref");
+    search_definition = (br_snd_config_search_definition_proc)dlsym(so, "snd_config_search_definition");
+    search = (br_snd_config_search_proc)dlsym(so, "snd_config_search");
+    get_string = (br_snd_config_get_string_proc)dlsym(so, "snd_config_get_string");
+    delete_config = (br_snd_config_delete_proc)dlsym(so, "snd_config_delete");
+    if (update_ref == NULL || unref == NULL || search_definition == NULL || search == NULL ||
+        get_string == NULL || delete_config == NULL) {
+        return;
+    }
+    if (update_ref(&top) < 0 || top == NULL) {
+        return;
+    }
+    if (search_definition(top, "pcm", id, &pcm) >= 0 && pcm != NULL) {
+        if (search(pcm, "type", &type) >= 0 && type != NULL && get_string(type, &value) >= 0 && value != NULL) {
+            strncpy(out, value, size - 1);
+            out[size - 1] = '\0';
+        }
+        delete_config(pcm);
+    }
+    unref(top);
+}
+#endif
+
+/* Lists the capture devices without opening any; returns a ma_result. On the ALSA backend
+ * each device comes with its PCM's configured type (NULL elsewhere, or when unknown), so the
+ * caller can tell a sound card from a route to a sound server that may not be running. */
 int br_capture_devices(br_capture *capture, br_capture_on_device on_device, void *user)
 {
     ma_device_info *playback = NULL;
@@ -145,6 +203,7 @@ int br_capture_devices(br_capture *capture, br_capture_on_device on_device, void
     ma_uint32 playback_count = 0;
     ma_uint32 count = 0;
     ma_uint32 i;
+    char pcm_type[64];
     ma_result r = ma_context_get_devices(&capture->context, &playback, &playback_count, &devices, &count);
     if (r != MA_SUCCESS) {
         return r;
@@ -153,7 +212,13 @@ int br_capture_devices(br_capture *capture, br_capture_on_device on_device, void
         if (br_is_null_device(capture, &devices[i])) {
             continue;
         }
-        on_device(user, devices[i].name, devices[i].isDefault ? 1 : 0);
+        pcm_type[0] = '\0';
+#if defined(MA_HAS_ALSA)
+        if (capture->context.backend == ma_backend_alsa) {
+            br_alsa_pcm_type(capture, devices[i].id.alsa, pcm_type, sizeof(pcm_type));
+        }
+#endif
+        on_device(user, devices[i].name, devices[i].isDefault ? 1 : 0, pcm_type[0] != '\0' ? pcm_type : NULL);
     }
     return MA_SUCCESS;
 }

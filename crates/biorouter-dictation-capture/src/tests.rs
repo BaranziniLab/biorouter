@@ -475,6 +475,235 @@ fn a_real_probe_never_answers_with_the_null_backend() {
         .any(|d| d.name.starts_with("Discard all samples")));
 }
 
+fn listed(name: &str, default: bool, pcm_type: Option<&str>) -> Listed {
+    Listed {
+        device: Device {
+            name: name.into(),
+            default,
+        },
+        pcm_type: pcm_type.map(str::to_string),
+    }
+}
+
+/// What `rockylinux:9` lists once the CLI rpm is installed: its GTK dependency pulls in
+/// `pipewire-alsa` as a weak dependency, whose two PCMs ALSA offers as capture devices
+/// while no PipeWire runs in the container (measured in the package smoke, 2026-11-16).
+fn pipewire_alsa_routes() -> Vec<Listed> {
+    vec![
+        listed("PipeWire Sound Server", false, Some("pipewire")),
+        listed(
+            "Default ALSA Output (currently PipeWire Media Server)",
+            true,
+            Some("pipewire"),
+        ),
+    ]
+}
+
+/// The environment `vars` and the sockets at `sockets`, as `probe_from_listing` asks.
+fn machine<'a>(
+    vars: &'a [(&'a str, &'a str)],
+    sockets: &'a [&'a str],
+) -> (
+    impl Fn(&str) -> Option<std::ffi::OsString> + 'a,
+    impl Fn(&std::path::Path) -> bool + 'a,
+) {
+    (
+        move |name: &str| {
+            vars.iter()
+                .find(|(k, _)| *k == name)
+                .map(|(_, v)| std::ffi::OsString::from(v))
+        },
+        move |path: &std::path::Path| sockets.iter().any(|s| std::path::Path::new(s) == path),
+    )
+}
+
+fn alsa_probe(listing: Vec<Listed>, vars: &[(&str, &str)], sockets: &[&str]) -> Probe {
+    let (var, is_socket) = machine(vars, sockets);
+    probe_from_listing(
+        vec!["PulseAudio".into(), "ALSA".into()],
+        "ALSA".into(),
+        true,
+        listing,
+        &var,
+        &is_socket,
+    )
+}
+
+/// The CLI rpm's smoke container: ALSA answers with PipeWire's PCMs and no PipeWire is
+/// there to take their samples, so nothing can record and the status says
+/// `no_audio_system`, as it does in the Debian container, which lists no PCM at all.
+#[test]
+fn alsa_routes_to_a_pipewire_that_is_not_running_are_not_microphones() {
+    let probe = alsa_probe(pipewire_alsa_routes(), &[], &[]);
+    assert_eq!(probe.backend.as_deref(), Some("ALSA"));
+    assert_eq!(probe.devices, Vec::<Device>::new());
+    assert_eq!(probe.error, Some(ErrorCode::NoDevice));
+
+    // A runtime folder without PipeWire's socket in it is no PipeWire either.
+    let probe = alsa_probe(
+        pipewire_alsa_routes(),
+        &[("XDG_RUNTIME_DIR", "/run/user/1000")],
+        &["/run/user/1000/pulse/native"],
+    );
+    assert_eq!(probe.error, Some(ErrorCode::NoDevice), "{probe:?}");
+}
+
+/// With PipeWire's socket where a PipeWire client looks for it, the same PCMs record.
+#[test]
+fn alsa_routes_to_a_running_pipewire_are_microphones() {
+    let both = |probe: &Probe| {
+        assert_eq!(probe.error, None, "{probe:?}");
+        assert_eq!(
+            probe.devices,
+            pipewire_alsa_routes()
+                .into_iter()
+                .map(|l| l.device)
+                .collect::<Vec<_>>()
+        );
+    };
+    // The session's runtime folder.
+    both(&alsa_probe(
+        pipewire_alsa_routes(),
+        &[("XDG_RUNTIME_DIR", "/run/user/1000")],
+        &["/run/user/1000/pipewire-0"],
+    ));
+    // A system wide PipeWire, which a client falls back to after its runtime folder.
+    both(&alsa_probe(
+        pipewire_alsa_routes(),
+        &[("XDG_RUNTIME_DIR", "/run/user/1000")],
+        &["/run/pipewire/pipewire-0"],
+    ));
+    both(&alsa_probe(
+        pipewire_alsa_routes(),
+        &[],
+        &["/run/pipewire/pipewire-0"],
+    ));
+    // PIPEWIRE_RUNTIME_DIR comes before XDG_RUNTIME_DIR.
+    both(&alsa_probe(
+        pipewire_alsa_routes(),
+        &[
+            ("PIPEWIRE_RUNTIME_DIR", "/srv/pw"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+        ],
+        &["/srv/pw/pipewire-0"],
+    ));
+    // PIPEWIRE_REMOTE names the socket, as a name, a path, or a list of either.
+    both(&alsa_probe(
+        pipewire_alsa_routes(),
+        &[
+            ("PIPEWIRE_REMOTE", "lab-0"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+        ],
+        &["/run/user/1000/lab-0"],
+    ));
+    both(&alsa_probe(
+        pipewire_alsa_routes(),
+        &[("PIPEWIRE_REMOTE", "/tmp/pw/socket")],
+        &["/tmp/pw/socket"],
+    ));
+    both(&alsa_probe(
+        pipewire_alsa_routes(),
+        &[
+            ("PIPEWIRE_REMOTE", "[ \"pipewire-0-manager\", pipewire-0 ]"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+        ],
+        &["/run/user/1000/pipewire-0"],
+    ));
+}
+
+/// PipeWire reads only the first runtime folder that is set, then its system folder, so
+/// a socket in a later one is not where its client would connect.
+#[test]
+fn the_pipewire_socket_is_looked_for_where_pipewire_looks() {
+    let probe = alsa_probe(
+        pipewire_alsa_routes(),
+        &[
+            ("PIPEWIRE_RUNTIME_DIR", "/srv/pw"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+        ],
+        &["/run/user/1000/pipewire-0"],
+    );
+    assert_eq!(probe.error, Some(ErrorCode::NoDevice), "{probe:?}");
+    // PIPEWIRE_REMOTE replaces the default name.
+    let probe = alsa_probe(
+        pipewire_alsa_routes(),
+        &[
+            ("PIPEWIRE_REMOTE", "lab-0"),
+            ("XDG_RUNTIME_DIR", "/run/user/1000"),
+        ],
+        &["/run/user/1000/pipewire-0"],
+    );
+    assert_eq!(probe.error, Some(ErrorCode::NoDevice), "{probe:?}");
+}
+
+/// miniaudio asks PulseAudio before ALSA, through the libpulse the ALSA plugin would load,
+/// so on the ALSA backend no PulseAudio server answered and its route records nothing.
+#[test]
+fn an_alsa_route_to_pulseaudio_is_not_a_microphone_on_the_alsa_backend() {
+    let probe = alsa_probe(
+        vec![
+            listed("PulseAudio Sound Server", false, Some("pulse")),
+            listed("Default", true, Some("pulse")),
+        ],
+        &[("XDG_RUNTIME_DIR", "/run/user/1000")],
+        &["/run/user/1000/pulse/native"],
+    );
+    assert_eq!(probe.devices, Vec::<Device>::new());
+    assert_eq!(probe.error, Some(ErrorCode::NoDevice));
+}
+
+/// A sound card, and any PCM whose type is not a sound server's, is listed as before; a
+/// dead route beside it is dropped, so the card is what the probe offers.
+#[test]
+fn a_sound_card_is_listed_beside_a_route_that_does_not_answer() {
+    let probe = alsa_probe(
+        vec![
+            listed("PipeWire Sound Server", false, Some("pipewire")),
+            listed("HDA Intel PCH, ALC295 Analog", false, Some("hw")),
+            listed("USB microphone", false, None),
+            listed("Default", true, Some("pipewire")),
+        ],
+        &[],
+        &[],
+    );
+    assert_eq!(probe.error, None, "{probe:?}");
+    assert_eq!(
+        probe
+            .devices
+            .iter()
+            .map(|d| d.name.as_str())
+            .collect::<Vec<_>>(),
+        ["HDA Intel PCH, ALC295 Analog", "USB microphone"]
+    );
+}
+
+/// Only ALSA's routes are judged: another backend's devices carry no PCM type, and its
+/// own server already answered.
+#[test]
+fn other_backends_list_what_they_found() {
+    let (var, is_socket) = machine(&[], &[]);
+    let probe = probe_from_listing(
+        vec!["PulseAudio".into(), "ALSA".into()],
+        "PulseAudio".into(),
+        true,
+        vec![listed("Built-in microphone", true, None)],
+        &var,
+        &is_socket,
+    );
+    assert_eq!(probe.error, None);
+    assert_eq!(probe.devices.len(), 1);
+    // A listing that failed is still no device.
+    let probe = probe_from_listing(
+        vec!["CoreAudio".into()],
+        "CoreAudio".into(),
+        false,
+        vec![],
+        &var,
+        &is_socket,
+    );
+    assert_eq!(probe.error, Some(ErrorCode::NoDevice));
+}
+
 /// DD-73's escape hatch: the recorder command's stdout is read as s16le, 16 kHz, mono, and
 /// its end, unasked, is a lost device.
 #[cfg(unix)]
