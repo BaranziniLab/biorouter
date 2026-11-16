@@ -463,7 +463,48 @@ pub fn person_model_names_in_sentence(text: &str) -> String {
     })
 }
 
+/// A model as a command takes it, for a model inside a backtick span: the
+/// text there is something to paste, and `joey-1 (Baseten)` is not a value a
+/// shell or `--decision-model` takes. A known Baseten slug is written by its
+/// alias (`baseten_decision/joey-1`, as `decision_tier::cli_words` writes it),
+/// any other model as written.
+fn pasteable_model(model: &DecisionModelRef) -> String {
+    let known = (model.provider == BASETEN_DECISION_PROVIDER)
+        .then(|| {
+            biorouter::providers::decision::catalog::BASETEN_DECISION_MODELS
+                .iter()
+                .find(|known| known.slug == model.model)
+        })
+        .flatten();
+    match known {
+        Some(known) => terminal_text(&format!("{}/{}", model.provider, known.name)),
+        None => terminal_text(&model.label()),
+    }
+}
+
+/// Every `provider/model` in `text` named by `name`, except inside a backtick
+/// span, where it stays pasteable ([`pasteable_model`]). A backtick with no
+/// partner opens no span.
 fn replace_model_ids(text: &str, name: impl Fn(&DecisionModelRef) -> String) -> String {
+    let pieces: Vec<&str> = text.split('`').collect();
+    // An odd number of pieces means every backtick has its partner.
+    let paired = pieces.len() % 2 == 1;
+    let last = pieces.len() - 1;
+    pieces
+        .iter()
+        .enumerate()
+        .map(|(i, piece)| {
+            if i % 2 == 1 && (paired || i != last) {
+                replace_model_ids_in(piece, pasteable_model)
+            } else {
+                replace_model_ids_in(piece, &name)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("`")
+}
+
+fn replace_model_ids_in(text: &str, name: impl Fn(&DecisionModelRef) -> String) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     loop {
@@ -2100,6 +2141,45 @@ pub(crate) mod tests {
             lines[1]
         );
         assert!(!lines[1].contains("this computer"), "{}", lines[1]);
+    }
+
+    /// W1-20: the refusal's way out is a command to paste, and the CLI turned
+    /// the model in it into the person's form: `biorouter session
+    /// --decision-model joey-1 (Baseten)`, which a shell cannot run. A model
+    /// inside a backtick span is something to type, so it keeps the
+    /// `provider/alias` form `--decision-model` takes; prose is still renamed.
+    #[test]
+    fn a_backticked_command_keeps_a_pasteable_model() {
+        let refusal = "The decision model baseten_decision/joey-1 is public. Choose a model on \
+                       this computer (`biorouter models decision list` shows them), or start \
+                       a new chat with `biorouter session --decision-model \
+                       baseten_decision/joey-1`.";
+        assert_eq!(
+            person_model_names_in_sentence(refusal),
+            "The decision model joey-1 (Baseten) is public. Choose a model on this computer \
+             (`biorouter models decision list` shows them), or start a new chat with \
+             `biorouter session --decision-model baseten_decision/joey-1`."
+        );
+        // A slug inside a code span becomes the alias, still pasteable.
+        assert_eq!(
+            person_model_names_in_sentence(
+                "run `biorouter session --decision-model \
+                 baseten_decision/decision-models/baseten-joey-2b-latest` instead"
+            ),
+            "run `biorouter session --decision-model baseten_decision/joey-1` instead"
+        );
+        // The `·` form follows the same rule.
+        assert_eq!(
+            person_model_names(
+                "Default baseten_decision/joey-1; set it with `--model baseten_decision/joey-1`"
+            ),
+            "Default joey-1 · Baseten; set it with `--model baseten_decision/joey-1`"
+        );
+        // A lone backtick opens no code span: the rest is still prose.
+        assert_eq!(
+            person_model_names_in_sentence("a ` then baseten_decision/joey-1 ran"),
+            "a ` then joey-1 (Baseten) ran"
+        );
     }
 
     /// R3: a model a person reads (not one they type back) is its alias and

@@ -546,11 +546,18 @@ pub fn render_monitors(session_id: &str, settings: &DecisionSettings) -> Vec<Str
             let owner = owner_text(monitor)
                 .map(|owner| format!(" · {owner}"))
                 .unwrap_or_default();
+            // The id is what `remove`, `pass` and `retry` take, so it is
+            // always shown; the name only when it says something the id does
+            // not (`--name costly` has the id `costly`).
+            let name = if monitor.name == monitor.id {
+                String::new()
+            } else {
+                format!("  {}", clip(&monitor.name, MAX_NAME_CHARS))
+            };
             out.push(format!(
-                "  {}. {}  {}  {state}{owner}",
+                "  {}. {}{name}  {state}{owner}",
                 i + 1,
                 clip(&monitor.id, 80),
-                clip(&monitor.name, MAX_NAME_CHARS)
             ));
             out.push(format!(
                 "     {}",
@@ -1514,6 +1521,35 @@ mod tests {
             .contains("no monitors"));
     }
 
+    /// W1-16: a monitor added as `--name costly` gets the id `costly`, and the
+    /// list printed the same word twice ("1. costly  costly  on"). The id is
+    /// what `remove` takes, so it stays; the name is printed only when it says
+    /// something the id does not.
+    #[test]
+    fn a_monitor_named_like_its_id_is_listed_once() {
+        let monitor = build_monitor(
+            &add(&[
+                "--name",
+                "costly",
+                "--ask",
+                "Is the agent about to spend money?",
+                "--threshold",
+                "0.8",
+                "--action",
+                "stop",
+            ]),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(monitor.id, "costly");
+        let settings = DecisionSettings {
+            default_model: None,
+            monitors: vec![monitor],
+        };
+        let lines = render_monitors("s1", &settings);
+        assert_eq!(lines[1], "  1. costly  on");
+    }
+
     #[test]
     fn the_list_reads_as_a_sentence_per_monitor() {
         let mut monitor = build_monitor(
@@ -1954,9 +1990,10 @@ mod tests {
             lines[1],
             "  1. off-task  Off task  on · set by the agent of chat 20261106_1"
         );
+        // `--name rm` has the id `rm`, so the name is not printed twice (W1-16).
         assert_eq!(
             lines[4],
-            "  2. rm  rm  on · from the chat that started this subagent (20261106_1)"
+            "  2. rm  on · from the chat that started this subagent (20261106_1)"
         );
 
         let before = serde_json::to_value(&settings.monitors).unwrap();

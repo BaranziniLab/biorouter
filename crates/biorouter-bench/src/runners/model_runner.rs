@@ -2,7 +2,7 @@ use crate::bench_config::{BenchEval, BenchModel, BenchRunConfig};
 use crate::eval_suites::EvaluationSuite;
 use crate::reporting::{BenchmarkResults, SuiteResult};
 use crate::runners::eval_runner::EvalRunner;
-use crate::utilities::{await_process_exits, parallel_bench_cmd};
+use crate::utilities::{await_process_exits, first_failure, parallel_bench_cmd};
 use anyhow::{Context, Result};
 use dotenvy::from_path_iter;
 use std::collections::HashMap;
@@ -43,19 +43,29 @@ impl ModelRunner {
             });
             handles.push(handle);
         }
-        await_process_exits(&mut Vec::new(), handles);
+        // Every repeat is waited for, and every result that was written is
+        // collected, before a failure is reported: a run whose eval crashed or
+        // wrote no results is a failed run, not a successful one with nothing in it.
+        let ran = await_process_exits(&mut Vec::new(), handles);
 
         let mut all_runs_results: Vec<BenchmarkResults> = Vec::new();
+        let mut collected = Vec::new();
         for i in 0..self.config.repeat.unwrap_or(1) {
             match self.collect_run_results(model.clone(), suites.clone(), i.to_string()) {
                 Ok(run_results) => all_runs_results.push(run_results),
                 Err(e) => {
-                    tracing::error!("Failed to collect results for run {}: {}", i, e)
+                    tracing::error!("Failed to collect results for run {}: {}", i, e);
+                    collected.push(Err(e.context(format!(
+                        "Failed to collect the results of run {i} of {}",
+                        model.name
+                    ))));
                 }
             }
         }
 
-        Ok(())
+        // A failed run's results are missing because it failed; that is one
+        // failure, not a second one.
+        ran.and_then(|()| first_failure(collected))
     }
 
     fn run_benchmark(
@@ -80,6 +90,7 @@ impl ModelRunner {
 
         // Only run in parallel if the model is parallel_safe
         let run_parallel = model.parallel_safe;
+        let mut outcomes: Vec<Result<()>> = Vec::new();
 
         for (suite, evals) in suites.iter() {
             results_handles.insert((*suite).clone(), Vec::new());
@@ -122,18 +133,25 @@ impl ModelRunner {
 
                 let handle = parallel_bench_cmd("exec-eval".to_string(), cfg, envs.clone());
 
-                // Wait for this process to complete before starting the next one
+                // Wait for this process to complete before starting the next one.
+                // A failed eval does not stop the others; the run fails at the end.
                 let mut child_procs = vec![handle];
-                await_process_exits(&mut child_procs, Vec::new());
+                outcomes.push(
+                    await_process_exits(&mut child_procs, Vec::new())
+                        .with_context(|| format!("The eval {} failed", eval_selector.selector)),
+                );
             }
         }
 
         // Wait for any remaining parallel processes to complete
-        for (_, child_procs) in results_handles.iter_mut() {
-            await_process_exits(child_procs, Vec::new());
+        for (suite, child_procs) in results_handles.iter_mut() {
+            outcomes.push(
+                await_process_exits(child_procs, Vec::new())
+                    .with_context(|| format!("An eval of the suite {suite} failed")),
+            );
         }
 
-        Ok(())
+        first_failure(outcomes)
     }
 
     fn collect_run_results(

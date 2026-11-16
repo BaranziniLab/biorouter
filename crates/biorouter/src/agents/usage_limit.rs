@@ -803,6 +803,11 @@ fn next_request_sentence(hit: &LimitHit, limit_text: &str) -> Option<String> {
 /// stored in whichever chat reached it, which may be a public one whose
 /// transcript a caller holding only the daemon secret can read; the usage
 /// routes give that total only to a caller with the user-action proof.
+///
+/// The notice is shown wherever a turn runs, the terminal included, and a
+/// limit is changed only in the desktop app (the cost under the composer, or
+/// Settings > App > Usage), so it says where: "in the Biorouter app". It told
+/// a terminal user to use a composer they do not have (W1-14).
 pub fn stop_notice(hit: &LimitHit) -> String {
     let (used, limit) = hit.amount.texts();
     let next = next_request_sentence(hit, &limit)
@@ -810,8 +815,8 @@ pub fn stop_notice(hit: &LimitHit) -> String {
         .unwrap_or_default();
     match (hit.scope, hit.source) {
         (LimitScope::Month, _) => format!(
-            "{MONTH_LIMIT_REACHED_PREFIX}{state}{next} To continue, raise or lift it in \
-             Settings > App > Usage. The month resets on the 1st, local time.",
+            "{MONTH_LIMIT_REACHED_PREFIX}{state}{next} To continue, raise or lift it in the \
+             Biorouter app, under Settings > App > Usage. The month resets on the 1st, local time.",
             state = if hit.next_request.is_some() {
                 format!("the monthly limit for {} is {limit}.", hit.month)
             } else {
@@ -820,12 +825,14 @@ pub fn stop_notice(hit: &LimitHit) -> String {
         ),
         (LimitScope::Chat, LimitSource::Default) => format!(
             "{CHAT_LIMIT_REACHED_PREFIX}{used} used, of the default per-chat limit of {limit}.\
-             {next} To continue, raise or lift the default in Settings > App > Usage, \
-             or set this chat's own limit from the cost at the lower right of the composer."
+             {next} To continue, raise or lift the default in the Biorouter app, under \
+             Settings > App > Usage, or set this chat's own limit from the cost at the lower right \
+             of the composer."
         ),
         (LimitScope::Chat, _) => format!(
             "{CHAT_LIMIT_REACHED_PREFIX}{used} used, of its limit of {limit}.{next} \
-             To continue, raise or lift the limit from the cost at the lower right of the composer."
+             To continue, raise or lift the limit in the Biorouter app, from the cost at the \
+             lower right of the composer."
         ),
     }
 }
@@ -1672,7 +1679,13 @@ mod tests {
         assert!(text.starts_with(CHAT_LIMIT_REACHED_PREFIX));
         assert!(text.contains("1,020,000 tokens used"), "{text}");
         assert!(text.contains("1,000,000 tokens"), "{text}");
-        assert!(text.contains("lower right of the composer"), "{text}");
+        assert!(
+            text.ends_with(
+                "To continue, raise or lift the limit in the Biorouter app, from the cost at the \
+                 lower right of the composer."
+            ),
+            "{text}"
+        );
 
         let default = LimitHit {
             source: LimitSource::Default,
@@ -1709,6 +1722,56 @@ mod tests {
         ] {
             assert!(!text.contains('\u{2014}'), "no em dash in copy: {text}");
         }
+    }
+
+    /// W1-14: the stop notice is shown in every surface that runs a turn, the
+    /// terminal included, and the limit can be changed only in the desktop app
+    /// (the cost under the composer, or Settings > App > Usage). Each notice says
+    /// so, so a terminal user is not sent to a control their surface lacks.
+    #[test]
+    fn the_stop_notice_says_it_is_set_in_the_app() {
+        let chat = LimitHit {
+            scope: LimitScope::Chat,
+            source: LimitSource::Chat,
+            amount: LimitAmount::Tokens {
+                used: 33_019,
+                limit: 5,
+            },
+            month: "2026-11".to_string(),
+            next_request: None,
+        };
+        assert_eq!(
+            stop_notice(&chat),
+            "Usage limit reached for this chat: 33,019 tokens used, of its limit of 5 tokens. \
+             To continue, raise or lift the limit in the Biorouter app, from the cost at the \
+             lower right of the composer."
+        );
+        let default = LimitHit {
+            source: LimitSource::Default,
+            ..chat.clone()
+        };
+        assert!(
+            stop_notice(&default).ends_with(
+                "To continue, raise or lift the default in the Biorouter app, under Settings > \
+                 App > Usage, or set this chat's own limit from the cost at the lower right of \
+                 the composer."
+            ),
+            "{}",
+            stop_notice(&default)
+        );
+        let month = LimitHit {
+            scope: LimitScope::Month,
+            source: LimitSource::None,
+            ..chat.clone()
+        };
+        assert!(
+            stop_notice(&month).ends_with(
+                "To continue, raise or lift it in the Biorouter app, under Settings > App > \
+                 Usage. The month resets on the 1st, local time."
+            ),
+            "{}",
+            stop_notice(&month)
+        );
     }
 
     /// The month's total sums every chat, private ones included, and only a

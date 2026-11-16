@@ -85,8 +85,11 @@ estimate of the request about to be sent, with the limits in force.
 - **At 100%** the turn ends there. No further model request is made, and no wrap-up
   request either, because that would spend past the limit too. The chat stores a notice
   that names the limit, the limit's size and, for a chat limit, the amount used, and says
-  where to raise or lift it: the cost in the composer for a chat limit, Settings > App >
-  Usage for the default or the monthly limit.
+  where to raise or lift it in the Biorouter app: the cost in the composer for a chat
+  limit, Settings > App > Usage for the default or the monthly limit. The notice is the
+  same wherever the turn ran, and the terminal has no command that sets a limit, so a
+  chat stopped in the terminal reads, for example, "To continue, raise or lift the limit
+  in the Biorouter app, from the cost at the lower right of the composer."
 - **A monthly notice names the monthly limit, never the month's total.** The total sums
   every chat, private and deleted ones included, and the notice is stored in whichever
   chat reached the limit, which may be a public one. So it says the monthly limit is near

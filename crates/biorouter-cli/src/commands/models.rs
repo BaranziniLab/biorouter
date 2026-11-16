@@ -203,11 +203,17 @@ pub async fn handle_models_list(provider_name: String, format: &str) -> Result<(
     Ok(())
 }
 
-/// Compact human-readable context window, e.g. `1,050,000` → `1.05M`, `200000`
-/// → `200K`.
+/// Compact human-readable context window, e.g. `1,050,000` → `1.1M`,
+/// `1,000,000` → `1M`, `200000` → `200K`. Millions take one decimal, and none
+/// for a whole number of them, as the desktop's context ring writes them
+/// (`fmt` in `ContextWindowIndicator.tsx`), so a window reads the same on both.
 fn human_context(tokens: usize) -> String {
     if tokens >= 1_000_000 {
-        format!("{:.2}M", tokens as f64 / 1_000_000.0)
+        if tokens.is_multiple_of(1_000_000) {
+            format!("{}M", tokens / 1_000_000)
+        } else {
+            format!("{:.1}M", tokens as f64 / 1_000_000.0)
+        }
     } else if tokens >= 1_000 {
         format!("{}K", tokens / 1_000)
     } else {
@@ -765,5 +771,25 @@ mod local_model_tests {
             ("ollama", Some(blob))
         );
         assert_eq!(launch_source_label(None, None), ("none", None));
+    }
+}
+
+#[cfg(test)]
+mod context_size_tests {
+    use super::human_context;
+
+    /// W1-49: the models list printed 1,050,000 as `1.05M` where the desktop's
+    /// context ring and the session's status line print `1.1M`, and 1,048,576
+    /// as `1.05M` where the ring prints `1.0M`. One decimal, and a whole number
+    /// of millions without one, as the ring writes it.
+    #[test]
+    fn window_sizes_use_one_decimal_like_the_ring() {
+        assert_eq!(human_context(1_050_000), "1.1M");
+        assert_eq!(human_context(1_048_576), "1.0M");
+        assert_eq!(human_context(1_000_000), "1M");
+        assert_eq!(human_context(2_000_000), "2M");
+        assert_eq!(human_context(1_999_990), "2.0M");
+        assert_eq!(human_context(200_000), "200K");
+        assert_eq!(human_context(512), "512");
     }
 }

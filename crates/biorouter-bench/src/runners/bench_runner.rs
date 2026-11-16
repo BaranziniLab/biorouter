@@ -2,7 +2,7 @@ use crate::bench_config::{BenchModel, BenchRunConfig};
 use crate::bench_work_dir::BenchmarkWorkDir;
 use crate::eval_suites::EvaluationSuite;
 use crate::runners::model_runner::ModelRunner;
-use crate::utilities::{await_process_exits, parallel_bench_cmd};
+use crate::utilities::{await_process_exits, first_failure, parallel_bench_cmd};
 use anyhow::Context;
 use std::path::PathBuf;
 
@@ -60,15 +60,28 @@ impl BenchRunner {
             parallel_models_handle.push(model_handle);
         }
 
-        // exec serial models
+        // exec serial models. One that fails does not stop the others, and the
+        // parallel ones are waited for either way; the run fails at the end, so
+        // `bench run` exits non-zero when any model's evals did not run.
+        let mut outcomes = Vec::new();
         for model in serial_models {
             self.config.models = vec![model.clone()];
-            ModelRunner::from(self.config.to_string()?)?.run()?;
+            let ran = self
+                .config
+                .to_string()
+                .and_then(ModelRunner::from)
+                .and_then(|runner| runner.run());
+            outcomes.push(
+                ran.with_context(|| format!("The model {}/{} failed", model.provider, model.name)),
+            );
         }
 
-        await_process_exits(&mut parallel_models_handle, Vec::new());
+        outcomes.push(
+            await_process_exits(&mut parallel_models_handle, Vec::new())
+                .context("A model run in parallel failed"),
+        );
 
-        Ok(())
+        first_failure(outcomes)
     }
 
     pub fn list_selectors(_config: Option<PathBuf>) -> anyhow::Result<()> {
