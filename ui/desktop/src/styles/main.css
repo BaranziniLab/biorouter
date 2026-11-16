@@ -483,6 +483,12 @@
      longer describes. */
   --tab-min-width: 136px;
 
+  /* Rung 5's floor: the box a compact pane keeps its hidden chat laid out in.
+     Mirrors PANE_MIN_WIDTH and PANE_MIN_HEIGHT in yieldLadder.ts, and
+     styles/paneFloor.test.ts pins the two together. */
+  --pane-min-width: 360px;
+  --pane-min-height: 270px;
+
   /* The height of a scroller's top scroll-edge fade (`.biorouter-scroll-fade-top`,
      authored below). 10px is the middle of the 8-12px band: tall enough that a
      row clipped to its last pixel is gone rather than reduced to a hairline,

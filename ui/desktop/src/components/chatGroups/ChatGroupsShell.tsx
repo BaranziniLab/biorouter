@@ -20,6 +20,12 @@ import { forgetTabStripMemories, tabStripMemoryFor, type TabStripMemories } from
 import { Plus } from '../icons/app-icons';
 import { ChatGroupSplitter } from './ChatGroupSplitter';
 import { ChatDropOverlay, ChatTabGhost } from './ChatDropOverlay';
+import { ChatPaneFrame } from './ChatPaneFrame';
+import { CompactPane, type CompactPaneInputs, type PaneIdentity } from './CompactPane';
+import type { PaneResize } from './paneGrowPlan';
+import { tabKindSource, tabShownTitle } from './tabIdentity';
+import { ChatKindIcon } from '../chats/ChatKindIcon';
+import type { ChatKindSource } from '../chats/chatKind';
 import { ChatTabDragProvider } from './ChatTabDragContext';
 import { useTabDragReorder } from './useTabDragReorder';
 import { CrossWindowPhase, ScreenPoint, payloadFromTab } from './tabTearOff';
@@ -31,13 +37,13 @@ import {
 } from './tabTearOffBridge';
 import { DropTarget } from './dropZones';
 import { groupCountOf } from './chatGroupsLayout';
-import { GroupLayoutSnapshot, snapshotGroupLayout } from './chatGroupsReducer';
-import { firstLeaf, leafGroupIds, GroupLayout, ChatGroupId } from './chatGroupsTypes';
+import { DEFAULT_TAB_TITLE, GroupLayoutSnapshot, snapshotGroupLayout } from './chatGroupsReducer';
+import { firstLeaf, leafGroupIds, GroupLayout, ChatGroupId, ChatTab } from './chatGroupsTypes';
 import { isDefaultSessionName } from '../../utils/sessionNameSync';
 import { splitSnapshotIsStale, splitYieldAction, splitYieldSample } from '../Layout/yieldLadder';
 import { useIsMobile } from '../../hooks/use-mobile';
 import { useSidebar } from '../ui/sidebar';
-import { SIDEBAR_COMPACT_TITLE_WIDTH } from '../Layout/TitlebarControls';
+import { SIDEBAR_COMPACT_TITLE_WIDTH, getTitlebarControlReserve } from '../Layout/TitlebarControls';
 import { setFocusedChatSession } from '../../utils/extensionErrorUtils';
 import {
   getCachedSessionList,
@@ -1371,6 +1377,68 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
     // each the width of its pane, never a bar spanning the whole window.
     const groupTabKeys = [...group.tabs.map((t) => t.tabId), `${groupId}-empty`];
 
+    // Rung 5: what this pane's placeholder shows and does if the split leaves it
+    // too small for its chat. The same inputs the strip reads, so a compact
+    // pane's glyph and title can never disagree with its tab.
+    const annotations = groups.tabAnnotations ?? {};
+    const kindSourceOf = (tab: ChatTab): ChatKindSource =>
+      tabKindSource(
+        tab,
+        annotations[tab.sessionId],
+        rowSessionTypes[tab.sessionId],
+        sessionWorkingDirs[tab.sessionId]
+      );
+    const identity: PaneIdentity = activeTab
+      ? {
+          title: tabShownTitle(kindSourceOf(activeTab), rowSessionRoles[activeTab.sessionId]),
+          kindSource: kindSourceOf(activeTab),
+          tier: privacyTiers[activeTab.sessionId],
+          sessionId: activeTab.sessionId,
+        }
+      : {
+          title: DEFAULT_TAB_TITLE,
+          kindSource: { name: DEFAULT_TAB_TITLE },
+          tier: undefined,
+          sessionId: '',
+        };
+    const compact: CompactPaneInputs = {
+      identity,
+      tabMenu: {
+        tabs: group.tabs,
+        activeTabId: group.activeTabId,
+        runningSessionIds: groups.runningSessionIds ?? [],
+        onSelectTab: handleSelect,
+        renderGlyph: (tab) => (
+          <ChatKindIcon
+            session={kindSourceOf(tab)}
+            tier={privacyTiers[tab.sessionId]}
+            className="h-4 w-4"
+          />
+        ),
+        titleOf: (tab) => tabShownTitle(kindSourceOf(tab), rowSessionRoles[tab.sessionId]),
+      },
+      layout,
+      treeRef,
+      bandInsetStart:
+        reserveTitlebarControls && groupId === reservedGroupId
+          ? getTitlebarControlReserve(true)
+          : 0,
+      // The person asked for room for THIS pane: it becomes the active one, and
+      // the branches move in one batch, so the layout commits and persists once.
+      onGrow: (plan: PaneResize[]) => {
+        dispatch?.({ type: 'setActiveGroup', groupId });
+        for (const entry of plan) {
+          dispatch?.({ type: 'resizeBranch', path: entry.path, sizes: entry.sizes });
+        }
+      },
+      // Every tab moves into this pane and none closes. No snapshot is taken:
+      // the person chose it, so rung 4 must not undo it.
+      onMerge: () => {
+        dispatch?.({ type: 'setActiveGroup', groupId });
+        dispatch?.({ type: 'mergeAllGroups' });
+      },
+    };
+
     const strip = (
       <ChatTabStrip
         tabs={group.tabs}
@@ -1448,6 +1516,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         renderSessionTitle={() => strip}
         onChatChange={onChatChange}
         onSessionLoaded={handleSessionLoaded}
+        compact={compact}
       />
     );
   };
@@ -1467,12 +1536,13 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
     <ChatTabDragProvider value={drag}>
       <div className="flex h-full min-h-0 w-full flex-col">
         {/* treeRef: rung 4 measures the room the GROUPS have, which the sidebar
-            can change without the window moving. */}
+            can change without the window moving, and a compact pane's Make
+            wider plans in the same box (rung 5). */}
         {/* Terminals render INSIDE their pane now (see ChatGroupPane), not here
             at the shell as a full-width bar below every group. A terminal belongs
             to one pane, is the width of that pane, and a split can show several
             at once — each scoped to its own session's working directory. */}
-        <div ref={treeRef} className="flex min-h-0 flex-1">
+        <div ref={treeRef} data-chat-groups-tree="" className="flex min-h-0 flex-1">
           {tree}
         </div>
       </div>
@@ -1574,11 +1644,15 @@ interface ChatGroupPaneProps {
   onSessionLoaded: (
     session: { id: string; name: string; userSetName: boolean; workingDir?: string } | null
   ) => void;
+  /** What the pane shows and does while the split leaves it too small (rung 5). */
+  compact: CompactPaneInputs;
 }
 
 /**
  * One group: the drop hit-test target, the focus target, and the host for its
- * active tab's chat.
+ * active tab's chat. Its box is `ChatPaneFrame`, which shows the compact
+ * placeholder in place of the chat when the split leaves it under 360 by 270,
+ * and keeps the chat mounted behind it.
  */
 function ChatGroupPane({
   groupId,
@@ -1597,6 +1671,7 @@ function ChatGroupPane({
   renderSessionTitle,
   onChatChange,
   onSessionLoaded,
+  compact,
 }: ChatGroupPaneProps) {
   // Extensions load per-session, so in a 4-way split four chats each finish
   // their own load and each has something to report. Telling the toast layer
@@ -1629,18 +1704,15 @@ function ChatGroupPane({
   };
 
   return (
-    <div
+    <ChatPaneFrame
       // The drag hit-test looks for exactly this attribute
       // (dropZones.dropTargetAtPoint). It must sit on the element whose
       // getBoundingClientRect IS the group's box, or the zones would be measured
-      // against the wrong rectangle and the tint would land off the group.
+      // against the wrong rectangle and the tint would land off the group. The
+      // frame's root is that element, compact or not: rung 5 measures the same
+      // box.
       data-chat-group-id={groupId}
       data-active-group={isActiveGroup ? 'true' : 'false'}
-      // flex COLUMN: the chat fills the pane and this pane's terminal (if any)
-      // stacks below it, inside the pane — so the terminal is the pane's width,
-      // not the window's. The box is still exactly the group's rectangle, which
-      // is what the drag hit-test measures against.
-      className="relative flex min-h-0 min-w-0 flex-1 flex-col"
       // CAPTURE phase, both: clicking anywhere in a group focuses it, including
       // on controls that stopPropagation on the bubble (the composer's buttons,
       // the strip's close ×). Focus must not depend on WHERE in the pane you
@@ -1648,66 +1720,85 @@ function ChatGroupPane({
       // focuses its group without any pointer at all.
       onPointerDownCapture={() => onFocusGroup(groupId)}
       onFocusCapture={() => onFocusGroup(groupId)}
-    >
-      <div
-        className="flex min-h-0 min-w-0 flex-1"
-        data-tab-content={tabSwitched ? 'switched' : undefined}
-        onAnimationEnd={onTabContentAnimationEnd}
-      >
-        <BaseChat
-          key={tabKey}
-          // Scopes this tab's terminal. Same id as the React key, so the terminal
-          // is tied to the tab, not the (rebindable) session.
-          terminalKey={tabKey}
-          setChat={onChatChange}
-          sessionId={sessionId}
-          initialMessage={initialMessage}
-          initialAttachments={initialAttachments}
-          onInitialMessageConsumed={onInitialMessageConsumed}
-          suppressEmptyState={false}
-          suppressGreeting={suppressGreeting}
-          renderSessionTitle={renderSessionTitle}
-          onSessionUpdate={onSessionLoaded}
-          // The preview panel follows the ACTIVE group. State is kept, only the
-          // render is gated — see BaseChat's artifactPanelEnabled doc.
-          artifactPanelEnabled={isActiveGroup}
-          // A session-scoped chat must never resize the OS window once it is not
-          // the only one: a background group opening an artifact would resize the
-          // window out from under the group you are actually looking at.
-          allowWindowResize={groupCount === 1}
-          // Only the focused pane's composer takes the caret when it mounts.
-          // Every pane mounts at once when /pair is rebuilt, and a focus inside
-          // a pane makes it the focused one (`onFocusCapture` above), so the
-          // LAST pane used to win the caret and the focus — whichever pane an
-          // arrival had just focused, and whichever the person had left.
-          autoFocusComposer={isActiveGroup && !isTabKeyboardFocusPending(tabKey)}
+      // A lone pane is never replaced: nothing could give it room back.
+      alone={groupCount === 1}
+      // The frame wraps all of this in one always-rendered flex column, so the
+      // chat fills the pane and this pane's terminal (if any) stacks below it,
+      // inside the pane, exactly as before. Compact or full, it is the same
+      // element in the same place, so nothing here remounts.
+      content={
+        <>
+          <div
+            className="flex min-h-0 min-w-0 flex-1"
+            data-tab-content={tabSwitched ? 'switched' : undefined}
+            onAnimationEnd={onTabContentAnimationEnd}
+          >
+            <BaseChat
+              key={tabKey}
+              // Scopes this tab's terminal. Same id as the React key, so the terminal
+              // is tied to the tab, not the (rebindable) session.
+              terminalKey={tabKey}
+              setChat={onChatChange}
+              sessionId={sessionId}
+              initialMessage={initialMessage}
+              initialAttachments={initialAttachments}
+              onInitialMessageConsumed={onInitialMessageConsumed}
+              suppressEmptyState={false}
+              suppressGreeting={suppressGreeting}
+              renderSessionTitle={renderSessionTitle}
+              onSessionUpdate={onSessionLoaded}
+              // The preview panel follows the ACTIVE group. State is kept, only the
+              // render is gated — see BaseChat's artifactPanelEnabled doc.
+              artifactPanelEnabled={isActiveGroup}
+              // A session-scoped chat must never resize the OS window once it is not
+              // the only one: a background group opening an artifact would resize the
+              // window out from under the group you are actually looking at.
+              allowWindowResize={groupCount === 1}
+              // Only the focused pane's composer takes the caret when it mounts.
+              // Every pane mounts at once when /pair is rebuilt, and a focus inside
+              // a pane makes it the focused one (`onFocusCapture` above), so the
+              // LAST pane used to win the caret and the focus — whichever pane an
+              // arrival had just focused, and whichever the person had left.
+              autoFocusComposer={isActiveGroup && !isTabKeyboardFocusPending(tabKey)}
+            />
+          </div>
+          {/* This pane's OWN terminals, stacked below its chat inside the pane's
+              flex column — so a terminal is the width of its pane and belongs to
+              exactly one pane, never a full-window bar. Every terminal in the group
+              stays mounted so its shell keeps running; only the one whose tab is
+              active in THIS pane is visible (open). `onClose` HIDES a terminal (its
+              panes live on); `onEmptied`, fired when its last pane closes, DESTROYS
+              it. Each reads its own frozen cwd — its tab's session folder, captured
+              on open. */}
+          {terminalDock?.terminals
+            .filter((terminal) => groupTabKeys.includes(terminal.key))
+            .map((terminal) => (
+              <InAppTerminalDock
+                key={terminal.key}
+                // Also its scope for "Run this code block": a Run clicked in this
+                // tab's transcript must land in THIS terminal, not in whichever
+                // pane happens to hold focus.
+                dockKey={terminal.key}
+                open={terminal.showing && terminal.key === tabKey}
+                workingDir={terminal.workingDir}
+                onClose={() => terminalDock.setOpen(terminal.key, false)}
+                onEmptied={() => terminalDock.remove(terminal.key)}
+              />
+            ))}
+        </>
+      }
+      renderCompact={({ answer, animateIn }) => (
+        <CompactPane
+          {...compact}
+          groupId={groupId}
+          tabKey={tabKey}
+          isActiveGroup={isActiveGroup}
+          shortfall={answer.shortfall ?? 'both'}
+          animateIn={animateIn}
         />
-      </div>
-      {/* This pane's OWN terminals, stacked below its chat inside the pane's
-          flex column — so a terminal is the width of its pane and belongs to
-          exactly one pane, never a full-window bar. Every terminal in the group
-          stays mounted so its shell keeps running; only the one whose tab is
-          active in THIS pane is visible (open). `onClose` HIDES a terminal (its
-          panes live on); `onEmptied`, fired when its last pane closes, DESTROYS
-          it. Each reads its own frozen cwd — its tab's session folder, captured
-          on open. */}
-      {terminalDock?.terminals
-        .filter((terminal) => groupTabKeys.includes(terminal.key))
-        .map((terminal) => (
-          <InAppTerminalDock
-            key={terminal.key}
-            // Also its scope for "Run this code block": a Run clicked in this
-            // tab's transcript must land in THIS terminal, not in whichever
-            // pane happens to hold focus.
-            dockKey={terminal.key}
-            open={terminal.showing && terminal.key === tabKey}
-            workingDir={terminal.workingDir}
-            onClose={() => terminalDock.setOpen(terminal.key, false)}
-            onEmptied={() => terminalDock.remove(terminal.key)}
-          />
-        ))}
-      {dropZone && <ChatDropOverlay zone={dropZone} />}
-    </div>
+      )}
+      overlay={dropZone ? <ChatDropOverlay zone={dropZone} /> : null}
+    />
   );
 }
 
