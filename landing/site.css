@@ -325,6 +325,36 @@ table.plain tr > :last-child { padding-right: 0; }
 .art-caption .k { font-size: var(--fs-md); }
 .art-caption p { color: var(--muted); font-size: var(--fs-md); line-height: 1.65; margin: 8px 0 0; max-width: 480px; }
 
+/* ── Feature tiles: a 4:3 animation over a short caption ── */
+/* Three across, two at 980px, one at 600px (the home page's Capabilities).
+   .features-5 lays out five: 3 + 2 with the second row centred, then 2 + 2 + 1
+   with the last one centred, then one column. Each tile keeps the width it
+   has in .features, so the animations see the sizes they were drawn for. */
+.features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 40px 24px; }
+.feature { margin: 0; display: flex; flex-direction: column; }
+.art-tile { aspect-ratio: 4 / 3; }
+.feature figcaption { flex: 1 1 auto; display: flex; flex-direction: column; padding-top: 16px; }
+.feature h3 { font-size: var(--fs-h3); line-height: var(--lh-h3); font-weight: 400; letter-spacing: var(--tr-h); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.feature p { color: var(--muted); font-size: var(--fs-md); line-height: 1.6; margin: 8px 0 0; max-width: 340px; }
+/* A caption may end with where to get it. The links of one row share a line,
+   however many lines the sentences above them take. */
+.feature figcaption p:not(:last-child) { margin-bottom: 12px; }
+.feature .text-link { margin-top: auto; align-self: flex-start; }
+.features-5 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+.features-5 > .feature { grid-column: span 2; }
+.features-5 > .feature:nth-child(4) { grid-column: 2 / span 2; }
+.features-5 > .feature:nth-child(5) { grid-column: 4 / span 2; }
+@media (max-width: 980px) {
+  .features { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .features-5 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .features-5 > .feature:nth-child(4) { grid-column: span 2; }
+  .features-5 > .feature:nth-child(5) { grid-column: 2 / span 2; }
+}
+@media (max-width: 600px) {
+  .features, .features-5 { grid-template-columns: 1fr; gap: 40px; }
+  .features-5 > .feature, .features-5 > .feature:nth-child(4), .features-5 > .feature:nth-child(5) { grid-column: auto; }
+}
+
 /* ── Footer ─────────────────────────────────────────────── */
 .site-footer { border-top: 1px solid var(--line); }
 .site-footer .wrap { display: grid; grid-template-columns: 1.6fr repeat(3, 1fr); gap: 32px; padding-top: 48px; padding-bottom: 36px; font-size: var(--fs-md); }

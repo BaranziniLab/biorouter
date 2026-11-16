@@ -45,8 +45,9 @@ const CLEAR = /^(transparent|rgba\(\d+, \d+, \d+, 0\))$/;
 
 // What may still draw a full outline: a floating surface the animations show, the
 // schedule's ring marker, Crew's recipes (the app has not converted Crew), and the
-// composer cards (R-32: the page ground with a resting hairline).
-const OUTLINE_OK = /hub-pick|wall-pop|sk-picker|apps-ask|sch-dot|crew-|apps-go|is-moving|hub-card|wall-card|sk-composer/;
+// composer cards (R-32: the page ground with a resting hairline). On download.html#ways: the
+// Jupyter tile's mention menu, and the desktop app's and browser tile's composer cards.
+const OUTLINE_OK = /hub-pick|wall-pop|sk-picker|apps-ask|sch-dot|crew-|apps-go|is-moving|hub-card|wall-card|sk-composer|acc-pick|acc-gui-comp|acs-card/;
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -264,6 +265,61 @@ if (!existsSync(PLAYWRIGHT)) {
       await settle(page);
       assert.equal(await top('.art-skills .sk-composer'), CORAL, 'the skills card takes the focus edge while typing');
       assert.deepEqual(await box('.art-skills .sk-composer'), skillsBefore, 'the skills card does not move when the edge turns');
+      await close();
+    });
+
+    test(`the download page's ways-to-use tiles follow the fills and the composer rule at ${width}px`, async () => {
+      const { page, close } = await open('download.html#ways', width);
+      await page.waitForSelector('[data-art="access-jupyter"] .ajl', { state: 'attached' });
+      for (const name of ['access-gui', 'access-tui', 'access-cli', 'access-serve', 'access-jupyter']) {
+        const frame = await paint(page, `[data-art="${name}"]`);
+        noEdge(frame, `the ${name} frame`);
+        assert.notEqual(frame.shadow, 'none', `the ${name} frame is lifted by a shadow`);
+      }
+      // The terminal panes are recessed into the frame: the subtle fill, no outline.
+      for (const pane of ['[data-art="access-tui"] .acc-tui-pane', '[data-art="access-cli"] .acli-pane', '[data-art="access-serve"] .acs-term']) {
+        const p = await paint(page, pane);
+        assert.equal(p.bg, FILL, `${pane} rests on the fill`);
+        noEdge(p, pane);
+      }
+      // A box inside a filled box steps back to the page ground.
+      const tuiBox = await paint(page, '[data-art="access-tui"] .acc-tui-box');
+      assert.equal(tuiBox.bg, PAPER, "the terminal chat's input box rests on the page ground inside its pane");
+      noEdge(tuiBox, "the terminal chat's input box at rest");
+      const card = await paint(page, '[data-art="access-gui"] .acc-gui-card');
+      assert.equal(card.bg, FILL, 'the artifact card rests on the fill');
+      noEdge(card, 'the artifact card');
+      assert.equal((await paint(page, '[data-art="access-gui"] .acc-gui-card-tile')).bg, PAPER, "the card's kind tile rests on the page ground");
+      const field = await paint(page, '[data-art="access-jupyter"] .ajl-field');
+      assert.equal(field.bg, FILL, "Jupyter AI's message box is a field on the fill");
+      noEdge(field, "Jupyter AI's message box at rest");
+      assert.equal((await paint(page, '[data-art="access-jupyter"] .ajl-files')).bg, FILL, 'the file browser is a recessed strip');
+
+      // R-32: both composer cards are the page ground with the resting hairline, the idle Send
+      // in them rests on the fill, and the edge turns coral while the question is typed, in place.
+      const edgeOf = (p) => ['top', 'right', 'bottom', 'left'].map((s) => `${p[s].w}px ${p[s].st} ${p[s].c}`);
+      const box = (sel) => page.locator(sel).first().evaluate((e) => {
+        const r = e.getBoundingClientRect();
+        return [r.x, r.y, r.width, r.height].map((n) => Math.round(n * 100) / 100);
+      });
+      for (const [tile, cardSel, sendSel, focus] of [
+        ['access-gui', '.acc-gui-comp', '.acc-gui-send', ['.acc-gui', 'is-focus']],
+        ['access-serve', '.acs-card', '.acs-send', ['.acs', 'is-edge']],
+      ]) {
+        const sel = `[data-art="${tile}"] ${cardSel}`;
+        const rest = await paint(page, sel);
+        assert.equal(rest.bg, PAPER, `the ${tile} composer card is the page ground, not a fill`);
+        assert.deepEqual(edgeOf(rest), Array(4).fill(`1px solid ${HAIRLINE}`), `the ${tile} composer card draws the resting hairline`);
+        assert.equal((await paint(page, `[data-art="${tile}"] ${sendSel}`)).bg, FILL, `the idle Send in the ${tile} card rests on the fill`);
+        const before = await box(sel);
+        await page.evaluate(([s, c]) => document.querySelector(s).classList.add(c), [`[data-art="${tile}"] ${focus[0]}`, focus[1]]);
+        await settle(page);
+        assert.equal((await paint(page, sel)).top.c, CORAL, `the ${tile} card takes the focus edge while typing`);
+        assert.deepEqual(await box(sel), before, `the ${tile} card does not move when the edge turns`);
+        await page.evaluate(([s, c]) => document.querySelector(s).classList.remove(c), [`[data-art="${tile}"] ${focus[0]}`, focus[1]]);
+        await settle(page);
+        assert.equal((await paint(page, sel)).top.c, HAIRLINE, `the ${tile} card returns to its hairline`);
+      }
       await close();
     });
 

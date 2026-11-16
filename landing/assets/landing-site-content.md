@@ -36,7 +36,7 @@ landing/
 ├── home.js             # The hero's download label and its "New" line
 ├── download.js         # Platform detection and the download table
 ├── baam.js, baam-details.js, marketplace-search.js   # BAAM shelves, card details, the search matcher
-├── art/                # The small product animations on the Introduction page (CSS and JS)
+├── art/                # The small product animations (CSS and JS): the Introduction page's, and the Download page's five ways to use Biorouter (access-*)
 ├── registry.json       # The marketplace catalog, generated from baam.html
 ├── scripts/            # Consistency checks, the registry generator, the docs assembler
 ├── shared.css, theme.js, app-mockups.css, app-mockups.js   # The previous design's files (see below)
@@ -49,7 +49,7 @@ landing/
     └── videos/                   # Rendered mp4 and webm files and their posters
 ```
 
-No page loads `shared.css`, `theme.js`, `app-mockups.css` or `app-mockups.js`. The reel in `video/reel/` loads `shared.css` and the two `app-mockups` files, `video/` keeps its own copies under `video/assets/`, and `check-consistency.mjs` reads `app-mockups.js`. The Introduction page draws its product animations with the CSS and JS in `art/`. No page embeds the files in `assets/videos/`.
+No page loads `shared.css`, `theme.js`, `app-mockups.css` or `app-mockups.js`. The reel in `video/reel/` loads `shared.css` and the two `app-mockups` files, `video/` keeps its own copies under `video/assets/`, and `check-consistency.mjs` reads `app-mockups.js`. The Introduction page and the Download page's "Ways to use Biorouter" draw their product animations with the CSS and JS in `art/`. No page embeds the files in `assets/videos/`.
 
 Docs source: `docs/website/` (a shell and one fragment per page). `node landing/scripts/assemble-docs.mjs` writes `landing/docs.html` from it.
 Icon: `landing/icon.svg`, `icon-transparent.svg`, `icon.png` (copied from `ui/desktop/src/images/`).
@@ -177,6 +177,16 @@ The Linux desktop packages (.deb and .rpm) need Debian 12, Ubuntu 22.04, Fedora 
 2. Connect a model: pick a provider on the Welcome screen, or later in Settings → Models. Llama Server, on the Local tab, needs no account or key. UCSF users pick Versa API Azure or Versa API Bedrock on the Institutional tab
 3. Ask a question
 4. Link to the Getting started page of the docs
+
+### Ways to use Biorouter
+Directly after "All platforms". Five looping animations (`art/access-*.css` and `.js`), 3 + 2 with the second row centred, then 2 + 2 + 1, then one column. Each caption is a title, one sentence and a link to where to get it:
+1. Desktop app: "Chats, tools and a side panel for what the agent makes." Download the app (to All platforms)
+2. Terminal chat: "A full screen chat in your terminal, with history and key hints." Chat in the terminal (docs)
+3. Command line: "One task at a time, from a script, a cluster job or CI." Run one task (docs)
+4. Browser: "On a server with no screen, open the same interface in a browser tab." Browser access (docs)
+5. JupyterLab: "Ask @Biorouter in the Jupyter AI chat, beside your notebook." Jupyter AI persona (the reference on GitHub)
+
+Every string a tile quotes from the product (the terminal banner and hints, the `serve` banner, the run flags, the placeholders, the tool rows) is read back from the source by `check-consistency.mjs`. The questions and answers are illustrations, with no patient data.
 
 ### Command line and servers
 - The command line tool ships with the app; the app offers to put it on the PATH as it starts (the Biorouter CLI card), or `biorouter setup-path` does it by hand
@@ -366,6 +376,7 @@ The page's Earlier updates list goes back to v1.20.0 (21 January 2026) and also 
 - [x] Install instructions per platform
 - [x] Getting started link
 - [x] After you install: open the app, connect a model (Llama Server on the Local tab, Versa on the Institutional tab), ask a question
+- [x] Ways to use Biorouter: desktop app, terminal chat, command line, browser and JupyterLab, each a looping animation
 
 ### Documentation tab
 - [x] Sidebar navigation

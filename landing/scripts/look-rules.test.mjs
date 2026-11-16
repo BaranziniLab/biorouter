@@ -48,7 +48,8 @@ const TOUCH_44 = /menu-btn|avatar/;
 // subtle fill with a TRANSPARENT 1px edge, never a drawn outline. What may still draw one: the
 // floating surfaces the animations show (a menu, a picker, a dialog keep a hairline and a
 // shadow), the schedule's ring marker, and Crew's own recipes, which the app has not converted.
-const OUTLINE_OK = /hub-pick|wall-pop|sk-picker|apps-ask|sch-dot|crew-/;
+// acc-pick is the Jupyter tile's mention menu (download.html#ways), a popover.
+const OUTLINE_OK = /hub-pick|wall-pop|sk-picker|apps-ask|sch-dot|crew-|acc-pick/;
 // The composer cards the animations draw are the one box the fill rule does not reach (owner message
 // 17, R-32): the page ground with the app's resting hairline, --border-subtle at 60%, which the site
 // writes as --line-composer. A card that goes back to the subtle fill with a transparent edge is the
@@ -58,6 +59,9 @@ const COMPOSER_CARDS = {
   'art/hub.css': '.art-hub .hub-card',
   'art/wall.css': '.art-wall .wall-card',
   'art/skills.css': '.art-skills .sk-composer',
+  // download.html#ways: the desktop app's composer, and the same composer in the browser tab.
+  'art/access-gui.css': '[data-art="access-gui"] .acc-gui-comp',
+  'art/access-serve.css': '[data-art="access-serve"] .acs-card',
 };
 const DRAWN_EDGE = /^[\d.]+px (solid|dashed|dotted) (var\(--(line|line-2|line-input|coral|coral-bar|ink|navy|danger)\)|#[0-9a-f]{3,8}|rgba?\([^)]*\))$/i;
 
@@ -167,6 +171,14 @@ const mutants = {
   'the wall composer card back on the fill': ['art/wall.css', (s) => s.replace('background: var(--paper); border: 1px solid var(--line-composer)', 'background: var(--fill); border: 1px solid transparent')],
   'the skills composer card with a harder line': ['art/skills.css', (s) => s.replace('border: 1px solid var(--line-composer)', 'border: 1px solid var(--line)')],
   'a drawn edge on the art frame': ['site.css', (s) => s + '\n.art { border: 1px solid var(--line); border-radius: var(--r-surface); }'],
+  'the desktop app composer card back on the fill': ['art/access-gui.css', (s) => s.replace('background: var(--paper);\n  border: 1px solid var(--line-composer);', 'background: var(--fill);\n  border: 1px solid transparent;')],
+  'the browser tile composer card with a harder line': ['art/access-serve.css', (s) => s.replace('border: 1px solid var(--line-composer)', 'border: 1px solid var(--line)')],
+  'the browser tile composer card with no hairline at all': ['art/access-serve.css', (s) => s.replace('border: 1px solid var(--line-composer);', '')],
+  'an outlined terminal pane': ['art/access-tui.css', (s) => s.replace('border: 1px solid transparent;', 'border: 1px solid var(--line);')],
+  'an outlined box beside the mention menu': ['art/access-jupyter.css', (s) => s + '\n[data-art="access-jupyter"] .acc-field { border: 1px solid var(--line); border-radius: var(--r-element); }'],
+  'a terminal size off the scale': ['art/access-cli.css', (s) => s.replace('font-size: 12px;', 'font-size: 11px;')],
+  'a bare ease in an access tile': ['art/access-serve.css', (s) => s + '\n.x { transition: opacity 300ms ease-out; }'],
+  'a weight Arial cannot draw in an access tile': ['art/access-jupyter.css', (s) => s.replace('font-weight: 700; color: var(--ink); white-space: nowrap;', 'font-weight: 600; color: var(--ink); white-space: nowrap;')],
 };
 for (const [name, [file, edit]] of Object.entries(mutants)) {
   test(`mutant caught: ${name}`, () => {

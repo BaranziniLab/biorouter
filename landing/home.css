@@ -36,15 +36,7 @@
   .pillar-art .art { aspect-ratio: auto; height: min(118vw, 500px); }
 }
 
-/* Capabilities */
-.features { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 40px 24px; }
-.feature { margin: 0; }
-.art-tile { aspect-ratio: 4 / 3; }
-.feature figcaption { padding-top: 16px; }
-.feature h3 { font-size: var(--fs-h3); line-height: var(--lh-h3); font-weight: 400; letter-spacing: var(--tr-h); display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.feature p { color: var(--muted); font-size: var(--fs-md); line-height: 1.6; margin: 8px 0 0; max-width: 340px; }
-@media (max-width: 980px) { .features { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 600px) { .features { grid-template-columns: 1fr; gap: 40px; } }
+/* Capabilities: the tile grid itself is shared (.features in site.css). */
 
 /* Get started */
 .start-body { max-width: 720px; }

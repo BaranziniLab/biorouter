@@ -270,6 +270,163 @@ includes(docs, "history.replaceState(null, '', '#' + name)", 'docs navigation sh
 const baamBeforeScript = baam.split('<script>')[0];
 check(registry.extensions.length === (baamBeforeScript.match(/<div[^>]*class="ext-card(?:\s|")/g) || []).length, 'registry extension count should match BAAM fallback cards');
 
+// ---- Every animation a page shows is loaded on that page -------------------
+// An art tile is a `<div data-art="NAME">`, filled by `art/NAME.js` (which calls
+// `BR.art('NAME', …)`) and styled by `art/NAME.css`. A page that forgets either
+// tag shows an empty white frame, and nothing else notices: the guard below is
+// the only reader of the pairing.
+for (const [label, page] of [['index.html', index], ['download.html', download]]) {
+  for (const name of new Set([...page.matchAll(/data-art="([^"]+)"/g)].map((match) => match[1]))) {
+    includes(page, `<script src="art/${name}.js"></script>`, `${label} shows data-art="${name}" but does not load art/${name}.js`);
+    includes(page, `<link rel="stylesheet" href="art/${name}.css">`, `${label} shows data-art="${name}" but does not load art/${name}.css`);
+    let js = '';
+    try { js = landing(`art/${name}.js`); } catch { failures.push(`art/${name}.js is missing`); }
+    check(!js || js.includes(`BR.art('${name}',`), `art/${name}.js does not register BR.art('${name}', …)`);
+  }
+}
+
+// ---- Ways to use Biorouter (download.html#ways) ---------------------------
+// Five tiles, each showing a way in. Every string a tile quotes from the
+// product is read back from the product here, so a renamed hint, banner or
+// placeholder fails this check rather than leaving the site showing a screen
+// that no longer exists. The questions and answers in the tiles are
+// illustrations and are not checked.
+const WAYS = ['access-gui', 'access-tui', 'access-cli', 'access-serve', 'access-jupyter'];
+const waysSection = (() => {
+  const start = download.indexOf('<section class="section wrap" id="ways"');
+  check(start !== -1, 'download.html should carry the "Ways to use Biorouter" section (id="ways")');
+  if (start === -1) return '';
+  return download.slice(start, download.indexOf('</section>', start));
+})();
+const waysTiles = [...waysSection.matchAll(/data-art="([^"]+)"/g)].map((match) => match[1]);
+check(
+  JSON.stringify(waysTiles) === JSON.stringify(WAYS),
+  `download.html#ways should show ${WAYS.join(', ')} in that order (found ${waysTiles.join(', ') || 'none'})`
+);
+for (const figure of waysSection.split('<figure').slice(1)) {
+  const name = (/data-art="([^"]+)"/.exec(figure) || [])[1] || '(unnamed)';
+  check(/role="img" aria-label="[^"]{20,}"/.test(figure), `${name}: the tile needs role="img" and an aria-label that says what it shows`);
+  check(/<figcaption><h3>[^<]+<\/h3><p>[^<]+<\/p><a class="text-link" href="[^"]+">/.test(figure), `${name}: the caption is a title, one sentence and where to get it`);
+  const href = (/<a class="text-link" href="([^"]+)"/.exec(figure) || [])[1];
+  if (!href) continue;
+  if (href.startsWith('#')) {
+    includes(download, `id="${href.slice(1)}"`, `${name}: the link ${href} names no section of download.html`);
+  } else if (href.startsWith('docs.html#')) {
+    includes(docs, `id="${href.slice('docs.html#'.length)}"`, `${name}: the link ${href} names no section of docs.html`);
+  } else {
+    const blob = /^https:\/\/github\.com\/BaranziniLab\/biorouter\/blob\/main\/(.+)$/.exec(href);
+    check(Boolean(blob), `${name}: the link ${href} should go to this page, docs.html or a file in the repository`);
+    if (blob) {
+      let ok = true;
+      try { source(blob[1]); } catch { ok = false; }
+      check(ok, `${name}: the link names ${blob[1]}, which is not in the repository`);
+    }
+  }
+}
+
+const art = (name) => landing(`art/${name}.js`);
+const jsString = (js, name, label) => capture(js, new RegExp(`var ${name} = '([^']*)'`), `${name} in ${label}`);
+const jsList = (js, name, label) =>
+  [...capture(js, new RegExp(`var ${name} = \\[([\\s\\S]*?)\\];`), `${name} in ${label}`).matchAll(/'([^']*)'/g)].map((match) => match[1]);
+const tuiSource = source('crates/biorouter-cli/src/session/tui/mod.rs');
+
+// Terminal chat: the banner, the greeting, the placeholder, the spinner and its
+// label, and the key hints, as the TUI draws them.
+{
+  const tile = art('access-tui');
+  const label = 'art/access-tui.js';
+  const ascii = [
+    ...capture(
+      source('crates/biorouter-cli/src/session/output.rs'),
+      /pub\(crate\) const BIOROUTER_ASCII: &\[&str\] = &\[([\s\S]*?)\];/,
+      'BIOROUTER_ASCII in crates/biorouter-cli/src/session/output.rs'
+    ).matchAll(/"([^"]*)"/g),
+  ].map((match) => match[1]);
+  check(JSON.stringify(jsList(tile, 'BANNER', label)) === JSON.stringify(ascii), `${label}: BANNER differs from BIOROUTER_ASCII in output.rs`);
+  for (const name of ['TAGLINE', 'ENTER', 'PLACEHOLDER']) {
+    const value = jsString(tile, name, label);
+    includes(tuiSource, `"${value}"`, `${label}: ${name} "${value}" is not a string the TUI draws (session/tui/mod.rs)`);
+  }
+  const spinner = [...capture(tuiSource, /const SPINNER: &\[&str\] = &\[([^\]]*)\];/, 'SPINNER in session/tui/mod.rs').matchAll(/"([^"]*)"/g)].map((match) => match[1]);
+  check(JSON.stringify(jsList(tile, 'SPINNER', label)) === JSON.stringify(spinner), `${label}: SPINNER differs from the TUI's frames`);
+  const thinking = jsString(tile, 'THINKING', label);
+  includes(source('crates/biorouter-cli/src/session/thinking.rs'), `"${thinking}"`, `${label}: "${thinking}" is not one of thinking.rs's labels`);
+  // hint_text's candidates, with no dictation key bound (`{dictate}` empty).
+  const hintBody = capture(tuiSource, /(fn hint_text\([\s\S]*?\n\}\n)/, 'hint_text in session/tui/mod.rs');
+  const candidates = new Set([...hintBody.matchAll(/"((?:↵|esc|↑↓|\{summary\})[^"]*)"/g)].map((match) => match[1].replace(/\{dictate\}/g, '')));
+  for (const hint of jsList(tile, 'HINTS', label)) {
+    check(candidates.has(hint), `${label}: the hint line "${hint}" is not one of hint_text's candidates`);
+  }
+}
+
+// Command line: the flags the two runs use, and the commands the docs give.
+{
+  const tile = art('access-cli');
+  const cli = source('crates/biorouter-cli/src/cli.rs');
+  includes(cli, `short = 'q',\n        long = "quiet"`, "art/access-cli.js uses -q, which cli.rs should still define as --quiet");
+  includes(cli, `short = 't',\n        long = "text"`, "art/access-cli.js uses -t, which cli.rs should still define as --text");
+  includes(cli, 'help = "Path to instruction file containing commands. Use - for stdin."', 'art/access-cli.js reads stdin with -i -, which cli.rs should still allow');
+  for (const cmd of [...tile.matchAll(/\{ cmd: '([^']+)' \}/g)].map((match) => match[1]).filter((cmd) => cmd.includes('biorouter'))) {
+    // The docs show each run without -q; the tile adds it so only the answer prints.
+    const plain = cmd.replace(' -q', '');
+    const shown = plain.startsWith('cat ') ? plain : plain.replace(/^biorouter run -t "/, '');
+    includes(docs, shown.replace(/"$/, ''), `art/access-cli.js runs \`${cmd}\`, which docs.html#cli-run should show`);
+  }
+}
+
+// Browser: what `biorouter serve` prints, and the interface it opens.
+{
+  const tile = art('access-serve');
+  const serve = source('crates/biorouter-cli/src/commands/serve.rs');
+  includes(serve, 'Biorouter is serving at', 'serve.rs should still print "Biorouter is serving at", which art/access-serve.js shows');
+  includes(serve, 'Press Ctrl-C to stop.', 'serve.rs should still print "Press Ctrl-C to stop.", which art/access-serve.js shows');
+  includes(tile, 'Biorouter is serving at', 'art/access-serve.js should show the line serve prints');
+  const port = capture(serve, /pub const DEFAULT_PORT: u16 = (\d+);/, 'DEFAULT_PORT in serve.rs');
+  includes(tile, `127.0.0.1:${port}`, `art/access-serve.js should show serve's default port ${port}`);
+  for (const nav of ['Home', 'New chat', 'Skills']) {
+    check(sidebarLabels.includes(nav), `art/access-serve.js draws the sidebar row "${nav}", which AppSidebar.tsx no longer declares`);
+  }
+  includes(source('ui/desktop/src/components/BioRouterSidebar/copy.ts'), "header: 'Chats'", "art/access-serve.js draws the sidebar's Chats header");
+}
+
+// Desktop app and the browser's composer: the placeholders, the chat's tab and
+// the figure's tool row, as the app writes them.
+{
+  const composer = source('ui/desktop/src/components/composer/copy.ts');
+  const gui = art('access-gui');
+  for (const [name, key] of [['PH_EMPTY', 'placeholderEmpty'], ['PH_FOLLOW', 'placeholderFollowUp']]) {
+    const value = jsString(gui, name, 'art/access-gui.js');
+    includes(composer, `${key}: '${value}'`, `art/access-gui.js: ${name} "${value}" should be composer/copy.ts's ${key}`);
+    includes(art('access-serve'), value, `art/access-serve.js should use the composer placeholder "${value}"`);
+  }
+  includes(gui, 'acc-gui-tab-name">New chat<', 'art/access-gui.js should name the chat New chat');
+  includes(source('ui/desktop/src/utils/sessionNameSync.ts'), "DEFAULT_SESSION_NAME = 'New chat'", "art/access-gui.js's tab is DEFAULT_SESSION_NAME");
+  const copy = source('ui/desktop/src/components/toolCallCopy.ts');
+  includes(copy, "chart: 'chart',", 'FIGURE_NAMES should still call the chart kind "chart" (art/access-gui.js shows "Rendering chart")');
+  includes(copy, 'render: (figure: string) => `Rendering ${figure}`', 'FIGURE_COPY.render should still read "Rendering <figure>"');
+  includes(copy, "Rendering: ['Rendered', 'render']", 'the finished row should still read "Rendered <figure>"');
+  includes(gui, 'Rendering chart</span>', 'art/access-gui.js should show the running row');
+  includes(gui, 'Rendered chart</span>', 'art/access-gui.js should show the finished row');
+}
+
+// JupyterLab: the persona's name, and a tool title written the way
+// `biorouter acp` writes one.
+{
+  const tile = art('access-jupyter');
+  includes(source('integrations/jupyter-ai/jupyter_ai_biorouter/persona.py'), `name="${jsString(tile, 'PERSONA', 'art/access-jupyter.js')}"`, "art/access-jupyter.js should use the persona's name");
+  const acp = source('crates/biorouter-acp/src/server.rs');
+  const formatter = capture(acp, /fn format_tool_name\(tool_name: &str\) -> String \{([\s\S]*?)\n\}/, 'format_tool_name in crates/biorouter-acp/src/server.rs');
+  check(
+    formatter.includes('split_once("__")') && formatter.includes(".replace('_', \" \")") && formatter.includes('"{}: {}"'),
+    'format_tool_name changed shape; check the title art/access-jupyter.js shows'
+  );
+  const title = 'code_execution__execute_code'
+    .split('__')
+    .map((part) => part.split('_').map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' '))
+    .join(': ');
+  check(jsString(tile, 'TOOL', 'art/access-jupyter.js') === title, `art/access-jupyter.js should title the call "${title}"`);
+}
+
 for (const stale of ['v1.85.0', 'v1.80.0', 'claude-opus-4-1', 'claude-sonnet-4-20250514', 'grok-code-fast-1</code>', 'gpt-5.2</code>']) {
   check(!index.includes(stale) && !download.includes(stale) && !docs.includes(stale), `stale token remains: ${stale}`);
 }

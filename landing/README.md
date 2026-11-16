@@ -7,7 +7,7 @@ The static site served at <https://biorouter.ucsf.edu/>. It is published from th
 | File | Page |
 | ---- | ---- |
 | `index.html` | Introduction: the model routing hub, the three principles, a Slack band and six capability tiles |
-| `download.html` | Download: the detected installer, every platform, first steps, the command line and servers |
+| `download.html` | Download: the detected installer, every platform, five ways to use Biorouter, first steps, the command line and servers |
 | `docs.html` | Documentation assembled from the tracked shell and fourteen fragments in `docs/website/` |
 | `baam.html` | BAAM, the Biorouter AI Agent Marketplace: extensions, skills and workflows |
 | `about.html` | About: the team, collaborators, inspirations and updates |
@@ -15,10 +15,10 @@ The static site served at <https://biorouter.ucsf.edu/>. It is published from th
 
 ## Shared files
 
-- `site.css`: every design token (they mirror the desktop app's light Parchment theme) and the shared parts: header with the Slack invite, footer, buttons, text links, section rules, privacy pills, tables, artifact frames.
+- `site.css`: every design token (they mirror the desktop app's light Parchment theme) and the shared parts: header with the Slack invite, footer, buttons, text links, section rules, privacy pills, tables, artifact frames, and the grid of animation tiles with captions (`.features`, and `.features-5` for five).
 - `site.js`: header state, mobile menu, reveal on scroll, copy buttons, the release version (`data-version` slots refreshed from the GitHub releases API), and the artifact registry.
 - `home.css`, `download.css`, `about.css`, `docs.css`, `baam.css`: one stylesheet per page.
-- `art/<name>.js` and `art/<name>.css`: the small animations. Each registers with `BR.art('<name>', mount)` and fills a `<div data-art="<name>">`. `site.js` starts it when it is on screen and stops it when it leaves, and each one draws a still frame when the visitor asks for reduced motion.
+- `art/<name>.js` and `art/<name>.css`: the small animations. Each registers with `BR.art('<name>', mount)` and fills a `<div data-art="<name>">`, and the page that shows it loads both files (`check-consistency.mjs` checks the pairing). `site.js` starts it when it is on screen and stops it when it leaves, and each one draws a still frame when the visitor asks for reduced motion. The Download page's five `access-*` tiles show the ways to use Biorouter; `scripts/access-tiles.browser.test.mjs` holds them to one mount each, no leftover timers and a still final frame.
 - `icon.svg`, `icon-transparent.svg`, `icon.png`: the BR mark. Do not edit them; `scripts/check-brand-consistency.sh` compares them with the app's copies.
 - `registry.json`: the marketplace catalog, generated from `baam.html`'s static cards. The app compiles it in.
 - `provider-catalogs/baseten.json`: Baseten's models and prices, which the app reads with no key. It is not in this folder in git. The deploy builds it from Baseten's model list with `scripts/build-provider-catalog.mjs` and publishes it with the site, or publishes the live copy again when that build fails. See [the Baseten provider reference](../docs/providers/baseten.md).

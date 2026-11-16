@@ -12,6 +12,11 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@600&text=Biorouter&display=swap">
 <link rel="stylesheet" href="site.css">
 <link rel="stylesheet" href="download.css">
+<link rel="stylesheet" href="art/access-gui.css">
+<link rel="stylesheet" href="art/access-tui.css">
+<link rel="stylesheet" href="art/access-cli.css">
+<link rel="stylesheet" href="art/access-serve.css">
+<link rel="stylesheet" href="art/access-jupyter.css">
 </head>
 <body>
 <a class="skip" href="#main">Skip to content</a>
@@ -122,6 +127,33 @@
     <p class="dl-note reveal">Older versions and the files the app uses to update itself are on the <a href="https://github.com/BaranziniLab/biorouter/releases">releases page</a>. For help installing, ask on the <a href="https://join.slack.com/t/ucsfbiorouter/shared_invite/zt-41rw0wjnm-0ENbObXPsUJWObnvTp4v6A">Biorouter Slack</a>.</p>
   </section>
 
+  <!-- Ways to use it: one animation per way in (art/access-*.js) -->
+  <section class="section wrap" id="ways" aria-labelledby="ways-h">
+    <div class="rule-line reveal"><h2 id="ways-h">Ways to use Biorouter</h2></div>
+    <div class="features features-5">
+      <figure class="feature reveal">
+        <div class="art art-tile" data-art="access-gui" role="img" aria-label="The desktop app. A question is typed in the message box and sent. The agent runs a tool, opens its figure in the side panel, and answers."></div>
+        <figcaption><h3>Desktop app</h3><p>Chats, tools and a side panel for what the agent makes.</p><a class="text-link" href="#platforms">Download the app <span aria-hidden="true">→</span></a></figcaption>
+      </figure>
+      <figure class="feature reveal">
+        <div class="art art-tile" data-art="access-tui" role="img" aria-label="A terminal chat. The Biorouter banner appears, a question is typed at the prompt, and the answer streams in while the context meter updates."></div>
+        <figcaption><h3>Terminal chat</h3><p>A full screen chat in your terminal, with history and key hints.</p><a class="text-link" href="docs.html#cli-chat">Chat in the terminal <span aria-hidden="true">→</span></a></figcaption>
+      </figure>
+      <figure class="feature reveal">
+        <div class="art art-tile" data-art="access-cli" role="img" aria-label="The command line. Two one-shot commands run in a plain terminal, each printing only its answer, and the shell reports exit code 0."></div>
+        <figcaption><h3>Command line</h3><p>One task at a time, from a script, a cluster job or CI.</p><a class="text-link" href="docs.html#cli-run">Run one task <span aria-hidden="true">→</span></a></figcaption>
+      </figure>
+      <figure class="feature reveal">
+        <div class="art art-tile" data-art="access-serve" role="img" aria-label="Browser access. A command run on a server prints a web address, a browser opens it, and the same Biorouter interface answers a question in the tab."></div>
+        <figcaption><h3>Browser</h3><p>On a server with no screen, open the same interface in a browser tab.</p><a class="text-link" href="docs.html#cli-serve">Browser access <span aria-hidden="true">→</span></a></figcaption>
+      </figure>
+      <figure class="feature reveal">
+        <div class="art art-tile" data-art="access-jupyter" role="img" aria-label="JupyterLab. A question starting with @Biorouter is typed in the Jupyter AI chat panel beside the file browser. The agent runs a tool and answers."></div>
+        <figcaption><h3>JupyterLab</h3><p>Ask @Biorouter in the Jupyter AI chat, beside your notebook.</p><a class="text-link" href="https://github.com/BaranziniLab/biorouter/blob/main/docs/integrations/jupyter-ai-persona.md">Jupyter AI persona <span aria-hidden="true">→</span></a></figcaption>
+      </figure>
+    </div>
+  </section>
+
   <!-- First run -->
   <section class="section wrap" id="after" aria-labelledby="after-h">
     <div class="rule-line reveal"><h2 id="after-h">After you install</h2></div>
@@ -224,6 +256,11 @@
 </footer>
 
 <script src="site.js"></script>
+<script src="art/access-gui.js"></script>
+<script src="art/access-tui.js"></script>
+<script src="art/access-cli.js"></script>
+<script src="art/access-serve.js"></script>
+<script src="art/access-jupyter.js"></script>
 <script src="download.js"></script>
 </body>
 </html>
