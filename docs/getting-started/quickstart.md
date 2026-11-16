@@ -136,7 +136,7 @@ biorouter will open a browser for you to authenticate with Tetrate, or create a 
    └  Configuration saved successfully
    ```
 
-   > **Note.** The model names above are an illustrative snapshot of one picker session, not the current catalog. The list you see depends on your provider and is fetched live. For per-provider defaults, see [Choosing a model provider](choosing-a-model-provider.md).
+   > **Note.** The model names above are an illustrative snapshot of one picker session, not the current catalog. The list you see depends on your provider and is fetched live. A provider with no live list, such as the Versa gateways, lists the models it declares (the ones `biorouter models list <provider>` prints) with its default first, and **Enter a model not listed...** takes any other name. Either list opens on the model in use. For per-provider defaults, see [Choosing a model provider](choosing-a-model-provider.md).
 
 ## Start a session
 
