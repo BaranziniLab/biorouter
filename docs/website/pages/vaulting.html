@@ -64,6 +64,7 @@
 <p>A few actions ask even in Autonomous, and no hook can answer for you:</p>
 <ul>
   <li>Writing or deleting under a protected system folder, your home folder itself, or a credential store such as <code>~/.ssh</code>.</li>
+  <li>A shell command that makes SSH trust a server's host key nobody checked, such as <code>ssh</code>, <code>scp</code> or <code>rsync -e</code> with <code>StrictHostKeyChecking=accept-new</code> or <code>no</code>, or a known-hosts file other than the default.</li>
   <li>Reading, saving or deleting a global memory, which every chat on the computer shares, and clearing every global memory, which cannot be undone. No call reads all global memories at once; each category is read and approved separately.</li>
   <li>Observing or controlling the desktop with Biorouter Copilot.</li>
 </ul>

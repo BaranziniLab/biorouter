@@ -340,6 +340,8 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
     <tr><td><code class="code-token">--public-url</code></td><td>The <code>https://</code> address a reverse proxy serves the interface at, path included. <code>serve</code> prints it with the token. <code class="code-token">BIOROUTER_PUBLIC_URL</code> does the same.</td></tr>
     <tr><td><code class="code-token">--no-dictation-install</code></td><td>Stop browsers on this service from installing speech models. The host can still run <code>biorouter dictation install</code>. <code class="code-token">BIOROUTER_DICTATION_BROWSER_INSTALL=false</code> and managed policy also stop browser installs.</td></tr>
     <tr><td><code class="code-token">--computer-use-approval</code></td><td>Set a Biorouter Copilot approval key of at least 16 characters, typed at the terminal. It is never saved.</td></tr>
+    <tr><td><code class="code-token">--folder-access-approval</code></td><td>Set a folder approval key of at least 16 characters, typed at the terminal. A person types it in the browser's <strong>Folder approval key</strong> field to let a chat use a folder outside its working folder, or to revoke that access. It is never saved, and it is separate from the Biorouter Copilot key.</td></tr>
+    <tr><td><code class="code-token">--allow-public-decision-models</code></td><td>Let a person in the browser make a new chat public by choosing a public decision model, such as one on Baseten, before its first message. The browser first shows which model makes the chat public. Without the flag the server refuses that choice and saves nothing, because it cannot tell a person from a program holding its secret.</td></tr>
   </tbody>
 </table></div>
 
@@ -392,6 +394,7 @@ sudo dnf install ./biorouter-cli-*-1.x86_64.rpm</code></pre></li>
     <tr><td>Resetting app data</td><td>No. On the host, use <code>biorouter session remove</code> and the other remove commands.</td></tr>
     <tr><td>File and folder pickers</td><td>No dialog. Type a path on the serving machine, not on the computer running the browser.</td></tr>
     <tr><td>Biorouter Copilot</td><td>Only when <code>serve</code> started with <code class="code-token">--computer-use-approval</code>. It controls the serving machine's desktop.</td></tr>
+    <tr><td>Folders outside the chat's working folder</td><td>Allowing or revoking access needs the key set with <code class="code-token">--folder-access-approval</code>; without it the approval card says to restart <code>serve</code> with that flag. Denying needs no key.</td></tr>
     <tr><td>The app's terminal, notifications, dock and menu bar icons, a second window</td><td>No</td></tr>
   </tbody>
 </table></div>
