@@ -1627,6 +1627,55 @@ mod tests {
         );
     }
 
+    /// W1-50 (p1 full-suite pass, 2026-11-16): a secret named inside a nested
+    /// script was refused, but the refusal named the whole script as one path
+    /// and joined it to the working directory: "Access to 'cat
+    /// ~/.aws/credentials' (resolves to <project>/cat ~/.aws/credentials)".
+    /// The script argument was judged as a path word before the nested parse
+    /// ever read it. The refusal now names the path inside the script and what
+    /// it resolves to, as the direct and here-document forms always did.
+    #[test]
+    fn h1_a_nested_script_refusal_names_the_inner_path() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let slashed = |path: &Path| path.to_string_lossy().replace('\\', "/");
+        let secret = slashed(&fake.home.join(".aws/credentials"));
+        let project = slashed(&fake.project);
+        for command in [
+            "bash -c 'cat ~/.aws/credentials'".to_string(),
+            "eval 'cat ~/.aws/credentials'".to_string(),
+            "eval \"c\"\"at ~/.aws/cred\"\"entials\"".to_string(),
+            format!("find {project} -maxdepth 0 -exec sh -c 'cat ~/.aws/credentials' \\;"),
+            "echo x | xargs -I{} sh -c 'cat ~/.aws/credentials'".to_string(),
+        ] {
+            let denied = g
+                .find_denied_access_in(json!({ "command": command }).as_object().unwrap(), &env)
+                .unwrap_or_else(|| panic!("{command} must be refused"));
+            let message = denied.message();
+            assert_eq!(denied.shown, "~/.aws/credentials", "{command}: {message}");
+            assert_eq!(
+                denied.resolved.as_deref().map(slashed),
+                Some(secret.clone()),
+                "{command}: {message}"
+            );
+            assert!(!message.contains("cat "), "{command}: {message}");
+        }
+
+        // `$HOME` inside double quotes is expanded by the outer shell, so the
+        // script the inner one reads already names the absolute path.
+        let denied = g
+            .find_denied_access_in(
+                json!({ "command": "sh -c \"cat $HOME/.aws/credentials\"" })
+                    .as_object()
+                    .unwrap(),
+                &env,
+            )
+            .expect("refused");
+        let message = denied.message();
+        assert_eq!(slashed(Path::new(&denied.shown)), secret, "{message}");
+        assert!(!message.contains("cat "), "{message}");
+    }
+
     /// A value nobody can know, with nothing known around it, is not refused:
     /// refusing `cat "$(ls *.csv)"` would refuse every command substitution.
     /// That residue belongs to the tool-output scan.

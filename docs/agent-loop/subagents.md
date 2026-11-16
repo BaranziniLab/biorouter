@@ -529,7 +529,9 @@ Two consequences worth knowing before you write a prompt that delegates:
   checked against the subagent's tier like an inherited one.
 
 If a spawn is refused, the fix is not to retry: switch the chat you are delegating *from*, or start
-a new chat on the model you want the work done on.
+a new chat on the model you want the work done on. The agent gets each of these refusals as a
+`permission_denied` tool error, which says the same call will be refused again, rather than as bad
+arguments to fix.
 
 When a private chat is refused a public subagent, the person sees one more line under the refusal,
 in the desktop card and in both terminal views (full-screen and line by line), and the agent never

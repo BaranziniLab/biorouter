@@ -3051,11 +3051,34 @@ async fn overridden_task_config(
 ) -> Result<(TaskConfig, ChildPrivacy), ErrorData> {
     resolve_child_privacy(task_config, params)
         .await
-        .map_err(|e| ErrorData {
-            code: ErrorCode::INVALID_PARAMS,
-            message: Cow::from(e.to_string()),
-            data: None,
-        })
+        .map_err(child_resolution_error)
+}
+
+/// The tool error a spawn returns when its child could not be resolved.
+///
+/// A privacy refusal (R4, DR-19, DR-31: the child would cross the chat's tier
+/// or affiliation) carries its own `permission_denied` envelope, the same way
+/// [`spawn_phase_error`] carries one for a held phase (C-5). Left to its code,
+/// `INVALID_PARAMS` classifies as `invalid_args`, whose header told the model
+/// "Fix the call itself; the same arguments will fail again" right above the
+/// refusal's own "Do not retry", and the model repeated both to the person
+/// (W1-44). The arguments were well formed: Biorouter's privacy control
+/// refused them, which is what `permission_denied` names ("Repeating it will
+/// be refused again; ask the user or take a permitted route"), and a control
+/// doing its job is then not read as a defect (`bug_report::evidence`). The
+/// refusal's sentence is unchanged, and any other failure keeps its
+/// classification.
+fn child_resolution_error(error: anyhow::Error) -> ErrorData {
+    use crate::agents::tool_errors::{ToolError, ToolErrorKind};
+    let message = error.to_string();
+    let data = error
+        .downcast_ref::<crate::privacy::PrivacyRefusal>()
+        .map(|_| ToolError::new(ToolErrorKind::PermissionDenied, message.clone()).to_envelope());
+    ErrorData {
+        code: ErrorCode::INVALID_PARAMS,
+        message: Cow::from(message),
+        data,
+    }
 }
 
 /// Run the subagent on a detached task and return its handle immediately.
@@ -7902,6 +7925,85 @@ mod tests {
             ),
             "expected DR-19's typed refusal, got: {err}"
         );
+    }
+
+    /// W1-44 (p1 full-suite pass, 2026-11-16): a spawn refused for crossing the
+    /// tier or the affiliation (R4, DR-19, DR-31) reached the model as
+    /// `invalid_args`, whose header reads "Fix the call itself; the same
+    /// arguments will fail again", above the refusal's own "Do not retry", and
+    /// the model quoted both to the person. The arguments were well formed:
+    /// Biorouter's privacy control refused them, which the taxonomy calls
+    /// `permission_denied`. The refusal's sentence is unchanged. Each row runs
+    /// the door both spawn paths use, so the envelope is what a real refused
+    /// spawn returns.
+    #[tokio::test]
+    async fn a_tier_refused_spawn_is_not_reported_as_bad_arguments() {
+        use crate::agents::tool_errors::{classify_error_data, ToolErrorKind};
+        let on_ollama: SubagentParams = serde_json::from_value(json!({
+            "instructions": "do the thing",
+            "settings": { "provider": "ollama" }
+        }))
+        .unwrap();
+        let rows = [
+            (
+                "R4",
+                parent_task_config(ProviderTier::Public, vec![]),
+                ask_params(Ask::Private),
+                ask_overrides(Ask::Private),
+            ),
+            (
+                "DR-19",
+                parent_task_config(ProviderTier::Private, vec![]),
+                ask_params(Ask::Public),
+                ask_overrides(Ask::Public),
+            ),
+            (
+                "DR-31",
+                TaskConfig::new(
+                    institution_parent("ucsf"),
+                    "parent-1",
+                    std::path::Path::new("."),
+                    vec![],
+                ),
+                on_ollama,
+                local_child_overrides(),
+            ),
+        ];
+        for (row, task_config, params, overrides) in rows {
+            let refused = match crate::config::with_config_overrides(
+                overrides,
+                overridden_task_config(task_config, &params),
+            )
+            .await
+            {
+                Ok(_) => panic!("{row}: the spawn must be refused"),
+                Err(refused) => refused,
+            };
+            let error = classify_error_data(&refused);
+            assert_eq!(
+                error.kind,
+                ToolErrorKind::PermissionDenied,
+                "{row}: {error:?}"
+            );
+            assert!(!error.retryable, "{row}: {error:?}");
+            assert!(
+                !error.header().contains("Fix the call itself"),
+                "{row}: {}",
+                error.header()
+            );
+            assert!(
+                refused.message.contains("Do not retry"),
+                "{row}: {}",
+                refused.message
+            );
+            assert_eq!(error.message, refused.message, "{row}");
+        }
+
+        // A failure that is not a privacy refusal keeps INVALID_PARAMS and the
+        // classification it always had.
+        let other = child_resolution_error(anyhow!("Provider 'nope' is not set up"));
+        assert_eq!(classify_error_data(&other).kind, ToolErrorKind::InvalidArgs);
+        assert!(other.data.is_none());
     }
 
     /// A temperature-only override changes both possible active halves without
