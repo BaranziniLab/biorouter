@@ -8,6 +8,7 @@ import {
   firstName,
   groupWorkspaceFingerprint,
   hostKeyFingerprints,
+  hostSetupStartCommands,
   hostStartCommands,
   invitationExpiry,
   isUnknownDeviceFailure,
@@ -131,6 +132,21 @@ describe('hostStartCommands', () => {
       expect(commands.split('\n')).toHaveLength(4);
       expect(commands).not.toMatch(/[;`|&<>]|\$\(/);
     }
+  });
+});
+
+describe('hostSetupStartCommands', () => {
+  it('hostSetupStartCommands adds --create on the start line only', () => {
+    // What Set up and start Crew runs (AO-9): the shown commands with `--create` on the start
+    // line, as the daemon's `setup_start_command` builds them (pinned from Rust in
+    // `host_start_tests.rs`).
+    const key = 'k'.repeat(64);
+    const shown = hostStartCommands('lab', key).split('\n');
+    const setup = hostSetupStartCommands('lab', key).split('\n');
+    expect(setup).toHaveLength(shown.length);
+    expect(setup[2]).toBe(`${shown[2]} --create`);
+    expect(setup.filter((line, index) => line !== shown[index])).toEqual([setup[2]]);
+    expect(setup.join('\n').match(/--create/g)).toHaveLength(1);
   });
 });
 

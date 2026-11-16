@@ -70,6 +70,52 @@ fn the_command_matches_the_host_dialogs_template() {
     assert_eq!(host_start_command(slug, KEY).unwrap(), filled.join("\n"));
 }
 
+/// Set up and start Crew shows `hostSetupStartCommands` from `joinText.ts` and compares the setup
+/// job's `host_command` with it; the job runs [`setup_start_command`](super::host_start::setup_start_command).
+/// Filling the dialog's setup template with the same values must give the same text, or every
+/// real setup trips the dialog's "not the commands shown" refusal (W1-01).
+#[test]
+fn the_dialog_setup_template_fills_to_the_setup_start_command() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../ui/desktop/src/components/crew/onboarding/joinText.ts");
+    let source = fs::read_to_string(&path).expect("the Host dialog's command template");
+    let start = source
+        .find("export function hostSetupStartCommands(")
+        .expect("hostSetupStartCommands");
+    let from = source.get(start..).unwrap();
+    let body = from.get(..from.find("\n}\n").unwrap()).unwrap();
+    let template = |line: &'static str| -> &'static str {
+        assert!(
+            body.contains(line),
+            "{line} is not in hostSetupStartCommands"
+        );
+        line
+    };
+    // The shown commands, with the start line's key followed by `--create`: once, and only there.
+    let plain = template("const start = `--bootstrap-key ${bootstrapKey}\\n`;");
+    let create = template("const create = `--bootstrap-key ${bootstrapKey} --create\\n`;");
+    template("return hostStartCommands(slug, bootstrapKey).replace(start, () => create);");
+    let fill = |line: &str, name: &str| {
+        line.trim_start_matches(name)
+            .trim_end_matches("`;")
+            .replace("${bootstrapKey}", KEY)
+            .replace("\\n", "\n")
+    };
+    let plain = fill(plain, "const start = `");
+    let create = fill(create, "const create = `");
+    for slug in ["chen-lab", "lab"] {
+        // `hostStartCommands` fills to `host_start_command` (the test above), and JavaScript's
+        // `replace` with a string pattern replaces the first match only.
+        let filled = host_start_command(slug, KEY)
+            .unwrap()
+            .replacen(&plain, &create, 1);
+        assert_eq!(
+            super::host_start::setup_start_command(slug, KEY).unwrap(),
+            filled
+        );
+    }
+}
+
 #[test]
 fn nothing_outside_the_grammar_reaches_the_command() {
     for slug in [

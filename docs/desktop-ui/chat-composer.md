@@ -32,6 +32,10 @@ The segmented control never moves (R-25): it is the popover's last child, Radix 
 
 Something elsewhere in the app can open the popover straight on this chat's Extensions (`openCurrentChatExtensions`, `utils/sessionToolEvents.ts`). Its one caller is the context card on the footer: when a chat can call more than 60 tools, the card says so in one line, with the reason in an InfoTip, and offers **Review extensions** beside **Compact chat** (`alerts/toolCountWarning.ts`). The tools' definitions are part of what fills the context window that card reports, and the card already follows the hover-peeks, click-pins rule. The line used to be a composer alert, which the October 2026 composer rework removed, leaving the opener with no caller (Phase C F-11).
 
+## Typing `/` and `@`
+
+A `/` at the start of the text or after a space opens the command list, and an `@` opens the mention list; either list closes at the next space or line break (`checkForMentionOrSlash` in `ChatInput.tsx`). A `/` word that holds a further `/` is a path, not a command name, so `/Users/me/notes.md` at the start of a message opens no list and Enter sends it. An `@` word may hold a `/`, because a mention can name a folder. Enter on a list that shows nothing closes it and sends what was typed, as Escape and then Enter would; with rows, Enter picks the highlighted one. `ChatInput.slashPath.test.tsx` holds these rules.
+
 ## Built-in capabilities and contexts, per chat
 
 The shipped capabilities (Developer, Biorouter Copilot, Web & Documents, Auto Visualiser, Memory, Knowledge, Agent Drafter and the rest of Settings > Chat > Capabilities) and the shipped Contexts (Word, PowerPoint, Excel, PDF, Biorouter overview, the Develop Biorouter guides, Knowledge) follow Settings for every new chat. Each one can also be switched for one chat:

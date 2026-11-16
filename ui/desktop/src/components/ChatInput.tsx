@@ -2083,7 +2083,9 @@ export default function ChatInput({
 
     const trigger = beforeCursor[triggerIndex];
     const query = beforeCursor.slice(triggerIndex + 1);
-    if (query.includes(' ') || query.includes('\n')) {
+    // A `/` query with a further `/` is a path, such as `/Users/me/notes.md`, not a command
+    // name: it opens no command list (W1-03). An `@` query may still name a folder.
+    if (query.includes(' ') || query.includes('\n') || (trigger === '/' && query.includes('/'))) {
       setMentionPopover((prev) => ({ ...prev, isOpen: false }));
       return;
     }
@@ -2923,9 +2925,15 @@ export default function ChatInput({
         return;
       }
       if (evt.key === 'Enter') {
-        evt.preventDefault();
-        mentionPopoverRef.current.selectFile(mentionPopover.selectedIndex);
-        return;
+        // A list with nothing in it has nothing to pick: Enter closes it and goes on as Enter
+        // does without it, so what was typed is sent (W1-03).
+        if (mentionPopoverRef.current.getDisplayFiles().length === 0) {
+          setMentionPopover((prev) => ({ ...prev, isOpen: false }));
+        } else {
+          evt.preventDefault();
+          mentionPopoverRef.current.selectFile(mentionPopover.selectedIndex);
+          return;
+        }
       }
       if (evt.key === 'Tab') {
         const displayFiles = mentionPopoverRef.current.getDisplayFiles();

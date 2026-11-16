@@ -9,6 +9,7 @@ import type { CrewPersonRead } from '../account/api';
 import type * as Api from '../../../api/types.gen';
 import { optionalText, wireOf } from '../api/parse';
 import { CrewHttpError, crewHttp } from '../crewApi';
+import { isBrowserSurface } from '../../../utils/surface';
 import { identityCopy, sanitizeDisplayText } from '../identity';
 import {
   CONNECT_FAILURE_CODES,
@@ -412,7 +413,10 @@ export function useChatCrewAccess(
   const refetch = useCallback(() => setNonce((value) => value + 1), []);
 
   useEffect(() => {
-    if (!id) return;
+    // A browser opened with `biorouter serve` has no Crew (SD-8): the daemon refuses every Crew
+    // route there, so nothing is asked and the chat stays 'unknown', showing and blocking
+    // nothing, as the Crew view, its attention dot and the change feed do.
+    if (!id || isBrowserSurface()) return;
     const controller = new AbortController();
     void (async () => {
       let next: Lookup;
