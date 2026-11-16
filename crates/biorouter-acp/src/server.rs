@@ -17,13 +17,14 @@ use rmcp::model::{CallToolResult, RawContent, ResourceContents, Role};
 use sacp::schema::{
     AgentCapabilities, AuthenticateRequest, AuthenticateResponse, AvailableCommand,
     AvailableCommandsUpdate, BlobResourceContents, CancelNotification, Content, ContentBlock,
-    ContentChunk, EmbeddedResource, EmbeddedResourceResource, ImageContent, InitializeRequest,
-    InitializeResponse, LoadSessionRequest, LoadSessionResponse, McpCapabilities, McpServer,
-    NewSessionRequest, NewSessionResponse, PermissionOption, PermissionOptionKind,
-    PromptCapabilities, PromptRequest, PromptResponse, RequestPermissionOutcome,
-    RequestPermissionRequest, ResourceLink, SessionId, SessionNotification, SessionUpdate,
-    StopReason, TextContent, TextResourceContents, ToolCall, ToolCallContent, ToolCallId,
-    ToolCallLocation, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields, ToolKind,
+    ContentChunk, EmbeddedResource, EmbeddedResourceResource, ImageContent, Implementation,
+    InitializeRequest, InitializeResponse, LoadSessionRequest, LoadSessionResponse,
+    McpCapabilities, McpServer, NewSessionRequest, NewSessionResponse, PermissionOption,
+    PermissionOptionKind, PromptCapabilities, PromptRequest, PromptResponse,
+    RequestPermissionOutcome, RequestPermissionRequest, ResourceLink, SessionId,
+    SessionNotification, SessionUpdate, StopReason, TextContent, TextResourceContents, ToolCall,
+    ToolCallContent, ToolCallId, ToolCallLocation, ToolCallStatus, ToolCallUpdate,
+    ToolCallUpdateFields, ToolKind,
 };
 use sacp::{AgentToClient, ByteStreams, Handled, JrConnectionCx, JrMessageHandler, MessageCx};
 use std::collections::HashMap;
@@ -47,6 +48,32 @@ fn dictate_command_update(available: bool) -> Option<AvailableCommandsUpdate> {
             ACP_DICTATE_DESCRIPTION,
         )])
     })
+}
+
+/// The `agentInfo` that `initialize` reports, so a client can name the agent and
+/// its version in its own interface and logs.
+fn acp_agent_info() -> Implementation {
+    Implementation::new("biorouter", env!("CARGO_PKG_VERSION")).title("Biorouter")
+}
+
+/// The folder a `session/new` opens its chat in.
+///
+/// ACP requires the client's `cwd` to be an absolute path, and an editor sends
+/// its project folder there, so the chat's shell and file tools run in it. A cwd
+/// that is not an absolute path to an existing folder is refused without
+/// failing the request: the chat opens in the folder this server was started
+/// in, as every new chat did before the cwd was read, and the refusal is logged.
+fn new_session_dir(requested: &std::path::Path) -> std::path::PathBuf {
+    if requested.is_absolute() && requested.is_dir() {
+        return requested.to_path_buf();
+    }
+    let fallback = std::env::current_dir().unwrap_or_default();
+    warn!(
+        requested_cwd = %requested.display(),
+        working_dir = %fallback.display(),
+        "session/new: the client's cwd is not an absolute path to an existing folder; opening the chat in the server's own folder"
+    );
+    fallback
 }
 
 struct BioRouterAcpSession {
@@ -827,7 +854,9 @@ impl BioRouterAcpAgent {
                     .embedded_context(true),
             )
             .mcp_capabilities(McpCapabilities::new().http(true));
-        Ok(InitializeResponse::new(args.protocol_version).agent_capabilities(capabilities))
+        Ok(InitializeResponse::new(args.protocol_version)
+            .agent_capabilities(capabilities)
+            .agent_info(acp_agent_info()))
     }
 
     async fn on_new_session(
@@ -839,7 +868,7 @@ impl BioRouterAcpAgent {
         let manager = self.agent.config.session_manager.clone();
         let biorouter_session = manager
             .create_session(
-                std::env::current_dir().unwrap_or_default(),
+                new_session_dir(&args.cwd),
                 "ACP Session".to_string(), // just an initial name - may be replaced by maybe_update_name
                 SessionType::User,
             )
@@ -1150,11 +1179,9 @@ impl BioRouterAcpAgent {
 
         use futures::StreamExt;
 
-        let mut was_cancelled = false;
-
         while let Some(event) = stream.next().await {
+            // Nothing that arrives after a cancel reaches the client.
             if cancel_token.is_cancelled() {
-                was_cancelled = true;
                 break;
             }
 
@@ -1183,12 +1210,16 @@ impl BioRouterAcpAgent {
             }
         }
 
+        // Both decisions below read the token, never whether an event arrived
+        // after the cancel: the reply loop sees the cancel too, and its stream
+        // then usually ends on its own before another event arrives (W1-07: the
+        // prompt answered `end_turn` after a Stop).
+        //
         // A cancel while a provider retry waits leaves the retry's note the last
-        // row the model reads, and the next prompt would be sent behind it. The
-        // token, not `was_cancelled`: the reply loop sees the cancel too, and its
-        // stream then usually ends on its own before another event arrives.
+        // row the model reads, and the next prompt would be sent behind it.
         drop(stream);
-        if cancel_token.is_cancelled() {
+        let cancelled = cancel_token.is_cancelled();
+        if cancelled {
             self.agent.retire_unanswered_retry_note(&session_id).await;
         }
 
@@ -1197,7 +1228,8 @@ impl BioRouterAcpAgent {
             session.cancel_token = None;
         }
 
-        Ok(PromptResponse::new(if was_cancelled {
+        // ACP: a prompt the client cancelled answers `cancelled`.
+        Ok(PromptResponse::new(if cancelled {
             StopReason::Cancelled
         } else {
             StopReason::EndTurn
