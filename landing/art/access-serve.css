@@ -1,0 +1,253 @@
+/* Browser access tile (biorouter serve). A terminal pane on the subtle fill
+   with the site's code font, then a browser window over it holding the same
+   interface: a sidebar on the sidebar ground and a chat with the composer card.
+   The window follows the app window of the apps tile (paper, a transparent
+   edge, the window shadow, a bar with three dots). The composer card is
+   the R-32 exception: the page ground with the app's resting hairline, its
+   edge coral while the question is typed. Coral marks only that edge and the
+   armed Send. Everything is scoped under [data-art="access-serve"]. */
+
+[data-art="access-serve"] .acs {
+  position: absolute; inset: 0;
+  container-type: size;
+  font-family: var(--font);
+  color: var(--ink);
+  line-height: 1;
+  -webkit-user-select: none; user-select: none;
+}
+/* The geometry lives one level in, so the size tiers below can restate it (a
+   container query styles only what is inside the container). */
+[data-art="access-serve"] .acs-in {
+  position: absolute; inset: 0;
+  --acs-pad: clamp(12px, 4cqw, 16px);  /* tile edge to the terminal pane */
+  --acs-tx: 12px;                      /* the pane's padding */
+  --acs-ty: 9px;
+  --acs-lh: 16px;                      /* one terminal row */
+  --acs-gap: 8px;                      /* pane edge to the browser window */
+  --acs-bar: 24px;
+  --acs-side: 100px;
+}
+
+/* ── The terminal ──────────────────────────────────────── */
+[data-art="access-serve"] .acs-term {
+  position: absolute; inset: var(--acs-pad);
+  overflow: hidden;
+  padding: var(--acs-ty) var(--acs-tx);
+  background: var(--fill);
+  border: 1px solid transparent;
+  border-radius: var(--r-container);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: var(--acs-lh);
+}
+[data-art="access-serve"] .acs-lines {
+  transition: transform var(--dur-slow) var(--ease), opacity var(--dur-med) var(--ease);
+}
+[data-art="access-serve"] .acs-row {
+  display: block; height: var(--acs-lh);
+  white-space: pre; overflow: hidden;
+  color: var(--muted);
+  transition: opacity var(--dur-med) var(--ease);
+}
+[data-art="access-serve"] .acs-ps { color: var(--subtle); }
+[data-art="access-serve"] .acs-cmd,
+[data-art="access-serve"] .acs-url { color: var(--ink); }
+[data-art="access-serve"] .acs-tcur {
+  display: inline-block; width: 0.6em; height: 13px; margin-left: 1px; vertical-align: -2px;
+  background: var(--muted);
+}
+[data-art="access-serve"] .acs.is-run .acs-tcur { opacity: 0; }
+
+/* serve prints its banner in one go. */
+[data-art="access-serve"] .acs-out { opacity: 0; }
+[data-art="access-serve"] .acs.is-printed .acs-out { opacity: 1; transition-duration: var(--dur-fast); }
+/* Before the browser opens, the terminal moves up four rows so the address
+   sits where the window's top edge will be, and every other row fades as it
+   goes. Then the window rises into the space, with nothing behind it. */
+[data-art="access-serve"] .acs.is-lift .acs-lines { transform: translateY(calc(var(--acs-lh) * -4)); }
+[data-art="access-serve"] .acs.is-lift .acs-fade { opacity: 0; transition-duration: var(--dur-med); }
+
+/* ── The browser window ────────────────────────────────── */
+/* Its top edge sits one terminal row and a gap under the pane's top padding,
+   so the address line stays in view above it. */
+[data-art="access-serve"] .acs-win {
+  position: absolute;
+  top: calc(var(--acs-pad) + 1px + var(--acs-ty) + var(--acs-lh) + var(--acs-gap));
+  left: calc(var(--acs-pad) + var(--acs-gap));
+  right: calc(var(--acs-pad) + var(--acs-gap));
+  bottom: calc(var(--acs-pad) + var(--acs-gap));
+  display: flex; flex-direction: column;
+  background: var(--paper);
+  border: 1px solid transparent;
+  border-radius: var(--r-container);
+  box-shadow: var(--shadow-window);
+  overflow: hidden;
+  opacity: 0; transform: translateY(16px);
+  transition: opacity var(--dur-med) var(--ease), transform var(--dur-slow) var(--ease);
+}
+[data-art="access-serve"] .acs.is-open .acs-win { opacity: 1; transform: none; }
+/* Loop end: the window and the terminal fade together, then the prompt returns. */
+[data-art="access-serve"] .acs.is-out .acs-win,
+[data-art="access-serve"] .acs.is-out .acs-lines { opacity: 0; }
+
+[data-art="access-serve"] .acs-bar {
+  position: relative; flex: none;
+  height: var(--acs-bar);
+  display: flex; align-items: center; justify-content: center;
+  background: var(--sidebar);
+  border-bottom: 1px solid var(--line);
+}
+[data-art="access-serve"] .acs-dots { position: absolute; left: 10px; top: 50%; display: flex; gap: 5px; transform: translateY(-50%); }
+[data-art="access-serve"] .acs-dots i { display: block; width: 7px; height: 7px; border-radius: 50%; background: var(--line-2); }
+/* The address field: a box on a filled ground rests on the paper. */
+[data-art="access-serve"] .acs-addr {
+  display: inline-flex; align-items: center;
+  height: 18px; padding: 0 12px;
+  background: var(--paper);
+  border: 1px solid transparent;
+  border-radius: var(--r-element);
+  font-size: 12px; line-height: 16px; color: var(--muted); white-space: nowrap;
+}
+
+/* ── The page: sidebar and chat ────────────────────────── */
+[data-art="access-serve"] .acs-page { flex: 1 1 auto; min-height: 0; display: flex; }
+[data-art="access-serve"] .acs-side {
+  flex: none; width: var(--acs-side);
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 8px 6px;
+  background: var(--sidebar);
+  overflow: hidden;
+}
+[data-art="access-serve"] .acs-nav {
+  flex: none; height: 22px;
+  display: flex; align-items: center; gap: 7px;
+  padding: 0 6px;
+  font-size: 12px; line-height: 16px; color: var(--muted); white-space: nowrap;
+}
+[data-art="access-serve"] .acs-nav svg { width: 14px; height: 14px; flex: none; }
+[data-art="access-serve"] .acs-nav-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+[data-art="access-serve"] .acs-label {
+  flex: none; padding: 8px 6px 2px;
+  font-size: 12px; line-height: 16px; color: var(--subtle); white-space: nowrap;
+}
+[data-art="access-serve"] .acs-chat svg { color: var(--subtle); }
+
+[data-art="access-serve"] .acs-main {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; flex-direction: column; gap: 6px;
+  padding: 4px 10px 10px;
+}
+/* The transcript sits on the composer; a line that passes its top edge fades. */
+[data-art="access-serve"] .acs-log {
+  flex: 1 1 auto; min-height: 0;
+  display: flex; flex-direction: column; justify-content: flex-end; gap: 6px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 4px);
+  mask-image: linear-gradient(to bottom, transparent 0, black 4px);
+}
+[data-art="access-serve"] .acs-user {
+  flex: none; align-self: flex-end; max-width: 100%;
+  padding: 5px 10px;
+  background: var(--medium);
+  border-radius: var(--r-container);
+  font-size: 13px; line-height: 18px; color: var(--ink); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+  opacity: 0; transform: translateY(4px);
+  transition: opacity var(--dur-med) var(--ease), transform var(--dur-med) var(--ease);
+}
+[data-art="access-serve"] .acs.show-user .acs-user { opacity: 1; transform: none; }
+[data-art="access-serve"] .acs-reply { flex: none; margin: 0; font-size: 13px; line-height: 19px; color: var(--ink); }
+[data-art="access-serve"] .acs-reply .w { opacity: 0; transition: opacity var(--dur-menu) var(--ease); }
+[data-art="access-serve"] .acs-reply .w.on { opacity: 1; }
+
+/* The composer card (R-32): the page ground with the app's resting hairline. */
+[data-art="access-serve"] .acs-card {
+  flex: none;
+  display: flex; flex-direction: column;
+  padding: 4px 4px 4px 11px;
+  background: var(--paper);
+  border: 1px solid var(--line-composer);
+  border-radius: var(--r-container);
+  transition: border-color var(--dur-menu) var(--ease);
+}
+[data-art="access-serve"] .acs.is-edge .acs-card { border-color: var(--coral); }
+[data-art="access-serve"] .acs-input {
+  position: relative; flex: 1 1 auto; min-width: 0;
+  height: 20px; margin: 1px 0 2px;
+  font-size: 13px; line-height: 20px; white-space: nowrap; overflow: hidden;
+}
+[data-art="access-serve"] .acs-ph {
+  position: absolute; left: 2px; top: 0; right: 0;
+  color: var(--muted); overflow: hidden; text-overflow: ellipsis;
+  transition: opacity var(--dur-menu) var(--ease);
+}
+[data-art="access-serve"] .acs.has-text .acs-ph { opacity: 0; transition-duration: var(--dur-fast); }
+[data-art="access-serve"] .acs-typed { color: var(--ink); }
+[data-art="access-serve"] .acs-caret {
+  display: inline-block; width: 1px; height: 15px; margin-left: 1px; vertical-align: -3px;
+  background: var(--ink); opacity: 0;
+}
+[data-art="access-serve"] .acs.is-edge .acs-caret { opacity: 1; }
+[data-art="access-serve"] .acs-ctl {
+  flex: none; height: 28px; margin-left: -6px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+[data-art="access-serve"] .acs-plus { display: grid; place-items: center; width: 24px; height: 24px; color: var(--muted); }
+[data-art="access-serve"] .acs-send {
+  display: grid; place-items: center; flex: none;
+  width: 28px; height: 28px;
+  border-radius: var(--r-element);
+  background: var(--fill); color: var(--muted);
+  transition: background var(--dur-menu) var(--ease), color var(--dur-menu) var(--ease), transform var(--dur-fast) var(--ease);
+}
+[data-art="access-serve"] .acs-plus svg,
+[data-art="access-serve"] .acs-send svg { width: 16px; height: 16px; display: block; }
+[data-art="access-serve"] .acs.has-text .acs-send { background: var(--coral); color: var(--paper); }
+[data-art="access-serve"] .acs.is-press .acs-send { transform: scale(0.98); }
+
+/* ── Size tiers, by the tile's own size ────────────────── */
+/* Narrow tiles: the sidebar keeps its icons and drops its words. */
+@container (max-width: 330px) {
+  [data-art="access-serve"] .acs-in { --acs-side: 34px; --acs-tx: 10px; }
+  [data-art="access-serve"] .acs-side { padding: 8px 5px; }
+  [data-art="access-serve"] .acs-nav { justify-content: center; padding: 0; }
+  [data-art="access-serve"] .acs-nav-t { display: none; }
+  [data-art="access-serve"] .acs-label { height: 10px; padding: 0; visibility: hidden; }
+}
+/* Tiles under 331px wide: the composer's two rows fold into one, so the
+   question and the answer both stay in view. */
+@container (max-height: 248px) {
+  [data-art="access-serve"] .acs-card { flex-direction: row; align-items: center; padding: 3px 3px 3px 11px; }
+  [data-art="access-serve"] .acs-input { margin: 0 8px 0 0; }
+  [data-art="access-serve"] .acs-ctl { margin-left: 0; }
+  [data-art="access-serve"] .acs-plus { display: none; }
+}
+/* Under 307px wide: a tighter window. */
+@container (max-height: 230px) {
+  [data-art="access-serve"] .acs-in { --acs-ty: 8px; --acs-gap: 6px; --acs-bar: 22px; }
+  [data-art="access-serve"] .acs-main { padding: 4px 8px 8px; }
+  [data-art="access-serve"] .acs-side { padding-top: 6px; }
+  [data-art="access-serve"] .acs-addr { height: 16px; }
+}
+/* The shortest tiles (under 283px wide: two columns on 600 to 660px pages)
+   close the gaps a little more and set the chat a size down. */
+@container (max-height: 212px) {
+  [data-art="access-serve"] .acs-in { --acs-ty: 6px; --acs-gap: 4px; --acs-bar: 20px; }
+  [data-art="access-serve"] .acs-main { padding: 2px 6px 6px; }
+  [data-art="access-serve"] .acs-addr { height: 14px; line-height: 14px; }
+  [data-art="access-serve"] .acs-user { padding: 4px 10px; font-size: 12px; line-height: 16px; }
+  [data-art="access-serve"] .acs-reply { font-size: 12px; line-height: 17px; }
+}
+/* Wide single-column tiles grow the terminal type a step. */
+@container (min-width: 460px) {
+  [data-art="access-serve"] .acs-in { --acs-lh: 18px; --acs-tx: 14px; --acs-ty: 12px; --acs-gap: 10px; --acs-side: 112px; }
+  [data-art="access-serve"] .acs-term { font-size: 13px; }
+  [data-art="access-serve"] .acs-tcur { height: 14px; }
+  [data-art="access-serve"] .acs-nav { height: 24px; font-size: 13px; }
+  [data-art="access-serve"] .acs-nav svg { width: 16px; height: 16px; }
+}
+
+/* Loop reset: jump to the first frame without animating back. The repeated
+   class outranks every transition rule above. */
+[data-art="access-serve"] .acs.acs-still.acs-still.acs-still,
+[data-art="access-serve"] .acs.acs-still.acs-still.acs-still * { transition: none; }
