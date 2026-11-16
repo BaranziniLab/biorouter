@@ -553,12 +553,138 @@ fn ollama_recommendation_note(models: &[String]) -> Option<String> {
     ))
 }
 
+/// The value of the "Enter a model not listed..." row in every model list.
+const UNLISTED_MODEL_KEY: &str = "__unlisted__";
+
+/// The row that lets a person type a model the list does not name.
+fn unlisted_model_item() -> (String, String, String) {
+    (
+        UNLISTED_MODEL_KEY.to_string(),
+        "Enter a model not listed...".to_string(),
+        String::new(),
+    )
+}
+
+/// The models `configure` offers for a provider whose listing named nothing
+/// (`fetch_recommended_models` answered `Ok(None)`: the Versa gateways, Amazon
+/// Bedrock, Azure OpenAI and the others with no live model list). They are the
+/// models the provider declares, the list `biorouter models list` prints, with
+/// its default first and marked Recommended, then a row to type any other name.
+/// `None` when it declares none, and the dialog asks for a typed name as before.
+///
+/// Phase C, T1 F3: this path asked for a typed name with the default filled in,
+/// so Versa API Bedrock never showed Sonnet 5.5 or Haiku 5.5 although
+/// `biorouter models list versa_bedrock` named both. The typed-name row is
+/// offered whatever `allows_unlisted_models` says, because this path always
+/// accepted a typed name: a gateway can enable a model before Biorouter lists it.
+fn known_model_items(
+    provider_meta: &biorouter::providers::base::ProviderMetadata,
+) -> Option<Vec<(String, String, String)>> {
+    if provider_meta.known_models.is_empty() {
+        return None;
+    }
+    let default = provider_meta.default_model.as_str();
+    let mut items = vec![(
+        default.to_string(),
+        default.to_string(),
+        "Recommended".to_string(),
+    )];
+    items.extend(
+        provider_meta
+            .known_models
+            .iter()
+            .filter(|model| model.name != default)
+            .map(|model| (model.name.clone(), model.name.clone(), String::new())),
+    );
+    items.push(unlisted_model_item());
+    Some(items)
+}
+
+/// The row a model list opens on: `current` when the list offers it. `None`
+/// opens it on its first row.
+fn preselected_model(items: &[(String, String, String)], current: Option<&str>) -> Option<String> {
+    let current = current?;
+    items
+        .iter()
+        .map(|(value, _, _)| value)
+        .find(|value| *value == current && *value != UNLISTED_MODEL_KEY)
+        .cloned()
+}
+
+/// Ask for one of `items`, opening on `initial` when given; the unlisted row
+/// asks for a typed name.
+fn pick_model(
+    items: &[(String, String, String)],
+    initial: Option<String>,
+    provider_meta: &biorouter::providers::base::ProviderMetadata,
+) -> anyhow::Result<String> {
+    let mut select = cliclack::select("Select a model:").items(items);
+    if let Some(initial) = initial {
+        select = select.initial_value(initial);
+    }
+    let selection = select.interact()?;
+    if selection == UNLISTED_MODEL_KEY {
+        prompt_unlisted_model(provider_meta)
+    } else {
+        Ok(selection)
+    }
+}
+
+/// `items` with `current`, the model in use, offered as a row of its own after
+/// the default when the list does not name it (a deployment the person typed
+/// before), so the list can open on it and Enter keeps it.
+fn with_model_in_use(
+    mut items: Vec<(String, String, String)>,
+    current: Option<&str>,
+) -> Vec<(String, String, String)> {
+    let Some(current) = current.map(str::trim).filter(|current| !current.is_empty()) else {
+        return items;
+    };
+    if current == UNLISTED_MODEL_KEY || items.iter().any(|(value, _, _)| value == current) {
+        return items;
+    }
+    let at = items.len().min(1);
+    items.insert(
+        at,
+        (
+            current.to_string(),
+            current.to_string(),
+            "In use".to_string(),
+        ),
+    );
+    items
+}
+
+/// The model prompt for a provider whose listing named nothing: the models it
+/// declares ([`known_model_items`]), opening on `current`, the model in use,
+/// or, when it declares none, a typed name under `typed_prompt` with
+/// `typed_default` filled in.
+fn prompt_for_unlisted_provider_model(
+    provider_meta: &biorouter::providers::base::ProviderMetadata,
+    current: Option<&str>,
+    typed_prompt: &str,
+    typed_default: &str,
+) -> anyhow::Result<String> {
+    match known_model_items(provider_meta) {
+        Some(items) => {
+            let items = with_model_in_use(items, current);
+            let initial = preselected_model(&items, current.map(str::trim));
+            pick_model(&items, initial, provider_meta)
+        }
+        None => Ok(cliclack::input(typed_prompt)
+            .default_input(typed_default)
+            .interact()?),
+    }
+}
+
+/// Ask for one of a provider's listed `models`, opening on `current`, the model
+/// in use, when the list shows it.
 fn select_model_from_list(
     models: &[String],
     provider_meta: &biorouter::providers::base::ProviderMetadata,
+    current: Option<&str>,
 ) -> anyhow::Result<String> {
     const MAX_MODELS: usize = 10;
-    const UNLISTED_MODEL_KEY: &str = "__unlisted__";
 
     let known_models: Vec<String> = provider_meta
         .known_models
@@ -592,16 +718,14 @@ fn select_model_from_list(
             );
 
             if provider_meta.allows_unlisted_models {
-                model_items.push((
-                    UNLISTED_MODEL_KEY.to_string(),
-                    "Enter a model not listed...".to_string(),
-                    String::new(),
-                ));
+                model_items.push(unlisted_model_item());
             }
 
-            let selection = cliclack::select("Select a model:")
-                .items(&model_items)
-                .interact()?;
+            let mut select = cliclack::select("Select a model:").items(&model_items);
+            if let Some(initial) = preselected_model(&model_items, current) {
+                select = select.initial_value(initial);
+            }
+            let selection = select.interact()?;
 
             if selection == "search_all" {
                 Ok(interactive_model_search(models)?)
@@ -617,22 +741,11 @@ fn select_model_from_list(
         let mut model_items = short_model_list(&provider_meta.name, models, &suggested);
 
         if provider_meta.allows_unlisted_models {
-            model_items.push((
-                UNLISTED_MODEL_KEY.to_string(),
-                "Enter a model not listed...".to_string(),
-                String::new(),
-            ));
+            model_items.push(unlisted_model_item());
         }
 
-        let selection = cliclack::select("Select a model:")
-            .items(&model_items)
-            .interact()?;
-
-        if selection == UNLISTED_MODEL_KEY {
-            prompt_unlisted_model(provider_meta)
-        } else {
-            Ok(selection)
-        }
+        let initial = preselected_model(&model_items, current);
+        pick_model(&model_items, initial, provider_meta)
     }
 }
 
@@ -1197,7 +1310,17 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
     };
     spin.stop(style("Model fetch complete").green());
 
-    // Select a model: on fetch error show styled error and abort; if Some(models), show list; if None, free-text input
+    // Select a model: on fetch error show styled error and abort; if Some(models), show list;
+    // if None, the provider's declared models (else a typed name). Either list opens on the
+    // model in use when it is this provider's.
+    let env_model = std::env::var("BIOROUTER_MODEL").ok();
+    let current = env_model.clone().or_else(|| {
+        config
+            .get_biorouter_provider()
+            .ok()
+            .filter(|current| current == provider_name)
+            .and_then(|_| config.get_biorouter_model().ok())
+    });
     let model: String = match models_res {
         Err(e) => {
             // Provider hook error
@@ -1205,13 +1328,15 @@ pub async fn configure_provider_dialog() -> anyhow::Result<bool> {
             cliclack::outro(style(e.to_string()).on_red().white())?;
             return Ok(false);
         }
-        Ok(Some(models)) => select_model_from_list(&models, provider_meta)?,
+        Ok(Some(models)) => select_model_from_list(&models, provider_meta, current.as_deref())?,
         Ok(None) => {
-            let default_model =
-                std::env::var("BIOROUTER_MODEL").unwrap_or(provider_meta.default_model.clone());
-            cliclack::input("Enter a model from that provider:")
-                .default_input(&default_model)
-                .interact()?
+            let default_model = env_model.unwrap_or(provider_meta.default_model.clone());
+            prompt_for_unlisted_provider_model(
+                provider_meta,
+                current.as_deref(),
+                "Enter a model from that provider:",
+                &default_model,
+            )?
         }
     };
 
@@ -1810,17 +1935,24 @@ pub async fn configure_default_worker_dialog() -> anyhow::Result<()> {
         .await
     };
     spin.stop(style("Model fetch complete").green());
+    let current_model = current
+        .as_ref()
+        .filter(|worker| &worker.provider == provider_name)
+        .map(|worker| worker.model.clone());
     let model: String = match models_res {
-        Ok(Some(models)) if !models.is_empty() => select_model_from_list(&models, provider_meta)?,
+        Ok(Some(models)) if !models.is_empty() => {
+            select_model_from_list(&models, provider_meta, current_model.as_deref())?
+        }
         _ => {
-            let default_model = current
-                .as_ref()
-                .filter(|worker| &worker.provider == provider_name)
-                .map(|worker| worker.model.clone())
+            let default_model = current_model
+                .clone()
                 .unwrap_or_else(|| provider_meta.default_model.clone());
-            cliclack::input("Enter the model name:")
-                .default_input(&default_model)
-                .interact()?
+            prompt_for_unlisted_provider_model(
+                provider_meta,
+                current_model.as_deref(),
+                "Enter the model name:",
+                &default_model,
+            )?
         }
     };
 
@@ -3201,5 +3333,187 @@ mod ollama_model_choice_tests {
         assert!(items[1..]
             .iter()
             .all(|(_, _, h)| h == OLLAMA_CLOUD_MODEL_HINT));
+    }
+}
+
+#[cfg(test)]
+mod unlisted_provider_model_tests {
+    use super::{
+        chat_providers, known_model_items, preselected_model, with_model_in_use, UNLISTED_MODEL_KEY,
+    };
+    use biorouter::providers::base::ProviderMetadata;
+    use biorouter::providers::providers;
+
+    /// The registry's own metadata, the source `biorouter models list` prints.
+    async fn meta(name: &str) -> ProviderMetadata {
+        providers()
+            .await
+            .into_iter()
+            .find(|(m, _)| m.name == name)
+            .map(|(m, _)| m)
+            .unwrap_or_else(|| panic!("no registry entry for `{name}`"))
+    }
+
+    fn values(items: &[(String, String, String)]) -> Vec<&str> {
+        items.iter().map(|(value, _, _)| value.as_str()).collect()
+    }
+
+    /// Phase C, T1 F3: Versa API Bedrock has no model listing, so `configure`
+    /// asked for a typed name with Opus 5.5 filled in and never showed Sonnet
+    /// 5.5 or Haiku 5.5, which `biorouter models list versa_bedrock` names.
+    #[tokio::test]
+    async fn configure_offers_versa_bedrocks_sonnet_and_haiku_5_5_with_opus_5_5_first() {
+        let meta = meta("versa_bedrock").await;
+        let items = known_model_items(&meta).expect("Versa API Bedrock declares its models");
+        let offered = values(&items);
+
+        assert_eq!(offered[0], "us.anthropic.claude-opus-5-5");
+        assert_eq!(offered[0], meta.default_model);
+        assert_eq!(items[0].2, "Recommended");
+        for model in [
+            "us.anthropic.claude-sonnet-5-5",
+            "us.anthropic.claude-haiku-5-5",
+        ] {
+            assert!(
+                offered.contains(&model),
+                "{model} is not offered: {offered:?}"
+            );
+        }
+        // Every model `models list` prints, once each, then the typed-name row.
+        for known in &meta.known_models {
+            assert_eq!(
+                offered.iter().filter(|v| **v == known.name).count(),
+                1,
+                "{} in {offered:?}",
+                known.name
+            );
+        }
+        assert_eq!(items.len(), meta.known_models.len() + 1);
+        assert_eq!(offered.last(), Some(&UNLISTED_MODEL_KEY));
+        assert_eq!(items.last().unwrap().1, "Enter a model not listed...");
+        assert!(items[1..].iter().all(|(_, _, hint)| hint.is_empty()));
+    }
+
+    /// The other Versa gateway answers the same way: its deployments, its
+    /// default first.
+    #[tokio::test]
+    async fn configure_offers_versa_azures_deployments_with_its_default_first() {
+        let meta = meta("versa_azure").await;
+        let items = known_model_items(&meta).expect("Versa API Azure declares its models");
+        let offered = values(&items);
+        assert_eq!(offered[0], meta.default_model);
+        assert_eq!(items[0].2, "Recommended");
+        let declared: Vec<&str> = meta.known_models.iter().map(|m| m.name.as_str()).collect();
+        let mut listed: Vec<&str> = offered[..offered.len() - 1].to_vec();
+        listed.sort_unstable();
+        let mut expected = declared.clone();
+        expected.sort_unstable();
+        assert_eq!(listed, expected);
+        assert_eq!(offered.last(), Some(&UNLISTED_MODEL_KEY));
+    }
+
+    /// Every chat provider: a declared list is offered with the default first
+    /// and marked, and a provider that declares none (Ollama) keeps the typed
+    /// name.
+    #[tokio::test]
+    async fn every_provider_that_declares_models_offers_them_default_first() {
+        for (meta, _) in chat_providers().await {
+            match known_model_items(&meta) {
+                None => assert!(meta.known_models.is_empty(), "{}", meta.name),
+                Some(items) => {
+                    assert!(!meta.known_models.is_empty(), "{}", meta.name);
+                    assert_eq!(items[0].0, meta.default_model, "{}", meta.name);
+                    assert_eq!(items[0].2, "Recommended", "{}", meta.name);
+                    assert_eq!(
+                        items.iter().filter(|(_, _, h)| !h.is_empty()).count(),
+                        1,
+                        "{}: only the default is marked",
+                        meta.name
+                    );
+                    assert_eq!(items.last().unwrap().0, UNLISTED_MODEL_KEY, "{}", meta.name);
+                }
+            }
+        }
+        assert!(known_model_items(&meta("ollama").await).is_none());
+    }
+
+    /// The list opens on the model in use when it is one of the listed models.
+    #[tokio::test]
+    async fn the_list_opens_on_the_model_in_use_when_it_is_listed() {
+        let items = known_model_items(&meta("versa_bedrock").await).unwrap();
+        assert_eq!(
+            preselected_model(&items, Some("us.anthropic.claude-haiku-5-5")).as_deref(),
+            Some("us.anthropic.claude-haiku-5-5")
+        );
+        assert_eq!(
+            preselected_model(&items, Some("gpt-5.6-sol-2026-07-09")),
+            None
+        );
+        assert_eq!(preselected_model(&items, Some(UNLISTED_MODEL_KEY)), None);
+        assert_eq!(preselected_model(&items, None), None);
+    }
+
+    /// A model in use that the list does not name (a deployment typed before)
+    /// gets a row of its own after the default, and the list opens on it; one
+    /// the list names is not repeated.
+    #[tokio::test]
+    async fn a_model_in_use_the_list_does_not_name_is_offered_after_the_default() {
+        let items = known_model_items(&meta("versa_azure").await).unwrap();
+        let default = items[0].0.clone();
+
+        let with_custom = with_model_in_use(items.clone(), Some(" my-lab-deployment "));
+        assert_eq!(with_custom.len(), items.len() + 1);
+        assert_eq!(with_custom[0].0, default, "the default stays first");
+        assert_eq!(
+            with_custom[1],
+            (
+                "my-lab-deployment".to_string(),
+                "my-lab-deployment".to_string(),
+                "In use".to_string()
+            )
+        );
+        assert_eq!(
+            preselected_model(&with_custom, Some("my-lab-deployment")).as_deref(),
+            Some("my-lab-deployment")
+        );
+
+        let listed = items[1].0.clone();
+        assert_eq!(with_model_in_use(items.clone(), Some(&listed)), items);
+        assert_eq!(with_model_in_use(items.clone(), None), items);
+        assert_eq!(with_model_in_use(items.clone(), Some("  ")), items);
+        assert_eq!(
+            with_model_in_use(items.clone(), Some(UNLISTED_MODEL_KEY)),
+            items
+        );
+    }
+
+    /// Both dialogs reach the list when the provider has no listing. Read at
+    /// the source, because the dialog is a terminal conversation.
+    #[test]
+    fn both_model_prompts_offer_the_declared_models() {
+        let source = include_str!("configure.rs");
+        for dialog in [
+            "pub async fn configure_provider_dialog()",
+            "pub async fn configure_default_worker_dialog()",
+        ] {
+            let (_, body) = source.split_once(dialog).expect("the dialog");
+            let (body, _) = body.split_once("\n}\n").expect("its end");
+            assert!(
+                body.contains("prompt_for_unlisted_provider_model("),
+                "{dialog} asks for a typed model without offering the declared ones"
+            );
+            assert!(
+                body.contains("select_model_from_list(&models, provider_meta, current"),
+                "{dialog}'s listed models do not open on the model in use"
+            );
+            assert!(
+                !body.contains("cliclack::input(\"Enter a model"),
+                "{dialog}"
+            );
+            assert!(
+                !body.contains("cliclack::input(\"Enter the model"),
+                "{dialog}"
+            );
+        }
     }
 }

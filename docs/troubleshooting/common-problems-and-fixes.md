@@ -244,8 +244,8 @@ Welcome to biorouter! Let's get you set up with a provider.
 ◇  Save this value in Biorouter's settings?
 │  No
 │
-◇  Enter a model from that provider:
-│  gemini-2.0-flash-exp
+◇  Select a model:
+│  gemini-3.1-pro-preview
 ```
 
 You may also use the `BIOROUTER_DISABLE_KEYRING` environment variable, which disables the system keyring for secret storage. Set to any value (e.g., "1", "true", "yes"), to disable. The actual value doesn't matter, only whether the variable is set.
