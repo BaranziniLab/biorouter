@@ -55,6 +55,7 @@ This page uses the bare names for readability.
 | `workspace_set_tools` | Extensions, skills and provider work; `set_knowledge_bases` refuses |
 | `workspace_close` | `tab` is a stated no-op; `turn` and `agent` refuse |
 | `workspace_open` | `session_id` form reports the session with no tab; `new` refuses |
+| `workspace_read_panel` | Refuses: `no GUI is attached, so there is no preview panel to read` |
 | `workspace_orchestrate` | Works: it reads and writes only the caller's own session row |
 | `workspace_monitor` | Works: it reads and writes this chat's or the subagent's monitors in the session store |
 | `subagent` | Works, headless (no tab) |
@@ -539,6 +540,51 @@ Headless: `Session {id} ready (gui_attached: false — no tab opened; the sessio
 ### When to reach for it
 
 To start parallel work **the user** should be able to see, and to bring an existing conversation forward. Not to delegate: delegation is `subagent`, whatever the request is phrased as. Note that there is no separate "focus" call — `workspace_open { session_id }` always sends `open_tab` and relies on the reducer's dedupe/adopt rule to focus an existing tab.
+
+---
+
+## `workspace_read_panel`
+
+Reads what a conversation's preview panel shows now: the rendered document, figure, file or live web page. Text by default, a screenshot with `capture: true`.
+
+### Arguments
+
+| Name | Type | Default | Meaning |
+|---|---|---|---|
+| `session_id` | string | the caller's own conversation | The conversation whose preview panel to read. |
+| `max_chars` | u32 | unset | How much text to return. The schema description says the default is 20000; `handle_panel` forwards the value to the GUI only when the caller set it. Ignored when `capture` is true. |
+| `capture` | bool | `false` | `false` returns the panel's text, which is cheaper and can be acted on. `true` returns a screenshot, for judging how something looks or for a panel that is an image with no readable text. |
+
+### Returns
+
+- **Default:** one text content, built by `frame_panel_reply`. Every page-controlled string in the GUI's reply is defanged, and the whole reply sits inside a frame marked `untrusted="true"`, because the page picks the title and locator whatever the content turns out to be.
+- **`capture: true`:** that same metadata text plus a PNG image content. The PNG is read from a screenshot path the GUI returns, which must be a regular `.png` file under `<tmp>/biorouter-pasted-images`, no larger than 16 MiB (`PANEL_CAPTURE_MAX_BYTES`). The file is removed once read.
+- If the GUI returns no screenshot path, only the text comes back.
+
+The frame sent to the GUI is `{"type":"workspace","cmd":"read_panel"|"capture_panel","session_id":…}`, plus `max_chars` when set. It goes through `gui_command_near` to the window holding that session, not to whichever window is focused, because the panel belongs to a tab ([#78](https://github.com/BaranziniLab/biorouter/issues/78)).
+
+### Refusals
+
+All of these come back as ordinary `Error: …` tool results.
+
+- **The privacy read gate runs first, before the GUI is contacted** (`refuse_unless_visible`). A public-capability caller is refused a private session's panel, with the same sentence an absent target gets, so resolving what is on a private screen is never the way to see it.
+- `no GUI is attached, so there is no preview panel to read` when there is no daemon or GUI handle.
+- `could not reach the GUI: {err}` when the GUI call fails.
+- `the panel session could not be verified` when the reply carries an absolute locator and the session lookup fails.
+- `the previewed file is excluded by .biorouterignore or the secret guard` when that locator is denied. Any screenshot the GUI took is discarded, not returned.
+- A subagent is refused this tool like every `workspace_*` tool.
+
+### Offer and the retired alias
+
+The tool is in `get_tools()` through `panel_tools()`, narrowed only by the extension entry's `available_tools`. The auto-injected delegation surface does not include it (see [`subagent`](#subagent)).
+
+`config.is_tool_available("workspace_read_panel")` (`MoimParts::granted_by`) gates something else: the per-turn panel context in the MOIM (the message the extension adds to each turn). The delegation grant holds `workspace_orchestrate` and not `workspace_read_panel`, so a chat that only delegates sees its plan every turn and no panel.
+
+`workspace_capture_panel` is retired from `get_tools()` and folded into `workspace_read_panel { capture: true }`. The dispatcher still accepts it, it is listed in `DISPATCHED_TOOL_NAMES` (so the subagent refusal covers it), and it is treated as `capture: true`. Both names reach dispatch only in their prefixed form, `workspace__workspace_read_panel`.
+
+### When to reach for it
+
+To check what a figure, report or page in the panel actually says, read it as text. To judge whether it looks right, pass `capture: true`.
 
 ---
 
