@@ -26,7 +26,15 @@ import { fileURLToPath } from 'node:url';
 import { build, type Plugin } from 'esbuild';
 import { chromium, type Browser, type Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { CHAT_COLUMN_CHROME, CHAT_MIN_WIDTH } from '../Layout/yieldLadder';
+import postcss from 'postcss';
+import { fontScale } from '../../../vite-plugins/fontScale.mjs';
+import {
+  CHAT_COLUMN_CHROME,
+  CHAT_MIN_WIDTH,
+  PANE_COMPOSER_BAR_HEIGHT,
+  PANE_HEADER_HEIGHT,
+  PANE_MIN_HEIGHT,
+} from '../Layout/yieldLadder';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const STYLES = resolve(here, '../../styles');
@@ -346,6 +354,18 @@ function App() {
       <div id="home-ground" className="bg-background-canvas" style={{ padding: 24, width: 760 }}>
         <Card id="home" />
       </div>
+      {/* BaseChat's composer bar as it wraps ChatInput (its pt-7 and pb-6, and the transcript's
+          28px gutters), at rest in a 360px pane: what rung 5's height floor is built on. */}
+      <div id="bar-pane" className="bg-background-canvas" style={{ width: 360 }}>
+        <div
+          id="bar"
+          data-preview-area="composer"
+          className="biorouter-chat-composer-bar flex-shrink-0 pb-6 pt-7 bg-background-canvas"
+          style={{ paddingInline: 28 }}
+        >
+          <Card id="bar-card" />
+        </div>
+      </div>
     </div>
   );
 }
@@ -406,11 +426,21 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
     await browser?.close();
   }, 120_000);
 
-  async function open(mode: 'light' | 'dark', forcedColors = false): Promise<Page> {
+  let scaled: Promise<string> | null = null;
+  /** The stylesheet through the app's own font-scale plugin, as the app's bundler serves it. */
+  const scaledCss = () =>
+    (scaled ??= postcss([fontScale()])
+      .process(css, { from: undefined })
+      .then((result) => result.css));
+
+  /** `scale` sets the Text size preference's `--app-font-scale` (Larger text is 1.15). */
+  async function open(mode: 'light' | 'dark', forcedColors = false, scale?: number): Promise<Page> {
     const tab = await browser!.newPage({ viewport: { width: 808, height: 1100 } });
     if (forcedColors) await tab.emulateMedia({ forcedColors: 'active' });
     await tab.setContent(
-      `<!doctype html><html class="${mode === 'dark' ? 'dark' : ''}"><head><style>${css}</style></head>` +
+      `<!doctype html><html class="${mode === 'dark' ? 'dark' : ''}"` +
+        (scale ? ` style="--app-font-scale: ${scale}"` : '') +
+        `><head><style>${scale ? await scaledCss() : css}</style></head>` +
         `<body style="margin:0;background:var(--background-default)"><div id="root"></div></body></html>`
     );
     await tab.addScriptTag({ content: script });
@@ -664,7 +694,45 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
     }
   });
 
-  it.for([760, 440, CHAT_MIN_WIDTH])(
+  /**
+   * Rung 5's height floor (`PANE_MIN_HEIGHT`, compact panes) is the 44px band, this bar and four
+   * lines of transcript. The bar was 174px before the one-line composer; if it moves again this
+   * fails, and `PANE_COMPOSER_BAR_HEIGHT` takes the measured value.
+   */
+  it('measures the resting composer bar the compact pane height floor is built on', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open('light');
+    try {
+      const bar = await tab.evaluate(
+        () => document.getElementById('bar')!.getBoundingClientRect().height
+      );
+      expect(
+        Math.abs(bar - PANE_COMPOSER_BAR_HEIGHT),
+        `the resting bar measured ${bar}px`
+      ).toBeLessThanOrEqual(2);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it('keeps the band and the composer bar under the height floor at Larger text', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open('light', false, 1.15);
+    try {
+      const bar = await tab.evaluate(
+        () => document.getElementById('bar')!.getBoundingClientRect().height
+      );
+      // The stylesheet really scaled: the bar is taller than at standard text.
+      expect(bar, `the Larger text bar measured ${bar}px`).toBeGreaterThan(
+        PANE_COMPOSER_BAR_HEIGHT + 2
+      );
+      expect(PANE_HEADER_HEIGHT + bar).toBeLessThan(PANE_MIN_HEIGHT);
+    } finally {
+      await tab.close();
+    }
+  });
+
+  it.for([760, 440, CHAT_MIN_WIDTH, 320])(
     'keeps +, the text, the microphone and Send on one row, and the model on the footer line, in a %ipx pane',
     async (width, ctx) => {
       if (!browser) return ctx.skip();
@@ -728,6 +796,11 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
             send: box(card, '#rest-send'),
             modelInCard: card.querySelector('[data-kind="model"]') !== null,
             footer: { ...footer.getBoundingClientRect().toJSON(), scrollWidth: footer.scrollWidth },
+            cardOverflow: { scrollWidth: card.scrollWidth, clientWidth: card.clientWidth },
+            paneOverflow: {
+              scrollWidth: document.getElementById('chat-ground')!.scrollWidth,
+              clientWidth: document.getElementById('chat-ground')!.clientWidth,
+            },
             folderGlyph: box(footer, '[data-testid="footer-folder"] svg'),
             model: box(footer, '[data-kind="model"]'),
             name: box(footer, '[data-kind="model"] .br-picker-chip__name'),
@@ -803,6 +876,14 @@ describe('the chat composer card under the whole stylesheet (R-32)', () => {
         }
         expect(geometry.folderGlyph.right).toBeLessThanOrEqual(geometry.model.left);
         expect(geometry.footer.scrollWidth).toBeLessThanOrEqual(geometry.footer.width);
+        // Nothing crosses the card or the pane sideways, down to a lone 320px browser pane
+        // (compact panes: a lone pane is never replaced, so it must hold its composer).
+        expect(geometry.cardOverflow.scrollWidth).toBeLessThanOrEqual(
+          geometry.cardOverflow.clientWidth
+        );
+        expect(geometry.paneOverflow.scrollWidth).toBeLessThanOrEqual(
+          geometry.paneOverflow.clientWidth
+        );
         // In the footer the chip is a readout: 24px, no chevron, its name giving way first.
         expect(geometry.model.height).toBe(24);
         expect(geometry.chevron.display).toBe('none');
