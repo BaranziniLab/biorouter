@@ -213,11 +213,17 @@
 @container (max-height: 205px) {
   .art-dictation .dx-term[data-i="1"] { display: none; }
 }
-@container (max-width: 270px) {
-  .art-dictation .dx-composer { padding: 6px 5px; }
+@container (max-width: 280px) {
+  .art-dictation .dx-composer { padding: 6px 3px; }
   .art-dictation .dx-row { gap: 0; }
   .art-dictation .dx-field { padding-left: 2px; }
   .art-dictation .dx-ph { left: 5px; }
+}
+/* At 258 wide the line and its caret still need a few pixels more: the
+   Dictionary slice and the composer sit 10px in from the frame. */
+@container (max-width: 265px) {
+  .art-dictation .dx-top,
+  .art-dictation .dx-composer { left: 10px; right: 10px; }
 }
 
 /* Tall tiles (two columns, 429 by 322): a third row. */

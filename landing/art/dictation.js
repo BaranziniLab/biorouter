@@ -157,10 +157,11 @@
     // The dictated draft: the still frame for reduced motion, and the frame
     // shown before the tile starts. The text is in the field, TREM2 spelled as
     // the dictionary row above it, Send armed, the microphone back at rest.
+    // The field is drawn unfocused here (no caret, the resting hairline): a
+    // caret always comes with the accent edge, as in the app.
     function still() {
       reset();
       set('show-dict', true);
-      set('is-focus', true);
       insert();
     }
 
@@ -191,13 +192,13 @@
       set('is-press', false); set('is-busy', true); set('has-heard', false);
       stopLevel();
     }]);
-    // The transcript lands as one edit. The edge returns to its hairline so the
-    // armed Send and the dictionary's spelling carry the accent.
+    // The transcript lands as one edit. The field keeps its focus, so its
+    // caret and its accent edge stay (utils/dictatedText.ts focuses the field
+    // for the insert).
     var INSERT_AT = STOP_AT + 600;
     plan.push([INSERT_AT, function () {
       set('is-rec', false); set('is-busy', false);
       ph.textContent = PH_EMPTY;
-      set('is-edge', false);
       insert();
       set('is-hit', true);
     }]);
@@ -206,7 +207,7 @@
     var NOTE_AT = INSERT_AT + 2600;
     plan.push([NOTE_AT, function () { set('show-note', true); }]);
     var CLEAR_AT = NOTE_AT + 2700;
-    plan.push([CLEAR_AT, function () { set('is-clearing', true); }]);
+    plan.push([CLEAR_AT, function () { set('is-clearing', true); set('is-edge', false); }]);
     var LOOP = CLEAR_AT + 600;
     plan.sort(function (a, b) { return a[0] - b[0]; });
     // On scroll-in the still frame holds briefly, then the disclosure arrives

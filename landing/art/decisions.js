@@ -114,7 +114,9 @@
     var metaIn = q('.dm-meta-in'), well = q('.dm-well'), asks = q('.dm-asks');
 
     // Width: the row's meta gives way first, then its chevron, so the summary
-    // keeps every word (the app would truncate it; a tile never cuts words).
+    // keeps every word. Only on the narrowest tile, where the summary alone is
+    // wider than the line, does it truncate as the app's row does (CSS); its
+    // full width is read from scrollWidth there.
     // Height: the Escalated list hangs below the frame by all but its first
     // chunk, so that chunk sits on the bottom edge and the next one runs out
     // under the fade.
@@ -122,7 +124,8 @@
       line.classList.remove('dm-fit-meta', 'dm-fit-chev');
       var avail = line.clientWidth;
       var lead = glyph.offsetWidth + 8;
-      var run = runText.offsetWidth, done = doneText.offsetWidth;
+      var run = Math.max(runText.offsetWidth, runText.scrollWidth);
+      var done = Math.max(doneText.offsetWidth, doneText.scrollWidth);
       var chev = 22; // 16px glyph and its 6px gap
       var showChev = lead + Math.max(run, done) + chev <= avail + 0.5;
       var showMeta = lead + Math.max(run, done + metaIn.scrollWidth) + (showChev ? chev : 0) <= avail + 0.5;

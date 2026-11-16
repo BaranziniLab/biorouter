@@ -177,6 +177,18 @@
   .art-decisions .dm-well { margin-top: 2px; padding: 9px 11px; }
 }
 
+/* The narrowest tiles (two columns just above a 600px window, 258 to 275
+   wide): the summary alone is wider than the line, so it truncates as the
+   app's row does, rather than running past the frame. decisions.js has
+   already dropped the meta and the chevron by then. */
+@container (max-width: 275px) {
+  .art-decisions .dm-label { flex: 0 1 auto; min-width: 0; grid-template-columns: minmax(0, 1fr); }
+  .art-decisions .dm-run,
+  .art-decisions .dm-done { justify-self: stretch; min-width: 0; overflow: hidden; }
+  .art-decisions .dm-run .dm-t { display: block; overflow: hidden; text-overflow: ellipsis; }
+  .art-decisions .dm-dt { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+}
+
 /* Resets between loops happen with no transition at all. Kept last. */
 [data-art="decisions"] .art-decisions.dm-instant,
 [data-art="decisions"] .art-decisions.dm-instant * { transition: none; }
