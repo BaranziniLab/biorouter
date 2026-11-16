@@ -326,6 +326,31 @@ fn take_correction(
     }
 }
 
+/// A backend slash command (`/effort deep`) yields the person's own prompt back ahead of
+/// its answer, carrying the id the store gave the row. The REPL printed that line as it was
+/// typed and pushed the prompt before the turn, so the copy is the same message: it takes
+/// the place of the copy pushed without an id, and is not printed a second time. True when
+/// `message` was that echo.
+fn adopt_prompt_echo(messages: &mut Conversation, message: &Message) -> bool {
+    let text_only = !message.content.is_empty()
+        && message
+            .content
+            .iter()
+            .all(|content| matches!(content, MessageContent::Text(_)));
+    let echoes = message.role == rmcp::model::Role::User
+        && text_only
+        && messages.last().is_some_and(|last| {
+            last.role == rmcp::model::Role::User
+                && last.id.is_none()
+                && last.as_concat_text() == message.as_concat_text()
+        });
+    if echoes {
+        messages.pop();
+        messages.push(message.clone());
+    }
+    echoes
+}
+
 /// `/dictate status` in the classic REPL.
 #[cfg(feature = "dictation")]
 fn print_dictation_status(dictation_state: &crate::dictation::frontend::FrontendSession) {
@@ -1023,6 +1048,17 @@ impl CliSession {
                 history.save(editor);
                 self.handle_biorouter_mode(&mode)?;
             }
+            InputResult::ShowMode => {
+                history.save(editor);
+                let mode = Config::global()
+                    .get_biorouter_mode()
+                    .unwrap_or(BioRouterMode::Auto);
+                output::biorouter_mode_message(&input::mode_status_line(mode));
+            }
+            InputResult::TuiOnly(command) => {
+                history.save(editor);
+                println!("{}", input::tui_only_note(command, &self.session_id));
+            }
             InputResult::Plan(options) => {
                 self.handle_plan_mode(options).await?;
             }
@@ -1297,8 +1333,9 @@ impl CliSession {
             Ok(mode) => mode,
             Err(_) => {
                 output::render_error(&format!(
-                    "Invalid mode '{}'. Mode must be one of: auto, approve, chat, smart_approve",
-                    mode
+                    "Invalid mode '{}'. Mode must be one of: {}",
+                    mode,
+                    input::MODE_NAMES
                 ));
                 return Ok(());
             }
@@ -2041,7 +2078,10 @@ impl CliSession {
                                 }
                             } else {
                                 log_tool_metrics(&message, &self.messages);
-                                self.messages.push(message.clone());
+                                let echoed = adopt_prompt_echo(&mut self.messages, &message);
+                                if !echoed {
+                                    self.messages.push(message.clone());
+                                }
 
                                 // A tool call that has answered streams no more
                                 // lines: print whatever of its output is still
@@ -2057,7 +2097,7 @@ impl CliSession {
 
                                 if is_stream_json_mode {
                                     emit_stream_event(&StreamEvent::Message { message: message.clone() });
-                                } else if !is_json_mode {
+                                } else if !is_json_mode && !echoed {
                                     output::render_message(&message, self.debug);
                                 }
 
@@ -3505,6 +3545,44 @@ mod tests {
             output_format.to_string(),
         )
         .await
+    }
+
+    /// W1-24: a backend slash command (`/effort deep`) yields the person's own prompt
+    /// back ahead of its answer, carrying the id the store gave it. The classic REPL
+    /// printed that copy as a second "/effort deep" and kept the prompt twice, once
+    /// without the id and once with it.
+    #[tokio::test]
+    async fn a_backend_command_keeps_its_prompt_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = std::sync::Arc::new(biorouter::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let mut session = test_cli_session(manager, "text").await;
+        session.push_message(Message::user().with_text("/effort deep"));
+        session
+            .process_agent_response(false, CancellationToken::default())
+            .await
+            .unwrap();
+        let messages = session.messages.messages();
+        let prompts: Vec<&Message> = messages
+            .iter()
+            .filter(|message| message.role == rmcp::model::Role::User)
+            .collect();
+        assert_eq!(prompts.len(), 1, "{messages:#?}");
+        assert_eq!(prompts[0].as_concat_text(), "/effort deep");
+        assert!(prompts[0].id.is_some(), "the stored copy is the one kept");
+        assert_eq!(
+            messages.len(),
+            2,
+            "the prompt and the answer: {messages:#?}"
+        );
+        assert!(
+            matches!(
+                messages[1].content.as_slice(),
+                [MessageContent::SystemNotification(note)] if note.msg.contains("deep")
+            ),
+            "the answer is the effort notice: {messages:#?}"
+        );
     }
 
     /// `/workflow` refuses a chat a Crew grant restricts BEFORE the model is

@@ -397,6 +397,39 @@ pub async fn retry_in_terminal(
     interact(Frontend::retry(session_id, model_affiliation, state)).await
 }
 
+/// The classic REPL's one status row while a recording runs. The terminal is in raw mode,
+/// so a `\r` returns to column 0 and nothing clears what it writes over.
+#[derive(Default)]
+struct StatusLine {
+    /// The columns the row's last status took.
+    width: usize,
+}
+
+impl StatusLine {
+    /// The bytes that draw `status` over the row's last one. A shorter status is padded
+    /// with spaces to the last one's width, then drawn again so the cursor ends with it.
+    fn redraw(&mut self, status: &str) -> String {
+        let width = unicode_width::UnicodeWidthStr::width(status);
+        let left_over = self.width.saturating_sub(width);
+        self.width = width;
+        if left_over == 0 {
+            format!("\r{status}")
+        } else {
+            format!("\r{status}{}\r{status}", " ".repeat(left_over))
+        }
+    }
+
+    /// The bytes that blank the row and leave the cursor at its column 0, where the
+    /// transcript's line, or a failure's reason, is written next. A `\n` would not do: in
+    /// raw mode it moves down without returning to column 0, which is what pushed the
+    /// Context line right.
+    fn clear(&mut self) -> String {
+        let blank = " ".repeat(self.width);
+        self.width = 0;
+        format!("\r{blank}\r")
+    }
+}
+
 async fn interact(mut frontend: Frontend) -> Result<Option<String>, String> {
     struct RawMode;
     impl Drop for RawMode {
@@ -408,26 +441,27 @@ async fn interact(mut frontend: Frontend) -> Result<Option<String>, String> {
     let _raw = RawMode;
     let mut terminal = EventStream::new();
     let mut last_status = String::new();
+    let mut line = StatusLine::default();
     loop {
         tokio::select! {
             event = frontend.events.recv() => match event {
-                Some(Event::Starting) => eprint!("\r{}", messages::LINE_STARTING),
+                Some(Event::Starting) => eprint!("{}", line.redraw(messages::LINE_STARTING)),
                 Some(Event::Recording(status) | Event::Transcribing(status)) => {
                     if status != last_status {
-                        eprint!("\r{status}  ");
+                        eprint!("{}", line.redraw(&status));
                         last_status = status;
                     }
                 }
                 Some(Event::Text(text)) => {
-                    eprintln!();
+                    eprint!("{}", line.clear());
                     return Ok(Some(text));
                 }
                 Some(Event::Failed(reason)) => {
-                    eprintln!();
+                    eprint!("{}", line.clear());
                     return Err(reason);
                 }
                 Some(Event::Cancelled) | None => {
-                    eprintln!();
+                    eprint!("{}", line.clear());
                     return Ok(None);
                 }
             },
@@ -1137,6 +1171,74 @@ async fn drain(child: &mut CaptureChild, recorder: &mut Recorder) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a terminal shows after `bytes`, as its rows and the cursor's (row, column):
+    /// a `\r` returns to column 0, a `\n` (raw mode, so no carriage return) moves down a
+    /// row at the same column, and every other character writes one cell, as each of the
+    /// status lines' characters does.
+    fn screen_after(bytes: &str) -> (Vec<String>, (usize, usize)) {
+        let mut rows = vec![Vec::<char>::new()];
+        let (mut row, mut column) = (0, 0);
+        for c in bytes.chars() {
+            match c {
+                '\r' => column = 0,
+                '\n' => {
+                    row += 1;
+                    if rows.len() <= row {
+                        rows.push(Vec::new());
+                    }
+                }
+                c => {
+                    let cells = &mut rows[row];
+                    while cells.len() <= column {
+                        cells.push(' ');
+                    }
+                    cells[column] = c;
+                    column += 1;
+                }
+            }
+        }
+        let rows = rows
+            .into_iter()
+            .map(|cells| cells.into_iter().collect::<String>().trim_end().to_string())
+            .collect();
+        (rows, (row, column))
+    }
+
+    /// W1-29: the recording line is longer than the transcribing one, and the redraw
+    /// never cleared to the end of the row, so "◌ Transcribing 0:08…" kept the REC line's
+    /// tail ("r stop · Esc cancel"). Clearing before the transcript leaves the cursor at
+    /// column 0 of a blank row, so the Context line that follows is not pushed right.
+    #[test]
+    fn a_shorter_status_clears_the_longer_one() {
+        let mut line = StatusLine::default();
+        let mut out = line.redraw(messages::LINE_STARTING);
+        out += &line.redraw(&messages::line_recording(7_000, &[0.1, 0.4, 0.7]));
+        out += &line.redraw(&messages::line_transcribing(8_000));
+        let (rows, (_, column)) = screen_after(&out);
+        assert_eq!(rows, ["◌ Transcribing 0:08…"]);
+        assert_eq!(
+            column,
+            "◌ Transcribing 0:08…".chars().count(),
+            "cursor at the end"
+        );
+
+        out += &line.clear();
+        let (rows, cursor) = screen_after(&out);
+        assert!(rows.iter().all(|row| row.is_empty()), "{rows:?}");
+        assert_eq!(
+            cursor,
+            (0, 0),
+            "the next line starts at column 0 of the same row"
+        );
+
+        // A status drawn after a clear starts from a blank row.
+        let mut line = StatusLine::default();
+        let mut out = line.redraw("◌ Transcribing 0:08…");
+        out += &line.clear();
+        out += &line.redraw("● REC 0:01");
+        assert_eq!(screen_after(&out).0, ["● REC 0:01"]);
+    }
 
     #[test]
     fn one_edited_dictated_word_yields_one_pair() {

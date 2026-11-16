@@ -66,6 +66,70 @@ pub fn descriptor_path() -> PathBuf {
     runtime_directory().join("runtime.json")
 }
 
+/// The Unix socket the shared daemon serves this profile on.
+pub fn socket_path() -> PathBuf {
+    runtime_directory().join("daemon.sock")
+}
+
+/// The longest socket path, in bytes, this system can bind: one less than
+/// `sockaddr_un.sun_path` (104 bytes on macOS, 108 on Linux), which also holds the
+/// terminating NUL. `UnixListener::bind` refuses anything longer with only
+/// "path must be shorter than SUN_LEN".
+#[cfg(unix)]
+pub fn socket_path_limit() -> usize {
+    // SAFETY: `sockaddr_un` is plain old data, so all zeros is a valid value.
+    let address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    address.sun_path.len() - 1
+}
+
+/// Refuse a socket path this system cannot bind, in a sentence that names the path, its
+/// length, the limit and the way out, before anything tries to bind it. Under a long
+/// `BIOROUTER_PATH_ROOT` (a test sandbox, a recipient store) `<state>/daemon/daemon.sock`
+/// passes the limit, and the bind error alone named none of that.
+#[cfg(unix)]
+pub fn check_socket_path(path: &Path) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let length = path.as_os_str().as_bytes().len();
+    let limit = socket_path_limit();
+    ensure!(
+        length <= limit,
+        "The daemon cannot start: its socket path {} is {length} bytes long, and this system \
+         allows at most {limit}. Set BIOROUTER_PATH_ROOT to a folder whose path is at least \
+         {} bytes shorter.",
+        path.display(),
+        length - limit
+    );
+    Ok(())
+}
+
+/// Set to `1` by a launcher that hands the shared daemon [`startup_log_path`] as its
+/// stderr (`biorouter`'s shared-daemon start), so a start that fails can say why. The
+/// daemon's stderr carries its console log for as long as it runs, and once it has
+/// published itself nothing reads that file, so [`RuntimeOwner::publish`] points stderr
+/// back at `/dev/null`, where it was before the log existed. Without this, a daemon that
+/// outlives its launcher would grow the file for the rest of its life.
+pub const STARTUP_LOG_ENV: &str = "BIOROUTER_DAEMON_STARTUP_LOG";
+
+/// What a starting shared daemon wrote to stderr, until it published itself.
+pub fn startup_log_path() -> PathBuf {
+    runtime_directory().join("startup.log")
+}
+
+/// Point stderr at `/dev/null`: the end of a launcher's startup log ([`STARTUP_LOG_ENV`]).
+#[cfg(unix)]
+fn release_startup_log() -> Result<()> {
+    use std::os::fd::AsRawFd;
+    let null = OpenOptions::new().write(true).open("/dev/null")?;
+    // SAFETY: both are open descriptors; `dup2` replaces fd 2 atomically.
+    let replaced = unsafe { libc::dup2(null.as_raw_fd(), libc::STDERR_FILENO) };
+    ensure!(
+        replaced == libc::STDERR_FILENO,
+        "Cannot release the daemon's startup log: {}",
+        std::io::Error::last_os_error()
+    );
+    Ok(())
+}
+
 /// The file that holds the running shared daemon's user-action key, beside `runtime.json`.
 pub const USER_ACTION_KEY_FILE: &str = "user-action-key.json";
 
@@ -371,7 +435,7 @@ pub fn read_descriptor() -> Result<Descriptor> {
     );
     let Endpoint::Unix { path } = &descriptor.endpoint;
     ensure!(
-        path == &runtime_directory().join("daemon.sock"),
+        path == &socket_path(),
         "Daemon socket is outside this profile's private runtime directory"
     );
     Ok(descriptor)
@@ -398,7 +462,7 @@ impl RuntimeOwner {
                 instance_id: uuid::Uuid::new_v4().to_string(),
                 pid: std::process::id(),
                 endpoint: Endpoint::Unix {
-                    path: runtime_directory().join("daemon.sock"),
+                    path: socket_path(),
                 },
                 api_secret,
                 user_action_installed,
@@ -414,6 +478,7 @@ impl RuntimeOwner {
     pub fn bind(&self) -> Result<tokio::net::UnixListener> {
         use std::os::unix::fs::{FileTypeExt, PermissionsExt};
         let Endpoint::Unix { path } = &self.descriptor.endpoint;
+        check_socket_path(path)?;
         match std::fs::symlink_metadata(path) {
             Ok(metadata) => {
                 ensure!(
@@ -426,13 +491,23 @@ impl RuntimeOwner {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
             Err(error) => return Err(error.into()),
         }
-        let listener = tokio::net::UnixListener::bind(path).context("Cannot bind private daemon socket (the profile path may exceed the Unix socket length limit)")?;
+        let listener = tokio::net::UnixListener::bind(path)
+            .with_context(|| format!("Cannot bind private daemon socket {}", path.display()))?;
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
         Ok(listener)
     }
 
+    /// Publish the descriptor that makes this daemon discoverable, and end a launcher's
+    /// startup log ([`STARTUP_LOG_ENV`]): from here on, a failure is not the start's.
     pub fn publish(&self) -> Result<()> {
-        write_private(&descriptor_path(), &self.descriptor)
+        write_private(&descriptor_path(), &self.descriptor)?;
+        #[cfg(unix)]
+        if std::env::var(STARTUP_LOG_ENV).as_deref() == Ok("1") {
+            if let Err(error) = release_startup_log() {
+                tracing::warn!("{error:#}");
+            }
+        }
+        Ok(())
     }
 }
 
@@ -446,5 +521,63 @@ impl Drop for RuntimeOwner {
             let _ = std::fs::remove_file(path);
         }
         remove_user_action_key(&self.descriptor.instance_id);
+    }
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    /// W1-11: a socket path past `sun_path` is refused in a sentence that names the path,
+    /// its length, the limit and the way out; the bind alone said "may exceed".
+    #[test]
+    fn a_socket_path_over_the_limit_is_named_with_its_length() {
+        let limit = socket_path_limit();
+        #[cfg(target_os = "macos")]
+        assert_eq!(limit, 103);
+        #[cfg(target_os = "linux")]
+        assert_eq!(limit, 107);
+
+        let root = format!("/{}", "r".repeat(108));
+        let path = Path::new(&root).join("state/daemon/daemon.sock");
+        let length = path.as_os_str().len();
+        let error = check_socket_path(&path).unwrap_err().to_string();
+        assert!(error.starts_with("The daemon cannot start: "), "{error}");
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert!(
+            error.contains(&format!("is {length} bytes long")),
+            "{error}"
+        );
+        assert!(error.contains(&format!("at most {limit}")), "{error}");
+        assert!(
+            error.contains("Set BIOROUTER_PATH_ROOT to a folder whose path is at least"),
+            "{error}"
+        );
+        assert!(
+            error.contains(&format!("at least {} bytes shorter", length - limit)),
+            "{error}"
+        );
+
+        let at_the_limit = format!("/{}", "s".repeat(limit - 1));
+        assert!(check_socket_path(Path::new(&at_the_limit)).is_ok());
+        let one_over = format!("/{}", "s".repeat(limit));
+        assert!(check_socket_path(Path::new(&one_over)).is_err());
+    }
+
+    /// The limit is the bind's: a path at it binds, and one byte more is what tokio refuses.
+    #[tokio::test]
+    async fn the_limit_is_the_one_bind_enforces() {
+        let directory = tempfile::Builder::new()
+            .prefix("s")
+            .tempdir_in("/tmp")
+            .unwrap();
+        let base = directory.path().join("");
+        let room = socket_path_limit() - base.as_os_str().len();
+        let fits = base.join("f".repeat(room));
+        assert_eq!(fits.as_os_str().len(), socket_path_limit());
+        tokio::net::UnixListener::bind(&fits).expect("a path at the limit binds");
+        let over = base.join("o".repeat(room + 1));
+        assert!(check_socket_path(&over).is_err());
+        assert!(tokio::net::UnixListener::bind(&over).is_err());
     }
 }

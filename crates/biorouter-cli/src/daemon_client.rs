@@ -6,6 +6,8 @@ use biorouter::daemon_runtime::{self, Descriptor, Identity};
 use serde_json::{json, Value};
 use std::io::{IsTerminal, Read};
 #[cfg(unix)]
+use std::path::Path;
+#[cfg(unix)]
 use std::time::Duration;
 use zeroize::Zeroizing;
 
@@ -1571,8 +1573,6 @@ async fn start_daemon() -> Result<CrewClient> {
     }
     #[cfg(unix)]
     {
-        use std::process::Stdio;
-        use tokio::io::AsyncWriteExt;
         if let Some(descriptor) = discover_shared_daemon().await? {
             if let Some(client) = CrewClient::with_saved_key(descriptor.clone()).await? {
                 return Ok(client);
@@ -1583,74 +1583,227 @@ async fn start_daemon() -> Result<CrewClient> {
             .parent()
             .context("CLI executable has no directory")?
             .join("biorouterd");
-        ensure!(
-            binary.is_file(),
-            "biorouterd must be installed alongside biorouter for shared Crew startup"
-        );
-        daemon_runtime::private_directory(&daemon_runtime::runtime_directory())?;
-        let proof = daemon_runtime::generate_user_action_key();
-        let mut command = tokio::process::Command::new(binary);
-        command
-            .arg("agent")
-            .env(daemon_runtime::SHARED_ENV, "1")
-            .env("BIOROUTER_USER_ACTION_EXPECTED", "1")
-            .env("BIOROUTER_HOST", "127.0.0.1")
-            .env("BIOROUTER_PORT", "0")
-            .env(
-                "BIOROUTER_SERVER__SECRET_KEY",
-                uuid::Uuid::new_v4().simple().to_string(),
-            )
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null());
-        use std::os::unix::process::CommandExt;
-        command.as_std_mut().process_group(0);
-        let mut child = command.spawn()?;
-        let child_pid = child.id().context("New daemon has no process ID")?;
-        let mut pipe = child
-            .stdin
-            .take()
-            .context("New daemon has no startup pipe")?;
-        let digest = daemon_runtime::user_action_digest_hex(&proof);
-        let startup_error = pipe.write_all(format!("{digest}\n").as_bytes()).await.err();
-        drop(pipe);
-        if startup_error.is_some() {
-            child.kill().await.ok();
-            child.wait().await.ok();
-        }
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
-        while tokio::time::Instant::now() < deadline {
-            if child.try_wait()?.is_some() {
-                // Another launcher's daemon may have taken the profile first; use it.
-                if let Some(descriptor) = discover_shared_daemon().await? {
-                    if descriptor.pid != child_pid {
-                        if let Some(client) = CrewClient::with_saved_key(descriptor).await? {
-                            return Ok(client);
-                        }
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                continue;
-            }
-            if let Ok(descriptor) = daemon_runtime::read_descriptor() {
-                if descriptor.pid == child_pid
-                    && descriptor.user_action_installed
-                    && verify_identity(&descriptor).await.is_ok()
-                {
-                    return finish_daemon_start(&mut child, descriptor, proof).await;
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
+        launch_daemon(
+            &binary,
+            &daemon_runtime::socket_path(),
+            DAEMON_START_TIMEOUT,
+        )
+        .await
+    }
+}
+
+/// How long a new shared daemon has to publish itself before it is stopped.
+#[cfg(unix)]
+const DAEMON_START_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Spawn `binary` as this profile's shared daemon, which will serve `socket`, and wait up to
+/// `timeout` for it to publish itself. A socket path the system cannot bind is refused before
+/// anything is spawned. The daemon's stderr goes to [`daemon_runtime::startup_log_path`] until
+/// it publishes itself, so a daemon that exits says why, at once, instead of after the whole
+/// wait. Only the child started here is ever stopped.
+#[cfg(unix)]
+async fn launch_daemon(binary: &Path, socket: &Path, timeout: Duration) -> Result<CrewClient> {
+    use std::process::Stdio;
+    use tokio::io::AsyncWriteExt;
+    daemon_runtime::check_socket_path(socket)?;
+    ensure!(
+        binary.is_file(),
+        "biorouterd must be installed alongside biorouter for shared Crew startup"
+    );
+    daemon_runtime::private_directory(&daemon_runtime::runtime_directory())?;
+    let log_path = daemon_runtime::startup_log_path();
+    let log = open_startup_log(&log_path)?;
+    let proof = daemon_runtime::generate_user_action_key();
+    let mut command = tokio::process::Command::new(binary);
+    command
+        .arg("agent")
+        .env(daemon_runtime::SHARED_ENV, "1")
+        .env(daemon_runtime::STARTUP_LOG_ENV, "1")
+        .env("BIOROUTER_USER_ACTION_EXPECTED", "1")
+        .env("BIOROUTER_HOST", "127.0.0.1")
+        .env("BIOROUTER_PORT", "0")
+        .env(
+            "BIOROUTER_SERVER__SECRET_KEY",
+            uuid::Uuid::new_v4().simple().to_string(),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(log));
+    use std::os::unix::process::CommandExt;
+    command.as_std_mut().process_group(0);
+    let mut child = command.spawn()?;
+    let child_pid = child.id().context("New daemon has no process ID")?;
+    let mut pipe = child
+        .stdin
+        .take()
+        .context("New daemon has no startup pipe")?;
+    let digest = daemon_runtime::user_action_digest_hex(&proof);
+    let startup_error = pipe.write_all(format!("{digest}\n").as_bytes()).await.err();
+    drop(pipe);
+    if startup_error.is_some() {
         child.kill().await.ok();
         child.wait().await.ok();
-        if let Some(error) = startup_error {
-            return Err(error.into());
-        }
-        bail!(
-            "The daemon did not establish authenticated shared readiness; only the newly started child was stopped"
-        )
     }
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let out_of_time = tokio::time::Instant::now() >= deadline;
+        if let Some(status) = child.try_wait()? {
+            // Another launcher's daemon may have taken the profile first; use it.
+            if let Some(descriptor) = discover_shared_daemon().await? {
+                if descriptor.pid != child_pid {
+                    if let Some(client) = CrewClient::with_saved_key(descriptor).await? {
+                        let _ = std::fs::remove_file(&log_path);
+                        return Ok(client);
+                    }
+                }
+            }
+            // That daemon holds the owner lock until it publishes; with no owner, nothing
+            // will, and the child's own output says why it stopped.
+            if out_of_time || !profile_has_a_running_owner() {
+                return Err(daemon_did_not_start(
+                    &log_path,
+                    DidNotStart::Exited(status),
+                    startup_error,
+                ));
+            }
+        } else if out_of_time {
+            child.kill().await.ok();
+            child.wait().await.ok();
+            return Err(daemon_did_not_start(
+                &log_path,
+                DidNotStart::TimedOut(timeout),
+                startup_error,
+            ));
+        } else if let Ok(descriptor) = daemon_runtime::read_descriptor() {
+            if descriptor.pid == child_pid
+                && descriptor.user_action_installed
+                && verify_identity(&descriptor).await.is_ok()
+            {
+                let client = finish_daemon_start(&mut child, descriptor, proof).await?;
+                let _ = std::fs::remove_file(&log_path);
+                return Ok(client);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+/// A fresh, private startup log for a new daemon's stderr. An older one is removed first, and
+/// the new file is created exclusively, so nothing at that name (a link included) is written
+/// through.
+#[cfg(unix)]
+fn open_startup_log(path: &Path) -> Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    match std::fs::remove_file(path) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+        _ => (),
+    }
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+        .open(path)
+        .with_context(|| format!("Cannot create the daemon's startup log {}", path.display()))
+}
+
+/// True while some daemon holds this profile's owner lock: one that is still starting will
+/// publish itself, so a launcher whose own child lost the race waits for it. A lock file that
+/// is missing, or that fails the checks a daemon's own lock passes, has no holder.
+#[cfg(unix)]
+fn profile_has_a_running_owner() -> bool {
+    use std::os::fd::AsRawFd;
+    let Ok(owner) = open_daemon_owner_lock() else {
+        return false;
+    };
+    // The probe lock, when it is taken, is released as `owner` drops.
+    unsafe { libc::flock(owner.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) != 0 }
+}
+
+/// How a new daemon failed to publish itself.
+#[cfg(unix)]
+enum DidNotStart {
+    Exited(std::process::ExitStatus),
+    TimedOut(Duration),
+}
+
+/// "The daemon did not start: <cause>", the cause read from the end of its startup log at
+/// `log_path`, then where the whole log is.
+#[cfg(unix)]
+fn daemon_did_not_start(
+    log_path: &Path,
+    how: DidNotStart,
+    startup_error: Option<std::io::Error>,
+) -> anyhow::Error {
+    let log = read_log_tail(log_path);
+    let cause = startup_failure_cause(&log);
+    let mut message = match (how, cause) {
+        (DidNotStart::Exited(_), Some(cause)) => format!("The daemon did not start: {cause}"),
+        (DidNotStart::Exited(status), None) => match startup_error {
+            Some(error) => format!("The daemon did not start: {error}"),
+            None => format!("The daemon did not start: it stopped ({status}) and printed nothing."),
+        },
+        (DidNotStart::TimedOut(timeout), cause) => {
+            let mut message = format!(
+                "The daemon did not start within {} seconds, so Biorouter stopped the one it had just started.",
+                timeout.as_secs()
+            );
+            if let Some(cause) = cause {
+                message.push_str(&format!(" Its last output: {cause}"));
+            }
+            message
+        }
+    };
+    if !log.trim().is_empty() {
+        message.push_str(&format!("\nIts full output is in {}.", log_path.display()));
+    }
+    anyhow::anyhow!(message)
+}
+
+/// The last 64 KiB of the startup log, or nothing when it cannot be read.
+#[cfg(unix)]
+fn read_log_tail(path: &Path) -> String {
+    use std::io::{Seek, SeekFrom};
+    const TAIL: u64 = 64 * 1024;
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    let length = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if file
+        .seek(SeekFrom::Start(length.saturating_sub(TAIL)))
+        .is_err()
+    {
+        return String::new();
+    }
+    let mut bytes = Vec::new();
+    let _ = file.take(TAIL).read_to_end(&mut bytes);
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Why a daemon stopped, from its stderr: the error `main` returned (`Error: <message>` and
+/// its `Caused by:` chain, on one line), or else the last few lines it wrote, such as a panic.
+#[cfg(unix)]
+fn startup_failure_cause(log: &str) -> Option<String> {
+    let lines: Vec<&str> = log.lines().map(str::trim).collect();
+    if let Some(start) = lines.iter().rposition(|line| line.starts_with("Error: ")) {
+        let mut chain = vec![lines[start].trim_start_matches("Error: ")];
+        let mut causes = false;
+        for line in &lines[start + 1..] {
+            if *line == "Caused by:" {
+                causes = true;
+            } else if !line.is_empty() {
+                // anyhow numbers a chain of two or more causes: "0: …", "1: …".
+                let numbered = line
+                    .split_once(": ")
+                    .filter(|(index, _)| causes && index.parse::<usize>().is_ok());
+                chain.push(numbered.map_or(line, |(_, cause)| cause));
+            }
+        }
+        return Some(chain.join(": "));
+    }
+    const LAST_LINES: usize = 5;
+    let written: Vec<&str> = lines.into_iter().filter(|line| !line.is_empty()).collect();
+    (!written.is_empty()).then(|| written[written.len().saturating_sub(LAST_LINES)..].join("\n"))
 }
 
 #[cfg(unix)]
@@ -1916,13 +2069,14 @@ pub async fn credentials_control(
 mod tests {
     use super::{
         bridge_missing_frame, credentials_control, daemon_control, daemon_refusal, key_refused,
-        no_vault_to_unlock, open_daemon_owner_lock, read_observer_frames,
+        launch_daemon, no_vault_to_unlock, open_daemon_owner_lock, read_observer_frames,
         require_supported_platform, secret_prompt_possible, sign_in_possible,
-        sign_in_terminal_size, vault_passphrase, wait_for_daemon_stop, CrewClient, DaemonRefusal,
-        EventDecoder, Restated, AUTH_NEEDS_A_TERMINAL, DAEMON_NEEDS_RESTART,
-        DAEMON_NEEDS_RESTART_CODE, DAEMON_NOT_RUNNING, DAEMON_NOT_RUNNING_CODE, MAX_SSE_FRAME,
-        NEW_VAULT_PASSPHRASE, NO_VAULT_NO_KEYRING, NO_VAULT_TO_UNLOCK, NO_VAULT_TO_UNLOCK_CODE,
-        NO_VAULT_TO_UNLOCK_FILES, VAULT_PASSPHRASE, VAULT_PASSPHRASE_AGAIN,
+        sign_in_terminal_size, startup_failure_cause, vault_passphrase, wait_for_daemon_stop,
+        CrewClient, DaemonRefusal, EventDecoder, Restated, AUTH_NEEDS_A_TERMINAL,
+        DAEMON_NEEDS_RESTART, DAEMON_NEEDS_RESTART_CODE, DAEMON_NOT_RUNNING,
+        DAEMON_NOT_RUNNING_CODE, MAX_SSE_FRAME, NEW_VAULT_PASSPHRASE, NO_VAULT_NO_KEYRING,
+        NO_VAULT_TO_UNLOCK, NO_VAULT_TO_UNLOCK_CODE, NO_VAULT_TO_UNLOCK_FILES, VAULT_PASSPHRASE,
+        VAULT_PASSPHRASE_AGAIN,
     };
     use crate::commands::needs_terminal::NeedsTerminal;
     use biorouter::crew::observation::ObserveEvent;
@@ -3316,5 +3470,184 @@ mod tests {
             CALLERS * REQUESTS,
             failures.first()
         );
+    }
+
+    /// An executable shell script standing in for `biorouterd`: `body` runs as it.
+    fn fake_daemon(directory: &Path, body: &str) -> PathBuf {
+        let binary = directory.join("biorouterd");
+        fs::write(&binary, format!("#!/bin/sh\n{body}\n")).expect("the fake daemon writes");
+        fs::set_permissions(&binary, fs::Permissions::from_mode(0o755))
+            .expect("the fake daemon is executable");
+        binary
+    }
+
+    /// W1-11: under a long `BIOROUTER_PATH_ROOT` the daemon's socket path passes the
+    /// system's limit. That is refused, in a sentence naming the path, its length, the
+    /// limit and the way out, before anything is spawned; it used to spawn, wait 30 s and
+    /// say only "did not establish authenticated shared readiness".
+    #[tokio::test]
+    #[serial]
+    async fn a_socket_path_over_the_limit_is_refused_before_spawning() {
+        let _ = runtime_dir();
+        let scratch = tempfile::tempdir().expect("scratch directory");
+        let spawned = scratch.path().join("spawned");
+        let binary = fake_daemon(
+            scratch.path(),
+            &format!("touch '{}'\nexit 1", spawned.display()),
+        );
+        let root = format!("/{}", "r".repeat(108));
+        assert_eq!(root.len(), 109);
+        let socket = Path::new(&root).join("state/daemon/daemon.sock");
+        let error = launch_daemon(&binary, &socket, Duration::from_secs(5))
+            .await
+            .err()
+            .expect("the start is refused")
+            .to_string();
+        assert!(
+            error.starts_with("The daemon cannot start: its socket path "),
+            "{error}"
+        );
+        assert!(error.contains(&socket.display().to_string()), "{error}");
+        assert!(
+            error.contains(&format!("is {} bytes long", socket.as_os_str().len())),
+            "{error}"
+        );
+        assert!(
+            error.contains(&format!("at most {}", daemon_runtime::socket_path_limit())),
+            "{error}"
+        );
+        assert!(
+            error.contains("Set BIOROUTER_PATH_ROOT to a folder whose path is at least"),
+            "{error}"
+        );
+        assert!(!spawned.exists(), "nothing was spawned");
+    }
+
+    /// W1-31: a daemon that exits during startup is reported at once, with the error its
+    /// `main` wrote to stderr, instead of after the whole 30 s wait with stderr discarded.
+    #[tokio::test]
+    #[serial]
+    async fn an_early_child_exit_reports_its_stderr() {
+        let _ = runtime_dir();
+        let scratch = tempfile::tempdir().expect("scratch directory");
+        let binary = fake_daemon(
+            scratch.path(),
+            "echo 'INFO starting the daemon' >&2\n\
+             echo 'Error: Cannot bind private daemon socket /run/x/daemon.sock' >&2\n\
+             echo >&2\n\
+             echo 'Caused by:' >&2\n\
+             echo '    path must be shorter than SUN_LEN' >&2\n\
+             exit 1",
+        );
+        let started = std::time::Instant::now();
+        let error = launch_daemon(
+            &binary,
+            &daemon_runtime::socket_path(),
+            Duration::from_secs(30),
+        )
+        .await
+        .err()
+        .expect("the start fails")
+        .to_string();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "reported after {:?}",
+            started.elapsed()
+        );
+        assert!(
+            error.starts_with(
+                "The daemon did not start: Cannot bind private daemon socket \
+                 /run/x/daemon.sock: path must be shorter than SUN_LEN"
+            ),
+            "{error}"
+        );
+        assert!(
+            error.contains(&daemon_runtime::startup_log_path().display().to_string()),
+            "{error}"
+        );
+        assert!(!error.contains("readiness"), "{error}");
+    }
+
+    /// A lock no daemon could hold (here a directory at `owner.lock`) does not keep the
+    /// launcher waiting for a daemon that will never publish itself.
+    #[tokio::test]
+    #[serial]
+    async fn a_lock_no_daemon_could_hold_does_not_hold_the_wait() {
+        struct RemoveDir(PathBuf);
+        impl Drop for RemoveDir {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir(&self.0);
+            }
+        }
+        let directory = runtime_dir();
+        let lock = directory.join("owner.lock");
+        fs::create_dir(&lock).expect("a directory at the lock path");
+        let _cleanup = RemoveDir(lock);
+        let scratch = tempfile::tempdir().expect("scratch directory");
+        let binary = fake_daemon(scratch.path(), "echo 'Error: Is a directory' >&2\nexit 1");
+        let started = std::time::Instant::now();
+        let error = launch_daemon(
+            &binary,
+            &daemon_runtime::socket_path(),
+            Duration::from_secs(30),
+        )
+        .await
+        .err()
+        .expect("the start fails")
+        .to_string();
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "reported after {:?}",
+            started.elapsed()
+        );
+        assert!(
+            error.starts_with("The daemon did not start: Is a directory"),
+            "{error}"
+        );
+    }
+
+    /// A daemon that never publishes itself is stopped at the deadline, and what it last
+    /// wrote is shown. The deadline leaves a loaded machine time to start the script.
+    #[tokio::test]
+    #[serial]
+    async fn a_daemon_that_never_publishes_is_stopped_with_its_last_output() {
+        let _ = runtime_dir();
+        let scratch = tempfile::tempdir().expect("scratch directory");
+        let binary = fake_daemon(scratch.path(), "echo 'still loading' >&2\nexec sleep 60");
+        let error = launch_daemon(
+            &binary,
+            &daemon_runtime::socket_path(),
+            Duration::from_secs(8),
+        )
+        .await
+        .err()
+        .expect("the start times out")
+        .to_string();
+        assert!(
+            error.starts_with(
+                "The daemon did not start within 8 seconds, so Biorouter stopped the one it \
+                 had just started. Its last output: still loading"
+            ),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn the_cause_is_mains_error_or_the_last_lines() {
+        let chained = "log\nError: Cannot bind\n\nCaused by:\n    0: outer 1: 2\n    1: inner\n";
+        assert_eq!(
+            startup_failure_cause(chained).as_deref(),
+            Some("Cannot bind: outer 1: 2: inner")
+        );
+        let panic = "a\nb\nc\nthread 'main' panicked at src/main.rs:3:5:\nboom\n\
+                     note: run with `RUST_BACKTRACE=1` environment variable\n\nd\n";
+        assert_eq!(
+            startup_failure_cause(panic).as_deref(),
+            Some(
+                "c\nthread 'main' panicked at src/main.rs:3:5:\nboom\n\
+                 note: run with `RUST_BACKTRACE=1` environment variable\nd"
+            )
+        );
+        assert_eq!(startup_failure_cause("\n  \n"), None);
     }
 }

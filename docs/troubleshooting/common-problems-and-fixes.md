@@ -59,6 +59,16 @@ If you use biorouter CLI and work with web development projects, you may encount
 
 You can prevent these issues by customizing your shell to handle these commands differently when biorouter runs them. See [customizing shell behaviour](../configuration/environment-variables.md#customizing-shell-behaviour) for details on using the `BIOROUTER_TERMINAL` environment variable.
 
+### The shared daemon does not start under a long folder path
+
+`biorouter session --shared-daemon` and `biorouter crew` start a background daemon that serves your profile on a Unix socket at `<state folder>/daemon/daemon.sock`. A Unix socket path has a fixed limit: 103 bytes on macOS and 107 on Linux. When the state folder sits deep in a long path, usually because `BIOROUTER_PATH_ROOT` points at a long folder such as a test sandbox, the socket path passes that limit and the daemon cannot bind it. Biorouter checks this before it starts anything and stops with a message like this one:
+
+```text
+The daemon cannot start: its socket path /Users/me/projects/a-very-long-folder/…/state/daemon/daemon.sock is 131 bytes long, and this system allows at most 103. Set BIOROUTER_PATH_ROOT to a folder whose path is at least 28 bytes shorter.
+```
+
+Set `BIOROUTER_PATH_ROOT` to a shorter folder and run the command again. A short symbolic link to the long folder works too, for example `ln -s /long/path/to/root ~/br` and then `BIOROUTER_PATH_ROOT=~/br`. When the daemon starts and then stops for another reason, the message reads `The daemon did not start:` followed by the error the daemon wrote, and names the file that holds its full startup output, `<state folder>/daemon/startup.log`.
+
 ### Context length exceeded error
 
 This error occurs when the input provided to biorouter exceeds the maximum token limit of the LLM being used. To resolve this, try breaking down your input into smaller parts. You can also use [`.biorouterhints`][biorouterhints] as a way to provide biorouter with detailed context, and use message queues in biorouter Desktop.
