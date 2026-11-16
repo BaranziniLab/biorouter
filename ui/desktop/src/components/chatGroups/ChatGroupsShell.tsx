@@ -1787,7 +1787,7 @@ function ChatGroupPane({
             ))}
         </>
       }
-      renderCompact={({ answer, animateIn }) => (
+      renderCompact={({ answer, animateIn, box }) => (
         <CompactPane
           {...compact}
           groupId={groupId}
@@ -1795,6 +1795,7 @@ function ChatGroupPane({
           isActiveGroup={isActiveGroup}
           shortfall={answer.shortfall ?? 'both'}
           animateIn={animateIn}
+          initialBox={box}
         />
       )}
       overlay={dropZone ? <ChatDropOverlay zone={dropZone} /> : null}

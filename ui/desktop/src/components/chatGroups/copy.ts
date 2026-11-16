@@ -1,3 +1,5 @@
+import type { PaneShortfall } from '../Layout/yieldLadder';
+
 /**
  * The words on the chat tab strip, in one place so the strip and its tests say
  * the same thing (spec 1, copy rules: each area keeps its strings in a
@@ -24,3 +26,31 @@ export const chatTabStripCopy = {
  * 3.16, "searching tabs"). Below it a list is short enough to read at a glance.
  */
 export const TAB_MENU_FILTER_MIN = 8;
+
+/**
+ * The words on a compact pane (rung 5 of the yield ladder): a pane in a split too small for its
+ * chat shows its glyph, its title, one state line and one action in place of the chat. Sentence
+ * case, no dashes, no exclamation marks. "Listening…" is `DICTATION_LABELS.listening`, imported
+ * where it is drawn rather than restated here.
+ */
+export const compactPaneCopy = {
+  shortfall: {
+    width: 'Too narrow to show',
+    height: 'Too short to show',
+    both: 'Too small to show',
+  },
+  running: chatTabStripCopy.running, // 'Running'
+  /** PhaseGateDialog's word for a chat that needs the person. */
+  waiting: 'Waiting for you',
+  grow: { width: 'Make wider', height: 'Make taller', both: 'Make larger' },
+  merge: 'Merge panes',
+  /** The action's accessible name: the visible verb, then the visible title. */
+  actionName: (label: string, title: string) => `${label}, ${title}`,
+  help: (shortfall: PaneShortfall, canGrow: boolean) => {
+    const bigger = { width: 'wider', height: 'taller', both: 'larger' }[shortfall];
+    return canGrow
+      ? `The chat is hidden, not closed. It comes back as it was when the pane is ${bigger}.`
+      : 'The chat is hidden, not closed. Make the window larger, or merge the panes into one.';
+  },
+  announceWaiting: (title: string) => `${title} is waiting for you`,
+} as const;

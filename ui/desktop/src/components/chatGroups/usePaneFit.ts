@@ -6,6 +6,8 @@ export interface PaneFitState {
   answer: PaneFitAnswer;
   /** True only when a measured full pane has just turned compact in this mount. */
   animateIn: boolean;
+  /** The pane's box at the sample that produced this answer. */
+  box: { width: number; height: number };
 }
 
 /**
@@ -38,6 +40,7 @@ export function usePaneFit(
   const [state, setState] = useState<PaneFitState>({
     answer: PANE_FULL_UNMEASURED,
     animateIn: false,
+    box: { width: 0, height: 0 },
   });
   const answerRef = useRef<PaneFitAnswer | null>(null);
   const aloneRef = useRef(opts.alone);
@@ -61,10 +64,11 @@ export function usePaneFit(
       answerRef.current = next;
       if (from.fit === next.fit && from.shortfall === next.shortfall) return;
       onWillChangeRef.current?.(from, next);
-      const update = {
+      const update: PaneFitState = {
         answer: next,
         // "Mounting is not opening": a pane that mounts compact appears at rest.
         animateIn: from.fit === 'full' && next.fit === 'compact' && from.measured,
+        box: { width: box.width, height: box.height },
       };
       if (commit === 'sync') flushSync(() => setState(update));
       else setState(update);

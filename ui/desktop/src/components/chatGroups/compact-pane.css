@@ -31,3 +31,192 @@
   visibility: hidden;
   opacity: 0;
 }
+
+/* ── The placeholder (CompactPaneView) ─────────────────────────────────────
+   The pane's own 44px band over a calm body holding one quiet button. Fills
+   before lines (design.md 9.11): the tile is the only fill, on the canvas
+   ground; the band's hairline is structural and continues the neighbouring
+   panes' band edge at the same y. Red is rare: the only emphasis is a state
+   word stepping from muted to default ink. Keyboard focus is the existing
+   unlayered `.biorouter-focus-surface` on both action elements; this file's
+   unlayered backgrounds out-rank the layered D-15 rule, so the hover rule
+   leaves `:focus-visible` alone. */
+.br-compact-pane {
+  position: relative;
+  z-index: 1; /* above the hidden content's stacking context; below the splitter and the drop overlay */
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 0;
+  background: var(--background-canvas); /* the chat body's own ground */
+}
+
+/* The placeholder holds focus itself when its band has no room for the action
+   (ChatPaneFrame, CompactPane), so focus never falls to the page. Its edge is
+   the shared `.biorouter-focus-region` inset shadow, which the band's own
+   ground would cover along the top; this layer repeats it above the band by
+   inheriting it, so the value stays in main.css. */
+.br-compact-pane:focus-visible::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: inherit;
+}
+
+/* Opacity only: the pane may still be moving under a drag, and travel would
+   read as sliding. `data-motion-layout` zeroes it during a window or sidebar
+   resize. */
+.br-compact-pane[data-enter] {
+  animation: br-fade-in var(--dur-fast-max) var(--ease-out) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .br-compact-pane[data-enter] {
+    animation-name: br-fade-in; /* already opacity only; the global reset clamps it */
+  }
+}
+
+/* Exactly the chat header's band: the window's top edge stays one line across
+   compact and full panes. It declares no app region; useTabBandWindowGesture
+   moves the window from it instead (#74). */
+.br-compact-pane__band {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  height: var(--chrome-height);
+  padding-inline-end: 8px;
+  overflow: hidden;
+  background: var(--sidebar);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.br-compact-pane__band .br-tabstrip__overflow {
+  margin-right: 0;
+}
+
+.br-compact-pane__body {
+  flex: 1 1 0;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 8px;
+  overflow: hidden;
+}
+
+.br-compact-pane__action {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 100%;
+  max-width: 220px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid transparent; /* forced colours draw it; the only edge there */
+  border-radius: var(--radius-container);
+  background: transparent;
+  color: var(--text-default);
+  font: inherit;
+  text-align: center;
+  cursor: pointer;
+  transition: background-color var(--dur-fast-min) var(--ease-out);
+}
+
+.br-compact-pane__action:hover:not(:focus-visible) {
+  background: var(--overlay-hover);
+}
+
+.br-compact-pane__action:active {
+  background: var(--overlay-pressed);
+  scale: var(--press-scale);
+}
+
+.br-compact-pane__tile {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-element);
+  background: var(--background-fill);
+}
+
+.br-compact-pane__tile .br-chat-kind-icon {
+  width: var(--icon-row);
+  height: var(--icon-row);
+}
+
+/* The running dot on the tile's top corner, so a running private chat shows
+   both the dot and the lock badge, as its tab does. */
+.br-compact-pane__dot {
+  position: absolute;
+  inset-block-start: -2px;
+  inset-inline-end: -2px;
+  box-shadow: 0 0 0 2px var(--background-canvas);
+}
+
+.br-compact-pane__title,
+.br-compact-pane__state {
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.br-compact-pane__title {
+  margin-top: 8px;
+  font-size: var(--text-label);
+  line-height: var(--text-label--line-height);
+  font-weight: var(--text-label--font-weight);
+  color: var(--text-default);
+}
+
+.br-compact-pane__state {
+  margin-top: 2px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+}
+
+.br-compact-pane__state:is([data-state='waiting'], [data-state='listening']) {
+  color: var(--text-default);
+}
+
+.br-compact-pane__verb {
+  margin-top: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--text-supporting);
+  line-height: var(--text-supporting--line-height);
+  color: var(--text-muted);
+}
+
+.br-compact-pane__verb svg {
+  flex: none;
+  width: var(--icon-row);
+  height: var(--icon-row);
+}
+
+.br-compact-pane__action:hover .br-compact-pane__verb {
+  color: var(--text-default);
+}
+
+/* Glyph density: the tile alone, in a 48px square button (the 32px tile, 7px
+   of padding and the 1px forced-colours border a side). The name and the
+   description never came from these words, so nothing is lost. */
+.br-compact-pane[data-density='glyph'] .br-compact-pane__action {
+  width: auto;
+  padding: 7px;
+}
+
+.br-compact-pane[data-density='glyph']
+  :is(.br-compact-pane__title, .br-compact-pane__state, .br-compact-pane__verb) {
+  display: none;
+}
