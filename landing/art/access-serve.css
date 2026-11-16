@@ -52,9 +52,10 @@
 [data-art="access-serve"] .acs-ps { color: var(--subtle); }
 [data-art="access-serve"] .acs-cmd,
 [data-art="access-serve"] .acs-url { color: var(--ink); }
+/* The shell's cursor: the same solid bar as the command line tile's. */
 [data-art="access-serve"] .acs-tcur {
-  display: inline-block; width: 0.6em; height: 13px; margin-left: 1px; vertical-align: -2px;
-  background: var(--muted);
+  display: inline-block; width: 1.5px; height: calc(var(--acs-lh) - 2px); margin-left: 1px; vertical-align: -3px;
+  background: var(--ink);
 }
 [data-art="access-serve"] .acs.is-run .acs-tcur { opacity: 0; }
 
@@ -242,7 +243,6 @@
 @container (min-width: 460px) {
   [data-art="access-serve"] .acs-in { --acs-lh: 18px; --acs-tx: 14px; --acs-ty: 12px; --acs-gap: 10px; --acs-side: 112px; }
   [data-art="access-serve"] .acs-term { font-size: 13px; }
-  [data-art="access-serve"] .acs-tcur { height: 14px; }
   [data-art="access-serve"] .acs-nav { height: 24px; font-size: 13px; }
   [data-art="access-serve"] .acs-nav svg { width: 16px; height: 16px; }
 }

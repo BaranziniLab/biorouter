@@ -139,8 +139,11 @@
       var chrome = comp.offsetWidth - field.clientWidth;
       var need = chrome + parseFloat(fs.paddingLeft) + parseFloat(fs.paddingRight) + textWidth(field, PH_FOLLOW) + 4;
       var chatMin = Math.ceil(Math.max(need, bubble.offsetWidth) + 2 * pad);
-      var pw = Math.min(Math.round(W * 0.46), W - chatMin);
-      inner.style.setProperty('--acc-gui-pw', Math.max(MIN_PANEL, pw) + 'px');
+      var pw = Math.max(MIN_PANEL, Math.min(Math.round(W * 0.46), W - chatMin)) + 'px';
+      if (inner.style.getPropertyValue('--acc-gui-pw') === pw) return;
+      // A new size is a new layout, not a beat of the loop: it lands at once,
+      // so the conversation never slides on load or under reduced motion.
+      settle(function () { inner.style.setProperty('--acc-gui-pw', pw); });
     }
     if ('ResizeObserver' in window) new ResizeObserver(fit).observe(inner);
 
