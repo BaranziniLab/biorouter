@@ -15,6 +15,11 @@ pub enum InputResult {
     SelectTheme(String),
     Retry,
     BioRouterMode(String),
+    /// A bare `/mode`: print the current mode and the names `/mode <name>` takes.
+    ShowMode,
+    /// A command only the full-screen chat runs (`/decisions`, `/subagents`, `/attach`):
+    /// print the one line [`tui_only_note`] writes, and spend no model turn.
+    TuiOnly(&'static str),
     Plan(PlanCommandOptions),
     EndPlan,
     Clear,
@@ -218,7 +223,12 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
         return Some(result);
     }
 
+    if let Some(command) = tui_only_command(input) {
+        return Some(InputResult::TuiOnly(command));
+    }
+
     match input {
+        "/mode" => Some(InputResult::ShowMode),
         s if s == "/folder-access" || s.starts_with("/folder-access ") => {
             Some(InputResult::FolderAccess(
                 s.strip_prefix("/folder-access")
@@ -256,7 +266,7 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
             s.get(CMD_BUILTIN.len()..).unwrap_or("").to_string(),
         )),
         s if s.starts_with(CMD_MODE) => Some(InputResult::BioRouterMode(
-            s.get(CMD_MODE.len()..).unwrap_or("").to_string(),
+            s.get(CMD_MODE.len()..).unwrap_or("").trim().to_string(),
         )),
         s if s == CMD_PLAN || s.starts_with("/plan ") => {
             parse_plan_command(s.get(CMD_PLAN.len()..).unwrap_or("").trim().to_string())
@@ -287,6 +297,50 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
         }
         "/r" => Some(InputResult::ToggleFullToolOutput),
         _ => None,
+    }
+}
+
+/// The names `/mode <name>` takes, in the order `/help` and every mode message list them.
+pub(super) const MODE_NAMES: &str = "auto, approve, chat, smart_approve";
+
+/// What a bare `/mode` prints: the mode `/mode <name>` last set, and the names it takes.
+pub(super) fn mode_status_line(mode: biorouter::config::BioRouterMode) -> String {
+    use biorouter::config::BioRouterMode;
+    let name = match mode {
+        BioRouterMode::Auto => "auto",
+        BioRouterMode::Approve => "approve",
+        BioRouterMode::SmartApprove => "smart_approve",
+        BioRouterMode::Chat => "chat",
+    };
+    format!("Mode: {name}. Change it with /mode <name>: {MODE_NAMES}.")
+}
+
+/// The slash commands only the full-screen chat runs, which is the TUI's
+/// `TUI_ONLY_SLASH_COMMANDS` (`tui/app.rs`), each with the terminal command that
+/// does its job for a chat, if one can. The classic REPL used to send these to the
+/// model, which spent a turn inventing an answer.
+const TUI_ONLY_COMMANDS: &[(&str, &str)] = &[
+    ("/decisions", "biorouter session decisions"),
+    ("/subagents", "biorouter session subagents"),
+    // A classic chat's subagents run in this process, so nothing outside it can
+    // attach to one; the list is what another terminal can show.
+    ("/attach", "biorouter session subagents"),
+];
+
+/// `command` (one of [`TUI_ONLY_COMMANDS`]) with what follows it, as typed.
+fn tui_only_command(input: &str) -> Option<&'static str> {
+    TUI_ONLY_COMMANDS.iter().find_map(|&(command, _)| {
+        let rest = input.strip_prefix(command)?;
+        (rest.is_empty() || rest.starts_with(' ')).then_some(command)
+    })
+}
+
+/// The one line the classic REPL prints for a full-screen-only `command` in chat `session_id`.
+pub(super) fn tui_only_note(command: &str, session_id: &str) -> String {
+    let only = format!("{command} works in the full-screen chat only.");
+    match TUI_ONLY_COMMANDS.iter().find(|(name, _)| *name == command) {
+        Some((_, route)) => format!("{only} From another terminal: {route} {session_id}"),
+        None => only,
     }
 }
 
@@ -412,8 +466,8 @@ const HELP_ROWS: &[(&str, &str)] = &[
         "Add builtin extensions by name (comma-separated)",
     ),
     (
-        "/mode <name>",
-        "Set mode: auto, approve, chat, smart_approve",
+        "/mode [name]",
+        "Show the mode, or set it: auto, approve, chat, smart_approve",
     ),
     (
         "/plan [message]",
@@ -753,6 +807,65 @@ mod tests {
     fn command_prefixes_do_not_capture_other_slash_names() {
         assert!(handle_slash_command("/planet").is_none());
         assert!(handle_slash_command("/workflow-analysis.yaml").is_none());
+    }
+
+    /// W1-24: `CMD_MODE` is `"/mode "`, so a bare `/mode` matched no arm, reached the
+    /// model, and the model invented an answer ("standard CLI chat mode" in approve).
+    #[test]
+    fn a_bare_mode_is_not_sent_to_the_model() {
+        for input in ["/mode", "  /mode  "] {
+            assert!(
+                matches!(handle_slash_command(input), Some(InputResult::ShowMode)),
+                "{input:?} must be answered here"
+            );
+        }
+        // A name still sets the mode, and a longer word is not `/mode`.
+        assert!(matches!(
+            handle_slash_command("/mode approve"),
+            Some(InputResult::BioRouterMode(mode)) if mode == "approve"
+        ));
+        assert!(matches!(
+            handle_slash_command("/mode   chat"),
+            Some(InputResult::BioRouterMode(mode)) if mode == "chat"
+        ));
+        assert!(handle_slash_command("/modes").is_none());
+
+        let line = mode_status_line(biorouter::config::BioRouterMode::Approve);
+        assert_eq!(
+            line,
+            "Mode: approve. Change it with /mode <name>: auto, approve, chat, smart_approve."
+        );
+        assert_eq!(
+            mode_status_line(biorouter::config::BioRouterMode::SmartApprove),
+            "Mode: smart_approve. Change it with /mode <name>: auto, approve, chat, smart_approve."
+        );
+    }
+
+    /// W1-24: `/decisions` (and the other full-screen-only commands) had no classic arm, so
+    /// they too went to the model. They answer with one line naming the terminal command.
+    #[test]
+    fn decisions_in_classic_is_not_sent_to_the_model() {
+        for (input, command) in [
+            ("/decisions", "/decisions"),
+            ("/subagents", "/subagents"),
+            ("/subagents list", "/subagents"),
+            ("/attach 2", "/attach"),
+        ] {
+            assert!(
+                matches!(handle_slash_command(input), Some(InputResult::TuiOnly(c)) if c == command),
+                "{input:?} must be answered here"
+            );
+        }
+        assert!(handle_slash_command("/decisionsx").is_none());
+
+        let note = tui_only_note("/decisions", "20261116_3");
+        assert_eq!(
+            note,
+            "/decisions works in the full-screen chat only. From another terminal: biorouter session decisions 20261116_3"
+        );
+        assert_eq!(note.lines().count(), 1);
+        assert!(tui_only_note("/attach", "20261116_3")
+            .ends_with("biorouter session subagents 20261116_3"));
     }
 
     #[cfg(feature = "dictation")]
