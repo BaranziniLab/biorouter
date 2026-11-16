@@ -935,7 +935,10 @@ enum SessionCommand {
         )]
         user_action_key_stdin: bool,
     },
-    #[command(name = "diagnostics")]
+    #[command(
+        name = "diagnostics",
+        about = "Save a chat's diagnostics bundle (a zip) for a bug report"
+    )]
     Diagnostics {
         /// Session identifier for generating diagnostics
         #[command(flatten)]
@@ -2225,10 +2228,11 @@ enum Command {
         verbose: bool,
     },
 
-    /// Manage system prompts and behaviors
-    #[command(about = "Run one of the mcp servers bundled with Biorouter")]
+    /// Run one of the built-in MCP servers
+    #[command(about = "Run one of the MCP servers bundled with Biorouter")]
     Mcp {
-        #[arg(value_parser = clap::value_parser!(McpCommand))]
+        /// The built-in server to run
+        #[arg(value_parser = McpServerName)]
         server: McpCommand,
     },
 
@@ -2864,16 +2868,9 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
             let session_identifier = if let Some(id) = identifier {
                 lookup_session_id(id).await?
             } else {
-                match crate::commands::session::prompt_interactive_session_selection(
-                    &session_manager,
-                )
-                .await
-                {
-                    Ok(id) => id,
-                    Err(e) => {
-                        eprintln!("Error: {}", e);
-                        return Ok(());
-                    }
+                match crate::commands::session::pick_session(&session_manager, "export").await? {
+                    Some(id) => id,
+                    None => return Ok(()),
                 }
             };
             crate::commands::session::handle_session_export(session_identifier, output, format)
@@ -2994,16 +2991,11 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
             let session_id = if let Some(id) = identifier {
                 lookup_session_id(id).await?
             } else {
-                match crate::commands::session::prompt_interactive_session_selection(
-                    &session_manager,
-                )
-                .await
+                match crate::commands::session::pick_session(&session_manager, "diagnostics")
+                    .await?
                 {
-                    Ok(id) => id,
-                    Err(e) => {
-                        eprintln!("Error: {}", e);
-                        return Ok(());
-                    }
+                    Some(id) => id,
+                    None => return Ok(()),
                 }
             };
             crate::commands::session::handle_diagnostics(&session_id, output).await?;
@@ -3016,16 +3008,9 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
             let session_id = if let Some(id) = identifier {
                 lookup_session_id(id).await?
             } else {
-                match crate::commands::session::prompt_interactive_session_selection(
-                    &session_manager,
-                )
-                .await
-                {
-                    Ok(id) => id,
-                    Err(e) => {
-                        eprintln!("Error: {}", e);
-                        return Ok(());
-                    }
+                match crate::commands::session::pick_session(&session_manager, "rename").await? {
+                    Some(id) => id,
+                    None => return Ok(()),
                 }
             };
             crate::commands::session::handle_session_rename(&session_id, new_name).await?;
@@ -3038,16 +3023,9 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
             let session_id = if let Some(id) = identifier {
                 lookup_session_id(id).await?
             } else {
-                match crate::commands::session::prompt_interactive_session_selection(
-                    &session_manager,
-                )
-                .await
-                {
-                    Ok(id) => id,
-                    Err(e) => {
-                        eprintln!("Error: {}", e);
-                        return Ok(());
-                    }
+                match crate::commands::session::pick_session(&session_manager, "diverge").await? {
+                    Some(id) => id,
+                    None => return Ok(()),
                 }
             };
             crate::commands::session::handle_session_diverge(&session_id, branch_name).await?;
@@ -3060,6 +3038,40 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `biorouter mcp <SERVER>`'s parser: [`McpCommand`]'s own `FromStr`, whose refusal names the
+/// five servers, and the same five as the possible values `--help` lists (W1-13).
+#[derive(Clone)]
+struct McpServerName;
+
+impl clap::builder::TypedValueParser for McpServerName {
+    type Value = McpCommand;
+
+    fn parse_ref(
+        &self,
+        cmd: &clap::Command,
+        _arg: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<McpCommand, clap::Error> {
+        value
+            .to_string_lossy()
+            .parse::<McpCommand>()
+            .map_err(|refusal| {
+                clap::Error::raw(clap::error::ErrorKind::InvalidValue, format!("{refusal}\n"))
+                    .with_cmd(cmd)
+            })
+    }
+
+    fn possible_values(
+        &self,
+    ) -> Option<Box<dyn Iterator<Item = clap::builder::PossibleValue> + '_>> {
+        Some(Box::new(
+            McpCommand::names()
+                .into_iter()
+                .map(clap::builder::PossibleValue::new),
+        ))
+    }
 }
 
 fn reject_shared_fields(fields: &[(&str, bool)]) -> Result<()> {
@@ -3182,7 +3194,10 @@ async fn handle_shared_run(
         !options.create_only || (!has_input && !behavior.interactive),
         "--create-only cannot be combined with --text, --instructions, or --interactive"
     );
-    anyhow::ensure!(!(options.approval_key_stdin && input.instructions.as_deref() == Some("-")), "--approval-key-stdin and --instructions - cannot share stdin; provide --text or an instruction file");
+    anyhow::ensure!(
+        !(options.approval_key_stdin && input.instructions.as_deref() == Some("-")),
+        "--approval-key-stdin and --instructions - cannot share stdin; provide --text or an instruction file"
+    );
     anyhow::ensure!(
         has_input || options.create_only || behavior.interactive,
         "--shared-daemon run requires --text, --instructions, --interactive, or --create-only"
@@ -3211,7 +3226,10 @@ async fn handle_shared_run(
 /// [`SessionChat`] since D4 added an eighth, `local`.
 async fn handle_session_command(command: Option<SessionCommand>, chat: SessionChat) -> Result<()> {
     if chat.session_opts.shared.shared_daemon {
-        anyhow::ensure!(command.is_none(), "--shared-daemon on session does not support local session subcommands; use an exact --resume --session-id for a daemon conversation");
+        anyhow::ensure!(
+            command.is_none(),
+            "--shared-daemon on session does not support local session subcommands; use an exact --resume --session-id for a daemon conversation"
+        );
         return handle_shared_session(chat).await;
     }
     match command {
@@ -3622,7 +3640,9 @@ fn parse_run_input(
             Ok(Some((input_config, Some(workflow))))
         }
         (None, None, None) => {
-            eprintln!("Error: Must provide either --instructions (-i), --text (-t), or --workflow. Use -i - for stdin.");
+            eprintln!(
+                "Error: Must provide either --instructions (-i), --text (-t), or --workflow. Use -i - for stdin."
+            );
             std::process::exit(1);
         }
     }
@@ -4438,6 +4458,72 @@ mod cli_tests {
         root.build();
         walk(&mut root, "biorouter", &mut leaks);
         assert!(leaks.is_empty(), "internal notes in --help: {leaks:#?}");
+    }
+
+    /// W1-13: `biorouter mcp --help` names the five servers it can run, and an unknown name
+    /// is answered with the same list rather than a bare "Invalid command".
+    #[test]
+    fn mcp_help_names_the_five_servers() {
+        const SERVERS: [&str; 5] = [
+            "autovisualiser",
+            "computercontroller",
+            "webdocuments",
+            "developer",
+            "memory",
+        ];
+        let mut root = command_tree();
+        root.build();
+        let mcp = root
+            .find_subcommand_mut("mcp")
+            .expect("`biorouter mcp` exists");
+        let help = mcp.render_long_help().to_string();
+        for name in SERVERS {
+            assert!(
+                help.contains(name),
+                "`mcp --help` does not name {name}:\n{help}"
+            );
+        }
+        assert!(
+            !help.contains("system prompts"),
+            "`mcp --help` describes another command:\n{help}"
+        );
+
+        let error = Cli::try_parse_from(["biorouter", "mcp", "nosuch"])
+            .map(|_| ())
+            .expect_err("an unknown server is refused")
+            .to_string();
+        assert!(error.contains("Unknown server 'nosuch'"), "{error}");
+        assert!(
+            error.contains(&format!("Choose one of: {}.", SERVERS.join(", "))),
+            "{error}"
+        );
+        for name in SERVERS.into_iter().chain(["Developer"]) {
+            assert!(
+                Cli::try_parse_from(["biorouter", "mcp", name]).is_ok(),
+                "`biorouter mcp {name}` no longer parses"
+            );
+        }
+    }
+
+    /// W1-30 (d): every `session` subcommand says what it does in `session --help`;
+    /// `diagnostics` was listed with an empty description.
+    #[test]
+    fn session_help_describes_diagnostics() {
+        let mut root = command_tree();
+        root.build();
+        let session = root
+            .find_subcommand_mut("session")
+            .expect("`biorouter session` exists");
+        let listing = session.render_help().to_string();
+        let line = listing
+            .lines()
+            .find(|line| line.trim_start().starts_with("diagnostics"))
+            .unwrap_or_else(|| panic!("`session --help` lists no diagnostics:\n{listing}"));
+        let description = line.trim_start().trim_start_matches("diagnostics").trim();
+        assert!(
+            description.contains("diagnostics bundle"),
+            "`diagnostics` has no description in `session --help`: {line:?}"
+        );
     }
 
     #[test]

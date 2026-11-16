@@ -391,19 +391,21 @@ impl DaemonAuth {
 /// secret and a port they chose, and points the app at it. Both halves of that
 /// are spelled out because a message that says "use the External Backend
 /// setting" without saying what to run is a message that cannot be followed.
-pub(crate) const NO_SECRET_KEY_HELP: &str =
-    "BIOROUTER_SERVER__SECRET_KEY is not set, so this command cannot authenticate with the \
-     daemon.\n\nIf the Biorouter desktop app is running: its daemon is deliberately \
-     unreachable from a terminal: it binds a random port and mints a new secret every launch, \
-     and neither is published. Point the app at a daemon you control instead:\n  \
-     1. Start one yourself, with a port and a secret you choose:\n       \
-     read -r -s action_key; printf '\n'; printf '%s' \"$action_key\" | shasum -a 256 | \
-     cut -d ' ' -f 1 | BIOROUTER_PORT=3000 BIOROUTER_SERVER__SECRET_KEY=<key> \
-     biorouterd agent\n  \
-     2. In the app: Settings > Advanced > External Backend, enable it and set the URL to \
-     http://127.0.0.1:3000\n  3. Re-run this command in a shell that exports the same two \
-     values:\n       BIOROUTER_PORT=3000 BIOROUTER_SERVER__SECRET_KEY=<key> biorouter session \
-     watch <id>\n\nWithout the app, step 1 and step 3 alone are enough.";
+///
+/// ⚠ The start command is ONE line, and its `printf '\\n'` is written with an escaped
+/// backslash. Written `'\n'` in an ordinary string, the `\n` became a real line break and
+/// the command split in two where a person copies it (W1-30).
+pub(crate) const NO_SECRET_KEY_HELP: &str = concat!(
+    "BIOROUTER_SERVER__SECRET_KEY is not set, so this command cannot authenticate with the ",
+    "daemon. The desktop app's own daemon is unreachable from a terminal (it binds a random ",
+    "port and makes a new secret each launch), so start one you control:\n",
+    "  1. Start it with a port and a secret you choose, then type a user-action key:\n",
+    "       read -r -s action_key; printf '\\n'; printf '%s' \"$action_key\" | shasum -a 256 | ",
+    "cut -d ' ' -f 1 | BIOROUTER_PORT=3000 BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent\n",
+    "  2. For the app too: Settings > Advanced > External Backend, URL http://127.0.0.1:3000\n",
+    "  3. Re-run this command with the same two values, for example:\n",
+    "       BIOROUTER_PORT=3000 BIOROUTER_SERVER__SECRET_KEY=<key> biorouter session watch <id>",
+);
 
 /// What a user is told when nothing is listening where this client looked.
 ///
@@ -415,10 +417,9 @@ pub(crate) const NO_SECRET_KEY_HELP: &str =
 pub(crate) fn no_daemon_at(port: u16) -> String {
     format!(
         "no Biorouter daemon is listening on {DAEMON_HOST}:{port}. The desktop app's own \
-         daemon does not count: it binds a port the operating system chooses at launch, so it \
-         is never on {port} except by coincidence. Start one you control, and point the app at \
-         it with Settings > Advanced > External Backend:\n  \
-         read -r -s action_key; printf '\n'; printf '%s' \"$action_key\" | shasum -a 256 | \
+         daemon does not count: it binds a port the operating system chooses at launch. Start \
+         one you control (Settings > Advanced > External Backend points the app at it):\n  \
+         read -r -s action_key; printf '\\n'; printf '%s' \"$action_key\" | shasum -a 256 | \
          cut -d ' ' -f 1 | BIOROUTER_PORT={port} BIOROUTER_SERVER__SECRET_KEY=<key> \
          biorouterd agent"
     )
@@ -608,6 +609,120 @@ fn wordless_message_line(message: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// One message's line, in the pieces [`ChunkFold`] puts together: `[role]` with its
+/// provenance, its text, and the tools it calls.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MessageLine {
+    head: String,
+    text: String,
+    tools: Vec<String>,
+}
+
+impl MessageLine {
+    /// `None` for a message with no content to read, which prints nothing; `Some(None)` for
+    /// one with neither text nor a tool call, which [`wordless_message_line`] renders.
+    fn of(message: &serde_json::Value) -> Option<Option<Self>> {
+        let role = message
+            .get("role")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("?");
+        // ⚠ DISPLAY ONLY, and the last surface in this crate that showed
+        // the guardrail's frame raw.
+        //
+        // A `toolResponse` block has no top-level `text` key, so the
+        // `filter_map` above already skips the ordinary tool-result path
+        // (`session/output.rs`, the TUI and markdown export unwrap it
+        // instead). What still arrives here framed is a plain **text**
+        // block: a subagent's spawn-context record is `Message::user()
+        // .with_text(…)` (`agents/subagent_handler.rs`), and its
+        // `### Task instructions` section is free text the PARENT agent
+        // wrote — so a parent quoting what a tool handed it carries a
+        // complete `<tool-output untrusted="true" tool="…">` … pair into
+        // the record. `render_join_snapshot` replays the whole stored
+        // conversation through here, so `biorouter session attach
+        // <subagent-id>` printed the model's delimiter at the terminal.
+        // This is the CLI half of the same defect fixed in the desktop's
+        // `SubagentTabHeader.tsx`.
+        //
+        // Per block rather than on the joined string, because the framer
+        // applies one frame per text block (`guard_tool_result`): matching
+        // per block is what agrees with how the text was produced, and
+        // joining first would let an opening tag in one block pair with a
+        // close in the next and swallow the seam between them.
+        //
+        // The `[BIOROUTER GUARDRAIL]` line survives without a branch — it
+        // sits above the opening tag, and the shared helper only rewrites
+        // between a complete open and its matching close. Nothing
+        // downstream of this string reaches a model; it is `println!`ed.
+        let text: String = message
+            .get("content")?
+            .as_array()?
+            .iter()
+            .filter_map(|c| c.get("text").and_then(serde_json::Value::as_str))
+            .map(biorouter::guardrails::tool_output_display::unframe_tool_output)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let tools: Vec<String> = message
+            .get("content")?
+            .as_array()?
+            .iter()
+            .filter(|c| c.get("type").and_then(serde_json::Value::as_str) == Some("toolRequest"))
+            .map(|c| {
+                c.get("toolCall")
+                    .and_then(|tc| tc.get("value"))
+                    .and_then(|v| v.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("tool")
+                    .to_string()
+            })
+            .collect();
+        // BR-71 §5: an injected message is never rendered as if the local
+        // user typed it.
+        let provenance = message
+            .get("metadata")
+            .and_then(|m| m.get("provenance"))
+            .map(|p| {
+                let kind = p
+                    .get("kind")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("?");
+                match kind {
+                    "agent_injection" => format!(
+                        " [injected by {}]",
+                        p.get("fromSessionName")
+                            .or_else(|| p.get("fromSessionId"))
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or("another agent")
+                    ),
+                    "user_direct" => " [direct user message]".to_string(),
+                    "spawn_context" => " [spawn context]".to_string(),
+                    other => format!(" [{other}]"),
+                }
+            })
+            .unwrap_or_default();
+        if text.trim().is_empty() && tools.is_empty() {
+            return Some(None);
+        }
+        Some(Some(Self {
+            head: format!("[{role}]{provenance}"),
+            text,
+            tools,
+        }))
+    }
+
+    /// The `<tools: …>` that ends a line whose message calls tools. It is the CLI's own
+    /// rendering of the message's tool requests, not text the model wrote.
+    fn tools_suffix(&self) -> Option<String> {
+        (!self.tools.is_empty()).then(|| format!("  <tools: {}>", self.tools.join(", ")))
+    }
+
+    fn render(&self) -> String {
+        let mut line = format!("{} {}", self.head, self.text);
+        line.extend(self.tools_suffix());
+        line
+    }
+}
+
 /// One line of human output for a frame, or `None` for frames a human does not
 /// need to see (heartbeats, token bookkeeping).
 pub(crate) fn render_frame(frame: &serde_json::Value) -> Option<String> {
@@ -615,94 +730,10 @@ pub(crate) fn render_frame(frame: &serde_json::Value) -> Option<String> {
         "Ping" => None,
         "Message" => {
             let message = frame.get("message")?;
-            let role = message
-                .get("role")
-                .and_then(serde_json::Value::as_str)
-                .unwrap_or("?");
-            // ⚠ DISPLAY ONLY, and the last surface in this crate that showed
-            // the guardrail's frame raw.
-            //
-            // A `toolResponse` block has no top-level `text` key, so the
-            // `filter_map` above already skips the ordinary tool-result path
-            // (`session/output.rs`, the TUI and markdown export unwrap it
-            // instead). What still arrives here framed is a plain **text**
-            // block: a subagent's spawn-context record is `Message::user()
-            // .with_text(…)` (`agents/subagent_handler.rs`), and its
-            // `### Task instructions` section is free text the PARENT agent
-            // wrote — so a parent quoting what a tool handed it carries a
-            // complete `<tool-output untrusted="true" tool="…">` … pair into
-            // the record. `render_join_snapshot` replays the whole stored
-            // conversation through here, so `biorouter session attach
-            // <subagent-id>` printed the model's delimiter at the terminal.
-            // This is the CLI half of the same defect fixed in the desktop's
-            // `SubagentTabHeader.tsx`.
-            //
-            // Per block rather than on the joined string, because the framer
-            // applies one frame per text block (`guard_tool_result`): matching
-            // per block is what agrees with how the text was produced, and
-            // joining first would let an opening tag in one block pair with a
-            // close in the next and swallow the seam between them.
-            //
-            // The `[BIOROUTER GUARDRAIL]` line survives without a branch — it
-            // sits above the opening tag, and the shared helper only rewrites
-            // between a complete open and its matching close. Nothing
-            // downstream of this string reaches a model; it is `println!`ed.
-            let text: String = message
-                .get("content")?
-                .as_array()?
-                .iter()
-                .filter_map(|c| c.get("text").and_then(serde_json::Value::as_str))
-                .map(biorouter::guardrails::tool_output_display::unframe_tool_output)
-                .collect::<Vec<_>>()
-                .join(" ");
-            let tools: Vec<String> = message
-                .get("content")?
-                .as_array()?
-                .iter()
-                .filter(|c| {
-                    c.get("type").and_then(serde_json::Value::as_str) == Some("toolRequest")
-                })
-                .map(|c| {
-                    c.get("toolCall")
-                        .and_then(|tc| tc.get("value"))
-                        .and_then(|v| v.get("name"))
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("tool")
-                        .to_string()
-                })
-                .collect();
-            // BR-71 §5: an injected message is never rendered as if the local
-            // user typed it.
-            let provenance = message
-                .get("metadata")
-                .and_then(|m| m.get("provenance"))
-                .map(|p| {
-                    let kind = p
-                        .get("kind")
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("?");
-                    match kind {
-                        "agent_injection" => format!(
-                            " [injected by {}]",
-                            p.get("fromSessionName")
-                                .or_else(|| p.get("fromSessionId"))
-                                .and_then(serde_json::Value::as_str)
-                                .unwrap_or("another agent")
-                        ),
-                        "user_direct" => " [direct user message]".to_string(),
-                        "spawn_context" => " [spawn context]".to_string(),
-                        other => format!(" [{other}]"),
-                    }
-                })
-                .unwrap_or_default();
-            if text.trim().is_empty() && tools.is_empty() {
-                return wordless_message_line(message);
+            match MessageLine::of(message)? {
+                Some(line) => Some(line.render()),
+                None => wordless_message_line(message),
             }
-            let mut line = format!("[{role}]{provenance} {text}");
-            if !tools.is_empty() {
-                line.push_str(&format!("  <tools: {}>", tools.join(", ")));
-            }
-            Some(line)
         }
         "ToolCallPending" => Some(format!(
             "[tool] {} …",
@@ -829,6 +860,86 @@ struct Progress {
     /// The approvals whose expiry a printed line already reported (`Render::Lines`): see
     /// `stream_frame_lines`.
     expiries: cards::SaidEnds,
+    /// The streamed reply whose line is still open: see [`ChunkFold`].
+    fold: ChunkFold,
+}
+
+/// Folds the chunks of one streamed reply onto one line (W1-21).
+///
+/// The daemon publishes a streamed reply as one `Message` frame per chunk, every chunk
+/// carrying the message's id (the store folds them the same way, by id, when it saves the
+/// message). Printed one line per frame, a reply came out as dozens of `[assistant] word`
+/// lines. So a chunk of the message whose line is open continues that line, and anything
+/// else ends it first: another message, any other frame that prints, or the end of the
+/// stream. A message with no id cannot be told from the next one and keeps a line of its
+/// own, as every frame did before.
+#[derive(Debug, Default)]
+struct ChunkFold {
+    /// The message whose line is printed up to its text so far, without its newline: its
+    /// id, and the `[role]` head the line started with.
+    open: Option<(String, String)>,
+}
+
+impl ChunkFold {
+    /// What to write for `frame`, given the whole lines [`stream_frame_lines`] renders it to.
+    fn write(&mut self, frame: &serde_json::Value, lines: Vec<String>) -> String {
+        if lines.is_empty() {
+            return String::new();
+        }
+        if let Some((id, line)) = streamed_chunk(frame) {
+            return self.fold(id, line);
+        }
+        let mut out = self.close();
+        for line in lines {
+            out.push_str(&line);
+            out.push('\n');
+        }
+        out
+    }
+
+    /// One chunk of message `id`: the rest of the open line when it is that message's,
+    /// otherwise a new line. A chunk that calls tools ends its line with the tools.
+    fn fold(&mut self, id: String, line: MessageLine) -> String {
+        let key = (id, line.head.clone());
+        let mut out = String::new();
+        if self.open.as_ref() == Some(&key) {
+            out.push_str(&line.text);
+        } else {
+            out.push_str(&self.close());
+            out.push_str(&line.head);
+            out.push(' ');
+            out.push_str(&line.text);
+            self.open = Some(key);
+        }
+        if let Some(suffix) = line.tools_suffix() {
+            out.push_str(&suffix);
+            out.push_str(&self.close());
+        }
+        out
+    }
+
+    /// The end of the open line, if one is open: what to write before anything else is.
+    fn close(&mut self) -> String {
+        if self.open.take().is_some() {
+            "\n".to_string()
+        } else {
+            String::new()
+        }
+    }
+}
+
+/// The message id and line of a `Message` frame that is a chunk [`ChunkFold`] can fold:
+/// one with an id, and with text or a tool call to print.
+fn streamed_chunk(frame: &serde_json::Value) -> Option<(String, MessageLine)> {
+    if frame.get("type").and_then(serde_json::Value::as_str) != Some("Message") {
+        return None;
+    }
+    let message = frame.get("message")?;
+    let id = message
+        .get("id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| !id.is_empty())?;
+    Some((id.to_string(), MessageLine::of(message)??))
 }
 
 /// What reading one response came to.
@@ -841,6 +952,8 @@ pub(crate) struct Streamed {
     pub(crate) turn_id: Option<String>,
     /// The read saw the turn's terminal frame.
     pub(crate) ended: bool,
+    /// The sentence a refusal (any status but 200) carried in its body, when it carried one.
+    pub(crate) refusal: Option<String>,
 }
 
 impl Streamed {
@@ -850,6 +963,7 @@ impl Streamed {
             code,
             turn_id: None,
             ended: false,
+            refusal: None,
         }
     }
 
@@ -858,6 +972,7 @@ impl Streamed {
             code,
             turn_id: seen.turn_id,
             ended: seen.ended,
+            refusal: None,
         }
     }
 }
@@ -867,12 +982,22 @@ fn status_code(status_line: &str) -> Option<u16> {
     status_line.split_whitespace().nth(1)?.parse().ok()
 }
 
+/// A connection to the daemon on `port`, or the actionable "no daemon" error. The
+/// port is an argument so a test's stand-in daemon is not reached by setting
+/// `BIOROUTER_PORT` in a process every test shares.
+async fn connect_to_daemon_at(port: u16) -> Result<tokio::net::TcpStream> {
+    if !daemon_ok(DAEMON_HOST, port).await {
+        return Err(anyhow!("{}", no_daemon_at(port)));
+    }
+    Ok(biorouter::net::connect_non_inheritable(format!("{DAEMON_HOST}:{port}")).await?)
+}
+
 /// Stream `request` from the daemon and return the status it answered with.
 ///
 /// On a 200 the body is consumed — rendering per `render` — until `until` is
 /// reached, the stream ends, or the future is dropped. On any other status it
-/// returns at once, so a caller can branch on a 409 without reading a body it
-/// does not want.
+/// returns once the refusal's sentence is read ([`refusal_body`]), which never
+/// waits for the socket to close, so a caller can branch on a 409 promptly.
 ///
 /// ⚠ Consuming a 200 `/reply` body to its terminal frame is not politeness.
 /// `stream_event` trips the turn's `CancellationToken` the moment its
@@ -883,30 +1008,7 @@ fn status_code(status_line: &str) -> Option<u16> {
 /// `status`, when given, fires with the code as soon as the daemon's status line
 /// is read — see the call site in `post_reply_quiet` for why the return value is
 /// far too late.
-async fn stream_request(
-    request: String,
-    until: Until,
-    render: Render,
-    status: Option<tokio::sync::oneshot::Sender<u16>>,
-) -> Result<Streamed> {
-    stream_request_bytes(request.as_bytes(), until, render, status, None).await
-}
-
-/// A connection to the configured daemon, or the actionable "no daemon" error.
-async fn connect_to_daemon() -> Result<tokio::net::TcpStream> {
-    connect_to_daemon_at(configured_port()).await
-}
-
-/// [`connect_to_daemon`] for a port the caller names — a test's stand-in
-/// daemon, which must not be reached by setting `BIOROUTER_PORT` in a process
-/// every test shares.
-async fn connect_to_daemon_at(port: u16) -> Result<tokio::net::TcpStream> {
-    if !daemon_ok(DAEMON_HOST, port).await {
-        return Err(anyhow!("{}", no_daemon_at(port)));
-    }
-    Ok(biorouter::net::connect_non_inheritable(format!("{DAEMON_HOST}:{port}")).await?)
-}
-
+///
 /// `cards`, when given, is told about every card and turn end the stream carries
 /// ([`cards::card_events`]): `attach`'s way to answer an approval.
 async fn stream_request_bytes(
@@ -916,7 +1018,19 @@ async fn stream_request_bytes(
     status: Option<tokio::sync::oneshot::Sender<u16>>,
     cards: Option<cards::CardSink>,
 ) -> Result<Streamed> {
-    let mut stream = connect_to_daemon().await?;
+    stream_request_bytes_at(configured_port(), request, until, render, status, cards).await
+}
+
+/// [`stream_request_bytes`] to the daemon on `port`; see [`connect_to_daemon_at`].
+async fn stream_request_bytes_at(
+    port: u16,
+    request: &[u8],
+    until: Until,
+    render: Render,
+    status: Option<tokio::sync::oneshot::Sender<u16>>,
+    cards: Option<cards::CardSink>,
+) -> Result<Streamed> {
+    let mut stream = connect_to_daemon_at(port).await?;
     stream.write_all(request).await?;
     read_response(&mut stream, until, render, status, cards.as_ref()).await
 }
@@ -943,7 +1057,13 @@ async fn read_response<S: tokio::io::AsyncRead + Unpin>(
     let mut seen = Progress::default();
     let mut chunk = [0u8; 8192];
     loop {
-        let read = stream.read(&mut chunk).await?;
+        let read = match stream.read(&mut chunk).await {
+            Ok(read) => read,
+            Err(error) => {
+                write_out(&seen.fold.close());
+                return Err(error.into());
+            }
+        };
         if read == 0 {
             break;
         }
@@ -969,7 +1089,11 @@ async fn read_response<S: tokio::io::AsyncRead + Unpin>(
                 let _ = tx.send(code);
             }
             if code != 200 {
-                return Ok(Streamed::status_only(code));
+                let refusal = refusal_body(stream, &head, &raw[end + 4..]).await;
+                return Ok(Streamed {
+                    refusal,
+                    ..Streamed::status_only(code)
+                });
             }
             headers_done = true;
             buffer.clear();
@@ -997,18 +1121,95 @@ async fn read_response<S: tokio::io::AsyncRead + Unpin>(
              so it is not known whether the request was accepted"
         ));
     }
+    write_out(&seen.fold.close());
     Ok(Streamed::read(200, seen))
 }
 
-/// `stream_request` for the callers that treat any non-200 as fatal.
-async fn stream_frames(request: String, until: Until, render: Render) -> Result<()> {
-    match stream_request(request, until, render, None).await?.code {
-        200 => Ok(()),
-        code => Err(anyhow!(
-            "daemon refused the request: HTTP {code}\n\
-             (401 usually means BIOROUTER_SERVER__SECRET_KEY does not match the daemon's)"
-        )),
+/// How long a refusal's body is waited for once its status line has been read.
+const REFUSAL_BODY_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// The most of a refusal's body that is read.
+const REFUSAL_BODY_LIMIT: usize = 64 * 1024;
+
+/// The sentence a refused response carries ([`refusal_sentence`]), read off `stream` as far
+/// as its head declares: `content-length` bytes, or a chunked body to its last chunk. A body
+/// the head does not delimit is taken as far as it has already arrived, because a refusal
+/// must never wait for the socket to close (see [`read_response`]).
+async fn refusal_body<S: tokio::io::AsyncRead + Unpin>(
+    stream: &mut S,
+    head: &str,
+    arrived: &[u8],
+) -> Option<String> {
+    let head = head.to_ascii_lowercase();
+    let length = head
+        .lines()
+        .find_map(|line| line.strip_prefix("content-length:"))
+        .and_then(|value| value.trim().parse::<usize>().ok());
+    let chunked = head.contains("transfer-encoding: chunked");
+    let complete = |body: &[u8]| match length {
+        Some(length) => body.len() >= length,
+        None => !chunked || body.ends_with(b"0\r\n\r\n"),
+    };
+    let mut body = arrived.to_vec();
+    let _ = tokio::time::timeout(REFUSAL_BODY_WAIT, async {
+        let mut chunk = [0u8; 4096];
+        while !complete(&body) && body.len() < REFUSAL_BODY_LIMIT {
+            match stream.read(&mut chunk).await {
+                Ok(0) | Err(_) => break,
+                Ok(read) => body.extend_from_slice(&chunk[..read]),
+            }
+        }
+    })
+    .await;
+    if let Some(length) = length {
+        body.truncate(length);
     }
+    let body = if chunked { dechunk(&body) } else { body };
+    refusal_sentence(&String::from_utf8_lossy(&body))
+}
+
+/// `stream_request_bytes` for `watch`, which treats any non-200 as fatal.
+async fn stream_frames(
+    session_id: &str,
+    request: String,
+    until: Until,
+    render: Render,
+) -> Result<()> {
+    stream_frames_at(configured_port(), session_id, request, until, render).await
+}
+
+/// [`stream_frames`] to the daemon on `port`; see [`connect_to_daemon_at`].
+async fn stream_frames_at(
+    port: u16,
+    session_id: &str,
+    request: String,
+    until: Until,
+    render: Render,
+) -> Result<()> {
+    let streamed =
+        stream_request_bytes_at(port, request.as_bytes(), until, render, None, None).await?;
+    match streamed.code {
+        200 => Ok(()),
+        _ => Err(stream_refusal(session_id, &streamed)),
+    }
+}
+
+/// Why the daemon would not stream `session_id`'s events, for `watch` and `attach` (W1-19):
+/// the sentence its refusal carried, as `cancel` prints it, or the bare status when it
+/// carried none. The hint about the secret or a missing session is added only for the code
+/// it explains; beside a 403 it pointed the wrong way.
+fn stream_refusal(session_id: &str, streamed: &Streamed) -> anyhow::Error {
+    let code = streamed.code;
+    let reason = streamed
+        .refusal
+        .clone()
+        .unwrap_or_else(|| format!("HTTP {code}"));
+    let hint = match code {
+        401 => "\n(401 means BIOROUTER_SERVER__SECRET_KEY does not match the daemon's)",
+        404 => "\n(404 means there is no such session)",
+        _ => "",
+    };
+    anyhow!("the daemon would not stream session {session_id}: {reason}{hint}")
 }
 
 /// The lines one frame contributes to the terminal — and nothing else, no I/O,
@@ -1072,10 +1273,14 @@ fn print_frames(
     cards: Option<&cards::CardSink>,
 ) -> bool {
     for frame in frames {
-        for line in stream_frame_lines(frame, render, &mut seen.joined, &mut seen.expiries) {
-            println!("{line}");
-        }
+        let lines = stream_frame_lines(frame, render, &mut seen.joined, &mut seen.expiries);
+        write_out(&seen.fold.write(frame, lines));
         if let Some(sink) = cards {
+            // `attach` prints what a card asks below the line that names it, so that line
+            // ends first.
+            if !cards::card_events(frame).is_empty() {
+                write_out(&seen.fold.close());
+            }
             cards::forward(frame, sink);
         }
         if seen.turn_id.is_none() {
@@ -1089,10 +1294,39 @@ fn print_frames(
             Some("Finish") | Some("Error")
         );
         if until.reached(seen) {
+            write_out(&seen.fold.close());
             return true;
         }
     }
     false
+}
+
+/// Whether the last thing written to stdout left a line open: a streamed reply that
+/// [`ChunkFold`] is still folding.
+static LINE_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Write `text` to stdout as it is, flushed, since a streamed reply's line ends only when
+/// the reply does. A reader that went away ends the command quietly, as
+/// [`super::print_line`] does, where `println!` panicked.
+fn write_out(text: &str) {
+    use std::io::Write;
+    if text.is_empty() {
+        return;
+    }
+    let mut out = std::io::stdout().lock();
+    if let Err(error) = out.write_all(text.as_bytes()).and_then(|()| out.flush()) {
+        if error.kind() == std::io::ErrorKind::BrokenPipe {
+            std::process::exit(0);
+        }
+    }
+    LINE_OPEN.store(!text.ends_with('\n'), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// One whole line of `attach`'s own (a notice, a card's question), printed from outside the
+/// observer stream: on a line of its own, even while a streamed reply's line is open.
+fn print_own_line(line: &str) {
+    let open = LINE_OPEN.load(std::sync::atomic::Ordering::Relaxed);
+    write_out(&format!("{}{line}\n", if open { "\n" } else { "" }));
 }
 
 /// The sessions holding a turn right now, read from the daemon (BR-71 Task 38b).
@@ -1196,7 +1430,7 @@ fn json_object(body: &str) -> Option<serde_json::Value> {
 
 /// One-shot POST to a JSON route: the status code and the response body.
 ///
-/// Separate from `stream_request` because `/interrupt` and `/agent/cancel`
+/// Separate from `stream_request_bytes` because `/interrupt` and `/agent/cancel`
 /// answer with a single JSON object rather than an SSE stream — and because a
 /// request made from inside an interactive loop must not be able to hang it,
 /// hence the deadline (as in `running_session_ids`).
@@ -1255,9 +1489,9 @@ fn parse_http_response(raw: &[u8], what: &str) -> Result<(u16, String)> {
         .position(|w| w == b"\r\n\r\n")
         .ok_or_else(|| {
             anyhow!(
-            "the daemon closed the connection before sending a complete response to {what}, so \
+                "the daemon closed the connection before sending a complete response to {what}, so \
              it is not known whether the request was carried out"
-        )
+            )
         })?;
     let head = String::from_utf8_lossy(&raw[..end]).into_owned();
     let status = head.lines().next().unwrap_or_default();
@@ -1542,6 +1776,7 @@ pub async fn handle_session_watch(session_id: &str, follow: bool) -> Result<()> 
     }
     eprintln!("watching session {session_id} (ctrl-c to stop)");
     stream_frames(
+        session_id,
         build_get_request(
             &format!("/sessions/{session_id}/events"),
             DAEMON_HOST,
@@ -1603,7 +1838,11 @@ pub(crate) enum SendOutcome {
     /// nothing happened, and the request can be made again. Whether the
     /// user-action key would change the answer is [`send_to`]'s question; the
     /// 403 alone cannot say (see [`key_verdict`]).
-    Forbidden,
+    ///
+    /// `said` is the sentence the refusal carried: the reach gate's, which is the
+    /// same for a private chat and for an id that names none. The subagent rule's
+    /// refusal is empty.
+    Forbidden { said: Option<String> },
 }
 
 /// Send one `POST /reply` over `stream` and read the answer as far as `wait`
@@ -1653,7 +1892,9 @@ where
             turn_id: streamed.turn_id,
         }),
         202 => Ok(SendOutcome::Queued),
-        403 => Ok(SendOutcome::Forbidden),
+        403 => Ok(SendOutcome::Forbidden {
+            said: streamed.refusal,
+        }),
         code => Err(anyhow!(
             "daemon refused the request: HTTP {code}\n\
              (401 usually means BIOROUTER_SERVER__SECRET_KEY does not match the daemon's)"
@@ -1713,7 +1954,7 @@ where
             let outcome =
                 send_turn(&mut stream, request.as_bytes(), wait, NO_WAIT_DEADLINE).await?;
             let gate = match outcome {
-                SendOutcome::Forbidden => {
+                SendOutcome::Forbidden { .. } => {
                     Some(post_json_to(port, "/interrupt", question, &auth).await?)
                 }
                 _ => None,
@@ -1731,14 +1972,22 @@ where
         ask,
     )
     .await?;
+    // The steer gate's answer decided whether to ask for the key, and only that. The reason
+    // shown is `/reply`'s own (W1-18): the steer gate's words are about steering a running
+    // turn, which a send to a chat with no turn running is not. They stand in only when
+    // `/reply` said nothing, as its subagent refusal does.
     match (attempt.outcome, verdict) {
-        (SendOutcome::Forbidden, KeyVerdict::Wanted) => {
+        (SendOutcome::Forbidden { .. }, KeyVerdict::Wanted) => {
             Err(anyhow!("{}", KeyUse::Send.wrong_key()))
         }
-        (SendOutcome::Forbidden, KeyVerdict::Refused(sentence)) => Err(anyhow!(
-            "the daemon would not start a turn in session {session_id}: {sentence}"
+        (SendOutcome::Forbidden { said }, KeyVerdict::Refused(gate)) => Err(anyhow!(
+            "the daemon would not start a turn in session {session_id}: {}",
+            said.unwrap_or(gate)
         )),
-        (SendOutcome::Forbidden, KeyVerdict::NotAsked) => Err(anyhow!(
+        (SendOutcome::Forbidden { said: Some(said) }, KeyVerdict::NotAsked) => Err(anyhow!(
+            "the daemon would not start a turn in session {session_id}: {said}"
+        )),
+        (SendOutcome::Forbidden { said: None }, KeyVerdict::NotAsked) => Err(anyhow!(
             "the daemon refused to start a turn in session {session_id} (HTTP 403) and gave no \
              reason. {}",
             KeyUse::Send.undone()
@@ -1788,7 +2037,7 @@ pub async fn handle_session_send(
         ),
         // `send_to` turns a refusal into its reason before it gets here; this
         // is only the wording it would fall back to.
-        SendOutcome::Forbidden => {
+        SendOutcome::Forbidden { .. } => {
             return Err(anyhow!(
                 "the daemon refused to start a turn in session {session_id} (HTTP 403)"
             ))
@@ -2161,16 +2410,16 @@ async fn post_reply_quiet(
 
     match status_rx.await {
         Ok(200) => {
-            println!("[started a new turn]");
+            print_own_line("[started a new turn]");
             // The end of the turn is announced by the holder, so that waiting
             // for it costs the user nothing.
             tokio::spawn(async move {
                 match holder.await {
-                    Ok(Ok(_)) => println!("[the turn you started has ended]"),
-                    Ok(Err(err)) => println!(
+                    Ok(Ok(_)) => print_own_line("[the turn you started has ended]"),
+                    Ok(Err(err)) => print_own_line(&format!(
                         "[the turn you started stopped streaming here: {err}]\n\
                          It may still be running. `biorouter session cancel <id>` stops it."
-                    ),
+                    )),
                     // Only reachable if the runtime is shutting down, which is
                     // the process exiting anyway.
                     Err(_) => {}
@@ -2539,18 +2788,20 @@ fn spawn_delivery_worker(
     tokio::spawn(async move {
         while let Some(text) = send_rx.recv().await {
             match deliver(&session_id, &text, &auth, &window).await {
-                Ok(Delivered::Steered { turn_id }) => println!("[steered turn {turn_id}]"),
+                Ok(Delivered::Steered { turn_id }) => {
+                    print_own_line(&format!("[steered turn {turn_id}]"));
+                }
                 // Both halves are announced from the socket itself — the start
                 // at the 200 in `post_reply_quiet`, the end when its holder
                 // reaches the terminal frame. `deliver` now returns at the 200,
                 // so anything said here would be a third copy, and at the wrong
                 // moment.
                 Ok(Delivered::NewTurn) => {}
-                Ok(Delivered::Nothing) => println!(
+                Ok(Delivered::Nothing) => print_own_line(&format!(
                     "[not sent] the session's turn state changed three times while this \
                      message was in flight, so it was not sent. Send it again:\n  {text}"
-                ),
-                Err(err) => println!("[not sent] {err}\n  {text}"),
+                )),
+                Err(err) => print_own_line(&format!("[not sent] {err}\n  {text}")),
             }
         }
     });
@@ -2610,7 +2861,7 @@ where
 
 fn print_lines(lines: &[String]) {
     for line in lines {
-        println!("{line}");
+        print_own_line(line);
     }
 }
 
@@ -2656,10 +2907,10 @@ fn take_typed_line(
     match send_tx.try_send(line) {
         Ok(()) => Ok(()),
         Err(tokio::sync::mpsc::error::TrySendError::Full(text)) => {
-            println!(
+            print_own_line(&format!(
                 "[not sent] {SEND_QUEUE} messages are already waiting to go out; \
                  let them clear first, then send this again:\n  {text}"
-            );
+            ));
             Ok(())
         }
         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
@@ -2758,16 +3009,13 @@ pub async fn handle_session_attach(
     loop {
         tokio::select! {
             observed = &mut observer => {
-                match observed?.code {
+                let observed = observed?;
+                match observed.code {
                     200 => {
                         eprintln!("the session's event stream ended");
                         return Ok(());
                     }
-                    code => return Err(anyhow!(
-                        "the daemon would not stream session {session_id}: HTTP {code}\n\
-                         (404 means no such session; 401 means BIOROUTER_SERVER__SECRET_KEY \
-                          does not match the daemon's)"
-                    )),
+                    _ => return Err(stream_refusal(&session_id, &observed)),
                 }
             }
             Some(event) = card_rx.recv() => print_lines(&waiting.on_event(event)),
@@ -4128,6 +4376,161 @@ mod tests {
         assert_eq!(daemon.requests().len(), 2);
     }
 
+    /// `session_reach::SESSION_REACH_NO_KEY`, the reach gate's refusal on a daemon that holds
+    /// no key: the same words for a private chat and for an id that names no chat.
+    const REACH_NO_KEY: &str = "This daemon was started without a user-action key, so it \
+                                cannot verify that a request came from the person at the \
+                                keyboard, and reaching into a private chat requires that proof. \
+                                Nothing was read and nothing was changed. This control is \
+                                unavailable on this daemon; use the desktop app.";
+
+    /// `reply::STEER_NO_KEY`: the steer gate's refusal on a daemon that holds no key.
+    const STEER_NO_KEY: &str = "This daemon was started without a user-action key, so it \
+                                cannot verify that a request came from the person at the \
+                                keyboard, and steering a turn that is already running requires \
+                                that proof: it changes what the model is doing, in place, \
+                                without the person watching it having asked. Nothing was queued \
+                                and the turn was not touched. Stop the turn and send the message \
+                                instead, or use the desktop app.";
+
+    /// A plain-text refusal, framed as the reach gate's `(status, &str)` response is.
+    fn plain_text(status: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status}\r\ncontent-type: text/plain; charset=utf-8\r\ncontent-length: {}\
+             \r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    /// W1-18: a `send` the reach gate refuses prints the reach gate's own sentence. It printed
+    /// the steer gate's, which talks about "steering a turn that is already running" when no
+    /// turn runs. The steer gate is still asked, because its answer is what says whether a key
+    /// would help, and that decision is unchanged: a daemon that holds a key still gets asked
+    /// for it.
+    #[tokio::test]
+    async fn a_refused_send_says_the_reach_sentence_not_steering() {
+        let asked = std::cell::Cell::new(0);
+        for id in ["20261116_6", "20990101_9"] {
+            let daemon = FakeDaemon::start(vec![
+                plain_text("403 Forbidden", REACH_NO_KEY),
+                http(
+                    "403 Forbidden",
+                    &serde_json::json!({ "message": STEER_NO_KEY }).to_string(),
+                ),
+            ])
+            .await;
+            let err = send_to(
+                daemon.port,
+                id,
+                "hi",
+                true,
+                DaemonAuth::for_test("s3cret", ""),
+                person_types("never-typed", &asked),
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+            assert_eq!(
+                err,
+                format!("the daemon would not start a turn in session {id}: {REACH_NO_KEY}")
+            );
+            assert!(!err.contains("steering"), "{err}");
+            let requests = daemon.requests();
+            assert_eq!(requests.len(), 2, "{requests:?}");
+            assert!(requests[1].starts_with("POST /interrupt "));
+        }
+        assert_eq!(asked.get(), 0, "no key helps on a daemon that holds none");
+
+        // A daemon that holds a key: the steer gate's empty refusal still asks for it.
+        let daemon = FakeDaemon::start(vec![
+            plain_text(
+                "403 Forbidden",
+                "That chat is private, or there is no chat with that id.",
+            ),
+            empty_403(),
+            a_whole_turn(),
+        ])
+        .await;
+        let outcome = send_to(
+            daemon.port,
+            "20261116_7",
+            "hi",
+            true,
+            DaemonAuth::for_test("s3cret", ""),
+            person_types("the-typed-key", &asked),
+        )
+        .await
+        .unwrap();
+        assert_eq!(outcome, SendOutcome::Streamed);
+        assert_eq!(asked.get(), 1);
+        assert!(daemon.requests()[2].contains("X-User-Action: the-typed-key\r\n"));
+    }
+
+    /// W1-19: `watch` and `attach` print the sentence a refusal carries, as `cancel` does,
+    /// instead of a bare `HTTP 403` beside a hint about 401 and 404. The hint stays where it is
+    /// about the code the daemon answered.
+    #[tokio::test]
+    async fn watch_and_attach_print_the_refusal_sentence() {
+        let id = "20261116_6";
+        let events = || {
+            build_get_request(
+                &format!("/sessions/{id}/events"),
+                DAEMON_HOST,
+                &DaemonAuth::for_test("s3cret", ""),
+            )
+        };
+        let refused = format!("the daemon would not stream session {id}: {REACH_NO_KEY}");
+
+        // `watch`, over a socket.
+        let daemon = FakeDaemon::start(vec![plain_text("403 Forbidden", REACH_NO_KEY)]).await;
+        let err = stream_frames_at(daemon.port, id, events(), Until::Terminal, Render::Lines)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, refused);
+
+        // `attach`'s observer, over a socket, framed as hyper frames a JSON refusal.
+        let daemon = FakeDaemon::start(vec![chunked(
+            "403 Forbidden",
+            &serde_json::json!({ "message": REACH_NO_KEY }).to_string(),
+        )])
+        .await;
+        let observed = stream_request_bytes_at(
+            daemon.port,
+            events().as_bytes(),
+            Until::Closed,
+            Render::JoinThenLines,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(observed.code, 403);
+        assert_eq!(stream_refusal(id, &observed).to_string(), refused);
+
+        // With no sentence, the code, and the hint only for the code it is about.
+        for (status, hint) in [
+            ("401 Unauthorized", Some("BIOROUTER_SERVER__SECRET_KEY")),
+            ("404 Not Found", Some("no such session")),
+            ("403 Forbidden", None),
+        ] {
+            let daemon = FakeDaemon::start(vec![http(status, "")]).await;
+            let err = stream_frames_at(daemon.port, id, events(), Until::Terminal, Render::Lines)
+                .await
+                .unwrap_err()
+                .to_string();
+            let code = status.split(' ').next().unwrap_or_default();
+            assert!(err.contains(&format!("HTTP {code}")), "{err}");
+            match hint {
+                Some(hint) => assert!(err.contains(hint), "{status}: {err}"),
+                None => assert!(
+                    !err.contains('('),
+                    "{status}: a hint about other codes: {err}"
+                ),
+            }
+        }
+    }
+
     /// Issue #56 — **every** daemon request states the capability this terminal
     /// is running under, on both verbs.
     ///
@@ -4217,6 +4620,92 @@ mod tests {
         assert!(text.contains("shasum -a 256"), "{text}");
         // The command it prints uses the port it just reported, not a literal.
         assert!(text.contains("BIOROUTER_PORT=3456 "), "{text}");
+    }
+
+    /// W1-30 (f): the start command in the two "no daemon" notes is ONE line a person can
+    /// copy. It wrote `printf '\n'` inside an ordinary string, so the `\n` became a real line
+    /// break and the command split in two, and the note ran to ten lines.
+    #[test]
+    fn the_key_recipe_keeps_printf_on_one_line() {
+        for text in [NO_SECRET_KEY_HELP.to_string(), no_daemon_at(3000)] {
+            let line = text
+                .lines()
+                .find(|line| line.contains("read -r -s action_key"))
+                .unwrap_or_else(|| panic!("no start command in:\n{text}"));
+            assert!(line.contains(r"printf '\n';"), "{line:?}");
+            assert!(
+                line.trim_end().ends_with("biorouterd agent"),
+                "the start command is split across lines:\n{text}"
+            );
+        }
+        assert!(
+            NO_SECRET_KEY_HELP.lines().count() <= 7,
+            "the missing-secret note is a wall of text:\n{NO_SECRET_KEY_HELP}"
+        );
+    }
+
+    /// W1-21: a streamed reply arrives as one `Message` frame per chunk, every chunk carrying
+    /// the message's id, and it printed one `[assistant]` line per chunk. Consecutive chunks
+    /// of one message are one line; the line ends when another message or frame starts, or
+    /// when the stream does. The `<tools: …>` suffix still ends the line it belongs to.
+    #[test]
+    fn same_id_chunks_print_as_one_line() {
+        fn chunk(id: &str, text: &str) -> serde_json::Value {
+            serde_json::json!({ "type": "Message", "message": {
+                "id": id, "role": "assistant",
+                "content": [{ "type": "text", "text": text }] } })
+        }
+        fn written(frames: &[serde_json::Value]) -> String {
+            let mut fold = ChunkFold::default();
+            let mut joined = false;
+            let mut expiries = cards::SaidEnds::default();
+            let mut out = String::new();
+            for frame in frames {
+                let lines = stream_frame_lines(frame, Render::Lines, &mut joined, &mut expiries);
+                out.push_str(&fold.write(frame, lines));
+            }
+            out.push_str(&fold.close());
+            out
+        }
+        let user = serde_json::json!({ "type": "Message", "message": {
+            "id": "u-1", "role": "user", "content": [{ "type": "text", "text": "hi" }] } });
+        let tool_request = serde_json::json!({ "type": "Message", "message": {
+            "id": "m-1", "role": "assistant", "content": [{
+                "type": "toolRequest", "id": "call-1",
+                "toolCall": { "status": "success",
+                              "value": { "name": "developer__shell", "arguments": {} } } }] } });
+        assert_eq!(
+            written(&[
+                user,
+                chunk("m-1", "Hi"),
+                chunk("m-1", "!"),
+                serde_json::json!({ "type": "Ping" }),
+                chunk("m-1", " How can I"),
+                chunk("m-1", " help?"),
+                tool_request,
+                serde_json::json!({ "type": "ToolCallPending", "name": "developer__shell" }),
+                chunk("m-2", "Done"),
+                chunk("m-2", "."),
+                serde_json::json!({ "type": "Finish", "reason": "stop" }),
+            ]),
+            "[user] hi\n\
+             [assistant] Hi! How can I help?  <tools: developer__shell>\n\
+             [tool] developer__shell …\n\
+             [assistant] Done.\n\
+             [finished] stop\n"
+        );
+        // A stream that ends with no terminal frame still ends its line.
+        assert_eq!(
+            written(&[chunk("m-3", "a"), chunk("m-3", "b")]),
+            "[assistant] ab\n"
+        );
+        // A message with no id cannot be told from the next one, so it keeps a line of its own.
+        let anonymous = serde_json::json!({ "type": "Message", "message": {
+            "role": "assistant", "content": [{ "type": "text", "text": "one" }] } });
+        assert_eq!(
+            written(&[anonymous.clone(), anonymous]),
+            "[assistant] one\n[assistant] one\n"
+        );
     }
 
     #[test]

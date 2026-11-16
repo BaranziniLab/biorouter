@@ -691,7 +691,7 @@ Remove one or more saved sessions.
 
 - **`--session-id <session_id>`**: Remove a specific session by its session ID — any session, including a subagent run or a session with no messages
 - **`-n, --name <name>`**: Remove the one session carrying this name. When several sessions share it (every session a bare `biorouter` creates is listed as `New chat` until it is renamed), nothing is removed and the matching IDs are listed
-- **`-r, --regex <pattern>`**: Remove every session whose ID matches a regex pattern, among the sessions `session list` shows
+- **`-r, --regex <pattern>`**: Remove every session whose ID matches a regex pattern, among the sessions `session list` shows. A pattern that matches no session removes nothing and exits with status `1`, as a `--name` that names no session does
 - **`--include-empty`**: With `--regex` or the picker, also match sessions that have not recorded a message yet
 - **`--subagents`**: With `--regex` or the picker, also match subagent runs (and sessions with no messages)
 - **`-y, --yes`**: Remove without asking for confirmation. Required when the command is not run from a terminal
@@ -737,6 +737,8 @@ Export sessions in different formats for backup, sharing, migration, or document
 - **`-o, --output <file>`**: Save exported content to a file (default: stdout)
 - **`--format <format>`**: Output format: `markdown`, `json`, `yaml`. Default is `markdown`
 
+With no `--session-id`, `--name` or `--path`, `export`, `diagnostics`, `rename` and `diverge` open a picker. The picker needs a terminal: without one, the command names the flags to use instead and exits with status `2`.
+
 **Export Formats:**
 
 - **`json`**: Complete session backup preserving all data including conversation history, metadata, and settings
@@ -746,7 +748,7 @@ Export sessions in different formats for backup, sharing, migration, or document
 **Usage:**
 
 ```bash
-# Interactive export
+# Interactive export (the picker needs a terminal)
 biorouter session export
 
 # Export specific session as JSON for backup
@@ -795,6 +797,8 @@ daemon with a key.
 ### session watch [options]
 
 Stream a session's live events into your terminal — the same frames biorouter Desktop renders, printed as lines. Watching is read-only: it never writes to the conversation, and stopping the watch never stops the session.
+
+A reply the model streams prints as one `[assistant]` line that fills in as the text arrives, not as one line per chunk. `send` and `attach` print it the same way.
 
 **Requires a running daemon.** See [Live-session commands and the daemon](#live-session-commands-and-the-daemon).
 
@@ -1248,9 +1252,11 @@ Generate a comprehensive diagnostics bundle for troubleshooting issues with a sp
 - **`--path <path>`**: Generate diagnostics for a specific session by file path (legacy)
 - **`-o, --output <file>`**: Save diagnostics bundle to a specific file path (default: `diagnostics_{session_id}.zip`)
 
+An ID or name that names no chat is refused with exit status `1`, and nothing is written.
+
 **What's included:**
 
-- **System Information**: App version, operating system, architecture, and timestamp
+- **System Information**: App version, operating system, architecture, the chat's own provider and model, the configured default provider and model, and timestamp
 - **Session Data**: Complete conversation messages and history for the specified session
 - **Configuration Files**: Your [configuration files](../configuration/config-file-reference.md) (if they exist)
 - **Log Files**: Recent application logs for debugging
@@ -1331,7 +1337,7 @@ biorouter session --resume --session-id 20251108_7
 
 ### session declassify
 
-Lower a session's privacy classification from private to public, so it may run on any model. The change is confirmed at the terminal and recorded in the classification ledger. It works by session id, including for sessions no listing shows: subagent runs, `--no-session` runs and terminal sessions.
+Lower a session's privacy classification from private to public, so it may run on any model. The change is confirmed at the terminal and recorded in the classification ledger. It works by session id, including for sessions no listing shows: subagent runs, `--no-session` runs and terminal sessions. Without a terminal to confirm on, a private session is left unchanged and the command exits with status `2`.
 
 **Usage:**
 
@@ -1700,7 +1706,7 @@ This is always the case next to the desktop app. The app's own daemon uses a ran
 
 ### mcp
 
-Run one of the MCP servers bundled with Biorouter as a subprocess speaking MCP over stdio. MCP is the Model Context Protocol, the standard biorouter extensions speak. `<name>` is not an arbitrary extension name: it must be one of the five bundled servers below, and any other value is refused with `Invalid command: <name>`.
+Run one of the MCP servers bundled with Biorouter as a subprocess speaking MCP over stdio. MCP is the Model Context Protocol, the standard biorouter extensions speak. `<name>` is not an arbitrary extension name: it must be one of the five bundled servers below, which `biorouter mcp --help` lists too. Any other value is refused with `Unknown server '<name>'. Choose one of: autovisualiser, computercontroller, webdocuments, developer, memory.`
 
 - `autovisualiser` (Auto Visualiser)
 - `computercontroller` (the config key whose display name is "Biorouter Copilot"; the key kept its original spelling so existing configs and command lines keep working)

@@ -76,6 +76,30 @@ impl Sandbox {
         let _ = child.stdin.take().unwrap().write_all(stdin.as_bytes());
         child.wait_with_output().unwrap()
     }
+
+    /// Run `biorouter <args>` with standard output a pipe whose reader has already gone, as
+    /// it is once `head` has read what it wanted. Every write the command makes to it fails
+    /// with a broken pipe, whatever the timing.
+    fn run_into_closed_stdout(&self, args: &[&str]) -> Output {
+        let (reader, writer) = std::io::pipe().expect("a pipe");
+        drop(reader);
+        Command::new(env!("CARGO_BIN_EXE_biorouter"))
+            .args(args)
+            .env("HOME", &self.home)
+            .env("XDG_CONFIG_HOME", self.home.join(".config"))
+            .env("BIOROUTER_PATH_ROOT", &self.root)
+            .env("BIOROUTER_DISABLE_KEYRING", "true")
+            .env_remove("BIOROUTER_PROVIDER")
+            .env_remove("BIOROUTER_MODEL")
+            .env_remove("BIOROUTER_SERVER__SECRET_KEY")
+            .stdin(Stdio::null())
+            .stdout(writer)
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn the biorouter binary")
+            .wait_with_output()
+            .unwrap()
+    }
 }
 
 fn text(bytes: &[u8]) -> String {
@@ -610,6 +634,26 @@ async fn session_remove_under_a_pipe_needs_yes_and_then_reaches_every_row_kind()
         assert!(!exists(&data, id).await, "{id} is still in the store");
     }
     assert!(exists(&data, &chat).await, "only the named rows go");
+}
+
+/// W1-12: `biorouter session list | head` ends quietly once `head` has what it wanted. The
+/// listing printed with `println!`, which panics with "failed printing to stdout: Broken
+/// pipe" when the reader has gone.
+#[tokio::test]
+async fn session_list_into_a_closed_pipe_does_not_panic() {
+    let sandbox = Sandbox::new();
+    seed_three_row_kinds(&sandbox.root.join("data")).await;
+
+    for args in [
+        &["session", "list"][..],
+        &["session", "list", "--format", "json"],
+        &["session", "list", "--subagents"],
+    ] {
+        let out = sandbox.run_into_closed_stdout(args);
+        let stderr = text(&out.stderr);
+        assert!(!stderr.contains("panicked"), "{args:?}: {stderr}");
+        assert_eq!(out.status.code(), Some(0), "{args:?}: {stderr}");
+    }
 }
 
 /// R-30: resuming a chat in the terminal is opening it, not activity in it.
