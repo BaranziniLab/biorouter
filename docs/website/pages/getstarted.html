@@ -6,7 +6,7 @@
 <p>Download the file for your computer from the <a href="download.html">Download page</a> or from <a href="https://github.com/BaranziniLab/biorouter/releases">GitHub Releases</a>.</p>
 <ul>
   <li><strong>Windows x64.</strong> <code>Biorouter-Setup-*.exe</code> is the installer. A later one upgrades in place and keeps your shortcuts. A <code>.zip</code> of the same build is also published.</li>
-  <li><strong>macOS.</strong> Open the <code>.dmg</code> for your Mac, <code>arm64</code> for Apple silicon or <code>x64</code> for Intel, and drag Biorouter to Applications.</li>
+  <li><strong>macOS.</strong> For macOS 12 (Monterey) or newer. Open the <code>.dmg</code> for your Mac, <code>arm64</code> for Apple silicon or <code>x64</code> for Intel, and drag Biorouter to Applications.</li>
   <li><strong>Linux, Debian and Ubuntu.</strong> Run this in the folder that holds the file:
 <pre><code>sudo apt install ./biorouter_*.deb</code></pre></li>
   <li><strong>Linux, Fedora and RHEL.</strong> Run this in the folder that holds the file:
@@ -14,7 +14,7 @@
   <li><strong>Linux server.</strong> The <code>biorouter-cli</code> packages, one <code>.deb</code> and one <code>.rpm</code>, install the command line, the background service and the browser interface with no desktop app. Install one the same way. See <a href="#cli">Command line</a>.</li>
 </ul>
 <p>The app checks for new releases and tells you when one is ready. <strong>Settings&nbsp;→&nbsp;App&nbsp;→&nbsp;About</strong> shows the version and where an update stands.</p>
-<div class="note"><p>When it starts, the app checks for Git, Python, uv and npm, which some extensions use, and offers to install any that are missing. The app itself runs without them. Local models on Linux need Debian 12, Ubuntu 22.04 or newer.</p></div>
+<div class="note"><p>When it starts, the app checks for Git, Python, uv and npm, which some extensions use, and offers to install any that are missing. The app itself runs without them. Local models in Llama Server need macOS 13.3 or newer on a Mac, and Debian 12, Ubuntu 22.04 or newer on Linux. Local dictation, in the next release, needs Apple silicon or an x86 processor with AVX2, FMA, F16C and BMI2; the Intel build running under Rosetta needs macOS 15 or newer for it.</p></div>
 
 <h2 id="getstarted-cli">Install the command line</h2>
 <p>The desktop app includes the <code>biorouter</code> command line tool, which shares your settings and chats with the app. When the command is not on your PATH, the app offers to install it as it starts. On Windows and on the Linux desktop packages, use that prompt. On macOS you can also run the bundled copy once from a terminal:</p>
@@ -31,13 +31,13 @@
   <li><strong>Public.</strong> Claude Code and Codex use the vendor's command line tool, installed and signed in to your own plan; Biorouter never sees the credential. Anthropic, OpenAI and Google Gemini need an API key from that provider. The others ask for that provider's own key or account credentials.</li>
 </ul>
 <p>Choose a provider's row, then <strong>Configure</strong>, and enter its credentials. Biorouter checks them when you save. From a terminal, run <code>biorouter configure</code> and choose <strong>Configure Providers</strong>. <a href="#providers">Models and providers</a> lists every provider and its default model, and <a href="#vaulting">Security</a> explains where credentials are kept.</p>
-<p>Llama Server, Ollama running on this computer, and the two Versa providers are private. Ollama on another machine, an Ollama cloud model, and every other provider, is public. For patient data, use a private model. Once a chat uses a private model or a private data extension, it stays private, and Biorouter refuses to switch it to a public model. To change that, choose <strong>Make this chat public</strong> in Chat history, or run <code>biorouter session declassify</code>. See <a href="#privacy">Private and public</a>.</p>
+<p>Llama Server, Ollama running on this computer, and the two Versa providers are private. Ollama on another machine, an Ollama cloud model, and every other provider, is public. For patient data, use a private model. Once a chat uses a private model or a private data extension, it stays private, and Biorouter refuses to switch it to a public model. To change that, choose <strong>Make this chat public</strong> in Chat history, or run <code>biorouter session declassify</code>. Decision models, in the next release, count too: a chat is as private as the least private model it uses, so a public decision model, such as one on Baseten, makes a chat on a Versa model public. You confirm that before the first message, and a chat that is already private refuses a public decision model. See <a href="#privacy">Private and public</a>.</p>
 <div class="note"><p><strong>UCSF researchers:</strong> use the two Versa providers on the Institutional tab. Azure OpenAI and Amazon Bedrock on the Public tab stay public even if you point them at a UCSF endpoint, because Biorouter cannot check where they send data.</p></div>
 
 <h2 id="getstarted-first-chat">Start a chat</h2>
 <ol class="steps">
   <li><strong>Open a new chat</strong> Choose <strong>New chat</strong> in the sidebar, or press <kbd>Cmd+T</kbd> (<kbd>Ctrl+T</kbd> on Windows and Linux).</li>
-  <li><strong>Pick a working folder</strong> The folder under the text box is where the agent reads and writes files. Choose it to switch folders before you send the first message. After that the chat keeps it.</li>
+  <li><strong>Pick a working folder</strong> The folder on the line under the text box is where the agent reads and writes files. Choose it to see its full path, and <strong>Choose folder…</strong> to switch before you send the first message. After that the chat keeps it, and the same card lists any other folders the chat may use, each with <strong>Revoke</strong>.</li>
   <li><strong>Ask</strong> Type a request in plain language and press <kbd>Enter</kbd>, for example “List the files in this folder and summarize the README.” The agent answers and shows each tool it runs as one line.</li>
 </ol>
 <p>From a terminal, <code>biorouter session</code> opens an interactive chat, and <code>biorouter run -t "Summarize ./notes.md"</code> sends one request and exits.</p>
