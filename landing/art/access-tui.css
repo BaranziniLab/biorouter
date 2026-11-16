@@ -1,0 +1,177 @@
+/* Terminal chat tile (download page, "Ways to use Biorouter"). The full screen
+   chat `biorouter session` opens (crates/biorouter-cli/src/session/tui), on
+   the site's light ground: a recessed --fill pane with mono text, the coral
+   banner and prompt, the person's turn on a shaded line behind a coral bar,
+   the status line, the input box on --paper and the key hints. The input box
+   rests with no outline; while a turn runs its edge turns coral and the
+   spinner sits in it, as the TUI draws it. Everything is scoped under
+   [data-art="access-tui"]. */
+
+[data-art="access-tui"] .acc-tui {
+  position: absolute; inset: 0;
+  container-type: inline-size;
+  -webkit-user-select: none; user-select: none;
+}
+
+/* Size tiers, by the tile's own width (the tile is 4:3). Text is 12px with a
+   14px row until the tile passes 420px, then 13px, then 14px. access-tui.js
+   adds fit-tight where the finished turn would push the banner out of view. */
+[data-art="access-tui"] .acc-tui-pane {
+  --acc-fs: 12px;
+  --acc-lh: 14px;
+  --acc-inset: 10px;
+  --acc-px: 12px;
+  --acc-py: 8px;
+  --acc-gap: 4px;
+  position: absolute; inset: var(--acc-inset);
+  display: flex; flex-direction: column;
+  padding: var(--acc-py) var(--acc-px);
+  border: 1px solid transparent;
+  border-radius: var(--r-container);
+  background: var(--fill);
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: var(--acc-fs);
+  line-height: var(--acc-lh);
+  color: var(--ink);
+}
+@container (max-width: 300px) {
+  [data-art="access-tui"] .acc-tui-pane { --acc-inset: 8px; --acc-px: 10px; --acc-py: 7px; }
+}
+@container (min-width: 420px) {
+  [data-art="access-tui"] .acc-tui-pane { --acc-fs: 13px; --acc-lh: 16px; --acc-inset: 14px; --acc-px: 15px; --acc-py: 12px; --acc-gap: 5px; }
+}
+@container (min-width: 500px) {
+  [data-art="access-tui"] .acc-tui-pane { --acc-fs: 14px; --acc-lh: 18px; --acc-inset: 16px; --acc-px: 18px; --acc-py: 14px; --acc-gap: 6px; }
+}
+[data-art="access-tui"] .acc-tui.fit-tight .acc-tui-pane { --acc-inset: 5px; --acc-py: 7px; --acc-gap: 3px; }
+[data-art="access-tui"] .acc-tui.fit-tight .acc-tui-box { padding-top: 3px; padding-bottom: 3px; }
+
+[data-art="access-tui"] .acc-tui-probe {
+  position: absolute; left: 0; top: 0; visibility: hidden; white-space: pre;
+}
+
+/* ── The scrollback ────────────────────────────────────── */
+/* access-tui.js snaps its height to whole rows (what is left over goes
+   between it and the status line) and moves the lines up once they are taller
+   than it. */
+[data-art="access-tui"] .acc-tui-hist {
+  flex: 1 1 0; min-height: 0;
+  margin-bottom: auto;
+  overflow: hidden;
+}
+[data-art="access-tui"] .acc-tui-lines { transition: transform var(--dur-med) var(--ease); }
+[data-art="access-tui"] .acc-tui-row {
+  min-height: var(--acc-lh);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+[data-art="access-tui"] .acc-tui-blank { height: var(--acc-lh); }
+/* The banner: 33 cells by 3 rows, drawn from the TUI's strings (access-tui.js).
+   It narrows with a pane too narrow for 33 cells rather than wrap. */
+[data-art="access-tui"] .acc-tui-banner { height: calc(var(--acc-lh) * 3); color: var(--coral); }
+[data-art="access-tui"] .acc-tui-banner svg { display: block; width: min(100%, 33ch); height: 100%; }
+[data-art="access-tui"] .acc-tui-tag { font-weight: 700; }
+[data-art="access-tui"] .acc-tui-dim { color: var(--muted); }
+
+[data-art="access-tui"] .acc-tui-turn > .acc-tui-row { display: none; }
+[data-art="access-tui"] .acc-tui.has-question .acc-tui-turn > .acc-tui-row:not(.acc-tui-reply) { display: block; }
+[data-art="access-tui"] .acc-tui.has-reply .acc-tui-turn > .acc-tui-reply { display: block; }
+[data-art="access-tui"] .acc-tui-turn > .acc-tui-row { transition: opacity var(--dur-med) var(--ease); }
+[data-art="access-tui"] .acc-tui.is-clearing .acc-tui-turn > .acc-tui-row { opacity: 0; }
+/* The person's turn: a coral bar, then the line on a shade one step back from
+   the pane. */
+[data-art="access-tui"] .acc-tui-bar { color: var(--coral); font-weight: 700; }
+[data-art="access-tui"] .acc-tui-said {
+  background: var(--paper);
+  -webkit-box-decoration-break: clone; box-decoration-break: clone;
+}
+
+/* ── Status ────────────────────────────────────────────── */
+[data-art="access-tui"] .acc-tui-status {
+  flex: none;
+  display: flex; justify-content: space-between; gap: 1ch;
+  margin-top: var(--acc-gap);
+  white-space: pre;
+  color: var(--muted);
+}
+[data-art="access-tui"] .acc-tui-counts { min-width: 0; overflow: hidden; }
+[data-art="access-tui"] .acc-tui-right { flex: none; transition: opacity var(--dur-menu) var(--ease); }
+[data-art="access-tui"] .acc-tui-right[hidden] { display: none; }
+[data-art="access-tui"] .acc-tui-right.is-swap { opacity: 0; }
+[data-art="access-tui"] .acc-tui-cells { color: var(--coral); }
+
+/* ── The input box ─────────────────────────────────────── */
+[data-art="access-tui"] .acc-tui-box {
+  position: relative;
+  flex: none;
+  display: flex; align-items: center;
+  /* Room for the upper half of the spinner's label, which rides on the top
+     edge, so it never touches the status line. */
+  margin-top: calc(var(--acc-lh) / 2 + 2px);
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: var(--r-element);
+  background: var(--paper);
+  transition: border-color var(--dur-menu) var(--ease);
+}
+[data-art="access-tui"] .acc-tui-box.is-busy { border-color: var(--coral); }
+[data-art="access-tui"] .acc-tui-prompt { flex: none; white-space: pre; color: var(--coral); font-weight: 700; }
+/* One line, as a field: while the draft is wider than the field, its end and
+   the caret stay in view. */
+[data-art="access-tui"] .acc-tui-field {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; justify-content: flex-end;
+  overflow: hidden;
+  white-space: pre;
+}
+[data-art="access-tui"] .acc-tui-field > .acc-tui-spacer { flex: 1 1 0; min-width: 0; }
+[data-art="access-tui"] .acc-tui-draft { flex: none; display: flex; align-items: center; }
+[data-art="access-tui"] .acc-tui-typed { color: var(--ink); }
+[data-art="access-tui"] .acc-tui-ph { color: var(--subtle); }
+[data-art="access-tui"] .acc-tui-box.has-draft .acc-tui-ph { display: none; }
+[data-art="access-tui"] .acc-tui-caret {
+  flex: none;
+  width: 1.5px; height: calc(var(--acc-fs) + 2px); margin: 0 1px 0 0;
+  background: var(--ink);
+}
+[data-art="access-tui"] .acc-tui-box.has-draft .acc-tui-caret { margin: 0 0 0 1px; }
+/* The terminal's cursor blinks while the chat waits for the person, and holds
+   still while they type and while the turn runs. */
+[data-art="access-tui"] .acc-tui-box.is-idle .acc-tui-caret {
+  animation: access-tui-blink calc(var(--dur-slow) * 2) var(--ease) infinite;
+}
+[data-art="access-tui"] .acc-tui.acc-tui-paused .acc-tui-caret { animation-play-state: paused; }
+@keyframes access-tui-blink {
+  0%, 48% { opacity: 1; }
+  52%, 96% { opacity: 0; }
+  100% { opacity: 1; }
+}
+/* The spinner and its label sit in the box's top edge. The label's ground is
+   the pane above the edge and the box below it, so the edge stops at its
+   sides. */
+[data-art="access-tui"] .acc-tui-legend {
+  position: absolute; left: 6px; top: calc(var(--acc-lh) / -2 - 0.5px);
+  white-space: pre;
+  color: var(--coral);
+  background: linear-gradient(to bottom, var(--fill) 50%, var(--paper) 50%);
+  opacity: 0;
+  transition: opacity var(--dur-menu) var(--ease);
+}
+[data-art="access-tui"] .acc-tui-box.is-busy .acc-tui-legend { opacity: 1; }
+
+/* ── Hints ─────────────────────────────────────────────── */
+[data-art="access-tui"] .acc-tui-hints {
+  flex: none;
+  margin-top: var(--acc-gap);
+  white-space: pre; overflow: hidden;
+  color: var(--subtle);
+}
+/* Short tiles: access-tui.js drops the status line first, then the hints.
+   Narrow ones show no hints: no hint line fits whole (hints-cut). */
+[data-art="access-tui"] .acc-tui.no-status .acc-tui-status,
+[data-art="access-tui"] .acc-tui.no-hints .acc-tui-hints,
+[data-art="access-tui"] .acc-tui.hints-cut .acc-tui-hints { display: none; }
+
+/* Instant state changes (reset, reduced motion). */
+[data-art="access-tui"] .acc-tui.acc-tui-still,
+[data-art="access-tui"] .acc-tui.acc-tui-still * { transition: none; }
