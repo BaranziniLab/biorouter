@@ -73,11 +73,21 @@ import { ChatKindIcon } from '../chats/ChatKindIcon';
 
 const w = window as unknown as Record<string, any>;
 const TITLE = 'Variant calls across the whole cohort';
+// g2 sits in a column inside a row, modelled at 280 by 180 in the 1400 by 900 tree, so a 'both'
+// shortfall has a plan on each axis and the action reads "Make larger", the widest of its words.
 const LAYOUT = {
   kind: 'branch',
   dir: 'row',
-  children: [{ kind: 'leaf', groupId: 'g1' }, { kind: 'leaf', groupId: 'g2' }],
-  sizes: [0.5, 0.5],
+  children: [
+    { kind: 'leaf', groupId: 'g1' },
+    {
+      kind: 'branch',
+      dir: 'col',
+      children: [{ kind: 'leaf', groupId: 'g2' }, { kind: 'leaf', groupId: 'g3' }],
+      sizes: [0.2, 0.8],
+    },
+  ],
+  sizes: [0.8, 0.2],
 };
 const TABS = [
   { tabId: 't1', sessionId: 's1', title: TITLE, userSetName: false },
@@ -390,6 +400,7 @@ describe('compact panes in a real layout engine (rung 5)', () => {
                 '[data-testid="chat-tab-overflow-trigger"]'
               );
               const tile = pane.querySelector<HTMLElement>('.br-compact-pane__tile');
+              const verb = pane.querySelector<HTMLElement>('.br-compact-pane__verb');
               const colours = new Set<string>();
               for (const el of [pane, ...pane.querySelectorAll<HTMLElement>('*')]) {
                 const cs = getComputedStyle(el);
@@ -425,6 +436,8 @@ describe('compact panes in a real layout engine (rung 5)', () => {
                 danger: colours.has(danger),
                 tileGround: tile ? getComputedStyle(tile).backgroundColor : null,
                 ground: getComputedStyle(pane).backgroundColor,
+                verb: verb?.textContent ?? null,
+                verbFits: verb ? verb.scrollWidth <= verb.clientWidth + 0.5 : null,
               };
             });
           });
@@ -458,6 +471,8 @@ describe('compact panes in a real layout engine (rung 5)', () => {
               cell.ground
             );
             if (density === 'card') {
+              expect(cell.verb, where).toBe('Make larger');
+              expect(cell.verbFits, `${where} the action words fit`).toBe(true);
               for (const [name, line] of [
                 ['title', cell.title],
                 ['state', cell.state],
