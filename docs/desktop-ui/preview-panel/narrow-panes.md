@@ -16,13 +16,15 @@ The preview's shape is a pure function of the pane's width P, measured on the sp
 | P < 800 | **Stack**: a sheet directly under the chat header at the pane's full width. From the top: header, sheet, transcript, composer. The composer stays on the pane's bottom edge. | Not dragged: `clamp(min(round(0.5·H), content), min(200, content), H − F)`. Dragged: `clamp(ratio·H, 200, H − F)`. If `H − F` is under the sheet's floor, the sheet is `max(36, H − F)`. |
 
 - **H** is the split box's height below its header band (the chat header, plus a subagent's second header when there is one).
-- **F** is the conversation's floor: its measured chrome (the composer bar, 174px today; a replay's page header), the 8px resize edge, and 146px of transcript. It is measured, not assumed, so a composer holding a queued message counts.
+- **F** is the conversation's floor: its measured chrome (the composer bar, 130px since the one-line composer of 2026-11-13; a replay's page header), the 8px resize edge, and 146px of transcript. It is measured, not assumed, so a composer holding a queued message counts.
 - **content** is the whole sheet's natural height, strip included. It never drops below the 36px strip.
 - **800** falls on no common split: a two-pane split reaches it from a 1601px window with the sidebar collapsed or an 1889px window with it open. The 720px rule it replaced sat exactly on a 1440px window.
 - **440** is the first chat column in which no full line of real transcript text runs under 45 characters, at the transcript's own 14px/24px face.
 - **360** is the panel's own floor: its tab strip, preview bar and file text fit with no overflow (two header icons, a ⋯ menu and one 136px tab fit; a second tab scrolls). A 285px floor cut the tab label to "Lab |".
 
 The conversation always wins a collision: the sheet gives way down to its strip, and never covers anything.
+
+A pane under 360 by 270 in a split shows the compact placeholder instead of its chat (rung 5, [Compact panes](../compact-panes.md)). Its preview stays mounted, in stack mode, inside the hidden 360px box, and is there unchanged when the pane returns.
 
 ### Rung 0 first: the summary rail
 
@@ -82,3 +84,4 @@ Each of those was made to fail once on purpose: 16 mutations, each turning a nam
 - [Window-scaling regressions](../window-scaling-regressions.md) — the window-size impostors a measurement of this layout has to avoid.
 - [Renderer testing traps](../renderer-testing-traps.md) — why a component test cannot see this layout, and what can.
 - [The Chat summary rail](../chat-summary-rail.md): rung 0, the summary rail that folds away before the preview takes width.
+- [Compact panes](../compact-panes.md): rung 5, the placeholder a pane under 360 by 270 shows while its chat and its preview stay mounted behind it.

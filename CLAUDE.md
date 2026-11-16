@@ -1408,6 +1408,19 @@ value's *location* is as load-bearing as the number.
   `components/summary/summaryRail.css`, not `main.css`, keyed on
   `[data-summary-rail]:not([data-preview-layout])`, and it snaps: only the conversation's FLIP
   (`hooks/useColumnGlide.ts`) and the card itself animate.
+- **A pane too small for its chat shows a placeholder (rung 5, D-45)** (`paneFit` in
+  `Layout/yieldLadder.ts`, `chatGroups/ChatPaneFrame.tsx`, `chatGroups/CompactPane.tsx`;
+  [`docs/desktop-ui/compact-panes.md`](docs/desktop-ui/compact-panes.md)). In a split, a pane under
+  360px wide (`CHAT_MIN_WIDTH`) or 270px tall (band 44 + composer bar 130 + four transcript lines)
+  shows its chat's glyph, title and state, and returns at 372 by 282. A lone pane is never replaced.
+  ⚠ The chat stays mounted: it moves into an absolutely positioned box held at `--pane-min-width` by
+  `--pane-min-height`, made `inert` and hidden with `visibility: hidden` plus `opacity: 0`. Never
+  `display: none` (it feeds every observer a 0px box and a 0 scroll offset while hidden) and never a
+  conditional render (it loses the draft, the stream and the terminal). The pane is
+  `overflow: hidden`, not `clip`, and resets its own scroll, because a `scrollIntoView` inside the
+  oversized box would otherwise scroll an ancestor. The size is the pane's `getBoundingClientRect`,
+  never the viewport; `styles/paneFloor.test.ts` pins the CSS floor to the constants, and
+  `composerCard.browser.test.tsx` pins the composer bar height the height floor is built on.
 - **Fills before lines** (R-27, owner message 13). In-page containers and
   controls are a subtle solid fill with no resting outline: `--background-fill`
   (`#f4f4f2` light, `#232320` dark) at rest and `--background-fill-strong`

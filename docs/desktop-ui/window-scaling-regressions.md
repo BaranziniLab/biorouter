@@ -42,6 +42,7 @@ getComputedStyle(document.documentElement).getPropertyValue('--measure-chat')
 | `inner` ≠ `outer`, or the console carries `Viewport pinned at …` | **Not a layout bug.** Your tooling pinned the viewport — confirm with `npm run cdp:viewport-check -- <port>` and see *Viewport emulation* below. |
 | `inner` = `outer`, and neither changes when you resize | **Not a layout bug.** Your resize command silently did nothing — see *AppleScript* below. |
 | Everything tracks, but the view is **Settings**, **Home**, **Chat history** or a saved/shared transcript, and its column stops at 760px | **Not a layout bug.** All of them read the chat measure by decision — see *Settings and Chat history, on the chat measure* below. |
+| A pane shows a chat's name and "Too narrow to show" in place of the chat | **Not a bug.** The pane is under 360px wide or 270px tall in a split; see [Compact panes](compact-panes.md). |
 | Everything tracks, but content stays the same width | **The real one.** A fixed pixel cap — see below. |
 | Part of the window has no live layout — a flat area, or a stale copy of what was there — while the window is dragged or resized | **A different symptom**, and what the area looks like does not tell you which. If `inner` ≠ `outer`, it is the viewport pin. If `inner` = `outer`, a frame is late and the window's native background shows where it does not reach — see *Unpainted window area* below. |
 

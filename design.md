@@ -2405,3 +2405,11 @@ almost always a way to fold a paragraph; finding it is part of designing the sur
   `DangerousConfirmDialog` take `details` too; an `Alert` takes `help` for its info icon. Reach for these before
   writing a second paragraph.
 
+
+### 9.17 · Compact panes (2026-11-16)
+
+The owner, on a window split into four panes of 140 to 290px: replace a pane that is too small with a small placeholder, never display a window broken, and bring the same content back when the pane returns to a proper size, in a design that is simple, elegant and consistent with the Biorouter theme.
+
+| ID | Decision | Resolved value |
+|---|---|---|
+| D-45 | **A pane too small for its chat shows a placeholder, and keeps the chat** | **Answers D-37's open question another way.** A split the person built may leave a pane under 360 by 270. That pane shows its chat's glyph, title and one state (Listening, Waiting for you, Running, or the size word) and one action, Make wider, taller or larger, or Merge panes when the layout has no room. The chat is never unmounted: it stays laid out in a box held at 360 by 270, inert and invisible, and returns at 372 by 282 exactly as it was. A lone pane is never replaced, because nothing in the app could give it room back. Rung 5 of the yield ladder, `paneFit`. Record: `docs/desktop-ui/compact-panes.md`. |
