@@ -31,6 +31,24 @@ import {
   splitYieldSample,
 } from './yieldLadder';
 import {
+  COMPACT_CARD_MIN_HEIGHT,
+  COMPACT_CARD_MIN_WIDTH,
+  COMPACT_GLYPH_MIN_HEIGHT,
+  COMPACT_GLYPH_MIN_WIDTH,
+  PANE_COMPOSER_BAR_HEIGHT,
+  PANE_FULL_UNMEASURED,
+  PANE_HEADER_HEIGHT,
+  PANE_MIN_HEIGHT,
+  PANE_MIN_WIDTH,
+  PANE_RETURN_BUFFER,
+  PANE_TRANSCRIPT_FLOOR,
+  type PaneFitAnswer,
+  type PaneShortfall,
+  compactBandControls,
+  compactPaneDensity,
+  paneFit,
+} from './yieldLadder';
+import {
   CHAT_COLUMN_CHROME,
   CHAT_FULL_MEASURE_WIDTH,
   CHAT_MEASURE,
@@ -705,5 +723,174 @@ describe('summaryRailVisible and summaryToggleMode', () => {
     expect(summaryToggleMode(fits)).toBe('rail');
     expect(summaryToggleMode(hidden)).toBe('popover');
     expect(summaryToggleMode(SUMMARY_RAIL_HIDDEN)).toBe('popover');
+  });
+});
+
+/**
+ * Rung 5: a pane the split leaves too small for its chat shows a placeholder,
+ * and keeps the chat mounted behind it. Every threshold one pixel either side,
+ * from both previous answers, as rungs 0 and 2 are held.
+ */
+describe('rung 5', () => {
+  const FULL: PaneFitAnswer = { fit: 'full', shortfall: null, measured: true };
+  const COMPACT = (shortfall: PaneShortfall): PaneFitAnswer => ({
+    fit: 'compact',
+    shortfall,
+    measured: true,
+  });
+  const fit = (width: number, height: number, previous: PaneFitAnswer | null = FULL) =>
+    paneFit({ width, height, alone: false, previous });
+
+  it('is built from the floors it protects: 360 wide, 44 + 130 + 96 = 270 tall', () => {
+    expect(PANE_MIN_WIDTH).toBe(CHAT_MIN_WIDTH);
+    expect(PANE_MIN_HEIGHT).toBe(
+      PANE_HEADER_HEIGHT + PANE_COMPOSER_BAR_HEIGHT + PANE_TRANSCRIPT_FLOOR
+    );
+    expect(PANE_MIN_HEIGHT).toBe(270);
+    expect(PANE_RETURN_BUFFER).toBe(12);
+  });
+
+  describe('paneFit', () => {
+    it('turns compact under 360 wide, and not at 360', () => {
+      expect(fit(359, 600)).toEqual(COMPACT('width'));
+      expect(fit(360, 600)).toEqual(FULL);
+    });
+
+    it('turns compact under 270 tall, and not at 270', () => {
+      expect(fit(800, 269)).toEqual(COMPACT('height'));
+      expect(fit(800, 270)).toEqual(FULL);
+    });
+
+    it('names both axes when both are short', () => {
+      expect(fit(359, 269)).toEqual(COMPACT('both'));
+    });
+
+    it('returns to full at 372 wide, and holds at 371', () => {
+      expect(fit(371, 600, COMPACT('width'))).toEqual(COMPACT('width'));
+      expect(fit(372, 600, COMPACT('width'))).toEqual(FULL);
+    });
+
+    it('returns to full at 282 tall, and holds at 281', () => {
+      expect(fit(800, 281, COMPACT('height'))).toEqual(COMPACT('height'));
+      expect(fit(800, 282, COMPACT('height'))).toEqual(FULL);
+    });
+
+    it('needs both axes past the buffer to return', () => {
+      expect(fit(372, 281, COMPACT('both'))).toEqual(COMPACT('height'));
+      expect(fit(371, 282, COMPACT('both'))).toEqual(COMPACT('width'));
+      expect(fit(372, 282, COMPACT('both'))).toEqual(FULL);
+    });
+
+    it('holds the band both ways: a full pane stays full from 360 to 371', () => {
+      for (let width = 360; width <= 371; width++) {
+        expect(fit(width, 600, FULL), `${width} from full`).toEqual(FULL);
+        expect(fit(width, 600, COMPACT('width')), `${width} from compact`).toEqual(
+          COMPACT('width')
+        );
+      }
+      for (let height = 270; height <= 281; height++) {
+        expect(fit(800, height, FULL), `${height} from full`).toEqual(FULL);
+        expect(fit(800, height, COMPACT('height')), `${height} from compact`).toEqual(
+          COMPACT('height')
+        );
+      }
+    });
+
+    it('judges the first sample with no buffer', () => {
+      expect(fit(359, 600, null)).toEqual(COMPACT('width'));
+      expect(fit(360, 600, null)).toEqual(FULL);
+    });
+
+    it('never replaces a lone pane, at any size', () => {
+      for (const previous of [null, FULL, COMPACT('both')]) {
+        expect(paneFit({ width: 1, height: 1, alone: true, previous })).toEqual(FULL);
+      }
+    });
+
+    it('reads an unmeasured box as no answer: the previous one, or full', () => {
+      for (const [width, height] of [
+        [0, 600],
+        [600, 0],
+        [Number.NaN, 600],
+        [600, Number.NaN],
+        [-10, 600],
+        [600, Number.POSITIVE_INFINITY],
+      ]) {
+        expect(paneFit({ width, height, alone: false, previous: null })).toBe(PANE_FULL_UNMEASURED);
+        const held = COMPACT('width');
+        expect(paneFit({ width, height, alone: false, previous: held })).toBe(held);
+      }
+      expect(PANE_FULL_UNMEASURED).toEqual({ fit: 'full', shortfall: null, measured: false });
+    });
+
+    it('takes no layout, so a layout change at a stable size cannot change the answer', () => {
+      // The signature is the proof: size, alone and the previous answer, nothing else.
+      expect(paneFit.length).toBe(1);
+      const answer = fit(300, 600);
+      expect(fit(300, 600, answer)).toEqual(answer);
+    });
+  });
+
+  describe('compactPaneDensity', () => {
+    it('is built from the card and glyph floors', () => {
+      expect([COMPACT_CARD_MIN_WIDTH, COMPACT_CARD_MIN_HEIGHT]).toEqual([176, 188]);
+      expect([COMPACT_GLYPH_MIN_WIDTH, COMPACT_GLYPH_MIN_HEIGHT]).toEqual([64, 108]);
+    });
+
+    it('draws the card from 176 by 188', () => {
+      expect(compactPaneDensity(175, 188)).toBe('glyph');
+      expect(compactPaneDensity(176, 188)).toBe('card');
+      expect(compactPaneDensity(176, 187)).toBe('glyph');
+      expect(compactPaneDensity(176, 188)).toBe('card');
+    });
+
+    it('draws the glyph from 64 by 108, and the band below', () => {
+      expect(compactPaneDensity(63, 108)).toBe('band');
+      expect(compactPaneDensity(64, 108)).toBe('glyph');
+      expect(compactPaneDensity(64, 107)).toBe('band');
+      expect(compactPaneDensity(64, 108)).toBe('glyph');
+    });
+
+    it('draws the band for an unmeasured box', () => {
+      expect(compactPaneDensity(0, 600)).toBe('band');
+      expect(compactPaneDensity(600, Number.NaN)).toBe('band');
+      expect(compactPaneDensity(-1, -1)).toBe('band');
+    });
+  });
+
+  describe('compactBandControls', () => {
+    const controls = (
+      width: number,
+      density: 'card' | 'glyph' | 'band',
+      tabCount: number,
+      insetStart = 0
+    ) => compactBandControls({ width, insetStart, density, tabCount });
+
+    it('offers the tab menu only from two tabs', () => {
+      expect(controls(300, 'card', 1)).toEqual({ action: false, menu: false });
+      expect(controls(300, 'card', 2)).toEqual({ action: false, menu: true });
+    });
+
+    it('puts the action in the band only in band density, from 28px of room', () => {
+      // room = width − inset − 8
+      expect(controls(35, 'band', 1)).toEqual({ action: false, menu: false });
+      expect(controls(36, 'band', 1)).toEqual({ action: true, menu: false });
+      expect(controls(300, 'glyph', 1)).toEqual({ action: false, menu: false });
+    });
+
+    it('fits the menu beside the band action from 56px of room', () => {
+      expect(controls(63, 'band', 2)).toEqual({ action: true, menu: false });
+      expect(controls(64, 'band', 2)).toEqual({ action: true, menu: true });
+    });
+
+    it('fits the menu alone from 28px of room in card and glyph density', () => {
+      expect(controls(35, 'glyph', 2)).toEqual({ action: false, menu: false });
+      expect(controls(36, 'glyph', 2)).toEqual({ action: false, menu: true });
+    });
+
+    it('leaves the titlebar reserve free: no menu under a 208px first pane', () => {
+      expect(controls(207, 'card', 2, 172)).toEqual({ action: false, menu: false });
+      expect(controls(208, 'card', 2, 172)).toEqual({ action: false, menu: true });
+    });
   });
 });
