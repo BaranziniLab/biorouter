@@ -29,6 +29,8 @@ for how the result is built, and [browser access](browser-access.md) for how to 
 
 Records are identified `SD-n` — *serve decision*. The numbering is stable; a superseded record
 keeps its number and says what replaced it.
+SD-1 to SD-14 keep their original heading punctuation (an em dash) so existing anchors such as
+`#sd-12--…` stay stable; SD-15 onward use a colon.
 
 ---
 

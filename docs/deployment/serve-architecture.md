@@ -1,7 +1,8 @@
 # How browser-served Biorouter is built
 
 > **What this is.** The architecture of the serving path: what `biorouter serve` starts, how the
-> daemon serves the interface, how a browser is authenticated, and which pieces of the old
+> daemon serves the interface, how a browser is authenticated, what the person on the page may
+> change (provider setup, updating `serve`, speech-model installs), and which pieces of the old
 > reverse-proxying front door were deleted rather than moved.
 > **Status:** Current. Describes shipped code; every mechanism below is in the tree and
 > exercised by the serve steps of the `integration (ubuntu, 3/3)` job in
@@ -172,6 +173,58 @@ reads the cookie. See
 > must not feed that same counter — a mistyped URL would otherwise lock the user out of their own
 > machine for a minute, and behind network address translation it would lock out their
 > colleagues too.
+
+## What the person on the page can change
+
+On a daemon that holds no user-action key, three things the desktop gates behind its proof are
+open to the person in the served page, and to nobody else. Everything else that needs a person
+(approvals, declassify, reset, steering) still asks the desktop's proof, so SD-8 and SD-11 stand.
+
+**Providers and the default model ([SD-18](serve-decisions.md#sd-18-the-person-in-the-served-page-sets-up-providers-and-an-agent-still-cannot)).**
+`auth::provider_choice_proof` counts a request as the person when it carries all three of:
+
+1. the served document's session cookie, which only the token exchange sets;
+2. the Fetch Metadata a browser attaches to the page's own script requests: `Sec-Fetch-Site:
+   same-origin`, `Sec-Fetch-Mode: cors` (or `same-origin`) and `Sec-Fetch-Dest: empty`
+   (`auth::sent_by_same_origin_page_script`);
+3. the daemon secret, which every API route already requires.
+
+A caller with only the secret is refused. The proof admits `/config/upsert` and `/config/remove`
+for the capability and destination keys, `/config/set_provider`, `/config/check_provider`, the
+custom-provider routes and `POST /privacy/disclosure/ack`. The page asks `GET /config/provider_setup`
+first, which answers the same predicate for its own request and says why when the answer is no.
+`/agent/update_provider` does not read this proof, so an open chat keeps its model. Because a
+browser sends Fetch Metadata only to an `https` or loopback address, a key typed in the page never
+crosses a network unencrypted, and a `--no-token` daemon, which has no cookie to check, keeps the
+old refusal.
+
+**Updating `serve` ([SD-19](serve-decisions.md#sd-19-the-person-on-the-page-updates-serve-and-it-comes-back-on-the-same-address)).**
+The update is offered only when `serve` declared `BIOROUTER_SERVE_SUPERVISOR=restart-v1` on the
+daemon it started, which it does on Unix only. The desktop app's daemon, a hand-started one and a
+Windows `serve` never offer it. Only the person on the page can install, by the same proof
+(`auth::served_person_present`); a request with only the secret gets 403 `not_from_the_page`.
+
+- A release file is installed only when its size and SHA-256 match the digest the release
+  publishes. Releases come from GitHub, or from `BIOROUTER_SERVE_UPDATE_FEED_URL`, which must be
+  `https`, or `http` to this machine.
+- How it installs depends on where the daemon's executable lives: the package manager for a deb or
+  rpm, a swap of the signed app bundle on macOS, and no one-click install for a source build or on
+  Windows.
+- The daemon then exits with status 75 and `serve` re-executes itself with the same pid, command
+  line and address (`commands/serve_restart.rs`). A token this launch minted is carried across in a
+  resume record readable only by this account; the new daemon mints its own secret.
+- If the new version does not start, `serve` puts the previous version back and re-executes that.
+
+The code is in `crates/biorouter/src/serve_update/` (feed, install, records, updater), the routes
+in `crates/biorouter-server/src/routes/serve_update.rs`, and the supervisor in
+`crates/biorouter-cli/src/commands/serve.rs` and `serve_restart.rs`.
+
+**Speech models.** The browser records and the host transcribes. The operator can stop browsers
+from installing speech models with `biorouter serve --no-dictation-install`,
+`BIOROUTER_DICTATION_BROWSER_INSTALL=false` or managed policy; a keyless daemon then refuses a
+browser install with "Dictation is not set up on this server." and the host still installs with
+`biorouter dictation install`. The ruling is the browser dictation ruling in
+[SD-17](serve-decisions.md#sd-17-app-pages-turn-the-microphone-off-the-grant-still-belongs-to-the-origin).
 
 ## Reaching it from another machine
 
@@ -358,5 +411,6 @@ argv, environment variables, a file, or piped input.
 - [Reaching a private chat from a script](programmatic-session-access.md) — what `X-Secret-Key` does *not* prove, and the capability header a private session additionally requires.
 - [Decisions behind `biorouter serve`](serve-decisions.md) — why each of the above was chosen.
 - [Browser access](browser-access.md) — using the command.
+- [Choosing the provider and model](browser-access.md#choosing-the-provider-and-model) and [updating from the page](browser-access.md#updating-from-the-page) — the same two mechanisms as the person on the page sees them.
 - [Privacy tiers](../security/privacy-tiers.md) — the classification the serving path must not weaken.
 - [Environment variables](../configuration/environment-variables.md) — `BIOROUTER_SERVE_UI` and neighbours.
