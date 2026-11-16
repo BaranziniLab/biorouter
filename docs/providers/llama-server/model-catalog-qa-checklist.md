@@ -155,7 +155,7 @@ drive the same dev GUI from a terminal over the Chrome DevTools Protocol, see
 - [ ] **Configure**: the Llama Server card saves with no API key and marks the provider
       configured.
 - [ ] **Onboarding card**: `LlamaServerInlineCard` lists both catalog models with their sizes
-      and a suitability note; *Download & run* shows progress and connects when ready.
+      and a suitability note; *Download and start* shows progress and connects when ready.
 - [ ] **Suitability**: the card shows the route's suitability message for this machine. Under
       32 GiB it says the model is below the minimum; on an Intel Mac it says Llama Server has no
       GPU acceleration there. Neither machine is offered a different model.
