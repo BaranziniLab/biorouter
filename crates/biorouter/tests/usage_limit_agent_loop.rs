@@ -13,18 +13,22 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use async_trait::async_trait;
+use biorouter::agents::extension::ExtensionConfig;
 use biorouter::agents::usage_limit::{
     self, ChatLimitOverride, CHAT_LIMIT_REACHED_PREFIX, CHAT_LIMIT_WARNING_PREFIX,
-    MONTH_LIMIT_REACHED_PREFIX,
+    MONTH_LIMIT_REACHED_PREFIX, SUBAGENT_LIMIT_REFUSAL,
 };
-use biorouter::agents::{Agent, AgentEvent, SessionConfig};
-use biorouter::config::Config;
+use biorouter::agents::{Agent, AgentConfig, AgentEvent, SessionConfig};
+use biorouter::config::permission::PermissionManager;
+use biorouter::config::{BioRouterMode, Config};
 use biorouter::conversation::message::{Message, MessageContent};
 use biorouter::model::ModelConfig;
-use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usage};
+use biorouter::providers::base::{
+    MessageStream, Provider, ProviderMetadata, ProviderStreamItem, ProviderUsage, Usage,
+};
 use biorouter::providers::errors::ProviderError;
 use biorouter::session::session_manager::{SessionType, UsageLedgerEntry};
-use biorouter::session::SideUsageEntry;
+use biorouter::session::{SessionManager, SideUsageEntry};
 use futures::StreamExt;
 use rmcp::model::{CallToolRequestParams, Tool};
 use rmcp::object;
@@ -968,4 +972,251 @@ async fn a_subagents_warning_is_stored_in_its_parent_chat() -> Result<()> {
         "not in the subagent's stream"
     );
     Ok(())
+}
+
+/// The chat's model in the spawn tests. Its first request bills
+/// `request_tokens` and asks for a subagent in the same reply; any later
+/// request, and any child's, answers in text. With `usage_after_the_call` it
+/// streams the way an OpenAI-compatible host does (Versa's chat completions
+/// route among them), which sends a request's usage in a chunk of its own
+/// after the one that ends its tool calls; without it the usage comes with the
+/// call, as from `complete`.
+struct SpawningProvider {
+    parent_calls: Arc<AtomicUsize>,
+    child_calls: Arc<AtomicUsize>,
+    request_tokens: i32,
+    usage_after_the_call: bool,
+}
+
+/// The opening line of `subagent_system.md`, which only a child's prompt has.
+const CHILD_PROMPT_MARKER: &str = "You are a specialized subagent";
+
+/// The id of the spawn call the first request makes.
+const SPAWN_CALL_ID: &str = "spawn_1";
+
+impl SpawningProvider {
+    fn usage(total: i32) -> ProviderUsage {
+        let input = total * 4 / 5;
+        ProviderUsage::new(
+            "mock-model".to_string(),
+            Usage::new(Some(input), Some(total - input), Some(total)),
+        )
+    }
+
+    /// The reply to one request, and whether it asks for a subagent.
+    fn reply(&self, system_prompt: &str) -> (Message, ProviderUsage, bool) {
+        if system_prompt.contains(CHILD_PROMPT_MARKER) {
+            self.child_calls.fetch_add(1, Ordering::SeqCst);
+            return (
+                Message::assistant().with_text("child done"),
+                Self::usage(100),
+                false,
+            );
+        }
+        if self.parent_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            let call = CallToolRequestParams {
+                task: None,
+                meta: None,
+                name: "subagent".into(),
+                arguments: Some(object!({
+                    "instructions": "Survey the workstream and report back."
+                })),
+            };
+            return (
+                Message::assistant().with_tool_request(SPAWN_CALL_ID, Ok(call)),
+                Self::usage(self.request_tokens),
+                true,
+            );
+        }
+        (
+            Message::assistant().with_text("Done."),
+            Self::usage(100),
+            false,
+        )
+    }
+}
+
+#[async_trait]
+impl Provider for SpawningProvider {
+    async fn complete(
+        &self,
+        system_prompt: &str,
+        _messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        let (message, usage, _) = self.reply(system_prompt);
+        Ok((message, usage))
+    }
+
+    async fn complete_with_model(
+        &self,
+        _model_config: &ModelConfig,
+        system_prompt: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        self.complete(system_prompt, messages, tools).await
+    }
+
+    fn supports_streaming(&self) -> bool {
+        self.usage_after_the_call
+    }
+
+    async fn stream(
+        &self,
+        system: &str,
+        _messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        let (message, usage, spawns) = self.reply(system);
+        let items: Vec<Result<ProviderStreamItem, ProviderError>> = if spawns {
+            vec![
+                Ok((Some(message), None, None)),
+                Ok((None, Some(usage), None)),
+            ]
+        } else {
+            vec![Ok((Some(message), Some(usage), None))]
+        };
+        Ok(Box::pin(futures::stream::iter(items)))
+    }
+
+    fn get_model_config(&self) -> ModelConfig {
+        ModelConfig::new("mock-model").unwrap()
+    }
+
+    fn metadata() -> ProviderMetadata {
+        MockSpendyProvider::metadata()
+    }
+
+    fn get_name(&self) -> &str {
+        "mock-spendy"
+    }
+}
+
+/// What the tool call `id` answered, error or result, as text.
+fn tool_answer(messages: &[Message], id: &str) -> Option<String> {
+    messages
+        .iter()
+        .flat_map(|m| m.content.iter())
+        .find_map(|c| match c {
+            MessageContent::ToolResponse(response) if response.id == id => {
+                Some(match &response.tool_result {
+                    Ok(result) => result
+                        .content
+                        .iter()
+                        .filter_map(|content| content.as_text().map(|t| t.text.clone()))
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                    Err(error) => error.message.to_string(),
+                })
+            }
+            _ => None,
+        })
+}
+
+/// The live sequence of Phase C's U-3: the turn is admitted under the chat's
+/// limit, and the one model request that carries it past the limit also asks
+/// for a subagent. That spawn is refused like one from a chat already at its
+/// limit, before any child row exists, rather than a child being born and
+/// stopped by its own first request.
+async fn a_spawn_from_the_request_that_reached_the_limit_is_refused(
+    name: &str,
+    usage_after_the_call: bool,
+) -> Result<()> {
+    let _serial = SERIAL.lock().await;
+    let agent = Agent::with_config(AgentConfig::new(
+        Arc::new(SessionManager::instance()),
+        PermissionManager::instance(),
+        None,
+        BioRouterMode::Auto,
+    ));
+    let manager = Arc::clone(&agent.config.session_manager);
+    let work_dir = tempfile::TempDir::new()?;
+    let id = manager
+        .create_session(
+            work_dir.path().to_path_buf(),
+            name.to_string(),
+            SessionType::User,
+        )
+        .await?
+        .id;
+    let parent_calls = Arc::new(AtomicUsize::new(0));
+    let child_calls = Arc::new(AtomicUsize::new(0));
+    agent
+        .update_provider(
+            Arc::new(SpawningProvider {
+                parent_calls: Arc::clone(&parent_calls),
+                child_calls: Arc::clone(&child_calls),
+                request_tokens: 1_000,
+                usage_after_the_call,
+            }),
+            &id,
+        )
+        .await?;
+    // Delegation is offered only beside an extension the person loaded
+    // (`Agent::subagents_enabled`).
+    agent
+        .add_extension(ExtensionConfig::Builtin {
+            name: "developer".to_string(),
+            description: "Developer tools".to_string(),
+            display_name: None,
+            timeout: None,
+            bundled: Some(true),
+            available_tools: vec![],
+        })
+        .await?;
+    // 100 recorded and the next request estimated at about 120: the turn is
+    // admitted under 500, and its request then bills 1,000.
+    seed_request(&agent, &id, &format!("{name}:seed")).await?;
+    usage_limit::set_for_session(
+        &manager,
+        &id,
+        Some(ChatLimitOverride::Limit {
+            max_tokens: Some(500),
+            max_usd: None,
+        }),
+    )
+    .await?;
+
+    let responses = drain(&agent, config(&id, 10)).await?;
+
+    assert_eq!(
+        parent_calls.load(Ordering::SeqCst),
+        1,
+        "the chat makes no request past its limit"
+    );
+    let answer = tool_answer(&responses, SPAWN_CALL_ID)
+        .unwrap_or_else(|| panic!("the spawn call got no answer: {responses:?}"));
+    assert!(
+        answer.contains(SUBAGENT_LIMIT_REFUSAL),
+        "the spawn is refused with the limit's reason: {answer}"
+    );
+    assert!(
+        !answer.contains("-326") && !answer.contains('`'),
+        "the reason is plain words, no error code or quoted id: {answer}"
+    );
+    assert!(
+        manager.list_subagent_children(&id).await?.is_empty(),
+        "no child row: nothing is created for a refused spawn"
+    );
+    assert_eq!(child_calls.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        chat_tokens(&agent, &id).await?,
+        1_100,
+        "the request is recorded once"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_spawn_from_the_request_that_reached_the_limit_creates_nothing() -> Result<()> {
+    a_spawn_from_the_request_that_reached_the_limit_is_refused("usage-limit-spawn", false).await
+}
+
+/// The same, on a stream whose usage arrives after the call that asks for the
+/// subagent, as on an OpenAI-compatible host.
+#[tokio::test]
+async fn a_spawn_whose_usage_arrives_after_the_call_creates_nothing() -> Result<()> {
+    a_spawn_from_the_request_that_reached_the_limit_is_refused("usage-limit-spawn-stream", true)
+        .await
 }

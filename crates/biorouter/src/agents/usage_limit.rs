@@ -1064,6 +1064,90 @@ pub async fn reached_limit(session_manager: &SessionManager, session_id: &str) -
     }
 }
 
+/// A model request whose usage is known but not recorded yet. The reply loop
+/// records a request's usage once its stream ends, and the tool calls the
+/// request asked for run before that, so the spawn gate adds it to the spend
+/// ([`reached_limit_with_unrecorded`]).
+#[derive(Debug, Clone)]
+pub struct UnrecordedRequest {
+    /// The provider the request went to, for its price.
+    pub provider: String,
+    pub usage: crate::providers::base::ProviderUsage,
+}
+
+/// [`reached_limit`] with `request`, a request of `session_id` that is billed
+/// but not recorded yet, added to the spend. The gate for a subagent that
+/// request asked for: a request that reached a limit starts no subagent,
+/// exactly as a chat already at its limit starts none. Failures are treated
+/// as not reached, like [`reached_limit`].
+pub async fn reached_limit_with_unrecorded(
+    session_manager: &SessionManager,
+    session_id: &str,
+    request: &UnrecordedRequest,
+) -> Option<LimitHit> {
+    let found = match check(session_manager, session_id).await {
+        Ok(found) => found,
+        Err(e) => {
+            tracing::warn!(
+                session_id,
+                "usage limit check failed, not enforced this time: {e:#}"
+            );
+            return None;
+        }
+    };
+    if found.reached.is_some() {
+        return found.reached;
+    }
+    let spend = found.spend?;
+    let usage = &request.usage.usage;
+    let tokens = usage.billed_total().unwrap_or(0);
+    let usd = if found.effective.needs_usd() {
+        let buckets = ProjectedRequest {
+            input_tokens: i64::from(usage.input_tokens.unwrap_or(0).max(0)),
+            cache_read_tokens: i64::from(usage.cache_read_input_tokens.unwrap_or(0).max(0)),
+            cache_creation_tokens: i64::from(usage.cache_creation_input_tokens.unwrap_or(0).max(0)),
+            output_tokens: i64::from(usage.output_tokens.unwrap_or(0).max(0)),
+        };
+        price_request(&request.provider, &request.usage.model, &buckets).await
+    } else {
+        None
+    };
+    // The month counts the chats the usage summary counts, as the ledger
+    // would once the request is recorded.
+    let in_month = matches!(
+        session_manager
+            .get_session(session_id, false)
+            .await
+            .map(|session| session.session_type),
+        Ok(SessionType::User | SessionType::Scheduled | SessionType::SubAgent)
+    );
+    let spend = with_unrecorded(spend, tokens, usd, in_month);
+    evaluate(&found.effective, &spend).0
+}
+
+/// `spend` with one request's billed tokens and dollars added: always to the
+/// chat, and to the month when the request's chat counts there. Unpriced
+/// dollars (`usd` `None`) add nothing.
+fn with_unrecorded(
+    mut spend: SpendSnapshot,
+    tokens: i64,
+    usd: Option<f64>,
+    in_month: bool,
+) -> SpendSnapshot {
+    let tokens = tokens.max(0);
+    spend.chat_tokens = spend.chat_tokens.saturating_add(tokens);
+    if in_month {
+        spend.month_tokens = spend.month_tokens.saturating_add(tokens);
+    }
+    if let Some(usd) = usd.filter(|usd| usd.is_finite() && *usd > 0.0) {
+        spend.chat_usd = Some(spend.chat_usd.unwrap_or(0.0) + usd);
+        if in_month {
+            spend.month_usd = Some(spend.month_usd.unwrap_or(0.0) + usd);
+        }
+    }
+    spend
+}
+
 /// Why a Crew task may not start now, `None` when it may. `asking_chat` is the chat whose
 /// `tasks_ask` asked for it, `None` for a task started from Crew itself: that chat is refused at
 /// its own limit as well as the month's ("refuse at limit only", owner 2026-11-13), while the
@@ -1164,6 +1248,9 @@ pub struct ReplyLimitState {
     stopped: AtomicBool,
     interrupted: AtomicBool,
     prompt_estimates: Mutex<HashMap<String, u64>>,
+    /// Each chat's current model request, once it reported usage and until
+    /// that usage is recorded ([`UnrecordedRequest`]).
+    unrecorded: Mutex<HashMap<String, UnrecordedRequest>>,
 }
 
 impl ReplyLimitState {
@@ -1179,6 +1266,9 @@ impl ReplyLimitState {
         self.interrupted.store(false, Ordering::SeqCst);
         if let Ok(mut estimates) = self.prompt_estimates.lock() {
             estimates.clear();
+        }
+        if let Ok(mut unrecorded) = self.unrecorded.lock() {
+            unrecorded.clear();
         }
     }
 
@@ -1205,6 +1295,26 @@ impl ReplyLimitState {
         if let Ok(mut estimates) = self.prompt_estimates.lock() {
             estimates.insert(session_id.to_string(), estimate);
         }
+    }
+
+    /// `session_id`'s current model request reported `request`'s usage (the
+    /// latest report wins), which is not recorded yet.
+    pub fn note_unrecorded(&self, session_id: &str, request: UnrecordedRequest) {
+        if let Ok(mut unrecorded) = self.unrecorded.lock() {
+            unrecorded.insert(session_id.to_string(), request);
+        }
+    }
+
+    /// `session_id`'s request was recorded, or a new one is about to be sent.
+    pub fn forget_unrecorded(&self, session_id: &str) {
+        if let Ok(mut unrecorded) = self.unrecorded.lock() {
+            unrecorded.remove(session_id);
+        }
+    }
+
+    /// What `session_id`'s current model request reported and is not recorded.
+    pub fn unrecorded(&self, session_id: &str) -> Option<UnrecordedRequest> {
+        self.unrecorded.lock().ok()?.get(session_id).cloned()
     }
 
     /// `true` the first time it is called in a reply.
@@ -1372,6 +1482,82 @@ mod tests {
         assert_eq!(
             for_session(&sm, &id).await.unwrap(),
             Some(ChatLimitOverride::Unlimited)
+        );
+    }
+
+    /// A request billed but not recorded counts toward the chat always, and
+    /// toward the month only where the month counts its chat; dollars only
+    /// when priced.
+    #[test]
+    fn an_unrecorded_request_is_added_to_the_spend_it_belongs_to() {
+        let mut priced = spend(100, 1_000);
+        priced.chat_usd = Some(0.5);
+        let added = with_unrecorded(priced.clone(), 900, Some(0.25), true);
+        assert_eq!((added.chat_tokens, added.month_tokens), (1_000, 1_900));
+        assert_eq!((added.chat_usd, added.month_usd), (Some(0.75), Some(0.25)));
+
+        let hidden = with_unrecorded(priced.clone(), 900, Some(0.25), false);
+        assert_eq!((hidden.chat_tokens, hidden.month_tokens), (1_000, 1_000));
+        assert_eq!(hidden.month_usd, None);
+
+        let unpriced = with_unrecorded(priced, 900, None, true);
+        assert_eq!(unpriced.chat_usd, Some(0.5));
+        assert_eq!(unpriced.month_usd, None);
+    }
+
+    /// The spawn gate: a chat under its limit whose current request, not yet
+    /// recorded, carries it to the limit is at its limit.
+    #[tokio::test]
+    async fn an_unrecorded_request_can_reach_the_chat_limit() {
+        use crate::providers::base::{ProviderUsage, Usage};
+        use crate::session::SideUsageEntry;
+        let temp = tempfile::tempdir().unwrap();
+        let (sm, chat) = manager_and_session(&temp).await;
+        set_for_session(
+            &sm,
+            &chat,
+            Some(ChatLimitOverride::Limit {
+                max_tokens: Some(500),
+                max_usd: None,
+            }),
+        )
+        .await
+        .unwrap();
+        sm.apply_side_usage_event(SideUsageEntry {
+            event_key: "unrecorded-test:1".to_string(),
+            session_id: chat.clone(),
+            provider: "openai".to_string(),
+            model_id: "gpt-test".to_string(),
+            input_tokens: Some(100),
+            output_tokens: Some(0),
+        })
+        .await
+        .unwrap();
+        let request = |total: i32| UnrecordedRequest {
+            provider: "openai".to_string(),
+            usage: ProviderUsage::new(
+                "gpt-test".to_string(),
+                Usage::new(Some(total - 10), Some(10), Some(total)),
+            ),
+        };
+
+        assert!(reached_limit(&sm, &chat).await.is_none(), "100 of 500");
+        assert!(
+            reached_limit_with_unrecorded(&sm, &chat, &request(300))
+                .await
+                .is_none(),
+            "400 of 500"
+        );
+        let hit = reached_limit_with_unrecorded(&sm, &chat, &request(400))
+            .await
+            .expect("500 of 500 is the limit");
+        assert_eq!(hit.scope, LimitScope::Chat);
+        assert_eq!(
+            hit.amount,
+            LimitAmount::Tokens {
+                used: 500,
+                limit: 500
+            }
         );
     }
 
