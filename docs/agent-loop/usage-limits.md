@@ -22,8 +22,10 @@ used.
 A deleted chat still counts, in tokens and in dollars, but its dollars are priced again at
 the model's base rate. Deleting a chat folds its usage into one total per day and model,
 which keeps no request's size, so a request that was billed at a model's long-context rate
-(past a prompt of 200,000 or 272,000 tokens, depending on the model) counts at the base
-rate from then on. Deleting such a chat can therefore lower the month's dollar figure, and
+(past a prompt of 100,000, 200,000 or 272,000 tokens, depending on the model: Claude Haiku
+5.5 above 100,000, xAI Grok 4.5 to 4.7 above 200,000, and the GPT-5.4, GPT-5.5, GPT-5.6 and
+GPT-6 models OpenAI lists with a long-context price, on OpenAI, Azure OpenAI or Versa's Azure
+gateway, above 272,000) counts at the base rate from then on. Deleting such a chat can therefore lower the month's dollar figure, and
 can lift a monthly dollar limit that had been reached. Token figures do not change.
 
 Each limit can be in dollars, in tokens, or both. The editors start in dollars whenever
