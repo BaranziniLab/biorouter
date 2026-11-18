@@ -121,7 +121,9 @@ export type AgentEvent =
   | { type: "thought"; delta: string }
   | { type: "tool"; name: string; status: string; id?: string }
   | { type: "done"; degraded?: boolean; missingProfiles?: string[] }
-  | { type: "error"; message: string }
+  // `code` names a typed failure; `usage_limit` is a turn a usage limit
+  // stopped, whose `message` is the sentence the desktop shows.
+  | { type: "error"; message: string; code?: string }
   // ── BRSDK protocol v2 (additive; gated by the ready frame's capabilities) ──
   | { type: "output"; callId?: string; schema?: unknown; value: unknown }
   // The server reprompts when a structured result misses its schema. Shown so a
@@ -178,6 +180,9 @@ export interface CapabilityReportBody {
   granted_knowledge_base?: string | null;
   missing_knowledge_base?: string | null;
   unmet_requirements?: unknown[];
+  /** Declared capabilities this install did not arm, such as `compute` or
+   *  `files.local_dir` (host folders are not mounted). */
+  withheld_capabilities?: string[];
 }
 
 /** Wildcard listener bucket (see `onAny`). Not a valid `EventKind`, so it can
@@ -779,6 +784,8 @@ export class BioRouterClient {
   // Durable-session info latched from the `ready` frame.
   sessionId: string | null = null;
   resumed = false;
+  /** How many messages the resumed session already held (`ready.messageCount`). */
+  messageCount = 0;
   private activeResolve: ResolveFn | null = null;
   private activeReject: RejectFn | null = null;
   private tokensWaiters: Array<(u: { used: number; limit: number; ratio: number }) => void> = [];
@@ -990,6 +997,7 @@ export class BioRouterClient {
       if (Array.isArray(msg.capabilities)) this.capabilities = msg.capabilities;
       if (typeof msg.sessionId === "string") this.sessionId = msg.sessionId;
       this.resumed = msg.resumed === true;
+      this.messageCount = typeof msg.messageCount === "number" ? msg.messageCount : 0;
       // Latch the declared worker profiles (§3.8). Absent/empty = none.
       const profiles = msg.profiles;
       if (Array.isArray(profiles)) this.declaredAgents = profiles.slice();
@@ -3170,6 +3178,9 @@ function eventSummary(ev: AgentEvent): TimelineSummary | null {
       if (rep.missing_knowledge_base) missing.push("knowledge base " + rep.missing_knowledge_base);
       const unmet = (rep.unmet_requirements || []).length;
       if (unmet) missing.push(unmet + " unmet requirement" + (unmet === 1 ? "" : "s"));
+      for (const withheld of rep.withheld_capabilities || []) {
+        missing.push(withheld === "files.local_dir" ? "host folders (files.local_dir)" : withheld);
+      }
       // There is no healthy report to draw. The daemon sends this frame only
       // inside `if capability_report.degraded()` and hardcodes
       // `"degraded": true` in the payload, so an "everything this app asked for
@@ -3221,6 +3232,10 @@ function eventSummary(ev: AgentEvent): TimelineSummary | null {
     case "done":
       return { label: "Run complete", detail: "", state: "done" };
     case "error":
+      // A usage limit is a pause the person chose, not a failure: a neutral row.
+      if (ev.code === "usage_limit") {
+        return { label: "Usage limit reached", detail: ev.message, state: "notice" };
+      }
       return { label: "Run error", detail: ev.message, state: "error" };
     default:
       // Two very different things land here, and collapsing them is the bug this
@@ -7118,16 +7133,54 @@ export function mountChat(client: BioRouterClient, host: HTMLElement): void {
   host.appendChild(form);
   mountTimeline(client, status, { maxItems: 12 });
 
-  const add = (cls: string, html: boolean, content: string): HTMLElement => {
+  const row = (cls: string, html: boolean, content: string): HTMLElement => {
     const el = document.createElement("div");
     el.className = "br-msg br-msg--" + cls;
     if (html) el.innerHTML = content;
     else el.textContent = content;
+    // A notice (a stopped turn, an error) is one muted line, not a bubble.
+    // Styled inline because theme.css carries no notice row.
+    if (cls === "notice") {
+      el.style.cssText =
+        "align-self:flex-start;background:transparent;color:var(--br-text-muted);" +
+        "font-size:0.8125rem;padding:2px 4px;";
+    }
+    return el;
+  };
+  const add = (cls: string, html: boolean, content: string): HTMLElement => {
+    const el = row(cls, html, content);
     log.appendChild(el);
     log.scrollTop = log.scrollHeight;
     return el;
   };
   if (client.config.greeting) add("agent", false, client.config.greeting);
+  // Earlier turns of a resumed session are drawn here: after the greeting,
+  // before anything this page adds.
+  const historyAnchor = document.createComment("br-chat-history");
+  log.appendChild(historyAnchor);
+  let historyLoaded = false;
+  const loadHistory = () => {
+    if (historyLoaded) return;
+    historyLoaded = true;
+    client.history().then((messages) => {
+      for (const m of messages) {
+        if (!m || typeof m.text !== "string" || !m.text) continue;
+        const el =
+          m.role === "user"
+            ? row("user", false, m.text)
+            : m.role === "assistant"
+              ? row("agent", true, client.renderMarkdown(m.text))
+              : row("notice", false, m.text);
+        log.insertBefore(el, historyAnchor);
+      }
+      log.scrollTop = log.scrollHeight;
+    });
+  };
+  // A reconnect sends `ready` again; the history is drawn once per page.
+  client.on("ready", (ev) => {
+    if (ev.type === "ready" && ev.resumed === true && (ev.messageCount || 0) > 0) loadHistory();
+  });
+  if (client.resumed && client.messageCount > 0) loadHistory();
 
   let current: HTMLElement | null = null;
   let buffer = "";
@@ -7162,9 +7215,19 @@ export function mountChat(client: BioRouterClient, host: HTMLElement): void {
   client.on("tool", (ev) => {
     if (ev.type === "tool") add("tool", false, ev.name + " (" + ev.status + ")");
   });
-  client.on("error", () => {
+  // One line per failure: the `error` frame says why in its own words (a
+  // usage limit's sentence, a provider's refusal), and the prompt's rejection
+  // that follows it carries the same message, so it adds nothing.
+  let errorShown = false;
+  client.on("error", (ev) => {
+    if (ev.type !== "error") return;
     clearTyping();
-    add("agent", false, "Could not reach the agent.");
+    errorShown = true;
+    add(
+      "notice",
+      false,
+      !ev.message || ev.message === "connection error" ? "Could not reach the agent." : ev.message
+    );
   });
 
   const submit = async () => {
@@ -7173,6 +7236,7 @@ export function mountChat(client: BioRouterClient, host: HTMLElement): void {
     add("user", false, text);
     input.value = "";
     current = null;
+    errorShown = false;
     showTyping();
     try {
       await client.prompt(text);
@@ -7180,7 +7244,7 @@ export function mountChat(client: BioRouterClient, host: HTMLElement): void {
       clearTyping();
       // Show why. "Failed to get a response" told the user nothing actionable —
       // the message from `dial()` names the endpoints tried and the fix.
-      add("agent", false, (e as Error).message || "Failed to get a response.");
+      if (!errorShown) add("notice", false, (e as Error).message || "Failed to get a response.");
     }
   };
   send.addEventListener("click", submit);

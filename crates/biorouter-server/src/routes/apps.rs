@@ -58,7 +58,9 @@ use tracing::{debug, info, warn};
 
 use biorouter::agents::extension::PLATFORM_EXTENSIONS;
 use biorouter::agents::{AgentEvent, ExtensionConfig, SessionConfig};
-use biorouter::conversation::message::{ActionRequiredData, Message, MessageContent};
+use biorouter::conversation::message::{
+    ActionRequiredData, Message, MessageContent, SystemNotificationType,
+};
 use biorouter::guardrails::pii::PiiDetector;
 use biorouter::guardrails::run_state::{PendingTool, RunState};
 use biorouter::model::ModelConfig;
@@ -2977,6 +2979,10 @@ async fn configure_main_extensions(
     arm_extensions(agent, manifest, None, extensions).await;
 }
 
+/// The withheld-capability entry for a files entry that names a host folder
+/// (`capabilities.files.entries[].local_dir`), which is never mounted.
+const FILES_LOCAL_DIR_WITHHELD: &str = "files.local_dir";
+
 /// Returns the capabilities this install DECLINED to arm (#153). Each `warn!`
 /// below already told the operator; the returned names are what tell the APP,
 /// via `CapabilityReport::withheld_capabilities`. Withholding tools when a
@@ -2996,7 +3002,19 @@ async fn inject_workspace_capabilities(
     };
 
     // Data sources are resolved inside the app workspace jail and are read-only.
-    if let Some(data) = cfg.capabilities.data.as_ref() {
+    //
+    // Only declared SQL sources arm `datasql`. A `data` block whose sources are
+    // all knowledge bases (or other extension-backed kinds) declares no SQL, so
+    // finding none is not a capability withheld: withholding `data` there took
+    // the knowledge grant out of the `ready` frame, and `br.kb` refused every
+    // call (rq2-194). The knowledge grant is advertised as `data:knowledge`,
+    // which nothing here withholds.
+    if let Some(data) = cfg
+        .capabilities
+        .data
+        .as_ref()
+        .filter(|data| data.declares_sql())
+    {
         let _ = std::fs::create_dir_all(&workspace);
         let sources = resolve_sql_sources(&workspace, data);
         if sources.is_empty() {
@@ -3026,9 +3044,21 @@ async fn inject_workspace_capabilities(
     }
 
     // Files and compute are deny-by-default and remain confined to the same jail.
-    if cfg.capabilities.files.is_some() {
+    if let Some(files) = cfg.capabilities.files.as_ref() {
         let _ = std::fs::create_dir_all(&workspace);
-        let server = biorouter_mcp::files_server::for_workspace(workspace.clone(), true);
+        // Owner decision (rq2-199): a manifest may not mount a host folder until
+        // a consent step names it. An entry's `local_dir` is therefore not
+        // mounted (the entry is a folder inside the workspace instead), and the
+        // page is told through the capability report rather than left to find
+        // an empty folder where it expected its files.
+        if files.entries.iter().any(|entry| entry.local_dir.is_some()) {
+            warn!(
+                app = %manifest.id,
+                "files entries name a host folder (local_dir); host folders are not mounted"
+            );
+            withheld.push(FILES_LOCAL_DIR_WITHHELD.to_string());
+        }
+        let server = biorouter_mcp::files_server::for_app(workspace.clone(), files);
         if let Err(e) = agent
             .extension_manager
             .add_inprocess_server("files", server)
@@ -3344,6 +3374,38 @@ pub(crate) fn grant_knowledge_base(
     Ok(())
 }
 
+/// The tools the given agent configurations list in `guardrails.needs_approval`.
+fn needs_approval_of(cfgs: &[Option<&AgentConfig>]) -> Vec<String> {
+    cfgs.iter()
+        .flatten()
+        .filter_map(|cfg| cfg.guardrails.as_ref())
+        .flat_map(|guardrails| guardrails.needs_approval.iter().cloned())
+        .collect()
+}
+
+/// rq2-193/198/211: register an app's `guardrails.needs_approval` for the
+/// chat its turns run in, so the permission inspector asks a person before
+/// each listed tool in every mode (Auto included), and the socket's approval
+/// relay sends the page an `approval` frame. Replaces any earlier list, so a
+/// manifest edited between connects takes effect on the next one.
+///
+/// Keyed by the chat's row (its id and creation time), so a chat that later
+/// reuses this id does not inherit the list. A chat that cannot be read gets
+/// nothing registered, and that is logged.
+async fn register_always_confirm(state: &AppState, session_id: &str, tools: &[String]) {
+    match state.session_manager().get_session(session_id, false).await {
+        Ok(session) => biorouter::config::permission::set_session_always_confirm(&session, tools),
+        Err(e) => {
+            if !tools.is_empty() {
+                warn!(
+                    session = %session_id,
+                    "could not read the app's chat; its needs_approval tools are not registered: {e}"
+                );
+            }
+        }
+    }
+}
+
 /// Configure an app's agent for a connecting page.
 ///
 /// R-30: connecting to an app OPENS its chat. Binding the app's model, arming
@@ -3379,6 +3441,14 @@ async fn configure_agent_for_connection(
 ) -> CapabilityReport {
     agent.set_dictionary_learning(false);
     let _ = agent.remove_extension("dictionary").await;
+    // Before the early return: a manifest that lost its agent block (or its
+    // list) releases the registration a previous connect made.
+    register_always_confirm(
+        state,
+        session_id,
+        &needs_approval_of(&[manifest.agent.as_ref()]),
+    )
+    .await;
     let Some(cfg) = manifest.agent.as_ref() else {
         return CapabilityReport::default();
     };
@@ -3999,6 +4069,16 @@ async fn configure_worker_agent(
             "error": refusal.to_string(),
         }));
     }
+
+    // The app's own needs_approval list holds for its workers too, with the
+    // profile's own list added: a worker turn's approval reaches the page over
+    // the same relay.
+    register_always_confirm(
+        state,
+        session_id,
+        &needs_approval_of(&[manifest.agent.as_ref(), Some(cfg)]),
+    )
+    .await;
 
     // `session_id` here is the WORKER's own session (`build_worker` mints one
     // per profile), not the app's main session — so the profile's declared base
@@ -7372,6 +7452,8 @@ async fn handle_agent_socket_inner(
             // Text after the final tool call is the terminal answer validated by
             // the manifest-level `output_type` contract.
             let mut final_text = String::new();
+            // The user-visible inline notices this reply yielded (rq2-207).
+            let mut turn_notices: Vec<String> = Vec::new();
 
             loop {
                 // Three sources, biased so a UI command a tool just issued reaches the
@@ -7629,6 +7711,29 @@ async fn handle_agent_socket_inner(
                                     .await;
                                     None
                                 }
+                                // rq2-207: the daemon's own notices (a usage limit
+                                // that stopped the turn, its near-limit warning, a
+                                // retry) used to fall through to `_ => None` with
+                                // nothing said. The stop becomes the turn's `error`
+                                // frame below. The others are not frames, because
+                                // an SDK bundled before this release draws an
+                                // unknown frame as an error row: the durable ones
+                                // (a limit's warning, a turn verdict) are stored in
+                                // the chat, where `history` returns them as
+                                // `notice` rows, and live narration is only logged.
+                                MessageContent::SystemNotification(notice)
+                                    if message.is_user_visible()
+                                        && notice.notification_type
+                                            == SystemNotificationType::InlineMessage =>
+                                {
+                                    debug!(
+                                        app = %manifest.id,
+                                        notice = %notice.msg,
+                                        "daemon notice in an app turn"
+                                    );
+                                    turn_notices.push(notice.msg.clone());
+                                    None
+                                }
                                 _ => None,
                             };
                             if let Some(f) = frame {
@@ -7680,6 +7785,26 @@ async fn handle_agent_socket_inner(
                     save_ui_state(&state, &session_id, &ui_bridge).await;
                     ui_bridge.detach(conn_token);
                     return;
+                }
+            }
+
+            // rq2-207/210: a usage limit stopped this turn before a model request
+            // (a chat already at its limit, or the loop's gate). The agent stored
+            // the stop sentence and ended its stream normally, so without this
+            // the page got a bare `done` and said nothing. End the turn with the
+            // typed `error` frame instead, carrying the sentence the desktop
+            // shows, and send no `done`.
+            if !errored && !cancel.is_cancelled() {
+                if let Some(sentence) = usage_limit_stop(&turn_notices, &turn_agent) {
+                    let _ = send_json(
+                        &mut socket_tx,
+                        stamp_agent(
+                            json!({"type":"error","code":"usage_limit","message":sentence}),
+                            stamp,
+                        ),
+                    )
+                    .await;
+                    errored = true;
                 }
             }
 
@@ -7805,6 +7930,26 @@ async fn handle_agent_socket_inner(
             return;
         }
     }
+}
+
+/// The stop sentence of a turn a usage limit cut short, or `None`.
+///
+/// Two facts, both required: the agent says a limit interrupted its reply
+/// (`usage_limit_interrupted_reply`), and this turn yielded the stop notice
+/// (`usage_limit::stop_notice`, recognised by its prefix). The flag alone is
+/// not enough, because a reply that returns before the loop (a slash command)
+/// does not reset it; the notice alone is not enough, because a turn that
+/// FINISHED and then stored the stop notice for the request after it was not
+/// cut short, and its page gets its answer and a `done`.
+fn usage_limit_stop(notices: &[String], agent: &biorouter::agents::Agent) -> Option<String> {
+    use biorouter::agents::usage_limit::{CHAT_LIMIT_REACHED_PREFIX, MONTH_LIMIT_REACHED_PREFIX};
+    let sentence = notices.iter().rev().find(|notice| {
+        notice.starts_with(CHAT_LIMIT_REACHED_PREFIX)
+            || notice.starts_with(MONTH_LIMIT_REACHED_PREFIX)
+    })?;
+    agent
+        .usage_limit_interrupted_reply()
+        .then(|| sentence.clone())
 }
 
 /// Result of applying the input-stage PII/PHI policy to a user prompt.
@@ -8314,6 +8459,28 @@ async fn backlog_for(state: &AppState, session_id: &str) -> Vec<serde_json::Valu
                     })
                     .collect::<Vec<_>>()
                     .join("");
+                // A stored daemon notice (a usage limit's stop sentence, say) is
+                // part of what the person saw: a reloaded page draws it as a
+                // `notice` row, so a refused prompt does not reload as a prompt
+                // nobody answered (rq2-207).
+                if text.is_empty() {
+                    let notice = m
+                        .content
+                        .iter()
+                        .filter_map(|c| match c {
+                            MessageContent::SystemNotification(n)
+                                if n.notification_type == SystemNotificationType::InlineMessage =>
+                            {
+                                Some(n.msg.clone())
+                            }
+                            _ => None,
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !notice.is_empty() {
+                        return json!({ "role": "notice", "text": notice });
+                    }
+                }
                 json!({ "role": m.role, "text": text })
             })
             .filter(|m| !m["text"].as_str().unwrap_or("").is_empty())
@@ -13681,6 +13848,145 @@ mod tests {
                 withheld.is_empty(),
                 "a capability that armed cleanly must not be reported as withheld: {withheld:?}"
             );
+        }
+
+        /// rq2-194/196: a `data` block whose only sources are knowledge bases
+        /// declares no SQL at all, so SQL resolving to nothing is not a
+        /// capability withheld. It used to withhold `data`, the `ready` frame
+        /// then carried no knowledge token, and `br.kb` in the page refused
+        /// every call with "declare a data.sources[kind:\"knowledge\"]", the
+        /// very thing the app had declared.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn a_knowledge_only_data_block_advertises_the_knowledge_grant() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let manifest = manifest(
+                "knowledgeonly",
+                serde_json::json!({
+                    "data": { "sources": [
+                        { "name": "trial", "kind": "knowledge", "ids": ["trial-kb"] }
+                    ] }
+                }),
+            );
+            let advertised = advertised_app_capabilities(&manifest, BrsdkSettings::current());
+            let withheld = withheld(&manifest).await;
+            assert!(
+                withheld.is_empty(),
+                "a knowledge-only data block withheld something: {withheld:?}"
+            );
+            let granted = granted_app_capabilities(advertised, &withheld);
+            assert!(
+                granted.iter().any(|c| c == "data:knowledge"),
+                "the ready frame must carry the knowledge grant: {granted:?}"
+            );
+        }
+
+        /// SQL that resolves to nothing still withholds `data`, and only `data`:
+        /// the knowledge grant beside it stays advertised.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn missing_sql_withholds_data_but_not_the_knowledge_grant() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let manifest = manifest(
+                "knowledgeandsql",
+                serde_json::json!({
+                    "data": { "sources": [
+                        { "name": "trial", "kind": "knowledge", "ids": ["trial-kb"] },
+                        { "name": "cohort", "kind": "sql", "file": "no-such-file.db" }
+                    ] }
+                }),
+            );
+            let advertised = advertised_app_capabilities(&manifest, BrsdkSettings::current());
+            let withheld = withheld(&manifest).await;
+            assert_eq!(withheld, vec!["data".to_string()]);
+            let granted = granted_app_capabilities(advertised, &withheld);
+            assert!(granted.iter().any(|c| c == "data:knowledge"), "{granted:?}");
+            assert!(!granted.iter().any(|c| c == "data"), "{granted:?}");
+        }
+
+        /// rq2-199, owner decision: a manifest may not mount a host folder yet,
+        /// so an entry's `local_dir` is not mounted. The page is told through
+        /// the capability report, and the rest of the files grant still arms.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn a_files_entry_naming_a_host_folder_is_reported_not_mounted() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let manifest = manifest(
+                "fileslocaldir",
+                serde_json::json!({
+                    "files": { "entries": [
+                        { "name": "data", "local_dir": "/abs/host/dir", "mode": "ro" }
+                    ] }
+                }),
+            );
+            let withheld = withheld(&manifest).await;
+            assert_eq!(
+                withheld,
+                vec![super::super::FILES_LOCAL_DIR_WITHHELD.to_string()],
+                "the host folder is not mounted, and the files grant itself still arms"
+            );
+        }
+
+        /// rq2-193/198/211: `guardrails.needs_approval` had no consumer. Opening
+        /// the app now registers the list for the app's chat, which the
+        /// permission inspector honours in every mode.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn a_manifests_needs_approval_list_is_registered_for_the_apps_chat() {
+            if !crate::test_sandbox::in_a_process_of_its_own() {
+                return;
+            }
+            let root = tempfile::TempDir::new().unwrap();
+            let _env = lock_env_for(root.path(), PUBLIC_HOST);
+            let state = crate::state::AppState::new_with_knowledge_root(root.path().join("kb"))
+                .await
+                .unwrap();
+            let session = state
+                .session_manager()
+                .create_session(
+                    root.path().to_path_buf(),
+                    "needs-approval".to_string(),
+                    biorouter::session::session_manager::SessionType::User,
+                )
+                .await
+                .unwrap();
+            let agent = state.get_agent(session.id.clone()).await.unwrap();
+            let manifest: Manifest = serde_json::from_value(serde_json::json!({
+                "id": "needsapproval",
+                "title": "needsapproval",
+                "kind": "agentic",
+                "entry": "index.html",
+                "agent": {
+                    "guardrails": { "needs_approval": ["developer__shell"] }
+                },
+            }))
+            .unwrap();
+            let bridge = super::super::UiBridge::new();
+            super::super::configure_agent(&agent, &state, &session.id, &manifest, &bridge, false)
+                .await;
+            assert!(
+                biorouter::config::permission::session_always_confirms(
+                    &session,
+                    "developer__shell"
+                ),
+                "the manifest's needs_approval list was not registered for the app's chat"
+            );
+
+            // A manifest edited to drop the list releases it on the next connect.
+            let mut edited = manifest.clone();
+            edited.agent.as_mut().unwrap().guardrails = None;
+            super::super::configure_agent(&agent, &state, &session.id, &edited, &bridge, false)
+                .await;
+            assert!(!biorouter::config::permission::session_always_confirms(
+                &session,
+                "developer__shell"
+            ));
         }
     }
 

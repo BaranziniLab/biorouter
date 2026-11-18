@@ -11,6 +11,63 @@ const PERMISSION_FILE: &str = "permission.yaml";
 static PERMISSION_MANAGER: LazyLock<Arc<PermissionManager>> =
     LazyLock::new(|| Arc::new(PermissionManager::new(Paths::config_dir())));
 
+/// Tools a chat must always put to a person before they run, in every
+/// permission mode. An Agent Drafter app names them in its manifest's
+/// `guardrails.needs_approval`, and the app's socket registers them for the
+/// app's chat each time a page connects ([`set_session_always_confirm`]).
+///
+/// Kept in memory and keyed by the chat's id AND its creation time: a chat id
+/// is reissued after the day's newest chat is deleted, and a new chat under a
+/// reused id must not inherit an app's approvals. A daemon restart forgets the
+/// set, and the next page that connects registers it again before any turn
+/// runs.
+static SESSION_ALWAYS_CONFIRM: LazyLock<RwLock<HashMap<String, SessionAlwaysConfirm>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+#[derive(Debug, Clone)]
+struct SessionAlwaysConfirm {
+    created_at: chrono::DateTime<chrono::Utc>,
+    tools: Vec<String>,
+}
+
+/// Register the tools `session` must always confirm with a person, replacing
+/// any earlier registration. Names are full tool names (`developer__shell`);
+/// blank entries are dropped, and an empty list removes the registration.
+pub fn set_session_always_confirm(session: &crate::session::Session, tools: &[String]) {
+    let mut tools: Vec<String> = tools
+        .iter()
+        .map(|tool| tool.trim().to_string())
+        .filter(|tool| !tool.is_empty())
+        .collect();
+    tools.sort();
+    tools.dedup();
+    let mut map = SESSION_ALWAYS_CONFIRM
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if tools.is_empty() {
+        map.remove(&session.id);
+    } else {
+        map.insert(
+            session.id.clone(),
+            SessionAlwaysConfirm {
+                created_at: session.created_at,
+                tools,
+            },
+        );
+    }
+}
+
+/// Whether `tool_name` must be put to a person before it runs in `session`,
+/// whatever the permission mode ([`set_session_always_confirm`]).
+pub fn session_always_confirms(session: &crate::session::Session, tool_name: &str) -> bool {
+    let map = SESSION_ALWAYS_CONFIRM
+        .read()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    map.get(&session.id).is_some_and(|entry| {
+        entry.created_at == session.created_at && entry.tools.iter().any(|t| t == tool_name)
+    })
+}
+
 /// Enum representing the possible permission levels for a tool.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -319,6 +376,49 @@ user:
         assert!(!config.always_allow.contains(&"tool7".to_string()));
         assert!(!config.ask_before.contains(&"tool7".to_string()));
         assert!(config.never_allow.contains(&"tool7".to_string()));
+    }
+
+    fn chat(id: &str) -> crate::session::Session {
+        crate::session::Session {
+            id: id.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// An app's `guardrails.needs_approval` is registered for the app's own
+    /// chat and nowhere else; an empty list removes it.
+    #[test]
+    fn a_session_always_confirm_set_is_kept_per_chat() {
+        let app_chat = chat("perm-always-confirm-app");
+        let other = chat("perm-always-confirm-other");
+        set_session_always_confirm(
+            &app_chat,
+            &[" developer__shell ".to_string(), String::new()],
+        );
+        assert!(session_always_confirms(&app_chat, "developer__shell"));
+        assert!(!session_always_confirms(
+            &app_chat,
+            "developer__text_editor"
+        ));
+        assert!(!session_always_confirms(&other, "developer__shell"));
+
+        set_session_always_confirm(&app_chat, &[]);
+        assert!(!session_always_confirms(&app_chat, "developer__shell"));
+    }
+
+    /// A chat that reuses a deleted chat's id is a different chat: it was
+    /// created at another time, so it inherits none of the old app's asks.
+    #[test]
+    fn a_reissued_chat_id_inherits_no_always_confirm_set() {
+        let first = chat("perm-always-confirm-reissued");
+        set_session_always_confirm(&first, &["developer__shell".to_string()]);
+        let reissued = crate::session::Session {
+            created_at: first.created_at + chrono::Duration::seconds(5),
+            ..first.clone()
+        };
+        assert!(session_always_confirms(&first, "developer__shell"));
+        assert!(!session_always_confirms(&reissued, "developer__shell"));
+        set_session_always_confirm(&first, &[]);
     }
 
     #[test]
