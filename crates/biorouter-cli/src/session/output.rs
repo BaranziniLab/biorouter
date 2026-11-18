@@ -1145,32 +1145,79 @@ fn save_artifact_html(_uri: &str, html: &str) -> Option<std::path::PathBuf> {
     Some(path)
 }
 
+/// The policy a saved figure runs under: `default-src 'none'` with grants for
+/// inline scripts and styles and `data:`/`blob:` assets, and nothing that
+/// reaches the network, navigates, submits or nests a frame. The same list as
+/// the desktop's `ARTIFACT_POLICY` (`ui/desktop/src/utils/artifactSecurity.ts`).
+const ARTIFACT_POLICY: [&str; 13] = [
+    "default-src 'none'",
+    "script-src 'unsafe-inline' 'unsafe-eval' blob:",
+    "style-src 'unsafe-inline'",
+    "img-src data: blob:",
+    "connect-src 'none'",
+    "font-src data:",
+    "frame-src 'none'",
+    "worker-src blob:",
+    "media-src data: blob:",
+    "navigate-to 'none'",
+    "form-action 'none'",
+    "base-uri 'none'",
+    "object-src 'none'",
+];
+
+/// The figure's own policy, written into its head.
+fn artifact_browser_csp() -> String {
+    ARTIFACT_POLICY.join("; ")
+}
+
+/// The policy of the page that holds the figure in a `srcdoc` frame.
+///
+/// It must grant everything the figure's policy grants, which is why it is
+/// derived rather than written: a `srcdoc` document enforces its parent's policy
+/// as well as its own, so a grant missing here is a grant the figure loses. The
+/// hand-written `default-src 'none'; style-src 'unsafe-inline'; frame-src 'self'`
+/// this used to carry blocked every script in every saved figure. The figure
+/// stays contained by its own identical policy and by the frame's sandbox (no
+/// `allow-same-origin`, no `allow-top-navigation`); this page runs no script of
+/// its own. The one difference is `frame-src`, because this page embeds a frame.
+fn artifact_wrapper_csp() -> String {
+    ARTIFACT_POLICY
+        .iter()
+        .map(|directive| {
+            if *directive == "frame-src 'none'" {
+                "frame-src 'self'"
+            } else {
+                directive
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// A Content-Security-Policy meta for `policy`. A plain string, not a raw one:
+/// `r#"... content="#` ends the raw string at the attribute's opening quote,
+/// which is how every saved figure once shipped with an unquoted policy that a
+/// browser reads as a bare `default-src`.
+fn csp_meta(policy: &str) -> String {
+    format!("<meta http-equiv=\"Content-Security-Policy\" content=\"{policy}\">")
+}
+
 fn inject_artifact_browser_csp(html: &str) -> String {
-    const META: &str = concat!(
-        r#"<meta http-equiv="Content-Security-Policy" content="#,
-        "default-src 'none'; ",
-        "script-src 'unsafe-inline' 'unsafe-eval' blob:; ",
-        "style-src 'unsafe-inline'; ",
-        "img-src data: blob:; ",
-        "connect-src 'none'; ",
-        "font-src data:; frame-src 'none'; worker-src blob:; ",
-        "media-src data: blob:; navigate-to 'none'; ",
-        "form-action 'none'; base-uri 'none'; object-src 'none'",
-        r#"">"#
-    );
+    let meta = csp_meta(&artifact_browser_csp());
+    let meta = meta.as_str();
 
     let lower = html.to_ascii_lowercase();
     if let Some(html_start) = find_start_tag(&lower, "html") {
         let Some(prefix) = lower.get(..html_start) else {
-            return format!("<head>{META}</head>{html}");
+            return format!("<head>{meta}</head>{html}");
         };
         if !is_document_preamble(prefix) {
-            return format!("<head>{META}</head>{html}");
+            return format!("<head>{meta}</head>{html}");
         }
         if let Some(relative_end) = lower.get(html_start..).and_then(|tail| tail.find('>')) {
             let insert_at = html_start + relative_end + 1;
             let Some(remainder) = lower.get(insert_at..) else {
-                return format!("<head>{META}</head>{html}");
+                return format!("<head>{meta}</head>{html}");
             };
             let whitespace = remainder.len() - remainder.trim_start().len();
             let head_start = insert_at + whitespace;
@@ -1181,12 +1228,12 @@ fn inject_artifact_browser_csp(html: &str) -> String {
                 if let Some(relative_end) = lower.get(head_start..).and_then(|tail| tail.find('>'))
                 {
                     let head_end = head_start + relative_end + 1;
-                    if let Some(secured) = insert_html_at(html, head_end, META) {
+                    if let Some(secured) = insert_html_at(html, head_end, meta) {
                         return secured;
                     }
                 }
             }
-            if let Some(secured) = insert_html_at(html, insert_at, &format!("<head>{META}</head>"))
+            if let Some(secured) = insert_html_at(html, insert_at, &format!("<head>{meta}</head>"))
             {
                 return secured;
             }
@@ -1199,13 +1246,13 @@ fn inject_artifact_browser_csp(html: &str) -> String {
         {
             if let Some(relative_end) = lower.get(head_start..).and_then(|tail| tail.find('>')) {
                 let insert_at = head_start + relative_end + 1;
-                if let Some(secured) = insert_html_at(html, insert_at, META) {
+                if let Some(secured) = insert_html_at(html, insert_at, meta) {
                     return secured;
                 }
             }
         }
     }
-    format!("<head>{META}</head>{html}")
+    format!("<head>{meta}</head>{html}")
 }
 
 fn insert_html_at(html: &str, index: usize, fragment: &str) -> Option<String> {
@@ -1227,8 +1274,7 @@ fn wrap_artifact_for_browser(html: &str) -> String {
     format!(
         concat!(
             "<!doctype html><html><head><meta charset=\"utf-8\">",
-            "<meta http-equiv=\"Content-Security-Policy\" content=\"",
-            "default-src 'none'; style-src 'unsafe-inline'; frame-src 'self'\">",
+            "{}",
             "<style>html,body,iframe{{width:100%;height:100%;margin:0;border:0;overflow:hidden}}",
             "body{{background:#fff}}</style></head><body>",
             "<iframe name=\"biorouter-artifact-preview\" title=\"Biorouter artifact preview\" ",
@@ -1236,6 +1282,7 @@ fn wrap_artifact_for_browser(html: &str) -> String {
             "sandbox=\"allow-scripts allow-downloads\" ",
             "srcdoc=\"{}\"></iframe></body></html>"
         ),
+        csp_meta(&artifact_wrapper_csp()),
         srcdoc
     )
 }
@@ -2648,6 +2695,92 @@ mod tests {
         assert!(wrapped.contains("sandbox=\"allow-scripts allow-downloads\""));
         assert!(!wrapped.contains("allow-top-navigation"));
         assert!(!wrapped.contains("allow-same-origin"));
+    }
+
+    /// The `content` of the first Content-Security-Policy meta in `document`,
+    /// read the way an HTML parser reads an attribute: a quoted value runs to its
+    /// closing quote, an unquoted one stops at the first space or `>`.
+    fn csp_meta_content(document: &str) -> Option<String> {
+        let start = document.find("<meta http-equiv=\"Content-Security-Policy\"")?;
+        let value = document.get(start..)?.split_once("content=")?.1;
+        match value.chars().next()? {
+            quote @ ('"' | '\'') => value
+                .get(1..)?
+                .split_once(quote)
+                .map(|(policy, _)| policy.to_string()),
+            _ => value
+                .split(|c: char| c.is_ascii_whitespace() || c == '>')
+                .next()
+                .map(str::to_string),
+        }
+    }
+
+    fn csp_directives(policy: &str) -> Vec<String> {
+        policy.split("; ").map(str::to_string).collect()
+    }
+
+    /// A figure saved by `biorouter run`, `session` or the TUI opened blank in
+    /// every browser: the attribute's opening quote was never written, so the
+    /// browser read the policy as a bare `default-src` and blocked every inline
+    /// script and style. A test that only looked for the header's name passed.
+    #[test]
+    fn the_saved_figure_csp_attribute_is_quoted() {
+        let secured = inject_artifact_browser_csp(
+            "<!doctype html><html><head><title>Figure</title></head><body></body></html>",
+        );
+
+        let policy = csp_meta_content(&secured).expect("a CSP meta in the figure");
+        assert!(policy.starts_with("default-src 'none'; "), "{policy}");
+        assert!(policy.contains("script-src 'unsafe-inline'"), "{policy}");
+        assert_eq!(
+            secured,
+            concat!(
+                "<!doctype html><html><head>",
+                "<meta http-equiv=\"Content-Security-Policy\" content=\"",
+                "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob:; ",
+                "style-src 'unsafe-inline'; img-src data: blob:; connect-src 'none'; ",
+                "font-src data:; frame-src 'none'; worker-src blob:; media-src data: blob:; ",
+                "navigate-to 'none'; form-action 'none'; base-uri 'none'; object-src 'none'\">",
+                "<title>Figure</title></head><body></body></html>"
+            )
+        );
+    }
+
+    /// A `srcdoc` document enforces its parent's policy as well as its own, so a
+    /// grant the wrapper lacks is a grant the figure loses. The wrapper's
+    /// hand-written `default-src 'none'; style-src 'unsafe-inline'; frame-src
+    /// 'self'` kept every figure blank even with the figure's own policy quoted
+    /// (measured in Chromium, 2026-11-17). The desktop wrapper had the same bug
+    /// and pins the same rule in `artifactSecurity.test.ts`.
+    #[test]
+    fn the_wrapper_grants_everything_the_saved_figure_is_granted() {
+        let wrapped =
+            wrap_artifact_for_browser("<!doctype html><html><head></head><body></body></html>");
+
+        let wrapper = csp_meta_content(&wrapped).expect("the wrapper's own CSP");
+        let srcdoc = wrapped
+            .split_once("srcdoc=\"")
+            .and_then(|(_, rest)| rest.split_once('"'))
+            .map(|(escaped, _)| escaped.replace("&quot;", "\"").replace("&amp;", "&"))
+            .expect("the figure's srcdoc");
+        let figure = csp_meta_content(&srcdoc).expect("the figure's CSP");
+
+        let wrapper = csp_directives(&wrapper);
+        let figure = csp_directives(&figure);
+        let missing: Vec<&String> = figure
+            .iter()
+            .filter(|d| !wrapper.contains(d) && !d.starts_with("frame-src"))
+            .collect();
+        assert!(missing.is_empty(), "the wrapper revokes {missing:?}");
+        let wrapper_only: Vec<&String> = wrapper.iter().filter(|d| !figure.contains(d)).collect();
+        assert_eq!(wrapper_only, ["frame-src 'self'"]);
+        for policy in [&wrapper, &figure] {
+            assert!(policy.iter().any(|d| d == "default-src 'none'"));
+            assert!(policy.iter().any(|d| d == "connect-src 'none'"));
+            assert!(policy
+                .iter()
+                .all(|d| !d.contains("http") && !d.contains('*')));
+        }
     }
 
     #[test]

@@ -495,6 +495,15 @@ function clampRenderErrorText(value: string) {
 }
 
 /**
+ * The `reason` a figure's render error carries when a library it needs could
+ * not be downloaded (the Auto Visualiser's `templates/_common.js`, fed by
+ * `utils/artifactCdnAssets.ts`). The figure already tells the person to check
+ * the connection and open it again; no edit to the figure can bring the library
+ * back, so such an error never becomes a repair turn.
+ */
+export const LIBRARY_UNAVAILABLE_REASON = 'library-unavailable';
+
+/**
  * The glyph a preview tab draws (spec 3.3 and 3.8: a glyph stands for the content,
  * the same way everywhere).
  *
@@ -1387,11 +1396,13 @@ export default function ArtifactViewer({
               message?: unknown;
               detail?: unknown;
               href?: unknown;
+              reason?: unknown;
             };
           }
         | undefined;
 
       if (!data || data.type !== 'biorouter-viz-render-error') return;
+      if (data.payload?.reason === LIBRARY_UNAVAILABLE_REASON) return;
 
       const message =
         typeof data.payload?.message === 'string'

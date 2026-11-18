@@ -90,9 +90,36 @@ export const artifactCdnStylePattern = (url: string): RegExp =>
 export type ArtifactCdnAssetFetcher = (url: string) => Promise<string>;
 
 /**
+ * The global a figure reads to learn which of its libraries never arrived.
+ * `templates/_common.js` in the Auto Visualiser reads the same name, and
+ * `the_common_script_names_a_missing_library_plainly` in that crate's tests
+ * holds the two together.
+ */
+export const UNAVAILABLE_LIBRARIES_GLOBAL = '__biorouterUnavailableLibraries';
+
+/** The npm package a CDN URL names (`d3`, `leaflet.markercluster`), else the URL. */
+const libraryName = (url: string): string => JSDELIVR_NPM_URL.exec(url)?.[1] ?? url;
+
+/**
+ * The inline script that takes the place of a library tag the main process
+ * could not fill. It records the library for the figure's error card, which then
+ * says the library could not be downloaded instead of "d3 is not defined", and
+ * tags its render error so the panel does not ask the agent to repair a figure
+ * that is not broken. The name comes from `ARTIFACT_CDN_ASSETS`, never from the
+ * document, and `<` is escaped so it can never close the script.
+ */
+const unavailableLibraryMarker = (url: string): string => {
+  const name = JSON.stringify(libraryName(url)).replace(/</g, '\\u003c');
+  const list = `window.${UNAVAILABLE_LIBRARIES_GLOBAL}`;
+  return `<script>(${list}=${list}||[]).push(${name});</script>`;
+};
+
+/**
  * Replace every known CDN reference in `rawHtml` with the library's source,
- * inlined. Unknown or unfetchable references are left untouched — the figure
- * then fails visibly rather than silently rendering half a chart.
+ * inlined. Unknown references are left untouched. A known one that cannot be
+ * fetched is replaced with a marker naming the library (the artifact CSP would
+ * block the remote tag anyway), so the figure fails visibly and says why rather
+ * than silently rendering half a chart.
  */
 export const inlineArtifactCdnAssets = async (
   rawHtml: string,
@@ -118,8 +145,68 @@ export const inlineArtifactCdnAssets = async (
         html = html.replace(pattern, () => `<script>${asset}</script>`);
       }
     } catch (error) {
+      html = html.replace(pattern, () => unavailableLibraryMarker(url));
       onError(url, error);
     }
   }
   return html;
+};
+
+/** How long one library download may take, body included, before the open gives up. */
+export const ARTIFACT_CDN_FETCH_TIMEOUT_MS = 20_000;
+
+/** The part of `fetch` the CDN fetcher uses, so a test can stand in for it. */
+export type CdnFetch = (
+  url: string,
+  init: { signal: AbortSignal }
+) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>;
+
+/**
+ * An `ArtifactCdnAssetFetcher` that downloads each library once per app session.
+ *
+ * What it keeps is a library that arrived. A download that fails (offline, an
+ * HTTP error, a proxy that resets) is dropped from the cache as it settles, so
+ * the next figure that needs the library tries again. It used to keep the
+ * rejected promise, and one open while offline then broke every later figure
+ * that needed that library until the app was restarted. Figures opened while a
+ * download is in flight share it.
+ *
+ * A download that has not finished within `timeoutMs` is aborted and fails, so
+ * an open never waits forever on a silent network. The timeout also settles the
+ * open when `fetchImpl` ignores its signal.
+ */
+export const createCachingCdnFetcher = (
+  fetchImpl: CdnFetch,
+  { timeoutMs = ARTIFACT_CDN_FETCH_TIMEOUT_MS }: { timeoutMs?: number } = {}
+): ArtifactCdnAssetFetcher => {
+  const cache = new Map<string, Promise<string>>();
+
+  const download = (url: string): Promise<string> => {
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        const error = new Error(`timed out after ${timeoutMs} ms`);
+        controller.abort(error);
+        reject(error);
+      }, timeoutMs);
+    });
+    const fetched = (async () => {
+      const response = await fetchImpl(url, { signal: controller.signal });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.text();
+    })();
+    return Promise.race([fetched, timedOut]).finally(() => clearTimeout(timer));
+  };
+
+  return (url) => {
+    const cached = cache.get(url);
+    if (cached) return cached;
+    const pending = download(url);
+    cache.set(url, pending);
+    pending.catch(() => {
+      if (cache.get(url) === pending) cache.delete(url);
+    });
+    return pending;
+  };
 };
