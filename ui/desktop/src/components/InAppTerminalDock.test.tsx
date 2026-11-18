@@ -399,6 +399,49 @@ describe('InAppTerminalDock', () => {
     expect(screen.getByRole('tablist', { name: /^terminals$/i })).toHaveClass('overflow-x-auto');
   });
 
+  // Red is rare: a terminal that cannot start is a failure, not danger, so the
+  // line saying so is in the terminal's own ink (rq2-089). Both ways a start can
+  // fail write it: an answer that says no, and a call that throws.
+  describe('a terminal that cannot start', () => {
+    /** Every line the pane's xterm was asked to write, in order. */
+    const writtenLines = () =>
+      xtermInstances.flatMap((term) =>
+        vi
+          .mocked((term as unknown as { writeln: (line: string) => void }).writeln)
+          .mock.calls.map(([line]) => line)
+      );
+    /** Any SGR colour or style escape: `ESC [ … m`. */
+    const SGR = new RegExp(`${ESC}\\[[0-9;]*m`);
+
+    it('a_start_failure_is_not_written_in_red', async () => {
+      vi.mocked(window.electron.createTerminalSession).mockResolvedValueOnce({
+        success: false,
+        error: 'In-app terminal is only available in Electron.',
+      } as Awaited<ReturnType<typeof window.electron.createTerminalSession>>);
+      render(<InAppTerminalDock open workingDir="/Users/wgu/work" onClose={vi.fn()} />);
+
+      await waitFor(() =>
+        expect(writtenLines()).toContain(
+          'Could not start terminal: In-app terminal is only available in Electron.'
+        )
+      );
+      expect(writtenLines().join('\n')).not.toContain(`${ESC}[31m`);
+      expect(writtenLines().filter((line) => SGR.test(line))).toEqual([]);
+    });
+
+    it('writes a start that throws in the same ink', async () => {
+      vi.mocked(window.electron.createTerminalSession).mockRejectedValueOnce(
+        new Error('pty spawn failed')
+      );
+      render(<InAppTerminalDock open workingDir="/Users/wgu/work" onClose={vi.fn()} />);
+
+      await waitFor(() =>
+        expect(writtenLines()).toContain('Could not start terminal: Error: pty spawn failed')
+      );
+      expect(writtenLines().filter((line) => SGR.test(line))).toEqual([]);
+    });
+  });
+
   // "Run" on a shell code block in the transcript (utils/terminalRunChannel.ts).
   // The click happens far away in the chat, so the registry IS the entry point
   // here exactly as it is for Cmd+W above: runInTerminal() is what BaseChat

@@ -23,6 +23,7 @@ import {
 } from './settings/models/modelInterface';
 import { ChatState } from '../types/chatState';
 import { ChatType } from '../types/chat';
+import { DEFAULT_CHAT_TITLE } from '../contexts/ChatContext';
 import { useIsMobile } from '../hooks/use-mobile';
 import { useSidebar } from './ui/sidebar';
 import { cn } from '../utils';
@@ -100,6 +101,7 @@ import { getInitialWorkingDir } from '../utils/workingDir';
 import { useConfig } from './ConfigContext';
 import { useTerminalDock } from '../contexts/TerminalDockContext';
 import { runInTerminal } from '../utils/terminalRunChannel';
+import { isBrowserSurface } from '../utils/surface';
 import { SessionNamePill } from './SessionNamePill';
 import { useBoundAffiliation } from './privacy/useBoundAffiliation';
 import { getSessionTitlePadding } from './Layout/TitlebarControls';
@@ -1326,6 +1328,121 @@ export function countSessionToolCalls(messages: Message[]): number {
 /** Module-level, so the message list's memoised element keeps one identity. */
 const isUserRow = (m: Message) => m.role === 'user';
 
+/**
+ * Is this BaseChat the window's focused chat, the one the app-level chat names?
+ *
+ * Off `/pair` there is no tab strip and this is the only chat on screen. On
+ * `/pair` every group mounts the BaseChat of its own active tab, keyed by that
+ * tab's id (`terminalKey`), so the focused one is the active group's active tab.
+ * A focused group with no tab yet is a placeholder pane, which has no session.
+ */
+export function isFocusedChatPane(
+  chatGroups: { activeTab: { tabId: string } | undefined } | null,
+  terminalKey: string | undefined,
+  sessionId: string
+): boolean {
+  if (chatGroups === null) return true;
+  if (chatGroups.activeTab === undefined) return !sessionId;
+  return chatGroups.activeTab.tabId === terminalKey;
+}
+
+/**
+ * Mirror the FOCUSED chat into the app-level chat (rq2-107).
+ *
+ * The app-level chat scopes the window's one `KnowledgeProvider` (`App.tsx`), so
+ * every composer's Knowledge list reads and writes the selection of whichever
+ * chat it names; the sidebar highlight and `document.title` read it too. It used
+ * to move only when a chat's NAME changed. A focused draft tab, which has no
+ * session and no name, then left it on the chat focused before, and the draft's
+ * Hide all wrote that other chat's hidden list. A background pane whose name
+ * arrived late took it over the same way.
+ *
+ * Now the focused pane writes itself whenever it becomes focused, binds a session
+ * or learns its name, a draft as `''` (machine scope, the default new chats
+ * inherit), and a pane that is not focused never writes.
+ */
+export function useMirrorFocusedChat({
+  focused,
+  sessionId,
+  sessionName,
+  messages,
+  workflow,
+  setChat,
+}: {
+  focused: boolean;
+  sessionId: string;
+  sessionName: string | undefined;
+  messages: Message[];
+  workflow: Workflow | null | undefined;
+  setChat: (chat: ChatType) => void;
+}): void {
+  // The transcript rides along as it stands when the chat is written, and does
+  // not re-write the app-level chat on every streamed message.
+  const transcript = useRef({ messages, workflow });
+  transcript.current = { messages, workflow };
+  useEffect(() => {
+    if (!focused) return;
+    setChat({
+      ...transcript.current,
+      sessionId,
+      // Until the name has loaded, the default title (what a new chat reads as
+      // in `ChatContext`), never the name of the chat focused before.
+      name: sessionName || DEFAULT_CHAT_TITLE,
+    });
+  }, [focused, sessionId, sessionName, setChat]);
+}
+
+/**
+ * Whether this surface has an in-app terminal at all. It is an Electron
+ * capability: a `biorouter serve` page has no pty, and the web shim answers every
+ * start with "In-app terminal is only available in Electron." SD-8 rules that a
+ * control which can never work here is not offered, so in a browser the chat
+ * shows no terminal toggle and no Run on a shell code block (rq2-088).
+ */
+function offersInAppTerminal(): boolean {
+  return !isBrowserSurface();
+}
+
+/** The transcript's "Run in terminal" handler, or `null` where no terminal exists. */
+export function runInTerminalWhereOffered<Handler>(handler: Handler): Handler | null {
+  return offersInAppTerminal() ? handler : null;
+}
+
+/**
+ * The chat header's terminal toggle, absent in a browser (`offersInAppTerminal`).
+ * Pressed while the dock is open: the band's fill step (R-27), the same as the
+ * summary button beside it.
+ */
+export function InAppTerminalHeaderButton({
+  open,
+  onToggle,
+}: {
+  open: boolean;
+  onToggle: () => void;
+}) {
+  if (!offersInAppTerminal()) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          type="button"
+          onClick={onToggle}
+          variant="ghost"
+          shape="round"
+          className={cn(
+            'no-drag text-text-muted hover:text-text-default',
+            open && 'bg-background-fill-strong text-text-default'
+          )}
+          aria-label={open ? 'Close in-app terminal' : 'Open in-app terminal'}
+        >
+          <Terminal />
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent>{open ? 'Close terminal' : 'Open terminal'}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 interface BaseChatProps {
   setChat: (chat: ChatType) => void;
   onMessageSubmit?: (message: string) => void;
@@ -1575,6 +1692,9 @@ function BaseChatContent({
     },
     [setIsTerminalDockOpen, terminalDockKey]
   );
+  // What the transcript is handed: no Run on a shell code block where there is
+  // no terminal to run it in (a browser, rq2-088). Stable either way.
+  const transcriptRunInTerminal = runInTerminalWhereOffered(handleRunInTerminal);
   const reportedArtifactRenderErrorsRef = useRef<Set<string>>(new Set());
   const pendingArtifactRenderFeedbackRef = useRef<Message | null>(null);
   // Wall-clock of the last moment the agent was actively working. Used to decide
@@ -2329,22 +2449,14 @@ function BaseChatContent({
     name: session?.name || 'New chat',
   };
 
-  // Update the global chat context when session name changes
-  const lastSetNameRef = useRef<string>('');
-
-  useEffect(() => {
-    const currentSessionName = session?.name;
-    if (currentSessionName && currentSessionName !== lastSetNameRef.current) {
-      lastSetNameRef.current = currentSessionName;
-      setChat({
-        messages,
-        workflow,
-        sessionId,
-        name: currentSessionName,
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.name, setChat]);
+  useMirrorFocusedChat({
+    focused: isFocusedChatPane(chatGroups, terminalKey, sessionId),
+    sessionId,
+    sessionName: session?.name,
+    messages,
+    workflow,
+    setChat,
+  });
 
   // Keep the latest onSessionUpdate in a ref so changes to its identity (e.g., a
   // new arrow on every render) don't refire this effect. The effect must fire
@@ -2749,26 +2861,7 @@ function BaseChatContent({
       className="ml-auto flex flex-shrink-0 items-center gap-1"
       style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
     >
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            type="button"
-            onClick={handleOpenTerminal}
-            variant="ghost"
-            shape="round"
-            className={cn(
-              'no-drag text-text-muted hover:text-text-default',
-              // Pressed while the dock is open: the band's fill step (R-27),
-              // the same as the summary button beside it.
-              isTerminalDockOpen && 'bg-background-fill-strong text-text-default'
-            )}
-            aria-label={isTerminalDockOpen ? 'Close in-app terminal' : 'Open in-app terminal'}
-          >
-            <Terminal />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>{isTerminalDockOpen ? 'Close terminal' : 'Open terminal'}</TooltipContent>
-      </Tooltip>
+      <InAppTerminalHeaderButton open={isTerminalDockOpen} onToggle={handleOpenTerminal} />
 
       {/* ONE button, two modes (spec 3.5): it shows and hides the docked
           rail where the rail fits, and opens the same content as a popover
@@ -2852,7 +2945,7 @@ function BaseChatContent({
           // leaving a Submit that 403s.
           submitElicitationResponse={subagentTabReadOnly ? undefined : submitElicitationResponse}
           onOpenArtifact={openArtifactFromTranscript}
-          onRunInTerminal={handleRunInTerminal}
+          onRunInTerminal={transcriptRunInTerminal}
           workingDir={sessionWorkingDir}
         />
       </FolderRequesterContext.Provider>
@@ -2872,7 +2965,7 @@ function BaseChatContent({
       heldMessageUpdate,
       submitElicitationResponse,
       openArtifactFromTranscript,
-      handleRunInTerminal,
+      transcriptRunInTerminal,
       sessionWorkingDir,
       folderRequester,
     ]

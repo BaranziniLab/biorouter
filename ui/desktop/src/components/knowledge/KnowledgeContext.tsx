@@ -125,6 +125,22 @@ interface KnowledgeContextType {
 
 const KnowledgeContext = createContext<KnowledgeContextType | null>(null);
 
+/**
+ * The scope of the window's one `KnowledgeProvider`, which `App.tsx` mounts
+ * around every route (rq2-107).
+ *
+ * - Home is machine scope: its list is labelled "Default for chats" and shapes
+ *   the chats that start there, whichever chat was open before.
+ * - Everywhere else it is the app-level chat, which on `/pair` is the focused
+ *   tab's (BaseChat's `useMirrorFocusedChat`): a draft tab is `''`, so machine
+ *   scope as on Home, and a named chat is its own. The Knowledge view keeps the
+ *   last chat's selection, as it always has.
+ */
+export function knowledgeScopeFor(pathname: string, chatSessionId: string): string | null {
+  if (pathname === '/') return null;
+  return chatSessionId || null;
+}
+
 export function KnowledgeProvider({
   children,
   sessionId = null,
