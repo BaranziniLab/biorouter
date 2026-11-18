@@ -299,33 +299,57 @@ impl KbToolDispatch {
                 )
             })?;
 
-        let edges = args
-            .get("edges")
-            .and_then(|v| v.as_array())
-            .map(Vec::as_slice)
-            .unwrap_or_default()
-            .iter()
-            .map(edge_mapping)
-            .collect::<Result<Vec<_>>>()?;
+        // A sent `edges` is the page's whole edge list (rq2-027): an empty list
+        // removes every edge, and only an omitted key keeps the ones already on
+        // the page. Reading `[]` as "not supplied" kept an invalid edge that a
+        // lint autofix then told the person it had removed.
+        let edges = match args.get("edges") {
+            None | Some(Value::Null) => None,
+            Some(Value::Array(items)) => {
+                Some(items.iter().map(edge_mapping).collect::<Result<Vec<_>>>()?)
+            }
+            Some(_) => anyhow::bail!(
+                "{WRITE_CONCEPT}: 'edges' must be a list of edges. Send every edge the page \
+                 should keep, an empty list to remove them all, or omit it to keep the edges \
+                 already on the page"
+            ),
+        };
 
         let path = match args.get("path").and_then(|v| v.as_str()) {
             Some(p) => p.to_string(),
             None => default_concept_path(node_type, identifier),
         };
-        let content = compose_page(
-            node_type,
-            identifier,
-            args,
-            edges,
-            &existing(kb_root, &path),
-        );
+        let existing = existing(kb_root, &path);
+        // Reported back so the model reads what the page now carries rather
+        // than what it meant to send.
+        let edge_count = match &edges {
+            Some(edges) => edges.len(),
+            None => existing
+                .frontmatter
+                .get("edges")
+                .and_then(serde_yaml::Value::as_sequence)
+                .map_or(0, Vec::len),
+        };
+        let content = compose_page(node_type, identifier, args, edges, &existing);
         let msg = args
             .get("commit_message")
             .and_then(|v| v.as_str())
             .unwrap_or("subagent write");
         let sha = store::write_page(kb_root, &path, &content, msg, txn)?;
-        Ok(serde_json::json!({ "path": path, "commit_sha": sha }).to_string())
+        Ok(serde_json::json!({ "path": path, "commit_sha": sha, "edges": edge_count }).to_string())
     }
+}
+
+/// Does a successful call of this tool write a page under `knowledge/`?
+///
+/// A lint autofix counts these results as its `fixes_applied`. It used to count
+/// `kb_write_page` alone, so a run that fixed pages with [`WRITE_CONCEPT`], the
+/// writer the BioOKF procedures point at, reported that it had fixed nothing
+/// (rq2-027). `kb_append_log` writes `log.md` and `kb_add_raw_source` writes
+/// under `raw/`, so neither is a page; `every_writing_tool_is_classified` keeps
+/// a new writer from being left out of this list.
+pub fn writes_a_page(name: &str) -> bool {
+    matches!(name, "kb_write_page" | WRITE_CONCEPT)
 }
 
 /// The frontmatter already at `path`, or an empty mapping.
@@ -531,7 +555,7 @@ fn compose_page(
     node_type: biookf::NodeType,
     identifier: &str,
     args: &Value,
-    edges: Vec<serde_yaml::Value>,
+    edges: Option<Vec<serde_yaml::Value>>,
     existing: &okf::Split,
 ) -> String {
     // Start from what is already there (see `existing`), then write this call's
@@ -559,8 +583,16 @@ fn compose_page(
             );
         }
     }
-    if !edges.is_empty() {
-        fm.insert("edges".into(), serde_yaml::Value::Sequence(edges));
+    // `edges` replaces rather than extends: a list is the page's whole edge
+    // set, so `[]` removes the key and only `None` (not sent) keeps it.
+    match edges {
+        None => {}
+        Some(edges) if edges.is_empty() => {
+            fm.remove("edges");
+        }
+        Some(edges) => {
+            fm.insert("edges".into(), serde_yaml::Value::Sequence(edges));
+        }
     }
     let yaml = serde_yaml::to_string(&serde_yaml::Value::Mapping(fm))
         .unwrap_or_else(|_| format!("type: {}\n", node_type.as_str()));
@@ -1154,7 +1186,9 @@ fn concept_optional_props() -> Vec<(&'static str, Prop)> {
             Prop::array_of(edge_schema()).describe(
                 "The typed relationships this page asserts. ONLY these are part of the graph — \
                  prose may restate a relationship and markdown links are fine for navigation, \
-                 but neither is an edge.",
+                 but neither is an edge. This list replaces the page's edges: send every edge \
+                 the page should keep, an empty list to remove them all, or omit it to keep the \
+                 edges already there.",
             ),
         ),
         (
@@ -1190,7 +1224,9 @@ fn write_concept_spec() -> Tool {
              invented predicate cannot produce a page the graph silently drops. Prefer it over \
              kb_write_page for every page whose frontmatter you are creating or changing; use \
              kb_write_page for index.md and for prose-only edits. Fields you omit keep whatever \
-             the page already had, so a second pass may add one edge without restating the page.",
+             the page already had. An `edges` list you send replaces the page's edges: to add \
+             one, send the page's edges plus the new one, and send an empty list to remove \
+             them all. The result says how many edges the page now carries.",
         ),
         schema_of(
             vec![
@@ -1950,6 +1986,115 @@ mod tests {
             "the rewrite dropped the body:\n{text}"
         );
         assert!(text.contains("predicate: treats"), "{text}");
+    }
+
+    /// rq2-027. The lint autofix sent `edges: []` to drop an invalid `loves`
+    /// edge, the writer read the empty list as "not supplied", kept the edge and
+    /// answered ok, and the model then told the person the edge was gone. An
+    /// explicit list is the page's whole edge list, so an empty one removes them;
+    /// only an omitted key keeps what the page already had.
+    #[tokio::test]
+    async fn write_concept_with_an_empty_edge_list_removes_the_edges() {
+        let (_dir, svc) = biookf_svc();
+        let kb_root = svc.root().join("bio");
+        let dispatch = biookf_dispatch(&svc);
+        let path = "knowledge/gene/badgene.md";
+        crate::knowledge::store::write_page(
+            &kb_root,
+            path,
+            "---\ntype: Spaceship\nidentifier: BADGENE\nedges:\n  - predicate: loves\n    \
+             object: BRCA note\n    knowledge_level: knowledge_assertion\n    \
+             agent_type: manual_agent\n    primary_source: BRCA note\n---\n\n# BADGENE\n\nBody.\n",
+            "seed",
+            None,
+        )
+        .unwrap();
+        let edges_on_disk = || {
+            let text = std::fs::read_to_string(kb_root.join(path)).unwrap();
+            crate::knowledge::okf::frontmatter::split(&text)
+                .unwrap()
+                .frontmatter
+                .get(serde_yaml::Value::String("edges".into()))
+                .cloned()
+        };
+
+        // Omitted: the page keeps its edges, which is the extend rule.
+        dispatch
+            .call(
+                WRITE_CONCEPT,
+                serde_json::json!({ "type": "Other", "identifier": "BADGENE", "path": path }),
+            )
+            .await
+            .unwrap();
+        assert!(
+            edges_on_disk().is_some(),
+            "omitting `edges` must keep the page's edges"
+        );
+
+        // Empty: the edges are gone, and the result says how many remain.
+        let out = dispatch
+            .call(
+                WRITE_CONCEPT,
+                serde_json::json!({
+                    "type": "Other",
+                    "identifier": "BADGENE",
+                    "path": path,
+                    "edges": [],
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            edges_on_disk(),
+            None,
+            "`edges: []` must remove the page's edges"
+        );
+        let out: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(out["edges"], 0, "{out}");
+        let text = std::fs::read_to_string(kb_root.join(path)).unwrap();
+        assert!(!text.contains("loves"), "{text}");
+        assert!(text.contains("Body."), "the body must survive: {text}");
+    }
+
+    /// Every tool a sub-agent may call that is not a reader is either a page
+    /// writer, which a lint autofix counts as a fix, or one of the two tools
+    /// known to write something else. A new writer has to be put on one side.
+    #[test]
+    fn every_writing_tool_is_classified() {
+        const WRITES_ELSEWHERE: [&str; 2] = ["kb_append_log", "kb_add_raw_source"];
+        for tool in tool_specs(Some(KbFormat::Biookf)) {
+            let name = tool.name.as_ref();
+            if is_read_only_tool(name) {
+                assert!(!writes_a_page(name), "{name} is a reader and a page writer");
+                continue;
+            }
+            assert!(
+                writes_a_page(name) || WRITES_ELSEWHERE.contains(&name),
+                "{name} writes but is not classified; add it to `writes_a_page` if it writes \
+                 a page under knowledge/"
+            );
+        }
+        assert!(writes_a_page("kb_write_page"));
+        assert!(writes_a_page(WRITE_CONCEPT));
+    }
+
+    /// A non-list `edges` is refused rather than read as "keep", which was the
+    /// silent shape of the bug above.
+    #[tokio::test]
+    async fn write_concept_refuses_edges_that_are_not_a_list() {
+        let (_dir, svc) = biookf_svc();
+        let err = biookf_dispatch(&svc)
+            .call(
+                WRITE_CONCEPT,
+                serde_json::json!({
+                    "type": "Molecule",
+                    "identifier": "Aspirin",
+                    "edges": "none",
+                }),
+            )
+            .await
+            .expect_err("a string is not an edge list");
+        assert!(err.to_string().contains("'edges' must be a list"), "{err}");
     }
 
     /// A base that is not in the BioOKF profile refuses the typed writer rather

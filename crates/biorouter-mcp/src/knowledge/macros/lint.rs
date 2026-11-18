@@ -12,7 +12,7 @@ use crate::knowledge::{
     store::split_frontmatter,
     subagent::{
         events::{DoneReason, SubAgentEvent},
-        kb_tools::{tool_specs, KbToolAccess, KbToolDispatch},
+        kb_tools::{self, tool_specs, KbToolAccess, KbToolDispatch},
         loop_::{Completer, SubAgent, SubAgentBounds, SubAgentResult},
         procedures::{lint_procedure, system_prompt},
     },
@@ -570,10 +570,17 @@ pub struct LintArgs {
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LintResult {
+    /// What is wrong with the base as it stands when the lint ends. After an
+    /// autofix that committed, this is a fresh scan of the committed base, so
+    /// it lists what the fix left and never a finding it fixed. Otherwise it is
+    /// the one scan the run made.
     pub report: LintReport,
     /// The autofix commit, or `None` for a read-only lint — which is every lint
     /// that ran without `autofix`, and therefore without a provider at all.
     pub commit_sha: Option<String>,
+    /// How many page writes the autofix committed: every successful
+    /// `kb_write_page` and `kb_write_concept` call. Zero for a read-only lint
+    /// and for an autofix that changed no page.
     pub fixes_applied: usize,
 }
 
@@ -765,14 +772,6 @@ fn settle_autofix(
             if let Err(error) = super::ensure_not_cancelled(cancel, "the lint commit") {
                 return Err(repo.abort_after_failure(txn, "lint autofix", error));
             }
-            let fixes_applied = r
-                .events
-                .iter()
-                .filter(|e| {
-                    matches!(e, SubAgentEvent::ToolResult { name, ok: true, .. }
-                        if name == "kb_write_page")
-                })
-                .count();
             // An autofix run that fixed nothing must not commit. `commit_txn`
             // squash-commits the transaction *tree* and git records a commit
             // whose tree equals its parent's without complaint, so every clean
@@ -799,12 +798,15 @@ fn settle_autofix(
                         ),
                     )
                 })?;
+                // Nothing landed, so nothing was applied, and the scan the run
+                // started from still describes the base.
                 return Ok(LintResult {
                     report,
                     commit_sha: None,
-                    fixes_applied,
+                    fixes_applied: 0,
                 });
             }
+            let fixes_applied = page_writes(&r.events);
             let sha = repo
                 .commit_txn(txn, ChangeKind::Lint, "lint autofix", None)
                 .map_err(|error| {
@@ -821,6 +823,7 @@ fn settle_autofix(
                 )
                 .into());
             }
+            let report = rescan_after_commit(svc, kb_id, &sha, cancel)?;
             Ok(LintResult {
                 report,
                 commit_sha: Some(sha),
@@ -838,6 +841,43 @@ fn settle_autofix(
         )),
         Err(e) => Err(repo.abort_after_failure(txn, "lint autofix", e)),
     }
+}
+
+/// The successful page writes in a sub-agent run, which is what an autofix
+/// reports as `fixes_applied`. Which tools write a page is
+/// [`kb_tools::writes_a_page`]'s answer, not a name spelled here.
+fn page_writes(events: &[SubAgentEvent]) -> usize {
+    events
+        .iter()
+        .filter(|e| {
+            matches!(e, SubAgentEvent::ToolResult { name, ok: true, .. }
+                if kb_tools::writes_a_page(name))
+        })
+        .count()
+}
+
+/// Scan the base again once the autofix is committed, with the scan the lint
+/// itself ran, so the result reports what remains (rq2-027).
+///
+/// The report handed to the sub-agent describes the base before the fix, and
+/// returning it as the result told the person every finding was still there
+/// while the commit said otherwise. A scan that fails here fails after the
+/// commit, so it is reported as committed work, sha included, rather than as a
+/// lint that changed nothing.
+fn rescan_after_commit(
+    svc: &KnowledgeService,
+    kb_id: &str,
+    sha: &str,
+    cancel: Option<&tokio_util::sync::CancellationToken>,
+) -> Result<LintReport> {
+    scan_with_cancellation(&paths::kb_root(svc.root(), kb_id), cancel).map_err(|error| {
+        KnowledgeWriteFailure::committed(
+            "lint autofix",
+            sha,
+            error.context("re-scanning the base after lint committed"),
+        )
+        .into()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1758,6 +1798,124 @@ mod tests {
         assert!(
             !log.iter().any(|e| e.kind == ChangeKind::Lint),
             "no lint commit may appear in the change log; log: {log:?}"
+        );
+    }
+
+    /// rq2-027. An autofix that rewrote a page with the typed writer reported
+    /// `fixes_applied: 0` (only `kb_write_page` was counted), and its terminal
+    /// frame carried the report the run STARTED from, so it listed the finding
+    /// it had just fixed. Both now describe the base as it stands.
+    #[tokio::test]
+    async fn an_autofix_counts_concept_writes_and_reports_what_remains() {
+        use crate::knowledge::biookf::lint::{RULE_PREDICATE_INVALID, RULE_TYPE_INVALID};
+        use crate::knowledge::subagent::kb_tools::WRITE_CONCEPT;
+        use crate::knowledge::subagent::loop_::{Completer, LlmMessage, LlmReply, LlmToolCall};
+
+        /// Fixes the predicate with the typed writer, then stops.
+        struct FixesThePredicate {
+            replies: tokio::sync::Mutex<Vec<LlmReply>>,
+        }
+
+        #[async_trait::async_trait]
+        impl Completer for FixesThePredicate {
+            async fn complete(
+                &self,
+                _system: &str,
+                _messages: &[LlmMessage],
+                _tools: &[rmcp::model::Tool],
+            ) -> anyhow::Result<LlmReply> {
+                let mut replies = self.replies.lock().await;
+                anyhow::ensure!(!replies.is_empty(), "the mock ran out of replies");
+                Ok(replies.remove(0))
+            }
+        }
+
+        let (_dir, svc) = svc_in(KbFormat::Biookf);
+        let kb = svc.root().join("k");
+        write(
+            &kb,
+            "knowledge/dataset/drugbank.md",
+            "---\ntype: Dataset\nidentifier: DrugBank\nxref: [infores:drugbank]\n---\n\n# DrugBank\n",
+        );
+        write(
+            &kb,
+            "knowledge/disease/headache.md",
+            "---\ntype: Disease\nidentifier: Headache\n---\n\nSee [[Aspirin]].\n",
+        );
+        write(
+            &kb,
+            "knowledge/molecule/aspirin.md",
+            &typed_page("Molecule", "Aspirin", &[("heals", "Headache")]),
+        );
+        write(
+            &kb,
+            "knowledge/gene/badgene.md",
+            "---\ntype: Spaceship\nidentifier: BADGENE\n---\n\n# BADGENE\n",
+        );
+        let before = scan(&kb).unwrap();
+        assert!(
+            before.diagnostics.has(RULE_PREDICATE_INVALID),
+            "{:?}",
+            rules(&before)
+        );
+        assert!(
+            before.diagnostics.has(RULE_TYPE_INVALID),
+            "{:?}",
+            rules(&before)
+        );
+
+        let fix = LlmReply {
+            text: String::new(),
+            tool_calls: vec![LlmToolCall {
+                id: "fix-1".into(),
+                name: WRITE_CONCEPT.into(),
+                args: serde_json::json!({
+                    "type": "Molecule",
+                    "identifier": "Aspirin",
+                    "path": "knowledge/molecule/aspirin.md",
+                    "edges": [{
+                        "predicate": "treats",
+                        "object": "Headache",
+                        "knowledge_level": "knowledge_assertion",
+                        "agent_type": "text_mining_agent",
+                        "primary_source": "DrugBank",
+                    }],
+                }),
+            }],
+        };
+        let done = LlmReply {
+            text: "Fixed the predicate.".into(),
+            tool_calls: Vec::new(),
+        };
+        let result = lint(
+            &svc,
+            LintArgs {
+                kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
+                completer: Some(Box::new(FixesThePredicate {
+                    replies: tokio::sync::Mutex::new(vec![fix, done]),
+                })),
+                autofix: true,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(result.commit_sha.is_some(), "the fix must commit");
+        assert_eq!(result.fixes_applied, 1, "the typed write is a fix");
+        assert!(
+            !result.report.diagnostics.has(RULE_PREDICATE_INVALID),
+            "the report must not list the finding the autofix fixed: {:?}",
+            rules(&result.report)
+        );
+        assert!(
+            result.report.diagnostics.has(RULE_TYPE_INVALID),
+            "the report must still list what the autofix left: {:?}",
+            rules(&result.report)
         );
     }
 

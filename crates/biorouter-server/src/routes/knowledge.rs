@@ -1802,7 +1802,9 @@ pub async fn ingest(
         };
         let outcome = match ingest_macro::ingest(&svc, args).await {
             Ok(r) => Ok(serde_json::to_value(&r).unwrap_or_default()),
-            Err(e) => Err(e.to_string()),
+            // The whole chain, never only the outermost context: this is what
+            // the person reads in the error frame (rq2-029).
+            Err(e) => Err(format!("{e:#}")),
         };
         let _ = result_tx.send(outcome).await;
     });
@@ -1917,7 +1919,7 @@ pub async fn ingest_conversation(
         .await
         {
             Ok(r) => Ok(serde_json::to_value(&r).unwrap_or_default()),
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(format!("{e:#}")),
         };
         let _ = result_tx.send(outcome).await;
     });
@@ -1977,7 +1979,7 @@ pub async fn query_kb(
         };
         let outcome = match query_macro::query(&svc, args).await {
             Ok(r) => Ok(serde_json::to_value(&r).unwrap_or_default()),
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(format!("{e:#}")),
         };
         let _ = result_tx.send(outcome).await;
     });
@@ -2001,6 +2003,8 @@ pub async fn query_kb(
 /// Each of those is a stable rule id (`kb.` for hygiene, `okf.` and `biookf.`
 /// for the format layers), a severity, the subject it is about and a message;
 /// a consumer matches on `rule` and never on `message`, which is prose.
+/// After an autofix that committed, the report is a fresh scan of the committed
+/// base, so it lists what the fix left rather than what it started from.
 ///
 /// Both schemas are published under `components.schemas` rather than as this
 /// response's body, because the body is an event stream and typing it as JSON
@@ -2066,7 +2070,7 @@ pub async fn lint(
         };
         let outcome = match lint_macro::lint(&svc, args).await {
             Ok(r) => Ok(serde_json::to_value(&r).unwrap_or_default()),
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(format!("{e:#}")),
         };
         let _ = result_tx.send(outcome).await;
     });
@@ -2116,6 +2120,8 @@ fn parse_source_input(v: &serde_json::Value) -> anyhow::Result<convert::SourceIn
     responses(
         (status = 200, description = "Source ingested", body = RawSourceResponse),
         (status = 400, description = "Bad request"),
+        (status = 422, description = "The source could not be read, such as a corrupt PDF; \
+                                      the body gives the converter's reason"),
         (status = 500, description = "Internal error"),
     )
 )]
@@ -2203,12 +2209,25 @@ pub async fn add_raw_source(
     let res = svc
         .add_raw_source(&id, input, None)
         .await
-        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+        .map_err(raw_source_http_error)?;
 
     Ok(Json(RawSourceResponse {
         source_id: res.source_id,
         source_md_path: res.source_md_path,
     }))
+}
+
+/// `POST /raw`'s failure. A source no converter could read is the person's
+/// file, so it is a 422 carrying the converter's reason; anything else is the
+/// daemon's, so a 500. Both print the whole cause chain (rq2-029: every
+/// failure, a corrupt upload included, used to be a 500).
+fn raw_source_http_error(error: anyhow::Error) -> (StatusCode, String) {
+    let status = if convert::UnreadableSource::is(&error) {
+        StatusCode::UNPROCESSABLE_ENTITY
+    } else {
+        StatusCode::INTERNAL_SERVER_ERROR
+    };
+    (status, format!("{error:#}"))
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

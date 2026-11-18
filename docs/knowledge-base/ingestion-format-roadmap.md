@@ -98,6 +98,13 @@ Lint (`macros/lint.rs`: deterministic scan plus optional sub-agent autofix), que
 operate downstream of `source.md` and need **no changes** for new formats — that is the
 payoff of the convert-then-digest design.
 
+An autofix's result reports what remains after the fix: once it commits, the lint scans the
+base again and returns that scan as `report`, and `fixes_applied` counts every page the
+sub-agent wrote with `kb_write_page` or `kb_write_concept`. A file no converter can read,
+such as a corrupt PDF, fails as an unreadable source (`convert::UnreadableSource`):
+`POST /knowledge/bases/{id}/raw` answers 422 with the converter's reason, and an ingest
+stream's error frame names that reason.
+
 ---
 
 ## Tool research summary

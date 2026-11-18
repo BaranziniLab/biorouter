@@ -374,16 +374,27 @@ async fn stage_raw_source(
             let retained = error
                 .downcast_ref::<RawSourceRefreshFailure>()
                 .map(|failure| failure.written.clone());
+            // These errors reach the person as the digest's error frame, so the
+            // words are theirs. The internal label this used to add,
+            // "add_raw_source", was all an ingest route printed and hid the
+            // cause, a corrupt PDF included (rq2-029).
             if let Some(written) = retained {
+                // Read and saved; only the refresh after it failed, and the
+                // failure's own sentence says so.
                 return Err(retained_raw_failure(
                     &written.source_id,
                     written.commit_sha.as_deref(),
                     IngestFailurePhase::NotStarted,
                     None,
-                    error.context("add_raw_source"),
+                    error,
                 ));
             }
-            Err(error.context("add_raw_source"))
+            // An unreadable source already says so, with its reason
+            // (`convert::UnreadableSource`).
+            if crate::knowledge::convert::UnreadableSource::is(&error) {
+                return Err(error);
+            }
+            Err(error.context("Could not add this source to the knowledge base"))
         }
     }
 }
@@ -1317,6 +1328,34 @@ mod tests {
             event_sink: None,
             cancel: None,
         }
+    }
+
+    /// rq2-029. A corrupt PDF fails before the sub-agent starts, and the error
+    /// a route shows says why in the person's words. It used to read
+    /// `add_raw_source` at its outermost layer, which is all a route printed.
+    #[tokio::test]
+    async fn an_unreadable_source_fails_the_ingest_with_its_cause() {
+        let (_dir, svc) = biookf_svc();
+        // No replies: the model must never be asked about a file it cannot see.
+        let mut args = biookf_args(MockCompleter::new(Vec::new()));
+        args.source = SourceInput::File {
+            bytes: b"%PDF-1.7\nthis is not a pdf body at all\n%%EOF\n".to_vec(),
+            filename: "broken.pdf".into(),
+            mime: Some("application/pdf".into()),
+        };
+        let error = ingest(&svc, args)
+            .await
+            .expect_err("a corrupt PDF cannot be ingested");
+        let outermost = error.to_string();
+        assert!(
+            outermost.starts_with("Could not read this source: ")
+                && outermost.contains("PDF text extraction failed"),
+            "{outermost}"
+        );
+        assert!(
+            !format!("{error:#}").contains("add_raw_source"),
+            "{error:#}"
+        );
     }
 
     // -------------------------------------------------------------------------
