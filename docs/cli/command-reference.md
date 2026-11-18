@@ -915,6 +915,8 @@ Stop the turn a session is currently running. This is the same action as the Sto
 
 Cancelling is idempotent: a session with no turn in flight is not an error, it reports `nothing to cancel: this session had no turn in flight`.
 
+A turn it stops keeps your message and one note that the turn was cancelled, the same note the desktop's Stop and Ctrl-C in a terminal chat leave.
+
 **Subagents.** A cancel also stops every subagent the chat started that still has work in flight
 (a delegated run, running or queued; a later turn in its tab; a continuation waiting to start),
 even when the chat itself was idle, and prints a second line, "Also stopped 2 subagents this chat
@@ -2038,9 +2040,13 @@ start of the message. The chip is only how the composer draws it: the message is
 sent as `/bug <text>`.
 
 The TUI and classic CLI additionally support `/help` (alias `/?`), `/exit` (alias `/quit`),
-`/rename <name>`, `/diverge [name]`, `/dictate` (record into the prompt, same as Ctrl+T; also
+`/rename <name>`, `/diverge [name]`, `/model`, `/dictate` (record into the prompt, same as Ctrl+T; also
 `status` and `retry`) and `/dictionary add|review|scan`; see
-[Dictation in terminal chats](#dictation-in-terminal-chats). The TUI also has `/decisions`, an overlay listing the
+[Dictation in terminal chats](#dictation-in-terminal-chats). `/model` shows the model the chat runs on, by its name
+(`Model: Claude Haiku 5.5 (Amazon Bedrock).`). A running terminal chat cannot switch its model, so
+`/model` followed by anything prints the command that does, and sends nothing to the model: exit, then run
+`biorouter session --resume --session-id <id> --provider <provider> --model <model>`. That command checks the
+new model against the chat's privacy tier and refuses a public model for a private chat. The TUI also has `/decisions`, an overlay listing the
 chat's decision-model calls by source and by recent turn; ↑↓ selects a source, Enter shows its
 last calls and Esc goes back. In the TUI and the classic CLI a turn's decision calls show as one
 line per source (`◇ Monitor 'Form reached': 18 checks this turn · 18 quiet · last P 0.31`), never
@@ -2109,7 +2115,7 @@ biorouter session --name use-custom-theme
 
 **Session Control:**
 
-- **`Ctrl+C`** - Interrupt the current request
+- **`Ctrl+C`** - Cancel the current turn. The chat keeps your message and stores one note that you cancelled the turn, which you see on screen and the model reads with your next message. Cancel at a tool approval ends the turn the same way. A turn that had already finished keeps no note.
 - **`Ctrl+J`** - Add a newline
 - **`Ctrl+T`** - Start or stop dictation into the prompt. Change the letter with `BIOROUTER_CLI_DICTATION_KEY`; an empty value turns the chord off, and `/dictate` still works. See [Dictation in terminal chats](#dictation-in-terminal-chats).
 

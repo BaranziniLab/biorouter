@@ -557,6 +557,55 @@ impl CliSession {
         &self.session_id
     }
 
+    /// The line `/model` prints, in the classic REPL and the TUI alike. A running
+    /// terminal chat never switches its model: the resume door is the one that
+    /// does, and it runs the privacy bind gate.
+    pub(super) async fn model_command_line(&self, command: input::ModelCommand) -> String {
+        let saved = self.ephemeral_store_dir.is_none();
+        match command {
+            input::ModelCommand::Show => {
+                let words = self.model_words().await;
+                input::model_status_line(
+                    words
+                        .as_ref()
+                        .map(|(model, provider)| (model.as_str(), provider.as_deref())),
+                    &self.session_id,
+                    saved,
+                )
+            }
+            input::ModelCommand::Switch => input::model_switch_note(&self.session_id, saved),
+        }
+    }
+
+    /// The model this chat's turns run on, by its display name ("Claude Haiku
+    /// 5.5", never `us.anthropic.claude-haiku-5-5`), and its provider's display
+    /// name when the catalog lists one. `None` when no model is bound.
+    async fn model_words(&self) -> Option<(String, Option<String>)> {
+        let provider = self.agent.provider().await.ok()?;
+        let key = provider.get_name().to_string();
+        let model = biorouter::providers::model_display::model_display_name(
+            &crate::commands::decide::model_name(&key, &provider.get_model_config().model_name),
+        );
+        let provider = biorouter::providers::providers()
+            .await
+            .into_iter()
+            .find(|(metadata, _)| metadata.name == key)
+            .map(|(metadata, _)| metadata.display_name)
+            .filter(|name| !name.trim().is_empty());
+        Some((model, provider))
+    }
+
+    /// After a turn the person cancelled before it finished, in either view:
+    /// store the one cancel note ([`Agent::record_turn_stopped`], which also
+    /// retires a retry note nothing answered), keep it in this chat's copy of
+    /// the conversation, and return its text (the one line the person is shown
+    /// about the cancel) with the stored row, `None` when the store refused it.
+    /// The person's message is not taken back: the stored chat keeps it, and
+    /// their next message decides what happens to it.
+    pub(super) async fn record_cancelled_turn(&mut self) -> (String, Option<Message>) {
+        record_cancelled_turn_in(&self.agent, &self.session_id, &mut self.messages).await
+    }
+
     /// Parse a stdio extension command string into an ExtensionConfig
     /// Format: "ENV1=val1 ENV2=val2 command args..."
     pub fn parse_stdio_extension(extension_command: &str) -> Result<ExtensionConfig> {
@@ -1050,14 +1099,15 @@ impl CliSession {
             }
             InputResult::ShowMode => {
                 history.save(editor);
-                let mode = Config::global()
-                    .get_biorouter_mode()
-                    .unwrap_or(BioRouterMode::Auto);
-                output::biorouter_mode_message(&input::mode_status_line(mode));
+                self.handle_show_mode();
             }
             InputResult::TuiOnly(command) => {
                 history.save(editor);
                 println!("{}", input::tui_only_note(command, &self.session_id));
+            }
+            InputResult::Model(command) => {
+                history.save(editor);
+                println!("{}", self.model_command_line(command).await);
             }
             InputResult::Plan(options) => {
                 self.handle_plan_mode(options).await?;
@@ -1089,6 +1139,13 @@ impl CliSession {
             }
         }
         Ok(())
+    }
+
+    fn handle_show_mode(&self) {
+        let mode = Config::global()
+            .get_biorouter_mode()
+            .unwrap_or(BioRouterMode::Auto);
+        output::biorouter_mode_message(&input::mode_status_line(mode));
     }
 
     /// `/dictionary add <term>` in the classic REPL: add a term from this chat, under
@@ -1812,6 +1869,10 @@ impl CliSession {
         // and every release below prints nothing — in the structured modes.
         let mut shell_order = shell_output_order::ShellOutputOrder::new();
         let cancel_token_clone = cancel_token.clone();
+        // A failure that ends the turn cancels its token as well. Any other
+        // cancel is the person's (Ctrl-C, or Cancel at a prompt the turn waits
+        // on), and only that one leaves the cancel note.
+        let mut ended_by_failure = false;
         let mut computer_use_challenge = None;
         let mut computer_use_poll = tokio::time::interval(std::time::Duration::from_millis(500));
 
@@ -1909,13 +1970,9 @@ impl CliSession {
                                 )?;
 
                                 if permission == Permission::Cancel {
-                                    // #40: prompt-adjacent status stays off a structured stdout
-                                    // (the prompt itself already renders on stderr).
-                                    if is_json_mode || is_stream_json_mode {
-                                        eprintln!("Tool call cancelled. Returning to chat...");
-                                    } else {
-                                        output::render_text("Tool call cancelled. Returning to chat...", Some(Color::Yellow), true);
-                                    }
+                                    // The person cancelled the turn here. The cancel
+                                    // note the turn's end stores is the one line
+                                    // about it.
                                     let mut response_message = Message::user();
                                     response_message.content.push(MessageContent::tool_response(
                                         id,
@@ -2049,28 +2106,25 @@ impl CliSession {
                                                 &self.output_format,
                                                 &self.active_session_store(),
                                             ));
+                                            ended_by_failure = true;
                                             cancel_token_clone.cancel();
                                             drop(stream);
-                                            if let Err(e) = self.handle_interrupted_messages(false).await {
+                                            if let Err(e) = self.handle_interrupted_messages().await {
                                                 eprintln!("Error handling interruption: {}", e);
                                             }
                                             break;
                                         }
                                     }
                                     Ok(None) => {
-                                        // Prompt-adjacent status stays off a structured
-                                        // stdout (#40), like the confirmation Cancel path.
-                                        if is_json_mode || is_stream_json_mode {
-                                            eprintln!("Information request cancelled.");
-                                        } else {
-                                            output::render_text("Information request cancelled.", Some(Color::Yellow), true);
-                                        }
+                                        // The person cancelled the request, and with it
+                                        // the turn: the cancel note is the one line.
                                         cancel_token_clone.cancel();
                                         drop(stream);
                                         break;
                                     }
                                     Err(e) => {
                                         output::render_error(&format!("Failed to collect input: {}", e));
+                                        ended_by_failure = true;
                                         cancel_token_clone.cancel();
                                         drop(stream);
                                         break;
@@ -2208,10 +2262,11 @@ impl CliSession {
                                 &self.output_format,
                                 &self.active_session_store(),
                             ));
+                            ended_by_failure = true;
                             cancel_token_clone.cancel();
                             drop(stream);
                             print_shell_output_lines(shell_order.finish_all(), &mut progress_bars, interactive);
-                            if let Err(e) = self.handle_interrupted_messages(false).await {
+                            if let Err(e) = self.handle_interrupted_messages().await {
                                 eprintln!("Error handling interruption: {}", e);
                             } else if !is_stream_json_mode {
                                 // render_error writes to stderr, so this prose can
@@ -2232,29 +2287,47 @@ impl CliSession {
                     self.agent.extension_manager.computer_use.revoke();
                     drop(stream);
                     print_shell_output_lines(shell_order.finish_all(), &mut progress_bars, interactive);
-                    if let Err(e) = self.handle_interrupted_messages(true).await {
-                        eprintln!("Error handling interruption: {}", e);
-                    }
                     break;
                 }
             }
         }
 
-        // A Stop (or a failed stream) while a provider retry waits leaves the
-        // retry's note the last row the model reads, and the next message would
-        // be sent behind it. The daemon settles that in `settle_interrupted_turn`;
-        // the CLI settles no turn, so it retires the note itself. Every exit that
-        // abandons the turn has cancelled the token, including the commonest: the
-        // reply loop sees the Stop and its stream ends on its own (`None`).
-        if cancel_token_clone.is_cancelled() {
-            self.agent
-                .retire_unanswered_retry_note(&self.session_id)
-                .await;
-        }
-
         // Whatever is still held (a call that never answered) belongs to this
         // turn and prints before it ends.
         print_shell_output_lines(shell_order.finish_all(), &mut progress_bars, interactive);
+
+        // Every exit that abandons the turn has cancelled the token, including
+        // the commonest: the reply loop sees the Stop and its stream ends on its
+        // own (`None`). A turn that finished before the token tripped left the
+        // loop already and leaves nothing here: its reply is whole.
+        if cancel_token_clone.is_cancelled() {
+            if ended_by_failure {
+                // A failed stream while a provider retry waits leaves the retry's
+                // note the last row the model reads, and the next message would
+                // be sent behind it. The daemon settles that in
+                // `settle_interrupted_turn`; the CLI settles no turn, so it
+                // retires the note itself.
+                self.agent
+                    .retire_unanswered_retry_note(&self.session_id)
+                    .await;
+            } else {
+                // CANCEL-NOTE: the person cancelled the turn before it finished.
+                // It leaves the one note every surface leaves, which also retires
+                // an unanswered retry note, and the person's message stays.
+                //
+                // Field by field: on some paths the stream still borrows
+                // `self.agent` here.
+                answer_interrupted_tool_calls(&mut self.messages);
+                if interactive {
+                    output::hide_thinking();
+                }
+                let _ = progress_bars.hide();
+                let (text, note) =
+                    record_cancelled_turn_in(&self.agent, &self.session_id, &mut self.messages)
+                        .await;
+                self.render_cancel_note(&text, note.as_ref());
+            }
+        }
 
         self.emit_final_output().await
     }
@@ -2347,7 +2420,35 @@ impl CliSession {
         }
     }
 
-    async fn handle_interrupted_messages(&mut self, interrupt: bool) -> Result<()> {
+    /// The cancel note's words, the one line about a cancelled turn: drawn as
+    /// the inline notice it is in text mode, on stderr where stdout is a
+    /// structured document. A stream-json consumer also gets the stored note as
+    /// a message, as it gets every other row of the turn.
+    fn render_cancel_note(&self, text: &str, note: Option<&Message>) {
+        if self.output_format == "stream-json" {
+            if let Some(note) = note {
+                emit_stream_event(&StreamEvent::Message {
+                    message: note.clone(),
+                });
+            }
+        }
+        if Self::interruption_prose_belongs_on_stderr(&self.output_format) {
+            eprintln!("{text}");
+        } else {
+            output::render_message(
+                &Message::assistant().with_system_notification(
+                    biorouter::conversation::message::SystemNotificationType::InlineMessage,
+                    text,
+                ),
+                self.debug,
+            );
+        }
+    }
+
+    /// After a failure ended the turn (a cancel is
+    /// [`Self::record_cancelled_turn`]'s): answer a tool call left waiting, or
+    /// take back a message the model never answered, and say so.
+    async fn handle_interrupted_messages(&mut self) -> Result<()> {
         // First, get any tool requests from the last message if it exists
         let tool_requests = self
             .messages
@@ -2380,11 +2481,7 @@ impl CliSession {
                 })
                 .unwrap_or_else(|| "tool".to_string());
 
-            let notification = if interrupt {
-                "Interrupted by the user to make a correction".to_string()
-            } else {
-                "An uncaught error happened during tool use".to_string()
-            };
+            let notification = "An uncaught error happened during tool use".to_string();
             for (req_id, _) in &tool_requests {
                 response_message.content.push(MessageContent::tool_response(
                     req_id.clone(),
@@ -2577,6 +2674,81 @@ impl CliSession {
 
     fn push_message(&mut self, message: Message) {
         self.messages.push(message);
+    }
+}
+
+/// [`CliSession::record_cancelled_turn`], over the session's fields, so the
+/// classic turn loop can call it while its reply stream still borrows the agent.
+async fn record_cancelled_turn_in(
+    agent: &Agent,
+    session_id: &str,
+    messages: &mut Conversation,
+) -> (String, Option<Message>) {
+    let note = agent.record_turn_stopped(session_id).await;
+    let text = note.as_ref().map_or_else(
+        // The store refused the row; the person is still told.
+        || biorouter::agents::stopped_turn::TURN_STOPPED_NOTICE.to_string(),
+        cancel_note_text,
+    );
+    if let Some(note) = &note {
+        messages.push(note.clone());
+    }
+    (text, note)
+}
+
+/// A turn the person cancelled while tool calls it made were waiting: answer
+/// them in the chat's copy of the conversation, so the copy stays one a
+/// provider would take (every tool request has its result). The cancel note is
+/// the one line about the cancel, so nothing is printed or added here.
+fn answer_interrupted_tool_calls(messages: &mut Conversation) {
+    let ids: Vec<String> = messages
+        .last()
+        .filter(|msg| msg.role == rmcp::model::Role::Assistant)
+        .map_or(Vec::new(), |msg| {
+            msg.content
+                .iter()
+                .filter_map(|content| match content {
+                    MessageContent::ToolRequest(req) => Some(req.id.clone()),
+                    _ => None,
+                })
+                .collect()
+        });
+    if ids.is_empty() {
+        return;
+    }
+    let mut response = Message::user();
+    for id in ids {
+        response.content.push(MessageContent::tool_response(
+            id,
+            Err(ErrorData {
+                code: ErrorCode::INTERNAL_ERROR,
+                message: std::borrow::Cow::from("Cancelled by the person before it finished"),
+                data: None,
+            }),
+        ));
+    }
+    messages.push(response);
+}
+
+/// The words of a stored cancel note, whichever way the agent stores it: as
+/// text the model reads, or as an inline notice. The note's own constant when it
+/// holds neither, so the person is always told.
+pub(crate) fn cancel_note_text(note: &Message) -> String {
+    let words: Vec<&str> = note
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            MessageContent::Text(text) => Some(text.text.as_str()),
+            MessageContent::SystemNotification(notice) => Some(notice.msg.as_str()),
+            _ => None,
+        })
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .collect();
+    if words.is_empty() {
+        biorouter::agents::stopped_turn::TURN_STOPPED_NOTICE.to_string()
+    } else {
+        words.join("\n")
     }
 }
 
@@ -3512,7 +3684,7 @@ mod tests {
     /// A `CliSession` over a private store rooted at `manager`'s directory,
     /// with its session row already created — the shape of a `--no-session`
     /// run, minus extensions and provider.
-    async fn test_cli_session(
+    pub(super) async fn test_cli_session(
         manager: std::sync::Arc<biorouter::session::SessionManager>,
         output_format: &str,
     ) -> CliSession {
@@ -3545,6 +3717,216 @@ mod tests {
             output_format.to_string(),
         )
         .await
+    }
+
+    /// A model that is asked and never answers: a turn the person stops while
+    /// the model is still working. `asked` is notified on each request.
+    pub(super) struct UnansweringModel {
+        pub(super) asked: Arc<tokio::sync::Notify>,
+    }
+
+    #[async_trait::async_trait]
+    impl Provider for UnansweringModel {
+        fn metadata() -> biorouter::providers::base::ProviderMetadata {
+            biorouter::providers::base::ProviderMetadata::empty()
+        }
+        fn get_name(&self) -> &str {
+            "unanswering-test"
+        }
+        fn get_model_config(&self) -> biorouter::model::ModelConfig {
+            biorouter::model::ModelConfig::new_or_fail("test-model")
+        }
+        async fn complete_with_model(
+            &self,
+            _model_config: &biorouter::model::ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<
+            (Message, biorouter::providers::base::ProviderUsage),
+            biorouter::providers::errors::ProviderError,
+        > {
+            self.asked.notify_one();
+            std::future::pending().await
+        }
+    }
+
+    /// A model that answers every request at once with [`ANSWER`].
+    struct AnsweringModel;
+
+    const ANSWER: &str = "Foxes are quick.";
+
+    #[async_trait::async_trait]
+    impl Provider for AnsweringModel {
+        fn metadata() -> biorouter::providers::base::ProviderMetadata {
+            biorouter::providers::base::ProviderMetadata::empty()
+        }
+        fn get_name(&self) -> &str {
+            "answering-test"
+        }
+        fn get_model_config(&self) -> biorouter::model::ModelConfig {
+            biorouter::model::ModelConfig::new_or_fail("test-model")
+        }
+        async fn complete_with_model(
+            &self,
+            _model_config: &biorouter::model::ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> Result<
+            (Message, biorouter::providers::base::ProviderUsage),
+            biorouter::providers::errors::ProviderError,
+        > {
+            Ok((
+                Message::assistant().with_text(ANSWER),
+                biorouter::providers::base::ProviderUsage::new(
+                    "test-model".to_string(),
+                    biorouter::providers::base::Usage::new(Some(10), Some(5), Some(15)),
+                ),
+            ))
+        }
+    }
+
+    /// Whether `message` is the note a cancelled turn leaves, however the agent
+    /// stores it (text the model reads, or an inline notice).
+    pub(super) fn is_cancel_note(message: &Message) -> bool {
+        let note = biorouter::agents::stopped_turn::TURN_STOPPED_NOTICE;
+        message.content.iter().any(|content| match content {
+            MessageContent::Text(text) => text.text.trim() == note,
+            MessageContent::SystemNotification(notice) => notice.msg.trim() == note,
+            _ => false,
+        })
+    }
+
+    /// What the store holds for `session_id`, in order.
+    pub(super) async fn stored_messages(
+        manager: &biorouter::session::SessionManager,
+        session_id: &str,
+    ) -> Vec<Message> {
+        manager
+            .get_session(session_id, true)
+            .await
+            .unwrap()
+            .conversation
+            .map(|conversation| conversation.messages().to_vec())
+            .unwrap_or_default()
+    }
+
+    /// CANCEL-NOTE, the classic REPL's door: a turn the person cancels before it
+    /// finishes leaves the one note every surface leaves, stored where the model
+    /// and the person read it, and the person's message stays. The REPL used to
+    /// drop the stream, store nothing, print its own "Interrupted before the model
+    /// replied and removed the last message." and take the message out of its
+    /// copy of the chat (while the store kept it).
+    #[tokio::test]
+    async fn a_cancelled_classic_turn_stores_one_cancel_note_and_keeps_the_prompt() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = std::sync::Arc::new(biorouter::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let mut session = test_cli_session(manager.clone(), "text").await;
+        let asked = Arc::new(tokio::sync::Notify::new());
+        session
+            .agent
+            .update_provider(
+                Arc::new(UnansweringModel {
+                    asked: asked.clone(),
+                }),
+                &session.session_id,
+            )
+            .await
+            .unwrap();
+        let prompt = "Write one sentence about foxes.";
+        session.push_message(Message::user().with_text(prompt));
+
+        // The person's Ctrl-C, once the model has been asked.
+        let cancel = CancellationToken::new();
+        let stopper = {
+            let cancel = cancel.clone();
+            tokio::spawn(async move {
+                asked.notified().await;
+                cancel.cancel();
+            })
+        };
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            session.process_agent_response(false, cancel),
+        )
+        .await
+        .expect("the cancelled turn ends")
+        .unwrap();
+        stopper.await.unwrap();
+
+        let stored = stored_messages(&manager, &session.session_id).await;
+        assert_eq!(
+            stored.iter().filter(|m| is_cancel_note(m)).count(),
+            1,
+            "one cancel note is stored: {stored:#?}"
+        );
+        let prompt_at = stored
+            .iter()
+            .position(|m| m.role == rmcp::model::Role::User && m.as_concat_text() == prompt)
+            .unwrap_or_else(|| panic!("the stored chat keeps the prompt: {stored:#?}"));
+        let note_at = stored.iter().position(is_cancel_note).unwrap();
+        assert!(
+            prompt_at < note_at,
+            "the note follows the prompt: {stored:#?}"
+        );
+
+        let local = session.messages.messages();
+        assert!(
+            local
+                .iter()
+                .any(|m| m.role == rmcp::model::Role::User && m.as_concat_text() == prompt),
+            "the chat's own copy keeps the prompt: {local:#?}"
+        );
+        assert_eq!(
+            local.iter().filter(|m| is_cancel_note(m)).count(),
+            1,
+            "and the one note: {local:#?}"
+        );
+    }
+
+    /// A turn that finished before the person's Ctrl-C arrived is whole: its
+    /// reply is stored, and no cancel note is.
+    #[tokio::test]
+    async fn a_classic_turn_that_finished_before_the_cancel_stores_no_note() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = std::sync::Arc::new(biorouter::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let mut session = test_cli_session(manager.clone(), "text").await;
+        session
+            .agent
+            .update_provider(Arc::new(AnsweringModel), &session.session_id)
+            .await
+            .unwrap();
+        let prompt = "Write one sentence about foxes.";
+        session.push_message(Message::user().with_text(prompt));
+
+        let cancel = CancellationToken::new();
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            session.process_agent_response(false, cancel.clone()),
+        )
+        .await
+        .expect("the turn ends")
+        .unwrap();
+        // Too late: the turn is over.
+        cancel.cancel();
+
+        let stored = stored_messages(&manager, &session.session_id).await;
+        assert!(
+            stored
+                .iter()
+                .any(|m| m.role == rmcp::model::Role::Assistant && m.as_concat_text() == ANSWER),
+            "the reply is stored: {stored:#?}"
+        );
+        assert!(
+            !stored.iter().any(is_cancel_note),
+            "a finished turn leaves no cancel note: {stored:#?}"
+        );
+        assert!(!session.messages.messages().iter().any(is_cancel_note));
     }
 
     /// W1-24: a backend slash command (`/effort deep`) yields the person's own prompt
@@ -3986,7 +4368,7 @@ mod tests {
             }),
         ));
         session.messages.push(tool_response);
-        session.handle_interrupted_messages(false).await.unwrap();
+        session.handle_interrupted_messages().await.unwrap();
 
         // The one thing emit_final_output prints on stdout in json mode.
         let document = session.build_json_document().await.unwrap();

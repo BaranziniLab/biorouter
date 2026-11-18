@@ -20,6 +20,8 @@ pub enum InputResult {
     /// A command only the full-screen chat runs (`/decisions`, `/subagents`, `/attach`):
     /// print the one line [`tui_only_note`] writes, and spend no model turn.
     TuiOnly(&'static str),
+    /// `/model`, answered here and never sent to the model (see [`model_command`]).
+    Model(ModelCommand),
     Plan(PlanCommandOptions),
     EndPlan,
     Clear,
@@ -51,6 +53,15 @@ pub enum InputResult {
     /// `/dictionary scan`: find words in the person's recent chats (owner, 2026-11-13).
     #[cfg(feature = "dictation")]
     DictionaryScan,
+}
+
+/// What a `/model` asks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelCommand {
+    /// A bare `/model`: the chat's model, by its display name.
+    Show,
+    /// `/model <anything>`: a running terminal chat cannot switch, so say how to.
+    Switch,
 }
 
 #[derive(Debug)]
@@ -227,6 +238,10 @@ fn handle_slash_command(input: &str) -> Option<InputResult> {
         return Some(InputResult::TuiOnly(command));
     }
 
+    if let Some(command) = model_command(input) {
+        return Some(InputResult::Model(command));
+    }
+
     match input {
         "/mode" => Some(InputResult::ShowMode),
         s if s == "/folder-access" || s.starts_with("/folder-access ") => {
@@ -342,6 +357,62 @@ pub(super) fn tui_only_note(command: &str, session_id: &str) -> String {
         Some((_, route)) => format!("{only} From another terminal: {route} {session_id}"),
         None => only,
     }
+}
+
+/// `/model` as typed (`input` already trimmed): bare, it asks for the chat's
+/// model; with anything after it, to switch. A longer word (`/models`) is not
+/// `/model`. Both views answer it themselves and never send it to the model,
+/// which used to write a switch confirmation of its own (rq2-074).
+pub(super) fn model_command(input: &str) -> Option<ModelCommand> {
+    let rest = input.strip_prefix("/model")?;
+    if rest.is_empty() {
+        Some(ModelCommand::Show)
+    } else if rest.starts_with(char::is_whitespace) {
+        Some(ModelCommand::Switch)
+    } else {
+        None
+    }
+}
+
+/// How a terminal chat changes its model. Not while it runs: the resume door
+/// binds the model, and it checks the new model against the chat's privacy
+/// tier on the way. `saved` is false for a `--no-session` chat, which is never
+/// stored and so cannot be resumed.
+fn model_change_route(session_id: &str, saved: bool) -> String {
+    if saved {
+        format!(
+            "To use another model, exit and run: biorouter session --resume --session-id \
+             {session_id} --provider <provider> --model <model>"
+        )
+    } else {
+        "To use another model, exit and start a chat with: biorouter session --provider \
+         <provider> --model <model>"
+            .to_string()
+    }
+}
+
+/// What a bare `/model` prints: the chat's model by its display name (and its
+/// provider's, when the catalog has one), then how to use another. `None` when
+/// no model is bound.
+pub(super) fn model_status_line(
+    model: Option<(&str, Option<&str>)>,
+    session_id: &str,
+    saved: bool,
+) -> String {
+    let named = match model {
+        Some((model, Some(provider))) => format!("{model} ({provider})"),
+        Some((model, None)) => model.to_string(),
+        None => "none yet".to_string(),
+    };
+    format!("Model: {named}. {}", model_change_route(session_id, saved))
+}
+
+/// What `/model <anything>` prints, as one line.
+pub(super) fn model_switch_note(session_id: &str, saved: bool) -> String {
+    format!(
+        "A running terminal chat cannot switch its model. {}",
+        model_change_route(session_id, saved)
+    )
 }
 
 /// The `/dictate` and `/dictionary` commands, checked before every other slash command.
@@ -469,6 +540,7 @@ const HELP_ROWS: &[(&str, &str)] = &[
         "/mode [name]",
         "Show the mode, or set it: auto, approve, chat, smart_approve",
     ),
+    ("/model", "Show this chat's model, and how to use another"),
     (
         "/plan [message]",
         "Enter plan mode, then optionally act on the plan",
@@ -866,6 +938,82 @@ mod tests {
         assert_eq!(note.lines().count(), 1);
         assert!(tui_only_note("/attach", "20261116_3")
             .ends_with("biorouter session subagents 20261116_3"));
+    }
+
+    /// rq2-074/075 (PV-01): the classic REPL had no `/model` arm, so `/model claude_code
+    /// claude-haiku-5-5` went to the chat's own model as a prompt, and that model wrote "Model
+    /// switched to claude_code/claude-haiku-5-5" itself. Nothing had switched, but the line
+    /// read as if a private chat now ran on a public model. `/model` is answered here: bare,
+    /// with the chat's model; with anything after it, with the one route that switches (the
+    /// resume door, which runs the privacy bind gate).
+    #[test]
+    fn a_model_command_is_not_sent_to_the_model() {
+        for input in ["/model", "  /model  "] {
+            assert!(
+                matches!(
+                    handle_slash_command(input),
+                    Some(InputResult::Model(ModelCommand::Show))
+                ),
+                "{input:?} must be answered here"
+            );
+        }
+        for input in [
+            "/model claude_code claude-haiku-5-5",
+            "/model   gpt-5.5",
+            "/model claude_code/claude-haiku-5-5",
+        ] {
+            assert!(
+                matches!(
+                    handle_slash_command(input),
+                    Some(InputResult::Model(ModelCommand::Switch))
+                ),
+                "{input:?} must be answered here"
+            );
+        }
+        // A longer word is not `/model`, and `/mode` keeps its own arms.
+        assert!(handle_slash_command("/models").is_none());
+        assert!(handle_slash_command("/modelx claude").is_none());
+        assert!(matches!(
+            handle_slash_command("/mode"),
+            Some(InputResult::ShowMode)
+        ));
+        assert!(matches!(
+            handle_slash_command("/mode approve"),
+            Some(InputResult::BioRouterMode(mode)) if mode == "approve"
+        ));
+
+        let route = "To use another model, exit and run: biorouter session --resume \
+                     --session-id 20261116_3 --provider <provider> --model <model>";
+        let switch = model_switch_note("20261116_3", true);
+        assert_eq!(
+            switch,
+            format!("A running terminal chat cannot switch its model. {route}")
+        );
+        assert_eq!(switch.lines().count(), 1);
+        assert_eq!(
+            model_status_line(
+                Some(("Claude Haiku 5.5", Some("Amazon Bedrock"))),
+                "20261116_3",
+                true
+            ),
+            format!("Model: Claude Haiku 5.5 (Amazon Bedrock). {route}")
+        );
+        assert_eq!(
+            model_status_line(Some(("GPT-5.5", None)), "20261116_3", true),
+            format!("Model: GPT-5.5. {route}")
+        );
+        // A `--no-session` chat is never stored, so nothing can resume it.
+        assert_eq!(
+            model_switch_note("20261116_3", false),
+            "A running terminal chat cannot switch its model. To use another model, exit and \
+             start a chat with: biorouter session --provider <provider> --model <model>"
+        );
+        assert!(model_status_line(None, "20261116_3", true).starts_with("Model: none yet. "));
+
+        assert!(super::super::completion::SLASH_COMMANDS.contains(&"/model"));
+        assert!(HELP_ROWS
+            .iter()
+            .any(|(row, _)| row.split(' ').next() == Some("/model")));
     }
 
     #[cfg(feature = "dictation")]
