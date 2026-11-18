@@ -59,7 +59,7 @@ import SkillsView from './components/skills/SkillsView';
 import KnowledgeView from './components/knowledge/KnowledgeView';
 import DictionaryView from './components/dictionary/DictionaryView';
 import DictionaryTermDoor from './components/dictionary/DictionaryTermDoor';
-import { KnowledgeProvider } from './components/knowledge/KnowledgeContext';
+import { KnowledgeProvider, knowledgeScopeFor } from './components/knowledge/KnowledgeContext';
 import ApplicationsView from './components/applications/ApplicationsView';
 import NotFoundView from './components/NotFoundView';
 import { useRouteFade, View, ViewOptions } from './utils/navigationUtils';
@@ -749,7 +749,7 @@ export function AppInner() {
       <div className="relative w-screen h-screen overflow-hidden bg-background-canvas flex flex-col">
         <div className="titlebar-drag-region" />
         <ChatStreamProvider>
-          <KnowledgeProvider sessionId={chat.sessionId || null}>
+          <KnowledgeProvider sessionId={knowledgeScopeFor(pathname, chat.sessionId)}>
             <Routes>
               <Route path="launcher" element={<LauncherView />} />
               <Route

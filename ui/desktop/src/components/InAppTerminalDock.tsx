@@ -61,6 +61,15 @@ type ProposedDimensions = {
  */
 export const MAX_TERMINAL_PANES = 32;
 
+/**
+ * The line a pane writes when its shell cannot start, in the terminal's own ink.
+ * It is a failure the person can read and act on, not danger, so it carries no
+ * colour: red is kept for real danger (design.md 9.14, rq2-089).
+ */
+function startFailureLine(reason: string): string {
+  return `Could not start terminal: ${reason}`;
+}
+
 function getTerminalSize(fitAddon: FitAddon): ProposedDimensions {
   const proposed = (
     fitAddon as FitAddon & { proposeDimensions?: () => ProposedDimensions | undefined }
@@ -403,7 +412,7 @@ const TerminalPaneView: React.FC<{
         terminalExitedRef.current = true;
         pendingInputRef.current = [];
         pendingRunsRef.current = [];
-        term.writeln(`\x1b[31mCould not start terminal: ${result.error}\x1b[0m`);
+        term.writeln(startFailureLine(result.error));
         return;
       }
       terminalExitedRef.current = false;
@@ -425,7 +434,7 @@ const TerminalPaneView: React.FC<{
 
     start().catch((error) => {
       if (!disposed) {
-        term.writeln(`\x1b[31mCould not start terminal: ${String(error)}\x1b[0m`);
+        term.writeln(startFailureLine(String(error)));
       }
     });
 

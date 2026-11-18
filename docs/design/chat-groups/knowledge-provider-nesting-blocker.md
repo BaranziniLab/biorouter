@@ -4,9 +4,11 @@
 > `KnowledgeProvider`s clobber each other's active knowledge base (KB) through
 > `localStorage` *and* the server, and specifying the prerequisite fix that must land
 > before chat groups may nest providers.
-> **Status:** Current — the prerequisite fix is **not** made. It was attempted on
+> **Status:** Current. The prerequisite fix is **not** made. It was attempted on
 > 2026-07-16 and reverted for lack of a green regression test; the chat-groups
-> execution register still lists `KnowledgeProvider` nesting as blocked on it.
+> execution register still lists `KnowledgeProvider` nesting as blocked on it. Since
+> 2026-11-17 the one app-level provider follows the focused tab, a draft tab included,
+> and nothing nests (see "Status as of 2026-11-17").
 > **Audience:** maintainers working on chat groups or on the desktop Knowledge frontend.
 > **Identifiers.** `R7` is risk 7 from the `minimal-shell` candidate design in the
 > chat-groups design packet; that risk register lives in
@@ -23,6 +25,32 @@ same `localStorage` keys and the same server-side active-KB state, and may fight
 spike ran the experiment and answered the question. Nesting is semantically correct; the
 shared-key write path in `syncSelection` is not, and that is a live latent bug today,
 independent of chat groups.
+
+## Status as of 2026-11-17
+
+Chat groups shipped without nesting: the window still has ONE `KnowledgeProvider`, in
+`App.tsx`, and every composer's Knowledge list writes through it. Its scope is
+`knowledgeScopeFor(pathname, chat.sessionId)` in `KnowledgeContext.tsx`, and the
+app-level chat it reads is written by BaseChat's `useMirrorFocusedChat`:
+
+- The focused pane writes itself whenever it becomes focused, binds a session or
+  learns its name. A pane that is not focused never writes. `isFocusedChatPane` decides
+  which pane is focused: the active group's active tab on `/pair`, and the only chat
+  everywhere else.
+- A draft "New chat" tab writes the session id `''`, so the provider is at machine
+  scope, the default new chats inherit, and the `+` popover's scope line reads "Default
+  for chats". Home is machine scope too, whichever chat was open before. The Knowledge
+  view keeps the last chat's selection.
+- Before this, the app-level chat moved only when a chat's name changed. A focused
+  draft tab, which has no name, left the scope on the chat focused before it, and its
+  Hide all wrote that other chat's `hidden-kb-sessions` file (rq2-107, K-23). Home had
+  the same hole. `KnowledgeContext.draftTab.test.tsx` pins the rule.
+
+The composer's list is the one consumer the table below marks per-pane. A press
+anywhere in a pane focuses it first (`onPointerDownCapture` in `ChatGroupsShell.tsx`),
+so the list a person opens is always the focused pane's, and following focus gives it
+its own chat's selection without a second provider. The nesting blocker itself is
+unchanged.
 
 ## Status as of 2026-07-16
 

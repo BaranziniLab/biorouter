@@ -386,9 +386,14 @@ describe('the summary is filled, not outlined, and parted into sections by hairl
   it('presses the header button on the band’s fill step, and rings the dot in the ground under it', () => {
     expect(BUTTON_TSX).toContain("expanded && 'bg-background-fill-strong text-text-default'");
     expect(BUTTON_TSX).not.toContain('bg-background-medium');
-    expect(codeWithoutComments(BASE_CHAT)).toContain(
-      "isTerminalDockOpen && 'bg-background-fill-strong text-text-default'"
+    const baseChatCode = codeWithoutComments(BASE_CHAT);
+    const terminalButton = baseChatCode.slice(
+      baseChatCode.indexOf('export function InAppTerminalHeaderButton'),
+      baseChatCode.indexOf('interface BaseChatProps')
     );
+    expect(terminalButton).toContain("open && 'bg-background-fill-strong text-text-default'");
+    expect(terminalButton).not.toContain('bg-background-medium');
+    expect(baseChatCode).toMatch(/<InAppTerminalHeaderButton\s+open=\{isTerminalDockOpen\}/);
     expect(property(onlyRule('.br-summary-dot').body, 'box-shadow')).toBe(
       '0 0 0 2px var(--sidebar)'
     );

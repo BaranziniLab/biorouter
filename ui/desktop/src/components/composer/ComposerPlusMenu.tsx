@@ -51,7 +51,7 @@ export const TOOLS_POPOVER_COLLISION_PADDING = { top: 52, right: 8, bottom: 8, l
 export const PLUS_INSET_IN_CARD = 9;
 
 export interface ComposerPlusMenuProps {
-  /** The focused chat, or `null` on Home and in a chat that has not started. */
+  /** The focused chat; `null` on Home and `''` in a draft tab, which has not started. */
   sessionId: string | null;
   /**
    * The chat's ratcheted classification (`ChatInput`'s `sessionPrivacyTier`).
@@ -344,7 +344,9 @@ export function ComposerPlusMenu({
             <ToolsListPanel
               lists={lists}
               segment={segment}
-              inChat={sessionId !== null}
+              // A draft tab's id is `''`: no chat yet, so its list is the default
+              // new chats inherit, as Home's is (rq2-107).
+              inChat={Boolean(sessionId)}
               inputRef={inputRef}
             />
           )}
