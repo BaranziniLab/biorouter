@@ -2130,7 +2130,7 @@ mod tests {
             "claude-opus-5-6",
             "claude-sonnet-5-1",
             "claude-haiku-5",
-            "claude-fable-5-2",
+            "claude-fable-5-3",
             "claude-mythos-preview",
             "claude-instant-1.2",
         ] {

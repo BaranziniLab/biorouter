@@ -675,13 +675,18 @@ mod tests {
     /// it), or it is routed away from us-central1 before the request is made.
     ///
     /// The classification is checked against the vendor's "Supported regions"
-    /// tables (2026-09-25), one row per advertised id — deriving it from
-    /// `availability()` itself would only restate the code. Adding a model to
+    /// tables (legacy rows checked 2026-09-25, new rows 2026-11-17). Each
+    /// advertised id has its own row; deriving it from `availability()` would
+    /// only restate the code. Adding a model to
     /// KNOWN_MODELS means looking up its regions and adding its row here.
     #[test]
     fn every_listed_model_has_a_route_from_the_default_location() -> Result<()> {
         use ModelAvailability::{GlobalOnly, MultiRegion, Regional};
         let vendor_regions = [
+            ("gemini-4-hydrogen", MultiRegion),
+            ("gemini-4-argon", MultiRegion),
+            ("claude-sonnet-5-5", MultiRegion),
+            ("claude-haiku-5-5", MultiRegion),
             ("gemini-3.8-flash", MultiRegion),
             ("gemini-3.7-flash", MultiRegion),
             ("gemini-3.6-flash", MultiRegion),

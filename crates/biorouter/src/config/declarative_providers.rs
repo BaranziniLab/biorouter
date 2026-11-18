@@ -483,15 +483,14 @@ mod tests {
         assert_eq!(moonshot.base_url, "https://api.moonshot.ai/v1");
         assert_eq!(moonshot.supports_streaming, Some(true));
 
-        // Newest-first: the first entry becomes the UI's default model. Kimi
-        // K3 (GA 2026-07-16) is Moonshot's flagship and its named replacement
-        // for every discontinued model; kimi-k2.5 was discontinued on
-        // 2026-08-31 and now answers "model not found" (platform.kimi.ai,
-        // read 2026-09-25).
+        // K3.1 Pro is the daily default; native-platform limits and rates
+        // remain distinct from hosted Kimi routes (platform.kimi.ai, 2026-11-17).
         let names: Vec<&str> = moonshot.models.iter().map(|m| m.name.as_str()).collect();
         assert_eq!(
             names,
             [
+                "kimi-k3.1-pro",
+                "kimi-k3.1-pro-highspeed",
                 "kimi-k3",
                 "kimi-k2.7-code",
                 "kimi-k2.7-code-highspeed",
@@ -501,21 +500,20 @@ mod tests {
 
         // Real token costs so pricing flows from provider metadata
         // (pricing_from_provider_metadata) with no pricing.rs entry.
-        // Direct-platform rates per MTok (platform.kimi.ai, 2026-09-25):
-        // k3 $3.00/$15.00, k2.7-code-highspeed $1.90/$8.00, k2.7-code and
-        // k2.6 $0.95/$4.00 — distinct from OpenRouter's rates for the same
-        // models.
+        // Direct-platform K3.1 Pro rates are $2/$10 and highspeed $4/$20
+        // per MTok; older cards retain their existing rates.
         for model in &moonshot.models {
-            // K3 is the one 1M-window Kimi (1,048,576); the K2 line is 256k.
-            let want_context = if model.name == "kimi-k3" {
-                1_048_576
-            } else {
-                262_144
+            let want_context = match model.name.as_str() {
+                "kimi-k3.1-pro" | "kimi-k3.1-pro-highspeed" => 1_000_000,
+                "kimi-k3" => 1_048_576,
+                _ => 262_144,
             };
             assert_eq!(model.context_limit, want_context, "{}", model.name);
             let input = model.input_token_cost.expect("input cost set");
             let output = model.output_token_cost.expect("output cost set");
             let (want_in, want_out) = match model.name.as_str() {
+                "kimi-k3.1-pro" => (2.00 / 1_000_000.0, 10.00 / 1_000_000.0),
+                "kimi-k3.1-pro-highspeed" => (4.00 / 1_000_000.0, 20.00 / 1_000_000.0),
                 "kimi-k3" => (3.00 / 1_000_000.0, 15.00 / 1_000_000.0),
                 "kimi-k2.7-code-highspeed" => (1.90 / 1_000_000.0, 8.00 / 1_000_000.0),
                 _ => (0.95 / 1_000_000.0, 4.00 / 1_000_000.0),
@@ -890,6 +888,7 @@ mod tests {
             ("baseten", "zai-org/GLM-5.3"),
             ("baseten", "zai-org/GLM-5.3-Fast"),
             ("baseten", "zai-org/GLM-5.3-Flash"),
+            ("baseten", "moonshotai/Kimi-K3.1-Pro"),
             ("baseten", "moonshotai/Kimi-K3"),
             ("baseten", "deepseek-ai/DeepSeek-V4.1-Flash"),
             ("baseten", "deepseek-ai/DeepSeek-V4.1-Flash-1017"),
@@ -902,6 +901,7 @@ mod tests {
             ("groq", "qwen/qwen3.8-27b"),
             // Mistral documents these as multimodal; codestral-2508 is
             // text-only. mistral-medium-latest is an alias of Medium 3.5.
+            ("mistral", "mistral-large-4"),
             ("mistral", "mistral-medium-3-5"),
             ("mistral", "mistral-large-2512"),
             ("mistral", "mistral-small-2603"),
@@ -909,6 +909,8 @@ mod tests {
             ("mistral", "ministral-8b-2512"),
             ("mistral", "ministral-3b-2512"),
             ("mistral", "mistral-medium-latest"),
+            ("moonshot", "kimi-k3.1-pro"),
+            ("moonshot", "kimi-k3.1-pro-highspeed"),
             ("moonshot", "kimi-k3"),
             ("moonshot", "kimi-k2.7-code"),
             ("moonshot", "kimi-k2.7-code-highspeed"),

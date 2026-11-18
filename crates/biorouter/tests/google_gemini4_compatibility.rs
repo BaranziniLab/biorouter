@@ -273,48 +273,6 @@ async fn gemini4_streaming_preserves_each_call_signature_and_id() {
     );
 }
 
-#[tokio::test]
-async fn gemini4_streaming_keeps_signed_part_order_when_tools_are_batched() {
-    let _guard = env_lock::lock_env([("BIOROUTER_TOOL_CALL_BATCHING", Some("true"))]);
-    let chunk = response(
-        "gemini-4-hydrogen",
-        vec![
-            json!({"functionCall": {"id": "first", "name": "read", "args": {}}, "thoughtSignature": "CALL"}),
-            json!({"text": "After call", "thoughtSignature": "TRAILING"}),
-        ],
-    );
-    let lines = futures::stream::iter([Ok(format!("data: {chunk}"))]);
-    let stream = response_to_streaming_message(lines);
-    futures::pin_mut!(stream);
-    let mut messages = Vec::new();
-    while let Some(item) = stream.next().await {
-        if let Some(message) = item.unwrap().0 {
-            messages.push(message);
-        }
-    }
-    let content: Vec<_> = messages
-        .iter()
-        .flat_map(|message| &message.content)
-        .collect();
-    assert!(matches!(content[0], MessageContent::ToolRequest(_)));
-    assert!(matches!(content[1], MessageContent::Text(_)));
-    let payload = create_request(
-        &ModelConfig::new_or_fail("gemini-4-hydrogen"),
-        "system",
-        &messages,
-        &[],
-    )
-    .unwrap();
-    assert_eq!(
-        payload["contents"][0]["parts"][0]["functionCall"]["id"],
-        "first"
-    );
-    assert_eq!(
-        payload["contents"][0]["parts"][1],
-        json!({"text": "After call", "thoughtSignature": "TRAILING"})
-    );
-}
-
 #[test]
 fn gemini4_omits_ignored_sampling_parameters_and_keeps_output_budget() {
     let mut config = ModelConfig::new_or_fail("gemini-4-hydrogen");

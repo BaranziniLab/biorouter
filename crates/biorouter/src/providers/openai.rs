@@ -1159,19 +1159,20 @@ mod mistral_protocol_tests {
                 .0;
         }
         let mut stream = provider.stream("system", history, &[]).await.unwrap();
-        let mut combined = Message::assistant();
+        let mut combined = crate::conversation::Conversation::default();
         while let Some(item) = stream.next().await {
             if let Some(message) = item.unwrap().0 {
-                combined.content.extend(message.content);
+                combined.push(message);
             }
         }
-        combined
+        assert_eq!(combined.len(), 1, "one streamed provider turn");
+        combined.last().unwrap().clone()
     }
 
     async fn assert_chunk_history(streamed: bool, with_tool: bool) {
         let server = MockServer::start().await;
         let template = if streamed {
-            let values = [
+            let mut values = [
                 json!({"choices":[{"index":0,"delta":{"content":[chunks()[0].clone()]}}]}),
                 json!({"choices":[{"index":0,"delta":{"content":[
                     {"type":"thinking","thinking":[{"type":"text","text":"Check labels."}]},
@@ -1183,6 +1184,9 @@ mod mistral_protocol_tests {
                     "function":{"name":"sample_count","arguments":"{}"}
                 }]},"finish_reason":"tool_calls"}]}),
             ];
+            for value in &mut values {
+                value["id"] = json!("mistral-native-protocol-turn");
+            }
             let mut sse = values
                 .iter()
                 .map(|value| format!("data: {value}\n\n"))
