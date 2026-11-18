@@ -501,7 +501,7 @@ impl SubAgent {
         if steps >= self.bounds.max_steps {
             return Some(DoneReason::StepBudgetReached);
         }
-        if started.elapsed() > self.bounds.max_wall {
+        if started.elapsed() >= self.bounds.max_wall {
             return Some(DoneReason::TimeBudgetReached);
         }
         if estimated_tokens(&self.system_prompt, messages) > self.bounds.max_tokens {
