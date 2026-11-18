@@ -83,6 +83,7 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
     const userScrolledUpRef = React.useRef(false);
     const lastScrollHeightRef = React.useRef(0);
     const isActivelyScrollingRef = React.useRef(false);
+    const followScrollTopRef = React.useRef<number | null>(null);
     const scrollTimeoutRef = React.useRef<number | null>(null);
     const followGrowthRef = React.useRef(followGrowth);
     followGrowthRef.current = followGrowth;
@@ -114,6 +115,10 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
           // a note above its composer grew landed 12px from the TOP).
           if (anchorBottomRef.current !== null)
             anchorBottomRef.current = viewportRef.current.scrollHeight;
+          followScrollTopRef.current =
+            behavior === 'auto'
+              ? Math.max(0, viewportRef.current.scrollHeight - viewportRef.current.clientHeight)
+              : null;
           viewportRef.current.scrollTo({
             top: viewportRef.current.scrollHeight,
             behavior,
@@ -130,6 +135,7 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
     const scrollToPosition = React.useCallback(
       ({ top, behavior = 'smooth' }: { top: number; behavior?: ScrollBehavior }) => {
         if (viewportRef.current) {
+          followScrollTopRef.current = null;
           viewportRef.current.scrollTo({
             top,
             behavior,
@@ -186,10 +192,14 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
 
       const { scrollTop } = viewport;
       const currentIsAtBottom = isAtBottom();
+      const isOwnFollow =
+        followScrollTopRef.current !== null &&
+        Math.abs(scrollTop - followScrollTopRef.current) <= 1;
+      followScrollTopRef.current = null;
 
       // detect if this is a user-initiated scroll (position changed from last known position)
       const scrollDelta = Math.abs(scrollTop - lastScrollTopRef.current);
-      if (scrollDelta > 0) {
+      if (scrollDelta > 0 && !isOwnFollow) {
         // Mark that user is actively scrolling immediately
         isActivelyScrollingRef.current = true;
 
@@ -206,15 +216,10 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
 
       lastScrollTopRef.current = scrollTop;
 
-      // Detect if user manually scrolled up from the bottom
-      // ⚠ Known edge, left on purpose: this also reads the follow's OWN scroll as the reader
-      // scrolling up when more than BOTTOM_SCROLL_THRESHOLD of content lands between the follow's
-      // `scrollTo` (in a frame) and its scroll event (the next frame), so following stops
-      // (measured by WS-SUMMARY: 432px from eight rows appended at once). Exempting that event
-      // alone would leave the view following yet short of the end, because the same event marks
-      // the reader as actively scrolling and the next frame's follow is skipped; a real fix also
-      // changes that throttle for every caller, Crew's timeline included.
-      if (!currentIsAtBottom && isFollowing) {
+      // An automatic follow's event can arrive after the next chunk grows. It is still our
+      // movement, even if the new tail is now far below it; treating it as the reader also
+      // throttles later growth and leaves the final chunk unfollowed.
+      if (!isOwnFollow && !currentIsAtBottom && isFollowing) {
         // user scrolled up, disabling auto-scroll
         userScrolledUpRef.current = true;
         setIsFollowing(false);
@@ -275,6 +280,10 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
             !isActivelyScrollingRef.current &&
             (followGrowthRef.current?.() ?? true)
           ) {
+            followScrollTopRef.current = Math.max(
+              0,
+              viewportRef.current.scrollHeight - viewportRef.current.clientHeight
+            );
             viewportRef.current.scrollTo({
               top: viewportRef.current.scrollHeight,
               behavior: 'auto',

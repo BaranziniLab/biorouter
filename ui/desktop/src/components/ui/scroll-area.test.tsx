@@ -156,7 +156,7 @@ describe('ScrollArea growth follow', () => {
       rerender(view(rows));
     };
     const commit = () => rerender(view(rows));
-    return { state, grow, commit };
+    return { state, grow, commit, viewport };
   }
 
   it('follows every growth to the end when no owner passes followGrowth', () => {
@@ -164,6 +164,39 @@ describe('ScrollArea growth follow', () => {
     grow(62);
     runFrames();
     expect(state.top).toBe(62);
+  });
+
+  it('follows successive growth while its own previous follow is settling', () => {
+    const { state, grow } = renderFollowing();
+    grow(62);
+    runFrames();
+    grow(38);
+    runFrames();
+    expect(state.top).toBe(100);
+  });
+
+  it('keeps following when content grows before its own scroll event arrives', () => {
+    const { state, grow, viewport } = renderFollowing();
+    viewport.scrollTo = ((options: { top?: number }) => {
+      viewport.scrollTop = options.top ?? 0;
+    }) as typeof viewport.scrollTo;
+    grow(62);
+    runFrames();
+    grow(432);
+    act(() => viewport.dispatchEvent(new Event('scroll')));
+    runFrames();
+    expect(state.top).toBe(494);
+  });
+
+  it('stops following when the reader moves above the tail between updates', () => {
+    const { state, grow, viewport } = renderFollowing();
+    grow(600);
+    runFrames();
+    state.top = 250;
+    act(() => viewport.dispatchEvent(new Event('scroll')));
+    grow(62);
+    runFrames();
+    expect(state.top).toBe(250);
   });
 
   it('keeps scrollTop for a growth the owner holds, and does not follow it on a later commit', () => {

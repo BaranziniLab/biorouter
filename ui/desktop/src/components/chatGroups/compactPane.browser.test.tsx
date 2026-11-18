@@ -30,6 +30,11 @@ const requireFromDesktop = createRequire(resolve(here, '../../../package.json'))
 const SHOTS = process.env.COMPACT_PANE_SHOTS;
 const PANE_CSS = readFileSync(resolve(here, 'compact-pane.css'), 'utf8');
 
+interface FollowHarnessWindow extends Window {
+  __chunk: (index: number) => void;
+  __bottom: () => void;
+}
+
 /** CompactPane's two process-wide sources, stood in for at its own imports only. */
 const standIns: Plugin = {
   name: 'compact-pane-stand-ins',
@@ -70,6 +75,8 @@ import { createRoot } from 'react-dom/client';
 import { CompactPane } from './CompactPane';
 import { ChatPaneFrame } from './ChatPaneFrame';
 import { ChatKindIcon } from '../chats/ChatKindIcon';
+import { ScrollArea } from '../ui/scroll-area';
+import { useTranscriptFollow } from '../summary/useTranscriptFollow';
 
 const w = window as unknown as Record<string, any>;
 const TITLE = 'Variant calls across the whole cohort';
@@ -215,7 +222,88 @@ function Reserve() {
   );
 }
 
-const App = { grid: Grid, frame: Frame, reserve: Reserve }[w.__mode];
+const LINE =
+  'is a line of a long reply, written long enough that it wraps in a narrow pane and rewraps ' +
+  'when the pane changes width.';
+
+/** The reply holds its own text, so a streamed chunk re-renders it alone, not the list. */
+function Reply() {
+  const [lines, setLines] = React.useState(() => ['The reply ' + LINE]);
+  React.useEffect(() => {
+    // One chunk: a new line every fourth chunk, else more words on the last one.
+    w.__chunk = (n) =>
+      setLines((all) =>
+        n % 4 === 0
+          ? [...all, all.length + ' ' + LINE]
+          : [...all.slice(0, -1), all[all.length - 1] + ' and more of it ' + n]
+      );
+  }, []);
+  return lines.map((line, i) => <p key={i} style={{ margin: '0 0 12px' }}>{line}</p>);
+}
+
+const EARLIER = Array.from({ length: 30 }, (_, i) => (
+  <p key={i} style={{ margin: '0 0 12px' }}>{i + ' ' + LINE}</p>
+));
+const COLUMN = (
+  <div className="biorouter-chat-column mx-auto w-full max-w-measure-chat">
+    {EARLIER}
+    <Reply />
+  </div>
+);
+
+/**
+ * The transcript as BaseChat mounts it: the real ScrollArea with the real follow hook, and a
+ * reply that streams into a row that re-renders alone.
+ */
+function Transcript() {
+  const scrollRef = React.useRef(null);
+  const follow = useTranscriptFollow({
+    scrollRef,
+    isPreviewStacked: () => false,
+    transcriptMounted: true,
+  });
+  React.useEffect(() => {
+    w.__bottom = () => scrollRef.current?.scrollToBottom('auto');
+  }, []);
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', flex: '1 1 0', minHeight: 0, minWidth: 0 }}>
+      <ScrollArea
+        ref={scrollRef}
+        className="flex-1 min-h-0 relative"
+        autoScroll
+        anchorBottomOnResize={follow.anchorBottomOnResize}
+        onScrollChange={follow.onScrollChange}
+        followGrowth={follow.followGrowth}
+        paddingX={6}
+        paddingY={0}
+      >
+        {COLUMN}
+      </ScrollArea>
+      <textarea id="draft" defaultValue="A draft in progress" style={{ height: 60, flex: 'none' }} />
+    </div>
+  );
+}
+
+function Follow() {
+  const treeRef = React.useRef(null);
+  return (
+    <div id="host" style={{ display: 'flex', height: 600, width: 1200 }}>
+      <div id="tree" ref={treeRef} style={{ display: 'flex', flex: '1 1 0', minWidth: 0 }}>
+        <div style={{ width: 300, flex: 'none' }}>left pane</div>
+        <div id="slot" style={{ width: 600, height: 600, display: 'flex', minWidth: 0, minHeight: 0, flex: 'none' }}>
+          <ChatPaneFrame
+            data-chat-group-id="g2"
+            alone={false}
+            content={<Transcript />}
+            renderCompact={({ box }) => <Placeholder treeRef={treeRef} box={box} />}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const App = { grid: Grid, frame: Frame, reserve: Reserve, follow: Follow }[w.__mode];
 createRoot(document.getElementById('root')).render(<App />);
 `;
 
@@ -300,7 +388,7 @@ describe('compact panes in a real layout engine (rung 5)', () => {
   }, 120_000);
 
   async function open(opts: {
-    mode: 'grid' | 'frame' | 'reserve';
+    mode: 'grid' | 'frame' | 'reserve' | 'follow';
     family?: (typeof FAMILIES)[number];
     dark?: boolean;
     paneCss?: string;
@@ -645,6 +733,97 @@ describe('compact panes in a real layout engine (rung 5)', () => {
         await tab.evaluate(() => document.activeElement === document.getElementById('draft')),
         'focus came back to the draft'
       ).toBe(true);
+    } finally {
+      await tab.close();
+    }
+  }, 60_000);
+
+  it('keeps following a streaming tail while compact and after restoring', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open({ mode: 'follow' });
+    try {
+      const view = () =>
+        tab.evaluate(() => {
+          const viewport = document.querySelector<HTMLElement>(
+            '[data-radix-scroll-area-viewport]'
+          )!;
+          return {
+            top: viewport.scrollTop,
+            height: viewport.scrollHeight,
+            fromEnd: viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight,
+            fit: document.querySelector('[data-pane-fit]')!.getAttribute('data-pane-fit'),
+          };
+        });
+      let nextChunk = 0;
+      const stream = async (count: number) => {
+        for (let i = 0; i < count; i++) {
+          await tab.evaluate(
+            (n) => (window as unknown as FollowHarnessWindow).__chunk(n),
+            nextChunk++
+          );
+          await tab.waitForTimeout(30);
+        }
+        await tab.waitForTimeout(200);
+      };
+      await tab.evaluate(() => (window as unknown as FollowHarnessWindow).__bottom());
+      await settle(tab);
+      expect((await view()).fromEnd, 'the reader starts at the tail').toBeLessThanOrEqual(2);
+      await stream(20);
+      expect((await view()).fromEnd, 'the visible reply stays followed').toBeLessThanOrEqual(2);
+      await tab.evaluate(() => (document.getElementById('draft') as HTMLTextAreaElement).focus());
+      await resizeSlot(tab, 355, 600);
+      const compact = await view();
+      expect(compact.fit).toBe('compact');
+      expect(compact.fromEnd, 'the width reflow keeps the reader at the tail').toBeLessThanOrEqual(
+        2
+      );
+      for (let burst = 0; burst < 4; burst++) {
+        await stream(12);
+        const streamed = await view();
+        expect(streamed.height).toBeGreaterThan(compact.height);
+        expect(streamed.top).toBeGreaterThan(compact.top);
+        expect(streamed.fromEnd, 'hidden streamed rows stay followed').toBeLessThanOrEqual(2);
+      }
+      await resizeSlot(tab, 400, 600);
+      expect((await view()).fit).toBe('full');
+      expect((await view()).fromEnd, 'the latest line is in view on restore').toBeLessThanOrEqual(
+        2
+      );
+      expect(await tab.locator('#draft').inputValue()).toBe('A draft in progress');
+      expect(await tab.locator('#draft').evaluate((node) => node === document.activeElement)).toBe(
+        true
+      );
+    } finally {
+      await tab.close();
+    }
+  }, 60_000);
+
+  it('keeps a reader above the tail in place while compact content streams', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open({ mode: 'follow' });
+    try {
+      await tab.evaluate(() => {
+        const viewport = document.querySelector<HTMLElement>('[data-radix-scroll-area-viewport]')!;
+        viewport.scrollTop = 500;
+      });
+      await tab.waitForTimeout(150);
+      await resizeSlot(tab, 355, 600);
+      const top = await tab
+        .locator('[data-radix-scroll-area-viewport]')
+        .evaluate((node) => node.scrollTop);
+      for (let n = 1; n <= 8; n++) {
+        await tab.evaluate((i) => (window as unknown as FollowHarnessWindow).__chunk(i), n);
+        await tab.waitForTimeout(150);
+      }
+      const after = await tab.locator('[data-radix-scroll-area-viewport]').evaluate((node) => ({
+        top: node.scrollTop,
+        fromEnd: node.scrollHeight - node.scrollTop - node.clientHeight,
+      }));
+      expect(
+        Math.abs(after.top - top),
+        'a hidden reader is not pulled away from older text'
+      ).toBeLessThanOrEqual(2);
+      expect(after.fromEnd).toBeGreaterThan(200);
     } finally {
       await tab.close();
     }

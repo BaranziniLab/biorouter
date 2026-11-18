@@ -904,8 +904,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
 
   const isMacOS = (window?.electron?.platform || 'darwin') === 'darwin';
   const isCompactSidebarOverlayOpen = isSidebarCompact && !isMobile && sidebarState !== 'collapsed';
-  const reserveTitlebarControls =
-    isMacOS && (isMobile || isSidebarCompact || sidebarState === 'collapsed');
+  const reserveTitlebarControls = isMobile || isSidebarCompact || sidebarState === 'collapsed';
 
   // firstLeaf is a TREE WALK, never an array index. In a root `col` split both
   // strips sit at x=0 but only the TOP one collides with the traffic lights, so
@@ -1421,7 +1420,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
       treeRef,
       bandInsetStart:
         reserveTitlebarControls && groupId === reservedGroupId
-          ? getTitlebarControlReserve(true)
+          ? getTitlebarControlReserve(isMacOS)
           : 0,
       // The person asked for room for THIS pane: it becomes the active one, and
       // the branches move in one batch, so the layout commits and persists once.

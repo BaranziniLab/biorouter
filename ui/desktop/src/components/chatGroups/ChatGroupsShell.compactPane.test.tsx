@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   dispatch: (() => {}) as (action: unknown) => void,
   running: [] as Array<{ sessionId: string; chatState: string; completedAt?: number }>,
   state: null as unknown,
+  sidebarState: 'expanded',
 }));
 
 vi.mock('../BaseChat', async () => {
@@ -45,7 +46,9 @@ vi.mock('../BaseChat', async () => {
 // The strip itself is not under test; the ▾ menu the compact band borrows from it is real.
 vi.mock('./ChatTabStrip', async (importOriginal) => ({
   ...(await importOriginal<typeof import('./ChatTabStrip')>()),
-  ChatTabStrip: () => <div data-testid="strip" />,
+  ChatTabStrip: ({ reserveTitlebar }: { reserveTitlebar: boolean }) => (
+    <div data-testid="strip" data-reserve-titlebar={String(reserveTitlebar)} />
+  ),
 }));
 
 vi.mock('../../hooks/chatStreamStore', () => ({
@@ -69,7 +72,9 @@ vi.mock('../../contexts/ChatGroupsContext', () => ({
   }),
 }));
 
-vi.mock('../ui/sidebar', () => ({ useSidebar: () => ({ state: 'expanded', isMobile: false }) }));
+vi.mock('../ui/sidebar', () => ({
+  useSidebar: () => ({ state: mocks.sidebarState, isMobile: false }),
+}));
 
 import ChatGroupsShell from './ChatGroupsShell';
 import { compactPaneCopy } from './copy';
@@ -139,6 +144,7 @@ beforeEach(() => {
   mocks.running = [];
   mocks.dispatch = vi.fn();
   mocks.state = stateWith(TWO_PANES);
+  mocks.sidebarState = 'expanded';
   boxes = {
     g1: { width: 600, height: 600 },
     g2: { width: 300, height: 600 },
@@ -187,6 +193,34 @@ const action = (groupId: string) =>
   pane(groupId).querySelector<HTMLElement>('[data-compact-pane-action]');
 
 describe('a compact pane in the shell', () => {
+  it.each(['linux', 'win32'])(
+    'reserves the floating titlebar controls on %s and serve',
+    (platform) => {
+      const originalElectron = Object.getOwnPropertyDescriptor(window, 'electron');
+      Object.defineProperty(window, 'electron', {
+        configurable: true,
+        value: { ...window.electron, platform },
+      });
+      mocks.sidebarState = 'collapsed';
+      try {
+        render(<ChatGroupsShell onChatChange={() => {}} />);
+        expect(pane('g1').querySelector('[data-testid="strip"]')).toHaveAttribute(
+          'data-reserve-titlebar',
+          'true'
+        );
+        expect(pane('g2').querySelector('[data-testid="strip"]')).toHaveAttribute(
+          'data-reserve-titlebar',
+          'false'
+        );
+        resize({ g1: { width: 150, height: 100 } });
+        expect(action('g1'), 'the compact band uses the non-macOS 88px reserve').not.toBeNull();
+      } finally {
+        if (originalElectron) Object.defineProperty(window, 'electron', originalElectron);
+        else Reflect.deleteProperty(window, 'electron');
+      }
+    }
+  );
+
   it('replaces only the pane under the floor, and makes its chat inert', () => {
     render(<ChatGroupsShell onChatChange={() => {}} />);
     expect(pane('g1').getAttribute('data-pane-fit')).toBe('full');
