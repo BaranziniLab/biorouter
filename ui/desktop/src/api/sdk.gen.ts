@@ -1271,6 +1271,8 @@ export const ingestConversation = <ThrowOnError extends boolean = false>(options
  * Each of those is a stable rule id (`kb.` for hygiene, `okf.` and `biookf.`
  * for the format layers), a severity, the subject it is about and a message;
  * a consumer matches on `rule` and never on `message`, which is prose.
+ * After an autofix that committed, the report is a fresh scan of the committed
+ * base, so it lists what the fix left rather than what it started from.
  *
  * Both schemas are published under `components.schemas` rather than as this
  * response's body, because the body is an event stream and typing it as JSON
