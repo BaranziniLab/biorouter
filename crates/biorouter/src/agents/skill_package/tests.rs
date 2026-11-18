@@ -40,19 +40,38 @@ fn zip_of(files: &[(&str, String)]) -> Vec<u8> {
 }
 
 /// The pipeline as a caller runs it, minus the network.
+///
+/// ⚠ **Every fixture runs through both readers.** `read_package` inflates only
+/// the files a plan reads; `read_zip` + `strip_wrapper` inflates everything.
+/// The two must give the same plan, or the same error, for every shape in this
+/// matrix, which is what shows that leaving files out changed no plan.
 fn plan(
     files: &[(&str, String)],
     hint: WrapperHint<'_>,
     hints: &[&str],
 ) -> anyhow::Result<ImportPlan> {
     let bytes = zip_of(files);
-    let entries = archive::read_zip(&bytes)?;
-    let (entries, wrapper) = archive::strip_wrapper(entries, hint);
-    let mut id_hints: Vec<String> = hints.iter().map(|h| h.to_string()).collect();
-    if let Some(wrapper) = wrapper {
-        id_hints.push(wrapper);
+    let planned = |(entries, wrapper): (Vec<archive::Entry>, Option<String>)| {
+        let mut id_hints: Vec<String> = hints.iter().map(|h| h.to_string()).collect();
+        if let Some(wrapper) = wrapper {
+            id_hints.push(wrapper);
+        }
+        plan_from_entries(entries, &id_hints, SourceProvenance::default())
+    };
+    let full = archive::read_zip(&bytes)
+        .map(|entries| archive::strip_wrapper(entries, hint))
+        .and_then(planned);
+    let lean = archive::read_package(&bytes, hint).and_then(planned);
+    match (&full, &lean) {
+        (Ok(full), Ok(lean)) => assert_eq!(
+            format!("{lean:?}"),
+            format!("{full:?}"),
+            "reading only what a plan uses changed the plan"
+        ),
+        (Err(full), Err(lean)) => assert_eq!(format!("{lean:#}"), format!("{full:#}")),
+        _ => panic!("the two readers disagree: full {full:?}, lean {lean:?}"),
     }
-    plan_from_entries(entries, &id_hints, SourceProvenance::default())
+    lean
 }
 
 /// HyperFrames as its main branch actually ships: a repository wrapper, a
@@ -999,6 +1018,86 @@ fn a_source_archive_hint_strips_a_wrapper_inference_would_have_kept() {
     );
     assert_eq!(from_source.as_deref(), Some("repo-main"));
     assert!(entries.iter().all(|e| !e.name.starts_with("repo-main/")));
+}
+
+// ---------------------------------------------------------------------------
+// Size: only what a plan reads counts against the limit.
+// ---------------------------------------------------------------------------
+
+/// A source archive's `docs/`, `registry/` and `packages/` belong to no skill.
+/// HyperFrames' default branch grew to 327 MB that way while its skills stayed
+/// near 14 MB, and inflating every file against the 256 MiB budget refused the
+/// documented import outright (rq2-220). The same shape, scaled down: a limit
+/// the skills fit under and the whole archive does not.
+#[test]
+fn an_archive_heavy_outside_its_skills_still_imports() {
+    let heavy = "x".repeat(64 * 1024);
+    let mut files = hyperframes(8);
+    files.push(("hyperframes-main/docs/media/demo.mp4", heavy.clone()));
+    files.push((
+        "hyperframes-main/registry/blocks/catalog.json",
+        heavy.clone(),
+    ));
+    files.push(("hyperframes-main/packages/core/dist/bundle.js", heavy));
+    let limit: u64 = 32 * 1024;
+    let total: usize = files.iter().map(|(_, body)| body.len()).sum();
+    assert!(
+        total as u64 > limit,
+        "the fixture must exceed the limit as a whole"
+    );
+    let bytes = zip_of(&files);
+
+    let (entries, wrapper) =
+        archive::read_package_limited(&bytes, WrapperHint::SourceArchive, limit)
+            .expect("the skills fit under the limit, so the archive imports");
+    assert_eq!(wrapper.as_deref(), Some("hyperframes-main"));
+    for prefix in ["docs/", "registry/", "packages/"] {
+        assert!(
+            entries.iter().all(|entry| !entry.name.starts_with(prefix)),
+            "`{prefix}` was inflated although no plan reads it"
+        );
+    }
+
+    // And the plan is exactly the one the whole archive gives.
+    let mut hints = vec!["hyperframes".to_string()];
+    hints.extend(wrapper);
+    let lean = plan_from_entries(entries, &hints, SourceProvenance::default()).unwrap();
+    let (all, wrapper) = archive::strip_wrapper(
+        archive::read_zip(&bytes).unwrap(),
+        WrapperHint::SourceArchive,
+    );
+    let mut hints = vec!["hyperframes".to_string()];
+    hints.extend(wrapper);
+    let full = plan_from_entries(all, &hints, SourceProvenance::default()).unwrap();
+    assert_eq!(format!("{lean:?}"), format!("{full:?}"));
+}
+
+/// The refusal a person reads when the skills themselves are too large: the
+/// limit in a unit people use, and what to import instead. It used to be "the
+/// archive expands past the 268435456 byte limit", a raw count with no way on.
+#[test]
+fn the_over_limit_sentence_names_a_tag_or_subfolder() {
+    let mut files = hyperframes(8);
+    files.push((
+        "hyperframes-main/skills/media-use/assets/clip.mp3",
+        "x".repeat(64 * 1024),
+    ));
+    let limit: u64 = 32 * 1024;
+    let error = archive::read_package_limited(&zip_of(&files), WrapperHint::SourceArchive, limit)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(error, archive::too_large_message(limit));
+    assert!(error.contains("32 KB"), "{error}");
+    assert!(!error.contains("byte"), "a raw byte count: {error}");
+    assert!(error.contains("/tree/<tag>"), "no tag to import: {error}");
+    assert!(
+        error.contains("skills folder"),
+        "no folder to import: {error}"
+    );
+
+    // The real limit reads in MB.
+    let real = archive::too_large_message(archive::MAX_ARCHIVE_BYTES);
+    assert!(real.contains("256 MB"), "{real}");
 }
 
 #[test]

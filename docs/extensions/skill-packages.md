@@ -31,7 +31,7 @@ slashes, and read no manifest at all. A normal GitHub source archive is
 | File | What it does |
 |---|---|
 | `source.rs` | A repository URL, a direct archive URL, or a local `.zip` → archive bytes. Holds the host allowlist. |
-| `archive.rs` | Read the zip safely; strip the wrapper directory a source archive carries. |
+| `archive.rs` | Read the zip safely, inflating only the files a plan reads; strip the wrapper directory a source archive carries. |
 | `manifest.rs` | The detection ladder. |
 | `plan.rs` | Structure → a reviewable `ImportPlan`. |
 | `install.rs` | Atomic install, the package record, removal. |
@@ -96,6 +96,36 @@ GitHub source archives wrap everything in one directory. Two rules, in
   That is what keeps a genuine bundle archive — `pack/alpha/SKILL.md`,
   `pack/beta/SKILL.md` — from being unwrapped into two unrelated skills.
 
+## How large a source may be
+
+The limit is 256 MB (`MAX_ARCHIVE_BYTES` in `archive.rs`), and it counts two
+things: the archive as it downloads, and the files read out of it. Only the
+files a plan can use are read, and only they count:
+
+- every file in a folder that holds a `SKILL.md`, which is a skill and its own
+  `references/`, `scripts/` and assets;
+- the shared `assets/`, `references/` and `scripts/` folders at the root or
+  beside the skills, which a bundle keeps;
+- the four manifests the detection ladder reads at the root.
+
+Everything else in a repository is never inflated: its docs, its registry, its
+build output, a zip bomb in a folder no skill lives in. The names are read from
+the archive's central directory first, and the wrapper is decided on all of
+them, so leaving the rest out changes no plan. The fixture matrix runs every
+shape through both readers and checks the plans are the same.
+
+HyperFrames' default branch is the case this is for. On 2026-11-17 it was a
+146 MB download that expands to 327 MB, mostly `docs/`, `registry/` and
+`packages/`; its skill folders hold about 14 MB. Inflating every file refused
+the import with a raw byte count. Reading only the skills, it imports.
+
+When a source is still too large, the refusal says so in one sentence and
+names two ways on: import a release tag (`…/tree/<tag>`), which is usually a
+smaller archive, or download the repository and drop a `.zip` of only its
+skills folder into Add skill. A `…/tree/<branch>/skills` URL does not help:
+GitHub serves a whole repository as one archive, and the importer reads
+`main/skills` as the name of a ref, which does not exist.
+
 ## Where components live
 
 A manifest's `skills` path wins. Otherwise the components root is the directory
@@ -134,25 +164,30 @@ same call rather than asking the question it was handed.
 ⚠ **The answer installs the archive that was previewed.** The parked plan holds
 the resolved bytes: a branch moves, and a preview saying "20 skills, entry point
 `hyperframes`" followed by an install of something else makes the preview a
-decoration. The store is bounded — 15 minutes, 8 plans — because an archive can
-be 256 MiB and a forgotten preview must not pin one.
+decoration. The store is bounded (15 minutes, 8 plans), because a plan can hold
+up to 256 MB of skill files and a forgotten preview must not pin one.
 
 ## What lands on disk
 
 ```
 ~/.config/biorouter/skills/hyperframes/
   biorouter-package.json      ← the record the catalog reads
-  hyperframes/SKILL.md        ← the router; its own name, not a prefix
-  media-use/SKILL.md
-  slideshow/SKILL.md
+  skills/hyperframes/SKILL.md ← the router; its own name, not a prefix
+  skills/media-use/SKILL.md
+  skills/slideshow/SKILL.md
   …
 ```
 
-That is the two-level layout discovery already understands, so a package needs
-no special case downstream. A **single** skill installs at
-`~/.config/biorouter/skills/<slug>/SKILL.md` with no record — one skill in one
-folder is not a package of one, and installing it as a bundle would put it a
-level deeper than every other single-skill install.
+A components folder a manifest declares (`skills/` here) is kept, because
+members and the package's shared assets refer to one another by relative path.
+The record lists each component's directory, and the catalog finds the members
+through it (`package_component_skill_files`). A folder inferred from structure
+alone is the package folder itself, so a plain `pack/alpha/SKILL.md` bundle
+installs as `pack/alpha/SKILL.md`, not `pack/pack/alpha`.
+
+A **single** skill installs at `~/.config/biorouter/skills/<slug>/SKILL.md` with
+no record. One skill in one folder is not a package of one, and installing it as
+a bundle would put it a level deeper than every other single-skill install.
 
 The record carries the package id and display name, its version, the source URL
 / ref / resolved commit, the installer, the timestamp, the entry point, the
@@ -201,14 +236,15 @@ every defect this replaces lived in a seam between two steps — a test that han
 `plan_from_entries` a hand-built entry list jumps straight over the wrapper
 directory, which is the one that mattered most.
 
-⚠ **Run the live test after touching `manifest.rs` or `plan.rs`:**
+⚠ **Run the live test after touching `archive.rs`, `manifest.rs` or `plan.rs`:**
 
 ```bash
 cargo test -p biorouter --test skill_package_live -- --ignored
 ```
 
-It downloads the real HyperFrames repository, so it is `#[ignore]`d — and it is
-the only test that can fail for the reason the fixtures cannot. A fixture is a
+It downloads the real HyperFrames repository (about 146 MB), so it is
+`#[ignore]`d, and it is the only test that can fail for the reason the fixtures
+cannot. A fixture is a
 statement about what you *think* the world looks like, and a complete synthetic
 matrix passed while **three** real defects survived, all three found in one live
 run:
@@ -224,6 +260,9 @@ run:
    no name" — about a package the user never asked for. Every fixture reached
    that shape through `strip_wrapper`, which unwraps it into the root-`SKILL.md`
    case and jumps over the branch.
+
+A later run failed for a reason no fixture could show: the repository grew past
+the size limit with files no skill uses (see "How large a source may be").
 
 ## Related documentation
 

@@ -349,6 +349,9 @@ export default function SkillsView() {
       )}
       {isCustomModalOpen && (
         <CustomSkillModal
+          // `null` until the catalog has been read (the daemon's generations start at 1), and
+          // when the last read failed: a name it cannot check is not written.
+          skills={catalog.error || catalog.generation === 0 ? null : catalog.skills}
           onClose={() => setIsCustomModalOpen(false)}
           onSaved={() => void reload(true)}
         />
