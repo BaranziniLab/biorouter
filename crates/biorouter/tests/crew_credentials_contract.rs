@@ -8,9 +8,21 @@ fn passphrase(value: &str) -> Zeroizing<String> {
     Zeroizing::new(value.to_owned())
 }
 
+fn vault_profile() -> env_lock::EnvGuard<'static> {
+    let guard = env_lock::lock_env([("BIOROUTER_DEV_PROFILE_ROOT", None::<&str>)]);
+    assert_eq!(
+        std::env::var("BIOROUTER_DISABLE_KEYRING").as_deref(),
+        Ok("true")
+    );
+    assert!(biorouter::config::test_binary_credentials::os_store_is_kept_off());
+    guard
+}
+
 #[tokio::test]
 async fn manager_vault_lifecycle_is_explicit_and_restart_locked() {
+    let _profile = vault_profile();
     let root = tempfile::tempdir().unwrap();
+    assert!(root.path().is_absolute());
     let manager = CrewManager::new(root.path().to_path_buf()).unwrap();
     let status = manager.credential_status().await.unwrap();
     assert_eq!(status.backend, "keyring");
@@ -45,7 +57,9 @@ async fn manager_vault_lifecycle_is_explicit_and_restart_locked() {
 
 #[tokio::test]
 async fn manager_vault_init_refuses_a_profile_with_existing_connection_registry() {
+    let _profile = vault_profile();
     let root = tempfile::tempdir().unwrap();
+    assert!(root.path().is_absolute());
     std::fs::write(
         root.path().join("connections.json"),
         serde_json::to_vec(&json!({
