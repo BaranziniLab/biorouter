@@ -2031,10 +2031,21 @@ async fn drive_run(
         TASK_CLEANUP_GRACE,
     )
     .await;
+    // Asked before the outcome is recorded, which moves the status on: only
+    // the owner's cancel (`reserve_cancellation`) leaves it pending.
+    let cancelled_by_the_owner = owner_cancelled(&ledger, &view.run_id).await;
     let error = outcome.err().map(|error| error.to_string());
     finish_run_outcome(&ledger, &view, error).await;
     if cancel.is_cancelled() {
-        let _ = agent.record_turn_stopped(&view.session_id).await;
+        // The person's cancel leaves the cancel note the model reads; the
+        // task's time limit, an error and a shutdown also trip the token, and
+        // end on the short line, because nobody cancelled those.
+        let _ = agent
+            .record_turn_end(
+                &view.session_id,
+                biorouter::agents::stopped_turn::TurnEnd::cancelled(cancelled_by_the_owner),
+            )
+            .await;
     }
     drop(turn_guard);
     publish_run_finished(&ledger, &view).await;
@@ -2042,6 +2053,26 @@ async fn drive_run(
         .agent_manager
         .deregister_agent_if_same(&view.session_id, &agent)
         .await;
+}
+
+/// Whether the run's owner cancelled it: [`reserve_cancellation`], the one
+/// owner door, moves the status to `cancellation_pending` and then to
+/// `cancelled` or `cancellation_unconfirmed`, while every other way a run's
+/// token trips (its time limit, an error, a shutdown) leaves the status for
+/// the run's own outcome to set.
+async fn owner_cancelled(ledger: &RunLedger, run_id: &str) -> bool {
+    ledger
+        .state
+        .lock()
+        .await
+        .runs
+        .get(run_id)
+        .is_some_and(|run| {
+            matches!(
+                run.view.status.as_str(),
+                "cancellation_pending" | "cancelled" | "cancellation_unconfirmed"
+            )
+        })
 }
 
 enum RunStatusUpdate {

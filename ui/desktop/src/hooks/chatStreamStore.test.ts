@@ -2564,17 +2564,17 @@ describe('ChatStreamRegistry — a Stop the daemon confirms (F5)', () => {
  * notice's own stream frame can land after the stream is abandoned.
  */
 describe('ChatStreamRegistry — a stopped reply stays marked (item 7)', () => {
-  const TURN_STOPPED = 'Stopped.';
+  // The cancel note the daemon stores for the person's Stop (owner ruling
+  // 2026-11-17): the agent's text, which the model reads on its next turn too.
+  const TURN_STOPPED = 'The person canceled this turn before it finished.';
 
   function stopNotice(id: string): Message {
     return {
       id,
       role: 'assistant',
       created: 2,
-      content: [
-        { type: 'systemNotification', notificationType: 'inlineMessage', msg: TURN_STOPPED },
-      ],
-      metadata: { userVisible: true, agentVisible: false },
+      content: [{ type: 'text', text: TURN_STOPPED }],
+      metadata: { userVisible: true, agentVisible: true },
     } as Message;
   }
 

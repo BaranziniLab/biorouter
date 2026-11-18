@@ -784,6 +784,154 @@ fn test_acp_cancel_answers_cancelled_when_the_stream_ends_on_its_own() {
     });
 }
 
+/// A `session/cancel` leaves the one cancel note every surface leaves (owner
+/// ruling 2026-11-17): stored once, read by the person on reload and by the
+/// model on its next turn.
+///
+/// The provider holds its first answer far longer than the test allows, so only
+/// the cancel can end that prompt, and answers every later request at once.
+/// The prompt that follows the cancel is sent behind the note exactly once.
+#[test]
+fn test_acp_cancel_leaves_one_cancel_note() {
+    use biorouter::agents::stopped_turn::TURN_STOPPED_NOTICE;
+    use biorouter::conversation::message::MessageContent;
+    use biorouter::session::SessionManager;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const PROVIDER_HOLD: Duration = Duration::from_secs(30);
+
+    run_async_test(async {
+        let data_dir = tempfile::tempdir().unwrap();
+        let first = "write a nine hundred word essay about bananas";
+        let second = "just the title, then";
+        let mock_server = MockServer::start().await;
+        let answered = Arc::new(AtomicUsize::new(0));
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/v1/chat/completions"))
+            .respond_with({
+                let answered = Arc::clone(&answered);
+                move |req: &wiremock::Request| {
+                    let body = String::from_utf8_lossy(&req.body);
+                    if body.contains("Reply with only a description in four words or less") {
+                        return wiremock::ResponseTemplate::new(200)
+                            .insert_header("content-type", "application/json")
+                            .set_body_string(include_str!(
+                                "./test_data/openai_session_description.json"
+                            ));
+                    }
+                    let response = wiremock::ResponseTemplate::new(200)
+                        .insert_header("content-type", "text/event-stream")
+                        .set_body_string(include_str!("./test_data/openai_basic_response.txt"));
+                    if answered.fetch_add(1, Ordering::SeqCst) == 0 {
+                        response.set_delay(PROVIDER_HOLD)
+                    } else {
+                        response
+                    }
+                }
+            })
+            .mount(&mock_server)
+            .await;
+        let mock = &mock_server;
+        let first_request = format!(r#"</info-msg>\n{first}""#);
+        let first_request = &first_request;
+        let session_seen = Arc::new(Mutex::new(None::<String>));
+
+        run_acp_session(
+            mock,
+            vec![],
+            &[],
+            data_dir.path(),
+            BioRouterMode::Auto,
+            None,
+            {
+                let session_seen = Arc::clone(&session_seen);
+                move |cx, session_id, _updates| async move {
+                    *session_seen.lock().unwrap() = Some(session_id.0.to_string());
+                    let started = std::time::Instant::now();
+                    let answered = cx
+                        .send_request(PromptRequest::new(
+                            session_id.clone(),
+                            vec![ContentBlock::Text(TextContent::new(first))],
+                        ))
+                        .block_task();
+                    let cancel = async {
+                        bounded(
+                            "the provider receiving the prompt",
+                            wait_for_provider_request(mock, first_request),
+                        )
+                        .await;
+                        cx.send_notification(CancelNotification::new(session_id.clone()))
+                            .expect("the client sends session/cancel");
+                    };
+                    let (response, ()) =
+                        tokio::join!(bounded("session/prompt after a cancel", answered), cancel);
+                    let response = response.expect("a cancelled prompt is answered, not failed");
+                    assert_eq!(response.stop_reason, StopReason::Cancelled);
+                    assert!(
+                        started.elapsed() < PROVIDER_HOLD / 2,
+                        "premise: the cancel ended the prompt ({:?})",
+                        started.elapsed()
+                    );
+
+                    let response = bounded(
+                        "the prompt after the cancel",
+                        cx.send_request(PromptRequest::new(
+                            session_id.clone(),
+                            vec![ContentBlock::Text(TextContent::new(second))],
+                        ))
+                        .block_task(),
+                    )
+                    .await
+                    .expect("the next prompt is answered");
+                    assert_eq!(response.stop_reason, StopReason::EndTurn);
+                }
+            },
+        )
+        .await;
+
+        let requests = mock_server.received_requests().await.unwrap_or_default();
+        let next = requests
+            .iter()
+            .map(|request| String::from_utf8_lossy(&request.body).into_owned())
+            .find(|body| {
+                body.contains(second)
+                    && !body.contains("Reply with only a description in four words or less")
+            })
+            .expect("the provider got the prompt after the cancel");
+        assert_eq!(
+            next.matches(TURN_STOPPED_NOTICE).count(),
+            1,
+            "the next request carries the cancel note exactly once: {next}"
+        );
+
+        let session_id = session_seen.lock().unwrap().clone().expect("a session");
+        let sm = SessionManager::new(data_dir.path().to_path_buf());
+        let stored = bounded("reading the chat", sm.get_session(&session_id, true))
+            .await
+            .unwrap()
+            .conversation
+            .unwrap_or_default();
+        bounded("closing the store", sm.close()).await;
+        let notes: Vec<_> = stored
+            .messages()
+            .iter()
+            .filter(|message| {
+                message.content.iter().any(|content| match content {
+                    MessageContent::Text(text) => text.text.trim() == TURN_STOPPED_NOTICE,
+                    MessageContent::SystemNotification(notice) => notice.msg == TURN_STOPPED_NOTICE,
+                    _ => false,
+                })
+            })
+            .collect();
+        assert_eq!(notes.len(), 1, "one note for one cancel: {stored:#?}");
+        assert!(
+            notes[0].is_user_visible() && notes[0].is_agent_visible(),
+            "the person and the model both read the note: {:?}",
+            notes[0]
+        );
+    });
+}
+
 /// W1-08: `session/new` opens the chat in the folder the client names.
 ///
 /// ACP requires `cwd` to be an absolute path. The handler used to ignore it and

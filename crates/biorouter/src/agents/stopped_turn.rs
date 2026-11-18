@@ -25,11 +25,29 @@
 //!    same line `TurnAbortCode::SignedStreamTruncated` draws when it discards a
 //!    partial response, and text is the part of a response that never needs a
 //!    signature.
-//! 2. **A durable notice** — [`TURN_STOPPED_NOTICE`], persisted exactly like the
-//!    planning gate's verdicts (`Agent::durable_notice`): a user-visible, model-
-//!    hidden inline system notification. A stop is a turn-level verdict, not
-//!    narration of a moment that has passed, which is the distinction that
-//!    decides which notices in the reply loop are made durable.
+//! 2. **A durable note.** What it says depends on who ended the turn
+//!    ([`TurnEnd`]).
+//!
+//!    - **The person cancelled it** (Stop on the desktop, a `biorouter serve`
+//!      page, `biorouter session cancel`, the terminal, an ACP editor): the
+//!      turn ends on the cancel note, [`TURN_STOPPED_NOTICE`], built by
+//!      [`turn_stopped_note`]. It is a RECORD, not a guard (owner ruling
+//!      2026-11-17): the model on its next turn and anyone reading the chat
+//!      later both see that a cancel happened here, and the next message
+//!      decides what follows. So it is stored as an ordinary assistant text
+//!      row that both the person and the model read. It takes the place of
+//!      the reply the turn did not finish, which keeps the stored chat in its
+//!      user and assistant shape: the salvaged prose and the note are two
+//!      assistant rows in a row, which `fix_conversation` sends as one reply,
+//!      so the next request carries the note once. A system notification
+//!      would not do, because every wire format drops those, and neither
+//!      would a user-only notice.
+//!    - **Something else cancelled it** (another agent's `workspace_close`, the
+//!      chat that started a subagent, a monitor, the orphan reaper, a Crew
+//!      task's time limit): the turn ends on [`TURN_ENDED_NOTICE`], the short
+//!      "Stopped." line every stopped turn ended on before the cancel note. It
+//!      is for people only, as it always was, because the cancel note would
+//!      say a person did something nobody did.
 
 use std::collections::HashSet;
 
@@ -37,15 +55,84 @@ use rmcp::model::Role;
 
 use crate::conversation::message::{Message, MessageContent};
 
-/// The notice a stopped turn ends on.
+/// The note a turn the person cancelled ends on: a plain record of what
+/// happened, which tells the model nothing about what to do next.
 ///
 /// ⚠ **Mirrored in the desktop** as `TURN_STOPPED_NOTICE` in
 /// `ui/desktop/src/components/conversation/turnStoppedNotice.ts`, which draws a
-/// stored notice with this exact text as the same quiet "Stopped." line a
-/// confirmed Stop shows live. A test below reads that file; change both or
-/// neither. A reader that does not know the constant — the CLI's export, an older
-/// desktop — still shows it, as the plain inline notice it is.
-pub const TURN_STOPPED_NOTICE: &str = "Stopped.";
+/// stored note with this exact text as the same quiet line a confirmed Stop
+/// shows live. A test below reads that file; change both or neither. A reader
+/// that does not know the constant (the CLI's export, an older desktop) shows it
+/// as the line of the agent's it is.
+pub const TURN_STOPPED_NOTICE: &str = "The person canceled this turn before it finished.";
+
+/// The line a turn ends on when something other than the person cancelled it,
+/// and the one every stopped turn ended on before [`TURN_STOPPED_NOTICE`]: an
+/// inline system notification the person sees and the model never reads.
+///
+/// ⚠ Mirrored in the desktop as `TURN_ENDED_NOTICE`, beside the other.
+pub const TURN_ENDED_NOTICE: &str = "Stopped.";
+
+/// Who ended an unfinished turn, which decides the note it ends on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TurnEnd {
+    /// The person cancelled it: it ends on [`TURN_STOPPED_NOTICE`], which the
+    /// model reads on its next turn.
+    CancelledByThePerson,
+    /// Something other than the person cancelled it: it ends on
+    /// [`TURN_ENDED_NOTICE`], for people only.
+    CancelledOtherwise,
+    /// The reply stream failed. Not a cancel, so no note: the turn's error says
+    /// what happened.
+    Failed,
+}
+
+impl TurnEnd {
+    /// The ending of a turn whose cancellation token tripped.
+    pub fn cancelled(by_the_person: bool) -> Self {
+        if by_the_person {
+            Self::CancelledByThePerson
+        } else {
+            Self::CancelledOtherwise
+        }
+    }
+}
+
+/// The cancel note, as it is stored: an assistant text row with default
+/// visibility, so the person and the model both read it.
+///
+/// `after_the_agents_text` says the row before it is the agent's own text (the
+/// prose a stopped reply had streamed). The two rows are then sent as one reply
+/// (`fix_conversation` merges consecutive assistant rows, and a later pass joins
+/// their texts as written), so the note opens a new paragraph there; without
+/// the break the model read "The telescope was invented inThe person
+/// cancelled…". Every reader compares the note's words trimmed.
+pub fn turn_stopped_note(after_the_agents_text: bool) -> Message {
+    let text = if after_the_agents_text {
+        format!("\n\n{TURN_STOPPED_NOTICE}")
+    } else {
+        TURN_STOPPED_NOTICE.to_string()
+    };
+    Message::assistant().with_text(text)
+}
+
+/// Does the next row after `previous` (the last row the model reads) join it
+/// as one reply? See [`turn_stopped_note`].
+pub fn ends_on_the_agents_text(previous: Option<&Message>) -> bool {
+    previous.is_some_and(|message| {
+        message.role == Role::Assistant
+            && matches!(message.content.last(), Some(MessageContent::Text(_)))
+    })
+}
+
+/// Is this row the cancel note? Exact words (trimmed) and shape, nothing looser.
+pub fn is_turn_stopped_note(message: &Message) -> bool {
+    message.role == Role::Assistant
+        && matches!(
+            message.content.as_slice(),
+            [MessageContent::Text(text)] if text.text.trim() == TURN_STOPPED_NOTICE
+        )
+}
 
 /// The part of a stopped iteration's streamed rows that is kept.
 ///
@@ -183,7 +270,7 @@ mod tests {
         assert_eq!(kept[0].as_concat_text(), "Let me check.");
     }
 
-    /// The desktop recognises a stored stop notice by this text; see the doc on
+    /// The desktop recognises a stored stop row by these texts; see the doc on
     /// [`TURN_STOPPED_NOTICE`].
     #[test]
     fn the_desktop_mirrors_the_notice_text() {
@@ -191,11 +278,70 @@ mod tests {
             .join("../../ui/desktop/src/components/conversation/turnStoppedNotice.ts");
         let source = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("cannot read {}: {e}", path.display()));
-        let declaration = format!("export const TURN_STOPPED_NOTICE = '{TURN_STOPPED_NOTICE}';");
-        assert!(
-            source.contains(&declaration),
-            "{} must declare `{declaration}`",
-            path.display()
+        for declaration in [
+            format!("export const TURN_STOPPED_NOTICE = '{TURN_STOPPED_NOTICE}';"),
+            format!("export const TURN_ENDED_NOTICE = '{TURN_ENDED_NOTICE}';"),
+        ] {
+            assert!(
+                source.contains(&declaration),
+                "{} must declare `{declaration}`",
+                path.display()
+            );
+        }
+    }
+
+    /// The cancel note is the agent's text with default visibility, the one
+    /// shape every wire format carries to the model and every surface shows.
+    #[test]
+    fn the_cancel_note_is_text_the_person_and_the_model_read() {
+        let note = turn_stopped_note(false);
+        assert!(is_turn_stopped_note(&note));
+        assert!(note.is_user_visible() && note.is_agent_visible());
+        assert_eq!(note.as_concat_text(), TURN_STOPPED_NOTICE);
+        let after_prose = turn_stopped_note(true);
+        assert!(is_turn_stopped_note(&after_prose));
+        assert_eq!(
+            after_prose.as_concat_text(),
+            format!("\n\n{TURN_STOPPED_NOTICE}"),
+            "after the agent's text the note opens a new paragraph"
         );
+        assert!(!note
+            .content
+            .iter()
+            .any(|content| matches!(content, MessageContent::SystemNotification(_))));
+    }
+
+    /// Exact words and shape: a reply that says more, the person's own words,
+    /// or a notice carrying the same text is not the note.
+    #[test]
+    fn only_the_note_itself_is_the_note() {
+        let longer = Message::assistant().with_text(format!("{TURN_STOPPED_NOTICE} More."));
+        let typed = Message::user().with_text(TURN_STOPPED_NOTICE);
+        let notice = Message::assistant()
+            .with_system_notification(SystemNotificationType::InlineMessage, TURN_STOPPED_NOTICE);
+        let two = turn_stopped_note(false).with_text(" Again.");
+        for lookalike in [longer, typed, notice, two] {
+            assert!(!is_turn_stopped_note(&lookalike), "{lookalike:?}");
+        }
+    }
+
+    #[test]
+    fn the_note_opens_a_paragraph_only_after_the_agents_text() {
+        let prose = Message::assistant().with_text("The telescope was invented in");
+        let asked = Message::user().with_text("When?");
+        let call = Message::assistant().with_tool_request(
+            "call-1",
+            Err(rmcp::model::ErrorData::internal_error("x", None)),
+        );
+        assert!(ends_on_the_agents_text(Some(&prose)));
+        assert!(!ends_on_the_agents_text(Some(&asked)));
+        assert!(!ends_on_the_agents_text(Some(&call)));
+        assert!(!ends_on_the_agents_text(None));
+    }
+
+    #[test]
+    fn only_the_persons_cancel_ends_on_the_note() {
+        assert_eq!(TurnEnd::cancelled(true), TurnEnd::CancelledByThePerson);
+        assert_eq!(TurnEnd::cancelled(false), TurnEnd::CancelledOtherwise);
     }
 }

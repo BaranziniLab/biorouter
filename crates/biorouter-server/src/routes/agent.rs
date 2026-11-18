@@ -3005,7 +3005,8 @@ async fn stop_agent(
 ) -> Result<StatusCode, ErrorResponse> {
     let session_id = payload.session_id;
     let session = authorize_agent_control(&state, &session_id, &headers).await?;
-    let stop_guard = state.begin_agent_stop(&session_id);
+    // The person's door: the turn it cancels ends on the cancel note.
+    let stop_guard = state.begin_agent_stop_by(&session_id, crate::state::CancelledBy::Person);
     if let Some(agent) = state.peek_agent(&session_id).await {
         agent.extension_manager.computer_use.revoke();
     }

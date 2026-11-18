@@ -2442,7 +2442,8 @@ pub struct CancelTurnResponse {
     pub continuation_lease: Option<String>,
     /// The rows the cancelled turn's Stop wrote to the transcript, in stored
     /// order: the prose its reply had streamed (text only), any steers it had
-    /// accepted, and the "Stopped." notice it now ends on (item 7). These are
+    /// accepted, and the note saying the person cancelled it, which the model
+    /// reads on its next turn too. These are
     /// exactly what a reload of the chat will show, so the caller can make its
     /// view agree without re-reading the conversation — the notice's own frame
     /// on the turn stream may arrive after a client has stopped listening.
@@ -2962,7 +2963,13 @@ fn admit_ordinary_cancel(
     state: &AppState,
     req: &CancelTurnRequest,
 ) -> Result<CancelAdmission, CancelTurnFailure> {
-    match state.cancel_turn_waitable(&req.session_id, req.expected_turn_id.as_deref()) {
+    // This route is the person's Stop (the desktop's, a `serve` page's,
+    // `biorouter session cancel`), so the turn ends on the cancel note.
+    match state.cancel_turn_waitable(
+        &req.session_id,
+        req.expected_turn_id.as_deref(),
+        crate::state::CancelledBy::Person,
+    ) {
         CancelTurnAttempt::Cancelled(turn) => Ok(CancelAdmission::Active {
             turn,
             continuation: None,

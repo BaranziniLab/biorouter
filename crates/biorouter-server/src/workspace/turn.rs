@@ -941,7 +941,7 @@ async fn run_turn_body(
             stream,
             &agent,
             &session_config,
-            &cancel_token,
+            (&cancel_token, &stop_record),
             &mut all_messages,
             &mut stopped_rows,
         )
@@ -1003,7 +1003,7 @@ async fn drive_turn_with_continuations<'a>(
     first: futures::stream::BoxStream<'a, anyhow::Result<AgentEvent>>,
     agent: &'a Arc<biorouter::agents::Agent>,
     session_config: &biorouter::agents::SessionConfig,
-    cancel_token: &CancellationToken,
+    (cancel_token, cancel_record): (&CancellationToken, &crate::state::TurnStopRecord),
     all_messages: &mut Conversation,
     stopped_rows: &mut Vec<Message>,
 ) -> bool {
@@ -1012,7 +1012,7 @@ async fn drive_turn_with_continuations<'a>(
         let terminal_error = drive_stream(
             session_id,
             stream,
-            cancel_token,
+            (cancel_token, cancel_record),
             all_messages,
             Some(agent.as_ref()),
             stopped_rows,
@@ -1471,21 +1471,21 @@ async fn drain_delegated_work_after_forced_exit(
     Ok(())
 }
 
-/// Settle a reply stream the runner is abandoning — a Stop (`stopped`) or a
-/// failed stream — through the one helper that writes prose, then steers, then
-/// the Stop notice (D19). Returns `true` when it had to publish a terminal
+/// Settle a reply stream the runner is abandoning (a cancel, or a failed
+/// stream) through the one helper that writes prose, then steers, then the
+/// note `end` leaves (D19). Returns `true` when it had to publish a terminal
 /// error of its own.
 async fn settle_interrupted(
     session_id: &str,
     in_flight: &Conversation,
     all_messages: &mut Conversation,
     agent: &biorouter::agents::Agent,
-    stopped: bool,
+    end: biorouter::agents::stopped_turn::TurnEnd,
     stop_record: &mut Vec<Message>,
 ) -> bool {
     biorouter::agents::subagent_handle::begin_parent_closing(session_id);
     match agent
-        .settle_interrupted_turn(session_id, in_flight.messages(), stopped)
+        .settle_interrupted_turn_as(session_id, in_flight.messages(), end)
         .await
     {
         Ok(rows) => {
@@ -1542,7 +1542,7 @@ async fn publish_stream_failure(
             in_flight,
             all_messages,
             agent,
-            false,
+            biorouter::agents::stopped_turn::TurnEnd::Failed,
             &mut Vec::new(),
         )
         .await
@@ -1577,15 +1577,17 @@ async fn publish_stream_failure(
 }
 
 /// `stop_record` receives the rows a STOP of this turn wrote to the transcript,
-/// in the order they were stored — the prose the reply had streamed, the steers
-/// it had accepted, and the "Stopped." notice (item 7). The runner hands them to
+/// in the order they were stored: the prose the reply had streamed, the steers
+/// it had accepted, and the note the turn ends on (item 7; the cancel note when
+/// `cancel_record` says the person cancelled it, the short "Stopped." line
+/// otherwise). The runner hands them to
 /// the cancel that is waiting on this turn, so the window that pressed Stop can
 /// show what a reload will show without re-reading the whole chat. Left empty by
 /// every ending that is not a Stop.
 async fn drive_stream(
     session_id: &str,
     stream: futures::stream::BoxStream<'_, anyhow::Result<AgentEvent>>,
-    cancel_token: &CancellationToken,
+    (cancel_token, cancel_record): (&CancellationToken, &crate::state::TurnStopRecord),
     all_messages: &mut Conversation,
     agent: Option<&biorouter::agents::Agent>,
     stop_record: &mut Vec<Message>,
@@ -1598,9 +1600,14 @@ async fn drive_stream(
     // agent instead. Folded with `Conversation::push`, like `all_messages`: a
     // streamed reply arrives as many same-id chunks.
     let mut in_flight = Conversation::new_unvalidated(Vec::new());
-    // The cancel arm wrote the Stop notice itself; the tail below must not
-    // write a second one.
+    // The cancel arm wrote the note itself; the tail below must not write a
+    // second one.
     let mut stop_settled = false;
+    // Who cancelled decides the note: asked only once the token has tripped,
+    // which the person's door does only after saying so.
+    let cancelled = || {
+        biorouter::agents::stopped_turn::TurnEnd::cancelled(cancel_record.cancelled_by_the_person())
+    };
     loop {
         // The hard cancellation escape. Without it this loop can only end when
         // the agent yields, and `AppState::cancel_turn` deliberately does not
@@ -1625,7 +1632,7 @@ async fn drive_stream(
                     // The prose first, so the store reads in the order things
                     // happened: the reply was streaming when a steer arrived, and
                     // the steer was never answered. See `settle_interrupted`.
-                    if settle_interrupted(session_id, &in_flight, all_messages, agent, true, stop_record).await {
+                    if settle_interrupted(session_id, &in_flight, all_messages, agent, cancelled(), stop_record).await {
                         return true;
                     }
                     stop_settled = true;
@@ -1727,7 +1734,7 @@ async fn drive_stream(
     // child's result is read from it.
     if cancel_token.is_cancelled() && !stop_settled {
         if let Some(notice) = match agent {
-            Some(agent) => agent.record_turn_stopped(session_id).await,
+            Some(agent) => agent.record_turn_end(session_id, cancelled()).await,
             None => None,
         } {
             session_events::publish(
@@ -3166,7 +3173,10 @@ mod tests {
         let terminal_error = drive_stream(
             sid,
             stream.boxed(),
-            &CancellationToken::new(),
+            (
+                &CancellationToken::new(),
+                &crate::state::TurnStopRecord::detached(true),
+            ),
             &mut all,
             None,
             &mut Vec::new(),
@@ -3249,7 +3259,10 @@ mod tests {
         let terminal_error = drive_stream(
             sid,
             stream.boxed(),
-            &CancellationToken::new(),
+            (
+                &CancellationToken::new(),
+                &crate::state::TurnStopRecord::detached(true),
+            ),
             &mut all,
             None,
             &mut Vec::new(),
@@ -3317,7 +3330,10 @@ mod tests {
         let terminal_error = drive_stream(
             sid,
             stream.boxed(),
-            &CancellationToken::new(),
+            (
+                &CancellationToken::new(),
+                &crate::state::TurnStopRecord::detached(true),
+            ),
             &mut all,
             None,
             &mut Vec::new(),
@@ -3662,7 +3678,7 @@ mod tests {
             drive_stream(
                 sid,
                 stream.boxed(),
-                &cancel,
+                (&cancel, &crate::state::TurnStopRecord::detached(true)),
                 &mut all,
                 None,
                 &mut Vec::new(),
@@ -3727,7 +3743,7 @@ mod tests {
         let terminal_error = drive_stream(
             &session.id,
             stream.boxed(),
-            &cancel,
+            (&cancel, &crate::state::TurnStopRecord::detached(true)),
             &mut all,
             Some(&agent),
             &mut stop_record,
@@ -3751,8 +3767,7 @@ mod tests {
                     SessionBusEvent::Agent(AgentEvent::Message(notice)),
                 ] if message.as_concat_text() == "please preserve this"
                     && message.metadata.provenance == Some(provenance.clone())
-                    && stop_notice_text(notice)
-                        == Some(biorouter::agents::stopped_turn::TURN_STOPPED_NOTICE)
+                    && biorouter::agents::stopped_turn::is_turn_stopped_note(notice)
             ),
             "unexpected bus events: {seen:#?}"
         );
@@ -3888,7 +3903,7 @@ mod tests {
             drive_stream(
                 &session.id,
                 stream.boxed(),
-                &cancel,
+                (&cancel, &crate::state::TurnStopRecord::detached(true)),
                 &mut all,
                 Some(&agent),
                 &mut stop_record,
@@ -3909,7 +3924,7 @@ mod tests {
         assert_eq!(
             stored.len(),
             4,
-            "prompt, earlier iteration, the stopped reply, the stop notice — got {ids:?}"
+            "prompt, earlier iteration, the stopped reply, the cancel note: got {ids:?}"
         );
         assert_eq!(stored[0].id.as_deref(), Some("stop-prompt"));
         assert_eq!(
@@ -3934,18 +3949,13 @@ mod tests {
 
         let notice = &stored[3];
         assert!(
-            matches!(
-                notice.content.as_slice(),
-                [MessageContent::SystemNotification(n)]
-                    if n.notification_type == SystemNotificationType::InlineMessage
-                        && n.msg == "Stopped."
-            ),
-            "the turn must end on a durable stop notice: {:?}",
+            biorouter::agents::stopped_turn::is_turn_stopped_note(notice),
+            "the turn the person stopped must end on the cancel note: {:?}",
             notice.content
         );
         assert!(
-            notice.is_user_visible() && !notice.is_agent_visible(),
-            "the notice is for people; the model is not told a transcript fact twice"
+            notice.is_user_visible() && notice.is_agent_visible(),
+            "the note is a record for the person and the model both (owner ruling 2026-11-17)"
         );
 
         // A second window following the chat learns it too. The half-reply is
@@ -3990,6 +4000,69 @@ mod tests {
         );
     }
 
+    /// A turn something other than the person cancelled (another agent's
+    /// `workspace_close`, the chat that started a subagent, the orphan reaper)
+    /// ends on the short line for people only: the cancel note would tell the
+    /// model the person did something nobody did.
+    #[tokio::test]
+    #[serial]
+    async fn a_turn_cancelled_by_something_else_ends_on_the_short_line() {
+        use biorouter::agents::stopped_turn::{is_turn_stopped_note, TURN_ENDED_NOTICE};
+        use biorouter::agents::{Agent, AgentConfig};
+        use biorouter::config::permission::PermissionManager;
+        use biorouter::config::BioRouterMode;
+        use biorouter::session::SessionManager;
+
+        let data_dir = tempfile::TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(data_dir.path().to_path_buf()));
+        let session = session_manager
+            .create_session(
+                std::env::temp_dir(),
+                "cancelled by another agent".into(),
+                SessionType::Hidden,
+            )
+            .await
+            .unwrap();
+        let agent = Agent::with_config(AgentConfig::new(
+            Arc::clone(&session_manager),
+            PermissionManager::instance(),
+            None,
+            BioRouterMode::Auto,
+        ));
+        let stream = futures::stream::pending::<anyhow::Result<AgentEvent>>();
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let mut all = Conversation::new_unvalidated(Vec::new());
+        let mut stop_record = Vec::new();
+        let terminal_error = drive_stream(
+            &session.id,
+            stream.boxed(),
+            (&cancel, &crate::state::TurnStopRecord::detached(false)),
+            &mut all,
+            Some(&agent),
+            &mut stop_record,
+        )
+        .await;
+
+        assert!(!terminal_error);
+        let stored = session_manager
+            .get_session(&session.id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert!(
+            !stored.messages().iter().any(is_turn_stopped_note),
+            "no cancel note for a cancel the person did not make: {stored:?}"
+        );
+        let [notice] = stored.messages().as_slice() else {
+            panic!("one row, the short line: {stored:?}");
+        };
+        assert_eq!(stop_notice_text(notice), Some(TURN_ENDED_NOTICE));
+        assert!(notice.is_user_visible() && !notice.is_agent_visible());
+        assert_eq!(stop_record.len(), 1);
+    }
+
     /// A turn that ended on its own was not stopped, and must not say it was —
     /// nor keep a second copy of a reply its own tail already wrote.
     #[tokio::test]
@@ -4028,7 +4101,7 @@ mod tests {
         let terminal_error = drive_stream(
             &session.id,
             stream.boxed(),
-            &cancel,
+            (&cancel, &crate::state::TurnStopRecord::detached(true)),
             &mut all,
             Some(&agent),
             &mut stop_record,
@@ -4121,7 +4194,10 @@ mod tests {
         let terminal_error = drive_stream(
             &session.id,
             stream.boxed(),
-            &CancellationToken::new(),
+            (
+                &CancellationToken::new(),
+                &crate::state::TurnStopRecord::detached(true),
+            ),
             &mut all,
             Some(&agent),
             &mut Vec::new(),
@@ -4243,7 +4319,7 @@ mod tests {
             drive_stream(
                 &session.id,
                 stream,
-                &cancel,
+                (&cancel, &crate::state::TurnStopRecord::detached(true)),
                 &mut all,
                 Some(&agent),
                 &mut stopped,
@@ -4270,13 +4346,15 @@ mod tests {
             steers[0].metadata.steer_outcome,
             Some(biorouter::conversation::message::SteerOutcome::Unanswered)
         );
-        assert!(stored
-            .messages()
-            .iter()
-            .any(|message| matches!(message.content.as_slice(),
-                [biorouter::conversation::message::MessageContent::SystemNotification(notice)]
-                    if notice.msg == "Stopped."
-            )));
+        assert_eq!(
+            stored
+                .messages()
+                .iter()
+                .filter(|message| biorouter::agents::stopped_turn::is_turn_stopped_note(message))
+                .count(),
+            1,
+            "one cancel note for one Stop"
+        );
         assert!(!agent.has_soft_interrupts());
     }
 
@@ -4301,7 +4379,10 @@ mod tests {
         let terminal_error = drive_stream(
             sid,
             stream.boxed(),
-            &CancellationToken::new(),
+            (
+                &CancellationToken::new(),
+                &crate::state::TurnStopRecord::detached(true),
+            ),
             &mut all,
             None,
             &mut Vec::new(),

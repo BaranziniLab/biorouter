@@ -115,6 +115,12 @@ struct RaceProvider {
     /// SYSTEM prompt, so this is how a test asserts what did — and did not —
     /// reach it.
     summarizer_payloads: Mutex<Vec<String>>,
+    /// Summarizer call indices that wait for their gate before answering: the
+    /// deterministic stand-in for a summarization still running (a slow model,
+    /// a loaded machine) when the next turn starts.
+    gate_summarization_on: Vec<(usize, Arc<tokio::sync::Notify>)>,
+    /// Main-call indices that report this total usage instead of 15 tokens.
+    main_usage_on: Vec<(usize, i32)>,
 }
 
 impl RaceProvider {
@@ -137,7 +143,21 @@ impl RaceProvider {
             seen: Mutex::new(Vec::new()),
             seen_reasoning: Mutex::new(Vec::new()),
             summarizer_payloads: Mutex::new(Vec::new()),
+            gate_summarization_on: Vec::new(),
+            main_usage_on: Vec::new(),
         }
+    }
+
+    /// Hold this summarizer call until `gate` is notified.
+    fn gate_summarization_on(mut self, call: usize, gate: Arc<tokio::sync::Notify>) -> Self {
+        self.gate_summarization_on.push((call, gate));
+        self
+    }
+
+    /// Report `total` tokens on this main call.
+    fn main_usage_on(mut self, call: usize, total: i32) -> Self {
+        self.main_usage_on.push((call, total));
+        self
     }
 
     fn overflow_on(mut self, calls: &[usize]) -> Self {
@@ -250,6 +270,11 @@ impl Provider for RaceProvider {
                 .lock()
                 .unwrap()
                 .push(system_prompt.to_string());
+            for (call, gate) in &self.gate_summarization_on {
+                if *call == n {
+                    gate.notified().await;
+                }
+            }
             if self.fail_summarization_on.contains(&n) {
                 return Err(ProviderError::RequestFailed(
                     "mock summarizer failure".to_string(),
@@ -295,6 +320,13 @@ impl Provider for RaceProvider {
         }
 
         let n = self.main_calls.fetch_add(1, Ordering::SeqCst);
+        let usage = match self.main_usage_on.iter().find(|(call, _)| *call == n) {
+            Some((_, total)) => ProviderUsage::new(
+                "mock-model".to_string(),
+                Usage::new(Some(*total - 5), Some(5), Some(*total)),
+            ),
+            None => usage,
+        };
         self.seen.lock().unwrap().push(
             messages
                 .iter()
@@ -1253,6 +1285,73 @@ async fn a_pinned_note_survives_both_the_writeback_and_a_later_compaction() {
     assert!(
         !agent_sees(&h, "q0").await,
         "an unmarked older message must have been summarized away"
+    );
+}
+
+/// FLAKY-WBF, made deterministic. A turn that ends over the compaction
+/// threshold starts an eager compaction in the background (BR-12); when the
+/// person's next message arrives before that summarization lands, the next
+/// turn used to read the history as still over the threshold and summarize the
+/// same history again in the foreground. Two summaries of one history, one of
+/// them thrown away by the store's freshness guard and billed all the same.
+/// That is what `a_pinned_note_survives_both_the_writeback_and_a_later_compaction`
+/// saw on a loaded CI runner, where turn 1's eager task ran late (3 summarizer
+/// calls where 2 are expected).
+///
+/// Here the eager summarization is held on a gate while turn 2 starts. The
+/// turn waits for the compaction already running, then decides on its result,
+/// so the history is summarized once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_turn_that_starts_during_an_eager_compaction_waits_for_it() {
+    const BOUND: std::time::Duration = std::time::Duration::from_secs(30);
+    let gate = Arc::new(tokio::sync::Notify::new());
+    let (h, provider) = harness(|p| {
+        p.main_usage_on(0, 190_000)
+            .gate_summarization_on(0, Arc::clone(&gate))
+    })
+    .await;
+    seed_history(&h, 6).await;
+
+    // Turn 1 ends at 190,000 of 200,000 tokens, over the threshold, so its end
+    // starts an eager compaction, which the gate holds in its model call.
+    h.run_turn(USER_PROMPT).await.unwrap();
+    tokio::time::timeout(BOUND, async {
+        while provider.summarizer_call_count() < 1 {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("premise: turn 1's end started an eager compaction");
+
+    // Turn 2 starts while it is still running. The gate opens once the turn
+    // has had every chance to start a summarization of its own.
+    let second = h.run_turn("and now the second question");
+    let release = async {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while provider.summarizer_call_count() < 2 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+        gate.notify_one();
+    };
+    let (second, ()) = tokio::join!(tokio::time::timeout(BOUND, second), release);
+    second.expect("turn 2 ends").unwrap();
+
+    assert_eq!(
+        provider.summarizer_call_count(),
+        1,
+        "one history must be summarized once: turn 2 waits for the eager \
+         compaction already running and decides on its result"
+    );
+    assert!(
+        !agent_sees(&h, "q0").await,
+        "the eager compaction landed: the oldest exchange is summarized away"
+    );
+    let seen = provider.texts_seen_on_main_call(1);
+    assert!(
+        seen.iter().any(|text| text.contains("## User Intent")),
+        "turn 2 was sent the compacted history: {seen:#?}"
     );
 }
 

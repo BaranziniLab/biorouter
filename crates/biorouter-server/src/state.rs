@@ -135,6 +135,12 @@ struct TurnRetirement {
     /// that is the one object the runner's guard and the cancel's handle already
     /// share, and it has exactly the lifetime this needs: one turn.
     stopped: StdMutex<Vec<biorouter::conversation::message::Message>>,
+    /// The person asked for this turn to be cancelled ([`CancelledBy::Person`]),
+    /// set by the door they used BEFORE it trips the token, so the runner that
+    /// settles the turn knows which note it ends on. On the retirement for the
+    /// same reason `stopped` is: the one object the door's registry entry and
+    /// the runner already share, for exactly one turn.
+    cancelled_by_the_person: AtomicBool,
 }
 
 impl TurnRetirement {
@@ -143,7 +149,16 @@ impl TurnRetirement {
             retired: AtomicBool::new(false),
             notify: Notify::new(),
             stopped: StdMutex::new(Vec::new()),
+            cancelled_by_the_person: AtomicBool::new(false),
         })
+    }
+
+    /// Say who is about to cancel this turn. Called before the token trips; a
+    /// person's cancel is never taken back by a later one from elsewhere.
+    fn note_cancel(&self, by: CancelledBy) {
+        if by == CancelledBy::Person {
+            self.cancelled_by_the_person.store(true, Ordering::Release);
+        }
     }
 
     fn is_retired(&self) -> bool {
@@ -209,12 +224,47 @@ impl CancelledTurn {
     }
 }
 
+/// Who asked for a turn to be cancelled, which decides the note the turn ends
+/// on (owner ruling 2026-11-17, `biorouter::agents::stopped_turn::TurnEnd`).
+///
+/// Only the person's cancel leaves the cancel note the model reads ("The person
+/// cancelled this turn before it finished."). Every other cancel (another
+/// agent's `workspace_close`, the chat that started a subagent, a monitor, the
+/// orphan reaper) ends the turn on the short "Stopped." line, for people only,
+/// because the note would say the person did something nobody did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelledBy {
+    /// The person, through a door they use: `POST /agent/cancel` (the desktop's
+    /// and a `serve` page's Stop, `biorouter session cancel`) or `POST /agent/stop`.
+    Person,
+    /// Anything else.
+    Other,
+}
+
 /// Where a turn's runner leaves the rows its Stop wrote, for the cancel that is
 /// waiting on the turn to retire (item 7). See [`CancelledTurn::stop_messages`].
 #[derive(Debug, Clone)]
 pub struct TurnStopRecord(Arc<TurnRetirement>);
 
 impl TurnStopRecord {
+    /// Whether the person cancelled this turn ([`CancelledBy::Person`]). Read
+    /// by the runner once the token has tripped, which the person's door does
+    /// only after saying so.
+    pub fn cancelled_by_the_person(&self) -> bool {
+        self.0.cancelled_by_the_person.load(Ordering::Acquire)
+    }
+
+    /// A record that belongs to no registered turn, for a runner's unit tests:
+    /// it says the turn was cancelled by the person or not, as given.
+    #[cfg(test)]
+    pub(crate) fn detached(cancelled_by_the_person: bool) -> Self {
+        let retirement = TurnRetirement::new();
+        if cancelled_by_the_person {
+            retirement.note_cancel(CancelledBy::Person);
+        }
+        Self(retirement)
+    }
+
     pub fn record(&self, rows: Vec<biorouter::conversation::message::Message>) {
         if rows.is_empty() {
             return;
@@ -1238,7 +1288,17 @@ impl AppState {
     /// Block successor admission while a stop operation cancels and evicts the
     /// current agent. The barrier and active-turn snapshot are taken under the
     /// same registry lock used by [`Self::try_begin_turn_idempotent`].
+    ///
+    /// The turn it cancels counts as cancelled by something other than the
+    /// person ([`CancelledBy::Other`]): an agent's `workspace_close` stops a
+    /// chat's agent through here. `POST /agent/stop` says it is the person with
+    /// [`Self::begin_agent_stop_by`].
     pub fn begin_agent_stop(&self, session_id: &str) -> AgentStopGuard {
+        self.begin_agent_stop_by(session_id, CancelledBy::Other)
+    }
+
+    /// [`Self::begin_agent_stop`], saying who is stopping the agent.
+    pub fn begin_agent_stop_by(&self, session_id: &str, by: CancelledBy) -> AgentStopGuard {
         let (cancel, cancelled_turn_id) = {
             let mut registry = self
                 .active_turns
@@ -1254,6 +1314,7 @@ impl AppState {
                 .get(session_id)
                 .filter(|turn| turn.finished_at.is_none())
                 .map_or((None, None), |turn| {
+                    turn.retirement.note_cancel(by);
                     (Some(turn.cancel.clone()), Some(turn.turn_id.clone()))
                 })
         };
@@ -1278,8 +1339,12 @@ impl AppState {
     /// deliberately do **not** remove the entry here, so `cancel_turn` stays
     /// idempotent (a second call finds the same token, already tripped) rather
     /// than racing the guard.
+    ///
+    /// The cancel counts as something other than the person's
+    /// ([`CancelledBy::Other`]): this is the door agents reach through the
+    /// workspace services (`workspace_close`, a parent stopping its subagent).
     pub fn cancel_turn(&self, session_id: &str) -> Option<String> {
-        match self.cancel_turn_waitable(session_id, None) {
+        match self.cancel_turn_waitable(session_id, None, CancelledBy::Other) {
             CancelTurnAttempt::Cancelled(turn) => Some(turn.turn_id),
             CancelTurnAttempt::Idle | CancelTurnAttempt::TurnMismatch { .. } => None,
         }
@@ -1289,10 +1354,14 @@ impl AppState {
     ///
     /// Unlike re-reading `active_turns` by session id, this handle cannot become
     /// confused with a successor that starts after the cancelled guard drops.
+    ///
+    /// `by` says who is cancelling, which decides the note the turn ends on; it
+    /// is recorded before the token trips.
     pub fn cancel_turn_waitable(
         &self,
         session_id: &str,
         expected_turn_id: Option<&str>,
+        by: CancelledBy,
     ) -> CancelTurnAttempt {
         let turn = {
             let turns = self
@@ -1318,6 +1387,7 @@ impl AppState {
             }
             turn.clone()
         };
+        turn.retirement.note_cancel(by);
         turn.cancel.cancel();
         CancelTurnAttempt::Cancelled(CancelledTurn {
             turn_id: turn.turn_id,
@@ -1333,6 +1403,11 @@ impl AppState {
     /// between the match and the mark. An exactly retained retired generation
     /// is safe to mark too: its guard is already settled, but the parent still
     /// needs the pending state during the gap before the replacement starts.
+    ///
+    /// Its one door is the person's Stop-and-Send (`POST /agent/cancel` with
+    /// `continuation_pending`), so the turn it cancels counts as the person's
+    /// ([`CancelledBy::Person`]) and ends on the cancel note before their next
+    /// message.
     pub fn cancel_turn_for_continuation_owned(
         &self,
         session_id: &str,
@@ -1396,6 +1471,7 @@ impl AppState {
         };
 
         self.schedule_continuation_lease_expiry(&admission.token, ttl);
+        turn.retirement.note_cancel(CancelledBy::Person);
         turn.cancel.cancel();
         ContinuationCancelAttempt::Cancelled {
             turn: CancelledTurn {
@@ -2264,6 +2340,47 @@ mod tests {
         assert!(token.is_cancelled(), "the running turn's token was tripped");
     }
 
+    /// Who cancelled a turn decides its note, and only the person's doors say
+    /// it was the person: `cancel_turn` (an agent's `workspace_close`) and the
+    /// plain `begin_agent_stop` do not, `/agent/cancel` and `/agent/stop` do.
+    #[tokio::test]
+    async fn only_the_persons_doors_mark_a_cancel_as_theirs() {
+        let state = AppState::new().await.unwrap();
+
+        let guard = state
+            .try_begin_turn_idempotent("by-agent", CancellationToken::new(), None)
+            .expect("turn starts");
+        state.cancel_turn("by-agent").expect("a turn was running");
+        assert!(!guard.stop_record().cancelled_by_the_person());
+        drop(guard);
+
+        let guard = state
+            .try_begin_turn_idempotent("by-agent-stop", CancellationToken::new(), None)
+            .expect("turn starts");
+        drop(state.begin_agent_stop("by-agent-stop"));
+        assert!(!guard.stop_record().cancelled_by_the_person());
+        drop(guard);
+
+        let guard = state
+            .try_begin_turn_idempotent("by-person", CancellationToken::new(), None)
+            .expect("turn starts");
+        assert!(matches!(
+            state.cancel_turn_waitable("by-person", None, CancelledBy::Person),
+            CancelTurnAttempt::Cancelled(_)
+        ));
+        assert!(guard.stop_record().cancelled_by_the_person());
+        // A later cancel from elsewhere does not take the person's back.
+        state.cancel_turn("by-person");
+        assert!(guard.stop_record().cancelled_by_the_person());
+        drop(guard);
+
+        let guard = state
+            .try_begin_turn_idempotent("by-person-stop", CancellationToken::new(), None)
+            .expect("turn starts");
+        drop(state.begin_agent_stop_by("by-person-stop", CancelledBy::Person));
+        assert!(guard.stop_record().cancelled_by_the_person());
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn agent_stop_blocks_successor_and_continuation_admission_until_eviction_finishes() {
         let state = AppState::new().await.unwrap();
@@ -2305,7 +2422,11 @@ mod tests {
         let state = AppState::new().await.unwrap();
         let guard = begin(&state, "retire-before-wait").unwrap();
         let turn_id = guard.turn_id().to_string();
-        let cancelled = match state.cancel_turn_waitable("retire-before-wait", Some(&turn_id)) {
+        let cancelled = match state.cancel_turn_waitable(
+            "retire-before-wait",
+            Some(&turn_id),
+            CancelledBy::Person,
+        ) {
             CancelTurnAttempt::Cancelled(turn) => turn,
             other => panic!("expected the running turn, got {other:?}"),
         };
@@ -2324,7 +2445,11 @@ mod tests {
         let state = AppState::new().await.unwrap();
         let first = begin(&state, "generation-wait").unwrap();
         let first_id = first.turn_id().to_string();
-        let cancelled = match state.cancel_turn_waitable("generation-wait", Some(&first_id)) {
+        let cancelled = match state.cancel_turn_waitable(
+            "generation-wait",
+            Some(&first_id),
+            CancelledBy::Person,
+        ) {
             CancelTurnAttempt::Cancelled(turn) => turn,
             other => panic!("expected the first turn, got {other:?}"),
         };

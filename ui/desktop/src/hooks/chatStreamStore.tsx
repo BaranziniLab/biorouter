@@ -622,7 +622,7 @@ export interface ChatStreamSnapshot {
   /**
    * F5 — this chat's last Stop provably ended a running turn: the daemon
    * answered its exact-generation cancel `cancelled: true, settled: true`.
-   * BaseChat renders it as a quiet "Stopped." line in the slot a failed Stop's
+   * BaseChat renders it as the quiet cancel line in the slot a failed Stop's
    * notice takes (`ChatTurnStopped`), because until this a Stop that WORKED
    * stated no outcome at all.
    *
@@ -718,7 +718,7 @@ export const TURN_STOPPED_BY_USER = 'turn_stopped_by_user';
 export const STOP_NOT_CONFIRMED = 'stop_not_confirmed';
 
 /**
- * F5 — how long a confirmed Stop's "Stopped." line stays in the transcript.
+ * F5: how long a confirmed Stop's live cancel line stays in the transcript.
  * design.md §4.3's toast duration, so the app's transient confirmations last
  * one length of time rather than two.
  */
@@ -1024,8 +1024,8 @@ class ChatStreamController {
   private lastStopCancelled = false;
   /**
    * Item 7 — the rows the last SETTLED cancel reports its Stop wrote to the
-   * store (`stop_messages`): the stopped reply's prose and the durable
-   * "Stopped." notice. Reset with `lastStopCancelled` at the top of every cancel
+   * store (`stop_messages`): the stopped reply's prose and the cancel note the
+   * model reads too. Reset with `lastStopCancelled` at the top of every cancel
    * request, and adopted into the transcript by `settleStoppedTurn` only once
    * the turn's stream has been abandoned — the stream loop keeps its own copy of
    * the transcript and would write a merge made while it runs straight back out.
@@ -4026,7 +4026,7 @@ class ChatStreamController {
       notifications: [],
       pendingToolCalls: [],
       turnError: undefined,
-      // F5 — "Stopped." spoke about the previous turn; this one supersedes it.
+      // F5: the cancel line spoke about the previous turn; this one supersedes it.
       stopConfirmed: undefined,
       turnStartedAt: Date.now(),
       lastMessageAt: undefined,
@@ -4969,9 +4969,9 @@ class ChatStreamController {
     this.abortController?.abort();
     // Item 7 — after the bump, so no frame of the abandoned stream can write its
     // own copy of the transcript over this. The view becomes what a reload shows:
-    // the stopped reply as stored and the "Stopped." notice it now ends on. The
-    // notice's frame on the turn stream is not relied on — it may land after the
-    // abort above — and `mergeStopRecord` replaces by id when it did arrive.
+    // the stopped reply as stored and the cancel note it now ends on. The
+    // note's frame on the turn stream is not relied on (it may land after the
+    // abort above), and `mergeStopRecord` replaces by id when it did arrive.
     const stopRecord = this.lastStopRecord;
     this.lastStopRecord = [];
     const mergedMessages = mergeStopRecord(this.messagesRef, stopRecord);

@@ -1215,17 +1215,24 @@ impl BioRouterAcpAgent {
         // then usually ends on its own before another event arrives (W1-07: the
         // prompt answered `end_turn` after a Stop).
         //
-        // A cancel while a provider retry waits leaves the retry's note the last
-        // row the model reads, and the next prompt would be sent behind it.
+        // The token is taken out of the session before it is read, so a cancel
+        // that arrives after this prompt ended finds nothing to cancel.
         drop(stream);
+        {
+            let mut sessions = self.sessions.lock().await;
+            if let Some(session) = sessions.get_mut(&session_id) {
+                session.cancel_token = None;
+            }
+        }
         let cancelled = cancel_token.is_cancelled();
         if cancelled {
-            self.agent.retire_unanswered_retry_note(&session_id).await;
-        }
-
-        let mut sessions = self.sessions.lock().await;
-        if let Some(session) = sessions.get_mut(&session_id) {
-            session.cancel_token = None;
+            // The one cancel note every surface leaves (owner ruling
+            // 2026-11-17): stored once, read by the person when the editor
+            // reloads the chat and by the model on its next turn. It also
+            // retires a provider retry's note the cancel left the last row
+            // the model reads, which the next prompt would otherwise be sent
+            // behind.
+            self.agent.record_turn_stopped(&session_id).await;
         }
 
         // ACP: a prompt the client cancelled answers `cancelled`.

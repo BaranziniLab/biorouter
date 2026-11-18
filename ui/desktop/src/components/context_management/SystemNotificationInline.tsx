@@ -1,7 +1,7 @@
 import React from 'react';
 import { Message, SystemNotificationContent } from '../../api';
 import { ChatTurnStopped } from '../conversation/ChatTurnStopped';
-import { isTurnStoppedNotice } from '../conversation/turnStoppedNotice';
+import { turnStoppedNoticeText } from '../conversation/turnStoppedNotice';
 import { usageLimitNoticeKind } from '../conversation/usageLimitNotice';
 import { Disclosure } from '../ui/disclosure';
 import { InfoTip } from '../ui/info-tip';
@@ -15,10 +15,12 @@ interface SystemNotificationInlineProps {
 }
 
 export const SystemNotificationInline: React.FC<SystemNotificationInlineProps> = ({ message }) => {
-  // Item 7: a stopped turn's stored notice is the same line a confirmed Stop
-  // draws live, so a reload, another window and History read it the same way.
-  if (isTurnStoppedNotice(message)) {
-    return <ChatTurnStopped inTranscript />;
+  // A stopped turn's stored row (the cancel note, or the short "Stopped." line)
+  // is the same line a confirmed Stop draws live, in the row's own words, so a
+  // reload, another window and History read it the same way.
+  const stopped = turnStoppedNoticeText(message);
+  if (stopped !== undefined) {
+    return <ChatTurnStopped inTranscript label={stopped} />;
   }
 
   const systemNotification = message.content.find(
