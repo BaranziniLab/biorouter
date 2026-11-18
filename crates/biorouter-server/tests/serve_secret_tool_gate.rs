@@ -75,7 +75,7 @@ fn launch_posture() {
     assert!(biorouter::privacy::privacy_tiers_enabled());
     let config = Config::global();
     config
-        .set_biorouter_provider_and_model("google".into(), MODEL.into())
+        .set_biorouter_provider_and_model("google", MODEL)
         .unwrap();
     config
         .set_secret("BASETEN_API_KEY", &"s14-synthetic-baseten-key")
