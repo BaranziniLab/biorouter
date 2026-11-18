@@ -3587,7 +3587,7 @@ mod tests {
                     path: required_file.to_string_lossy().into_owned(),
                 }],
                 on_failure: Some(format!(
-                    "echo recovery >> \"{}\"",
+                    "echo recovery>>\"{}\"",
                     recovery_log.to_string_lossy()
                 )),
                 timeout_seconds: Some(10),
