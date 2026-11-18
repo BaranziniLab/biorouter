@@ -501,6 +501,13 @@ async fn cancelling_while_the_saved_runtime_loads_settles_without_inference() {
     let provider = RosterProvider::new(None);
     let state = state(&provider).await;
     let (_workdir, session) = saved_session(&state, vec![todo()], SessionType::User).await;
+    state
+        .session_manager()
+        .update(&session.id)
+        .user_provided_name("Cold roster fixture")
+        .apply()
+        .await
+        .unwrap();
     let (release, loaded) = oneshot::channel::<()>();
     state
         .set_extension_loading_task(
