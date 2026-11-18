@@ -5,7 +5,9 @@
 > judged, and the redaction of credential material in what a tool returns.
 > **Status:** Current. The argument scan was rebuilt and the output redaction added on
 > 2026-09-11, fixing QA-C finding H1; the sections below describe that code. Seven well-known
-> password and token stores joined the floor on 2026-09-25 (Crew live QA round 4, Q4-56).
+> password and token stores joined the floor on 2026-09-25 (Crew live QA round 4, Q4-56). On
+> 2026-11-17 the symlink budget began to fail closed (SG-30) and the served page's two file routes
+> began to apply the floor and the redaction (SG-27).
 > **Audience:** developers working on tool dispatch, the Developer and Biorouter Copilot
 > extensions or the guardrails, and anyone reviewing what BioRouter promises about secrets.
 
@@ -63,6 +65,7 @@ standing (`q4_56_a_negation_reopens_one_store`).
 | Developer server, `is_ignored` | `text_editor` and `image_processor` paths, after symlinks are resolved. |
 | `call_tool_withholding_secrets`, inside the dispatched future | Every tool **result** and error, before any model sees it. |
 | Biorouter Copilot tools | Nothing path-shaped for the argument scan to judge: their arguments name a display, an application or an element, not a file. The result redaction applies to their text, not to their screenshots. |
+| `/headless/fs/read` and `/headless/fs/artifact` (`refuse_floor` in `routes/shell.rs`) | The file a served page's preview asks for, or any caller holding the daemon secret (which a public chat's shell can recover), after its links are resolved: the floor and the nearest project `.biorouterignore` refuse it whether or not it exists, and a text body the route does return passes the output redaction below. Both routes ask the same question, so they cannot disagree about a file. |
 
 The command argument checks share one resolver, so they cannot disagree about what a command means.
 
@@ -162,8 +165,22 @@ proves expensive.
 
 The scan runs on every tool call, so it is bounded: at most 512 symlink resolutions, 64
 directory listings of at most 4,096 entries, a 256-directory / 8,192-entry walk for `**`, four
-levels of nested shells, and 2,048 path literals pulled out of code. A certain path that cannot
-be verified inside those budgets fails closed; a path-looking string pulled out of code does not.
+levels of nested shells, and 2,048 path literals pulled out of code.
+
+Each word a command uses as a path spends one of the 512 symlink resolutions and records where its
+folder really is. Once they are spent, a word is still judged when it can be placed without one: a
+file that is not a link, in a folder already recorded (or reached from one through folders that
+are not links), where every name added on the way is one the disk cannot spell another way, which
+means printable ASCII, no `~`, `:` or other character Windows reserves, and no trailing `.` or
+space, because a case-insensitive or short-name filesystem opens the same file under such a
+spelling and only `realpath` reports the real one. Any other certain path past the budget is
+refused as too complex: a link, a name outside that set, a folder never seen. A glob in a
+directory the listing budget can no longer read is refused as well. So a command naming 600 files
+in one folder is judged in full, while 700 benign links and then one to `.netrc` is refused. Until
+2026-11-17 everything past the 512th resolution was let through instead, and that command read the
+password (SG-30). A path-looking string pulled out of code does not fail closed; past a budget it
+keeps the verdict its spelling alone gives.
+
 `h1_scan_cost_stays_bounded` holds a 2,000-command line, a 2,000-line here-document and a
 10,000-token content field to a few seconds in a debug build.
 
@@ -186,7 +203,10 @@ recognises credential material in a tool result and replaces the value with a ma
 
 It runs inside the future `dispatch_tool_call` returns, so the agent loop, the Claude Code and
 Codex tool bridge (whose results never pass the agent loop's own output guardrail),
-`POST /agent/call_tool` and code execution's sub-calls all receive the redacted result. Errors are
+`POST /agent/call_tool` and code execution's sub-calls all receive the redacted result. The served
+page's `/headless/fs/read` and `/headless/fs/artifact` pass the text they return through the same
+`redact_text`: a file's text and the text extracted from an Office document. A document's own
+bytes and an image are returned as they are. Errors are
 redacted as well: a failing tool can include command output in its error. A redacted
 result carries `_meta.biorouterSecretRedaction` (`{count, kinds}`); the agent loop turns that into
 a `[BIOROUTER GUARDRAIL]` line above the untrusted-data frame, and the daemon logs a warning that
@@ -230,6 +250,7 @@ boundary against a determined adversary — the same ruling that governs
 BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-mcp --lib -- secret_guard h1_
 BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter --lib -- secret_output extension_manager guardrails::tool_output
 BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-server --lib -- crew::local_files
+BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-server --lib -- routes::shell
 ```
 
 The H1 tables run every measured spelling — and the families around them — against a throwaway
@@ -237,7 +258,8 @@ HOME holding made-up credentials, through the dispatch scan, through the resolve
 `developer__shell`'s own check. The `q4_56_` tests hold the seven long-tail stores to the floor by
 name, by case and through the H1 spellings (`~`, `$HOME`, a glob, `cd`, `bash -c`,
 `find -name`), keep their neighbours readable, and prove a negation still reopens one;
-`crew::local_files` holds Crew's registration to the same floor. The fake key material is
+`crew::local_files` holds Crew's registration to the same floor, and `routes::shell` holds the
+served page's two file routes to it and to the redaction. The fake key material is
 assembled at run time so no key-shaped literal sits in the source. None of the tests reads the
 real `~/.aws`, `~/.ssh` or `~/.config/biorouter`.
 

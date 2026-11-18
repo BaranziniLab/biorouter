@@ -23,6 +23,11 @@
 //! refused if the directory it would land in holds a protected file, or if its
 //! known end could complete a deny pattern.
 //!
+//! A certain path the scan cannot verify inside its budgets is refused too
+//! ([`Reason::TooComplex`]): past [`MAX_CANONICALIZE`] resolutions, a link, a
+//! name the disk could spell another way, or a folder never seen before (see
+//! `Resolver::physical`).
+//!
 //! # What this cannot see
 //!
 //! A path computed at run time by something other than the shell — `python -c`
@@ -142,6 +147,15 @@ pub(crate) enum Reason {
     TooComplex,
 }
 
+/// What [`Resolver::denied_resolved`] concluded about one path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Verdict {
+    Clear,
+    Denied,
+    /// A certain path with a link the budget no longer covers.
+    Unverifiable,
+}
+
 type Scan = Result<(), Finding>;
 
 #[derive(Clone)]
@@ -206,6 +220,10 @@ pub(crate) struct Resolver<'a> {
     listings_left: u32,
     listings: HashMap<PathBuf, Listing>,
     secret_dirs: HashMap<PathBuf, bool>,
+    /// A folder as a word named it, mapped to where it really is, recorded
+    /// while the symlink budget lasts so that a plain file in a known folder
+    /// can still be judged after it runs out (see [`Self::physical`]).
+    resolved_dirs: HashMap<PathBuf, PathBuf>,
     /// Whether the word being judged is certainly a path the command uses
     /// (a shell word, a redirect target, a path argument) rather than a
     /// path-looking string pulled out of code. Only a certain path fails closed
@@ -230,6 +248,7 @@ impl<'a> Resolver<'a> {
             listings_left: MAX_LISTINGS,
             listings: HashMap::new(),
             secret_dirs: HashMap::new(),
+            resolved_dirs: HashMap::new(),
             strict: true,
             dotglob: false,
             windows_lexing: cfg!(windows),
@@ -252,14 +271,17 @@ impl<'a> Resolver<'a> {
         for windows in grammars {
             self.windows_lexing = *windows;
             // Each grammar gets the WHOLE budget, not a share of it. Both
-            // budgets fail *open* when they run out — `denied_resolved` stops
-            // canonicalising and answers "not denied", and `list` stops reading
-            // directories — so a second pass running on the drain of the first
-            // would be a weaker check than the first, which is precisely the
-            // asymmetry the union exists to remove. The `listings` and
-            // `secret_dirs` caches are deliberately *not* reset: they memoise
-            // facts about the filesystem, which no grammar changes, so the
-            // second pass reuses them for free.
+            // budgets fail *closed* for a certain path when they run out (a
+            // link `denied_resolved` can no longer resolve, or a directory
+            // `list` can no longer read, is refused as too complex) and open
+            // for a path-looking string pulled out of code. A second pass
+            // running on the drain of the first would therefore answer
+            // differently from the first for the same input, which is
+            // precisely the asymmetry the union exists to remove. The
+            // `listings`, `secret_dirs` and `resolved_dirs` caches are
+            // deliberately *not* reset: they memoise facts about the
+            // filesystem, which no grammar changes, so the second pass reuses
+            // them for free.
             self.canonicalize_left = MAX_CANONICALIZE;
             self.listings_left = MAX_LISTINGS;
             result = scan(self);
@@ -1021,10 +1043,11 @@ impl<'a> Resolver<'a> {
                 Kind::Hole => return self.eval_hole(cur, &comps[k..], shown),
             }
         }
-        if self.denied_resolved(&cur) {
-            return Err(self.finding(shown, Some(cur), Reason::Pattern));
+        match self.denied_resolved(&cur) {
+            Verdict::Clear => Ok(()),
+            Verdict::Denied => Err(self.finding(shown, Some(cur), Reason::Pattern)),
+            Verdict::Unverifiable => Err(self.finding(shown, Some(cur), Reason::TooComplex)),
         }
-        Ok(())
     }
 
     fn eval_glob(&mut self, dir: PathBuf, tokens: &[Tok], rest: &[Template], shown: &str) -> Scan {
@@ -1208,18 +1231,91 @@ impl<'a> Resolver<'a> {
 
     // ---- the filesystem ---------------------------------------------------
 
-    /// Denied lexically, or once symlinks are resolved.
-    fn denied_resolved(&mut self, path: &Path) -> bool {
+    /// Denied lexically, or once symlinks are resolved; or, for a certain path
+    /// whose links the budget no longer covers, unverifiable.
+    fn denied_resolved(&mut self, path: &Path) -> Verdict {
         let lexical = lexical_normalize(path);
         if self.guard.is_denied(&lexical) {
-            return true;
+            return Verdict::Denied;
         }
-        if self.canonicalize_left == 0 {
-            return false;
+        let Some(physical) = self.physical(path) else {
+            // Out of budget with a link, an unusual name or an unknown folder
+            // still to resolve. A certain path fails closed (SG-30: 700 benign
+            // links and then one to `.netrc` used to read the password); a
+            // path-looking string pulled out of code keeps the lexical
+            // verdict, as it does for every other budget.
+            return if self.strict {
+                Verdict::Unverifiable
+            } else {
+                Verdict::Clear
+            };
+        };
+        if physical != lexical && self.guard.is_denied(&physical) {
+            Verdict::Denied
+        } else {
+            Verdict::Clear
         }
-        self.canonicalize_left -= 1;
-        let physical = canonical_prefix(path);
-        physical != lexical && self.guard.is_denied(&physical)
+    }
+
+    /// Where `path` really is, or `None` when that would take a symlink
+    /// resolution the budget no longer has.
+    ///
+    /// Inside the budget this is [`canonical_prefix`], exactly as it always
+    /// was, and each answer also records where the word's folder really is
+    /// (free, unless the word is itself a link). Past the budget a path is
+    /// composed from a folder recorded that way, one `lstat` per component and
+    /// no resolution at all, which is exact unless something on the way needs
+    /// one: a link, or a name the disk could spell differently
+    /// ([`is_stable_name`]), because `realpath` is what turns `credentialſ` or
+    /// `CREDEN~1` into `credentials` on a case-insensitive or short-name
+    /// filesystem. Those, and a path under no folder seen before, answer
+    /// `None`.
+    fn physical(&mut self, path: &Path) -> Option<PathBuf> {
+        if self.canonicalize_left > 0 {
+            self.canonicalize_left -= 1;
+            let physical = canonical_prefix(path);
+            self.remember_folder(path, &physical);
+            return Some(physical);
+        }
+        self.composed(path)
+    }
+
+    /// Record where `path`'s folder really is, given where `path` really is.
+    /// Only for a path that is not itself a link: a link's resolution names
+    /// its target's folder, not its own.
+    fn remember_folder(&mut self, path: &Path, physical: &Path) {
+        let (Some(_), Some(parent), Some(folder)) =
+            (path.file_name(), path.parent(), physical.parent())
+        else {
+            return;
+        };
+        if parent.as_os_str().is_empty() || self.resolved_dirs.contains_key(parent) || is_link(path)
+        {
+            return;
+        }
+        self.resolved_dirs
+            .insert(parent.to_path_buf(), folder.to_path_buf());
+    }
+
+    /// `path` from a folder already resolved, past the budget. See
+    /// [`Self::physical`].
+    fn composed(&mut self, path: &Path) -> Option<PathBuf> {
+        let (Some(name), Some(parent)) = (path.file_name(), path.parent()) else {
+            return None;
+        };
+        if parent.as_os_str().is_empty() || !is_stable_name(name) || is_link(path) {
+            return None;
+        }
+        let folder = match self.resolved_dirs.get(parent) {
+            Some(folder) => folder.clone(),
+            None => {
+                let folder = self.composed(parent)?;
+                self.resolved_dirs
+                    .insert(parent.to_path_buf(), folder.clone());
+                folder
+            }
+        };
+        Some(folder.join(name))
     }
 
     /// Does `dir` directly hold a protected file, or sit under a directory
@@ -1611,6 +1707,39 @@ fn classify(comp: &Template) -> Kind {
         })
         .collect();
     Kind::Glob(glob::parse(&chars))
+}
+
+/// Whether a file name's spelling on disk can differ from this spelling only
+/// in ASCII case, which [`SecretGuard::is_denied`] folds anyway.
+///
+/// Printable ASCII (a space included), with none of `~`, `:` or the other
+/// characters Windows reserves, and not ending in `.` or a space. That rules
+/// out what a case-insensitive or legacy filesystem treats as another name for
+/// the same file: a non-ASCII letter that folds to an ASCII one (`ſ` to `s` on
+/// APFS), a short name (`CREDEN~1`), a trailing dot or space Windows drops, and
+/// an alternate data stream (`name:stream`).
+/// Whether the last component of `path` is itself a symbolic link.
+fn is_link(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|named| named.file_type().is_symlink())
+}
+
+#[cfg(test)]
+pub(crate) fn is_stable_name_for_tests(name: &str) -> bool {
+    is_stable_name(std::ffi::OsStr::new(name))
+}
+
+fn is_stable_name(name: &std::ffi::OsStr) -> bool {
+    name.to_str().is_some_and(|name| {
+        !name.is_empty()
+            && !name.ends_with(['.', ' '])
+            && name.bytes().all(|b| {
+                (b.is_ascii_graphic() || b == b' ')
+                    && !matches!(
+                        b,
+                        b'~' | b':' | b'\\' | b'*' | b'?' | b'"' | b'<' | b'>' | b'|'
+                    )
+            })
+    })
 }
 
 fn push_component(path: &mut PathBuf, name: &str) {

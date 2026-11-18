@@ -77,6 +77,18 @@
 //! surface reads any of them; secrets reach the interface through the `/config`
 //! routes.
 //!
+//! The two reading routes, `/headless/fs/read` and `/headless/fs/artifact`, then
+//! ask one more question through [`refuse_floor`]: the secret guard's always-on
+//! floor (`.env`, `.netrc`, `secrets.*`, private keys and the rest of
+//! `biorouter_mcp::secret_guard::DEFAULT_SECRET_PATTERNS`) and the nearest
+//! project `.biorouterignore`, asked of the resolved path whether or not the
+//! file exists. A text body either route returns passes the same credential
+//! redaction a tool result does
+//! (`biorouter::guardrails::secret_output::redact_text`). Holding the daemon
+//! secret does not make a caller the user, because a public chat's shell can
+//! recover it, so these routes may not hand over a file the agent's own tools
+//! would refuse (SG-27).
+//!
 //! # What did not come across
 //!
 //! The reverse proxy, the static-file serving, the index rewriting and the
@@ -547,6 +559,49 @@ fn is_denied(path: &Path) -> bool {
                 .iter()
                 .any(|denied| name.eq_ignore_ascii_case(denied))
         })
+}
+
+/// Refuse a resolved path the secret guard's floor names, for both reading
+/// routes.
+///
+/// [`is_denied`] knows only the credential-store directories and a few names.
+/// The secret guard also refuses `.env`, `.netrc`, `secrets.*`, private keys
+/// and the other well-known stores, plus whatever the nearest project
+/// `.biorouterignore` adds, and it refuses them whether or not they exist. The
+/// artifact route used to ask it and `/headless/fs/read` did not, so the same
+/// `.env` was refused by one and returned in clear by the other (SG-27).
+///
+/// `path` is what [`PathGuard::resolve`] returned, so a link has already been
+/// replaced by its target and is judged as the file it reaches. The project is
+/// the nearest ancestor holding a `.biorouterignore`, else the daemon's working
+/// directory; the floor applies wherever the path is.
+fn refuse_floor(guard: &PathGuard, path: &Path) -> Result<(), Refusal> {
+    if is_denied(path) {
+        return Err(Refusal::Denied);
+    }
+    let project_root = path
+        .parent()
+        .and_then(|parent| {
+            parent
+                .ancestors()
+                .find(|ancestor| ancestor.join(".biorouterignore").is_file())
+        })
+        .unwrap_or(&guard.cwd);
+    if biorouter_mcp::secret_guard::SecretGuard::cached_for_dir(project_root).is_denied(path) {
+        return Err(Refusal::Denied);
+    }
+    Ok(())
+}
+
+/// A text body as a reading route returns it: with credential material in it
+/// (a renamed copy of an AWS credentials file, a private key under another
+/// name) replaced by the marker a tool result would carry. The floor stops a
+/// file by name; this stops the bytes when the name is not one it knows.
+fn withhold_credentials(text: String) -> String {
+    match biorouter::guardrails::secret_output::redact_text(&text) {
+        Some((redacted, _kinds)) => redacted,
+        None => text,
+    }
 }
 
 /// The user's home directory.
@@ -1601,26 +1656,12 @@ async fn fs_artifact(Query(query): Query<PathQuery>) -> Response {
 
 fn read_artifact_within(guard: &PathGuard, requested: &str) -> Result<serde_json::Value, Refusal> {
     let path = guard.resolve(requested)?;
+    // The floor is judged on the resolved path before anything is opened, so a
+    // floor name is refused whether or not it exists, and then
+    // `open_validated_file` proves the descriptor is the file at that same
+    // path: a name flipped to a link in between is refused, not read.
+    refuse_floor(guard, &path)?;
     let (mut file, metadata) = open_validated_file(&path)?;
-    // Both deny lists run again now that the descriptor is proven to be this
-    // path. `resolve` ran them against a *name*, and a name is the one thing
-    // the substitution above changes — a check that never reaches the file it
-    // is protecting is advice, not a boundary.
-    if is_denied(&path) {
-        return Err(Refusal::Denied);
-    }
-    let project_root = path
-        .parent()
-        .and_then(|parent| {
-            parent
-                .ancestors()
-                .find(|ancestor| ancestor.join(".biorouterignore").is_file())
-        })
-        .unwrap_or(&guard.cwd);
-    let secret_guard = biorouter_mcp::secret_guard::SecretGuard::cached_for_dir(project_root);
-    if secret_guard.is_denied(&path) {
-        return Err(Refusal::Denied);
-    }
     let title = path
         .file_name()
         .and_then(OsStr::to_str)
@@ -1664,7 +1705,7 @@ fn read_artifact_within(guard: &PathGuard, requested: &str) -> Result<serde_json
             "size": metadata.len(), "revision": revision, "found": true
         });
         if let Some(extracted) = extracted {
-            document["extractedText"] = extracted.text.into();
+            document["extractedText"] = withhold_credentials(extracted.text).into();
             document["textTruncated"] = extracted.truncated.into();
         }
         return Ok(document);
@@ -1685,7 +1726,9 @@ fn read_artifact_within(guard: &PathGuard, requested: &str) -> Result<serde_json
         }));
     }
     if mime_type.starts_with("text/") {
-        let text = String::from_utf8(bytes).map_err(|_| Refusal::Unusable)?;
+        // The revision above identifies the file's bytes; the text shown is
+        // those bytes with any credential material withheld.
+        let text = withhold_credentials(String::from_utf8(bytes).map_err(|_| Refusal::Unusable)?);
         return Ok(serde_json::json!({
             "kind": if mime_type == "text/html" { "html" } else { "text" },
             "title": title, "path": requested, "mimeType": mime_type, "text": text,
@@ -1703,6 +1746,10 @@ fn read_artifact_within(guard: &PathGuard, requested: &str) -> Result<serde_json
 /// exercised against a real directory instead of against the process's own
 /// home.
 ///
+/// It applies [`refuse_floor`] and [`withhold_credentials`] exactly as
+/// [`read_artifact_within`] does, so the two routes behind one preview panel
+/// cannot disagree about a credential file.
+///
 /// The file is opened the way the artifact route opens it, through
 /// [`open_validated`], and for the reason recorded on [`open_validated_file`]:
 /// `resolve` checked a *name*, and a plain open resolves that name again from
@@ -1711,6 +1758,8 @@ fn read_artifact_within(guard: &PathGuard, requested: &str) -> Result<serde_json
 /// the guard had just refused it by name.
 async fn read_file_within(guard: &PathGuard, requested: &str) -> Result<ReadFileResponse, Refusal> {
     let path = guard.resolve(requested)?;
+    // The same floor the artifact route asks, on the same resolved path.
+    refuse_floor(guard, &path)?;
     let read = tokio::task::spawn_blocking(move || read_validated_text(&path))
         .await
         .map_err(|_| Refusal::Unusable)??;
@@ -1720,7 +1769,7 @@ async fn read_file_within(guard: &PathGuard, requested: &str) -> Result<ReadFile
     Ok(match read {
         Ok(file) => ReadFileResponse {
             file_path,
-            file,
+            file: withhold_credentials(file),
             found: true,
             error: None,
         },
@@ -3205,6 +3254,109 @@ mod tests {
             "OPENAI_API_KEY: real"
         );
         assert_eq!(read_validated_text(&requested).err(), Some(Refusal::Denied));
+    }
+
+    // --- The secret floor on both reading routes (SG-27, GAP-SG-01) --------
+
+    /// SG-27 (rq2-039, rq2-044). The artifact route asked the secret guard and
+    /// refused `.env`, `.netrc`, `secrets.csv` and a link to `.env`, while
+    /// `/headless/fs/read` asked only the short credential-store list and
+    /// returned all four in clear. Both routes serve the same preview panel,
+    /// so they answer the same, and a floor name is refused whether or not the
+    /// file exists.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn fs_read_refuses_the_floor_names_the_artifact_route_refuses() {
+        let tmp = TempDir::new().unwrap();
+        let guard = guard_over(tmp.path());
+        let home = tmp.path().join("home");
+        let project = home.join("proj");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(project.join("ok.txt"), "hello\n").unwrap();
+        fs::write(project.join(".env"), "API_KEY=fake-api-key-for-tests\n").unwrap();
+        fs::write(
+            home.join(".netrc"),
+            "machine example.com login me password hunter2fake\n",
+        )
+        .unwrap();
+        fs::write(project.join("secrets.csv"), "name,secret\nbob,fake\n").unwrap();
+        std::os::unix::fs::symlink(project.join(".env"), project.join("linkenv")).unwrap();
+
+        // A positive control: an ordinary file beside them reads on both.
+        let ok = project.join("ok.txt");
+        assert_eq!(read_answer(&guard, &ok).await.0, StatusCode::OK);
+        assert_eq!(artifact_answer(&guard, &ok).await.0, StatusCode::OK);
+
+        for floor in [
+            project.join(".env"),
+            home.join(".netrc"),
+            project.join("secrets.csv"),
+            project.join("linkenv"),
+            // Not there at all: the floor does not depend on existence.
+            project.join(".env.local"),
+        ] {
+            let name = floor.display().to_string();
+            assert_eq!(
+                read_file_within(&guard, &name).await.err(),
+                Some(Refusal::Denied),
+                "/headless/fs/read served {name}"
+            );
+            let read = read_answer(&guard, &floor).await;
+            let artifact = artifact_answer(&guard, &floor).await;
+            assert_eq!(read.0, StatusCode::FORBIDDEN, "{name}: {}", read.1);
+            assert_eq!(read, artifact, "the two routes disagree about {name}");
+        }
+    }
+
+    /// GAP-SG-01. A credential under a name the floor does not know (a renamed
+    /// copy of an AWS credentials file) came back whole from both routes. Text
+    /// bodies now pass the same redaction a tool result does.
+    #[tokio::test]
+    async fn fs_read_and_artifact_redact_credential_material() {
+        let tmp = TempDir::new().unwrap();
+        let guard = guard_over(tmp.path());
+        let home = tmp.path().join("home");
+        // Assembled at run time so no key-shaped literal sits in the source.
+        let id = format!("{}{}", "AKIA", "FAKEFAKEFAKE0000");
+        let secret = format!("{}{}", "fakeSecretKeyForTestsOnly", "0".repeat(15));
+        let body =
+            format!("[default]\naws_access_key_id = {id}\naws_secret_access_key = {secret}\n");
+        // The instrument first: the redactor recognises this body.
+        assert!(biorouter::guardrails::secret_output::redact_text(&body).is_some());
+        let renamed = home.join("renamed_aws.txt");
+        fs::write(&renamed, &body).unwrap();
+        let renamed = renamed.to_str().unwrap();
+
+        let withheld = |text: &str, route: &str| {
+            assert!(!text.contains(&secret), "{route} returned the secret key");
+            assert!(!text.contains(&id), "{route} returned the key id");
+            assert!(text.contains("[REDACTED:"), "{route}: {text}");
+            assert!(text.contains("[default]"), "{route} lost the rest: {text}");
+        };
+
+        let read = read_file_within(&guard, renamed).await.unwrap();
+        assert!(read.found);
+        withheld(&read.file, "/headless/fs/read");
+
+        let value = read_artifact_within(&guard, renamed).unwrap();
+        assert_eq!(value["kind"], "text");
+        withheld(
+            value["text"].as_str().unwrap(),
+            "/headless/fs/artifact text",
+        );
+
+        // Text the route extracts from an Office document is a text body too.
+        let docx = home.join("keys.docx");
+        let xml = format!(
+            "<w:document><w:body><w:p><w:r><w:t>[default]</w:t></w:r></w:p>\
+             <w:p><w:r><w:t>{id} {secret}</w:t></w:r></w:p></w:body></w:document>"
+        );
+        fs::write(&docx, office_zip(&[("word/document.xml", xml.as_bytes())])).unwrap();
+        let value = read_artifact_within(&guard, docx.to_str().unwrap()).unwrap();
+        withheld(
+            value["extractedText"].as_str().unwrap(),
+            "/headless/fs/artifact extractedText",
+        );
     }
 
     /// A loop has no target either. It is refused as a link, not stepped past

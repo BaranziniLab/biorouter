@@ -675,8 +675,9 @@ impl DeniedAccess {
                  Name the file you need explicitly instead."
             ),
             resolve::Reason::TooComplex => format!(
-                "The command is blocked: {target} nests shells too deeply for the secret guard \
-                 to verify which files it reads. Split it into simpler commands."
+                "The command is blocked: the secret guard could not verify which files {target} \
+                 reads, because the command nests shells too deeply or names more links than it \
+                 can follow. Split it into simpler commands."
             ),
         }
     }
@@ -1906,6 +1907,126 @@ mod tests {
                 scan_command(&g, &env, command).is_some(),
                 "a link into the fake ~/.aws reached the secret: {command}"
             );
+        }
+    }
+
+    /// `padding` links to a benign file, then one into a fake `.netrc`.
+    #[cfg(unix)]
+    fn padded_link_command(fake: &FakeHome, padding: usize) -> String {
+        let links = fake.project.join("ln");
+        fs::create_dir_all(&links).unwrap();
+        fs::write(fake.project.join("benign.txt"), "hello\n").unwrap();
+        fs::write(
+            fake.home.join(".netrc"),
+            "machine example.com login me password hunter2fake\n",
+        )
+        .unwrap();
+        let mut words = vec!["cat".to_string()];
+        for i in 0..padding {
+            let name = format!("l{i}");
+            if !links.join(&name).exists() {
+                std::os::unix::fs::symlink(fake.project.join("benign.txt"), links.join(&name))
+                    .unwrap();
+            }
+            words.push(format!("ln/{name}"));
+        }
+        if !links.join("zz").exists() {
+            std::os::unix::fs::symlink(fake.home.join(".netrc"), links.join("zz")).unwrap();
+        }
+        words.push("ln/zz".to_string());
+        words.join(" ")
+    }
+
+    /// SG-30 (rq2-040, rq2-043). The scan resolves at most 512 symlinks, and it
+    /// used to answer "not denied" for every path after that: 700 benign links
+    /// and then a link to `.netrc` read the password. A certain path the scan
+    /// cannot verify inside its budget must be refused, as the docs say.
+    #[test]
+    #[cfg(unix)]
+    fn h1_a_credential_link_past_the_symlink_budget_is_refused() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        // The instrument first: the link alone, and behind a few benign links,
+        // is refused, so whatever the long command answers is the budget's
+        // doing.
+        let short = padded_link_command(&fake, 8);
+        assert!(
+            scan_command(&g, &env, "cat ln/zz").is_some(),
+            "the credential link alone must be refused"
+        );
+        assert!(
+            scan_command(&g, &env, &short).is_some(),
+            "the credential link behind a few links must be refused"
+        );
+        let long = padded_link_command(&fake, 600);
+        assert!(
+            scan_command(&g, &env, &long).is_some(),
+            "FAIL-OPEN: a link to a credential after more links than the scan \
+             resolves was let through"
+        );
+    }
+
+    /// The other half of the budget rule: past the budget, a plain file in a
+    /// folder the scan has already resolved is still judged, from where that
+    /// folder really is, so a long list of them is allowed and a credential
+    /// reached through a linked folder seen earlier is still refused as the
+    /// file it reaches (a pattern refusal, not a "too complex" one).
+    #[test]
+    fn h1_many_plain_files_past_the_budget_are_still_allowed() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let many = fake.project.join("many");
+        fs::create_dir_all(&many).unwrap();
+        let mut files = Vec::new();
+        for i in 0..600 {
+            fs::write(many.join(format!("f{i}.txt")), "x\n").unwrap();
+            files.push(format!("many/f{i}.txt"));
+        }
+        let files = files.join(" ");
+        assert_eq!(
+            scan_command(&g, &env, &format!("cat {files}")),
+            None,
+            "600 plain files in one folder were refused"
+        );
+
+        #[cfg(unix)]
+        {
+            let fake = fake.with_links();
+            let g = fake.guard();
+            // `aws-link` is resolved (to the fake `~/.aws`) before the budget
+            // runs out; `aws-link/credentials` is judged after it has.
+            let command = format!("cat aws-link/config {files} aws-link/credentials");
+            let denied = g
+                .find_denied_access_in(json!({ "command": command }).as_object().unwrap(), &env)
+                .expect("a credential reached through a linked folder past the budget");
+            assert_eq!(
+                denied.reason,
+                resolve::Reason::Pattern,
+                "it should be judged as the file it reaches: {}",
+                denied.message()
+            );
+        }
+    }
+
+    /// The budget's shortcut skips a resolution only for a name the disk
+    /// cannot spell differently in a way the deny set cares about; anything a
+    /// case-insensitive or short-name filesystem could open under another
+    /// spelling is resolved in full, so `realpath` still reports the real name.
+    #[test]
+    fn h1_only_names_the_disk_cannot_respell_skip_a_resolution() {
+        for stable in ["f0.txt", "my file (1).csv", "data-v2_final.tsv", ".bashrc"] {
+            assert!(resolve::is_stable_name_for_tests(stable), "{stable}");
+        }
+        for unstable in [
+            "credential\u{17f}",
+            "CREDEN~1",
+            "credentials.",
+            "credentials ",
+            "credentials:stream",
+            "caf\u{e9}.txt",
+            "",
+        ] {
+            assert!(!resolve::is_stable_name_for_tests(unstable), "{unstable:?}");
         }
     }
 
