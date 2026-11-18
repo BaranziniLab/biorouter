@@ -4487,7 +4487,10 @@ pub struct InterruptedTurnRows {
     pub prose: Vec<Message>,
     /// Accepted steers the turn never answered.
     pub steers: Vec<Message>,
-    /// The durable "Stopped." notice, for a Stop.
+    /// The note a cancelled turn ends on: the cancel note when the person
+    /// cancelled it, the short "Stopped." line when something else did, and
+    /// nothing for a stream that failed
+    /// ([`crate::agents::stopped_turn::TurnEnd`]).
     pub notice: Option<Message>,
 }
 
@@ -5200,6 +5203,11 @@ pub struct Agent {
     /// swap in a compacted history. A plain `std::Mutex` — only held for the
     /// insert/remove, never across an await.
     pub(super) eager_compactions: Arc<std::sync::Mutex<HashSet<String>>>,
+    /// Told whenever a session leaves [`Self::eager_compactions`], so a turn
+    /// that starts while its chat's eager compaction runs can wait for it
+    /// ([`Self::wait_for_eager_compaction`]) instead of summarizing the same
+    /// history again.
+    pub(super) eager_compaction_settled: Arc<Notify>,
     /// Per-session set of skill names whose full body has already been inlined
     /// into an earlier turn's `<explicit-resource-context>` (BR-8). A skill's
     /// body is inlined in full the first turn it is selected, then replaced by a
@@ -5946,6 +5954,8 @@ mod folder_approval_wake_tests {
 struct EagerCompactionGuard {
     session_id: String,
     in_flight: Arc<std::sync::Mutex<HashSet<String>>>,
+    /// Woken once the marker is gone: a turn may be waiting on it.
+    settled: Arc<Notify>,
 }
 
 /// The estimated size of what follows the last agent-visible assistant
@@ -5968,8 +5978,16 @@ impl Drop for EagerCompactionGuard {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(&self.session_id);
+        self.settled.notify_waiters();
     }
 }
+
+/// How long a turn waits for its chat's eager compaction to land before it
+/// decides for itself ([`Agent::wait_for_eager_compaction`]). A summarization
+/// round-trip the turn would otherwise make again fits well inside it; a
+/// compaction that hangs past it is left to its own outcome, and the turn's
+/// synchronous check runs as it always did.
+const EAGER_COMPACTION_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 #[allow(clippy::too_many_arguments)]
 async fn run_background_compaction(
@@ -6594,6 +6612,7 @@ impl Agent {
             soft_interrupt_notify: Arc::new(Notify::new()),
             checkpoints,
             eager_compactions: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            eager_compaction_settled: Arc::new(Notify::new()),
             injected_skills: Mutex::new(HashMap::new()),
             failure_loop: Self::failure_loop_config(Config::global()),
             tool_risks,
@@ -9429,6 +9448,7 @@ impl Agent {
         let hooks_manager = Arc::clone(&self.hooks_manager);
         let extension_manager = Arc::clone(&self.extension_manager);
         let in_flight = Arc::clone(&self.eager_compactions);
+        let settled = Arc::clone(&self.eager_compaction_settled);
         let session_config = session_config.clone();
         let working_dir = working_dir.to_path_buf();
         let threshold = Config::global()
@@ -9444,6 +9464,7 @@ impl Agent {
             let _guard = EagerCompactionGuard {
                 session_id: session_id.clone(),
                 in_flight,
+                settled,
             };
             // The same test `with_saved_tool_outputs` makes: save and name
             // tool output only when the chat can read a file back.
@@ -9471,6 +9492,71 @@ impl Agent {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .remove(session_id);
+        self.eager_compaction_settled.notify_waiters();
+    }
+
+    /// BR-12: let an eager compaction of this chat that is still running land
+    /// before the turn decides whether to compact.
+    ///
+    /// The previous turn's end starts one in the background
+    /// ([`Self::maybe_spawn_eager_compaction`]). When the person's next message
+    /// arrives while it is still summarizing, the turn used to read the history
+    /// as still over the threshold and summarize the same history again in the
+    /// foreground: two summaries of one history, the later swap refused by the
+    /// store's freshness guard and billed all the same (FLAKY-WBF, measured as
+    /// three summarizer calls where two were due). Waiting is never slower than
+    /// that second summary, and the turn then decides on what the first wrote.
+    ///
+    /// Bounded by [`EAGER_COMPACTION_WAIT`], and ended at once by the turn's
+    /// cancel. A chat with no compaction running returns at once.
+    async fn wait_for_eager_compaction(
+        &self,
+        session_id: &str,
+        cancel_token: Option<&tokio_util::sync::CancellationToken>,
+    ) {
+        let in_flight = |agent: &Self| {
+            agent
+                .eager_compactions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(session_id)
+        };
+        if !in_flight(self) {
+            return;
+        }
+        info!(
+            session_id,
+            "waiting for this chat's eager compaction to land"
+        );
+        let deadline = tokio::time::Instant::now() + EAGER_COMPACTION_WAIT;
+        let cancelled = async {
+            match cancel_token {
+                Some(token) => token.cancelled().await,
+                None => std::future::pending().await,
+            }
+        };
+        tokio::pin!(cancelled);
+        loop {
+            let settled = self.eager_compaction_settled.notified();
+            tokio::pin!(settled);
+            // Registered before the check, so a compaction that ends between
+            // the two still wakes this wait.
+            settled.as_mut().enable();
+            if !in_flight(self) {
+                return;
+            }
+            tokio::select! {
+                () = &mut settled => {}
+                () = &mut cancelled => return,
+                () = tokio::time::sleep_until(deadline) => {
+                    warn!(
+                        session_id,
+                        "this chat's eager compaction is still running; the turn decides without it"
+                    );
+                    return;
+                }
+            }
+        }
     }
 
     async fn handle_approved_and_denied_tools(
@@ -12851,6 +12937,12 @@ impl Agent {
         // revision re-read later, against a view decided earlier, is the split
         // that lets a concurrent append fall between the two (see
         // [`RewriteBasis`]).
+        //
+        // An eager compaction still running from the previous turn lands first,
+        // so this turn reads what it wrote instead of summarizing the same
+        // history a second time (FLAKY-WBF).
+        self.wait_for_eager_compaction(&session_config.id, cancel_token.as_ref())
+            .await;
         let (session, mut rewrite_basis) =
             RewriteBasis::read_with_session(&session_manager, &session_config.id).await?;
         let stored_conversation = rewrite_basis.known().clone();
@@ -14459,11 +14551,19 @@ impl Agent {
         written
     }
 
-    /// Item 7 — the durable notice a stopped turn ends on
-    /// ([`crate::agents::stopped_turn::TURN_STOPPED_NOTICE`]), persisted the way
-    /// [`Self::durable_notice`] persists every turn-level verdict.
+    /// The cancel note a turn the person cancelled ends on
+    /// ([`crate::agents::stopped_turn::TURN_STOPPED_NOTICE`], owner ruling
+    /// 2026-11-17). Every door the person cancels a turn through calls this once,
+    /// and only for a turn the cancel cut short: the daemon's runner, ACP and the
+    /// terminal's two views.
     ///
-    /// `None` when the write failed: a notice the store does not hold must not be
+    /// It is a record, not a guard. It is stored as the agent's own text
+    /// ([`crate::agents::stopped_turn::turn_stopped_note`]), so the person reads
+    /// it in the transcript and the model reads it on its next turn, and it tells
+    /// the model nothing about what to do: the next message decides that. Storing
+    /// it is a message like any other, so it stamps the chat's activity (R-30).
+    ///
+    /// `None` when the write failed: a note the store does not hold must not be
     /// handed to a client as history, because a reload would not reproduce it.
     ///
     /// A retry note nothing answered is retired first: a reply stream that ran
@@ -14471,13 +14571,76 @@ impl Agent {
     /// [`Self::settle_interrupted_turn`].
     pub async fn record_turn_stopped(&self, session_id: &str) -> Option<Message> {
         self.retire_unanswered_retry_note(session_id).await;
+        // After the prose a stopped reply had streamed, the note opens a new
+        // paragraph: the two rows reach the model as one reply. A store that
+        // cannot be read here fails the write below too.
+        let after_the_agents_text = match self
+            .config
+            .session_manager
+            .get_session(session_id, true)
+            .await
+        {
+            Ok(session) => crate::agents::stopped_turn::ends_on_the_agents_text(
+                session.conversation.as_ref().and_then(|conversation| {
+                    conversation
+                        .messages()
+                        .iter()
+                        .rev()
+                        .find(|message| message.is_agent_visible())
+                }),
+            ),
+            Err(_) => false,
+        };
+        let mut note = crate::agents::stopped_turn::turn_stopped_note(after_the_agents_text);
+        match self
+            .config
+            .session_manager
+            .add_message_adopting_uid(session_id, &mut note)
+            .await
+        {
+            Ok(()) => Some(note),
+            Err(e) => {
+                warn!("could not store the note that this turn was cancelled: {e}");
+                None
+            }
+        }
+    }
+
+    /// The short line a turn ends on when something other than the person
+    /// cancelled it ([`crate::agents::stopped_turn::TURN_ENDED_NOTICE`]):
+    /// another agent's `workspace_close`, the chat that started a subagent, a
+    /// monitor, the orphan reaper, a Crew task's time limit. Persisted the way
+    /// [`Self::durable_notice`] persists every turn-level verdict, for people
+    /// only, as every stopped turn was before the cancel note: the cancel note
+    /// would tell the model the person did something nobody did.
+    ///
+    /// `None` when the write failed, and the unanswered retry note is retired
+    /// first, as in [`Self::record_turn_stopped`].
+    pub async fn record_turn_ended(&self, session_id: &str) -> Option<Message> {
+        self.retire_unanswered_retry_note(session_id).await;
         let notice = self
             .durable_notice(
                 session_id,
-                crate::agents::stopped_turn::TURN_STOPPED_NOTICE.to_string(),
+                crate::agents::stopped_turn::TURN_ENDED_NOTICE.to_string(),
             )
             .await;
         notice.id.is_some().then_some(notice)
+    }
+
+    /// The note `end` leaves: [`Self::record_turn_stopped`] for the person's
+    /// cancel, [`Self::record_turn_ended`] for any other cancel, and nothing for a
+    /// stream that failed.
+    pub async fn record_turn_end(
+        &self,
+        session_id: &str,
+        end: crate::agents::stopped_turn::TurnEnd,
+    ) -> Option<Message> {
+        use crate::agents::stopped_turn::TurnEnd;
+        match end {
+            TurnEnd::CancelledByThePerson => self.record_turn_stopped(session_id).await,
+            TurnEnd::CancelledOtherwise => self.record_turn_ended(session_id).await,
+            TurnEnd::Failed => None,
+        }
     }
 
     /// Hide from the model a retry note nothing answered. A provider retry is
@@ -14541,12 +14704,17 @@ impl Agent {
         }
     }
 
-    /// Settle a turn whose reply stream is being abandoned — a Stop, or a stream
-    /// that failed — writing, in the order things happened (D19):
+    /// Settle a turn whose reply stream is being abandoned (a cancel, or a
+    /// stream that failed), writing, in the order things happened (D19):
     ///
     /// 1. the prose the reply had streamed ([`Self::settle_stopped_reply`]),
     /// 2. the steers the turn had accepted, marked unanswered (D4),
-    /// 3. for a Stop, the durable "Stopped." notice.
+    /// 3. the note `end` leaves ([`Self::record_turn_end`]).
+    ///
+    /// `stopped` is the person's cancel: [`Self::settle_interrupted_turn_as`]
+    /// with [`crate::agents::stopped_turn::TurnEnd::CancelledByThePerson`], or
+    /// with `Failed` when false. A door that cannot tell who cancelled calls
+    /// that one with the ending it knows.
     ///
     /// PR #311 did this for a Stop in the runner's cancel arm only; the
     /// stream-error path and a delegated child's consumer settled the steers
@@ -14561,14 +14729,26 @@ impl Agent {
         in_flight: &[Message],
         stopped: bool,
     ) -> Result<InterruptedTurnRows> {
+        let end = if stopped {
+            crate::agents::stopped_turn::TurnEnd::CancelledByThePerson
+        } else {
+            crate::agents::stopped_turn::TurnEnd::Failed
+        };
+        self.settle_interrupted_turn_as(session_id, in_flight, end)
+            .await
+    }
+
+    /// [`Self::settle_interrupted_turn`] for a turn that ended as `end`.
+    pub async fn settle_interrupted_turn_as(
+        &self,
+        session_id: &str,
+        in_flight: &[Message],
+        end: crate::agents::stopped_turn::TurnEnd,
+    ) -> Result<InterruptedTurnRows> {
         let prose = self.settle_stopped_reply(session_id, in_flight).await;
         self.retire_unanswered_retry_note(session_id).await;
         let steers = self.settle_carried_over_soft_interrupts(session_id).await?;
-        let notice = if stopped {
-            self.record_turn_stopped(session_id).await
-        } else {
-            None
-        };
+        let notice = self.record_turn_end(session_id, end).await;
         Ok(InterruptedTurnRows {
             prose,
             steers,

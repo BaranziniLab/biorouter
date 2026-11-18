@@ -9,7 +9,7 @@ function StopGlyph() {
 }
 
 /** The words the daemon stores for a confirmed Stop, so both lines read the same. */
-const STOPPED = TURN_STOPPED_NOTICE;
+const CANCELLED = TURN_STOPPED_NOTICE;
 
 /**
  * F5 — what a Stop the daemon CONFIRMED did, said once and quietly.
@@ -29,12 +29,14 @@ const STOPPED = TURN_STOPPED_NOTICE;
  *
  * It is drawn from two places, and they are the same fact:
  *
- * - **the transcript**, for the notice the daemon now STORES when a Stop ends a
- *   turn (item 7, `turnStoppedNotice.ts`). That row is what a reload, another
- *   window and History show, and in the window that pressed Stop the cancel
- *   response puts it into the transcript directly. `inTranscript` drops the top
- *   margin and the entrance, which the transcript's row wrapper already
- *   provides.
+ * - **the transcript**, for the row the daemon STORES when a turn is cancelled
+ *   (`turnStoppedNotice.ts`), drawn in its own words (`label`): the cancel note
+ *   when the person cancelled it (which the model reads too), or the short
+ *   "Stopped." line when something else did, or for a chat stored before the
+ *   note. That row is what a reload, another window and History show, and in
+ *   the window that pressed Stop the cancel response puts it into the
+ *   transcript directly. `inTranscript` drops the top margin and the entrance,
+ *   which the transcript's row wrapper already provides.
  * - **BaseChat's tail slot**, from the store's transient
  *   `ChatStreamSnapshot.stopConfirmed` — now only the fallback for a daemon that
  *   returned no stored record, and never beside a transcript that already ends
@@ -44,11 +46,18 @@ const STOPPED = TURN_STOPPED_NOTICE;
  * Live in the tail slot it enters with the shared `.br-enter` (its own
  * reduced-motion rest in `main.css`).
  */
-export function ChatTurnStopped({ inTranscript = false }: { inTranscript?: boolean }) {
+export function ChatTurnStopped({
+  inTranscript = false,
+  label = CANCELLED,
+}: {
+  inTranscript?: boolean;
+  /** The stored row's own words; the cancel note when there is no row. */
+  label?: string;
+}) {
   return (
     <div data-testid="chat-turn-stopped" className={cn('w-full', !inTranscript && 'mt-2 br-enter')}>
       <div role="status">
-        <TranscriptRow icon={StopGlyph} glyph="stopped" label={STOPPED} />
+        <TranscriptRow icon={StopGlyph} glyph="stopped" label={label} />
       </div>
     </div>
   );

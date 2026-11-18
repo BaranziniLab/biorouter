@@ -41,6 +41,7 @@ import { transcriptCopy } from './transcript/copy';
 import { DecisionTurnMarker } from './decisions/DecisionTurnMarker';
 import { messageDecisionMarker } from '../utils/sessionDecisions';
 import { expiryShownOnItsCard } from '../utils/approvalExpiry';
+import { asTranscriptNotice, isTurnStoppedNotice } from './conversation/turnStoppedNotice';
 
 /** A row's key: its id, or its place and time for a row the daemon has not named yet. */
 const rowKey = (message: Message, index: number) => message.id ?? `msg-${index}-${message.created}`;
@@ -335,12 +336,23 @@ export default function ProgressiveMessageList({
   // One gap per row (24px between turns, 8px between blocks, 4px between tool
   // rows), and the `.br-enter` entrance only for rows appended live: a history
   // load, a tab switch and a reload draw at rest (spec 3.6).
-  const gaps = useMemo(() => messageGaps(messages, isUserMessage), [messages, isUserMessage]);
+  //
+  // The rhythm reads a stored cancel note as the notice line it draws as: the
+  // daemon stores it as the agent's text so the model reads it, but it is not
+  // an answer, and its (absent) actions must not shorten the row above.
+  const rhythmMessages = useMemo(
+    () => (messages.some(isTurnStoppedNotice) ? messages.map(asTranscriptNotice) : messages),
+    [messages]
+  );
+  const gaps = useMemo(
+    () => messageGaps(rhythmMessages, isUserMessage),
+    [rhythmMessages, isUserMessage]
+  );
   // The rows an answer's floating actions rise into: their last tool row ends
   // the cluster's width short, so a hover covers no label (`message-meta.css`).
   const underActions = useMemo(
-    () => rowsUnderAnswerActions(messages, isUserMessage, gaps),
-    [messages, isUserMessage, gaps]
+    () => rowsUnderAnswerActions(rhythmMessages, isUserMessage, gaps),
+    [rhythmMessages, isUserMessage, gaps]
   );
   const rowKeys = useMemo(() => messages.map(rowKey), [messages]);
   const liveRows = useLiveRows(
@@ -410,8 +422,14 @@ export default function ProgressiveMessageList({
           return null;
         }
 
-        // System notifications are never user messages, handle them first
-        if (decisionMarker || hasInlineSystemNotification(message)) {
+        // System notifications are never user messages, handle them first. A
+        // stored cancel note is the agent's text (so the model reads it) and
+        // draws as the stopped line, through the same branch.
+        if (
+          decisionMarker ||
+          hasInlineSystemNotification(message) ||
+          isTurnStoppedNotice(message)
+        ) {
           return (
             <div
               key={key}
@@ -529,7 +547,7 @@ export default function ProgressiveMessageList({
           rhythm matches exactly. */}
       {trailingActivity && (
         <div
-          className={cn('relative', ROW_GAP_CLASS[trailingGap(messages, isUserMessage)])}
+          className={cn('relative', ROW_GAP_CLASS[trailingGap(rhythmMessages, isUserMessage)])}
           data-role="assistant"
           data-testid="trailing-activity-container"
         >

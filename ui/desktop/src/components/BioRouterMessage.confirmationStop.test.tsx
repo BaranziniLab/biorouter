@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import BioRouterMessage from './BioRouterMessage';
 import type { Message } from '../api';
-import { TURN_STOPPED_NOTICE } from './conversation/turnStoppedNotice';
+import { TURN_ENDED_NOTICE, TURN_STOPPED_NOTICE } from './conversation/turnStoppedNotice';
 
 const mocks = vi.hoisted(() => ({
   confirmToolAction: vi.fn(),
@@ -41,14 +41,26 @@ function confirmation(): Message {
   } as Message;
 }
 
+/** The cancel note the daemon stores when the person stops a turn: the agent's text, read by the model too. */
 function stopped(): Message {
+  return {
+    id: `stop-${nextId++}`,
+    role: 'assistant',
+    created: 2,
+    metadata: { userVisible: true, agentVisible: true },
+    content: [{ type: 'text', text: TURN_STOPPED_NOTICE }],
+  };
+}
+
+/** The short line a turn stopped by something else ends on, and every chat stored before the note. */
+function endedShort(): Message {
   return {
     id: `stop-${nextId++}`,
     role: 'assistant',
     created: 2,
     metadata: { userVisible: true, agentVisible: false },
     content: [
-      { type: 'systemNotification', notificationType: 'inlineMessage', msg: TURN_STOPPED_NOTICE },
+      { type: 'systemNotification', notificationType: 'inlineMessage', msg: TURN_ENDED_NOTICE },
     ],
   };
 }
@@ -106,11 +118,35 @@ describe('approval cards after Stop', () => {
     expect(screen.getByRole('button', { name: 'Allow once' })).toBeEnabled();
   });
 
-  it('requires the typed daemon notice rather than model prose', () => {
+  it('removes them for the short line too, as a chat stored before the note ends', () => {
     const message = confirmation();
-    const prose: Message = { ...stopped(), content: [{ type: 'text', text: TURN_STOPPED_NOTICE }] };
-    render(card(message, [message, prose]));
-    expect(screen.getByRole('button', { name: 'Allow once' })).toBeEnabled();
+    render(card(message, [message, endedShort()]));
+    expect(screen.getByText('Approval canceled')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Allow once' })).toBeNull();
+  });
+
+  // The cancel note is the agent's own text (so the model reads it), which makes
+  // the stored note's exact words and shape the marker: a reply that only talks
+  // about cancelling, the person's own words, or a notice carrying the note's
+  // text are not it.
+  it('requires the stored note exactly, not words about cancelling', () => {
+    const message = confirmation();
+    const reply: Message = {
+      ...stopped(),
+      content: [{ type: 'text', text: `${TURN_STOPPED_NOTICE} I will pick it up from here.` }],
+    };
+    const typed: Message = { ...stopped(), role: 'user' };
+    const notice: Message = {
+      ...stopped(),
+      content: [
+        { type: 'systemNotification', notificationType: 'inlineMessage', msg: TURN_STOPPED_NOTICE },
+      ],
+    };
+    for (const lookalike of [reply, typed, notice]) {
+      const view = render(card(message, [message, lookalike]));
+      expect(screen.getByRole('button', { name: 'Allow once' })).toBeEnabled();
+      view.unmount();
+    }
   });
 
   it('preserves an approval acknowledged before the turn stopped', async () => {

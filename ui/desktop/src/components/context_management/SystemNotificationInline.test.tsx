@@ -25,6 +25,26 @@ describe('SystemNotificationInline', () => {
     expect(screen.getByTestId('chat-turn-stopped')).toHaveTextContent('Stopped.');
   });
 
+  // The cancel note (owner ruling 2026-11-17) is the agent's text, read by the
+  // model too, and draws as the same line in its own words.
+  it('draws the stored cancel note as the stopped line, in its words', () => {
+    const note = 'The person canceled this turn before it finished.';
+    render(
+      <SystemNotificationInline
+        message={
+          {
+            id: 'note',
+            role: 'assistant',
+            created: 1,
+            content: [{ type: 'text', text: note }],
+            metadata: { userVisible: true, agentVisible: true },
+          } as Message
+        }
+      />
+    );
+    expect(screen.getByTestId('chat-turn-stopped')).toHaveTextContent(note);
+  });
+
   it('leaves every other inline notice as it was', () => {
     render(<SystemNotificationInline message={inlineNotice('Compaction complete')} />);
     expect(screen.queryByTestId('chat-turn-stopped')).toBeNull();

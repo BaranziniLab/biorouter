@@ -1,28 +1,74 @@
 import type { Message } from '../../api';
 
 /**
- * Item 7 — the notice a stopped turn ends on, as the daemon stores it.
+ * The note a turn the person cancelled ends on, as the daemon stores it (owner
+ * ruling 2026-11-17: a record, not a guard). The daemon stores it as the agent's
+ * own text, read by the person AND by the model on its next turn, because every
+ * wire format drops a system notification.
  *
  * ⚠ Mirrors `TURN_STOPPED_NOTICE` in `crates/biorouter/src/agents/stopped_turn.rs`,
  * and a Rust test reads this exact declaration. Change both or neither.
  *
- * The daemon writes it as an ordinary inline system notification (user-visible,
- * model-hidden) — the shape the planning gate's durable verdicts already use —
- * so the CLI's export and any reader that does not know this constant still show
- * it. The desktop recognises it only to draw it as the same quiet "Stopped."
- * line a confirmed Stop shows live (`ChatTurnStopped`).
+ * A reader that does not know this constant (the CLI's export, an older desktop)
+ * shows it as the agent's line it is. The desktop recognises it to draw it as
+ * the same quiet line a confirmed Stop shows live (`ChatTurnStopped`), in its
+ * own words.
  */
-export const TURN_STOPPED_NOTICE = 'Stopped.';
+export const TURN_STOPPED_NOTICE = 'The person canceled this turn before it finished.';
 
-/** Is this row the stored "this reply was stopped" notice? Exact text, nothing looser. */
-export function isTurnStoppedNotice(message: Message | undefined): boolean {
-  if (!message || message.role !== 'assistant' || message.content.length !== 1) return false;
+/**
+ * The short line a turn ends on when something other than the person cancelled
+ * it (another agent, a monitor, the orphan reaper), and the one every stopped
+ * turn ended on before the cancel note: an inline system notification the model
+ * never reads. Chats stored before the note still end on it.
+ *
+ * ⚠ Mirrors `TURN_ENDED_NOTICE` in the same Rust file.
+ */
+export const TURN_ENDED_NOTICE = 'Stopped.';
+
+/**
+ * The words a stored stop row is drawn with, or `undefined` when the row is not
+ * one: the cancel note (the agent's text, exactly the note, nothing else) or the
+ * short line (an inline notice, exactly `Stopped.`). Exact text, nothing looser.
+ *
+ * The note's words are compared trimmed: after the prose a stopped reply had
+ * streamed, the daemon stores it as a new paragraph, because the model reads
+ * the two rows as one reply.
+ */
+export function turnStoppedNoticeText(message: Message | undefined): string | undefined {
+  if (!message || message.role !== 'assistant' || message.content.length !== 1) return undefined;
   const [content] = message.content;
-  return (
+  if (content.type === 'text' && content.text.trim() === TURN_STOPPED_NOTICE) {
+    return TURN_STOPPED_NOTICE;
+  }
+  if (
     content.type === 'systemNotification' &&
     content.notificationType === 'inlineMessage' &&
-    content.msg === TURN_STOPPED_NOTICE
-  );
+    content.msg === TURN_ENDED_NOTICE
+  ) {
+    return content.msg;
+  }
+  return undefined;
+}
+
+/** Is this row a stored "this turn was stopped" row? */
+export function isTurnStoppedNotice(message: Message | undefined): boolean {
+  return turnStoppedNoticeText(message) !== undefined;
+}
+
+/**
+ * The row as the transcript's rhythm should see it: a stop row is a notice line,
+ * never an answer whose floating actions reach into the row above. The cancel
+ * note is stored as text so the model reads it; for spacing it is the notice it
+ * draws as.
+ */
+export function asTranscriptNotice(message: Message): Message {
+  const text = turnStoppedNoticeText(message);
+  if (text === undefined || message.content[0]?.type !== 'text') return message;
+  return {
+    ...message,
+    content: [{ type: 'systemNotification', notificationType: 'inlineMessage', msg: text }],
+  } as Message;
 }
 
 /** Does the transcript already end on a stored stop notice? */
