@@ -49,6 +49,29 @@ Mermaid's is `mermaid@11/dist/mermaid.min.js`, an esbuild bundle ending in
 `globalThis["mermaid"] = …` — the same global the vendored offline copy sets, which is
 what lets both asset modes reach an identical runtime state.
 
+## When a library cannot be downloaded
+
+The main process downloads each library at most once per app session and keeps it
+once it has arrived. A download that fails (offline, an HTTP error, a proxy that
+resets the connection) or has not finished within 20 seconds is aborted and **not**
+kept, so the next figure that needs that library tries again. The fetcher is
+`createCachingCdnFetcher` in `artifactCdnAssets.ts`. It used to keep the failed
+download, and one open while offline then broke every later figure that needed the
+library until the app was restarted.
+
+A library the rewriter could not download does not leave its tag behind. The tag is
+replaced with a one-line inline script that records the library's name in
+`window.__biorouterUnavailableLibraries`, and the figure's shared runtime
+(`templates/_common.js`) reads that record when anything fails. The figure then says
+"This figure needs a chart library that could not be downloaded. Check the
+connection, then open the figure again." in the figure's own neutral ink, instead of
+"d3 is not defined", and posts its render error with the reason
+`library-unavailable`. The artifact panel does not turn that error into a repair
+turn, because no edit to the figure can bring the library back
+(`LIBRARY_UNAVAILABLE_REASON` in `ArtifactViewer.tsx`). Other render errors reach the
+repair path as before. `ArtifactViewer.libraryUnavailable.test.tsx` runs the real runtime in
+jsdom with the network down to hold all three pieces together.
+
 ## Adding a library
 
 1. Add the `include_str!` asset and the `CDN_*` constant in
@@ -60,10 +83,12 @@ what lets both asset modes reach an identical runtime state.
 
 ## Reading a failure
 
-- **"… library failed to load", or a blank figure with `X is not defined`** — check
+- **"… library failed to load", or a blank figure with `X is not defined`**: check
   whether the prepared document still contains `cdn.jsdelivr.net`. If it does, the
   rewriter did not recognise the reference: either the URL is not in the list, or the
-  tag is not in a shape the patterns match.
+  tag is not in a shape the patterns match. A library it recognised but could not
+  download says so in plain words instead (see above), and the main process log has a
+  `Could not inline artifact CDN asset` warning naming the URL.
 - **A report (`render_dashboard`) is a separate case.** It always inlines, ignoring the
   flag, because its library tags live inside base64 panel blobs the rewriter cannot
   reach. Guarded by `crates/biorouter-mcp/tests/autovis_dashboard_cdn.rs`.
@@ -89,6 +114,15 @@ what lets both asset modes reach an identical runtime state.
   stays broken in a way that reads as a different bug. The containment that matters is
   the guest's own identical policy plus the sandbox attribute (no `allow-same-origin`,
   no `allow-top-navigation`).
+
+  The terminal has the same rule. `biorouter run`, `biorouter session` and the TUI save
+  a figure as a wrapper page around a `srcdoc` frame and print its `file://` address.
+  That wrapper's policy is derived from the figure's in
+  `crates/biorouter-cli/src/session/output.rs` (`artifact_wrapper_csp`), differing only
+  in `frame-src`. It was hand-written as the old desktop one was, and the figure's own
+  meta was also written without the opening quote of its `content` attribute, so every
+  saved figure opened blank. `the_saved_figure_csp_attribute_is_quoted` and
+  `the_wrapper_grants_everything_the_saved_figure_is_granted` in that file pin both.
 
 - **A map shows no tiles in either surface, by design.** `img-src data: blob:` names no
   remote scheme, so Leaflet's tiles never load in an artifact; markers and vector

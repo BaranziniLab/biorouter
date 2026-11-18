@@ -144,7 +144,7 @@ import {
   attentionNotificationAllowed,
   parseAttentionRequest,
 } from './components/crew/attention/attentionMain';
-import { inlineArtifactCdnAssets } from './utils/artifactCdnAssets';
+import { createCachingCdnFetcher, inlineArtifactCdnAssets } from './utils/artifactCdnAssets';
 import { isFilePathAllowedForPreview, previewFileRoots } from './utils/pathContainment';
 import { writeFileWithinRoots } from './utils/writeFileWithinRoots';
 import { NativeSaveFileGrants } from './utils/nativeSaveFileGrants';
@@ -8553,23 +8553,11 @@ async function appMain() {
 
   // Standalone previews are offline. Inline the small, fixed set of libraries
   // emitted by Auto Visualiser before applying its network-denying CSP. The
-  // asset list, the tag patterns and the substitution itself live in
-  // `utils/artifactCdnAssets.ts` so the Rust side can assert against them.
-  const artifactCdnAssetCache = new Map<string, Promise<string>>();
-
-  const fetchArtifactCdnAsset = (url: string): Promise<string> => {
-    let cached = artifactCdnAssetCache.get(url);
-    if (!cached) {
-      cached = fetch(url).then((response) => {
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-        return response.text();
-      });
-      artifactCdnAssetCache.set(url, cached);
-    }
-    return cached;
-  };
+  // asset list, the tag patterns, the substitution and the download cache live
+  // in `utils/artifactCdnAssets.ts` so they can be tested and the Rust side can
+  // assert against them. The cache keeps a library once it has arrived and
+  // forgets a failed or timed-out download, so the next open retries it.
+  const fetchArtifactCdnAsset = createCachingCdnFetcher((url, init) => fetch(url, init));
 
   const inlineKnownArtifactCdnAssets = (rawHtml: string): Promise<string> =>
     inlineArtifactCdnAssets(rawHtml, fetchArtifactCdnAsset, (url, error) => {

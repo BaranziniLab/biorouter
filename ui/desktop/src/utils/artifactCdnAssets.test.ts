@@ -3,11 +3,25 @@ import {
   ARTIFACT_CDN_ASSETS,
   artifactCdnScriptPattern,
   artifactCdnStylePattern,
+  createCachingCdnFetcher,
   inlineArtifactCdnAssets,
 } from './artifactCdnAssets';
 
 const MERMAID = 'https://cdn.jsdelivr.net/npm/mermaid@11.17.2/dist/mermaid.min.js';
 const LEAFLET_CSS = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css';
+const D3 = 'https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js';
+const CHART = 'https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.min.js';
+
+/** The marker a figure reads to learn which library never arrived. */
+const missing = (name: string) =>
+  `<script>(window.__biorouterUnavailableLibraries=window.__biorouterUnavailableLibraries||[]).push("${name}");</script>`;
+
+/** A `fetch` answer carrying only what the fetcher reads. */
+const answer = (body: string, status = 200) => ({
+  ok: status >= 200 && status < 300,
+  status,
+  text: async () => body,
+});
 
 describe('artifactCdnAssets', () => {
   it('covers Mermaid, which the artifact CSP would otherwise block outright', () => {
@@ -35,7 +49,10 @@ describe('artifactCdnAssets', () => {
     );
   });
 
-  it('leaves the document alone when a fetch fails, and reports it', async () => {
+  // A tag left in place is blocked by the artifact CSP and the figure then
+  // fails with "mermaid is not defined", which reads as a bug in the figure. The
+  // marker tells the figure what really happened.
+  it('replaces the tag of a library it could not fetch with a marker, and reports it', async () => {
     const html = `<head><script src="${MERMAID}"></script></head>`;
     const onError = vi.fn();
     const out = await inlineArtifactCdnAssets(
@@ -46,8 +63,23 @@ describe('artifactCdnAssets', () => {
       onError
     );
 
-    expect(out).toBe(html);
+    expect(out).toBe(`<head>${missing('mermaid')}</head>`);
     expect(onError).toHaveBeenCalledWith(MERMAID, expect.any(Error));
+  });
+
+  it('an_unfetchable_library_is_recorded_for_the_figure', async () => {
+    const html =
+      `<head><script src="${D3}"></script><script src="${CHART}"></script>` +
+      `<link rel="stylesheet" href="${LEAFLET_CSS}"/></head>`;
+    const out = await inlineArtifactCdnAssets(html, async (url) => {
+      if (url === CHART) return 'globalThis.Chart={};';
+      throw new TypeError('fetch failed');
+    });
+
+    expect(out).toBe(
+      `<head>${missing('d3')}<script>globalThis.Chart={};</script>${missing('leaflet')}</head>`
+    );
+    expect(out).not.toContain('cdn.jsdelivr.net');
   });
 
   // A figure's HTML is stored in the session, so a tag written under an older
@@ -154,5 +186,67 @@ describe('artifactCdnAssets', () => {
     const esm = `<head><script type="module">import mermaid from '${MERMAID}/+esm';</script></head>`;
     expect(artifactCdnScriptPattern(MERMAID).test(esm)).toBe(false);
     expect(await inlineArtifactCdnAssets(esm, async () => 'globalThis.mermaid={};')).toBe(esm);
+  });
+});
+
+describe('createCachingCdnFetcher', () => {
+  // One offline open used to cache the rejection for the whole app session, so
+  // every later figure needing that library failed until the app restarted.
+  it('a_failed_fetch_is_retried_on_the_next_open', async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(answer('', 503))
+      .mockResolvedValue(answer('globalThis.d3={};'));
+    const fetchAsset = createCachingCdnFetcher(fetchImpl, { timeoutMs: 1_000 });
+
+    await expect(fetchAsset(D3)).rejects.toThrow('fetch failed');
+    await expect(fetchAsset(D3)).rejects.toThrow('HTTP 503');
+    await expect(fetchAsset(D3)).resolves.toBe('globalThis.d3={};');
+    // What is kept is the library, once it has arrived.
+    await expect(fetchAsset(D3)).resolves.toBe('globalThis.d3={};');
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('shares one download between figures opened at the same time', async () => {
+    let finish: (value: ReturnType<typeof answer>) => void = () => {};
+    const fetchImpl = vi.fn(
+      () =>
+        new Promise<ReturnType<typeof answer>>((resolve) => {
+          finish = resolve;
+        })
+    );
+    const fetchAsset = createCachingCdnFetcher(fetchImpl, { timeoutMs: 1_000 });
+
+    const first = fetchAsset(D3);
+    const second = fetchAsset(D3);
+    finish(answer('globalThis.d3={};'));
+
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      'globalThis.d3={};',
+      'globalThis.d3={};',
+    ]);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('a_fetch_that_hangs_times_out', async () => {
+    const signals: AbortSignal[] = [];
+    const fetchImpl = vi
+      .fn()
+      // A request that never answers and ignores its signal: the timeout must
+      // still settle the open rather than leave the panel loading forever.
+      .mockImplementationOnce((_url: string, init: { signal: AbortSignal }) => {
+        signals.push(init.signal);
+        return new Promise(() => {});
+      })
+      .mockResolvedValue(answer('globalThis.d3={};'));
+    const fetchAsset = createCachingCdnFetcher(fetchImpl, { timeoutMs: 20 });
+
+    await expect(fetchAsset(D3)).rejects.toThrow('timed out after 20 ms');
+    // The request it gave up on is cancelled, not left running.
+    expect(signals[0].aborted).toBe(true);
+    // And the next open tries again.
+    await expect(fetchAsset(D3)).resolves.toBe('globalThis.d3={};');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 });

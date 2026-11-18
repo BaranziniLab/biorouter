@@ -1115,6 +1115,52 @@ async fn a_generated_figure_carries_the_attribution_beside_the_libraries() {
     assert!(html.contains("Chart.js v4.5.0"));
 }
 
+/// A CDN-mode figure whose library the desktop app could not download used to
+/// show "d3 is not defined" in a red card, and the artifact panel turned that
+/// into a paid repair turn that no edit to the figure could satisfy. The desktop
+/// now records each such library in place of its tag
+/// (`ui/desktop/src/utils/artifactCdnAssets.ts`), and the shared runtime reads
+/// that record: one plain line, a reason the panel does not repair, and neutral
+/// ink. The behaviour is exercised in jsdom by
+/// `ArtifactViewer.libraryUnavailable.test.tsx`; this pins the source both
+/// halves are written against.
+#[test]
+fn the_common_script_names_a_missing_library_plainly() {
+    const SENTENCE: &str = "This figure needs a chart library that could not be downloaded. \
+                            Check the connection, then open the figure again.";
+    const GLOBAL: &str = "__biorouterUnavailableLibraries";
+    let common = common::COMMON_JS;
+
+    assert!(
+        common.contains(&format!("'{SENTENCE}'")),
+        "the plain sentence"
+    );
+    assert!(
+        common.contains("'library-unavailable'"),
+        "the reason the panel skips"
+    );
+    assert!(
+        common.contains(&format!("window.{GLOBAL}")),
+        "reads the desktop's record"
+    );
+
+    let desktop = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../ui/desktop/src/utils/artifactCdnAssets.ts");
+    let desktop = std::fs::read_to_string(&desktop)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", desktop.display()));
+    assert!(
+        desktop.contains(&format!("UNAVAILABLE_LIBRARIES_GLOBAL = '{GLOBAL}'")),
+        "the desktop records missing libraries under the name the figure reads"
+    );
+
+    // Red is rare: a figure that cannot draw is a failure, not a danger.
+    for red in [
+        "#9b2c2c", "#f3c2c2", "#fff5f5", "#5b2a2a", "#2a1f22", "#f3b0b0",
+    ] {
+        assert!(!common.contains(red), "the error card still paints {red}");
+    }
+}
+
 include!("tests_extra.rs");
 include!("tests_dashboard.rs");
 include!("tests_distributions.rs");

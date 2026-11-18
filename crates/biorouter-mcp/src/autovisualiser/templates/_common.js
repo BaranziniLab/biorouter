@@ -146,38 +146,73 @@
     return String(detail);
   }
 
-  function reportRenderError(message, detail) {
+  // The desktop app inlines a CDN-mode figure's libraries before showing it
+  // (ui/desktop/src/utils/artifactCdnAssets.ts). A library it could not download
+  // is recorded here in place of its tag. Whatever then fails is that missing
+  // library, so the card says so plainly instead of "d3 is not defined", and the
+  // error carries a reason the panel does not turn into a repair turn: no edit
+  // to the figure can bring the library back.
+  var LIBRARY_UNAVAILABLE_MESSAGE =
+    'This figure needs a chart library that could not be downloaded. Check the connection, then open the figure again.';
+
+  function unavailableLibraries() {
+    try {
+      var recorded = window.__biorouterUnavailableLibraries;
+      if (!Array.isArray(recorded)) return [];
+      return recorded.filter(function (name) {
+        return typeof name === 'string' && name;
+      });
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function reportRenderError(message, detail, reason) {
     if (window.parent === window) return;
     try {
-      window.parent.postMessage({
-        type: 'biorouter-viz-render-error',
-        payload: {
-          message: message || 'This visualization could not be rendered.',
-          detail: normalizeErrorDetail(detail),
-          title: document.title || 'Visualization',
-          href: window.location.href,
-        },
-      }, '*');
+      var payload = {
+        message: message || 'This visualization could not be rendered.',
+        detail: normalizeErrorDetail(detail),
+        title: document.title || 'Visualization',
+        href: window.location.href,
+      };
+      if (reason) payload.reason = reason;
+      window.parent.postMessage({ type: 'biorouter-viz-render-error', payload: payload }, '*');
     } catch (e) {
       /* ignore */
     }
   }
 
   function showError(message, detail) {
+    var missing = unavailableLibraries();
     var host = document.querySelector('.viz-root') || document.body;
     var card = document.createElement('div');
     card.setAttribute('role', 'alert');
+    // Neutral ink from the figure's own theme: a figure that cannot draw is a
+    // failure, not a danger, and its words say what happened.
     card.style.cssText =
       'margin:16px;padding:18px 20px;border-radius:12px;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;' +
-      'border:1px solid ' + (dark ? '#5b2a2a' : '#f3c2c2') + ';' +
-      'background:' + (dark ? '#2a1f22' : '#fff5f5') + ';color:' + (dark ? '#f3b0b0' : '#9b2c2c') + ';';
+      'border:1px solid ' + colors.border + ';background-color:' + colors.surface + ';color:' + colors.text + ';';
     var title = document.createElement('div');
+    if (missing.length) {
+      title.textContent = LIBRARY_UNAVAILABLE_MESSAGE;
+      card.appendChild(title);
+      host.appendChild(card);
+      reportSize();
+      reportRenderError(
+        LIBRARY_UNAVAILABLE_MESSAGE,
+        'Not downloaded: ' + missing.join(', '),
+        'library-unavailable'
+      );
+      return;
+    }
     title.style.cssText = 'font-weight:600;margin-bottom:6px;';
     title.textContent = '⚠ ' + (message || 'This visualization could not be rendered.');
     card.appendChild(title);
     if (detail) {
       var d = document.createElement('div');
-      d.style.cssText = 'font-size:12px;opacity:0.85;white-space:pre-wrap;word-break:break-word;';
+      d.style.cssText =
+        'font-size:12px;color:' + colors.muted + ';white-space:pre-wrap;word-break:break-word;';
       d.textContent = String(detail);
       card.appendChild(d);
     }
