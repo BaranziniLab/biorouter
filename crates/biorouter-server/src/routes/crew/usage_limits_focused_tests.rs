@@ -90,7 +90,6 @@ impl Provider for CountingTaskProvider {
                     total_tokens: Some(input + output),
                     cache_read_input_tokens: Some(0),
                     cache_creation_input_tokens: Some(0),
-                    ..Usage::default()
                 },
             ),
         ))
