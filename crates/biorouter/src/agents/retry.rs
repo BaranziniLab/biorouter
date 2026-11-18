@@ -415,17 +415,23 @@ pub async fn execute_shell_command_in(
     );
 
     let future = async {
-        let mut cmd = if cfg!(target_os = "windows") {
-            let mut cmd = Command::new("cmd");
-            cmd.args(["/C", command]);
-            cmd.env("BIOROUTER_TERMINAL", "1");
-            cmd
-        } else {
-            let mut cmd = Command::new("sh");
-            cmd.args(["-c", command]);
-            cmd.env("BIOROUTER_TERMINAL", "1");
+        #[cfg(target_os = "windows")]
+        let mut cmd = {
+            use std::os::windows::process::CommandExt;
+
+            let mut cmd = Command::new("cmd.exe");
+            cmd.args(["/D", "/S", "/C"]);
+            // cmd.exe parses its /C payload itself, so preserve its shell quotes verbatim.
+            cmd.as_std_mut().raw_arg(format!("\"{command}\""));
             cmd
         };
+        #[cfg(not(target_os = "windows"))]
+        let mut cmd = {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", command]);
+            cmd
+        };
+        cmd.env("BIOROUTER_TERMINAL", "1");
 
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
