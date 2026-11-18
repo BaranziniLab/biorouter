@@ -21,9 +21,9 @@ use crate::providers::base::{
 
 use crate::providers::errors::ProviderError;
 use crate::providers::formats::gcpvertexai::{
-    create_request, get_usage, response_to_message, response_to_streaming_message, GcpLocation,
-    ModelProvider, RequestContext, DEFAULT_MODEL, EU_MULTI_REGION, GLOBAL_LOCATION, KNOWN_MODELS,
-    MULTI_REGION_LOCATIONS, US_MULTI_REGION,
+    create_request, create_streaming_request, get_usage, response_to_message,
+    response_to_streaming_message, GcpLocation, ModelProvider, RequestContext, DEFAULT_MODEL,
+    EU_MULTI_REGION, GLOBAL_LOCATION, KNOWN_MODELS, MULTI_REGION_LOCATIONS, US_MULTI_REGION,
 };
 use crate::providers::gcpauth::GcpAuth;
 use crate::providers::retry::RetryConfig;
@@ -680,7 +680,8 @@ impl Provider for GcpVertexAIProvider {
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
         let model_config = self.get_model_config();
-        let (mut request, context) = create_request(&model_config, system, messages, tools)?;
+        let (mut request, context) =
+            create_streaming_request(&model_config, system, messages, tools)?;
 
         if matches!(context.provider(), ModelProvider::Anthropic) {
             if let Some(obj) = request.as_object_mut() {
@@ -843,7 +844,7 @@ mod tests {
     fn test_provider_metadata() {
         let metadata = GcpVertexAIProvider::metadata();
         assert!(!metadata.known_models.is_empty());
-        assert_eq!(metadata.default_model, "gemini-3.8-flash");
+        assert_eq!(metadata.default_model, "gemini-4-hydrogen");
         // The UI auto-selects the first entry on a provider switch.
         assert_eq!(metadata.known_models[0].name, metadata.default_model);
         assert_eq!(metadata.config_keys.len(), 6);
@@ -1083,6 +1084,35 @@ mod tests {
                     "{model} routed to {location} under GCP_LOCATION=us"
                 );
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod hosted_refresh_tests {
+    use super::*;
+
+    #[test]
+    fn hosted_refresh_vertex_daily_model_and_partner_catalogue_are_available_routes() {
+        let metadata = GcpVertexAIProvider::metadata();
+        assert_eq!(metadata.default_model, "gemini-4-hydrogen");
+        assert_eq!(metadata.known_models[0].name, metadata.default_model);
+        for name in [
+            "gemini-4-argon",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+        ] {
+            assert!(
+                metadata.known_models.iter().any(|m| m.name == name),
+                "{name}"
+            );
+        }
+        for gated in ["gemini-4-carbon", "claude-fable-5-2"] {
+            assert!(
+                !metadata.known_models.iter().any(|m| m.name == gated),
+                "{gated}"
+            );
         }
     }
 }

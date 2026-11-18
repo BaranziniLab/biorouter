@@ -29,8 +29,8 @@ pub const XAI_API_HOST: &str = "https://api.x.ai/v1";
 // Removed Sep 2026:
 // - grok-4.20-multi-agent-0309: xAI documents that the multi-agent model does
 //   not work with the Chat Completions API, the only API this provider calls.
-// - grok-imagine-image-quality: image generation only, and xAI retires it on
-//   Nov 2, 2026.
+// - grok-imagine-image and grok-imagine-image-quality: image generation only;
+//   their /v1/images/generations endpoint is outside this chat adapter.
 pub const XAI_DEFAULT_MODEL: &str = "grok-4.7";
 pub const XAI_KNOWN_MODELS: &[&str] = &[
     // Flagship family (500K context; text + image in, function calling)
@@ -48,18 +48,12 @@ pub const XAI_KNOWN_MODELS: &[&str] = &[
     "grok-4.20-0309-non-reasoning",
     // Fast agentic coding (256K context; successor to grok-code-fast-1)
     "grok-build-0.1",
-    // Image generation. xAI serves it on /v1/images/generations, not on the
-    // chat/completions endpoint this provider calls, so it cannot answer a
-    // chat here. The Sep 2026 refresh removed only the -quality model that
-    // xAI is retiring; whether to drop this one too is still open.
-    "grok-imagine-image",
 ];
 
 pub const XAI_DOC_URL: &str = "https://docs.x.ai/docs/overview";
 
 /// xAI's chat models take png/jpeg images alongside text. grok-build-0.1 and
-/// Grok 4.5-4.7 are listed as "text, image -> text" on docs.x.ai (Sep 2026);
-/// only the image-generation model is left out.
+/// Grok 4.5-4.7 are listed as "text, image -> text" on docs.x.ai (Sep 2026).
 fn xai_model_supports_vision(name: &str) -> bool {
     const IMAGE_INPUT_PREFIXES: &[&str] = &[
         "grok-4.3",
@@ -265,16 +259,17 @@ mod tests {
             );
         }
         assert_eq!(known("grok-4.7").context_limit, 500_000);
-        assert_eq!(known("grok-imagine-image").supports_vision, None);
     }
 
-    /// The multi-agent model does not work with Chat Completions and the
-    /// -quality image model is being retired. (grok-imagine-image cannot
-    /// answer through Chat Completions either, but it is still listed; see
-    /// the comment on XAI_KNOWN_MODELS.)
+    /// Multi-agent and image-generation models use protocols this adapter
+    /// does not implement.
     #[test]
     fn multi_agent_and_retiring_image_models_are_not_advertised() {
-        for removed in ["grok-4.20-multi-agent-0309", "grok-imagine-image-quality"] {
+        for removed in [
+            "grok-4.20-multi-agent-0309",
+            "grok-imagine-image",
+            "grok-imagine-image-quality",
+        ] {
             assert!(
                 !XAI_KNOWN_MODELS.contains(&removed),
                 "{removed} should no longer be advertised"

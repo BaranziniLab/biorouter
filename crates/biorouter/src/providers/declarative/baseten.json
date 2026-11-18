@@ -52,6 +52,21 @@
       ]
     },
     {
+      "name": "moonshotai/Kimi-K3.1-Pro",
+      "context_limit": 1048576,
+      "input_token_cost": 0.000002,
+      "output_token_cost": 0.00001,
+      "currency": "$",
+      "supports_vision": true,
+      "supported_input_mime_types": [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif"
+      ]
+    },
+    {
       "name": "moonshotai/Kimi-K3",
       "context_limit": 1048576,
       "input_token_cost": 0.000003,

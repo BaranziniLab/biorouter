@@ -130,6 +130,8 @@ impl Provider for ZaiProvider {
                 let info = ModelInfo::new(name, ModelConfig::new_or_fail(name).context_limit());
                 if ZAI_VISION_MODELS.contains(&name) {
                     info.with_vision()
+                } else if name == ZAI_DEFAULT_MODEL {
+                    info.without_vision()
                 } else {
                     info
                 }

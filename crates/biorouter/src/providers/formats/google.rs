@@ -5,17 +5,82 @@ use crate::providers::formats::audience;
 use crate::providers::utils::{is_valid_function_name, sanitize_function_name};
 use anyhow::Result;
 use rmcp::model::{
-    object, AnnotateAble, CallToolRequestParams, ErrorCode, ErrorData, RawContent, Role, Tool,
+    object, AnnotateAble, CallToolRequestParams, ErrorCode, ErrorData, Meta, RawContent,
+    RawTextContent, Role, Tool,
 };
 use serde::Serialize;
 use std::borrow::Cow;
+use std::collections::HashMap;
 use uuid::Uuid;
 
-use crate::conversation::message::{Message, MessageContent, ProviderMetadata};
+use crate::conversation::has_google_native_replay_content;
+use crate::conversation::message::{
+    Message, MessageContent, ProviderMetadata, ToolRequest, ToolResponse,
+};
 use serde_json::{json, Map, Value};
 use std::ops::Deref;
 
 pub const THOUGHT_SIGNATURE_KEY: &str = "thoughtSignature";
+const NATIVE_PART_KEY: &str = "googleNativePart";
+
+// Gemini 4 requires every prior native part to retain its own signature.
+// https://aistudio.google.com/docs/whats-new-gemini-4-hydrogen
+fn uses_gemini4_history(model_name: &str) -> bool {
+    model_name
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name.starts_with("gemini-4-"))
+}
+
+pub(crate) fn uses_gemini4_response_history(response: &Value, model_name: &str) -> bool {
+    uses_gemini4_history(model_name)
+        || response
+            .get("modelVersion")
+            .and_then(Value::as_str)
+            .is_some_and(uses_gemini4_history)
+}
+
+fn native_part(metadata: &Option<ProviderMetadata>) -> Option<&Value> {
+    metadata.as_ref().and_then(|meta| meta.get(NATIVE_PART_KEY))
+}
+
+fn function_response_identity(
+    response: &ToolResponse,
+    requests: &HashMap<&str, (usize, &ToolRequest)>,
+    gemini4: bool,
+) -> Map<String, Value> {
+    let mut identity = Map::new();
+    if !gemini4 {
+        identity.insert("name".to_string(), json!(response.id));
+        return identity;
+    }
+
+    let request = requests
+        .get(response.id.as_str())
+        .map(|(_, request)| *request);
+    let native_call = native_part(&response.metadata)
+        .or_else(|| request.and_then(|request| native_part(&request.metadata)))
+        .and_then(|part| part.get("functionCall"));
+    let name = native_call
+        .and_then(|call| call.get("name"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .or_else(|| {
+            request
+                .and_then(|request| request.tool_call.as_ref().ok())
+                .map(|call| sanitize_function_name(&call.name))
+        })
+        .unwrap_or_else(|| response.id.clone());
+    identity.insert("name".to_string(), json!(name));
+    if let Some(call) = native_call {
+        if let Some(id) = call.get("id") {
+            identity.insert("id".to_string(), id.clone());
+        }
+    } else {
+        identity.insert("id".to_string(), json!(response.id));
+    }
+    identity
+}
 
 pub fn metadata_with_signature(signature: &str) -> ProviderMetadata {
     let mut map = ProviderMetadata::new();
@@ -38,8 +103,12 @@ pub fn get_thought_signature(metadata: &Option<ProviderMetadata>) -> Option<&str
 /// earlier in the chat stores what it showed that way. Replayed, it became a
 /// plain `text` part: the other model's private reasoning presented to Gemini
 /// as its own answer, beside an empty `thoughtSignature`.
-#[allow(clippy::too_many_lines)]
 pub fn format_messages(messages: &[Message]) -> Vec<Value> {
+    format_messages_with_policy(messages, false)
+}
+
+#[allow(clippy::too_many_lines)]
+fn format_messages_with_policy(messages: &[Message], gemini4: bool) -> Vec<Value> {
     let without_unsigned;
     let messages = if messages.iter().any(super::anthropic::has_unsigned_thinking) {
         without_unsigned = super::anthropic::without_unsigned_thinking(messages);
@@ -66,35 +135,84 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
         .filter(|(_, m)| m.role != Role::User)
         .map(|(i, _)| i)
         .next_back();
+    let mut tool_requests = HashMap::new();
+    let mut next_tool_order = 0;
 
     filtered
         .iter()
         .enumerate()
         .map(|(idx, message)| {
+            for request in message
+                .content
+                .iter()
+                .filter_map(MessageContent::as_tool_request)
+            {
+                tool_requests.insert(request.id.as_str(), (next_tool_order, request));
+                next_tool_order += 1;
+            }
             let role = if message.role == Role::User {
                 "user"
             } else {
                 "model"
             };
-            let include_signature = match last_assistant_idx {
-                Some(last_idx) => idx >= last_idx,
-                None => false,
-            };
+            let include_signature = gemini4
+                || match last_assistant_idx {
+                    Some(last_idx) => idx >= last_idx,
+                    None => false,
+                };
             let mut parts = Vec::new();
-            for message_content in message.content.iter() {
+            let mut content: Vec<_> = message.content.iter().collect();
+            if gemini4 {
+                for group in content.chunk_by_mut(|left, right| {
+                    matches!(left, MessageContent::ToolResponse(_))
+                        && matches!(right, MessageContent::ToolResponse(_))
+                }) {
+                    group.sort_by_key(|content| match content {
+                        MessageContent::ToolResponse(response) => tool_requests
+                            .get(response.id.as_str())
+                            .map(|(order, _)| *order)
+                            .unwrap_or(usize::MAX),
+                        _ => usize::MAX,
+                    });
+                }
+            }
+            for message_content in content {
                 match message_content {
                     MessageContent::Text(text) => {
+                        if gemini4 {
+                            if let Some(part) = text
+                                .meta
+                                .as_ref()
+                                .and_then(|meta| meta.0.get(NATIVE_PART_KEY))
+                            {
+                                if part.get("text").and_then(Value::as_str)
+                                    == Some(text.text.as_str())
+                                {
+                                    parts.push(part.clone());
+                                    continue;
+                                }
+                            }
+                        }
                         if !text.text.is_empty() {
                             parts.push(json!({"text": text.text}));
                         }
                     }
                     MessageContent::ToolRequest(request) => match &request.tool_call {
                         Ok(tool_call) => {
+                            if gemini4 {
+                                if let Some(part) = native_part(&request.metadata) {
+                                    parts.push(part.clone());
+                                    continue;
+                                }
+                            }
                             let mut function_call_part = Map::new();
                             function_call_part.insert(
                                 "name".to_string(),
                                 json!(sanitize_function_name(&tool_call.name)),
                             );
+                            if gemini4 {
+                                function_call_part.insert("id".to_string(), json!(request.id));
+                            }
 
                             if let Some(args) = &tool_call.arguments {
                                 if !args.is_empty() {
@@ -168,8 +286,8 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
                                     text = "Tool call is done.".to_string();
                                 }
                                 let mut part = Map::new();
-                                let mut function_response = Map::new();
-                                function_response.insert("name".to_string(), json!(response.id));
+                                let mut function_response =
+                                    function_response_identity(response, &tool_requests, gemini4);
                                 function_response.insert(
                                     "response".to_string(),
                                     json!({"content": {"text": text}}),
@@ -178,7 +296,7 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
                                     "functionResponse".to_string(),
                                     json!(function_response),
                                 );
-                                if include_signature {
+                                if include_signature && !gemini4 {
                                     if let Some(signature) =
                                         get_thought_signature(&response.metadata)
                                     {
@@ -193,8 +311,8 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
                             Err(e) => {
                                 let text = format!("Error: {}", super::tool_error_text(e));
                                 let mut part = Map::new();
-                                let mut function_response = Map::new();
-                                function_response.insert("name".to_string(), json!(response.id));
+                                let mut function_response =
+                                    function_response_identity(response, &tool_requests, gemini4);
                                 function_response.insert(
                                     "response".to_string(),
                                     json!({"content": {"text": text}}),
@@ -203,7 +321,7 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
                                     "functionResponse".to_string(),
                                     json!(function_response),
                                 );
-                                if include_signature {
+                                if include_signature && !gemini4 {
                                     if let Some(signature) =
                                         get_thought_signature(&response.metadata)
                                     {
@@ -217,9 +335,14 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
                             }
                         }
                     }
+                    MessageContent::Thinking(_)
+                        if !gemini4 && has_google_native_replay_content(message) => {}
                     MessageContent::Thinking(thinking) => {
                         let mut part = Map::new();
                         part.insert("text".to_string(), json!(thinking.thinking));
+                        if gemini4 {
+                            part.insert("thought".to_string(), json!(true));
+                        }
                         if include_signature {
                             part.insert("thoughtSignature".to_string(), json!(thinking.signature));
                         }
@@ -364,6 +487,7 @@ pub fn process_map(map: &Map<String, Value>, parent_key: Option<&str>) -> Value 
 enum SignedTextHandling {
     SignedTextAsThinking,
     SignedTextAsRegularText,
+    NativeGemini4,
 }
 
 pub fn process_response_part(
@@ -392,11 +516,51 @@ fn process_response_part_non_streaming(
     process_response_part_impl(part, last_signature, handling)
 }
 
+fn process_response_text(
+    part: &Value,
+    text: &str,
+    signature: Option<&str>,
+    signed_text_handling: SignedTextHandling,
+) -> Option<MessageContent> {
+    let gemini4 = matches!(signed_text_handling, SignedTextHandling::NativeGemini4);
+    if text.is_empty() && !gemini4 {
+        return None;
+    }
+    if gemini4 {
+        if part.get("thought").and_then(Value::as_bool) == Some(true) {
+            return Some(MessageContent::thinking(
+                text.to_string(),
+                signature.unwrap_or_default().to_string(),
+            ));
+        }
+        // Unsigned visible text still identifies the native turn containing
+        // optional signed thoughts, including after session persistence.
+        let meta = Some(Meta(Map::from_iter([(
+            NATIVE_PART_KEY.to_string(),
+            part.clone(),
+        )])));
+        return Some(MessageContent::Text(
+            RawTextContent {
+                text: text.to_string(),
+                meta,
+            }
+            .no_annotation(),
+        ));
+    }
+    match (signature, signed_text_handling) {
+        (Some(sig), SignedTextHandling::SignedTextAsThinking) => {
+            Some(MessageContent::thinking(text.to_string(), sig.to_string()))
+        }
+        _ => Some(MessageContent::text(text.to_string())),
+    }
+}
+
 fn process_response_part_impl(
     part: &Value,
     last_signature: &mut Option<String>,
     signed_text_handling: SignedTextHandling,
 ) -> Option<MessageContent> {
+    let gemini4 = matches!(signed_text_handling, SignedTextHandling::NativeGemini4);
     let signature = part.get(THOUGHT_SIGNATURE_KEY).and_then(|v| v.as_str());
 
     if let Some(sig) = signature {
@@ -405,15 +569,7 @@ fn process_response_part_impl(
 
     let text_value = part.get("text");
     if let Some(text) = text_value.and_then(|v| v.as_str()) {
-        if text.is_empty() {
-            return None;
-        }
-        match (signature, signed_text_handling) {
-            (Some(sig), SignedTextHandling::SignedTextAsThinking) => {
-                Some(MessageContent::thinking(text.to_string(), sig.to_string()))
-            }
-            _ => Some(MessageContent::text(text.to_string())),
-        }
+        process_response_text(part, text, signature, signed_text_handling)
     } else if text_value.is_some() {
         tracing::warn!(
             "Google response part has 'text' field but it's not a string: {:?}",
@@ -421,7 +577,15 @@ fn process_response_part_impl(
         );
         None
     } else if let Some(function_call) = part.get("functionCall") {
-        let id = Uuid::new_v4().to_string();
+        let id = if gemini4 {
+            function_call
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        } else {
+            None
+        }
+        .unwrap_or_else(|| Uuid::new_v4().to_string());
         let name = function_call["name"].as_str().unwrap_or_default();
 
         if !is_valid_function_name(name) {
@@ -438,8 +602,17 @@ fn process_response_part_impl(
             let arguments = function_call
                 .get("args")
                 .map(|params| object(params.clone()));
-            let effective_signature = signature.or(last_signature.as_deref());
-            let metadata = effective_signature.map(metadata_with_signature);
+            let effective_signature = if gemini4 {
+                signature
+            } else {
+                signature.or(last_signature.as_deref())
+            };
+            let mut metadata = effective_signature.map(metadata_with_signature);
+            if gemini4 {
+                metadata
+                    .get_or_insert_with(Map::new)
+                    .insert(NATIVE_PART_KEY.to_string(), part.clone());
+            }
 
             Some(MessageContent::tool_request_with_metadata(
                 id,
@@ -458,6 +631,11 @@ fn process_response_part_impl(
 }
 
 pub fn response_to_message(response: Value) -> Result<Message> {
+    response_to_message_for_model(response, "")
+}
+
+pub fn response_to_message_for_model(response: Value, model_name: &str) -> Result<Message> {
+    let gemini4 = uses_gemini4_response_history(&response, model_name);
     let role = Role::Assistant;
     let created = chrono::Utc::now().timestamp();
 
@@ -479,9 +657,12 @@ pub fn response_to_message(response: Value) -> Result<Message> {
     let mut last_signature: Option<String> = None;
 
     for part in parts {
-        if let Some(msg_content) =
+        let parsed = if gemini4 {
+            process_response_part_impl(part, &mut last_signature, SignedTextHandling::NativeGemini4)
+        } else {
             process_response_part_non_streaming(part, &mut last_signature, has_function_calls)
-        {
+        };
+        if let Some(msg_content) = parsed {
             content.push(msg_content);
         }
     }
@@ -550,12 +731,37 @@ where
     response_to_streaming_message_batching(stream, tool_call_batching_enabled())
 }
 
+pub fn response_to_streaming_message_for_model<S>(
+    stream: S,
+    model_name: &str,
+) -> impl futures::Stream<Item = anyhow::Result<crate::providers::base::ProviderStreamItem>> + 'static
+where
+    S: futures::Stream<Item = anyhow::Result<String>> + Unpin + Send + 'static,
+{
+    response_to_streaming_message_with_policy(
+        stream,
+        tool_call_batching_enabled(),
+        uses_gemini4_history(model_name),
+    )
+}
+
 /// [`response_to_streaming_message`] with the batching decision supplied by the
 /// caller instead of resolved from the environment.
-#[allow(clippy::too_many_lines)]
 pub(crate) fn response_to_streaming_message_batching<S>(
+    stream: S,
+    batch_tool_calls: bool,
+) -> impl futures::Stream<Item = anyhow::Result<crate::providers::base::ProviderStreamItem>> + 'static
+where
+    S: futures::Stream<Item = anyhow::Result<String>> + Unpin + Send + 'static,
+{
+    response_to_streaming_message_with_policy(stream, batch_tool_calls, false)
+}
+
+#[allow(clippy::too_many_lines)]
+fn response_to_streaming_message_with_policy<S>(
     mut stream: S,
     batch_tool_calls: bool,
+    mut gemini4: bool,
 ) -> impl futures::Stream<Item = anyhow::Result<crate::providers::base::ProviderStreamItem>> + 'static
 where
     S: futures::Stream<Item = anyhow::Result<String>> + Unpin + Send + 'static,
@@ -571,8 +777,8 @@ where
         // §6.2b: buffer completed functionCall blocks and flush them as ONE
         // message before the terminal usage yield, so a multi-tool turn
         // dispatches in parallel. Off restores one message per block (serial).
-        // Text/thinking parts keep streaming per-part, unchanged. A dropped
-        // stream (cancellation) drops this Vec unflushed — never half-delivers.
+        // Gemini 4 also keeps later signed parts here so batching cannot move
+        // them ahead of the calls in the history replay.
         let mut pending_tool_contents: Vec<MessageContent> = Vec::new();
 
         while let Some(line_result) = stream.next().await {
@@ -638,6 +844,10 @@ where
                 Err(anyhow::anyhow!("Google API error ({}): {}", status, message))?;
             }
 
+            if let Some(model) = chunk.get("modelVersion").and_then(Value::as_str) {
+                gemini4 |= uses_gemini4_history(model);
+            }
+
             if let Ok(usage) = get_usage(&chunk) {
                 if usage.input_tokens.is_some() || usage.output_tokens.is_some() {
                     let model = chunk.get("modelVersion")
@@ -658,11 +868,17 @@ where
 
             if let Some(parts) = parts {
                 for part in parts {
-                    if let Some(content) = process_response_part(part, &mut last_signature) {
+                    let content = if gemini4 {
+                        process_response_part_impl(part, &mut last_signature, SignedTextHandling::NativeGemini4)
+                    } else {
+                        process_response_part(part, &mut last_signature)
+                    };
+                    if let Some(content) = content {
                         // §6.2b: buffer tool requests so N of them coalesce into one
-                        // message (parallel dispatch). Text/thinking still stream
-                        // per-part so first-token latency is unchanged.
-                        if batch_tool_calls && matches!(content, MessageContent::ToolRequest(_)) {
+                        // message (parallel dispatch). Text before the calls
+                        // still streams per-part without additional latency.
+                        if batch_tool_calls && (matches!(content, MessageContent::ToolRequest(_))
+                            || (gemini4 && !pending_tool_contents.is_empty())) {
                             pending_tool_contents.push(content);
                         } else {
                             let message = Message::new(
@@ -741,28 +957,30 @@ pub fn create_request(
         })
     };
 
-    // No `thinkingConfig` is sent: the BR-63 effort only reaches Gemini as the
-    // temperature `Quick` fills in. That is deliberate. Mapping Quick onto
-    // `thinkingLevel: "minimal"` would 400 on gemini-3.8-flash, which supports
-    // only low/medium/high (ai.google.dev model page, Sep 2026). Anyone adding
-    // a thinking level here must clamp Quick to "low" for such models. Google
-    // deprecated temperature on the 3.x models but still accepts it, so it
-    // stays (see the test `quick_effort_never_sends_a_thinking_level`).
-    let generation_config =
-        if model_config.temperature.is_some() || model_config.max_tokens.is_some() {
-            Some(GenerationConfig {
-                temperature: model_config.temperature.map(|t| t as f64),
-                max_output_tokens: model_config.max_tokens,
-            })
-        } else {
-            None
-        };
+    // Gemini 4 ignores sampling parameters and rejects minimal thinking.
+    // Leaving thinkingConfig unset keeps Google's model-specific default.
+    let gemini4 = uses_gemini4_history(&model_config.model_name);
+    let temperature = if gemini4 {
+        None
+    } else {
+        model_config
+            .temperature
+            .map(|temperature| temperature as f64)
+    };
+    let generation_config = if temperature.is_some() || model_config.max_tokens.is_some() {
+        Some(GenerationConfig {
+            temperature,
+            max_output_tokens: model_config.max_tokens,
+        })
+    } else {
+        None
+    };
 
     let request = GoogleRequest {
         system_instruction: SystemInstruction {
             parts: [TextPart { text: system }],
         },
-        contents: format_messages(messages),
+        contents: format_messages_with_policy(messages, gemini4),
         tools: tools_wrapper,
         generation_config,
     };
@@ -777,6 +995,76 @@ mod tests {
     use rmcp::model::{CallToolRequestParams, CallToolResult};
     use rmcp::{model::Content, object};
     use serde_json::json;
+
+    fn google_native_foreign_fixture(tool_origin: bool) -> Message {
+        let mut parts = vec![serde_json::json!({
+            "text": "GOOGLE-PRIVATE-THOUGHT",
+            "thought": true,
+            "thoughtSignature": "GOOGLE-PRIVATE-SIGNATURE"
+        })];
+        parts.push(if tool_origin {
+            serde_json::json!({"functionCall": {"id": "google-native-call", "name": "read", "args": {"path": "synthetic.txt"}}})
+        } else {
+            serde_json::json!({"text": "visible native answer"})
+        });
+        let mut message = crate::providers::formats::google::response_to_message_for_model(
+            serde_json::json!({"candidates": [{"content": {"role": "model", "parts": parts}}]}),
+            "gemini-4-hydrogen",
+        )
+        .unwrap();
+        if tool_origin {
+            message = message.with_text("visible native answer");
+        }
+        message.with_redacted_thinking("R09PR0xFLVJFREFDVEVE")
+    }
+
+    fn google_native_foreign_signed_control() -> Message {
+        let mut message = Message::assistant()
+            .with_text("visible signed control")
+            .with_thinking("OWN-SIGNED-THOUGHT", "OWN-SIGNED-SIGNATURE")
+            .with_redacted_thinking("T1dOLVJFREFDVEVE");
+        if let MessageContent::Text(text) = &mut message.content[0] {
+            text.meta = Some(rmcp::model::Meta(
+                serde_json::json!({
+                    "mistral_content_provider": "mistral",
+                    "mistral_content": [{"type": "text", "text": "visible signed control"}]
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ));
+        }
+        message
+    }
+
+    #[test]
+    fn google_native_foreign_legacy_google_omits_native_four_reasoning() {
+        for tool_origin in [false, true] {
+            let message = google_native_foreign_fixture(tool_origin);
+            let before = message.clone();
+            let serialized =
+                serde_json::to_string(&format_messages(std::slice::from_ref(&message))).unwrap();
+
+            assert!(serialized.contains("visible native answer"));
+            assert!(!serialized.contains("GOOGLE-PRIVATE-THOUGHT"));
+            assert!(!serialized.contains("GOOGLE-PRIVATE-SIGNATURE"));
+            assert!(!serialized.contains("R09PR0xFLVJFREFDVEVE"));
+
+            assert_eq!(
+                message, before,
+                "outbound projection must not mutate durable history"
+            );
+        }
+    }
+
+    #[test]
+    fn google_native_foreign_legacy_google_keeps_non_google_signed_reasoning() {
+        let serialized =
+            serde_json::to_string(&format_messages(&[google_native_foreign_signed_control()]))
+                .unwrap();
+        assert!(serialized.contains("OWN-SIGNED-THOUGHT"));
+        assert!(serialized.contains("OWN-SIGNED-SIGNATURE"));
+    }
 
     fn set_up_text_message(text: &str, role: Role) -> Message {
         Message::new(role, 0, vec![MessageContent::text(text.to_string())])

@@ -115,8 +115,8 @@ const KIND: CodingAgentKind = CodingAgentKind::ClaudeCode;
 /// # Why Opus 5.5 is the default
 ///
 /// It is Claude Code's own default. Anthropic's model-config page
-/// (https://code.claude.com/docs/en/model-config.md, read 2026-09-25) makes
-/// Opus 5.5 the default for Pro, Max, Team, Enterprise and API accounts, the
+/// (https://code.claude.com/docs/en/model-config, checked 2026-11-17) makes
+/// Opus 5.5 the default for Pro, Max, Ultra, Team, Enterprise and API accounts. The
 /// 2.1.280 changelog entry is "Added Claude Opus 5.5 (claude-opus-5-5), now
 /// the default Opus model", and from 2.1.280 the CLI's baked alias map resolves
 /// `opus` to `claude-opus-5-5` (2.1.266 and 2.1.275 still resolve it to
@@ -133,7 +133,7 @@ const KIND: CodingAgentKind = CodingAgentKind::ClaudeCode;
 /// Claude Code never shows the consent prompt and bills those credits without
 /// asking. A subscription provider should not start every new chat on the
 /// model most likely to spend credits the user did not choose to spend.
-/// Fable 5.1 stays in the picker for anyone who picks it.
+/// Fable 5.2 and 5.1 stay in the picker for anyone who picks them.
 ///
 /// ⚠ It needs **`claude` 2.1.280 or newer** ("Opus 5.5 requires Claude Code
 /// v2.1.280 or later", same page). Measured 2026-09-25: 2.1.280 knows the id,
@@ -234,7 +234,7 @@ fn known_models() -> Vec<ModelInfo> {
     // `tests/context_windows.rs::provider_declared_windows_match_the_registry`
     // compares the two.
     //
-    // Anthropic's **current** lineup, and nothing else, default first.
+    // Anthropic's current daily tiers lead the optional Fable tiers.
     //
     // Two rounds of evidence, and they are not the same kind:
     //
@@ -262,22 +262,25 @@ fn known_models() -> Vec<ModelInfo> {
     //     `unrecognized_model` warning (the control, `claude-not-a-model-9`,
     //     drew one). On that CLI the `sonnet` and `haiku` aliases run them.
     //
-    // All six windows match
-    // https://platform.claude.com/docs/en/about-claude/models/overview, which
+    // Fable 5.2's 1M window and vision support are documented in Anthropic's
+    // model overview, checked 2026-11-17; no live CLI turn was used for it.
+    // All seven windows match
+    // https://platform.claude.com/docs/en/models/overview, which
     // also states that every current model takes text *and* image input —
-    // hence `with_vision()` on all six. Sonnet 5 and Haiku 4.5 stay listed:
+    // hence `with_vision()` on all seven. Sonnet 5 and Haiku 4.5 stay listed:
     // Anthropic still lists both as current models, not legacy.
     //
     // ⚠ Each model has its own CLI floor, and an older CLI gets the vendor's
     // `claude_code_version_too_old` 400, which is surfaced verbatim so it reads
     // as "update the CLI", not as a Biorouter fault (see
-    // `CLAUDE_CODE_DEFAULT_MODEL`). From the model-config page on 2026-09-25:
+    // `CLAUDE_CODE_DEFAULT_MODEL`). From the model-config page on 2026-11-17:
     //   claude-opus-5-5   2.1.280  (the default, so the floor that matters)
     //   claude-fable-5-1  2.1.257  (the page said 2.1.255 on 2026-09-08, and the
     //                               API's own 400 on 2.1.235 then named 2.1.251)
+    //   claude-fable-5-2  2.1.321
+    //   claude-sonnet-5-5 2.1.284
+    //   claude-haiku-5-5  2.1.293
     //   claude-sonnet-5   2.1.197
-    // The 5.5 Sonnet and Haiku answered on 2.1.321 (2026-11-12); their floor
-    // was not measured.
     //
     // ⚠ The probe has to be checked before it is trusted: `claude --model X -p`
     // ACCEPTS an unknown id and merely warns. Current CLIs (2.1.266, 2.1.275
@@ -322,9 +325,10 @@ fn known_models() -> Vec<ModelInfo> {
     //     registry keyed on the model name alone has no way to say so.
     vec![
         ModelInfo::new("claude-opus-5-5", 1_000_000).with_vision(),
-        ModelInfo::new("claude-fable-5-1", 1_000_000).with_vision(),
         ModelInfo::new("claude-sonnet-5-5", 1_000_000).with_vision(),
         ModelInfo::new("claude-haiku-5-5", 1_000_000).with_vision(),
+        ModelInfo::new("claude-fable-5-2", 1_000_000).with_vision(),
+        ModelInfo::new("claude-fable-5-1", 1_000_000).with_vision(),
         ModelInfo::new("claude-sonnet-5", 1_000_000).with_vision(),
         ModelInfo::new("claude-haiku-4-5", 200_000).with_vision(),
     ]
@@ -2763,6 +2767,39 @@ mod tests {
         );
     }
 
+    #[test]
+    fn model_refresh_claude_code_prioritizes_daily_tiers_before_optional_fable() {
+        let metadata = ClaudeCodeProvider::metadata();
+        let leading: Vec<&str> = metadata
+            .known_models
+            .iter()
+            .take(4)
+            .map(|model| model.name.as_str())
+            .collect();
+        assert_eq!(metadata.default_model, "claude-opus-5-5");
+        assert_eq!(
+            leading,
+            [
+                "claude-opus-5-5",
+                "claude-sonnet-5-5",
+                "claude-haiku-5-5",
+                "claude-fable-5-2",
+            ]
+        );
+        let fable = metadata
+            .known_models
+            .iter()
+            .find(|model| model.name == "claude-fable-5-2")
+            .expect("the current optional Fable tier is offered");
+        assert_eq!(fable.context_limit, 1_000_000);
+        assert_eq!(fable.supports_vision, Some(true));
+        assert!(metadata.allows_unlisted_models);
+        assert!(metadata
+            .known_models
+            .iter()
+            .any(|model| model.name == "claude-fable-5-1"));
+    }
+
     /// The advertised catalog is Anthropic's *current* lineup and nothing else.
     ///
     /// Pinned as an exact list rather than as "contains X", because the failure
@@ -2778,16 +2815,15 @@ mod tests {
             advertised,
             [
                 "claude-opus-5-5",
-                "claude-fable-5-1",
                 "claude-sonnet-5-5",
                 "claude-haiku-5-5",
+                "claude-fable-5-2",
+                "claude-fable-5-1",
                 "claude-sonnet-5",
                 "claude-haiku-4-5",
             ],
-            "Anthropic's current lineup per its model overview, re-read \
-             2026-09-25 against the baked catalogs of `claude` 2.1.266, 2.1.275 \
-             and 2.1.280; Sonnet 5.5 and Haiku 5.5 measured on 2.1.321 \
-             (2026-11-12)"
+            "Anthropic's current lineup per its model overview and Claude Code \
+             model configuration, re-read 2026-11-17"
         );
         assert_eq!(
             m.default_model, CLAUDE_CODE_DEFAULT_MODEL,
@@ -2831,6 +2867,7 @@ mod tests {
                 .context_limit
         };
         assert_eq!(window("claude-opus-5-5"), 1_000_000);
+        assert_eq!(window("claude-fable-5-2"), 1_000_000);
         assert_eq!(window("claude-fable-5-1"), 1_000_000);
         assert_eq!(window("claude-sonnet-5-5"), 1_000_000);
         assert_eq!(window("claude-haiku-5-5"), 1_000_000);

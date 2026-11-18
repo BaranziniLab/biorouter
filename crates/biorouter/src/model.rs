@@ -114,23 +114,40 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("gpt-6-luna-2026-09-22", 1_050_000),
         ("gpt-6-sol", 1_050_000),
         ("gpt-6-sol-2026-09-22", 1_050_000),
+        ("gpt-6.1-sol", 1_050_000),
+        ("gpt-6.1-sol-2026-09-29", 1_050_000),
+        ("gpt-6.1-terra", 1_050_000),
+        ("gpt-6.1-terra-2026-10-26", 1_050_000),
+        ("gpt-6.2-astra", 1_050_000),
+        ("gpt-6.2-astra-2026-11-17", 1_050_000),
+        ("gpt-6.2-sol", 1_050_000),
+        ("gpt-6.2-sol-2026-11-17", 1_050_000),
         ("o3", 200_000),
         ("o3-2025-04-16", 200_000),
         ("openai/gpt-5.6-terra", 1_050_000),
         ("openai/gpt-6-astra", 1_050_000),
         ("openai/gpt-6-luna", 1_050_000),
         ("openai/gpt-6-sol", 1_050_000),
+        ("openai/gpt-6.1-sol", 1_050_000),
+        ("openai/gpt-6.1-terra", 1_050_000),
+        ("openai/gpt-6.2-astra", 1_050_000),
+        ("openai/gpt-6.2-sol", 1_050_000),
         // ── Anthropic ──
         ("anthropic/claude-fable-5.1", 1_000_000),
+        ("anthropic/claude-fable-5.2", 1_000_000),
+        ("anthropic/claude-haiku-5.5", 1_000_000),
         ("anthropic/claude-haiku-4.5", 200_000),
         ("anthropic/claude-opus-4.8", 1_000_000),
         ("anthropic/claude-opus-5.5", 1_000_000),
         ("anthropic/claude-sonnet-4.6", 1_000_000),
         ("anthropic/claude-sonnet-5", 1_000_000),
+        ("anthropic/claude-sonnet-5.5", 1_000_000),
         ("claude-4-sonnet", 200_000),
         ("claude-fable-5", 1_000_000),
         ("claude-fable-5-1", 1_000_000),
         ("claude-fable-5.1", 1_000_000),
+        ("claude-fable-5-2", 1_000_000),
+        ("claude-fable-5.2", 1_000_000),
         ("claude-haiku-4-5", 200_000),
         ("claude-haiku-4-5-20251001", 200_000),
         ("claude-haiku-4-5@20251001", 200_000),
@@ -139,6 +156,7 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         // and UCSF's Bedrock gateway named the same 1,000,000-token limit for
         // `us.anthropic.claude-haiku-5-5` on 2026-11-12.
         ("claude-haiku-5-5", 1_000_000),
+        ("claude-haiku-5.5", 1_000_000),
         ("claude-opus-4-1", 200_000),
         ("claude-opus-4-5", 200_000),
         ("claude-opus-4-5-20251101", 200_000),
@@ -160,6 +178,7 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("claude-sonnet-4.6", 1_000_000),
         ("claude-sonnet-5", 1_000_000),
         ("claude-sonnet-5-5", 1_000_000),
+        ("claude-sonnet-5.5", 1_000_000),
         ("us.anthropic.claude-haiku-4-5-20251001-v1:0", 200_000),
         ("us.anthropic.claude-haiku-5-5", 1_000_000),
         ("us.anthropic.claude-opus-4-5-20251101-v1:0", 200_000),
@@ -176,6 +195,7 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         // (AWS model cards); only the 4.5 generation carries `-v1:0` and Opus
         // 4.6 alone `-v1`.
         ("us.anthropic.claude-fable-5-1", 1_000_000),
+        ("us.anthropic.claude-fable-5-2", 1_000_000),
         ("us.anthropic.claude-opus-5", 1_000_000),
         ("us.anthropic.claude-opus-5-5", 1_000_000),
         ("us.anthropic.claude-sonnet-4-5-20250929-v1:0", 200_000),
@@ -203,6 +223,9 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("gemini-3.6-flash", 1_048_576),
         ("gemini-3.7-flash", 1_048_576),
         ("gemini-3.8-flash", 1_048_576),
+        ("gemini-4-hydrogen", 1_048_576),
+        ("gemini-4-argon", 1_048_576),
+        ("gemini-4-carbon", 1_048_576),
         // Llama Server catalog names (`providers/llamacpp.rs`). `gemma4-31b` is
         // in the catalog; the other `gemma4*` rows are retired catalog names,
         // which a chat now runs as `qwen3.8-27b` but whose windows stay true.
@@ -297,9 +320,12 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("kimi-k2.7-code", 262_144),
         ("kimi-k2.7-code-highspeed", 262_144),
         ("kimi-k3", 1_048_576),
+        ("kimi-k3.1-pro", 1_000_000),
+        ("kimi-k3.1-pro-highspeed", 1_000_000),
         ("moonshotai/kimi-k2.6", 262_144),
         ("moonshotai/kimi-k2.7-code", 262_144),
         ("moonshotai/kimi-k3", 1_048_576),
+        ("moonshotai/kimi-k3.1-pro", 1_048_576),
         // ── Xiaomi MiMo ──
         ("mimo-v2-omni", 262_144),
         ("mimo-v2-pro", 262_144),
@@ -310,6 +336,7 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         // ── Inception Mercury ──
         ("mercury-2", 128_000),
         ("mercury-2.5", 260_000),
+        ("mercury-3", 1_000_000),
         ("mercury-coder", 128_000),
         // ── Mistral ──
         ("codestral-2508", 128_000),
@@ -319,6 +346,9 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("ministral-3b-2512", 262_144),
         ("ministral-8b-2512", 262_144),
         ("mistral-large-2512", 262_144),
+        ("mistral-large-4", 1_000_000),
+        ("mistral-large-4-0", 1_000_000),
+        ("mistralai/mistral-large-4-0", 1_048_576),
         ("mistral-medium-2508", 128_000),
         ("mistral-medium-3-5", 262_144),
         // Now an alias of mistral-medium-3-5 (256k).
@@ -329,6 +359,7 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         // table says 256K, read 2026-09-25. 128k halved the gauge and made
         // compaction fire early for a model Venice advertises.
         ("mistral-small-3-2-24b-instruct", 256_000),
+        ("deepseek-v4-1-flash-1017-uncensored", 1_000_000),
         // ── MiniMax ──
         ("minimax/minimax-m3", 1_048_576),
         // ── Baseten-hosted ──
@@ -344,6 +375,8 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("zai-org/GLM-5.3-Fast", 1_048_576),
         ("zai-org/GLM-5.3-Flash", 1_048_576),
         ("moonshotai/Kimi-K3", 1_048_576),
+        // Exact host window from Baseten's /v1/models, checked 2026-11-18.
+        ("moonshotai/Kimi-K3.1-Pro", 1_048_576),
         ("deepseek-ai/DeepSeek-V4.1-Flash", 1_048_576),
         ("deepseek-ai/DeepSeek-V4.1-Flash-1017", 1_048_576),
         ("deepseek-ai/DeepSeek-V4-Pro-0813", 1_048_576),
@@ -364,9 +397,12 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("databricks-claude-opus-4-7", 1_000_000),
         ("databricks-claude-opus-4-8", 1_000_000),
         ("databricks-claude-opus-5", 1_000_000),
+        ("databricks-claude-opus-5-5", 1_000_000),
+        ("databricks-claude-haiku-5-5", 1_000_000),
         ("databricks-claude-sonnet-4-5", 200_000),
         ("databricks-claude-sonnet-4-6", 1_000_000),
         ("databricks-claude-sonnet-5", 1_000_000),
+        ("databricks-claude-sonnet-5-5", 1_000_000),
         ("databricks-gemini-2-5-flash", 1_048_576),
         ("databricks-gemini-2-5-pro", 1_048_576),
         ("databricks-gemini-3-1-flash-lite", 1_048_576),
@@ -377,6 +413,7 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("databricks-gemini-3-7-flash", 1_048_576),
         ("databricks-gemini-3-8-flash", 1_048_576),
         ("databricks-gemini-3-flash", 1_048_576),
+        ("databricks-gemini-4-argon", 1_048_576),
         // GPT-5.4 and 5.5 are 1,050,000 on Databricks, as everywhere else
         // (Databricks supported-models page); only mini/nano are 400k.
         ("databricks-gpt-5-4", 1_050_000),
@@ -390,12 +427,17 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("databricks-gpt-6-astra", 1_050_000),
         ("databricks-gpt-6-luna", 1_050_000),
         ("databricks-gpt-6-sol", 1_050_000),
+        ("databricks-gpt-6-1-sol", 1_050_000),
+        ("databricks-gpt-6-1-terra", 1_050_000),
         ("databricks-llama-4-maverick", 128_000),
         ("databricks-meta-llama-3-3-70b-instruct", 128_000),
         // ── Other ──
         ("google/gemini-3.1-pro-preview", 1_048_576),
         ("google/gemini-3.5-flash", 1_048_576),
         ("google/gemini-3.8-flash", 1_048_576),
+        ("google/gemini-4-hydrogen", 1_048_576),
+        ("google/gemini-4-argon", 1_048_576),
+        ("google/gemini-4-carbon", 1_048_576),
         ("o4-mini-2025-04-16", 200_000),
         ("sagemaker-tgi-endpoint", 128_000),
         ("z-ai/glm-5.1", 202_752),

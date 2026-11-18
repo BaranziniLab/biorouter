@@ -1,5 +1,5 @@
 use crate::conversation::message::{Message, MessageContent, ProviderMetadata};
-use crate::providers::formats::openai;
+use crate::providers::formats::openai::{self, REASONING_PROVIDER_KEY};
 use rmcp::model::Role;
 use serde_json::{json, Value};
 
@@ -26,14 +26,42 @@ pub fn extract_reasoning_details(response: &Value) -> Option<Vec<Value>> {
 }
 
 pub fn get_reasoning_details(metadata: &Option<ProviderMetadata>) -> Option<Vec<Value>> {
-    metadata
-        .as_ref()
-        .and_then(|m| m.get(REASONING_DETAILS_KEY))
-        .and_then(|v| v.as_array())
-        .cloned()
+    get_reasoning_details_for_provider(metadata, "openrouter")
+}
+
+fn get_reasoning_details_for_provider(
+    metadata: &Option<ProviderMetadata>,
+    provider_name: &str,
+) -> Option<Vec<Value>> {
+    let metadata = metadata.as_ref()?;
+    // The generic OpenAI stream decoder also captured this key historically,
+    // so an unstamped transcript cannot be assumed to come from OpenRouter.
+    if metadata.get(REASONING_PROVIDER_KEY)?.as_str()? != provider_name {
+        return None;
+    }
+    metadata.get(REASONING_DETAILS_KEY)?.as_array().cloned()
+}
+
+pub fn stamp_reasoning_details_provenance(message: &mut Message, provider_name: &str) {
+    for content in &mut message.content {
+        if let MessageContent::ToolRequest(request) = content {
+            if let Some(metadata) = request.metadata.as_mut() {
+                if metadata.contains_key(REASONING_DETAILS_KEY) {
+                    metadata.insert(REASONING_PROVIDER_KEY.to_string(), json!(provider_name));
+                }
+            }
+        }
+    }
 }
 
 pub fn response_to_message(response: &Value) -> anyhow::Result<Message> {
+    response_to_message_for_provider(response, "openrouter")
+}
+
+pub fn response_to_message_for_provider(
+    response: &Value,
+    provider_name: &str,
+) -> anyhow::Result<Message> {
     let mut message = openai::response_to_message(response)?;
 
     if let Some(details) = extract_reasoning_details(response) {
@@ -46,10 +74,20 @@ pub fn response_to_message(response: &Value) -> anyhow::Result<Message> {
         }
     }
 
+    stamp_reasoning_details_provenance(&mut message, provider_name);
+
     Ok(message)
 }
 
 pub fn add_reasoning_details_to_request(payload: &mut Value, messages: &[Message]) {
+    add_reasoning_details_to_request_for_provider(payload, messages, "openrouter");
+}
+
+pub fn add_reasoning_details_to_request_for_provider(
+    payload: &mut Value,
+    messages: &[Message],
+    provider_name: &str,
+) {
     let mut assistant_reasoning: Vec<Option<Vec<Value>>> = messages
         .iter()
         .filter(|m| m.is_agent_visible())
@@ -57,7 +95,9 @@ pub fn add_reasoning_details_to_request(payload: &mut Value, messages: &[Message
         .filter(|m| has_assistant_content(m))
         .map(|message| {
             message.content.iter().find_map(|c| match c {
-                MessageContent::ToolRequest(req) => get_reasoning_details(&req.metadata),
+                MessageContent::ToolRequest(req) => {
+                    get_reasoning_details_for_provider(&req.metadata, provider_name)
+                }
                 _ => None,
             })
         })

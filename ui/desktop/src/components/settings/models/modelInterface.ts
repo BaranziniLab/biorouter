@@ -135,9 +135,9 @@ export interface ProviderModelsResult {
 
 /**
  * Fetches models for all active providers in parallel.
- * When a provider has a curated known_models list, that is used exclusively
- * (avoids showing deprecated/unsupported models from the live API).
- * For providers without known_models (e.g. Ollama), falls back to live API.
+ * Curated catalogues keep unsupported live models out and put their available
+ * declared default first. Live lists retain the provider's own priority order.
+ * Coding-agent account catalogues take precedence over bundled fallback models.
  */
 export async function fetchModelsForProviders(
   activeProviders: ProviderDetails[],
@@ -146,18 +146,37 @@ export async function fetchModelsForProviders(
   const modelPromises = activeProviders.map(async (p) => {
     const providerName = p.name;
     const knownModels = p.metadata.known_models?.map((m) => m.name) || [];
+    const defaultIndex = knownModels.indexOf(p.metadata.default_model);
+    const declaredModels =
+      defaultIndex > 0
+        ? [
+            knownModels[defaultIndex],
+            ...knownModels.slice(0, defaultIndex),
+            ...knownModels.slice(defaultIndex + 1),
+          ]
+        : knownModels;
+    const usesAccountCatalogue = providerName === 'codex' || providerName === 'github_copilot';
 
     // When a curated known_models list exists, use it exclusively so only
     // tested/supported models are shown (live API includes old deprecated models).
-    if (knownModels.length > 0) {
-      return { provider: p, models: knownModels, error: null };
+    if (declaredModels.length > 0 && !usesAccountCatalogue) {
+      return { provider: p, models: declaredModels, error: null };
     }
 
-    // No curated list — use the live API (e.g. Ollama, custom providers).
     try {
       const models = await getProviderModelsFunc(providerName);
+      if (providerName === 'codex' && !models?.length) {
+        return { provider: p, models: declaredModels, error: null };
+      }
       return { provider: p, models: models || [], error: null };
     } catch (e: unknown) {
+      if (providerName === 'github_copilot') {
+        // Capability metadata also serves saved models; it is not an account catalogue.
+        return { provider: p, models: [p.metadata.default_model], error: null };
+      }
+      if (usesAccountCatalogue && declaredModels.length > 0) {
+        return { provider: p, models: declaredModels, error: null };
+      }
       const errorMessage = `Failed to fetch models for ${providerName}${e instanceof Error ? `: ${e.message}` : ''}`;
       return {
         provider: p,

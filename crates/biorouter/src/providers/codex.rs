@@ -59,26 +59,11 @@ use crate::model::ModelConfig;
 
 const KIND: CodingAgentKind = CodingAgentKind::Codex;
 
-/// The model a Codex session starts on.
-///
-/// Astra is the vendor's own bundled default: codex-cli 0.153.4's changelog
-/// entry is "Fixed Astra's visibility in the bundled model picker and made it
-/// the bundled default", and `model/list` returns it first with
-/// `isDefault: true` on 0.153.4 (measured 2026-09-08 and again 2026-09-25) and
-/// on 0.157.0, the npm `latest` on 2026-09-25. It is also what the operator's
-/// own `~/.codex/config.toml` selects.
-///
-/// Why not the newer `gpt-6-sol`: Sol and Luna need codex-cli **0.156.1**, and
-/// an older CLI refuses them with a sentence that does not say "upgrade" (see
-/// [`cli_floor_hint`]). Astra is the one GPT-6 model that both CLIs measured
-/// on 2026-09-25 actually ran (`codex exec` answered on 0.153.4 and 0.157.0),
-/// so a user who has not updated since early September still gets a working
-/// default.
-///
-/// ⚠ It needs **codex-cli 0.153.4 or newer**. On 0.147.0 the request is
-/// refused with `400 The 'gpt-6-astra' model requires a newer version of Codex.
-/// Please upgrade to the latest app or CLI and try again.` — which Biorouter
-/// surfaces verbatim, so a stale CLI fails actionably rather than silently.
+/// Bundled fallback when the account's live catalog cannot be read. A successful
+/// `model/list` supplies the available models and puts its recommended default
+/// first; it does not change a saved model selection. GPT-6.2 availability varies
+/// by account and client, so newer documented API IDs are not static substitutes.
+/// This fallback was verified on codex-cli 0.153.4 and 0.157.0.
 pub const CODEX_DEFAULT_MODEL: &str = "gpt-6-astra";
 pub const CODEX_DOC_URL: &str = "https://developers.openai.com/codex/cli";
 
@@ -98,6 +83,7 @@ pub const CODEX_DOC_URL: &str = "https://developers.openai.com/codex/cli";
 /// state and replies. Anything approaching this is already a broken install, and
 /// exceeding it lands in the same fail-open branch a rejected method does.
 const ACCOUNT_READ_TIMEOUT: Duration = Duration::from_secs(10);
+const MODEL_CATALOGUE_TIMEOUT: Duration = Duration::from_secs(10);
 
 enum StreamPumpEvent {
     Continue,
@@ -219,8 +205,8 @@ fn with_codex_window(mut model: ModelConfig) -> ModelConfig {
     model
 }
 
-/// Every model gets [`CODEX_CONTEXT_WINDOW`], not its `MODEL_CONTEXT_WINDOWS`
-/// entry; see there for why, and `tests/context_windows.rs` for the exemption.
+/// The verified bundled fallback, used only when live model discovery fails.
+/// Every row gets the conservative Codex working context, not its API window.
 fn known_models() -> Vec<ModelInfo> {
     // Read from the CLI itself, not from a blog post: `codex app-server`
     // answers `model/list` with the catalog the signed-in account actually
@@ -409,6 +395,84 @@ fn failure_hint(model: &str, failure: &str) -> String {
     cli_floor_hint(model, failure)
 }
 
+fn runtime_model_id(model: &Value) -> Option<&str> {
+    if model.get("hidden").and_then(Value::as_bool) == Some(true)
+        || model
+            .get("inputModalities")
+            .and_then(Value::as_array)
+            .is_some_and(|modalities| !modalities.iter().any(|modality| modality == "text"))
+    {
+        return None;
+    }
+    model
+        .get("model")
+        .or_else(|| model.get("id"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+}
+
+fn runtime_effort(model: &ModelConfig, catalogue: Option<&[Value]>) -> Option<String> {
+    let entry = catalogue.and_then(|models| {
+        models
+            .iter()
+            .find(|entry| runtime_model_id(entry) == Some(model.model_name.as_str()))
+    });
+    let Some(entry) = entry else {
+        return known_models()
+            .iter()
+            .any(|known| known.name == model.model_name)
+            .then(|| {
+                coding_agent::effort::codex_effort(model.reasoning_effort, &model.model_name)
+                    .to_string()
+            });
+    };
+
+    // Ultra delegates work; increasing ordinary reasoning must not enable it.
+    const ORDINARY_EFFORTS: &[&str] = &["none", "minimal", "low", "medium", "high", "xhigh", "max"];
+    let rank = |effort: &str| ORDINARY_EFFORTS.iter().position(|known| *known == effort);
+    let default = entry
+        .get("defaultReasoningEffort")
+        .and_then(Value::as_str)
+        .filter(|effort| rank(effort).is_some());
+    let supported: Vec<_> = entry
+        .get("supportedReasoningEfforts")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|supported| {
+            supported
+                .get("reasoningEffort")
+                .and_then(Value::as_str)
+                .or_else(|| supported.as_str())
+        })
+        .filter_map(|effort| rank(effort).map(|rank| (rank, effort)))
+        .collect();
+    match model.reasoning_effort {
+        Some(ReasoningEffort::Quick) => supported
+            .iter()
+            .min_by_key(|(rank, _)| *rank)
+            .map(|(_, effort)| *effort)
+            .or(default),
+        Some(ReasoningEffort::Deep) => supported
+            .iter()
+            .max_by_key(|(rank, _)| *rank)
+            .map(|(_, effort)| *effort)
+            .or(default),
+        Some(ReasoningEffort::Normal) | None => default,
+    }
+    .map(str::to_string)
+}
+
+fn with_runtime_effort(mut params: Value, effort: Option<&str>) -> Value {
+    if let Some(effort) = effort {
+        params["effort"] = json!(effort);
+    } else if let Some(params) = params.as_object_mut() {
+        params.remove("effort");
+    }
+    params
+}
+
 // `Clone` so the streaming path can hand a spawner to its pump task and go
 // through `spawn_app_server` rather than building a second command of its own.
 // Every field is cheap to clone (a path, a model config, a name).
@@ -429,6 +493,56 @@ struct TurnOutcome {
 }
 
 impl CodexProvider {
+    async fn runtime_catalogue(server: &AppServer) -> Option<Vec<Value>> {
+        tokio::time::timeout(MODEL_CATALOGUE_TIMEOUT, async {
+            let mut models = Vec::new();
+            let mut names = std::collections::HashSet::new();
+            let mut cursors = std::collections::HashSet::new();
+            let mut cursor = None::<String>;
+            for _ in 0..10 {
+                let response = server
+                    .request(
+                        "model/list",
+                        json!({"limit": 100, "includeHidden": false, "cursor": cursor}),
+                    )
+                    .await?;
+                let rows = response
+                    .get("data")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        ProviderError::RequestFailed("Codex did not return a model catalog".into())
+                    })?;
+                for row in rows {
+                    if let Some(name) = runtime_model_id(row) {
+                        if names.insert(name.to_string()) {
+                            models.push(row.clone());
+                        }
+                    }
+                }
+                match response.get("nextCursor") {
+                    None | Some(Value::Null) => {
+                        models.sort_by_key(|model| {
+                            model.get("isDefault").and_then(Value::as_bool) != Some(true)
+                        });
+                        return Ok::<_, ProviderError>(models);
+                    }
+                    Some(Value::String(next))
+                        if !next.is_empty() && cursors.insert(next.clone()) =>
+                    {
+                        cursor = Some(next.clone());
+                    }
+                    _ => break,
+                }
+            }
+            Err(ProviderError::RequestFailed(
+                "Codex model catalog pagination did not finish".into(),
+            ))
+        })
+        .await
+        .ok()
+        .and_then(Result::ok)
+    }
+
     /// Construct a provider pointed at an arbitrary binary, for tests: the twin of
     /// `ClaudeCodeProvider::for_tests`. Nothing is spawned until a turn runs.
     #[doc(hidden)]
@@ -733,18 +847,9 @@ impl CodexProvider {
     ///
     /// The schema types `effort` as `ReasoningEffort`, which it declares as an
     /// open non-empty string — "a reasoning effort value advertised by the
-    /// model" — rather than a closed enum, so the accepted set is per-model and
-    /// read from `model/list`. Which rung each `/effort` tier reaches, and why
-    /// the default sends `high` rather than nothing, is
-    /// `coding_agent::effort`'s to decide and explain; this function only
-    /// carries the answer.
-    ///
-    /// ⚠ That default is a deliberate override of the vendor's, which is not
-    /// uniform: `model/list`'s `defaultReasoningEffort` on 2026-09-25 was
-    /// `medium` on the three GPT-6 models and `low` on `gpt-5.6-sol`. So every
-    /// turn of every user who never touched `/effort` asks for more reasoning
-    /// than the model would have chosen, and
-    /// `the_default_effort_is_high_rather_than_silence` pins that it does.
+    /// model" rather than a closed enum. This builds the legacy fallback
+    /// template; the actual turn applies its account catalog through
+    /// `with_runtime_effort`, including omitting an unverified effort.
     fn turn_params(
         thread_id: &str,
         prompt: &str,
@@ -770,11 +875,7 @@ impl CodexProvider {
         json!({
             "threadId": thread_id,
             "input": input,
-            // Always sent, and on Codex's own per-model ladder rather than the
-            // OpenAI-family low/high pair — see `coding_agent::effort`. The model
-            // is needed because that ladder differs between models: every model
-            // Biorouter advertises has `max`, but `gpt-5.5` (listed until it
-            // retires on 2026-10-14) and any unlisted id get `xhigh`.
+            // The runtime catalog replaces this fallback before sending.
             "effort": crate::providers::coding_agent::effort::codex_effort(effort, model),
         })
     }
@@ -1094,6 +1195,9 @@ impl CodexProvider {
         // the only reason this is not the very first thing the turn does.
         Self::assert_subscription(server).await?;
 
+        let catalogue = Self::runtime_catalogue(server).await;
+        let effort = runtime_effort(model, catalogue.as_deref());
+
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| ".".to_string());
@@ -1123,12 +1227,15 @@ impl CodexProvider {
         // notifications, so the pump has to run alongside it rather than after it.
         let start = server.request(
             "turn/start",
-            Self::turn_params_with_images(
-                &thread_id,
-                &prompt.text,
-                &prompt.images,
-                model.reasoning_effort,
-                &model.model_name,
+            with_runtime_effort(
+                Self::turn_params_with_images(
+                    &thread_id,
+                    &prompt.text,
+                    &prompt.images,
+                    model.reasoning_effort,
+                    &model.model_name,
+                ),
+                effort.as_deref(),
             ),
         );
         let pump = Self::pump(server);
@@ -1174,6 +1281,9 @@ impl CodexProvider {
         // user's prompt anywhere or costing a token.
         Self::assert_subscription(server).await?;
 
+        let catalogue = Self::runtime_catalogue(server).await;
+        let effort = runtime_effort(model, catalogue.as_deref());
+
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| ".".to_string());
@@ -1211,12 +1321,15 @@ impl CodexProvider {
             let started = server
                 .request(
                     "turn/start",
-                    Self::turn_params_with_images(
-                        &thread_id,
-                        &prompt.text,
-                        &prompt.images,
-                        model.reasoning_effort,
-                        &model.model_name,
+                    with_runtime_effort(
+                        Self::turn_params_with_images(
+                            &thread_id,
+                            &prompt.text,
+                            &prompt.images,
+                            model.reasoning_effort,
+                            &model.model_name,
+                        ),
+                        effort.as_deref(),
                     ),
                 )
                 .await?;
@@ -1234,7 +1347,14 @@ impl CodexProvider {
             Ok::<(), ProviderError>(())
         };
         let pump = Self::stream_pump(
-            server, model, &thread_id, turn_id_rx, tx, steering, bridge_url,
+            server,
+            model,
+            &thread_id,
+            turn_id_rx,
+            tx,
+            steering,
+            bridge_url,
+            effort.as_deref(),
         );
 
         let (started, pumped) = coding_agent::await_turn(
@@ -1256,6 +1376,7 @@ impl CodexProvider {
     ///
     /// `bridge_url` is this turn's bridge, whose grant kept Biorouter's own
     /// result for each bridged call — see [`emit_codex_tool_event`].
+    #[allow(clippy::too_many_arguments)]
     async fn stream_pump(
         server: &AppServer,
         model: &ModelConfig,
@@ -1264,6 +1385,7 @@ impl CodexProvider {
         tx: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
         mut steering: Option<ProviderSteerReceiver>,
         bridge_url: Option<&str>,
+        effort: Option<&str>,
     ) -> Result<(), ProviderError> {
         let mut decoder = codex_stream::CodexDecoder::new();
         let mut streamed_anything = false;
@@ -1327,6 +1449,7 @@ impl CodexProvider {
                                 tx,
                                 &mut restart_after_terminal,
                                 &mut turn_id,
+                                effort,
                             )
                             .await?
                             {
@@ -1384,6 +1507,7 @@ impl CodexProvider {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_stream_terminal(
         server: &AppServer,
         model: &ModelConfig,
@@ -1392,9 +1516,11 @@ impl CodexProvider {
         tx: &tokio::sync::mpsc::UnboundedSender<Result<ProviderStreamItem, ProviderError>>,
         restart_after_terminal: &mut Option<ProviderSteerRequest>,
         turn_id: &mut Option<String>,
+        effort: Option<&str>,
     ) -> Result<bool, ProviderError> {
         if let Some(request) = restart_after_terminal.take() {
-            match Self::start_followup_turn(server, thread_id, model, request.text()).await {
+            match Self::start_followup_turn(server, thread_id, model, request.text(), effort).await
+            {
                 Ok(next_turn_id) => {
                     *turn_id = Some(next_turn_id);
                     *decoder = codex_stream::CodexDecoder::new();
@@ -1530,15 +1656,19 @@ impl CodexProvider {
         thread_id: &str,
         model: &ModelConfig,
         instruction: &str,
+        effort: Option<&str>,
     ) -> Result<String, ProviderError> {
         let started = server
             .request(
                 "turn/start",
-                Self::turn_params(
-                    thread_id,
-                    instruction,
-                    model.reasoning_effort,
-                    &model.model_name,
+                with_runtime_effort(
+                    Self::turn_params(
+                        thread_id,
+                        instruction,
+                        model.reasoning_effort,
+                        &model.model_name,
+                    ),
+                    effort,
                 ),
             )
             .await?;
@@ -1970,14 +2100,47 @@ impl Provider for CodexProvider {
         self.stream_inner(system, messages, Some(steering)).await
     }
 
-    /// Ask the CLI whether this provider can run at all. Spawns, so never call it
-    /// from `from_env`.
+    /// The account's picker is authoritative; the bundled list is only an
+    /// unavailable-catalog fallback. No thread or paid turn is started here.
     async fn fetch_supported_models(&self) -> Result<Option<Vec<String>>, ProviderError> {
         let availability = discovery::probe(KIND).await;
         if !availability.auth.is_subscription() {
             return Err(coding_agent::unavailable_error(KIND, &availability));
         }
-        Ok(Some(known_models().into_iter().map(|m| m.name).collect()))
+        let server = tokio::time::timeout(MODEL_CATALOGUE_TIMEOUT, self.spawn_app_server()).await;
+        let catalogue = if let Ok(Ok(server)) = server {
+            let result = async {
+                server.notify("initialized", Value::Null).await?;
+                Self::assert_subscription(&server).await?;
+                Ok::<_, ProviderError>(Self::runtime_catalogue(&server).await)
+            }
+            .await;
+            server.shutdown().await;
+            match result {
+                Ok(catalogue) => catalogue,
+                Err(error @ ProviderError::Authentication(_)) => return Err(error),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
+        let models = catalogue
+            .filter(|models| !models.is_empty())
+            .map(|models| {
+                models
+                    .iter()
+                    .filter_map(runtime_model_id)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_else(|| known_models().into_iter().map(|model| model.name).collect());
+        Ok(Some(models))
+    }
+
+    async fn fetch_recommended_models(&self) -> Result<Option<Vec<String>>, ProviderError> {
+        // Filtering against the bundled API registry can discard a new account
+        // default while retaining older mapped models, silently changing it.
+        self.fetch_supported_models().await
     }
 }
 
@@ -2302,6 +2465,9 @@ for line in sys.stdin:
         continue
     m = json.loads(line)
     method = m.get("method")
+    if method == "model/list":
+        print(json.dumps(dict(id=m["id"], error=dict(code=-32601, message="model/list unavailable"))), flush=True)
+        continue
     if method == "initialize":
         print(json.dumps({{"jsonrpc":"2.0","id":m["id"],"result":{{"codexHome":"/tmp"}}}}), flush=True)
     elif method == "account/read":
@@ -2670,13 +2836,10 @@ for line in sys.stdin:
     /// `thread/start` declares no `effort` field at all, so shaping the thread
     /// cannot carry it.
     ///
-    /// The rungs are Codex's own ladder rather than the OpenAI-family `low`/`high`
-    /// pair — `coding_agent::effort` owns the table and the reasoning. `Deep`
-    /// stops at `xhigh` here because `gpt-5.5` does not advertise `max`. It is
-    /// no longer in the picker (Codex retires it on 2026-10-14), but it still
-    /// runs and can still be typed, and it is the measured short-ladder model.
+    /// This retains the measured legacy template. Actual connections replace
+    /// it with the runtime catalog's supported/default efforts.
     #[test]
-    fn the_effort_ladder_reaches_the_turn() {
+    fn the_legacy_effort_ladder_reaches_the_turn_template() {
         for (effort, expected) in [
             (Some(ReasoningEffort::Quick), "low"),
             (Some(ReasoningEffort::Normal), "high"),
@@ -2691,13 +2854,8 @@ for line in sys.stdin:
         }
     }
 
-    /// The effort is **always** sent, including for the default. That is a
-    /// deliberate departure from every other provider, where `Normal` is silence:
-    /// a coding agent is reached for when the work is hard, so Biorouter's default
-    /// here is `high` rather than whatever the model would have chosen. Asserted
-    /// explicitly because it costs the user thinking tokens on every turn.
     #[test]
-    fn the_default_effort_is_high_rather_than_silence() {
+    fn the_legacy_template_keeps_high_until_runtime_effort_is_applied() {
         let p = CodexProvider::turn_params("th_1", "hi", None, "gpt-5.5");
         assert_eq!(p["effort"], "high");
         assert!(
@@ -3437,6 +3595,9 @@ for line in sys.stdin:
         continue
     m = json.loads(line)
     method = m.get("method")
+    if method == "model/list":
+        print(json.dumps(dict(id=m["id"], error=dict(code=-32601, message="model/list unavailable"))), flush=True)
+        continue
     if method == "initialize":
         send({"jsonrpc":"2.0","id":m["id"],"result":{"codexHome":"/tmp"}})
     elif method == "account/read":
@@ -3513,9 +3674,18 @@ def send(obj):
     print(json.dumps(obj), flush=True)
 
 turn_count = 0
+catalogue_reads = 0
 for line in sys.stdin:
     m = json.loads(line)
     method = m.get("method")
+    if method == "model/list":
+        catalogue_reads += 1
+        send({"id":m["id"],"result":{"data":[{
+            "model":"gpt-5.5", "defaultReasoningEffort":"medium",
+            "supportedReasoningEfforts":[{"reasoningEffort":"low"},
+                {"reasoningEffort":"medium"}, {"reasoningEffort":"high"}]
+        }]}})
+        continue
     if method == "initialize":
         send({"jsonrpc":"2.0","id":m["id"],"result":{"codexHome":"/tmp"}})
     elif method == "account/read":
@@ -3527,6 +3697,10 @@ for line in sys.stdin:
     elif method == "turn/start":
         turn_count += 1
         turn_id = f"turn-{turn_count}"
+        if catalogue_reads != 1 or m.get("params", {}).get("effort") != "medium":
+            send({"id":m["id"],"error":{"code":-32602,
+                "message":"follow-up must reuse the account catalog and selected effort"}})
+            continue
         if turn_count == 2:
             expected = [{"type":"text","text":"change course"}]
             if m.get("params", {}).get("input") != expected:
@@ -3589,6 +3763,9 @@ for line in sys.stdin:
         continue
     m = json.loads(line)
     method = m.get("method")
+    if method == "model/list":
+        print(json.dumps(dict(id=m["id"], error=dict(code=-32601, message="model/list unavailable"))), flush=True)
+        continue
     if method == "initialize":
         send({"jsonrpc":"2.0","id":m["id"],"result":{"codexHome":"/tmp"}})
     elif method == "account/read":
@@ -3724,7 +3901,7 @@ for line in sys.stdin:
     }
 
     #[tokio::test]
-    async fn a_user_instruction_steers_the_running_codex_turn() {
+    async fn a_user_instruction_steers_the_running_codex_turn_with_the_same_catalogue_effort() {
         let script = steerable_codex();
         let provider = provider_running(&script);
         let messages = vec![Message::user().with_text("hello")];
@@ -4107,6 +4284,9 @@ for line in sys.stdin:
         continue
     m = json.loads(line)
     method = m.get("method")
+    if method == "model/list":
+        print(json.dumps(dict(id=m["id"], error=dict(code=-32601, message="model/list unavailable"))), flush=True)
+        continue
     if method == "initialize":
         send({{"jsonrpc":"2.0","id":m["id"],"result":{{"codexHome":"/tmp"}}}})
     elif method == "account/read":

@@ -45,6 +45,58 @@ pub const REASONING_CONTENT_KEY: &str = "reasoning_content";
 /// rather than leaked across providers.
 pub const REASONING_PROVIDER_KEY: &str = "reasoning_provider";
 
+const MISTRAL_CONTENT_KEY: &str = "mistral_content";
+const MISTRAL_CONTENT_PROVIDER_KEY: &str = "mistral_content_provider";
+
+fn visible_content_text(content: &Value) -> Option<String> {
+    match content {
+        Value::String(text) => Some(text.clone()),
+        Value::Array(chunks) => Some(
+            chunks
+                .iter()
+                .filter(|chunk| chunk.get("type").and_then(Value::as_str) == Some("text"))
+                .filter_map(|chunk| chunk.get("text").and_then(Value::as_str))
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
+#[derive(Debug)]
+struct DeltaContent {
+    text: String,
+    chunks: Option<Vec<Value>>,
+}
+
+impl Deref for DeltaContent {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.text
+    }
+}
+
+impl Serialize for DeltaContent {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match &self.chunks {
+            Some(chunks) => chunks.serialize(serializer),
+            None => self.text.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for DeltaContent {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = Value::deserialize(deserializer)?;
+        let text = visible_content_text(&value)
+            .ok_or_else(|| serde::de::Error::custom("content must be a string or chunk list"))?;
+        Ok(Self {
+            text,
+            chunks: value.as_array().cloned(),
+        })
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Default)]
 struct DeltaToolCallFunction {
     name: Option<String>,
@@ -62,7 +114,7 @@ struct DeltaToolCall {
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Delta {
-    content: Option<String>,
+    content: Option<DeltaContent>,
     role: Option<String>,
     tool_calls: Option<Vec<DeltaToolCall>>,
     reasoning_details: Option<Vec<Value>>,
@@ -82,6 +134,16 @@ struct Delta {
 }
 
 impl Delta {
+    fn append_mistral_content(&self, accumulated: &mut Vec<Value>) {
+        if let Some(content) = &self.content {
+            if let Some(chunks) = &content.chunks {
+                accumulated.extend(chunks.iter().cloned());
+            } else if !accumulated.is_empty() && !content.text.is_empty() {
+                accumulated.push(json!({"type": "text", "text": content.text}));
+            }
+        }
+    }
+
     /// This delta's thinking text under either name; `reasoning_content` wins
     /// when a host sends both.
     fn reasoning_text(&self) -> Option<&str> {
@@ -118,8 +180,9 @@ impl Delta {
     /// `role` does not count — b11429 stamps `"role":"assistant"` on frames
     /// that carry nothing else.
     fn is_empty(&self) -> bool {
-        self.content.as_deref().is_none_or(str::is_empty)
-            && self.tool_calls.as_ref().is_none_or(Vec::is_empty)
+        self.content.as_ref().is_none_or(|content| {
+            content.text.is_empty() && content.chunks.as_ref().is_none_or(Vec::is_empty)
+        }) && self.tool_calls.as_ref().is_none_or(Vec::is_empty)
             && self.reasoning_details.as_ref().is_none_or(Vec::is_empty)
             && self.reasoning_text().is_none()
     }
@@ -691,20 +754,19 @@ pub fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<
         let mut output = Vec::new();
         let mut content_array = Vec::new();
         let mut text_array = Vec::new();
+        let mut has_image_content = false;
 
         for content in &message.content {
             match content {
                 MessageContent::Text(text) => {
                     if !text.text.is_empty() {
+                        text_array.push(text.text.clone());
+                        content_array.push(json!({"type": "text", "text": text.text}));
                         if let Some(image_path) = detect_image_path(&text.text) {
                             if let Ok(image) = load_image_file(image_path) {
-                                content_array.push(json!({"type": "text", "text": text.text}));
                                 content_array.push(convert_image(&image, image_format));
-                            } else {
-                                text_array.push(text.text.clone());
+                                has_image_content = true;
                             }
-                        } else {
-                            text_array.push(text.text.clone());
                         }
                     }
                 }
@@ -828,6 +890,7 @@ pub fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<
                 MessageContent::ActionRequired(_) => {}
                 MessageContent::Image(image) => {
                     content_array.push(convert_image(image, image_format));
+                    has_image_content = true;
                 }
                 MessageContent::FrontendToolRequest(request) => match &request.tool_call {
                     Ok(tool_call) => {
@@ -865,7 +928,7 @@ pub fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<
             }
         }
 
-        if !content_array.is_empty() {
+        if has_image_content {
             converted["content"] = json!(content_array);
         } else if !text_array.is_empty() {
             converted["content"] = json!(text_array.join("\n"));
@@ -920,8 +983,8 @@ pub fn response_to_message(response: &Value) -> anyhow::Result<Message> {
     let mut content = Vec::new();
 
     if let Some(text) = original.get("content") {
-        if let Some(text_str) = text.as_str() {
-            content.push(MessageContent::text(text_str));
+        if let Some(text) = visible_content_text(text) {
+            content.push(MessageContent::text(text));
         }
     }
 
@@ -1010,25 +1073,130 @@ pub fn response_to_message(response: &Value) -> anyhow::Result<Message> {
         }
     }
 
-    Ok(Message::new(
-        Role::Assistant,
-        chrono::Utc::now().timestamp(),
-        content,
-    ))
+    let mut message = Message::new(Role::Assistant, chrono::Utc::now().timestamp(), content);
+    if let Some(chunks) = original.get("content").and_then(Value::as_array) {
+        attach_mistral_content(&mut message, chunks);
+    }
+    Ok(message)
 }
 
-/// Stamp provider provenance onto every tool request that carries captured
-/// `reasoning_content`. Called by the owning provider right after
+fn attach_mistral_content(message: &mut Message, chunks: &[Value]) {
+    if chunks.is_empty() {
+        return;
+    }
+    for content in &mut message.content {
+        match content {
+            MessageContent::Text(text) => {
+                text.meta
+                    .get_or_insert_with(rmcp::model::Meta::new)
+                    .insert(MISTRAL_CONTENT_KEY.to_string(), json!(chunks));
+            }
+            MessageContent::ToolRequest(request) => {
+                request
+                    .metadata
+                    .get_or_insert_with(ProviderMetadata::new)
+                    .insert(MISTRAL_CONTENT_KEY.to_string(), json!(chunks));
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Stamp provider provenance onto captured reasoning and structured assistant
+/// content. Called by the owning provider right after
 /// [`response_to_message`] (and on each streamed message) — the format
 /// decoders are shared across providers and cannot know who they decoded
 /// for. Requests without captured reasoning are left untouched.
 pub fn stamp_reasoning_provenance(message: &mut Message, provider_name: &str) {
     for item in &mut message.content {
+        if let MessageContent::Text(text) = item {
+            if let Some(meta) = text.meta.as_mut() {
+                if meta.contains_key(MISTRAL_CONTENT_KEY) {
+                    meta.insert(
+                        MISTRAL_CONTENT_PROVIDER_KEY.to_string(),
+                        json!(provider_name),
+                    );
+                }
+            }
+        }
         if let MessageContent::ToolRequest(req) = item {
             if let Some(meta) = req.metadata.as_mut() {
                 if meta.contains_key(REASONING_CONTENT_KEY) {
                     meta.insert(REASONING_PROVIDER_KEY.to_string(), json!(provider_name));
                 }
+                if meta.contains_key(MISTRAL_CONTENT_KEY) {
+                    meta.insert(
+                        MISTRAL_CONTENT_PROVIDER_KEY.to_string(),
+                        json!(provider_name),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// Mistral requires its complete assistant chunk list, including thinking,
+/// on subsequent turns. Keep the original chunks in inert content metadata;
+/// only this provider can replay them, including after a provider switch.
+pub fn prepare_mistral_request(
+    payload: &mut Value,
+    model: &ModelConfig,
+    messages: &[Message],
+    provider_name: &str,
+) {
+    if provider_name != "mistral" {
+        return;
+    }
+    if matches!(
+        model.model_name.as_str(),
+        "mistral-large-4" | "mistral-large-4-0"
+    ) {
+        if let Some(effort) = model
+            .reasoning_effort
+            .and_then(|effort| effort.provider_effort())
+        {
+            payload["reasoning_effort"] = json!(effort);
+        }
+    }
+    let capture = |provider: Option<&Value>, content: Option<&Value>| {
+        (provider.and_then(Value::as_str) == Some(provider_name))
+            .then(|| content.and_then(Value::as_array).cloned())
+            .flatten()
+    };
+    let mut captures = messages
+        .iter()
+        .filter(|message| message.is_agent_visible() && message.role == Role::Assistant)
+        .filter(|message| message_has_assistant_content(message))
+        .map(|message| {
+            message
+                .content
+                .iter()
+                .rev()
+                .find_map(|content| match content {
+                    MessageContent::Text(text) => text.meta.as_ref().and_then(|meta| {
+                        capture(
+                            meta.get(MISTRAL_CONTENT_PROVIDER_KEY),
+                            meta.get(MISTRAL_CONTENT_KEY),
+                        )
+                    }),
+                    MessageContent::ToolRequest(request) => {
+                        request.metadata.as_ref().and_then(|meta| {
+                            capture(
+                                meta.get(MISTRAL_CONTENT_PROVIDER_KEY),
+                                meta.get(MISTRAL_CONTENT_KEY),
+                            )
+                        })
+                    }
+                    _ => None,
+                })
+        });
+    if let Some(payload_messages) = payload.get_mut("messages").and_then(Value::as_array_mut) {
+        for message in payload_messages
+            .iter_mut()
+            .filter(|message| message["role"] == "assistant")
+        {
+            if let Some(Some(content)) = captures.next() {
+                message["content"] = json!(content);
             }
         }
     }
@@ -1347,6 +1515,7 @@ where
 
         let mut accumulated_reasoning: Vec<Value> = Vec::new();
         let mut accumulated_reasoning_content = String::new();
+        let mut accumulated_mistral_content: Vec<Value> = Vec::new();
         // Thinking not yet shown (Surface only). Handed on in batches while
         // it streams, and whatever is left just before the first visible
         // output it preceded, or at the end of a stream that never produced
@@ -1395,6 +1564,7 @@ where
             }
 
             if !chunk.choices.is_empty() {
+                chunk.choices[0].delta.append_mistral_content(&mut accumulated_mistral_content);
                 if let Some(details) = &chunk.choices[0].delta.reasoning_details {
                     accumulated_reasoning.extend(details.iter().cloned());
                 }
@@ -1493,6 +1663,7 @@ where
                                     tool_model = Some(model.clone());
                                 }
                                 if !tool_chunk.choices.is_empty() {
+                                    tool_chunk.choices[0].delta.append_mistral_content(&mut accumulated_mistral_content);
                                     if let Some(details) = &tool_chunk.choices[0].delta.reasoning_details {
                                         accumulated_reasoning.extend(details.iter().cloned());
                                     }
@@ -1570,6 +1741,7 @@ where
 
                 let metadata: Option<ProviderMetadata> = if !accumulated_reasoning.is_empty()
                     || !accumulated_reasoning_content.is_empty()
+                    || !accumulated_mistral_content.is_empty()
                 {
                     let mut map = ProviderMetadata::new();
                     if !accumulated_reasoning.is_empty() {
@@ -1580,6 +1752,9 @@ where
                             REASONING_CONTENT_KEY.to_string(),
                             json!(accumulated_reasoning_content),
                         );
+                    }
+                    if !accumulated_mistral_content.is_empty() {
+                        map.insert(MISTRAL_CONTENT_KEY.to_string(), json!(accumulated_mistral_content));
                     }
                     Some(map)
                 } else {
@@ -1683,8 +1858,9 @@ where
                 let mut msg = Message::new(
                     Role::Assistant,
                     chrono::Utc::now().timestamp(),
-                    vec![MessageContent::text(text)],
+                    vec![MessageContent::text(text.text.clone())],
                 );
+                attach_mistral_content(&mut msg, &accumulated_mistral_content);
 
                 // Add ID if present
                 if let Some(id) = chunk.id {
@@ -1946,6 +2122,42 @@ mod tests {
     use rmcp::model::CallToolResult;
     use rmcp::object;
     use serde_json::json;
+
+    #[test]
+    fn mixed_image_content_keeps_text_and_image_blocks_in_original_order() {
+        let message = Message::user()
+            .with_text("before")
+            .with_image("IMAGE_A", "image/png")
+            .with_text("between")
+            .with_image("IMAGE_B", "image/jpeg")
+            .with_text("after");
+        let formatted = format_messages(&[message], &ImageFormat::OpenAi);
+        assert_eq!(
+            formatted[0]["content"],
+            json!([
+                {"type": "text", "text": "before"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,IMAGE_A"}},
+                {"type": "text", "text": "between"},
+                {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,IMAGE_B"}},
+                {"type": "text", "text": "after"}
+            ])
+        );
+    }
+
+    #[test]
+    fn image_first_and_text_only_content_keep_their_existing_shapes() {
+        let image_first = Message::user()
+            .with_image("IMAGE", "image/png")
+            .with_text("describe it");
+        let text_only = Message::user().with_text("first").with_text("second");
+        let formatted = format_messages(&[image_first, text_only], &ImageFormat::OpenAi);
+        assert_eq!(formatted[0]["content"][0]["type"], "image_url");
+        assert_eq!(
+            formatted[0]["content"][1],
+            json!({"type":"text","text":"describe it"})
+        );
+        assert_eq!(formatted[1]["content"], "first\nsecond");
+    }
     use tokio::pin;
     use tokio_stream::{self, StreamExt};
 

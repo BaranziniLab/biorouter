@@ -23,7 +23,7 @@ use super::formats::bedrock::{
 pub const BEDROCK_DOC_LINK: &str =
     "https://docs.aws.amazon.com/bedrock/latest/userguide/models-supported.html";
 
-pub const BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-sonnet-4-6";
+pub const BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-opus-5-5";
 // Verified against the AWS Bedrock model cards + lifecycle page (2026-09-25).
 // Every id is a `us.` geo cross-region inference profile. The id shape follows
 // the model generation, not a rule: Opus 4.7 and everything newer (and Sonnet
@@ -32,9 +32,8 @@ pub const BEDROCK_DEFAULT_MODEL: &str = "us.anthropic.claude-sonnet-4-6";
 // Legacy since Apr 2026, EOL 2026-10-14) and claude-opus-4-1 (Legacy since
 // 2026-07-08).
 //
-// The list is newest → oldest because the UI auto-selects the first entry when
-// a user switches providers; BEDROCK_DEFAULT_MODEL is a separate choice and
-// stays on Sonnet 4.6.
+// The capable daily default and first picker entry agree. Account and region
+// entitlements still determine which inference profiles can be called.
 //
 // Not listed although Active on Bedrock: `us.anthropic.claude-opus-4-7` and
 // `us.anthropic.claude-fable-5`. Opus 4.8 and Fable 5.1 supersede them at the
@@ -62,7 +61,7 @@ pub const BEDROCK_KNOWN_MODELS: &[&str] = &[
     // Claude Sonnet 5 / Opus 4.8
     "us.anthropic.claude-sonnet-5",
     "us.anthropic.claude-opus-4-8",
-    // Claude Sonnet 4.6 — BEDROCK_DEFAULT_MODEL (1M context)
+    // Claude Sonnet 4.6 (1M context)
     "us.anthropic.claude-sonnet-4-6",
     // Claude Opus 4.6 (1M context)
     "us.anthropic.claude-opus-4-6-v1",
@@ -419,6 +418,7 @@ impl Provider for BedrockProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::agents::extension::ExtensionConfig;
     use crate::agents::{Agent, AgentConfig, AgentEvent, SessionConfig};
     use crate::config::permission::PermissionManager;
@@ -434,6 +434,8 @@ mod tests {
     use rmcp::object;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
+
+    const SIGNED_REPLAY_MODEL: &str = "us.anthropic.claude-sonnet-4-6";
 
     async fn capturing_provider() -> (
         BedrockProvider,
@@ -456,7 +458,7 @@ mod tests {
         (
             BedrockProvider {
                 client: Client::new(&sdk_config),
-                model: ModelConfig::new_or_fail(BEDROCK_DEFAULT_MODEL),
+                model: ModelConfig::new_or_fail(SIGNED_REPLAY_MODEL),
                 retry_config: RetryConfig::new(0, 0, 1.0, 0),
                 name: "aws_bedrock".to_string(),
             },
@@ -590,7 +592,7 @@ mod tests {
                         .unwrap(),
                 ),
             ];
-            let mut decoder = BedrockStreamDecoder::new(BEDROCK_DEFAULT_MODEL);
+            let mut decoder = BedrockStreamDecoder::new(SIGNED_REPLAY_MODEL);
             let mut decoded = events
                 .iter()
                 .flat_map(|event| decoder.on_event(event))
@@ -633,7 +635,7 @@ mod tests {
                 return Ok(Self::first_stream());
             }
             let mut usage = ProviderUsage::new(
-                BEDROCK_DEFAULT_MODEL.to_string(),
+                SIGNED_REPLAY_MODEL.to_string(),
                 crate::providers::base::Usage::new(Some(10), Some(5), Some(15)),
             );
             usage.finish_reason = Some("stop".to_string());
@@ -648,7 +650,7 @@ mod tests {
         }
 
         fn get_model_config(&self) -> ModelConfig {
-            ModelConfig::new_or_fail(BEDROCK_DEFAULT_MODEL)
+            ModelConfig::new_or_fail(SIGNED_REPLAY_MODEL)
         }
 
         fn metadata() -> ProviderMetadata {
@@ -670,7 +672,7 @@ mod tests {
         ) -> Result<(Message, ProviderUsage), ProviderError> {
             self.calls.lock().unwrap().push(messages.to_vec());
             let mut usage = ProviderUsage::new(
-                BEDROCK_DEFAULT_MODEL.to_string(),
+                SIGNED_REPLAY_MODEL.to_string(),
                 crate::providers::base::Usage::new(Some(10), Some(5), Some(15)),
             );
             usage.finish_reason = Some("stop".to_string());
@@ -688,7 +690,7 @@ mod tests {
         }
 
         fn get_model_config(&self) -> ModelConfig {
-            ModelConfig::new_or_fail(BEDROCK_DEFAULT_MODEL)
+            ModelConfig::new_or_fail(SIGNED_REPLAY_MODEL)
         }
 
         fn metadata() -> ProviderMetadata {
@@ -715,7 +717,7 @@ mod tests {
                 call
             };
             let mut usage = ProviderUsage::new(
-                BEDROCK_DEFAULT_MODEL.to_string(),
+                SIGNED_REPLAY_MODEL.to_string(),
                 crate::providers::base::Usage::new(Some(10), Some(5), Some(15)),
             );
             if call == 0 {
@@ -756,7 +758,7 @@ mod tests {
         }
 
         fn get_model_config(&self) -> ModelConfig {
-            ModelConfig::new_or_fail(BEDROCK_DEFAULT_MODEL)
+            ModelConfig::new_or_fail(SIGNED_REPLAY_MODEL)
         }
 
         fn metadata() -> ProviderMetadata {
@@ -815,7 +817,7 @@ mod tests {
                 call
             };
             let mut usage = ProviderUsage::new(
-                BEDROCK_DEFAULT_MODEL.to_string(),
+                SIGNED_REPLAY_MODEL.to_string(),
                 crate::providers::base::Usage::new(Some(10), Some(5), Some(15)),
             );
             if call == 0 {
@@ -838,7 +840,7 @@ mod tests {
         }
 
         fn get_model_config(&self) -> ModelConfig {
-            ModelConfig::new_or_fail(BEDROCK_DEFAULT_MODEL)
+            ModelConfig::new_or_fail(SIGNED_REPLAY_MODEL)
         }
 
         fn metadata() -> ProviderMetadata {
@@ -1163,7 +1165,7 @@ mod tests {
         let (wire_provider, captured) = capturing_provider().await;
         let _ = wire_provider
             .converse(
-                &ModelConfig::new_or_fail(BEDROCK_DEFAULT_MODEL),
+                &ModelConfig::new_or_fail(SIGNED_REPLAY_MODEL),
                 "system",
                 &calls[1],
                 &[],
@@ -1515,5 +1517,30 @@ mod tests {
         assert!(cold_stored.iter().flat_map(|message| &message.content).any(
             |content| matches!(content, MessageContent::Thinking(thinking) if thinking.signature == "signature-one")
         ));
+    }
+}
+
+#[cfg(test)]
+mod hosted_refresh_tests {
+    use super::*;
+
+    #[test]
+    fn hosted_refresh_bedrock_fresh_selection_uses_the_capable_claude_triad() {
+        let metadata = BedrockProvider::metadata();
+        assert_eq!(metadata.default_model, "us.anthropic.claude-opus-5-5");
+        let offered: Vec<_> = metadata
+            .known_models
+            .iter()
+            .take(3)
+            .map(|m| m.name.as_str())
+            .collect();
+        assert_eq!(
+            offered,
+            [
+                "us.anthropic.claude-opus-5-5",
+                "us.anthropic.claude-sonnet-5-5",
+                "us.anthropic.claude-haiku-5-5"
+            ]
+        );
     }
 }

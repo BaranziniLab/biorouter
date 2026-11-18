@@ -43,9 +43,15 @@ fn sandbox() {
         }
         std::fs::write(dir.path().join("config/config.yaml"), "{}\n").expect("a config file");
         std::fs::write(dir.path().join("config/secrets.yaml"), "{}\n").expect("a secrets file");
+        // Preserve the historical fixture and use its model data in a synthetic fresh cache.
+        let mut synthetic_feed: serde_json::Value = serde_json::from_slice(include_bytes!(
+            "../../../landing/scripts/fixtures/baseten-catalog.json"
+        ))
+        .expect("the historical feed parses");
+        synthetic_feed["fetched_at"] = serde_json::json!("2026-11-18T00:00:00Z");
         std::fs::write(
             dir.path().join("state/provider-catalogs/baseten.json"),
-            include_bytes!("../../../landing/scripts/fixtures/baseten-catalog.json"),
+            serde_json::to_vec(&synthetic_feed).expect("the synthetic feed serializes"),
         )
         .expect("a cached feed");
         dir
