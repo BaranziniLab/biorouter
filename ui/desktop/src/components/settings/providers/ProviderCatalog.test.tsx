@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   updateCustomProvider: vi.fn(),
   createCustomProvider: vi.fn(),
   removeCustomProvider: vi.fn(),
+  revealProviderSecret: vi.fn(),
 }));
 
 vi.mock('../../../api', async (importOriginal) => ({
@@ -36,6 +37,7 @@ vi.mock('../../../api', async (importOriginal) => ({
   updateCustomProvider: mocks.updateCustomProvider,
   createCustomProvider: mocks.createCustomProvider,
   removeCustomProvider: mocks.removeCustomProvider,
+  revealProviderSecret: mocks.revealProviderSecret,
 }));
 // The configure modal asks which provider is bound before offering "Remove".
 vi.mock('../../ModelAndProviderContext', () => ({
@@ -1057,6 +1059,45 @@ describe('a declarative provider nobody has set up', () => {
  * made it, so the catalog's update carries that proof.
  */
 describe('updating a custom provider', () => {
+  it('reveals the saved key for the selected custom provider', async () => {
+    mocks.getCustomProvider.mockResolvedValue({
+      data: {
+        is_editable: true,
+        config: {
+          engine: 'openai',
+          display_name: 'Lab gateway',
+          base_url: 'https://lab.example/v1',
+          api_key_env: 'CUSTOM_LAB_API_KEY',
+          models: [{ name: 'lab-model' }],
+          supports_streaming: true,
+        },
+      },
+    });
+    mocks.revealProviderSecret.mockResolvedValue({ data: 'synthetic-custom-key' });
+    const lab = {
+      ...provider('custom_lab', { is_configured: true }, 'Lab gateway'),
+      provider_type: 'Custom',
+    } as ProviderDetails;
+    render(
+      <ProviderCatalog
+        providers={[lab]}
+        mode="settings"
+        refreshProviders={vi.fn()}
+        initialTab="public"
+      />
+    );
+    fireEvent.click(await screen.findByTestId('provider-card-custom_lab'));
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Show API key' }));
+    expect(await within(dialog).findByDisplayValue('synthetic-custom-key')).toBeInTheDocument();
+    expect(mocks.revealProviderSecret).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: { provider: 'custom_lab', key: 'CUSTOM_LAB_API_KEY' },
+        headers: { 'X-User-Action': 'test-key' },
+      })
+    );
+  });
+
   it('sends the proof that the user made the change', async () => {
     mocks.getCustomProvider.mockResolvedValue({
       data: {

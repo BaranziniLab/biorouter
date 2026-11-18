@@ -1048,6 +1048,11 @@ export default function ProviderCatalog({
         initialData={initialData}
         isEditable={editable}
         hasSavedKey={editingProvider?.isConfigured ?? true}
+        savedKey={
+          editingProvider
+            ? { provider: editingProvider.id, key: editingProvider.config.api_key_env }
+            : undefined
+        }
         onSubmit={editingProvider ? handleUpdateCustomProvider : handleCreateCustomProvider}
         onCancel={handleCloseCustomModal}
         removal={customProviderRemoval}

@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails } from '../../../../../../api';
 import DefaultProviderSetupForm, {
@@ -14,11 +14,16 @@ import {
   resetProviderSetupAccessForTests,
 } from '../../../../../../utils/providerSetupAccess';
 
-const mocks = vi.hoisted(() => ({ read: vi.fn(), getProviderSetupAccess: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  read: vi.fn(),
+  getProviderSetupAccess: vi.fn(),
+  revealProviderSecret: vi.fn(),
+}));
 
 vi.mock('../../../../../../api', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getProviderSetupAccess: mocks.getProviderSetupAccess,
+  revealProviderSecret: mocks.revealProviderSecret,
 }));
 
 /** SD-18: put this page in a browser the daemon admits to provider setup. */
@@ -64,8 +69,15 @@ const bedrock = {
   },
 } as unknown as ProviderDetails;
 
-function Harness({ provider = bedrock }: { provider?: ProviderDetails }) {
+function Harness({
+  provider = bedrock,
+  onValues,
+}: {
+  provider?: ProviderDetails;
+  onValues?: (values: Record<string, ConfigInput>) => void;
+}) {
   const [values, setValues] = useState<Record<string, ConfigInput>>({});
+  useEffect(() => onValues?.(values), [onValues, values]);
   return (
     <DefaultProviderSetupForm
       configValues={values}
@@ -135,6 +147,58 @@ describe('providerFieldName: a key named in sentence case', () => {
 });
 
 describe('DefaultProviderSetupForm — secrets are masked', () => {
+  it('reveals an existing provider key only when the person asks to see it', async () => {
+    const google = {
+      ...bedrock,
+      name: 'google',
+      metadata: {
+        ...bedrock.metadata,
+        config_keys: [{ name: 'GOOGLE_API_KEY', required: true, secret: true }],
+      },
+    } as ProviderDetails;
+    mocks.read.mockResolvedValue({ maskedValue: '••••••••' });
+    mocks.revealProviderSecret.mockResolvedValue({ data: 'synthetic-google-key' });
+    const onValues = vi.fn();
+    render(<Harness provider={google} onValues={onValues} />);
+
+    const input = await screen.findByLabelText('Google API key');
+    expect(input).toHaveAttribute('type', 'password');
+    expect(input).toHaveValue('');
+    expect(mocks.revealProviderSecret).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show Google API key' }));
+    await waitFor(() => expect(input).toHaveValue('synthetic-google-key'));
+    expect(input).toHaveAttribute('type', 'text');
+    expect(mocks.revealProviderSecret).toHaveBeenCalledWith(
+      expect.objectContaining({ body: { provider: 'google', key: 'GOOGLE_API_KEY' } })
+    );
+    expect(onValues).toHaveBeenLastCalledWith({
+      GOOGLE_API_KEY: { serverValue: { maskedValue: '••••••••' } },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Hide Google API key' }));
+    expect(input).toHaveAttribute('type', 'password');
+    expect(input).toHaveValue('');
+  });
+
+  it('does not try to reveal an OAuth token from the provider store', async () => {
+    const copilot = {
+      ...bedrock,
+      name: 'github_copilot',
+      metadata: {
+        ...bedrock.metadata,
+        config_keys: [
+          { name: 'GITHUB_COPILOT_TOKEN', required: true, secret: true, oauth_flow: true },
+        ],
+      },
+    } as ProviderDetails;
+    mocks.read.mockResolvedValue({ maskedValue: '••••••••' });
+    render(<Harness provider={copilot} />);
+    const label = providerFieldName('github_copilot', 'GITHUB_COPILOT_TOKEN');
+    fireEvent.click(await screen.findByRole('button', { name: `Show ${label}` }));
+    expect(mocks.revealProviderSecret).not.toHaveBeenCalled();
+  });
+
   it('renders a secret parameter as a masked, unchecked, un-autofilled field', async () => {
     render(<Harness />);
 
@@ -490,6 +554,31 @@ describe('CustomProviderForm for a provider with no key saved', () => {
     expect(input).toHaveAttribute('placeholder', 'Leave blank to keep existing key');
     fireEvent.click(screen.getByRole('button', { name: customProviderCopy.update }));
     expect(onSubmit).toHaveBeenCalled();
+  });
+
+  it('reveals a saved custom-provider key without writing it again on save', async () => {
+    const onSubmit = vi.fn();
+    mocks.revealProviderSecret.mockResolvedValue({ data: 'synthetic-custom-key' });
+    const { container } = render(
+      <CustomProviderForm
+        onSubmit={onSubmit}
+        onCancel={vi.fn()}
+        initialData={definition}
+        isEditable={false}
+        hasSavedKey
+        savedKey={{ provider: 'deepseek', key: 'DEEPSEEK_API_KEY' }}
+      />
+    );
+    const input = container.querySelector('#api-key') as HTMLInputElement;
+    expect(mocks.revealProviderSecret).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Show API key' }));
+    await waitFor(() => expect(input).toHaveValue('synthetic-custom-key'));
+    expect(mocks.revealProviderSecret).toHaveBeenCalledWith(
+      expect.objectContaining({ body: { provider: 'deepseek', key: 'DEEPSEEK_API_KEY' } })
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: customProviderCopy.update }));
+    expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ api_key: '' }));
   });
 });
 

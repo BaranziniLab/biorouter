@@ -84,6 +84,12 @@ pub struct ConfigKeyQuery {
     pub is_secret: bool,
 }
 
+#[derive(Deserialize, ToSchema)]
+pub struct RevealProviderSecretRequest {
+    pub provider: String,
+    pub key: String,
+}
+
 #[derive(Serialize, ToSchema)]
 pub struct ConfigResponse {
     pub config: HashMap<String, Value>,
@@ -1144,6 +1150,50 @@ pub async fn read_config(
         }
     };
     Ok(Json(response_value))
+}
+
+#[utoipa::path(
+    post,
+    path = "/config/provider-secret/reveal",
+    request_body = RevealProviderSecretRequest,
+    responses(
+        (status = 200, description = "The requested provider secret", body = String),
+        (status = 403, description = "The request did not prove a desktop user action"),
+        (status = 404, description = "The provider secret is unavailable"),
+        (status = 500, description = "The provider secret could not be read"),
+    )
+)]
+pub async fn reveal_provider_secret(
+    headers: http::HeaderMap,
+    Json(query): Json<RevealProviderSecretRequest>,
+) -> Result<(http::HeaderMap, Json<String>), StatusCode> {
+    if !is_user_action(&headers) {
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    let declared = get_providers().await.into_iter().any(|(metadata, _)| {
+        metadata.name == query.provider
+            && metadata
+                .config_keys
+                .iter()
+                .any(|key| key.name == query.key && key.secret && !key.oauth_flow)
+    });
+    if !declared {
+        return Err(StatusCode::NOT_FOUND);
+    }
+
+    let value: String = Config::global()
+        .get_secret(&query.key)
+        .map_err(|error| match error {
+            ConfigError::NotFound(_) => StatusCode::NOT_FOUND,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        })?;
+    let mut response_headers = http::HeaderMap::new();
+    response_headers.insert(
+        http::header::CACHE_CONTROL,
+        http::HeaderValue::from_static("no-store"),
+    );
+    Ok((response_headers, Json(value)))
 }
 
 #[utoipa::path(
@@ -2972,6 +3022,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/config/upsert", post(upsert_config))
         .route("/config/remove", post(remove_config))
         .route("/config/read", post(read_config))
+        .route(
+            "/config/provider-secret/reveal",
+            post(reveal_provider_secret),
+        )
         .route("/config/extensions", get(get_extensions))
         .route("/config/extensions", post(add_extension))
         .route("/config/extensions/{name}", delete(remove_extension))

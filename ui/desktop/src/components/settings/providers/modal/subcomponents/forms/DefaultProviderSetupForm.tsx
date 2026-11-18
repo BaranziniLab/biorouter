@@ -17,6 +17,7 @@ import { sentenceCase } from '../../../../config/configLabels';
 import { machineStringProps } from '../../../../config/machineString';
 import { providerSetupCopy } from '../../../copy';
 import { useHandFocusOnReady } from '../../../../models/dialogFocus';
+import { loadProviderSecret } from '../../../../../../utils/providerSecret';
 
 type ValidationErrors = Record<string, string>;
 
@@ -251,7 +252,7 @@ export default function DefaultProviderSetupForm({
 
   function getRenderValue(parameter: ConfigKey): string | undefined {
     if (parameter.secret) {
-      return undefined;
+      return configValues[parameter.name]?.value ?? '';
     }
 
     const entry = configValues[parameter.name];
@@ -297,7 +298,15 @@ export default function DefaultProviderSetupForm({
               its key — the same primitive, so the two cannot diverge again. A
               non-secret parameter (an endpoint, a region) stays readable. */}
           {parameter.secret ? (
-            <SecretInput {...fieldProps} revealLabel={getFieldName(parameter)} />
+            <SecretInput
+              {...fieldProps}
+              revealLabel={getFieldName(parameter)}
+              loadSavedValue={
+                !parameter.oauth_flow && configValues[parameter.name]?.serverValue
+                  ? () => loadProviderSecret(provider.name, parameter.name)
+                  : undefined
+              }
+            />
           ) : (
             <Input {...fieldProps} type="text" />
           )}

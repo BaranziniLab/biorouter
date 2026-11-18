@@ -6868,6 +6868,11 @@ export type RetryConfig = {
     timeout_seconds?: number | null;
 };
 
+export type RevealProviderSecretRequest = {
+    key: string;
+    provider: string;
+};
+
 /**
  * Where a grant that stopped on this device stands with the workspace.
  */
@@ -10864,6 +10869,37 @@ export type GetPricingResponses = {
 };
 
 export type GetPricingResponse = GetPricingResponses[keyof GetPricingResponses];
+
+export type RevealProviderSecretData = {
+    body: RevealProviderSecretRequest;
+    path?: never;
+    query?: never;
+    url: '/config/provider-secret/reveal';
+};
+
+export type RevealProviderSecretErrors = {
+    /**
+     * The request did not prove a desktop user action
+     */
+    403: unknown;
+    /**
+     * The provider secret is unavailable
+     */
+    404: unknown;
+    /**
+     * The provider secret could not be read
+     */
+    500: unknown;
+};
+
+export type RevealProviderSecretResponses = {
+    /**
+     * The requested provider secret
+     */
+    200: string;
+};
+
+export type RevealProviderSecretResponse = RevealProviderSecretResponses[keyof RevealProviderSecretResponses];
 
 export type GetProviderSetupAccessData = {
     body?: never;

@@ -15,6 +15,7 @@ import { useProvidersAreHostManaged } from '../../../../../../utils/providerSetu
 import { HOST_MANAGED_CUSTOM_URL } from '../../../../../privacy/hostManagedModelCopy';
 import { machineStringProps } from '../../../../config/machineString';
 import { customProviderCopy } from '../../../copy';
+import { loadProviderSecret } from '../../../../../../utils/providerSecret';
 import '../../../providers.css';
 
 /**
@@ -58,6 +59,7 @@ interface CustomProviderFormProps {
    * the old reading, so a caller that knows nothing changes nothing.
    */
   hasSavedKey?: boolean;
+  savedKey?: { provider: string; key: string };
   /**
    * Where Cancel and the submit button go. Inside {@link CustomProviderDialog} it is the dialog's
    * footer, so the two stay put under the footer's rule while the fields scroll, as every other
@@ -94,6 +96,7 @@ export default function CustomProviderForm({
   initialData,
   isEditable,
   hasSavedKey = true,
+  savedKey,
   actionsHost,
   onRemove,
   hidden = false,
@@ -319,6 +322,11 @@ export default function CustomProviderForm({
               onChange={(e) => setApiKey(e.target.value)}
               placeholder={keepsSavedKey ? 'Leave blank to keep existing key' : 'Your API key'}
               disabled={isLocalModel}
+              loadSavedValue={
+                keepsSavedKey && savedKey
+                  ? () => loadProviderSecret(savedKey.provider, savedKey.key)
+                  : undefined
+              }
             />
           </Field>
           {!initialData && (
