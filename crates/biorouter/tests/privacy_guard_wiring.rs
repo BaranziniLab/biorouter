@@ -606,14 +606,14 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/workflow.rs",
-                counts: c(1, 3, 0),
+                counts: c(1, 4, 0),
                 kind: SiteKind::Guard,
                 what: "`POST /workflows/create`, which loads the named chat's whole transcript \
                        and returns a workflow a model wrote from it (QA 2026-09-10, F0's \
                        sweep). The second ref is the module qualifier on `http_caller`, which \
-                       filters the knowledge bases the workflow names; the third is the \
-                       qualifier on `schedule_reach` for `POST /workflows/schedule` — a \
-                       different function, with its own row below",
+                       filters the knowledge bases the workflow names; the third and fourth \
+                       qualify `schedule_reach` for `POST /workflows/schedule` and \
+                       `POST /workflows/delete` — a different function, with its own row below",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/session_meta.rs",
@@ -1029,12 +1029,13 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/workflow.rs",
-                counts: c(1, 0, 0),
+                counts: c(2, 0, 0),
                 kind: SiteKind::Guard,
                 what: "`POST /workflows/schedule`, which adds, re-times or removes the schedule \
                        of a saved workflow through the same scheduler. ⚠ Not redundancy: without \
                        it a caller refused at `/schedule/create` re-issued the request one URL \
-                       over",
+                       over. The second call is `POST /workflows/delete`, asked of every matching \
+                       schedule before any registration or the workflow source is removed",
             },
         ],
     },
