@@ -3580,6 +3580,7 @@ mod tests {
             .title("Scheduled retry fixture")
             .description("Synthetic retry accounting")
             .prompt("Finish the synthetic task.")
+            .extensions(Vec::new())
             .retry(RetryConfig {
                 max_retries: 1,
                 checks: vec![SuccessCheck::FileExists {
@@ -3594,8 +3595,6 @@ mod tests {
             })
             .build()
             .unwrap();
-        let mut workflow = workflow;
-        workflow.extensions = Some(Vec::new());
         let workflow_path = dir.path().join("retry.yaml");
         fs::write(&workflow_path, workflow.to_yaml().unwrap()).unwrap();
         let job_id = format!("retry-fixture-{}", uuid::Uuid::new_v4().simple());
