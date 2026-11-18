@@ -752,6 +752,18 @@ fn progress_token_key(token: &ProgressToken) -> String {
     }
 }
 
+fn sampling_message_for_provider(msg: &SamplingMessage) -> crate::conversation::message::Message {
+    let base = match msg.role {
+        Role::User => crate::conversation::message::Message::user(),
+        Role::Assistant => crate::conversation::message::Message::assistant(),
+    };
+
+    match msg.content.as_text() {
+        Some(text) => base.with_text(&text.text),
+        None => base.with_content(msg.content.clone().into()),
+    }
+}
+
 impl ClientHandler for BioRouterClient {
     async fn on_progress(
         &self,
@@ -828,17 +840,7 @@ impl ClientHandler for BioRouterClient {
         let provider_ready_messages: Vec<crate::conversation::message::Message> = params
             .messages
             .iter()
-            .map(|msg| {
-                let base = match msg.role {
-                    Role::User => crate::conversation::message::Message::user(),
-                    Role::Assistant => crate::conversation::message::Message::assistant(),
-                };
-
-                match msg.content.as_text() {
-                    Some(text) => base.with_text(&text.text),
-                    None => base.with_content(msg.content.clone().into()),
-                }
-            })
+            .map(sampling_message_for_provider)
             .collect();
 
         let system_prompt = params
