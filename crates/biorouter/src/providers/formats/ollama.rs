@@ -38,6 +38,7 @@
 //!   Ollama forwards as text.
 
 use crate::agents::extension_manager::MOIM_OPEN_TAG;
+use crate::conversation::has_google_native_replay_content;
 use crate::conversation::message::{Message, MessageContent};
 use crate::providers::base::{PendingToolCall, ProviderStreamItem, ProviderUsage, Usage};
 use crate::providers::errors::ProviderError;
@@ -492,7 +493,8 @@ pub fn format_messages(messages: &[Message], vision: bool, calls_without_text: b
                 let mut texts: Vec<String> = Vec::new();
                 let mut thinking: Vec<String> = Vec::new();
                 let mut tool_calls: Vec<Value> = Vec::new();
-                let replay = replay_thinking_after.is_none_or(|boundary| index > boundary);
+                let replay = replay_thinking_after.is_none_or(|boundary| index > boundary)
+                    && !has_google_native_replay_content(message);
                 for content in &message.content {
                     match content {
                         MessageContent::Text(text) if !text.text.is_empty() => {
@@ -1731,6 +1733,88 @@ mod tests {
     use super::*;
     use futures::TryStreamExt;
     use rmcp::model::CallToolResult;
+
+    fn google_native_foreign_fixture(tool_origin: bool) -> Message {
+        let mut parts = vec![serde_json::json!({
+            "text": "GOOGLE-PRIVATE-THOUGHT",
+            "thought": true,
+            "thoughtSignature": "GOOGLE-PRIVATE-SIGNATURE"
+        })];
+        parts.push(if tool_origin {
+            serde_json::json!({"functionCall": {"id": "google-native-call", "name": "read", "args": {"path": "synthetic.txt"}}})
+        } else {
+            serde_json::json!({"text": "visible native answer"})
+        });
+        let mut message = crate::providers::formats::google::response_to_message_for_model(
+            serde_json::json!({"candidates": [{"content": {"role": "model", "parts": parts}}]}),
+            "gemini-4-hydrogen",
+        )
+        .unwrap();
+        if tool_origin {
+            message = message.with_text("visible native answer");
+        }
+        message.with_redacted_thinking("R09PR0xFLVJFREFDVEVE")
+    }
+
+    fn google_native_foreign_signed_control() -> Message {
+        let mut message = Message::assistant()
+            .with_text("visible signed control")
+            .with_thinking("OWN-SIGNED-THOUGHT", "OWN-SIGNED-SIGNATURE")
+            .with_redacted_thinking("T1dOLVJFREFDVEVE");
+        if let MessageContent::Text(text) = &mut message.content[0] {
+            text.meta = Some(rmcp::model::Meta(
+                serde_json::json!({
+                    "mistral_content_provider": "mistral",
+                    "mistral_content": [{"type": "text", "text": "visible signed control"}]
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ));
+        }
+        message
+    }
+
+    #[test]
+    fn google_native_foreign_ollama_omits_native_reasoning_in_current_loop() {
+        for tool_origin in [false, true] {
+            let message = google_native_foreign_fixture(tool_origin);
+            let before = message.clone();
+            let serialized = serde_json::to_string(&format_messages(
+                &[
+                    Message::user().with_text("current synthetic query"),
+                    message.clone(),
+                ],
+                false,
+                false,
+            ))
+            .unwrap();
+
+            assert!(serialized.contains("visible native answer"));
+            assert!(!serialized.contains("GOOGLE-PRIVATE-THOUGHT"));
+            assert!(!serialized.contains("GOOGLE-PRIVATE-SIGNATURE"));
+            assert!(!serialized.contains("R09PR0xFLVJFREFDVEVE"));
+
+            assert_eq!(
+                message, before,
+                "outbound projection must not mutate durable history"
+            );
+        }
+    }
+
+    #[test]
+    fn google_native_foreign_ollama_keeps_non_google_signed_reasoning_in_current_loop() {
+        let serialized = serde_json::to_string(&format_messages(
+            &[
+                Message::user().with_text("current synthetic query"),
+                google_native_foreign_signed_control(),
+            ],
+            false,
+            false,
+        ))
+        .unwrap();
+        assert!(serialized.contains("OWN-SIGNED-THOUGHT"));
+    }
 
     fn call(name: &str, args: Value) -> CallToolRequestParams {
         CallToolRequestParams {

@@ -22,10 +22,12 @@ used.
 A deleted chat still counts, in tokens and in dollars, but its dollars are priced again at
 the model's base rate. Deleting a chat folds its usage into one total per day and model,
 which keeps no request's size, so a request that was billed at a model's long-context rate
-(past a prompt of 100,000, 200,000 or 272,000 tokens, depending on the model: Claude Haiku
-5.5 above 100,000, xAI Grok 4.5 to 4.7 above 200,000, and the GPT-5.4, GPT-5.5, GPT-5.6 and
-GPT-6 models OpenAI lists with a long-context price, on OpenAI, Azure OpenAI or Versa's Azure
-gateway, above 272,000) counts at the base rate from then on. Deleting such a chat can therefore lower the month's dollar figure, and
+counts at the base rate from then on. Claude Haiku 5.5's tier starts strictly above 100,000
+prompt tokens on the provider/model pairs Biorouter prices. The priced xAI Grok 4.3, 4.20,
+4.5 to 4.7 and Build 0.1 cards start at or above 200,000. OpenAI's listed GPT-5.4, GPT-5.5,
+GPT-5.6 and GPT-6 tiers start strictly above 272,000; the newer GPT-6.1/6.2 tiers apply only
+to their verified OpenAI and OpenRouter cards. Older verified Azure and Versa Azure cards
+keep their existing tiers. Prompt size includes fresh input, cache reads and cache writes. Deleting such a chat can therefore lower the month's dollar figure, and
 can lift a monthly dollar limit that had been reached. Token figures do not change.
 
 Each limit can be in dollars, in tokens, or both. The editors start in dollars whenever
@@ -233,6 +235,11 @@ model missing from the price list), its dollar figure is unknown, not zero, and 
 limit over it never fires. The usage-limit route says so with `chatDollarLimitInert` and
 `monthDollarLimitInert`. Set a token limit if you need a limit that always applies. When
 only part of the spend is priced, the priced part is compared, which is a lower bound.
+
+Prices belong to a provider/model pair. A new Azure, Vertex or Databricks model can have
+known capabilities and an unknown hosted rate; Biorouter does not fill it with the direct
+vendor's retail price. Claude Code, Codex and GitHub Copilot subscription usage also stays
+unpriced per token. A dollar limit cannot enforce spend for those unpriced requests.
 
 ## Who may change a limit
 

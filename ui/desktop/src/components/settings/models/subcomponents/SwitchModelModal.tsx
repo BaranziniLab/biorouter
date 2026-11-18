@@ -54,10 +54,9 @@ import {
   type SessionClassification,
 } from '../../../../api';
 
-// Return the first concrete model from the provider's list. The list is
-// authored in priority order in the Rust provider definition (typically newest
-// / preferred model first), so picking [0] gives the right default per provider
-// without falling back to cross-provider name heuristics.
+// Declared catalogues arrive with their available default first; live lists
+// keep the provider's own priority order. Preserve either order when choosing
+// a model for a fresh selection.
 type ModelOption = {
   value: string;
   label: string;

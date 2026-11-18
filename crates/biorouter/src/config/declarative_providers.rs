@@ -741,8 +741,8 @@ mod tests {
 
         let cases: &[(&str, &[&str], &[&str])] = &[
             (
-                // Baseten Model APIs (`GET /v1/models`, read 2026-10-18). GLM
-                // 5.3 is the model Baseten's own quickstart uses. Left out:
+                // Baseten Model APIs (overview/pricing, read 2026-11-17). GLM
+                // 5.3 remains Baseten's quickstart model. Left out:
                 // Beam rejects any multi-turn request whose assistant turns
                 // lack `reasoning_content`, which only Moonshot replays, and
                 // SID-1's 32,768-token window is smaller than Biorouter's own
@@ -752,6 +752,7 @@ mod tests {
                     "zai-org/GLM-5.3",
                     "zai-org/GLM-5.3-Fast",
                     "zai-org/GLM-5.3-Flash",
+                    "moonshotai/Kimi-K3.1-Pro",
                     "moonshotai/Kimi-K3",
                     "deepseek-ai/DeepSeek-V4.1-Flash",
                     "deepseek-ai/DeepSeek-V4.1-Flash-1017",
@@ -793,19 +794,23 @@ mod tests {
                 ],
             ),
             (
-                // Mercury 2.5 (GA 2026-09-08) is Inception's most capable
-                // production model; Mercury Coder is no longer offered to new
-                // users.
+                // Mercury 3 is the current chat model. Inception stops API
+                // requests after 2026-12-28; the provider description discloses it.
                 "inception",
-                &["mercury-2.5", "mercury-2"],
-                &["mercury-coder"],
+                &["mercury-3", "mercury-2.5", "mercury-2"],
+                &[
+                    "mercury-coder",
+                    "mercury-decide",
+                    "mercury-edit-2",
+                    "mercury-voice",
+                ],
             ),
             (
-                // Mistral Medium 3.1 retired 2026-08-31; Devstral 2 and
-                // Magistral Medium 1.2 retired 2026-07-31. Mistral names
-                // Medium 3.5 as the alternative for all three.
+                // Large 4 leads current selections. Medium 3.5 remains the
+                // replacement for retired Medium 3.1, Devstral 2 and Magistral.
                 "mistral",
                 &[
+                    "mistral-large-4",
                     "mistral-medium-3-5",
                     "mistral-large-2512",
                     "mistral-small-2603",
@@ -824,6 +829,8 @@ mod tests {
             (
                 "moonshot",
                 &[
+                    "kimi-k3.1-pro",
+                    "kimi-k3.1-pro-highspeed",
                     "kimi-k3",
                     "kimi-k2.7-code",
                     "kimi-k2.7-code-highspeed",

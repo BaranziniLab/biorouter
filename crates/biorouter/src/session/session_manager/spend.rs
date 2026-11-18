@@ -600,6 +600,29 @@ mod tests {
         assert_eq!(summary.all_time.turns, 1);
     }
 
+    #[tokio::test]
+    async fn november_prompt_band_preserves_xais_inclusive_200k_boundary() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let sql = format!("SELECT {} FROM (SELECT ?1 AS input_tokens, ?2 AS cache_read_tokens, 0 AS cache_creation_tokens)", prompt_band_sql!(""));
+        for (fresh, cached, expected) in [
+            (189_999_i64, 10_000_i64, 100_000_i64),
+            (190_000, 10_000, 200_000),
+            (190_001, 10_000, 200_000),
+        ] {
+            let band: i64 = sqlx::query_scalar(&sql)
+                .bind(fresh)
+                .bind(cached)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(band, expected, "fresh {fresh}, cached {cached}");
+            assert_eq!(prompt_band(fresh + cached), expected);
+        }
+    }
+
     /// The SQL band and the Rust band agree on both sides of every threshold.
     #[tokio::test]
     async fn prompt_band_sql_matches_the_pricing_bands() {

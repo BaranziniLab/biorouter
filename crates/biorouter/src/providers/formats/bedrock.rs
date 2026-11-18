@@ -312,12 +312,20 @@ pub fn to_bedrock_messages(
 }
 
 pub fn to_bedrock_message(message: &Message) -> Result<bedrock::Message> {
+    let google_native = crate::conversation::has_google_native_replay_content(message);
     bedrock::Message::builder()
         .role(to_bedrock_role(&message.role))
         .set_content(Some(
             message
                 .content
                 .iter()
+                .filter(|content| {
+                    !google_native
+                        || !matches!(
+                            content,
+                            MessageContent::Thinking(_) | MessageContent::RedactedThinking(_)
+                        )
+                })
                 .map(to_bedrock_message_content)
                 .collect::<Result<_>>()?,
         ))
@@ -3095,6 +3103,90 @@ mod tests {
     use super::*;
     use anyhow::Result;
     use rmcp::model::{AnnotateAble, RawImageContent};
+
+    fn google_native_foreign_fixture(tool_origin: bool) -> Message {
+        let mut parts = vec![serde_json::json!({
+            "text": "GOOGLE-PRIVATE-THOUGHT",
+            "thought": true,
+            "thoughtSignature": "GOOGLE-PRIVATE-SIGNATURE"
+        })];
+        parts.push(if tool_origin {
+            serde_json::json!({"functionCall": {"id": "google-native-call", "name": "read", "args": {"path": "synthetic.txt"}}})
+        } else {
+            serde_json::json!({"text": "visible native answer"})
+        });
+        let mut message = crate::providers::formats::google::response_to_message_for_model(
+            serde_json::json!({"candidates": [{"content": {"role": "model", "parts": parts}}]}),
+            "gemini-4-hydrogen",
+        )
+        .unwrap();
+        if tool_origin {
+            message = message.with_text("visible native answer");
+        }
+        message.with_redacted_thinking("R09PR0xFLVJFREFDVEVE")
+    }
+
+    fn google_native_foreign_signed_control() -> Message {
+        let mut message = Message::assistant()
+            .with_text("visible signed control")
+            .with_thinking("OWN-SIGNED-THOUGHT", "OWN-SIGNED-SIGNATURE")
+            .with_redacted_thinking("T1dOLVJFREFDVEVE");
+        if let MessageContent::Text(text) = &mut message.content[0] {
+            text.meta = Some(rmcp::model::Meta(
+                serde_json::json!({
+                    "mistral_content_provider": "mistral",
+                    "mistral_content": [{"type": "text", "text": "visible signed control"}]
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ));
+        }
+        message
+    }
+
+    #[test]
+    fn google_native_foreign_bedrock_omits_native_reasoning() {
+        for tool_origin in [false, true] {
+            let message = google_native_foreign_fixture(tool_origin);
+            let before = message.clone();
+            let converted = to_bedrock_message(&message).unwrap();
+            assert!(converted.content().iter().any(|block| matches!(block, bedrock::ContentBlock::Text(text) if text == "visible native answer")));
+            assert!(!converted
+                .content()
+                .iter()
+                .any(|block| matches!(block, bedrock::ContentBlock::ReasoningContent(_))));
+            assert_eq!(
+                message, before,
+                "outbound projection must not mutate durable history"
+            );
+        }
+    }
+
+    #[test]
+    fn google_native_foreign_bedrock_keeps_non_google_signed_reasoning() {
+        let message = google_native_foreign_signed_control();
+        let converted = to_bedrock_message(&message).unwrap();
+        assert_eq!(
+            converted
+                .content()
+                .iter()
+                .filter(|block| matches!(block, bedrock::ContentBlock::ReasoningContent(_)))
+                .count(),
+            2
+        );
+        assert!(message
+            .content
+            .iter()
+            .filter(|content| matches!(
+                content,
+                MessageContent::Thinking(_) | MessageContent::RedactedThinking(_)
+            ))
+            .all(|content| matches!(
+                to_bedrock_message_content(content).unwrap(),
+                bedrock::ContentBlock::ReasoningContent(_)
+            )));
+    }
 
     // Base64 encoded 1x1 PNG image for testing
     const TEST_IMAGE_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==";

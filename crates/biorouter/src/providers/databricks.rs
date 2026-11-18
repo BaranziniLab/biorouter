@@ -40,33 +40,18 @@ const DEFAULT_TIMEOUT_SECS: u64 = 600;
 // which retire on Oct 2, 2026 (Databricks names Gemini 3.1 Pro and 3.5 Flash as
 // the replacements).
 //
-// The default stays Sonnet 4.6 although Sonnet 5 is GA: Databricks serves 4.6
-// natively in almost every region, while Sonnet 5 is unavailable in some
-// (ap-south-1, eu-west-3) and cross-geo only in several more (region table,
-// 2026-09-25).
-pub const DATABRICKS_DEFAULT_MODEL: &str = "databricks-claude-sonnet-4-6";
+// The daily default follows the hosted Claude flagship. Workspace endpoint,
+// region and cross-geo permissions remain the user's existing configuration.
+pub const DATABRICKS_DEFAULT_MODEL: &str = "databricks-claude-opus-5-5";
 const DATABRICKS_DEFAULT_FAST_MODEL: &str = "databricks-gemini-3-5-flash";
-/// Default first — the desktop model switcher preselects entry 0 — then each
-/// family by generation, newest generation first.
-///
-/// NOT listed: `databricks-claude-opus-5-5` and `databricks-claude-fable-5-1`.
-/// Databricks documents both only on its Anthropic Messages API
-/// (`/serving-endpoints/anthropic/v1/messages`): "Claude Opus 5.5 and Claude
-/// Fable 5.1 use the Anthropic Messages API" (query-reason-models, read
-/// 2026-09-25). This provider posts OpenAI chat-completions bodies to
-/// `serving-endpoints/{name}/invocations`, so neither is advertised until a
-/// live request on that path succeeds.
-///
-/// Also NOT listed, though Databricks serves them (supported-models page,
-/// 2026-09-25): `databricks-grok-4-6`, `databricks-glm-5-3`,
-/// `databricks-glm-5-3-flash`, `databricks-kimi-k3` and
-/// `databricks-deepseek-v4-1-flash`. `formats::databricks` shapes requests
-/// only for the Claude, GPT and Gemini families it names, and these
-/// open-weight families carry constraints it does not model (Kimi K3 rejects
-/// any non-default sampling value; GLM-5.3 reasons on every request and
-/// refuses to have that disabled). With no Databricks key to try tool calling
-/// on the invocations path, none is advertised; each can still be typed.
+// Databricks documents 5.5 tool calling on OpenAI-compatible pay-per-token
+// endpoints (2026-11-11). Native reasoning controls and structured output still
+// need Messages; this adapter sends neither thinking controls nor response_format.
+// Unity-Gateway-only Fable 5.2 / Carbon / Hydrogen are not invocation endpoints.
 pub const DATABRICKS_KNOWN_MODELS: &[&str] = &[
+    DATABRICKS_DEFAULT_MODEL,
+    "databricks-claude-sonnet-5-5",
+    "databricks-claude-haiku-5-5",
     "databricks-claude-sonnet-4-6",
     // Claude
     "databricks-claude-sonnet-5",
@@ -78,8 +63,9 @@ pub const DATABRICKS_KNOWN_MODELS: &[&str] = &[
     "databricks-claude-opus-4-5",
     "databricks-claude-sonnet-4-5",
     "databricks-claude-haiku-4-5",
-    // OpenAI. There is no GPT-6 Terra: Databricks serves GPT-6 as Astra, Sol
-    // and Luna, and Terra exists only as GPT-5.6 Terra.
+    // OpenAI hosted endpoints; the unsuffixed GPT-6 Terra does not exist.
+    "databricks-gpt-6-1-sol",
+    "databricks-gpt-6-1-terra",
     "databricks-gpt-6-astra",
     "databricks-gpt-6-sol",
     "databricks-gpt-6-luna",
@@ -111,6 +97,10 @@ pub const DATABRICKS_KNOWN_MODELS: &[&str] = &[
 /// images, and it is Databricks' endpoint that receives the request. Llama 3.3
 /// 70B is text-only too.
 const DATABRICKS_VISION_MODELS: &[&str] = &[
+    "databricks-claude-opus-5-5",
+    "databricks-claude-haiku-5-5",
+    "databricks-gpt-6-1-sol",
+    "databricks-gpt-6-1-terra",
     "databricks-claude-sonnet-4-6",
     "databricks-claude-sonnet-5",
     "databricks-claude-opus-5",
@@ -602,13 +592,11 @@ mod tests {
             );
         }
 
-        // Gemini 2.5 retires Oct 2, 2026. Opus 5.5 / Fable 5.1 are served only
-        // on the Anthropic Messages API, which this provider does not speak.
-        // GPT-6 Terra does not exist.
+        // Gemini 2.5 retired Oct 2, 2026. Fable remains off this adapter
+        // pending its own hosted protocol checks. GPT-6 Terra does not exist.
         for absent in [
             "databricks-gemini-2-5-pro",
             "databricks-gemini-2-5-flash",
-            "databricks-claude-opus-5-5",
             "databricks-claude-fable-5-1",
             "databricks-gpt-6-terra",
         ] {
@@ -659,5 +647,109 @@ mod tests {
             DatabricksProvider::metadata().model_doc_link,
             "https://docs.databricks.com/aws/en/machine-learning/foundation-model-apis/supported-models"
         );
+    }
+}
+
+#[cfg(test)]
+mod hosted_refresh_tests {
+    use super::*;
+    use crate::conversation::message::MessageContent;
+    use rmcp::model::{CallToolResult, Content};
+
+    #[test]
+    fn hosted_refresh_databricks_catalogue_respects_hosted_vision_and_endpoint_scope() {
+        let metadata = DatabricksProvider::metadata();
+        assert_eq!(metadata.default_model, "databricks-claude-opus-5-5");
+        let names: Vec<_> = metadata
+            .known_models
+            .iter()
+            .take(3)
+            .map(|m| m.name.as_str())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                "databricks-claude-opus-5-5",
+                "databricks-claude-sonnet-5-5",
+                "databricks-claude-haiku-5-5"
+            ]
+        );
+        for (name, vision) in [
+            ("databricks-claude-opus-5-5", Some(true)),
+            ("databricks-claude-sonnet-5-5", None),
+            ("databricks-claude-haiku-5-5", Some(true)),
+            ("databricks-gpt-6-1-sol", Some(true)),
+            ("databricks-gpt-6-1-terra", Some(true)),
+        ] {
+            assert_eq!(
+                metadata
+                    .known_models
+                    .iter()
+                    .find(|m| m.name == name)
+                    .unwrap()
+                    .supports_vision,
+                vision,
+                "{name}"
+            );
+        }
+        for unavailable in [
+            "system.ai.gemini-4-carbon",
+            "databricks-gemini-4-carbon",
+            "system.ai.gemini-4-hydrogen",
+            "databricks-claude-fable-5-2",
+        ] {
+            assert!(
+                !DATABRICKS_KNOWN_MODELS.contains(&unavailable),
+                "{unavailable} needs another endpoint"
+            );
+        }
+    }
+
+    #[test]
+    fn hosted_refresh_databricks_claude_55_tool_history_is_openai_compatible() {
+        let tool: Tool = serde_json::from_value(json!({"name":"lookup","description":"Look up a record","inputSchema":{"type":"object","properties":{}}})).unwrap();
+        let response = json!({"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{}"}}]}}]});
+        let assistant = response_to_message(&response).unwrap();
+        assert!(assistant
+            .content
+            .iter()
+            .any(|c| matches!(c, MessageContent::ToolRequest(_))));
+        let history = vec![
+            Message::user().with_text("look up record"),
+            assistant,
+            Message::user().with_tool_response(
+                "call-1",
+                Ok(CallToolResult::success(vec![Content::text("found")])),
+            ),
+        ];
+        for name in [
+            "databricks-claude-opus-5-5",
+            "databricks-claude-sonnet-5-5",
+            "databricks-claude-haiku-5-5",
+            "databricks-gpt-6-1-sol",
+            "databricks-gpt-6-1-terra",
+        ] {
+            let config = ModelConfig::new_or_fail(name)
+                .with_temperature(Some(0.0))
+                .with_max_tokens(Some(1024));
+            let payload = create_request(
+                &config,
+                "system",
+                &history,
+                std::slice::from_ref(&tool),
+                &ImageFormat::OpenAi,
+            )
+            .unwrap();
+            assert_eq!(
+                payload["messages"][2]["tool_calls"][0]["id"], "call-1",
+                "{name}"
+            );
+            assert_eq!(payload["messages"][3]["role"], "tool", "{name}");
+            assert_eq!(payload["messages"][3]["tool_call_id"], "call-1", "{name}");
+            assert_eq!(payload["messages"][3]["content"], "found", "{name}");
+            assert_eq!(payload["max_tokens"], 1024, "{name}");
+            assert!(payload.get("temperature").is_none(), "{name}");
+            assert!(payload.get("response_format").is_none(), "{name}");
+        }
     }
 }

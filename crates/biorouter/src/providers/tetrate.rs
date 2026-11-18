@@ -23,7 +23,7 @@ use rmcp::model::Tool;
 // key; it also lives at github.com/tetrateio/agent-router-models), but the
 // provider's authenticated /v1/models fetch is what decides what a given key
 // can route, so this static list is only a fallback. Verified against the
-// public catalog on Sep 25, 2026.
+// public catalog on 2026-11-17.
 //
 // Removed models retired upstream: claude-opus-4-1 (Anthropic retired it
 // Aug 5, 2026), gpt-5 / gpt-5-mini / gpt-5-nano (OpenAI deprecated them on
@@ -41,7 +41,7 @@ use rmcp::model::Tool;
 // Responses, so a tool call is not known to work. gpt-4.1 is `mode: responses`
 // too, but it is a non-reasoning model, so the restriction does not reach it.
 //
-// Gemini 3 (gemini-3.8-flash, gemini-3.1-pro-preview) is deliberately NOT
+// Gemini 3+ (including Gemini 4) is deliberately NOT
 // listed either, although Tetrate routes it. Tetrate's public catalog backs
 // those ids with Google's OpenAI-compatible endpoint
 // (generativelanguage.googleapis.com/v1beta/openai/), where Gemini 3 function
@@ -55,6 +55,8 @@ use rmcp::model::Tool;
 // 2026) and Tetrate still routes them.
 pub const TETRATE_KNOWN_MODELS: &[&str] = &[
     "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "claude-haiku-5-5",
     "claude-fable-5-1",
     "claude-sonnet-5",
     "claude-sonnet-4-6",
@@ -64,6 +66,22 @@ pub const TETRATE_KNOWN_MODELS: &[&str] = &[
     "gpt-4.1",
 ];
 pub const TETRATE_DOC_URL: &str = "https://router.tetrate.ai";
+
+fn tetrate_model_uses_supported_chat_protocol(name: &str) -> bool {
+    let normalized = name.to_ascii_lowercase();
+    let name = normalized.rsplit('/').next().unwrap_or(&normalized);
+    if name.starts_with("gpt-5") || name.starts_with("gpt-6") {
+        return false;
+    }
+    if let Some(gemini) = name.strip_prefix("gemini-") {
+        return gemini
+            .split('.')
+            .next()
+            .and_then(|major| major.parse::<u32>().ok())
+            .is_some_and(|major| major < 3);
+    }
+    true
+}
 
 fn tetrate_model_supports_vision(name: &str) -> bool {
     let normalized = name.to_ascii_lowercase();
@@ -331,13 +349,9 @@ impl Provider for TetrateProvider {
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                if supports_computer_use {
+                if supports_computer_use && tetrate_model_uses_supported_chat_protocol(id) {
                     Some(id.to_string())
                 } else {
-                    tracing::debug!(
-                        "Model '{}' does not support computer_use (tool support), skipping",
-                        id
-                    );
                     None
                 }
             })
@@ -414,5 +428,66 @@ mod tests {
                 "{id} needs thought-signature replay the OpenAI format lacks"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod hosted_refresh_tests {
+    use super::*;
+
+    #[test]
+    fn hosted_refresh_tetrate_signup_and_picker_use_the_same_flagship() {
+        let metadata = TetrateProvider::metadata();
+        assert_eq!(metadata.default_model, "claude-opus-5-5");
+        assert_eq!(metadata.default_model, TETRATE_DEFAULT_MODEL);
+        let offered: Vec<_> = metadata
+            .known_models
+            .iter()
+            .take(3)
+            .map(|m| m.name.as_str())
+            .collect();
+        assert_eq!(
+            offered,
+            ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"]
+        );
+        for model in metadata.known_models.iter().take(3) {
+            assert_eq!(model.supports_vision, Some(true));
+        }
+        assert!(metadata
+            .known_models
+            .iter()
+            .all(|m| !m.name.starts_with("gpt-6") && !m.name.starts_with("gemini-4")));
+    }
+}
+
+#[cfg(test)]
+mod hosted_refresh_route_tests {
+    use super::*;
+    use serde_json::json;
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn hosted_refresh_tetrate_live_account_list_keeps_protocol_exclusions() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":[
+                {"id":"claude-sonnet-5-5","supports_computer_use":true},
+                {"id":"gpt-6.2-sol","supports_computer_use":true},
+                {"id":"gemini-4-hydrogen","supports_computer_use":true},
+                {"id":"gemini-3.8-flash","supports_computer_use":true},
+                {"id":"no-tools","supports_computer_use":false}
+            ]})))
+            .mount(&server)
+            .await;
+        let provider = TetrateProvider {
+            api_client: ApiClient::new(server.uri(), AuthMethod::BearerToken("fixture".into()))
+                .unwrap(),
+            model: ModelConfig::new_or_fail("claude-opus-5-5"),
+            supports_streaming: true,
+            name: "tetrate".into(),
+        };
+        let supported = provider.fetch_supported_models().await.unwrap().unwrap();
+        assert_eq!(supported, ["claude-sonnet-5-5"]);
     }
 }

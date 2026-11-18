@@ -54,12 +54,12 @@ const PROVIDER: &str = "baseten";
 /// `pricing::BASETEN_SYNC_PRICING` were last read from Baseten. Move it in the
 /// same change as either of them: a catalog fetched before this day is older
 /// than what the release ships, and is ignored.
-const BUNDLED_CATALOG_AS_OF: &str = "2026-10-18";
+const BUNDLED_CATALOG_AS_OF: &str = "2026-11-18";
 /// The day `pricing::BASETEN_DECISION_PRICING` was read from the feed. A
 /// catalog fetched before it gives no decision price
 /// ([`LiveCatalog::decision_pricing`]), so an old cached feed cannot bill the
 /// decision models below what the release ships. Move it with that table.
-const BUNDLED_DECISION_PRICING_AS_OF: &str = "2026-11-04";
+const BUNDLED_DECISION_PRICING_AS_OF: &str = "2026-11-18";
 const CACHE_SUBPATH: &str = "provider-catalogs/baseten.json";
 const SCHEMA_VERSION: u32 = 1;
 
@@ -315,8 +315,12 @@ impl LiveCatalog {
     /// take the feed's prices and image support; bundled models the feed no
     /// longer lists are dropped; new advertised models follow, by id. A
     /// window comes from the static registry when it has the slug, else from
-    /// the feed (see the module comment). Nothing advertised keeps `bundled`.
+    /// the feed (see the module comment). An older feed or no advertised models
+    /// leaves `bundled` unchanged.
     pub fn merge_models(&self, bundled: Vec<ModelInfo>) -> Vec<ModelInfo> {
+        if self.predates_bundled() {
+            return bundled;
+        }
         let advertised: Vec<&LiveModel> = self.advertised().collect();
         if advertised.is_empty() {
             return bundled;
@@ -607,6 +611,7 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Days;
 
     fn model(id: &str, context: u64, image: bool, tools: bool, prices: [&str; 3]) -> String {
         let modalities = if image {
@@ -637,7 +642,11 @@ mod tests {
     }
 
     fn feed(models: &[String]) -> Vec<u8> {
-        feed_at("2026-10-19T00:00:00Z", models)
+        feed_on(bundled_as_of() + Days::new(1), models)
+    }
+
+    fn feed_on(date: NaiveDate, models: &[String]) -> Vec<u8> {
+        feed_at(&format!("{date}T00:00:00Z"), models)
     }
 
     fn one_model() -> String {
@@ -717,8 +726,8 @@ mod tests {
         assert!(glm.vision && glm.tools);
         assert_eq!(glm.cache_read_cost, Some(1.2e-7));
         assert_eq!(
-            catalog.fetched_at,
-            DateTime::parse_from_rfc3339("2026-10-19T00:00:00Z").unwrap()
+            catalog.fetched_at.date_naive(),
+            bundled_as_of() + Days::new(1)
         );
     }
 
@@ -741,7 +750,7 @@ mod tests {
             ),
             (
                 "fetched_at that is not RFC 3339",
-                replace("2026-10-19T00:00:00Z", "yesterday"),
+                feed_at("yesterday", &[one_model()]),
             ),
             ("no models", feed(&[])),
             ("duplicate id", feed(&[one_model(), one_model()])),
@@ -923,10 +932,10 @@ mod tests {
     #[test]
     fn a_catalog_older_than_the_bundled_one_is_not_in_force() {
         let day_before =
-            LiveCatalog::from_bytes(&feed_at("2026-10-17T23:59:59Z", &[one_model()])).unwrap();
+            LiveCatalog::from_bytes(&feed_on(bundled_as_of() - Days::new(1), &[one_model()]))
+                .unwrap();
         assert!(day_before.predates_bundled());
-        let same_day =
-            LiveCatalog::from_bytes(&feed_at("2026-10-18T00:00:00Z", &[one_model()])).unwrap();
+        let same_day = LiveCatalog::from_bytes(&feed_on(bundled_as_of(), &[one_model()])).unwrap();
         assert!(!same_day.predates_bundled());
     }
 
@@ -934,7 +943,7 @@ mod tests {
     fn a_fetch_older_than_the_bundled_catalog_is_refused_and_not_cached() {
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("baseten.json");
-        let old = feed_at("2026-09-01T00:00:00Z", &[one_model()]);
+        let old = feed_on(bundled_as_of() - Days::new(1), &[one_model()]);
         assert!(matches!(
             apply_fetched(&old, &cache, None),
             Err(LiveCatalogError::Stale(_))
@@ -962,7 +971,7 @@ mod tests {
         assert_eq!(std::fs::read(&cache).unwrap(), first);
 
         // The next day's feed: same models, new `fetched_at`.
-        let next_day = feed_at("2026-10-20T00:00:00Z", &[one_model()]);
+        let next_day = feed_on(bundled_as_of() + Days::new(2), &[one_model()]);
         assert_eq!(
             apply_fetched(&next_day, &cache, Some(&loaded)).unwrap(),
             Refreshed::Unchanged
@@ -970,8 +979,8 @@ mod tests {
         assert_eq!(std::fs::read(&cache).unwrap(), first, "not rewritten");
 
         // A price change is an update, and is cached.
-        let repriced = feed_at(
-            "2026-10-21T00:00:00Z",
+        let repriced = feed_on(
+            bundled_as_of() + Days::new(3),
             &[model(
                 "a/b",
                 131_072,
@@ -995,7 +1004,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("baseten.json");
         let stale =
-            LiveCatalog::from_bytes(&feed_at("2026-09-01T00:00:00Z", &[one_model()])).unwrap();
+            LiveCatalog::from_bytes(&feed_on(bundled_as_of() - Days::new(1), &[one_model()]))
+                .unwrap();
         let current_feed = feed(&[one_model()]);
         assert!(matches!(
             apply_fetched(&current_feed, &cache, Some(&stale)).unwrap(),
@@ -1015,10 +1025,6 @@ mod tests {
         let bytes = include_bytes!("../../../../landing/scripts/fixtures/baseten-catalog.json");
         let catalog = LiveCatalog::from_bytes(bytes).expect("the script's output parses");
         assert_eq!(catalog.models.len(), 18);
-        assert!(
-            !catalog.predates_bundled(),
-            "the fixture must postdate {BUNDLED_CATALOG_AS_OF}"
-        );
 
         let advertised: Vec<&str> = catalog.advertised().map(|m| m.id.as_str()).collect();
         assert_eq!(
@@ -1028,17 +1034,26 @@ mod tests {
         );
         assert!(!advertised.contains(&"reflection/Beam-1.0"));
         assert!(!advertised.contains(&"sid/sid-1"));
+    }
 
-        // Every model the bundled baseten.json ships is in the feed, so
-        // merging today drops none of them.
+    #[test]
+    fn an_older_published_feed_cannot_drop_the_new_bundled_k31_model() {
+        let bytes = include_bytes!("../../../../landing/scripts/fixtures/baseten-catalog.json");
+        let catalog = LiveCatalog::from_bytes(bytes).unwrap();
+        let new_model = "moonshotai/Kimi-K3.1-Pro";
+        assert!(catalog.models.iter().all(|model| model.id != new_model));
         let bundled = crate::config::declarative_providers::bundled_models("baseten");
-        assert!(!bundled.is_empty());
-        for info in &bundled {
-            assert!(advertised.contains(&info.name.as_str()), "{}", info.name);
-        }
+        assert!(bundled.iter().any(|model| model.name == new_model));
         let merged = catalog.merge_models(bundled.clone());
-        assert_eq!(merged[0].name, bundled[0].name, "the default stays first");
-        assert_eq!(merged.len(), 16);
+        assert!(
+            merged.iter().any(|model| model.name == new_model),
+            "the historical feed must not remove the newly bundled K3.1 Pro"
+        );
+        assert_eq!(
+            merged, bundled,
+            "the historical feed cannot override the bundle"
+        );
+        assert!(catalog.predates_bundled());
     }
 
     /// The bundled snapshot must itself pass the rules the feed is filtered
@@ -1121,8 +1136,8 @@ mod tests {
     fn a_decision_model_takes_its_input_price_from_the_feed() {
         let slug = "decision-models/baseten-elephant-9b-latest";
         let decision = model(slug, 16_384, false, false, ["0.000000035", "0.00", "0.00"]);
-        let catalog = LiveCatalog::from_bytes(&feed_at(
-            "2026-11-05T00:00:00Z",
+        let catalog = LiveCatalog::from_bytes(&feed_on(
+            decision_pricing_as_of() + Days::new(1),
             &[decision.clone(), one_model()],
         ))
         .unwrap();
@@ -1140,13 +1155,18 @@ mod tests {
 
         // A zero input price is unknown here too.
         let free = model(slug, 16_384, false, false, ["0.00", "0.00", "0.00"]);
-        let catalog = LiveCatalog::from_bytes(&feed_at("2026-11-05T00:00:00Z", &[free])).unwrap();
+        let catalog =
+            LiveCatalog::from_bytes(&feed_on(decision_pricing_as_of() + Days::new(1), &[free]))
+                .unwrap();
         assert!(catalog.decision_pricing(slug).is_none());
 
         // A feed older than the bundled decision prices gives none, so it
         // cannot bill under them.
-        let catalog =
-            LiveCatalog::from_bytes(&feed_at("2026-10-30T00:00:00Z", &[decision])).unwrap();
+        let catalog = LiveCatalog::from_bytes(&feed_on(
+            decision_pricing_as_of() - Days::new(1),
+            &[decision],
+        ))
+        .unwrap();
         assert!(catalog.decision_pricing(slug).is_none());
     }
 

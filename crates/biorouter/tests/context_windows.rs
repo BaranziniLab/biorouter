@@ -18,6 +18,109 @@ use biorouter::model::ModelConfig;
 use biorouter::providers::live_catalog;
 use biorouter::providers::providers;
 
+#[test]
+fn november_2026_models_have_exact_windows_before_provider_overrides() {
+    let cases = [
+        ("gpt-6.2-astra", 1_050_000),
+        ("gpt-6.2-sol", 1_050_000),
+        ("gpt-6.1-sol", 1_050_000),
+        ("gpt-6.1-terra", 1_050_000),
+        ("gpt-6.2-astra-2026-11-17", 1_050_000),
+        ("gpt-6.2-sol-2026-11-17", 1_050_000),
+        ("gpt-6.1-sol-2026-09-29", 1_050_000),
+        ("gpt-6.1-terra-2026-10-26", 1_050_000),
+        ("openai/gpt-6.2-astra", 1_050_000),
+        ("openai/gpt-6.2-sol", 1_050_000),
+        ("claude-fable-5-2", 1_000_000),
+        ("anthropic/claude-fable-5.2", 1_000_000),
+        ("anthropic/claude-sonnet-5.5", 1_000_000),
+        ("anthropic/claude-haiku-5.5", 1_000_000),
+        ("us.anthropic.claude-fable-5-2", 1_000_000),
+        ("claude-sonnet-5.5", 1_000_000),
+        ("claude-haiku-5.5", 1_000_000),
+        ("gemini-4-hydrogen", 1_048_576),
+        ("gemini-4-argon", 1_048_576),
+        ("gemini-4-carbon", 1_048_576),
+        ("google/gemini-4-hydrogen", 1_048_576),
+        ("google/gemini-4-argon", 1_048_576),
+        ("google/gemini-4-carbon", 1_048_576),
+        ("databricks-gpt-6-1-sol", 1_050_000),
+        ("databricks-gpt-6-1-terra", 1_050_000),
+        ("databricks-gemini-4-argon", 1_048_576),
+        ("databricks-claude-opus-5-5", 1_000_000),
+        ("databricks-claude-sonnet-5-5", 1_000_000),
+        ("databricks-claude-haiku-5-5", 1_000_000),
+        ("kimi-k3.1-pro", 1_000_000),
+        ("kimi-k3.1-pro-highspeed", 1_000_000),
+        ("moonshotai/Kimi-K3.1-Pro", 1_048_576),
+        ("mercury-3", 1_000_000),
+        ("mistral-large-4", 1_000_000),
+        ("mistral-large-4-0", 1_000_000),
+        ("deepseek-v4-1-flash-1017-uncensored", 1_000_000),
+    ];
+    for (id, expected) in cases {
+        assert_eq!(
+            ModelConfig::registry_context_window(id),
+            Some(expected),
+            "{id}"
+        );
+        assert_eq!(ModelConfig::context_window_for(id), expected, "{id}");
+    }
+    assert_eq!(
+        ModelConfig::context_window_for("gpt-6.2-unannounced"),
+        128_000
+    );
+    assert_eq!(ModelConfig::context_window_for("gpt-6-astra"), 1_050_000);
+    assert!(biorouter::providers::codex::CODEX_CONTEXT_WINDOW < 1_050_000);
+}
+
+#[test]
+fn november_canonical_limits_keep_foreground_output_and_vision_distinct() {
+    use biorouter::providers::canonical::maybe_get_canonical_model;
+
+    for (provider, id, context, output) in [
+        ("openai", "gpt-6.2-astra", 1_050_000, 128_000),
+        ("openai", "gpt-6.2-sol", 1_050_000, 128_000),
+        ("openai", "gpt-6.1-sol", 1_050_000, 128_000),
+        ("openai", "gpt-6.1-terra", 1_050_000, 128_000),
+        ("azure_openai", "gpt-6.2-sol-2026-11-17", 1_050_000, 128_000),
+        ("anthropic", "claude-fable-5-2", 1_000_000, 128_000),
+        (
+            "aws_bedrock",
+            "us.anthropic.claude-fable-5-2",
+            1_000_000,
+            128_000,
+        ),
+        ("google", "gemini-4-hydrogen", 1_048_576, 65_536),
+        ("google", "gemini-4-argon", 1_048_576, 65_536),
+        ("google", "gemini-4-carbon", 1_048_576, 65_536),
+        ("gcp_vertex_ai", "gemini-4-hydrogen", 1_048_576, 65_536),
+    ] {
+        let spec = maybe_get_canonical_model(provider, id)
+            .unwrap_or_else(|| panic!("missing canonical mapping for {provider}/{id}"));
+        assert_eq!(spec.context_length, context, "{provider}/{id}");
+        assert_eq!(spec.max_completion_tokens, Some(output), "{provider}/{id}");
+        assert!(spec.supports_tools, "{provider}/{id}");
+        assert!(
+            spec.input_modalities.iter().any(|m| m == "image"),
+            "{provider}/{id}"
+        );
+    }
+
+    let glm = maybe_get_canonical_model("zai", "glm-5.3").unwrap();
+    assert_eq!(glm.input_modalities, ["text"]);
+
+    for id in ["mistral-large-4", "mistral-large-4-0"] {
+        let direct = maybe_get_canonical_model("mistral", id).unwrap();
+        assert_eq!(direct.context_length, 1_000_000, "{id}");
+        assert_eq!(direct.max_completion_tokens, None, "{id}");
+        assert!(direct.supports_tools, "{id}");
+    }
+    let route = maybe_get_canonical_model("openrouter", "mistralai/mistral-large-4-0").unwrap();
+    assert_eq!(route.context_length, 1_048_576);
+    assert_eq!(route.max_completion_tokens, Some(262_144));
+}
+
 /// (provider, model, declared window) for every model in the registry.
 async fn advertised_models() -> Vec<(String, String, usize)> {
     let mut rows = Vec::new();

@@ -1,3 +1,4 @@
+use crate::conversation::has_google_native_replay_content;
 use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
 use crate::providers::base::{tool_call_batching_enabled, PendingToolCall, Usage};
@@ -47,6 +48,7 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
     let mut anthropic_messages = Vec::new();
 
     for message in messages.iter().filter(|m| m.is_agent_visible()) {
+        let google_native = has_google_native_replay_content(message);
         let role = match message.role {
             Role::User => USER_ROLE,
             Role::Assistant => ASSISTANT_ROLE,
@@ -140,6 +142,8 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
                 MessageContent::SystemNotification(_) => {
                     // Skip
                 }
+                MessageContent::Thinking(_) | MessageContent::RedactedThinking(_)
+                    if google_native => {}
                 MessageContent::Thinking(thinking) => {
                     content.push(json!({
                         TYPE_FIELD: THINKING_TYPE,
@@ -594,7 +598,7 @@ pub const THINKING_BINDING_CONTROLS_BETA: &str = "thinking-binding-controls-2026
 
 /// Models whose thinking blocks are bound to the conversation that produced
 /// them ("preserved thinking"): Claude Opus 5.5, Sonnet 5.5, Haiku 5.5 and
-/// Fable 5.1. Haiku 5.5 runs the same history-editing check (Anthropic's Haiku
+/// Fable 5.1 and 5.2. Haiku 5.5 runs the same history-editing check (Anthropic's Haiku
 /// 5.5 migration guide, "editing earlier turns invalidates thinking blocks",
 /// read 2026-11-12), and its `block_binding` likewise works only inside
 /// `{"type": "adaptive"}`, which is how [`apply_thinking_block_binding`] sends
@@ -637,6 +641,8 @@ pub fn uses_preserved_thinking(model_name: &str) -> bool {
         "sonnet-5.5",
         "haiku-5-5",
         "haiku-5.5",
+        "fable-5-2",
+        "fable-5.2",
         "fable-5-1",
         "fable-5.1",
         "mythos-5-1",
@@ -1359,6 +1365,78 @@ where
 mod tests {
     use super::*;
     use crate::agents::effort::{ReasoningEffort, DEEP_THINKING_BUDGET_TOKENS};
+
+    fn google_native_foreign_fixture(tool_origin: bool) -> Message {
+        let mut parts = vec![serde_json::json!({
+            "text": "GOOGLE-PRIVATE-THOUGHT",
+            "thought": true,
+            "thoughtSignature": "GOOGLE-PRIVATE-SIGNATURE"
+        })];
+        parts.push(if tool_origin {
+            serde_json::json!({"functionCall": {"id": "google-native-call", "name": "read", "args": {"path": "synthetic.txt"}}})
+        } else {
+            serde_json::json!({"text": "visible native answer"})
+        });
+        let mut message = crate::providers::formats::google::response_to_message_for_model(
+            serde_json::json!({"candidates": [{"content": {"role": "model", "parts": parts}}]}),
+            "gemini-4-hydrogen",
+        )
+        .unwrap();
+        if tool_origin {
+            message = message.with_text("visible native answer");
+        }
+        message.with_redacted_thinking("R09PR0xFLVJFREFDVEVE")
+    }
+
+    fn google_native_foreign_signed_control() -> Message {
+        let mut message = Message::assistant()
+            .with_text("visible signed control")
+            .with_thinking("OWN-SIGNED-THOUGHT", "OWN-SIGNED-SIGNATURE")
+            .with_redacted_thinking("T1dOLVJFREFDVEVE");
+        if let MessageContent::Text(text) = &mut message.content[0] {
+            text.meta = Some(rmcp::model::Meta(
+                serde_json::json!({
+                    "mistral_content_provider": "mistral",
+                    "mistral_content": [{"type": "text", "text": "visible signed control"}]
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ));
+        }
+        message
+    }
+
+    #[test]
+    fn google_native_foreign_anthropic_omits_native_reasoning() {
+        for tool_origin in [false, true] {
+            let message = google_native_foreign_fixture(tool_origin);
+            let before = message.clone();
+            let serialized =
+                serde_json::to_string(&format_messages(std::slice::from_ref(&message))).unwrap();
+
+            assert!(serialized.contains("visible native answer"));
+            assert!(!serialized.contains("GOOGLE-PRIVATE-THOUGHT"));
+            assert!(!serialized.contains("GOOGLE-PRIVATE-SIGNATURE"));
+            assert!(!serialized.contains("R09PR0xFLVJFREFDVEVE"));
+
+            assert_eq!(
+                message, before,
+                "outbound projection must not mutate durable history"
+            );
+        }
+    }
+
+    #[test]
+    fn google_native_foreign_anthropic_keeps_non_google_signed_reasoning() {
+        let serialized =
+            serde_json::to_string(&format_messages(&[google_native_foreign_signed_control()]))
+                .unwrap();
+        assert!(serialized.contains("OWN-SIGNED-THOUGHT"));
+        assert!(serialized.contains("OWN-SIGNED-SIGNATURE"));
+        assert!(serialized.contains("T1dOLVJFREFDVEVE"));
+    }
+
     use crate::conversation::message::Message;
     use rmcp::model::CallToolRequestParams;
     use rmcp::object;
@@ -1727,6 +1805,62 @@ mod tests {
         ] {
             assert!(!uses_preserved_thinking(model), "{model}");
         }
+    }
+
+    #[test]
+    fn model_refresh_fable_5_2_keeps_signed_history_with_rebinding_controls() -> Result<()> {
+        let history = [
+            Message::user().with_text("question"),
+            Message::assistant()
+                .with_thinking("", "prior-prefix-signature")
+                .with_redacted_thinking("opaque-reasoning")
+                .with_text("answer"),
+            Message::user().with_text("continue"),
+        ];
+        for model in [
+            "claude-fable-5-2",
+            "anthropic/claude-fable-5.2",
+            "global.anthropic.claude-fable-5-2",
+            "claude-fable-5-1",
+            "anthropic/claude-fable-5.1",
+            "claude-mythos-5-1",
+        ] {
+            let mut config =
+                ModelConfig::new_or_fail(model).with_reasoning_effort(Some(ReasoningEffort::Deep));
+            config.max_tokens = Some(8000);
+            config.temperature = Some(0.5);
+            let mut payload = create_request(&config, "changed system", &history, &[])?;
+
+            assert!(apply_thinking_block_binding(&mut payload), "{model}");
+            assert_eq!(payload["thinking"]["type"], "adaptive", "{model}");
+            assert_eq!(
+                payload["thinking"]["block_binding"]["prefix_mismatch_behavior"], "drop_block",
+                "{model}"
+            );
+            assert_eq!(payload["max_tokens"], 8000, "{model}");
+            assert!(
+                payload["thinking"].get("budget_tokens").is_none(),
+                "{model}"
+            );
+            assert!(payload.get("temperature").is_none(), "{model}");
+            assert_eq!(
+                payload["messages"][1]["content"][0]["signature"], "prior-prefix-signature",
+                "{model}"
+            );
+            assert_eq!(
+                payload["messages"][1]["content"][1]["data"], "opaque-reasoning",
+                "{model}"
+            );
+            assert_eq!(
+                payload["messages"][1]["content"][2]["text"], "answer",
+                "{model}"
+            );
+            assert_eq!(
+                payload["messages"][2]["content"][0]["text"], "continue",
+                "{model}"
+            );
+        }
+        Ok(())
     }
 
     #[test]

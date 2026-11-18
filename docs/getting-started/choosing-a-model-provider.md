@@ -1,16 +1,16 @@
 # Choosing a model provider
 
 > **What this is.** A reference of Biorouter's supported LLM providers: the credentials each one needs, its default model, a representative model list, and how to switch provider or override the choice per session.
-> **Status:** Current. The provider list, default models and model lists below were checked against `crates/biorouter/src/providers/` on 2026-09-25, except the two local providers (Llama Server and Ollama), checked on 2026-10-10, and the Versa API Azure and Versa API Bedrock lists, which were checked against the code and the UCSF gateway on 2026-10-05 (the Versa API Azure default and list order against the code on 2026-10-07; the Versa API Bedrock list again on 2026-10-22, when Claude Opus 5.5 and Sonnet 5.5 were added, and on 2026-11-12, when Claude Haiku 5.5 was added and Claude Opus 5.5 became the default). The Anthropic and Amazon Bedrock lists gained Claude Sonnet 5.5 and Haiku 5.5 on 2026-11-12. The Baseten section was checked against the code and Baseten's `GET /v1/models` on 2026-10-18. The provider panel section was checked against [`ui/desktop/src/components/settings/providers/providerOrdering.ts`](../../ui/desktop/src/components/settings/providers/providerOrdering.ts) on 2026-10-10.
+> **Status:** Current source snapshot, checked against Biorouter's bundled provider definitions on 2026-11-18 and the official model documentation reviewed on 2026-11-17, with Baseten's primary model list checked on 2026-11-18. The dated UCSF gateway checks below are historical observations; this refresh made no new UCSF inference request. Account, deployment, region and installed-model availability remain provider-specific.
 > **Audience:** end users
 
 Biorouter connects to a wide range of LLM providers: commercial cloud APIs, institution-hosted services, and local models. You select and configure providers in the provider panel of the app: open **Settings** > **Models**, then choose **Manage…** on the **Providers** row.
 
 **UCSF users:** For institution-managed access, start with **Versa API Azure** (`versa_azure`, the UCSF ChatGPT models) or **Versa API Bedrock** (`versa_bedrock`, the UCSF-hosted Anthropic models). The generic **Azure OpenAI** and **Amazon Bedrock** providers are the commercial ones, not the UCSF institutional ones. For fully local inference, use **Llama Server** or **Ollama**.
 
-> **Note.** The model lists on this page are hand-maintained snapshots, last checked against the code on 2026-09-25 (the two Versa lists on 2026-10-05, the Versa API Bedrock list again on 2026-10-22), and they drift. The authoritative values are the `*_DEFAULT_MODEL` and `*_KNOWN_MODELS` constants in `crates/biorouter/src/providers/`, and the bundled JSON files in `crates/biorouter/src/providers/declarative/` for Baseten, DeepSeek, Groq, Inception, Mistral AI and Moonshot AI. Treat the live model picker, which fetches from the provider, as authoritative.
+> **Note.** These representative bundled lists change between releases. The authoritative definitions are the provider constants in `crates/biorouter/src/providers/` and the JSON files in `crates/biorouter/src/providers/declarative/`. The picker uses those definitions or the provider's own discovery path. A listed model still needs to be available to your account or endpoint.
 
-The **default model** is the one Biorouter uses when you configure a provider without naming a model. The desktop model picker preselects the first model in a provider's list when you switch to that provider, and that is not always the default named here.
+For a bundled list, new provider setup starts with its declared default and the picker moves that default first when it is in the available list and retains the other entries' order. Live Codex and GitHub Copilot lists use the account's reported priority instead. A saved selection remains selected, including a model no longer suggested for new chats.
 
 ## Provider configuration panel
 
@@ -95,7 +95,7 @@ Available models, in the order the model picker lists them:
 - `gpt-5-2025-08-07`, `gpt-5-mini-2025-08-07`, `gpt-5-nano-2025-08-07`
 - `gpt-4o-2024-11-20`
 
-Each model maps to a UCSF deployment, so this provider does not accept a model outside the list. The three GPT-5.6 models became available at UCSF on 2026-10-01, with a 1,050,000-token context window. Biorouter sends them to the Responses API, because on Chat Completions they cannot use tools and reasoning in the same request. The other models stay on Chat Completions. UCSF has not deployed GPT-6 (checked 2026-10-05).
+Each model maps to a UCSF deployment, so this provider does not accept a model outside the list. The three GPT-5.6 models became available at UCSF on 2026-10-01, with a 1,050,000-token context window. Biorouter sends them to the Responses API, because on Chat Completions they cannot use tools and reasoning in the same request. The other models stay on Chat Completions. The 2026-10-05 check did not establish a UCSF GPT-6 deployment. This refresh retains the institution-specific list; check UCSF's current deployment documentation for later availability.
 
 `gpt-5.6-sol-2026-07-09` is the default after Biorouter 1.92.1. Up to 1.92.1 the default was `gpt-5.5-2026-04-24`, which is still offered. An existing configuration keeps the model it names, and a chat keeps the model it is bound to. The default is what a new setup of this provider starts on, and what the model picker selects when you switch to this provider.
 
@@ -122,9 +122,9 @@ Available models:
 
 Claude Opus 5.5, Sonnet 5.5 and Haiku 5.5 each answered a request and made a tool call through the UCSF gateway on 2026-11-12. For each one the gateway named a 1,000,000-token prompt limit and a 128,000-token output limit when a request went over them, which matches [Anthropic's model specifications](https://platform.claude.com/docs/en/models/overview). Opus 5.5 and Sonnet 5.5 were first reported working on 2026-10-22 in [PR #434](https://github.com/BaranziniLab/biorouter/pull/434). The other listed models answered on 2026-10-05. These are checks of what UCSF's account may use, and UCSF can change that.
 
-Prices follow [Anthropic's pricing](https://platform.claude.com/docs/en/about-claude/pricing): Opus 5.5 is $4 per million input tokens and $20 per million output tokens, and Sonnet 5.5 is $2 and $10. Haiku 5.5 has two rates chosen by the size of the prompt: $0.10 and $0.50 for a prompt of 100,000 tokens or fewer, and $0.50 and $2.50 above that. Biorouter prices each request at the rate its prompt size selects, cached tokens included in the size. None of the three accepts a temperature setting, so Biorouter does not send one to them.
+Biorouter's cost estimates apply its bundled provider/model rate cards, including prompt-size tiers where present. The Anthropic-based rates used for Versa are estimates, not a fresh verification of UCSF's bill; Haiku 5.5's gateway rate remains unconfirmed. See [usage limits](../agent-loop/usage-limits.md#when-a-dollar-limit-cannot-fire) for the effect of unknown hosted rates. None of these three models accepts a temperature setting, so Biorouter does not send one.
 
-UCSF does not offer Claude Opus 5, Opus 4.7, Sonnet 4.5, Sonnet 4, Fable 5.1 or Fable 5 through Versa. Bedrock refuses requests for them from the UCSF account, so they are not listed. A chat still set to one of them stops with a message that names the models above; your access key pair is not the problem. Claude Fable models would stay off the list even if UCSF enabled them, because Bedrock serves Fable only to accounts whose data retention mode is `aws_review`. Claude Opus 4.1 still answers, but Amazon has marked it legacy and ends it on 2027-01-08, so it is not offered either. Claude Opus 4 and the Claude 3 models are retired on Bedrock.
+At the recorded gateway checks, UCSF did not serve Claude Opus 5, Opus 4.7, Sonnet 4.5, Sonnet 4, Fable 5.1 or Fable 5 through Versa. Bedrock refused those requests from the UCSF account, and these models remain outside the bundled list. A chat still set to one of them stops with a message that names the models above; your access key pair is not the problem. Claude Fable models would stay off the list even if UCSF enabled them, because Bedrock serves Fable only to accounts whose data retention mode is `aws_review`. Claude Opus 4.1 still answers, but Amazon has marked it legacy and ends it on 2027-01-08, so it is not offered either. Claude Opus 4 and the Claude 3 models are retired on Bedrock.
 
 ### Commercial providers
 
@@ -134,16 +134,17 @@ UCSF does not offer Claude Opus 5, Opus 4.7, Sonnet 4.5, Sonnet 4, Fable 5.1 or 
 
 Direct API access to Anthropic's Claude models.
 
-Default model: `claude-opus-4-8`. Fast model, used for background calls such as chat titles and summaries: `claude-haiku-4-5`.
+Default model: `claude-opus-5-5`. Fast model, used for background calls such as chat titles and summaries: `claude-haiku-5-5`.
 
 Available models include:
 
-- `claude-opus-5-5`, `claude-fable-5-1`, `claude-sonnet-5-5`, `claude-haiku-5-5`
+- `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-fable-5-2`
+- `claude-fable-5-1`
 - `claude-opus-5`, `claude-sonnet-5`
 - `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`
 - `claude-haiku-4-5`
 
-Claude Fable 5.1 needs 30-day data retention: an organization on zero data retention gets an error for every request.
+Claude Fable remains an explicit optional tier with account and retention requirements. See [Anthropic and Claude Code models](../providers/anthropic-models.md) for current identifiers, access and client-version boundaries.
 
 #### OpenAI
 
@@ -151,11 +152,13 @@ Claude Fable 5.1 needs 30-day data retention: an organization on zero data reten
 
 Direct API access to OpenAI models.
 
-Default model: `gpt-6-sol`. Fast model, used for background calls such as chat titles and summaries: `gpt-6-luna`.
+Default model: `gpt-6.2-astra`. Fast model, used for background calls such as chat titles and summaries: `gpt-6-luna`.
 
 Available models include:
 
-- GPT-6: `gpt-6-sol`, `gpt-6-astra`, `gpt-6-luna`
+- GPT-6.2: `gpt-6.2-astra`, `gpt-6.2-sol`
+- GPT-6.1: `gpt-6.1-terra`, `gpt-6.1-sol`
+- GPT-6: `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`
 - GPT-5.6: `gpt-5.6-sol` (also reachable as `gpt-5.6`), `gpt-5.6-terra`, `gpt-5.6-luna`
 - `gpt-5.5`, `gpt-5.5-pro`
 - `gpt-5.4`, `gpt-5.4-pro`, `gpt-5.4-mini`, `gpt-5.4-nano`
@@ -163,11 +166,11 @@ Available models include:
 - `gpt-5.2`, `gpt-5.1`
 - `gpt-4.1`, `gpt-4.1-mini`, `gpt-4o-mini`
 
-There is no `gpt-6-terra`; Terra exists only as `gpt-5.6-terra`. `gpt-5`, `gpt-5-mini`, `gpt-5-nano` and `o3` are no longer listed, because OpenAI shuts them down on 2026-12-11. OpenAI names `gpt-5.6-sol` as the replacement for `gpt-5` and `o3`, `gpt-5.6-terra` for `gpt-5-mini`, and `gpt-5.6-luna` for `gpt-5-nano`.
+Terra is available as `gpt-6.1-terra` and `gpt-5.6-terra`. `gpt-5`, `gpt-5-mini`, `gpt-5-nano` and `o3` are no longer listed, because OpenAI shuts them down on 2026-12-11. OpenAI names `gpt-5.6-sol` as the replacement for `gpt-5` and `o3`, `gpt-5.6-terra` for `gpt-5-mini`, and `gpt-5.6-luna` for `gpt-5-nano`.
 
 GPT-6, GPT-5.6, GPT-5.5, GPT-5.4 and `gpt-5.3-codex` go through OpenAI's Responses API (`/v1/responses`); the older models use Chat Completions. Biorouter picks the route from the model name. `OPENAI_BASE_PATH` changes only the Chat Completions path, so a proxy set through `OPENAI_HOST` must also serve `/v1/responses` for those newer models.
 
-Optional configuration: `OPENAI_HOST`, `OPENAI_BASE_PATH`, `OPENAI_ORGANIZATION`, `OPENAI_PROJECT`, `OPENAI_CUSTOM_HEADERS`, `OPENAI_TIMEOUT`
+Optional configuration: `OPENAI_HOST`, `OPENAI_BASE_PATH`, `OPENAI_ORGANIZATION`, `OPENAI_PROJECT`, `OPENAI_CUSTOM_HEADERS`, `OPENAI_TIMEOUT`. See [OpenAI models](../providers/openai.md) for current API limits and the separate Codex account contract.
 
 #### Google Gemini
 
@@ -175,16 +178,17 @@ Optional configuration: `OPENAI_HOST`, `OPENAI_BASE_PATH`, `OPENAI_ORGANIZATION`
 
 Direct API access to Google's Gemini models.
 
-Default model: `gemini-3.1-pro-preview`. Fast model, used for background calls such as chat titles and summaries: `gemini-3.5-flash-lite`.
+Default model: `gemini-4-hydrogen`. Fast model, used for background calls such as chat titles and summaries: `gemini-3.5-flash-lite`.
 
 Available models include:
 
+- `gemini-4-hydrogen`, `gemini-4-argon`, `gemini-4-carbon`
 - `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`
 - `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite`
 - `gemini-3.1-pro-preview`, `gemini-3-flash-preview`
 - `gemini-2.5-pro`, `gemini-2.5-flash`, `gemini-2.5-flash-lite`
 
-Since 2026-09-18 Google serves the Gemini 2.5 models only to API keys that used them before.
+Since 2026-09-18 Google serves the Gemini 2.5 models only to API keys that used them before. See [Google Gemini](../providers/google.md) for Gemini 4 thinking, output and history requirements.
 
 #### GCP Vertex AI
 
@@ -192,18 +196,20 @@ Since 2026-09-18 Google serves the Gemini 2.5 models only to API keys that used 
 
 Runs Google and Anthropic models through Google Cloud's Vertex AI infrastructure.
 
-Default model: `gemini-3.8-flash`
+Default model: `gemini-4-hydrogen`
 
 Available models include:
 
+- `gemini-4-hydrogen`, `gemini-4-argon`
 - `gemini-3.8-flash`, `gemini-3.7-flash`, `gemini-3.6-flash`, `gemini-3.5-flash`, `gemini-3.5-flash-lite`
 - `gemini-3.1-pro-preview`, `gemini-3.1-flash-lite`, `gemini-3-flash-preview`
-- `claude-opus-5-5`, `claude-fable-5-1`, `claude-opus-5`, `claude-sonnet-5`
+- `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-fable-5-1`
+- `claude-opus-5`, `claude-sonnet-5`
 - `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, `claude-sonnet-4-6`
 
-A Claude model must first be enabled in your project's Model Garden.
+A Claude model must first be enabled in your project's Model Garden. Gemini 4 Carbon's restricted deployment and Claude Fable 5.2 are not bundled for this Vertex adapter. Direct Gemini availability does not establish Vertex project access.
 
-`GCP_LOCATION` may be a single region such as `us-central1`, the `global` endpoint, or the `us` or `eu` multi-region. Vertex serves Gemini 3.x, Claude 5.x, Claude Opus 4.7 and Claude Opus 4.8 at `global` and the `us` and `eu` multi-regions rather than in single regions like `us-central1`. So when `GCP_LOCATION` names a single region, Biorouter sends those models to the `global` endpoint automatically. When it is `us` or `eu`, Biorouter keeps that multi-region, so requests stay in that geography; the two preview models always go to `global`. Older Claude models and Gemini 2.x use the configured region. The `us` and `eu` multi-regions do not serve them, so with either one they go to a single region in that geography instead (`europe-west1` for `eu`; `us-east5` for Claude or `us-central1` for Gemini with `us`), and a failed request is never retried outside that geography.
+`GCP_LOCATION` may be a single region such as `us-central1`, the `global` endpoint, or the `us` or `eu` multi-region. Vertex serves Gemini 3.x and 4.x, Claude 5.x, Claude Opus 4.7 and Claude Opus 4.8 at `global` and the `us` and `eu` multi-regions rather than in single regions like `us-central1`. So when `GCP_LOCATION` names a single region, Biorouter sends those models to the `global` endpoint automatically. When it is `us` or `eu`, Biorouter keeps that multi-region, so requests stay in that geography; the two preview models always go to `global`. Gemini 4 Argon also honors its documented single regions `europe-west2` and `asia-southeast1`. Older Claude models and Gemini 2.x use the configured region. The `us` and `eu` multi-regions do not serve them, so with either one they go to a single region in that geography instead (`europe-west1` for `eu`; `us-east5` for Claude or `us-central1` for Gemini with `us`), and a failed request is never retried outside that geography.
 
 #### Azure OpenAI
 
@@ -211,10 +217,12 @@ A Claude model must first be enabled in your project's Model Garden.
 
 The generic Azure OpenAI provider, for your own Azure resource. It is a commercial provider; UCSF users should use [Versa API Azure](#versa-api-azure) instead.
 
-Default model: `gpt-6-sol-2026-09-22`
+Default model: `gpt-6.2-astra-2026-11-17`
 
 Available models include:
 
+- GPT-6.2: `gpt-6.2-astra-2026-11-17`, `gpt-6.2-sol-2026-11-17`
+- GPT-6.1: `gpt-6.1-sol-2026-09-29`, `gpt-6.1-terra-2026-10-26`
 - GPT-6: `gpt-6-sol-2026-09-22`, `gpt-6-astra-2026-09-03`, `gpt-6-luna-2026-09-22`
 - GPT-5.6: `gpt-5.6-sol-2026-07-09`, `gpt-5.6-terra-2026-07-09`, `gpt-5.6-luna-2026-07-09`
 - `gpt-5.5-2026-04-24`
@@ -222,7 +230,7 @@ Available models include:
 - `gpt-5.2-2025-12-11`, `gpt-5.1-2025-11-13`, `gpt-5-2025-08-07`
 - `gpt-4o-2024-11-20`
 
-Each id is the Azure model name plus its model version. The deployment a request goes to is `AZURE_OPENAI_DEPLOYMENT_NAME`. Azure notes that some quota tiers need a quota request for the GPT-6 family.
+Each id is the Azure model name plus its model version. The deployment a request goes to is `AZURE_OPENAI_DEPLOYMENT_NAME`. Azure notes that some quota tiers need a quota request for the GPT-6 family. Your deployment, region and quota determine access. Newly added hosted models do not inherit an OpenAI retail price when Azure's rate is unverified.
 
 GPT-6, GPT-5.6, GPT-5.5 and GPT-5.4 models use `POST {endpoint}/openai/v1/responses`, with the deployment name as the `model` and no `api-version`. `AZURE_OPENAI_API_VERSION` (default `2025-01-01-preview`) applies only to the models that use Chat Completions: GPT-5.2, GPT-5.1, GPT-5 and GPT-4o.
 
@@ -234,7 +242,7 @@ Azure has deprecated `o1`, `o3-mini`, `o3` and `o4-mini` (retiring 2026-11-19) a
 
 The generic Amazon Bedrock provider, for your own AWS account. It is a commercial provider; UCSF users should use [Versa API Bedrock](#versa-api-bedrock) instead. Supports AWS SSO profiles: run `aws sso login --profile <profile-name>` before using.
 
-Default model: `us.anthropic.claude-sonnet-4-6`
+Default model: `us.anthropic.claude-opus-5-5`
 
 Available models include:
 
@@ -251,16 +259,16 @@ Claude Fable 5.1 on Bedrock needs the AWS account's Bedrock data retention mode 
 
 Access models through Databricks. Supports OAuth.
 
-Default model: `databricks-claude-sonnet-4-6`. Fast model, used for background calls such as chat titles and summaries: `databricks-gemini-3-5-flash`, when your workspace serves it.
+Default model: `databricks-claude-opus-5-5`. Fast model, used for background calls such as chat titles and summaries: `databricks-gemini-3-5-flash`, when your workspace serves it.
 
 Available models include:
 
-- Claude: `databricks-claude-sonnet-5`, `databricks-claude-opus-5`, `databricks-claude-opus-4-8`, `databricks-claude-sonnet-4-6`
-- OpenAI: `databricks-gpt-6-astra`, `databricks-gpt-6-sol`, `databricks-gpt-6-luna`, `databricks-gpt-5-6-sol`, `databricks-gpt-5-5`
-- Google: `databricks-gemini-3-8-flash`, `databricks-gemini-3-5-flash`, `databricks-gemini-3-1-pro`
+- Claude: `databricks-claude-opus-5-5`, `databricks-claude-sonnet-5-5`, `databricks-claude-haiku-5-5`, `databricks-claude-sonnet-5`, `databricks-claude-sonnet-4-6`
+- OpenAI: `databricks-gpt-6-1-sol`, `databricks-gpt-6-1-terra`, `databricks-gpt-6-astra`, `databricks-gpt-6-sol`, `databricks-gpt-6-luna`
+- Google: `databricks-gemini-4-hydrogen`, `databricks-gemini-4-argon`, `databricks-gemini-3-8-flash`, `databricks-gemini-3-5-flash`
 - Meta: `databricks-meta-llama-3-3-70b-instruct`, `databricks-llama-4-maverick`
 
-Claude Opus 5.5 and Claude Fable 5.1 are not listed: Databricks documents them only on its Anthropic Messages API, which this provider does not call.
+The bundled Claude 5.5 models use this provider's invocations adapter. Claude Fable 5.1 and 5.2 remain excluded because their documented Anthropic Messages path needs another adapter. Workspace, region and endpoint access still apply; newly added hosted rates stay unknown without host-specific pricing.
 
 #### Snowflake Cortex
 
@@ -268,12 +276,11 @@ Claude Opus 5.5 and Claude Fable 5.1 are not listed: Databricks documents them o
 
 Access Claude and other models through Snowflake's Cortex integration.
 
-Default model: `claude-sonnet-4-6`
+Default model: `claude-opus-5-5`
 
 Available models include:
 
-- `claude-sonnet-4-6`, `claude-sonnet-5`, `claude-opus-5`
-- `claude-opus-5-5` (a public preview on Snowflake)
+- `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-sonnet-4-6`, `claude-sonnet-5`, `claude-opus-5`
 - `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`
 - `claude-opus-4-5`, `claude-sonnet-4-5`, `claude-haiku-4-5`
 
@@ -283,13 +290,13 @@ Available models include:
 
 A proxy service that provides access to many providers through a single API.
 
-Default model: `anthropic/claude-sonnet-5`. Fast model, used for background calls such as chat titles and summaries: `google/gemini-3.5-flash`.
+Default model: `anthropic/claude-opus-5.5`. Fast model, used for background calls such as chat titles and summaries: `google/gemini-3.5-flash`.
 
 Available models include:
 
-- `anthropic/claude-opus-5.5`, `anthropic/claude-fable-5.1`, `anthropic/claude-sonnet-5`
-- `openai/gpt-6-astra`, `openai/gpt-6-sol`, `openai/gpt-6-luna`, `openai/gpt-5.6-terra`
-- `google/gemini-3.1-pro-preview`, `google/gemini-3.8-flash`
+- `anthropic/claude-opus-5.5`, `anthropic/claude-sonnet-5.5`, `anthropic/claude-haiku-5.5`, `anthropic/claude-fable-5.1`
+- `openai/gpt-6.2-sol`, `openai/gpt-6.2-astra`, `openai/gpt-6-astra`, `openai/gpt-6-sol`, `openai/gpt-6-luna`
+- `google/gemini-4-hydrogen`, `google/gemini-4-argon`, `google/gemini-3.1-pro-preview`, `google/gemini-3.8-flash`
 - `x-ai/grok-4.7`, `deepseek/deepseek-v4.1-flash`, `moonshotai/kimi-k3`, `z-ai/glm-5.3`, `qwen/qwen3-coder-next`, `minimax/minimax-m3`
 
 #### Tetrate Agent Router Service
@@ -298,11 +305,11 @@ Available models include:
 
 Provider id `tetrate`. A routing service across upstream models, and the provider [biorouter in 5 minutes](quickstart.md) uses. Its automatic setup signs you in through the browser.
 
-Default model: `claude-haiku-4-5`
+Default model: `claude-opus-5-5`
 
 Available models include:
 
-- `claude-opus-5-5`, `claude-fable-5-1`, `claude-sonnet-5`, `claude-sonnet-4-6`, `claude-haiku-4-5`
+- `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-haiku-5-5`, `claude-fable-5-1`, `claude-sonnet-5`
 - `gemini-2.5-pro`, `gemini-2.5-flash`
 - `gpt-4.1`
 
@@ -312,15 +319,9 @@ Available models include:
 
 Access GPT, Claude, Gemini, and Grok models through GitHub Copilot infrastructure.
 
-Default model: `gpt-5.3-codex`
+Fresh choices come from the signed-in account's eligible chat-completions catalogue. An eligible API-marked default comes first. Otherwise, an eligible account-reported `claude-sonnet-5.5` is preferred under GitHub's daily-use guidance; other eligible entries retain service order. Hidden, disabled, Auto-only and incompatible-endpoint rows do not become named choices.
 
-Available models include:
-
-- `gpt-5.3-codex`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`
-- `claude-opus-5.5`, `claude-fable-5.1`, `claude-opus-4.8`, `claude-sonnet-5`, `claude-haiku-4.5`
-- `gemini-3.8-flash`, `grok-4.7`
-
-Which of these your account can use depends on your Copilot plan, and the picker shows what GitHub reports for your account.
+A successful empty catalogue stays empty. If discovery is unavailable, the named fallback is `gpt-5.3-codex`, GitHub's documented Business/Enterprise LTS choice; that fallback does not prove account entitlement. Saved explicit models, including older identifiers absent from current suggestions, remain selected. Static capability metadata is retained for attachments, not merged into fresh account suggestions. No upstream API token price is assigned to a Copilot subscription.
 
 GitHub Copilot does not use an API key. During configuration an auth code is copied to your clipboard and a browser window opens for you to paste it. See the configuration walkthrough in [biorouter in 5 minutes](quickstart.md#cli).
 
@@ -383,9 +384,9 @@ A saved configuration that names a retired id (`deepseek-chat`, `deepseek-reason
 
 Provider id `moonshot`. The Kimi model family.
 
-Default model: `kimi-k3`
+Default model: `kimi-k3.1-pro`
 
-Available models: `kimi-k3`, `kimi-k2.7-code`, `kimi-k2.7-code-highspeed`, `kimi-k2.6`
+Available models: `kimi-k3.1-pro`, `kimi-k3.1-pro-highspeed`, `kimi-k3`, `kimi-k2.7-code`, `kimi-k2.7-code-highspeed`, `kimi-k2.6`
 
 #### Groq
 
@@ -405,11 +406,11 @@ Provider id `baseten`. Open-weight models hosted on Baseten Model APIs (`https:/
 
 Default model: `zai-org/GLM-5.3`
 
-Available models: `zai-org/GLM-5.3`, `zai-org/GLM-5.3-Fast`, `zai-org/GLM-5.3-Flash`, `moonshotai/Kimi-K3`, `deepseek-ai/DeepSeek-V4.1-Flash`, `deepseek-ai/DeepSeek-V4.1-Flash-1017`, `deepseek-ai/DeepSeek-V4-Pro-0813`, `meta-models/muse-spark-open`, `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B`, `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B`, `openai/gpt-oss-120b`
+Available models: `zai-org/GLM-5.3`, `zai-org/GLM-5.3-Fast`, `zai-org/GLM-5.3-Flash`, `moonshotai/Kimi-K3.1-Pro`, `moonshotai/Kimi-K3`, `deepseek-ai/DeepSeek-V4.1-Flash`, `deepseek-ai/DeepSeek-V4.1-Flash-1017`, `deepseek-ai/DeepSeek-V4-Pro-0813`, `meta-models/muse-spark-open`, `nvidia/NVIDIA-Nemotron-3.5-Super-VL-120B-A12B`, `nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B`, `openai/gpt-oss-120b`
 
 Once your Baseten key is saved, this list and the prices refresh from Baseten's catalog at most twice a day, so the picker can show models released after your version of Biorouter. Without a key Biorouter asks for nothing. Offline, the last list Biorouter saw or the list above is used, unless it is older than the list above. See [the Baseten provider reference](../providers/baseten.md).
 
-Slugs are case-sensitive, as Baseten spells them. Costs use Baseten's own per-token rates, including its discounted rate for cached input (read from its `/v1/models` and https://www.baseten.co/pricing/ on 2026-10-18), not the model vendors'.
+Slugs are case-sensitive, as Baseten spells them. Costs use Baseten's own per-token rates, including cached input. The bundle's freshness cutoff is 2026-11-18. Its host-specific Kimi K3.1 entry is separate from native Moonshot and OpenRouter routes; their context and price records do not substitute for one another.
 
 #### Inception
 
@@ -417,9 +418,9 @@ Slugs are case-sensitive, as Baseten spells them. Costs use Baseten's own per-to
 
 Provider id `inception`. Inception's Mercury diffusion language models.
 
-Default model: `mercury-2.5`
+Default model: `mercury-3`
 
-Available models: `mercury-2.5`, `mercury-2`
+Available models: `mercury-3`, `mercury-2.5`, `mercury-2`. Inception schedules these Model APIs to end on 2026-12-28; an existing choice is preserved, but continued service depends on that lifecycle.
 
 #### Mistral AI
 
@@ -427,11 +428,11 @@ Available models: `mercury-2.5`, `mercury-2`
 
 Provider id `mistral`. Direct access to Mistral models.
 
-Default model: `mistral-medium-3-5`
+Default model: `mistral-large-4`
 
 Available models include:
 
-- `mistral-medium-3-5`, `mistral-large-2512`, `mistral-small-2603`
+- `mistral-large-4`, `mistral-medium-3-5`, `mistral-large-2512`, `mistral-small-2603`
 - `ministral-14b-2512`, `ministral-8b-2512`, `ministral-3b-2512`
 - `codestral-2508`
 
@@ -449,12 +450,9 @@ Default model: `gpt-4o-mini`
 
 Privacy-focused inference provider.
 
-Default model: `llama-3.3-70b`
+Default model: `deepseek-v4-1-flash-1017-uncensored`
 
-Available models include:
-
-- Llama 3.2 / 3.3 variants
-- Mistral variants
+Available bundled choices include that model, `llama-3.2-3b` and `llama-3.3-70b`. The endpoint may list additional account-available models.
 
 #### AWS SageMaker TGI
 
@@ -476,7 +474,7 @@ Provider id `claude_code`.
 
 Default model: `claude-opus-5-5`, which needs `claude` 2.1.280 or newer.
 
-Available models: `claude-opus-5-5`, `claude-fable-5-1`, `claude-sonnet-5`, `claude-haiku-4-5`
+The bundled list starts with `claude-opus-5-5`, `claude-sonnet-5-5` and `claude-haiku-5-5`, then the optional `claude-fable-5-2` tier. Sonnet 5.5 needs Claude Code 2.1.284, Haiku 5.5 needs 2.1.293 and Fable 5.2 needs 2.1.321. See [Anthropic and Claude Code models](../providers/anthropic-models.md) for access and usage-credit boundaries.
 
 #### Codex
 
@@ -484,9 +482,9 @@ Available models: `claude-opus-5-5`, `claude-fable-5-1`, `claude-sonnet-5`, `cla
 
 Provider id `codex`.
 
-Default model: `gpt-6-astra`, which needs `codex-cli` 0.153.4 or newer.
+The account's visible text-capable `model/list` catalogue supplies its preferred default and available models. Saved explicit choices stay selected. An unavailable or empty discovery result uses the verified bundled fallback: `gpt-6-astra` first, then `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra` and `gpt-5.6-luna`. Astra needs `codex-cli` 0.153.4 or newer; bundled Sol and Luna need 0.156.1.
 
-Available models: `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`. `gpt-6-sol` and `gpt-6-luna` need `codex-cli` 0.156.1 or newer.
+API model availability and context do not establish Codex subscription availability or working context. See [coding-agent performance and limits](../providers/coding-agents/performance-and-limits.md#codex-model-and-reasoning-selection) for runtime default and effort selection.
 
 ### Custom / declarative providers
 

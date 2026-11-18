@@ -1,12 +1,10 @@
 # Model provider integration references
 
-This folder holds the maintainer-facing integration references for individual LLM
-providers: how a provider module is wired into the provider registry and factory, every
-surface in the app where a user can select it, the commands that verify the integration
-still works, and the provider-specific gotchas that are easy to rediscover the hard way.
-Each document records the wiring so a maintainer can re-derive it from code, and each is
-explicit that the authoritative model lists and defaults live in the Rust source rather
-than on the page.
+This folder holds selected model and integration references for individual LLM
+providers: model defaults and capabilities, provider wiring and selection surfaces,
+verification commands, and provider-specific limits. Provider source, bundled
+catalogues and supported live discovery determine the advertised model lists and
+defaults; each reference explains the relevant behavior and links to its evidence.
 
 Come here when you are **changing or verifying a provider integration** — adding a
 provider module, touching `crates/biorouter/src/providers/factory.rs`, or re-running the
@@ -15,18 +13,20 @@ pick one, find the credential it needs, or switch models — read
 [Choosing a model provider](../getting-started/choosing-a-model-provider.md); if you want
 the credential variable itself among all other settings, read
 [Environment variables](../configuration/environment-variables.md). Note that this folder
-is not an inventory of every shipping provider: BioRouter has 40+ provider modules under
-`crates/biorouter/src/providers/`, and only the few named below are documented here: the three provider reference pages in
-this folder, plus the two local providers (the bundled Llama Server and Ollama) and the two
-coding-agent providers in the subdirectories. Every other provider is
-documented only by its own source module.
+is not an inventory of every shipping provider. It covers the references below, the
+two local providers (the bundled Llama Server and Ollama), and the two coding-agent
+providers in the subdirectories. Other providers are documented by their source
+modules under `crates/biorouter/src/providers/`.
 
 ## Documents
 
 | Document | What it covers |
 | --- | --- |
+| [Anthropic and Claude Code models](anthropic-models.md) | The ordered Claude 5.5 models, optional Fable tier, Claude Code version requirements, saved selections, model retirement and signed thinking history. Current, verified 2026-11-17. |
 | [Baseten provider](baseten.md) | The integration reference for the `baseten` declarative provider: the bundled catalog, the keyless feed that keeps its models and prices current between releases, the daily job that publishes that feed with a key held in a GitHub Environment, where Baseten appears in the app, its known limits, and the verification commands. Current, written 2026-10-19, revised 2026-10-20. |
 | [Content-filter refusals](content-filter-refusals.md) | What Biorouter says when Azure's or an OpenAI-compatible provider's content filter blocks a request or a reply (a policy refusal that names the flagged categories and is not retried), what the Responses route says, and why a filter that failed to run no longer ends the turn. Shared by Azure OpenAI, Versa API Azure, OpenAI and the custom providers on OpenAI's format. Current (November 2026). |
+| [Google Gemini provider](google.md) | Gemini 4 model defaults and thinking behavior, native GenerateContent signatures, tool identities, and fixture-based verification. Current, verified 2026-11-17. |
+| [OpenAI API models](openai.md) | Current flagship and optional model tiers, Responses tool support, output budgets, reasoning controls, and the separate Codex account catalogue. Current, verified 2026-11-17. |
 | [Xiaomi MiMo provider](xiaomi-mimo.md) | The integration reference for the `xiaomi_mimo` provider — registry wiring, the `XIAOMI_MIMO_API_KEY` / `XIAOMI_MIMO_HOST` contract with its regional endpoints, every selection surface, and the verification commands. Current, written 2026-06-19 against v1.85.3. |
 | [z.ai (GLM) provider](zai-glm.md) | The integration reference for the `zai` provider serving the GLM model family — registry wiring, the `ZAI_API_KEY` / `ZAI_HOST` contract on the OpenAI-compatible surface, every selection surface, and the verification commands. Current, written 2026-06-19 against v1.85.3. |
 

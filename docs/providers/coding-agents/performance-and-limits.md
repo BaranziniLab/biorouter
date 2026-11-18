@@ -42,6 +42,29 @@ seconds, in `config.yaml` or the environment. A missing, invalid or zero value k
 Both providers first shipped with a fixed ceiling; it was removed on 2026-08-26, in favour of this
 default.
 
+## Codex model and reasoning selection
+
+The Codex model picker reads the signed-in account's `model/list` catalog. Its recommended default
+comes first, followed by the other visible text-capable models in vendor order. A saved model
+selection stays selected. If discovery is unavailable or empty, Biorouter uses its verified bundled
+catalog with GPT-6 Astra first. API model availability does not establish subscription availability.
+
+Each Codex connection reads the catalog once after its account check. Normal uses the model's
+advertised default reasoning effort, Quick uses its lowest supported ordinary effort, and Deep
+uses its highest. Ultra delegates work and is excluded from those intent settings. A session's
+explicit Quick or Deep selection is applied on the selected model's own ladder. A steered follow-up
+reuses that connection's selected effort and catalog.
+
+When discovery fails, known older models retain their verified fallback settings. An unfamiliar
+model receives no guessed effort value, allowing Codex to select its default. The
+[official app-server contract](https://learn.chatgpt.com/docs/app-server#list-models-modellist)
+defines these account and client dependent catalog fields.
+
+Codex working context and the OpenAI API context are separate limits. Biorouter keeps its
+conservative Codex working budget unless the user has explicitly pinned one; the larger API
+window must not be used to postpone Codex compaction. See the
+[current Codex model guide](https://learn.chatgpt.com/docs/models) for client-specific defaults.
+
 ## Prompt overhead: replacing the vendor prompt is the single biggest win
 
 | Prompt | Tokens per call |
