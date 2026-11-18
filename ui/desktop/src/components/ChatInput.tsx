@@ -42,6 +42,7 @@ import { detectInterruption } from '../utils/interruptionDetector';
 import { getSession, Message } from '../api';
 import { userActionHeaders } from '../utils/userAction';
 import { liveContextWindow } from '../utils/liveContextWindow';
+import { isTerminalFocused } from '../utils/terminalFocus';
 import type { ProviderDetails, SessionClassification } from '../api/types.gen';
 import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUtils';
 import { getSteerShortcutText } from '../utils/keyboardShortcuts';
@@ -1564,7 +1565,8 @@ export default function ChatInput({
 
   const autoFocusAtMountRef = useRef(autoFocus);
   useEffect(() => {
-    if (autoFocusAtMountRef.current && textAreaRef.current) {
+    // Pane remounts and StrictMode replay must leave a retained terminal's caret alone.
+    if (autoFocusAtMountRef.current && textAreaRef.current && !isTerminalFocused()) {
       textAreaRef.current.focus();
     }
   }, []);
@@ -3594,7 +3596,6 @@ export default function ChatInput({
               sits on the controls' centre line however the row is drawn. */}
             <textarea
               data-testid="chat-input"
-              autoFocus={autoFocusAtMountRef.current}
               id="dynamic-textarea"
               aria-label={COMPOSER_COPY.inputLabel}
               // An invitation, never an instruction: "Ask a follow-up" once the
