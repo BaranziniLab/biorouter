@@ -28,8 +28,8 @@ export interface TranscriptFollow {
    */
   keepPlaceForWidthChange: () => void;
   /**
-   * For `ScrollArea`'s `followGrowth`: false while a row the person did not
-   * cause waits below what is on screen (`holdForLateRow`).
+   * For `ScrollArea`'s `followGrowth`: false during a width change that keeps a clicked card in
+   * place, or while a row the person did not cause waits below what is on screen.
    */
   followGrowth: () => boolean;
   /**
@@ -115,7 +115,7 @@ export function useTranscriptFollow({
   // A late row held below the fold (V2-R9-2). A ref: the scroll area asks
   // `followGrowth` in its effect and its animation frame, between commits.
   const holdingRef = useRef(false);
-  const followGrowth = useCallback(() => !holdingRef.current, []);
+  const followGrowth = useCallback(() => !holdingRef.current && !keepPlaceRef.current, []);
   const isHolding = useCallback(() => holdingRef.current, []);
   const releaseHold = useCallback(() => {
     holdingRef.current = false;
@@ -140,11 +140,10 @@ export function useTranscriptFollow({
       viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight <= TRANSCRIPT_END_SLOP_PX;
     let width = viewport.clientWidth;
     let wasAtEnd = atEnd();
-    // The scroll the browser's scroll anchoring makes when a narrower column
-    // re-wraps the text reaches this listener AFTER the observer below
-    // (measured in Chromium, even with the layout forced in the same task), so
-    // the place read here is always the one from before the change.
+    // A splitter's reflow can dispatch its native scroll before the width observer. Keep the
+    // pre-resize position until that observer handles the new width, as the height anchor does.
     const remember = () => {
+      if (viewport.clientWidth !== width) return;
       wasAtEnd = atEnd();
       // The reader reached the held row, or their send took them there: from
       // here on the end is followed as before.

@@ -32,7 +32,12 @@ const PANE_CSS = readFileSync(resolve(here, 'compact-pane.css'), 'utf8');
 
 interface FollowHarnessWindow extends Window {
   __chunk: (index: number) => void;
+  __paragraph: () => void;
   __bottom: () => void;
+  __settle: () => void;
+  __isFollowing: () => boolean;
+  __streamDone: boolean;
+  __finishStream: () => void;
 }
 
 /** CompactPane's two process-wide sources, stood in for at its own imports only. */
@@ -74,9 +79,11 @@ import * as React from 'react';
 import { createRoot } from 'react-dom/client';
 import { CompactPane } from './CompactPane';
 import { ChatPaneFrame } from './ChatPaneFrame';
+import { ChatGroupSplitter } from './ChatGroupSplitter';
 import { ChatKindIcon } from '../chats/ChatKindIcon';
+import MarkdownContent from '../MarkdownContent';
 import { ScrollArea } from '../ui/scroll-area';
-import { useTranscriptFollow } from '../summary/useTranscriptFollow';
+import { useTranscriptFollow, useTranscriptSettle } from '../summary/useTranscriptFollow';
 
 const w = window as unknown as Record<string, any>;
 const TITLE = 'Variant calls across the whole cohort';
@@ -241,13 +248,26 @@ function Reply() {
   return lines.map((line, i) => <p key={i} style={{ margin: '0 0 12px' }}>{line}</p>);
 }
 
+function MarkdownReply() {
+  const [content, setContent] = React.useState('Synthetic compact-pane stream.\\n\\n');
+  const next = React.useRef(1);
+  React.useEffect(() => {
+    w.__paragraph = () => {
+      const addition = next.current++ + '. This synthetic reply grows while its pane changes size. ' +
+        'The newest line stays in view, and an older reader keeps their place.\\n\\n';
+      setContent((text) => text + addition);
+    };
+  }, []);
+  return <MarkdownContent content={content} />;
+}
+
 const EARLIER = Array.from({ length: 30 }, (_, i) => (
   <p key={i} style={{ margin: '0 0 12px' }}>{i + ' ' + LINE}</p>
 ));
 const COLUMN = (
   <div className="biorouter-chat-column mx-auto w-full max-w-measure-chat">
     {EARLIER}
-    <Reply />
+    {w.__markdown ? <MarkdownReply /> : <Reply />}
   </div>
 );
 
@@ -262,8 +282,11 @@ function Transcript() {
     isPreviewStacked: () => false,
     transcriptMounted: true,
   });
+  const onRenderingComplete = useTranscriptSettle(scrollRef, 2, follow.isHolding);
+  w.__settle = onRenderingComplete;
   React.useEffect(() => {
     w.__bottom = () => scrollRef.current?.scrollToBottom('auto');
+    w.__isFollowing = () => scrollRef.current?.isFollowing;
   }, []);
   return (
     <div style={{ display: 'flex', flexDirection: 'column', flex: '1 1 0', minHeight: 0, minWidth: 0 }}>
@@ -286,11 +309,12 @@ function Transcript() {
 
 function Follow() {
   const treeRef = React.useRef(null);
+  const [sizes, setSizes] = React.useState([496 / 1000, 504 / 1000]);
   return (
-    <div id="host" style={{ display: 'flex', height: 600, width: 1200 }}>
+    <div id="host" style={{ display: 'flex', height: 600, width: w.__splitter ? 1000 : 1200 }}>
       <div id="tree" ref={treeRef} style={{ display: 'flex', flex: '1 1 0', minWidth: 0 }}>
-        <div style={{ width: 300, flex: 'none' }}>left pane</div>
-        <div id="slot" style={{ width: 600, height: 600, display: 'flex', minWidth: 0, minHeight: 0, flex: 'none' }}>
+        {!w.__splitter && <div style={{ width: 300, flex: 'none' }}>left pane</div>}
+        <div id="slot" style={{ width: w.__splitter ? sizes[0] * 1000 : 600, height: 600, display: 'flex', minWidth: 0, minHeight: 0, flex: 'none' }}>
           <ChatPaneFrame
             data-chat-group-id="g2"
             alone={false}
@@ -298,6 +322,10 @@ function Follow() {
             renderCompact={({ box }) => <Placeholder treeRef={treeRef} box={box} />}
           />
         </div>
+        {w.__splitter && <>
+          <ChatGroupSplitter dir="row" index={0} sizes={sizes} containerRef={treeRef} onResize={setSizes} />
+          <div style={{ flex: '1 1 0', minWidth: 0 }}>other pane</div>
+        </>}
       </div>
     </div>
   );
@@ -366,7 +394,7 @@ describe('compact panes in a real layout engine (rung 5)', () => {
       jsx: 'automatic',
       platform: 'browser',
       plugins: [standIns, workletUrl],
-      define: { 'process.env.NODE_ENV': '"production"' },
+      define: { 'process.env.NODE_ENV': '"production"', 'import.meta.env': '{}' },
       loader: { '.css': 'empty', '.svg': 'dataurl', '.png': 'dataurl' },
       logLevel: 'silent',
     });
@@ -828,6 +856,160 @@ describe('compact panes in a real layout engine (rung 5)', () => {
       await tab.close();
     }
   }, 60_000);
+
+  it('resumes following a live stream after the reader returns to the tail, including compact restoration', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open({ mode: 'follow', globals: { __markdown: true } });
+    try {
+      await resizeSlot(tab, 496, 600);
+      await tab.evaluate(() => (window as unknown as FollowHarnessWindow).__settle());
+      await tab.evaluate(() => {
+        const viewport = document.querySelector<HTMLElement>('[data-radix-scroll-area-viewport]')!;
+        viewport.scrollTop -= 400;
+      });
+      await tab.waitForTimeout(150);
+      await tab.evaluate(() => {
+        const viewport = document.querySelector<HTMLElement>('[data-radix-scroll-area-viewport]')!;
+        viewport.scrollTop = viewport.scrollHeight;
+      });
+      await tab.waitForTimeout(150);
+      const stream = (count: number) =>
+        tab.evaluate(async (count) => {
+          const harness = window as unknown as FollowHarnessWindow;
+          for (let i = 0; i < count; i++) {
+            harness.__paragraph();
+            await new Promise((done) => setTimeout(done, 40));
+          }
+        }, count);
+      const expectTail = async (where: string) => {
+        await tab.waitForTimeout(200);
+        const fromEnd = await tab
+          .locator('[data-radix-scroll-area-viewport]')
+          .evaluate(
+            (viewport) => viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+          );
+        expect(fromEnd, where).toBeLessThanOrEqual(2);
+      };
+      await stream(20);
+      await expectTail('the visible stream follows after the reader returns to its tail');
+      await tab.evaluate(() => {
+        const draft = document.getElementById('draft') as HTMLTextAreaElement;
+        draft.focus();
+        draft.setSelectionRange(2, 9);
+      });
+      await resizeSlot(tab, 355, 600);
+      expect(await fitOf(tab)).toBe('compact');
+      await stream(40);
+      await expectTail('the compact stream follows after the reader returns to its tail');
+      await resizeSlot(tab, 367, 600);
+      expect(await fitOf(tab)).toBe('compact');
+      await stream(20);
+      await resizeSlot(tab, 374, 600);
+      expect(await fitOf(tab)).toBe('full');
+      await stream(20);
+      await expectTail('the restored stream follows its final line');
+      expect(await tab.locator('#draft').evaluate((node) => node === document.activeElement)).toBe(
+        true
+      );
+      expect(
+        await tab
+          .locator('#draft')
+          .evaluate((node: HTMLTextAreaElement) => [node.selectionStart, node.selectionEnd])
+      ).toEqual([2, 9]);
+    } finally {
+      await tab.close();
+    }
+  }, 60_000);
+
+  for (const finishAtResize of [false, true]) {
+    it(`keeps a running Markdown tail followed through an actual splitter drag${finishAtResize ? ' when its final chunk follows the resize' : ''}`, async (ctx) => {
+      if (!browser) return ctx.skip();
+      const tab = await open({ mode: 'follow', globals: { __markdown: true, __splitter: true } });
+      try {
+        await tab.evaluate(() => {
+          const harness = window as unknown as FollowHarnessWindow;
+          harness.__settle();
+          const draft = document.getElementById('draft') as HTMLTextAreaElement;
+          draft.focus();
+          draft.setSelectionRange(2, 9);
+          harness.__streamDone = false;
+          let chunks = 0;
+          const timer = setInterval(() => {
+            harness.__paragraph();
+            if (++chunks === 120) {
+              clearInterval(timer);
+              harness.__streamDone = true;
+            }
+          }, 40);
+          harness.__finishStream = () => {
+            clearInterval(timer);
+            harness.__paragraph();
+            harness.__streamDone = true;
+          };
+        });
+        await tab.waitForTimeout(800);
+        await tab.evaluate(() => {
+          const viewport = document.querySelector<HTMLElement>(
+            '[data-radix-scroll-area-viewport]'
+          )!;
+          viewport.scrollTop = viewport.scrollHeight;
+        });
+        await tab.waitForTimeout(200);
+        const drag = async (delta: number) => {
+          const box = await tab
+            .getByRole('separator', { name: 'Resize chat groups' })
+            .boundingBox();
+          if (!box) throw new Error('No splitter box.');
+          const x = box.x + box.width / 2;
+          const y = box.y + box.height / 2;
+          await tab.mouse.move(x, y);
+          await tab.mouse.down();
+          await tab.mouse.move(x + delta, y);
+          await tab.mouse.up();
+          await settle(tab);
+        };
+        await drag(-141);
+        expect(await fitOf(tab)).toBe('compact');
+        if (finishAtResize) {
+          await tab.evaluate(() => (window as unknown as FollowHarnessWindow).__finishStream());
+          await tab.waitForTimeout(200);
+          const gap = await tab
+            .locator('[data-radix-scroll-area-viewport]')
+            .evaluate(
+              (viewport) => viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+            );
+          expect(
+            gap,
+            'a final chunk just after reflow stays followed while compact'
+          ).toBeLessThanOrEqual(2);
+        }
+        await tab.waitForTimeout(850);
+        expect(
+          await tab.evaluate(() => (window as unknown as FollowHarnessWindow).__isFollowing()),
+          'a width reflow during the real splitter drag is not the reader scrolling away'
+        ).toBe(true);
+        await drag(12);
+        expect(await fitOf(tab)).toBe('compact');
+        await drag(7);
+        expect(await fitOf(tab)).toBe('full');
+        await tab.waitForFunction(() => (window as unknown as FollowHarnessWindow).__streamDone);
+        await tab.waitForTimeout(200);
+        const fromEnd = await tab
+          .locator('[data-radix-scroll-area-viewport]')
+          .evaluate(
+            (viewport) => viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight
+          );
+        expect(fromEnd, 'the final streamed line is visible after restoration').toBeLessThanOrEqual(
+          2
+        );
+        expect(
+          await tab.locator('#draft').evaluate((node) => node === document.activeElement)
+        ).toBe(true);
+      } finally {
+        await tab.close();
+      }
+    }, 60_000);
+  }
 
   it('keeps focus on the placeholder itself when its band has no room for an action, and gives it back', async (ctx) => {
     if (!browser) return ctx.skip();

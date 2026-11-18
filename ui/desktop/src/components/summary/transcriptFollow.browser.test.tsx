@@ -83,6 +83,7 @@ function Frame({ legacy }) {
         autoScroll
         anchorBottomOnResize={legacy ? isStacked : follow.anchorBottomOnResize}
         onScrollChange={legacy ? undefined : follow.onScrollChange}
+        followGrowth={legacy ? undefined : follow.followGrowth}
         paddingX={6}
       >
         {column}

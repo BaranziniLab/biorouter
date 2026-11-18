@@ -124,6 +124,11 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
             behavior,
           });
           // When explicitly scrolling to bottom, reset the following state
+          isActivelyScrollingRef.current = false;
+          if (scrollTimeoutRef.current !== null) {
+            clearTimeout(scrollTimeoutRef.current);
+            scrollTimeoutRef.current = null;
+          }
           setIsFollowing(true);
           userScrolledUpRef.current = false;
           onScrollChange?.(true);
@@ -160,13 +165,14 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
 
     // track last scroll position to detect user-initiated scrolling
     const lastScrollTopRef = React.useRef(0);
-    // The predicate, read at resize time, and the viewport height the anchor last
+    // The predicate, read at resize time, and the viewport size the anchor last
     // saw. A scroll event that arrives while the height differs from this one is
     // the LAYOUT moving, not the reader (see handleScroll).
     const anchorPredicateRef = React.useRef(anchorBottomOnResize);
     anchorPredicateRef.current = anchorBottomOnResize;
     const anchorEngagedRef = React.useRef(false);
     const anchoredHeightRef = React.useRef<number | null>(null);
+    const anchoredWidthRef = React.useRef<number | null>(null);
 
     // Handle scroll events to update isFollowing state
     const handleScroll = React.useCallback(() => {
@@ -175,7 +181,7 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       const viewport = viewportRef.current;
 
       // ⚠ A scroll that arrives WITH a viewport resize is layout, not the reader.
-      // When a stacked preview opens, Chromium's scroll anchoring can adjust
+      // When a preview opens or a pane narrows, Chromium's scroll anchoring can adjust
       // `scrollTop` during the reflow and dispatch this event BEFORE the resize
       // observer below has run. Read as a reader's scroll, it turned following
       // OFF and left the transcript hundreds of pixels above its newest line for
@@ -183,8 +189,9 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       // anchor is engaged the observer owns this change, so it is not a scroll.
       if (
         (anchorEngagedRef.current || anchorPredicateRef.current?.()) &&
-        anchoredHeightRef.current !== null &&
-        viewport.clientHeight !== anchoredHeightRef.current
+        ((anchoredHeightRef.current !== null &&
+          viewport.clientHeight !== anchoredHeightRef.current) ||
+          (anchoredWidthRef.current !== null && viewport.clientWidth !== anchoredWidthRef.current))
       ) {
         lastScrollTopRef.current = viewport.scrollTop;
         return;
@@ -342,8 +349,10 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       if (!autoScroll || !hasBottomAnchor || !viewport) return;
       if (typeof ResizeObserver === 'undefined') return;
       let lastHeight = viewport.clientHeight;
+      let lastWidth = viewport.clientWidth;
       anchorBottomRef.current = viewport.scrollTop + lastHeight;
       anchoredHeightRef.current = lastHeight;
+      anchoredWidthRef.current = lastWidth;
       const remember = () => {
         // Mid-reflow the height is already new and the observer has not run: the
         // bottom edge it would record is the one being moved, not the reader's.
@@ -351,6 +360,18 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
         anchorBottomRef.current = viewport.scrollTop + viewport.clientHeight;
       };
       const observer = new ResizeObserver(() => {
+        const width = viewport.clientWidth;
+        if (width !== lastWidth) {
+          lastWidth = width;
+          anchoredWidthRef.current = width;
+          if (anchorPredicateRef.current?.() || anchorEngagedRef.current) {
+            // Native anchoring can dispatch its scroll on either side of this observer.
+            if (viewport.scrollTop !== lastScrollTopRef.current) {
+              followScrollTopRef.current = viewport.scrollTop;
+            }
+            lastScrollTopRef.current = viewport.scrollTop;
+          }
+        }
         const height = viewport.clientHeight;
         if (height === lastHeight) return;
         const engaged = anchorPredicateRef.current?.() ?? false;
@@ -360,7 +381,14 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
         anchoredHeightRef.current = height;
         if (anchor) {
           const bottom = anchorBottomRef.current ?? viewport.scrollTop + height;
+          const previousTop = viewport.scrollTop;
           viewport.scrollTop = Math.max(0, bottom - height);
+          if (
+            viewport.scrollTop !== previousTop ||
+            viewport.scrollTop !== lastScrollTopRef.current
+          ) {
+            followScrollTopRef.current = viewport.scrollTop;
+          }
           lastScrollTopRef.current = viewport.scrollTop;
         }
         anchorBottomRef.current = viewport.scrollTop + height;
@@ -372,6 +400,7 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
         viewport.removeEventListener('scroll', remember);
         anchorBottomRef.current = null;
         anchoredHeightRef.current = null;
+        anchoredWidthRef.current = null;
         anchorEngagedRef.current = false;
       };
       // `anchorBottomOnResize` is read through the ref; only its presence matters here.
@@ -385,11 +414,17 @@ const ScrollArea = React.forwardRef<ScrollAreaHandle, ScrollAreaProps>(
       viewport.addEventListener('scroll', handleScroll, { passive: true });
       return () => {
         viewport.removeEventListener('scroll', handleScroll);
-        if (scrollTimeoutRef.current) {
-          clearTimeout(scrollTimeoutRef.current);
-        }
       };
     }, [handleScroll]);
+
+    // Following changes replace the listener while its quiet-period timer is still running.
+    // Keep that timer alive so a reader who returns to the end can follow growth again.
+    React.useEffect(
+      () => () => {
+        if (scrollTimeoutRef.current) clearTimeout(scrollTimeoutRef.current);
+      },
+      []
+    );
 
     // Spec 2.6: the scrollbar rests hidden and shows on hover and while scrolling. Hover is CSS;
     // "while scrolling" is this attribute, set on every scroll and cleared once the wheel stops.
