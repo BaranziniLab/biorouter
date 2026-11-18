@@ -6,7 +6,7 @@
 //! 3. Make requests to the public HTTPS URL
 //! 4. Verify they proxy through to the local server
 
-use super::lapstone;
+use super::{lapstone, TunnelState};
 use axum::{
     extract::Request,
     response::Json,
@@ -121,6 +121,7 @@ async fn test_tunnel_end_to_end() {
         agent_id.clone(),
         handle.clone(),
         restart_tx,
+        Arc::new(RwLock::new(TunnelState::Starting)),
     )
     .await
     .expect("Failed to start tunnel");
@@ -177,6 +178,7 @@ async fn test_tunnel_post_request() {
         agent_id.clone(),
         handle.clone(),
         restart_tx,
+        Arc::new(RwLock::new(TunnelState::Starting)),
     )
     .await
     .expect("Failed to start tunnel");

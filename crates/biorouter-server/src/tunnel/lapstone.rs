@@ -1,4 +1,4 @@
-use super::TunnelInfo;
+use super::{TunnelInfo, TunnelState};
 use anyhow::{Context, Result};
 use futures::{SinkExt, StreamExt};
 use reqwest;
@@ -470,12 +470,21 @@ async fn cleanup_connection(
     }
 }
 
+/// One connection to the relay, from the dial to its end.
+///
+/// It owns the `running` half of the tunnel's state: `running` is written here once the relay
+/// has taken the websocket, and `starting` when that websocket ends, before the watchdog is told
+/// to redial. A dial that fails writes nothing, so the state stays `starting`, as
+/// `TunnelManager` left it. Until GAP-SV-01 the manager wrote `running` before any websocket
+/// existed and kept it through every retry, so a relay that refused the connection read as a
+/// working tunnel.
 async fn run_single_connection(
     port: u16,
     agent_id: String,
     tunnel_secret: String,
     server_secret: String,
     restart_tx: mpsc::Sender<()>,
+    state: Arc<RwLock<TunnelState>>,
 ) {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
@@ -516,6 +525,7 @@ async fn run_single_connection(
         }
     };
 
+    *state.write().await = TunnelState::Running;
     info!("✓ Connected as agent: {}", agent_id);
     info!("✓ Proxying to: http://127.0.0.1:{}", port);
     let public_url = format!("{}/tunnel/{}", worker_url, agent_id);
@@ -560,6 +570,8 @@ async fn run_single_connection(
 
     cleanup_connection(ws_tx, active_tasks).await;
 
+    // The websocket is gone, so the tunnel is not up while the watchdog waits to redial.
+    *state.write().await = TunnelState::Starting;
     let _ = restart_tx.send(()).await;
 }
 
@@ -570,6 +582,7 @@ pub async fn start(
     agent_id: String,
     handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>,
     restart_tx: mpsc::Sender<()>,
+    state: Arc<RwLock<TunnelState>>,
 ) -> Result<TunnelInfo> {
     let worker_url = get_worker_url();
 
@@ -577,6 +590,10 @@ pub async fn start(
     let tunnel_secret_clone = tunnel_secret.clone();
     let server_secret_clone = server_secret;
 
+    // The slot is held across the spawn, so the task is stored before anything else can run:
+    // an abort landing between the two would leave a connection no `stop` can reach, free to
+    // write the state after the tunnel was stopped.
+    let mut slot = handle.write().await;
     let task = tokio::spawn(async move {
         run_single_connection(
             port,
@@ -584,11 +601,12 @@ pub async fn start(
             tunnel_secret_clone,
             server_secret_clone,
             restart_tx,
+            state,
         )
         .await;
     });
-
-    *handle.write().await = Some(task);
+    *slot = Some(task);
+    drop(slot);
 
     let public_url = format!("{}/tunnel/{}", worker_url, agent_id);
     let hostname = Url::parse(&worker_url)?
@@ -596,8 +614,9 @@ pub async fn start(
         .unwrap_or("")
         .to_string();
 
+    // Not up yet: the connection task says `running` once the relay takes the websocket.
     Ok(TunnelInfo {
-        state: super::TunnelState::Running,
+        state: TunnelState::Starting,
         url: public_url,
         hostname,
         secret: tunnel_secret,
@@ -605,8 +624,11 @@ pub async fn start(
 }
 
 pub async fn stop(handle: Arc<RwLock<Option<tokio::task::JoinHandle<()>>>>) {
-    if let Some(task) = handle.write().await.take() {
+    let task = handle.write().await.take();
+    if let Some(task) = task {
         task.abort();
+        // Wait for it to end, so it cannot write the tunnel's state after the caller has.
+        let _ = task.await;
         info!("Lapstone tunnel stopped");
     }
 }

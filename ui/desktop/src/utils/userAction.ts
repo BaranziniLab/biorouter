@@ -110,6 +110,19 @@ export const CALLER_PROVIDER_HEADER = 'X-Caller-Provider';
 /** The host's `BIOROUTER_PROVIDER`, once it has been read successfully. */
 let hostProvider: string | undefined;
 
+/**
+ * Counts the times the cached host provider was dropped. A read keeps what it found only when
+ * this did not move while it was out: a read that left before the page's own default switch and
+ * came back after it carries the old default, and caching that stated the old provider until a
+ * reload (rq2-091).
+ */
+let hostProviderGeneration = 0;
+
+function dropHostProvider(): void {
+  hostProvider = undefined;
+  hostProviderGeneration += 1;
+}
+
 let followingHostDefault = false;
 /**
  * SD-18: once a browser has cached the host default, drop it whenever any tab announces that
@@ -120,9 +133,17 @@ let followingHostDefault = false;
 function followHostDefault(): void {
   if (followingHostDefault) return;
   followingHostDefault = true;
-  subscribeAppModelSelectionChanges(() => {
-    hostProvider = undefined;
-  });
+  subscribeAppModelSelectionChanges(dropHostProvider);
+}
+
+async function readHostProvider(): Promise<string | null> {
+  try {
+    const { data } = await readConfig({ body: { key: 'BIOROUTER_PROVIDER', is_secret: false } });
+    if (typeof data === 'string' && data.trim()) return data.trim();
+  } catch {
+    // Say nothing, which the daemon reads as the public side: fail-safe.
+  }
+  return null;
 }
 
 /**
@@ -131,18 +152,21 @@ function followHostDefault(): void {
  * Only a successful read is cached. A failure answers `null` and is asked again
  * next time, so a transient error cannot pin the page to the public side for as
  * long as it stays open.
+ *
+ * A read the cache was dropped under is asked once more, so the request waiting on it states
+ * the new default too. If that one is overtaken as well, nothing is stated (the public side).
  */
 async function hostConfiguredProvider(): Promise<string | null> {
-  if (hostProvider) return hostProvider;
-  try {
-    const { data } = await readConfig({ body: { key: 'BIOROUTER_PROVIDER', is_secret: false } });
-    if (typeof data === 'string' && data.trim()) {
-      hostProvider = data.trim();
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (hostProvider) return hostProvider;
+    const generation = hostProviderGeneration;
+    const provider = await readHostProvider();
+    if (generation !== hostProviderGeneration) continue;
+    if (provider) {
+      hostProvider = provider;
       followHostDefault();
-      return hostProvider;
     }
-  } catch {
-    // Say nothing, which the daemon reads as the public side — fail-safe.
+    return provider;
   }
   return null;
 }
@@ -155,10 +179,11 @@ async function hostConfiguredProvider(): Promise<string | null> {
  * from the next request on. Called after every renderer write of that key; a change another
  * tab announces drops it too (`followHostDefault`). A change made on the host itself
  * (`biorouter configure`) is not announced, so the page reads it again only on a reload. A
- * no-op in effect on the desktop, which never reads the cache.
+ * no-op in effect on the desktop, which never reads the cache. A read already in flight when this
+ * runs is not cached ({@link hostProviderGeneration}).
  */
 export const forgetHostConfiguredProvider = (): void => {
-  hostProvider = undefined;
+  dropHostProvider();
 };
 
 /** For tests: forget the cached host provider. */

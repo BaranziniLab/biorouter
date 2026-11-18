@@ -255,6 +255,7 @@ impl TunnelManager {
             agent_id,
             self.lapstone_handle.clone(),
             restart_tx,
+            self.state.clone(),
         )
         .await;
 
@@ -281,8 +282,9 @@ impl TunnelManager {
         drop(state);
 
         match self.start_tunnel_internal().await {
-            Ok((info, mut restart_rx)) => {
-                *self.state.write().await = TunnelState::Running;
+            Ok((mut info, mut restart_rx)) => {
+                // The state stays Starting: the connection task writes Running once the relay
+                // has taken the websocket (`lapstone::run_single_connection`).
                 *self.info.write().await = Some(info.clone());
                 let _ = Self::set_auto_start(true);
 
@@ -298,12 +300,15 @@ impl TunnelManager {
                         let auto_start = Self::get_auto_start();
                         if !auto_start {
                             tracing::info!("Tunnel connection lost but auto_start is disabled");
+                            // Nothing redials from here, so the tunnel is down for good.
+                            *state.write().await = TunnelState::Error;
                             break;
                         }
 
                         tracing::warn!("Tunnel connection lost, initiating restart...");
-                        // The wait keeps the state Running and tunnel.lock held, and
-                        // `stop()` aborts this task, which ends the wait at once.
+                        // The wait keeps tunnel.lock held and the state Starting (the connection
+                        // task wrote it as its websocket ended, or never got one), and `stop()`
+                        // aborts this task, which ends the wait at once.
                         retry_delay = next_retry_delay(retry_delay, attempt_started.elapsed());
                         tokio::time::sleep(retry_delay).await;
                         lapstone::stop(lapstone_handle.clone()).await;
@@ -313,8 +318,7 @@ impl TunnelManager {
 
                         match manager.start_tunnel_internal().await {
                             Ok((_, new_restart_rx)) => {
-                                *state.write().await = TunnelState::Running;
-                                tracing::info!("Tunnel restarted successfully");
+                                tracing::info!("Tunnel redialling the relay");
                                 restart_rx = new_restart_rx;
                                 attempt_started = Instant::now();
                             }
@@ -329,6 +333,7 @@ impl TunnelManager {
 
                 *watchdog_handle_arc.write().await = Some(watchdog);
 
+                info.state = self.state.read().await.clone();
                 Ok(info)
             }
             Err(e) => {
@@ -358,8 +363,12 @@ impl TunnelManager {
     }
 
     pub async fn stop(&self, clear_auto_start: bool) {
-        if let Some(handle) = self.watchdog_handle.write().await.take() {
+        // Each task is awaited after its abort, so neither can write the state (or spawn a
+        // connection that would) after the Idle below.
+        let watchdog = self.watchdog_handle.write().await.take();
+        if let Some(handle) = watchdog {
             handle.abort();
+            let _ = handle.await;
         }
 
         *self.restart_tx.write().await = None;
@@ -478,5 +487,96 @@ mod tests {
             (2..=4).contains(&dialled),
             "the refusing relay was dialled {dialled} times in 4 s"
         );
+    }
+
+    /// GAP-SV-01's second half: with the relay refusing every dial, status said
+    /// `running` (and the answer to start did too), because the state was set
+    /// before any websocket existed and kept through the watchdog's retry wait.
+    /// Nothing listens on port 9, so the tunnel is never up here, and no answer
+    /// may say it is: not start's, and not any status read while it redials.
+    #[tokio::test]
+    async fn status_is_not_running_until_the_relay_connects() {
+        // Saves the tunnel's secrets, so only where they live in the sandbox's file.
+        if !crate::test_sandbox::global_config_reads_secrets_from_a_file() {
+            return;
+        }
+        // Writes tunnel_auto_start and takes tunnel.lock under its own sandbox root.
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let _env = env_lock::lock_env([
+            ("BIOROUTER_TUNNEL_WORKER_URL", Some("http://127.0.0.1:9")),
+            ("BIOROUTER_TUNNEL", None),
+        ]);
+
+        let manager = TunnelManager::new();
+        let info = manager.start().await.expect("the tunnel starts");
+        assert_ne!(
+            info.state,
+            TunnelState::Running,
+            "start answered `running` before any websocket was connected"
+        );
+        // Long enough for the refused dial, the first 1 s retry wait and the redial.
+        let until = Instant::now() + Duration::from_millis(2500);
+        while Instant::now() < until {
+            assert_ne!(
+                manager.get_info().await.state,
+                TunnelState::Running,
+                "status reported a tunnel whose relay refused the connection as running"
+            );
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        manager.stop(true).await;
+        assert_eq!(manager.get_info().await.state, TunnelState::Idle);
+    }
+
+    /// A relay on 127.0.0.1 that accepts the websocket upgrade and holds the
+    /// connection open, as a working relay does.
+    async fn accepting_relay() -> std::net::SocketAddr {
+        use futures::StreamExt as _;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            while let Ok((stream, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    if let Ok(mut socket) = tokio_tungstenite::accept_async(stream).await {
+                        while let Some(Ok(_)) = socket.next().await {}
+                    }
+                });
+            }
+        });
+        addr
+    }
+
+    /// The positive control for the test above: once the relay takes the
+    /// websocket, status says `running`, and stop takes it back to `idle`.
+    #[tokio::test]
+    async fn status_turns_running_once_the_relay_accepts_the_websocket() {
+        if !crate::test_sandbox::global_config_reads_secrets_from_a_file() {
+            return;
+        }
+        if !crate::test_sandbox::in_a_process_of_its_own() {
+            return;
+        }
+        let relay = accepting_relay().await;
+        let relay_url = format!("http://{relay}");
+        let _env = env_lock::lock_env([
+            ("BIOROUTER_TUNNEL_WORKER_URL", Some(relay_url.as_str())),
+            ("BIOROUTER_TUNNEL", None),
+        ]);
+
+        let manager = TunnelManager::new();
+        manager.start().await.expect("the tunnel starts");
+        let until = Instant::now() + Duration::from_secs(10);
+        while manager.get_info().await.state != TunnelState::Running && Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!(
+            manager.get_info().await.state,
+            TunnelState::Running,
+            "the relay accepted the websocket and status never said so"
+        );
+        manager.stop(true).await;
+        assert_eq!(manager.get_info().await.state, TunnelState::Idle);
     }
 }
