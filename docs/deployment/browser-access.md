@@ -383,7 +383,8 @@ differs:
 | File and folder pickers | No native dialog. You type a path, and it is a path **on the machine running the daemon**, not on the machine holding the browser. |
 | Artifacts and diagnostics bundles | The artifact side panel works as usual. Opening an artifact outside the panel opens a new tab; a diagnostics bundle downloads as a file. |
 | Sending a region of the preview to the chat, and the agent's screenshot of the panel | **Not available, and it says so before you try.** Both are a picture taken by the desktop application's window, the only thing that can see into the sandboxed frames most previews draw in, and a browser page has no such window. The camera button in the panel's header is disabled and its tooltip says why; an agent that asks for a screenshot is told to read the panel's text instead, which works ([SD-8](serve-decisions.md#sd-8--a-control-that-can-never-work-here-says-so-rather-than-failing-on-click)). |
-| The in-app terminal | Not available — it is an Electron capability. Use a shell on the serving machine. |
+| The in-app terminal | Not available, because it is an Electron capability. Use a shell on the serving machine. |
+| Remote access through the tunnel relay | **Not available.** Opening or closing the remote tunnel needs proof that a person acted, which only the desktop application holds, so the daemon refuses both with a sentence saying why and changes nothing. Its status shows a tunnel's state without the relay address or the tunnel's secret. To reach `serve` from another computer, use an SSH tunnel or a reverse proxy; see [Reaching it from another machine](#reaching-it-from-another-machine). |
 | Updating Biorouter | Works from the page. See [Updating from the page](#updating-from-the-page). |
 | Installing the CLI, one-click dependency installs | Not available. |
 | Desktop niceties — system notifications, spellcheck, dock and menu-bar icons, keeping the machine awake | Not available. |

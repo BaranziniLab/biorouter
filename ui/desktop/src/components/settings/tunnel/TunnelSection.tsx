@@ -25,6 +25,7 @@ import { startTunnel, stopTunnel, getTunnelStatus } from '../../../api/sdk.gen';
 import type { TunnelInfo } from '../../../api/types.gen';
 import { useConfig } from '../../ConfigContext';
 import { useTransientFlag } from '../../../hooks/useTransientFlag';
+import { userActionHeaders } from '../../../utils/userAction';
 
 const STATUS_MESSAGES = {
   idle: 'Tunnel is not running',
@@ -35,6 +36,33 @@ const STATUS_MESSAGES = {
 } as const;
 
 const IOS_APP_STORE_URL = 'https://apps.apple.com/us/app/biorouter-ai/id6752889295';
+
+/**
+ * The daemon answers start before the relay has taken the websocket, so it says `starting`, and
+ * says `running` only once the relay connected. Start asks again at this pace until it settles.
+ */
+const START_POLL_MS = 500;
+const START_POLL_LIMIT = 60;
+
+/**
+ * Every call carries the person's proof: without it the daemon refuses start and stop, and
+ * answers status with the state alone (no URL, no secret).
+ */
+const readTunnelStatus = async () => getTunnelStatus({ headers: await userActionHeaders() });
+
+async function settledTunnelInfo(info: TunnelInfo): Promise<TunnelInfo> {
+  let current = info;
+  for (let poll = 0; current.state === 'starting' && poll < START_POLL_LIMIT; poll += 1) {
+    await new Promise((resolve) => setTimeout(resolve, START_POLL_MS));
+    try {
+      const { data } = await readTunnelStatus();
+      if (data) current = data;
+    } catch {
+      // Ask again on the next poll.
+    }
+  }
+  return current;
+}
 
 export default function TunnelSection() {
   const { refreshConfig } = useConfig();
@@ -62,7 +90,7 @@ export default function TunnelSection() {
   useEffect(() => {
     const loadTunnelInfo = async () => {
       try {
-        const { data } = await getTunnelStatus();
+        const { data } = await readTunnelStatus();
         if (data) {
           setTunnelInfo(data);
         }
@@ -79,14 +107,14 @@ export default function TunnelSection() {
   const handleToggleTunnel = async () => {
     if (tunnelInfo.state === 'running') {
       try {
-        await stopTunnel();
+        await stopTunnel({ headers: await userActionHeaders() });
         await refreshConfigAfterTunnelWrite();
         setTunnelInfo({ state: 'idle', url: '', hostname: '', secret: '' });
         setShowQRModal(false);
       } catch (err) {
         setError(errorMessage(err, 'Failed to stop tunnel'));
         try {
-          const { data } = await getTunnelStatus();
+          const { data } = await readTunnelStatus();
           if (data) {
             setTunnelInfo(data);
           }
@@ -99,11 +127,14 @@ export default function TunnelSection() {
       setTunnelInfo({ state: 'starting', url: '', hostname: '', secret: '' });
 
       try {
-        const { data } = await startTunnel();
+        const { data } = await startTunnel({ headers: await userActionHeaders() });
         await refreshConfigAfterTunnelWrite();
         if (data) {
-          setTunnelInfo(data);
-          setShowQRModal(true);
+          const settled = await settledTunnelInfo(data);
+          setTunnelInfo(settled);
+          if (settled.state === 'running') {
+            setShowQRModal(true);
+          }
         }
       } catch (err) {
         const errorMsg = errorMessage(err, 'Failed to start tunnel');
