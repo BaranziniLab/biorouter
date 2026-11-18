@@ -192,6 +192,7 @@ impl BrxtBundle {
         let file = fs::File::open(&self.path)?;
         let mut archive = zip::ZipArchive::new(file)?;
         fs::create_dir_all(dest).with_context(|| format!("creating {}", dest.display()))?;
+        let root = fs::canonicalize(dest)?;
         for i in 0..archive.len() {
             let mut entry = archive.by_index(i)?;
             // `enclosed_name` is the zip-slip guard: it returns `None` for any
@@ -199,7 +200,7 @@ impl BrxtBundle {
             let Some(rel) = entry.enclosed_name().map(Path::to_path_buf) else {
                 bail!("Unsafe path in bundle: {}", entry.name());
             };
-            let out_path = dest.join(&rel);
+            let out_path = extraction_target(&root, &rel)?;
             if entry.is_dir() {
                 fs::create_dir_all(&out_path)?;
                 continue;
@@ -213,6 +214,35 @@ impl BrxtBundle {
         }
         Ok(())
     }
+}
+
+fn extraction_target(root: &Path, relative: &Path) -> Result<PathBuf> {
+    let mut target = root.to_path_buf();
+    for component in relative.components() {
+        match component {
+            std::path::Component::Normal(part) => target.push(part),
+            std::path::Component::CurDir => continue,
+            std::path::Component::ParentDir if target != root => {
+                target.pop();
+            }
+            _ => bail!("Unsafe path in bundle: {}", relative.display()),
+        }
+        match fs::symlink_metadata(&target) {
+            Ok(_) => {
+                target = fs::canonicalize(&target)
+                    .with_context(|| format!("resolving {}", target.display()))?;
+                if !target.starts_with(root) {
+                    bail!(
+                        "Bundle path leaves the extension directory: {}",
+                        relative.display()
+                    );
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Ok(target)
 }
 
 fn read_bundled_skills(

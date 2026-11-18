@@ -49,6 +49,8 @@ async function unixFixture(): Promise<Fixture> {
   // the synthetic root short enough that the private daemon socket remains
   // usable while still isolating each fixture.
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'br-runtime-'));
+  const group = process.getgid?.();
+  if (group !== undefined) fs.chownSync(root, -1, group);
   const config = path.join(root, 'config');
   const daemonDir = path.join(root, 'state', 'daemon');
   fs.mkdirSync(config, { recursive: true, mode: 0o700 });
@@ -849,6 +851,7 @@ describe.sequential('the user-action key file', () => {
     const target = userActionKeyPath();
     for (const mode of [0o400, 0o644, 0o700, 0o4600, 0o2600, 0o1600]) {
       fs.chmodSync(target, mode);
+      expect(fs.lstatSync(target).mode & 0o7777).toBe(mode);
       await expect(readUserActionKey(current.runtime, noGrace)).resolves.toBeUndefined();
     }
     fs.chmodSync(target, 0o600);
@@ -869,6 +872,7 @@ describe.sequential('the user-action key file', () => {
     const directory = path.dirname(userActionKeyPath());
     for (const mode of [0o500, 0o600, 0o755, 0o4700, 0o2700, 0o1700]) {
       fs.chmodSync(directory, mode);
+      expect(fs.lstatSync(directory).mode & 0o7777).toBe(mode);
       expect(() => writeUserActionKey(current.runtime, generateUserActionKey())).toThrow();
     }
     fs.chmodSync(directory, 0o700);

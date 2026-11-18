@@ -4,8 +4,7 @@
 > that branches a conversation into a new session — paired with the behavior BioRouter
 > must exhibit for each. It doubles as a manual QA script and as the spec the automated
 > tests encode.
-> **Status:** Current. Last revised 2026-07-18, when the ~25 dashboard-canvas items were
-> deleted alongside dashboard mode itself.
+> **Status:** Current. Updated 2026-11-17 for the browser's existing-tab delivery; the desktop window behavior is unchanged.
 > **Audience:** maintainers of the desktop chat UI, and anyone running a Diverge
 > regression pass.
 
@@ -21,6 +20,12 @@ repo, so keep the identifiers stable when editing:
 Each item is tagged with how it is verified: **[T]** is covered by an automated test
 (see the coverage map at the end); **[UI]** requires driving the real app.
 
+Window-specific checks below describe the desktop app. In a `biorouter serve` browser,
+Diverge opens the new branch as the active chat tab in the existing page. Its canonical
+name and retained transcript appear, the source tab remains available, and no browser
+popup is needed. `App.routing.test.tsx` covers this path through the browser bridge,
+route and tab provider.
+
 Two window-model terms appear throughout. **Hub** is the landing screen where a user
 starts a new conversation (`ui/desktop/src/components/Hub.tsx`). **Pair** is the tabbed
 chat route at `/pair` that a conversation opens into.
@@ -29,7 +34,7 @@ chat route at `/pair` that a conversation opens into.
 > items about diverging on the free-floating dashboard canvas, including a whole section
 > on "Chat ⇄ Dashboard isolation". Dashboard mode has been removed in favour of tabs,
 > chat groups and split panes, so diverge no longer branches on canvas-vs-chat — it
-> *always* opens a new Electron window. Those items were vacuous and have been deleted;
+> opens a new Electron window on the desktop. Those items were vacuous and have been deleted;
 > everything below still describes real behaviour. See the
 > [dashboard mode history](../history/dashboard-mode/README.md) for what was removed.
 > Release notes and the dated dashboard plans and specs are historical records and were
@@ -39,9 +44,9 @@ chat route at `/pair` that a conversation opens into.
 
 - **I1.** Diverge branches the conversation into a *new session* that inherits the full
   history; the **original session is never mutated**.
-- **I2.** Diverge only ever *spins up a new chat surface*. It changes nothing else about
-  the agent, the current window, or other conversations.
-- **I3.** Diverge **always opens a new, focused Electron window**. There is a single
+- **I2.** Diverge only ever *spins up a new chat surface*. It leaves the agent and other
+  conversations unchanged; the desktop's current window stays where it was.
+- **I3.** On the desktop, Diverge **always opens a new, focused Electron window**. There is a single
   diverge surface — it never navigates the current window and never re-uses a tab or
   split pane.
 - **I4.** Closing a chat surface **never deletes a conversation.** A branch, once
@@ -160,7 +165,8 @@ chat route at `/pair` that a conversation opens into.
 
 | Area | Test file |
 |------|-----------|
-| Hook behaviour (always a new window, failure paths) | `ui/desktop/src/hooks/useDiverge.test.tsx` |
+| Hook behaviour (desktop window, failure paths) | `ui/desktop/src/hooks/useDiverge.test.tsx` |
+| Serve branch route, title, transcript and source tab | `ui/desktop/src/App.routing.test.tsx` |
 | Button affordance & failure modes | `ui/desktop/src/components/MessageDivergeLink.test.tsx` |
 | CLI parsing + deeplink | `crates/biorouter-cli` (`session::input::tests`, `session::tests`) |
 | Backend naming/lineage/history | `crates/biorouter` (`session_manager::tests`), `crates/biorouter-server` (`routes::session::diverge_tests`) |

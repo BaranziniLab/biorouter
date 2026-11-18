@@ -265,6 +265,13 @@ fn settle_query(
                     error,
                 ));
             }
+            if result.final_text.trim().is_empty() {
+                return Err(fail_query_txn_if_open(
+                    kb_root,
+                    txn_branch.as_deref(),
+                    anyhow::anyhow!("query sub-agent returned an empty answer"),
+                ));
+            }
             // Commit the txn if we were filing the answer as a page — and only
             // if a page was actually filed. See the helper for why that
             // distinction matters.
@@ -654,6 +661,103 @@ mod tests {
             result.commit_sha.is_none(),
             "read-only query must not commit"
         );
+    }
+
+    #[tokio::test]
+    async fn wave3_query_blank_completions_are_errors_for_both_success_reasons() {
+        for answer in ["", " \n\t "] {
+            for complete_sentinel in [false, true] {
+                for file_as_page in [false, true] {
+                    let (_dir, svc) = fresh_svc();
+                    let kb = svc.root().join("k");
+                    let before = git_state(&kb);
+                    let mut reply = text_reply_with_citation(answer);
+                    if complete_sentinel {
+                        reply.tool_calls =
+                            tool_call_reply("complete", serde_json::json!({})).tool_calls;
+                    }
+                    let result = query(
+                        &svc,
+                        QueryArgs {
+                            kb_id: "k".into(),
+                            caller_is_private: false,
+                            caller_affiliation: Default::default(),
+                            question: "What is known?".into(),
+                            completer: Box::new(MockCompleter::new(vec![reply])),
+                            file_as_page,
+                            bounds: SubAgentBounds::default(),
+                            event_sink: None,
+                            cancel: None,
+                        },
+                    )
+                    .await;
+                    let error = result.expect_err(&format!(
+                        "a blank answer cannot succeed: sentinel={complete_sentinel}, save={file_as_page}"
+                    ));
+                    assert!(error.to_string().contains("answer"), "{error:#}");
+                    assert_eq!(git_state(&kb), before, "a failed answer commits nothing");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn wave3_query_blank_final_answer_aborts_a_page_already_written_in_its_transaction() {
+        for complete_sentinel in [false, true] {
+            let (_dir, svc) = fresh_svc();
+            let kb = svc.root().join("k");
+            let before = git_state(&kb);
+            let pages_before = directory_state(&kb.join("knowledge"));
+            let mut final_reply = text_reply_with_citation(" \n ");
+            if complete_sentinel {
+                final_reply.tool_calls =
+                    tool_call_reply("complete", serde_json::json!({})).tool_calls;
+            }
+            let result = query(
+                &svc,
+                QueryArgs {
+                    kb_id: "k".into(),
+                    caller_is_private: false,
+                    caller_affiliation: Default::default(),
+                    question: "File the answer.".into(),
+                    completer: Box::new(MockCompleter::new(vec![
+                        tool_call_reply(
+                            "kb_write_page",
+                            serde_json::json!({
+                                "path": "knowledge/notes/unfinished.md",
+                                "content": valid_page("note", "unfinished", "Unfinished answer."),
+                                "commit_message": "file query"
+                            }),
+                        ),
+                        final_reply,
+                    ])),
+                    file_as_page: true,
+                    bounds: SubAgentBounds::default(),
+                    event_sink: None,
+                    cancel: None,
+                },
+            )
+            .await;
+            let error = result.expect_err("a filed page cannot turn a blank answer into success");
+            assert!(error.to_string().contains("answer"), "{error:#}");
+            assert_eq!(
+                git_state(&kb),
+                before,
+                "the failed run must not advance history"
+            );
+            assert_eq!(directory_state(&kb.join("knowledge")), pages_before);
+            let repo = git2::Repository::open(&kb).unwrap();
+            assert!(!repo
+                .branches(Some(git2::BranchType::Local))
+                .unwrap()
+                .any(|branch| branch
+                    .unwrap()
+                    .0
+                    .name()
+                    .unwrap()
+                    .unwrap()
+                    .starts_with("txn/")));
+        }
     }
 
     #[tokio::test]

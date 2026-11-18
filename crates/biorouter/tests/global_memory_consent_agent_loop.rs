@@ -48,6 +48,7 @@ struct OneToolCallProvider {
     calls: AtomicUsize,
     tool_name: String,
     arguments: serde_json::Value,
+    offered_tools: std::sync::Mutex<Vec<String>>,
 }
 
 impl OneToolCallProvider {
@@ -56,6 +57,7 @@ impl OneToolCallProvider {
             calls: AtomicUsize::new(0),
             tool_name: tool_name.to_string(),
             arguments,
+            offered_tools: std::sync::Mutex::new(Vec::new()),
         }
     }
 }
@@ -66,8 +68,10 @@ impl Provider for OneToolCallProvider {
         &self,
         _system_prompt: &str,
         _messages: &[Message],
-        _tools: &[Tool],
+        tools: &[Tool],
     ) -> Result<(Message, ProviderUsage), ProviderError> {
+        *self.offered_tools.lock().unwrap() =
+            tools.iter().map(|tool| tool.name.to_string()).collect();
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         let usage = ProviderUsage::new(
             "mock-model".to_string(),
@@ -579,4 +583,51 @@ async fn a_denied_write_never_reaches_the_machine_wide_store() {
              user's answer (file: {written:?})"
         );
     }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn memory_bridge_default_code_execution_offers_and_gates_a_direct_global_write() {
+    let root = TempDir::new().unwrap();
+    let provider = Arc::new(OneToolCallProvider::new(
+        "memory__remember_memory",
+        json!({"category": "release-test", "data": "synthetic approved memory", "is_global": true}),
+    ));
+    let (agent, session_id, _work) = agent_with_memory(root.path(), provider.clone()).await;
+    agent
+        .add_extension(ExtensionConfig::Platform {
+            name: "code_execution".into(),
+            description: "Execute JavaScript".into(),
+            bundled: Some(true),
+            available_tools: vec![],
+        })
+        .await
+        .unwrap();
+
+    let (messages, cards) = drain_collecting_cards(&agent, "remember this", &session_id)
+        .await
+        .unwrap();
+    let offered = provider.offered_tools.lock().unwrap();
+    assert!(offered
+        .iter()
+        .any(|name| name == "code_execution__execute_code"));
+    for name in [
+        "memory__retrieve_memories",
+        "memory__remember_memory",
+        "memory__remove_memory_category",
+        "memory__remove_specific_memory",
+    ] {
+        assert!(
+            offered.iter().any(|offered| offered == name),
+            "Code Execution hid the direct consent path for {name}: {offered:?}"
+        );
+    }
+    assert_eq!(cards.len(), 1, "one write must raise one consent card");
+    assert_eq!(cards[0].tool_name, "memory__remember_memory");
+    let prompt = cards[0].prompt.as_deref().expect("the inspector's reason");
+    assert!(prompt.contains("release-test") && prompt.contains("machine-wide"));
+    let written =
+        std::fs::read_to_string(sandboxed_store(root.path()).join("release-test.txt")).unwrap();
+    assert!(written.contains("synthetic approved memory"));
+    assert!(!tool_response_text(&messages).contains("must call"));
 }

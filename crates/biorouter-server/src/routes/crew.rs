@@ -2770,6 +2770,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
 mod route_tests;
 
 #[cfg(test)]
+#[path = "crew/usage_limits_focused_tests.rs"]
+mod usage_limits_focused_tests;
+
+#[cfg(test)]
 #[path = "crew/openapi_contract_tests.rs"]
 mod openapi_contract_tests;
 

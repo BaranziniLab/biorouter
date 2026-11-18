@@ -26,11 +26,11 @@ The states an install can end in are all reportable, to a person and to a model:
 | `cancelled` | A person declined. Nothing was registered. |
 | `failed` | Something broke. Everything this run created was undone. |
 
-Rollback is scoped to the run's own work. A tree that already existed is not deleted — a failed upgrade that removes a working extension is worse than a failed upgrade — and a credential the machine already held is not revoked, because other extensions may share it.
+Rollback is scoped to the run's own work. Before an upgrade writes package files, it keeps a copy of the working tree and restores it if extraction or dependency setup fails. A partial first install is removed. The Python environment is built at the final install path so its absolute launcher paths remain valid. A credential the machine already held is not revoked, because other extensions may share it.
 
-> **A cancelled credential step leaves a claim on disk, and the claim is what makes it findable again.** The extracted tree and its built Python environment survive, and beside them — in `extension-installs/`, a *sibling* of the extensions directory so a bundle cannot forge one — sits an [`InstallClaim`](../../crates/biorouter/src/extension_install/claim.rs) naming the extension, its install directory, and which keys are still needed. No values, ever.
+> **A cancelled credential step leaves a claim on disk, and the claim is what makes it findable again.** A first install keeps its extracted tree and built Python environment. An upgrade restores the previous working package while it waits for the missing credentials. In both cases, an [`InstallClaim`](../../crates/biorouter/src/extension_install/claim.rs) in `extension-installs/`, a *sibling* of the extensions directory so a bundle cannot forge one, names the extension, its source, its stable install directory, and which keys are still needed. No values, ever.
 >
-> ⚠ **This used to say the record lived in a process-global map and that "retrying does not re-download or rebuild". Both were wrong.** The map was write-only and died with the process, so quitting the app left the tree unreachable and invisible on every surface — which is the whole reason the claim is now written to disk. And a resume *does* re-download and re-extract; what survives the round trip is the built `.venv`, which is the expensive part. Finish a claimed install with `biorouter extension configure <name>`, which prompts with echo off.
+> A resume reads the source from that durable claim, downloads again when needed, re-extracts and runs dependency setup at the stable install path. Finish a claimed install with `biorouter extension configure <name>`, which prompts with echo off.
 
 ---
 

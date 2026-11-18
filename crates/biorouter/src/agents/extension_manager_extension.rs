@@ -1267,6 +1267,7 @@ fn remaining_deletion_results(
 
 async fn delete_one_marketplace_package(
     manager: &Arc<crate::agents::extension_manager::ExtensionManager>,
+    session_manager: &Arc<crate::session::SessionManager>,
     plan: &ValidatedMarketplaceDeletion,
     cancel: &CancellationToken,
     caller: crate::privacy::ProviderTier,
@@ -1284,6 +1285,12 @@ async fn delete_one_marketplace_package(
                 .await
             {
                 Ok(()) => {
+                    let (sessions_updated, session_problems) = prune_extension_from_sessions(
+                        session_manager,
+                        &plan.package.extension_name,
+                        &plan.package.provenance.config_key,
+                    )
+                    .await;
                     return (
                         true,
                         serde_json::json!({
@@ -1291,6 +1298,8 @@ async fn delete_one_marketplace_package(
                             "extensionName": plan.package.extension_name,
                             "status": "deleted",
                             "detachedFromCurrentSession": was_attached,
+                            "sessionsUpdated": sessions_updated,
+                            "sessionProblems": session_problems,
                             "credentialsPreserved": true,
                         }),
                     );
@@ -1314,6 +1323,7 @@ async fn delete_one_marketplace_package(
 
 async fn execute_marketplace_deletion_batch(
     manager: &Arc<crate::agents::extension_manager::ExtensionManager>,
+    session_manager: &Arc<crate::session::SessionManager>,
     plans: &[ValidatedMarketplaceDeletion],
     cancel: &CancellationToken,
     caller: crate::privacy::ProviderTier,
@@ -1348,7 +1358,8 @@ async fn execute_marketplace_deletion_batch(
             return (false, results);
         }
 
-        let (deleted, result) = delete_one_marketplace_package(manager, plan, cancel, caller).await;
+        let (deleted, result) =
+            delete_one_marketplace_package(manager, session_manager, plan, cancel, caller).await;
         all_deleted &= deleted;
         results.push(result);
     }
@@ -1376,7 +1387,13 @@ fn marketplace_deletion_report(
         report.as_object_mut(),
         single.as_ref().and_then(Value::as_object),
     ) {
-        for key in ["registryId", "extensionName", "detachedFromCurrentSession"] {
+        for key in [
+            "registryId",
+            "extensionName",
+            "detachedFromCurrentSession",
+            "sessionsUpdated",
+            "sessionProblems",
+        ] {
             if let Some(value) = single.get(key) {
                 report.insert(key.to_owned(), value.clone());
             }
@@ -2700,8 +2717,14 @@ impl ExtensionManagerClient {
             .as_ref()
             .and_then(|weak| weak.upgrade())
             .ok_or(ExtensionManagerToolError::ManagerUnavailable)?;
-        let (all_deleted, results) =
-            execute_marketplace_deletion_batch(&manager, &current, &cancel, cap.tier()).await;
+        let (all_deleted, results) = execute_marketplace_deletion_batch(
+            &manager,
+            &self.context.session_manager,
+            &current,
+            &cancel,
+            cap.tier(),
+        )
+        .await;
         let report = marketplace_deletion_report(registry_ids, results, all_deleted);
         Ok(vec![Content::text(
             serde_json::to_string_pretty(&report).unwrap_or_else(|_| "{}".to_owned()),
@@ -4218,6 +4241,325 @@ mod tests {
         }
     }
 
+    async fn save_marketplace_deletion_roster(
+        session_manager: &crate::session::SessionManager,
+        configs: Vec<ExtensionConfig>,
+        at: &str,
+    ) -> String {
+        use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
+
+        let session = session_manager
+            .create_session(
+                PathBuf::from("/tmp/l7-marketplace-deletion"),
+                "saved extension roster".to_owned(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        session_manager
+            .add_message(
+                &session.id,
+                &crate::conversation::message::Message::user().with_text("synthetic saved chat"),
+            )
+            .await
+            .unwrap();
+        let stored = EnabledExtensionsState::new(configs).to_value().unwrap();
+        session_manager
+            .update_extension_state(
+                &session.id,
+                EnabledExtensionsState::EXTENSION_NAME,
+                EnabledExtensionsState::VERSION,
+                |_| Ok(stored),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        set_updated_at(session_manager, &session.id, at).await;
+        session.id
+    }
+
+    async fn marketplace_deletion_roster_keys(
+        session_manager: &crate::session::SessionManager,
+        session_id: &str,
+    ) -> Vec<String> {
+        use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
+
+        let value = session_manager
+            .get_extension_state(
+                session_id,
+                EnabledExtensionsState::EXTENSION_NAME,
+                EnabledExtensionsState::VERSION,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        serde_json::from_value::<EnabledExtensionsState>(value)
+            .unwrap()
+            .extensions
+            .iter()
+            .map(ExtensionConfig::key)
+            .collect()
+    }
+
+    fn marketplace_deletion_kept_config() -> ExtensionConfig {
+        ExtensionConfig::Platform {
+            name: "todo".to_owned(),
+            description: String::new(),
+            bundled: None,
+            available_tools: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn marketplace_deletion_prunes_saved_rosters_without_chat_activity_or_credential_loss() {
+        let _path_root = pinned_path_root();
+        let mut fixture = install_deletion_fixture("playwrightagent", "SavedRosters").await;
+        let credential_key = format!("{}_PASSCODE", fixture.config_key.to_ascii_uppercase());
+        let ExtensionConfig::Stdio { env_keys, .. } = &mut fixture.entry.config else {
+            panic!("package fixture must use stdio");
+        };
+        *env_keys = vec![credential_key.clone()];
+        crate::config::extensions::set_extension(fixture.entry.clone());
+        crate::config::Config::global()
+            .set_secret(&credential_key, &"synthetic-retained-credential")
+            .unwrap();
+        let (_manager_root, _manager, client, _session_id) = a_live_tool_client().await;
+        let sessions = client.context.session_manager.clone();
+        let kept = marketplace_deletion_kept_config();
+        let mut ids = Vec::new();
+        for index in 0..3 {
+            let mut roster = vec![kept.clone()];
+            if index < 2 {
+                roster.insert(0, fixture.entry.config.clone());
+            }
+            ids.push(
+                save_marketplace_deletion_roster(
+                    &sessions,
+                    roster,
+                    &format!("200{index}-01-01 00:00:00"),
+                )
+                .await,
+            );
+        }
+        let order_before = sessions
+            .list_sessions()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|session| session.id)
+            .collect::<Vec<_>>();
+
+        let result = run_approved_delete(
+            Arc::new(client),
+            format!("delete-saved-rosters-{}", uuid::Uuid::new_v4()),
+            serde_json::json!({ "registry_id": fixture.registry_id.clone() }),
+        )
+        .await;
+
+        assert_ne!(result.is_error, Some(true), "{}", tool_result_text(&result));
+        let report: Value = serde_json::from_str(&tool_result_text(&result)).unwrap();
+        assert_eq!(report["state"], "deleted");
+        assert!(!fixture.install_dir.exists());
+        for (index, id) in ids.iter().enumerate() {
+            assert_eq!(
+                marketplace_deletion_roster_keys(&sessions, id).await,
+                vec![kept.key()]
+            );
+            assert_eq!(
+                stored_updated_at(&sessions, id).await,
+                format!("200{index}-01-01 00:00:00")
+            );
+        }
+        assert_eq!(
+            sessions
+                .list_sessions()
+                .await
+                .unwrap()
+                .into_iter()
+                .map(|session| session.id)
+                .collect::<Vec<_>>(),
+            order_before
+        );
+        assert_eq!(report["sessionsUpdated"], 2);
+        assert_eq!(report["results"][0]["sessionsUpdated"], 2);
+        assert_eq!(
+            report["results"][0]["sessionProblems"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            crate::config::Config::global()
+                .get_secret::<String>(&credential_key)
+                .unwrap(),
+            "synthetic-retained-credential"
+        );
+    }
+
+    #[tokio::test]
+    async fn marketplace_deletion_batch_prunes_each_package_from_multiple_saved_rosters() {
+        let _path_root = pinned_path_root();
+        let first = install_deletion_fixture("codegraphagent", "SavedBatchOne").await;
+        let second = install_deletion_fixture("bioroffice", "SavedBatchTwo").await;
+        let (_manager_root, _manager, client, _session_id) = a_live_tool_client().await;
+        let sessions = client.context.session_manager.clone();
+        let kept = marketplace_deletion_kept_config();
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            ids.push(
+                save_marketplace_deletion_roster(
+                    &sessions,
+                    vec![
+                        first.entry.config.clone(),
+                        second.entry.config.clone(),
+                        kept.clone(),
+                    ],
+                    "2001-01-01 00:00:00",
+                )
+                .await,
+            );
+        }
+
+        let result = run_approved_delete(
+            Arc::new(client),
+            format!("delete-saved-batch-{}", uuid::Uuid::new_v4()),
+            serde_json::json!({ "registry_ids": [first.registry_id.clone(), second.registry_id.clone()] }),
+        ).await;
+
+        assert_ne!(result.is_error, Some(true), "{}", tool_result_text(&result));
+        let report: Value = serde_json::from_str(&tool_result_text(&result)).unwrap();
+        assert_eq!(report["state"], "deleted");
+        for id in ids {
+            assert_eq!(
+                marketplace_deletion_roster_keys(&sessions, &id).await,
+                vec![kept.key()]
+            );
+            assert_eq!(
+                stored_updated_at(&sessions, &id).await,
+                "2001-01-01 00:00:00"
+            );
+        }
+        for result in report["results"].as_array().unwrap() {
+            assert_eq!(result["sessionsUpdated"], 2);
+            assert_eq!(result["sessionProblems"], serde_json::json!([]));
+        }
+    }
+
+    #[tokio::test]
+    async fn marketplace_deletion_reports_a_failed_roster_write_and_continues_housekeeping() {
+        let _path_root = pinned_path_root();
+        let fixture = install_deletion_fixture("opennotebookagent", "PartialRoster").await;
+        let (_manager_root, _manager, client, _session_id) = a_live_tool_client().await;
+        let sessions = client.context.session_manager.clone();
+        let kept = marketplace_deletion_kept_config();
+        let good = save_marketplace_deletion_roster(
+            &sessions,
+            vec![fixture.entry.config.clone(), kept.clone()],
+            "2001-01-01 00:00:00",
+        )
+        .await;
+        let failed = save_marketplace_deletion_roster(
+            &sessions,
+            vec![fixture.entry.config.clone(), kept.clone()],
+            "2002-01-01 00:00:00",
+        )
+        .await;
+        let pool = sessions.storage().pool().await.unwrap();
+        sqlx::query(&format!(
+            "CREATE TRIGGER reject_l7_roster_write BEFORE UPDATE OF extension_data ON sessions \
+             WHEN OLD.id = '{failed}' BEGIN SELECT RAISE(FAIL, 'synthetic roster write failure'); END"
+        )).execute(pool).await.unwrap();
+
+        let result = run_approved_delete(
+            Arc::new(client),
+            format!("delete-partial-roster-{}", uuid::Uuid::new_v4()),
+            serde_json::json!({ "registry_id": fixture.registry_id.clone() }),
+        )
+        .await;
+
+        assert_ne!(result.is_error, Some(true), "{}", tool_result_text(&result));
+        let report: Value = serde_json::from_str(&tool_result_text(&result)).unwrap();
+        assert_eq!(report["state"], "deleted");
+        assert!(!fixture.install_dir.exists());
+        assert_eq!(
+            marketplace_deletion_roster_keys(&sessions, &good).await,
+            vec![kept.key()]
+        );
+        assert_eq!(
+            marketplace_deletion_roster_keys(&sessions, &failed).await,
+            vec![fixture.config_key.clone(), kept.key()]
+        );
+        assert_eq!(
+            stored_updated_at(&sessions, &good).await,
+            "2001-01-01 00:00:00"
+        );
+        assert_eq!(
+            stored_updated_at(&sessions, &failed).await,
+            "2002-01-01 00:00:00"
+        );
+        assert_eq!(report["results"][0]["sessionsUpdated"], 1);
+        let problems = report["results"][0]["sessionProblems"].as_array().unwrap();
+        assert_eq!(problems.len(), 1);
+        assert!(problems[0].as_str().unwrap().contains(&failed));
+        assert!(problems[0]
+            .as_str()
+            .unwrap()
+            .contains("synthetic roster write failure"));
+    }
+
+    #[tokio::test]
+    async fn marketplace_deletion_cancellation_leaves_saved_rosters_untouched() {
+        let _path_root = pinned_path_root();
+        let fixture = install_deletion_fixture("playwrightagent", "CancelledRoster").await;
+        let (_manager_root, _manager, client, _session_id) = a_live_tool_client().await;
+        let sessions = client.context.session_manager.clone();
+        let saved = save_marketplace_deletion_roster(
+            &sessions,
+            vec![fixture.entry.config.clone()],
+            "2001-01-01 00:00:00",
+        )
+        .await;
+        let session_id = format!("delete-cancelled-roster-{}", uuid::Uuid::new_v4());
+        let cancel = CancellationToken::new();
+        let running = tokio::spawn({
+            let cancel = cancel.clone();
+            let session_id = session_id.clone();
+            let registry_id = fixture.registry_id.clone();
+            async move {
+                client
+                    .call_tool(
+                        DELETE_EXTENSION_PACKAGE_TOOL_NAME,
+                        Some(
+                            serde_json::json!({ "registry_id": registry_id })
+                                .as_object()
+                                .unwrap()
+                                .clone(),
+                        ),
+                        McpMeta::new(session_id, public_enforcing()),
+                        cancel,
+                    )
+                    .await
+            }
+        });
+        wait_for_delete_card(&session_id, DELETE_EXTENSION_PACKAGE_TOOL_NAME).await;
+        cancel.cancel();
+        let result = tokio::time::timeout(Duration::from_secs(30), running)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(result.is_error, Some(true), "{}", tool_result_text(&result));
+        assert!(fixture.install_dir.exists());
+        fixture.assert_provenance_present();
+        assert_eq!(
+            marketplace_deletion_roster_keys(&sessions, &saved).await,
+            vec![fixture.config_key.clone()]
+        );
+        assert_eq!(
+            stored_updated_at(&sessions, &saved).await,
+            "2001-01-01 00:00:00"
+        );
+    }
+
     /// A `.brxt` somebody sideloaded, or an MCP server they added by hand:
     /// installed, on disk, and invisible to the marketplace. No provenance
     /// record is written, which is exactly the state
@@ -4670,6 +5012,13 @@ mod tests {
         let _path_root = pinned_path_root();
         let fixture = install_deletion_fixture("opennotebookagent", "Revalidate").await;
         let (_manager_root, manager, client, _session_id) = a_live_tool_client().await;
+        let sessions = client.context.session_manager.clone();
+        let saved = save_marketplace_deletion_roster(
+            &sessions,
+            vec![fixture.entry.config.clone()],
+            "2001-01-01 00:00:00",
+        )
+        .await;
         let client = Arc::new(client);
         let session_id = format!("delete-revalidate-{}", uuid::Uuid::new_v4());
         let running = tokio::spawn({
@@ -4729,6 +5078,14 @@ mod tests {
         assert_eq!(current.config, replacement.config);
         fixture.assert_provenance_present();
         assert!(!manager.is_extension_enabled(&fixture.config_key).await);
+        assert_eq!(
+            marketplace_deletion_roster_keys(&sessions, &saved).await,
+            vec![fixture.config_key.clone()]
+        );
+        assert_eq!(
+            stored_updated_at(&sessions, &saved).await,
+            "2001-01-01 00:00:00"
+        );
         fixture.remove_persisted_artifacts();
     }
 

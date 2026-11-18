@@ -1752,6 +1752,16 @@ impl ExtensionManager {
         &self.context
     }
 
+    pub(crate) async fn bound_model_provider(
+        &self,
+    ) -> Option<Arc<dyn crate::providers::base::Provider>> {
+        self.provider
+            .lock()
+            .await
+            .clone()
+            .map(crate::providers::decision_bound::unwrap_decision_bound)
+    }
+
     pub async fn computer_use_status(
         &self,
         session_id: &str,

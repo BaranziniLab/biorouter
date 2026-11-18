@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useLayoutEffect, useState } from 'react';
 import { ActionRequired } from '../api';
 import JsonSchemaForm from './ui/JsonSchemaForm';
 import type { JsonSchema } from './ui/JsonSchemaForm';
@@ -23,9 +23,19 @@ export default function ElicitationRequest({
   actionRequiredContent,
   onSubmit,
 }: ElicitationRequestProps) {
-  const [submitted, setSubmitted] = useState(isClicked);
+  const externalOutcome = isClicked ? 'sent' : isCancelledMessage ? 'canceled' : null;
+  const [outcome, setOutcome] = useState<'sent' | 'canceled' | null>(externalOutcome);
+  const settledOutcome = outcome ?? externalOutcome;
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Latch Stop at commit, before an in-flight delivery can finish; a delivered
+  // answer may precede its transcript event and must keep its earlier outcome.
+  useLayoutEffect(() => {
+    if (externalOutcome !== null) {
+      setOutcome((current) => current ?? externalOutcome);
+    }
+  }, [externalOutcome]);
 
   if (actionRequiredContent.data.actionType !== 'elicitation') {
     return null;
@@ -34,12 +44,12 @@ export default function ElicitationRequest({
   const { id: elicitationId, message, requested_schema } = actionRequiredContent.data;
 
   const handleSubmit = async (formData: Record<string, unknown>) => {
-    if (submitting) return;
+    if (submitting || settledOutcome !== null) return;
     setSubmitting(true);
     setError(null);
     try {
       await onSubmit(elicitationId, formData);
-      setSubmitted(true);
+      setOutcome((current) => current ?? 'sent');
     } catch (failure) {
       setError(errorMessage(failure));
     } finally {
@@ -48,7 +58,7 @@ export default function ElicitationRequest({
   };
 
   // Resolved states are transcript rows: the card has done its job.
-  if (isCancelledMessage) {
+  if (settledOutcome === 'canceled') {
     return (
       <div className="biorouter-message-content text-body">
         <TranscriptRow icon={X} label={ELICITATION_COPY.canceled} />
@@ -56,7 +66,7 @@ export default function ElicitationRequest({
     );
   }
 
-  if (submitted) {
+  if (settledOutcome === 'sent') {
     return (
       <div className="biorouter-message-content text-body">
         <TranscriptRow icon={Check} label={ELICITATION_COPY.sent} />

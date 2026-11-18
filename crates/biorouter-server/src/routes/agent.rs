@@ -1777,7 +1777,7 @@ async fn load_resumed_agent_extensions(
                 "No background task found, loading extensions for session {}",
                 payload.session_id
             );
-            agent.load_extensions_from_session(session).await
+            state.load_session_extensions(session, &agent).await
         };
     (Some(results), None)
 }

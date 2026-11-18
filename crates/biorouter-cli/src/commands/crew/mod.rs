@@ -4690,8 +4690,8 @@ impl Named {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum MemberAccess {
     /// `crew setup`: `--agent-access` when given; without it full, with one warning, for a
-    /// connection that has no work folder yet (OW-6: the setup flow's default), and otherwise
-    /// nothing, so a folder or level the person chose stays as it is.
+    /// connection with no work folder or previous connection yet (OW-6: the setup flow's
+    /// default), and otherwise nothing, so a folder or level the person chose stays as it is.
     Asked(Option<AgentAccess>),
     /// The setup `crew join` needed on a connection never set up from this computer
     /// ([`never_set_up`], L8): the setup flow's default, as `Asked(None)` gives it, since
@@ -4707,6 +4707,11 @@ enum MemberAccess {
 fn member_agent_access(access: MemberAccess, connection: &Value) -> Option<AgentAccess> {
     match access {
         MemberAccess::Asked(Some(level)) => Some(level),
+        MemberAccess::Asked(None)
+            if !connection["node_id"].is_null() || !connection["server_access"].is_null() =>
+        {
+            None
+        }
         MemberAccess::Asked(None) | MemberAccess::JoinDefault => {
             let has_folder = connection["remote_root"]
                 .as_str()
@@ -15836,6 +15841,72 @@ mod tests {
             failure_body(&error, "m", "req-1")["code"],
             "crew_setup_something_new"
         );
+    }
+
+    /// CREW-15: a pinned server survives daemon restarts and remembers that this connection
+    /// was set up before; a missing work folder can then be the person's explicit Off choice.
+    #[tokio::test]
+    async fn setup_agent_access_preserves_off_and_keeps_new_connection_defaults() {
+        let finished = setup_status(
+            "member",
+            "finished",
+            json!({"outcome": {"installed_version": "1.93.0", "reused": true, "connection_id": CONNECTION}}),
+        );
+        for (label, node_id, server_access, asked, expected) in [
+            (
+                "previously connected Off after a daemon restart",
+                json!("ab".repeat(32)),
+                Value::Null,
+                None,
+                None,
+            ),
+            (
+                "Off after this daemon heard the bridge",
+                Value::Null,
+                json!({"full_access_available": true}),
+                None,
+                None,
+            ),
+            (
+                "explicit Full after Off",
+                json!("ab".repeat(32)),
+                Value::Null,
+                Some(AgentAccess::Full),
+                Some("full"),
+            ),
+            (
+                "untouched connection default",
+                Value::Null,
+                Value::Null,
+                None,
+                Some("full"),
+            ),
+        ] {
+            let mut connection = connection_with_levels();
+            connection["status"] = json!("disconnected");
+            connection["node_id"] = node_id;
+            connection["server_access"] = server_access;
+            let daemon = setup_daemon(vec![finished.clone()]);
+            let handler = move |method: &str, path: &str, body: Option<&Value>| -> Result<Value> {
+                if method == "GET" && path == "/crew/connections" {
+                    return Ok(json!({"connections": [connection.clone()]}));
+                }
+                daemon(method, path, body)
+            };
+            let (api, fake) = api_with(OutputFormat::Json, handler);
+            let mut args = setup_command(None, false);
+            args.agent_access = asked;
+            setup(&api, args, std::future::pending())
+                .await
+                .expect(label);
+            let requests = setup_requests(&fake);
+            assert_eq!(requests.len(), 1, "{label}: {requests:?}");
+            assert_eq!(
+                requests[0].get("agent_access").and_then(Value::as_str),
+                expected,
+                "{label}: {requests:?}"
+            );
+        }
     }
 
     /// OW-6, C10: a member's setup asks for full access only for a connection with no work

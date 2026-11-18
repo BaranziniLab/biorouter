@@ -292,6 +292,14 @@ pub(crate) fn survives_code_execution_filter(
                 | "dictionary__list_terms"
                 | "dictionary__remove_added_terms"
         )
+        // Nested global-memory access is refused; direct calls retain inspection.
+        || matches!(
+            tool_name,
+            "memory__retrieve_memories"
+                | "memory__remember_memory"
+                | "memory__remove_memory_category"
+                | "memory__remove_specific_memory"
+        )
         // BR-40's separate poll tool used to need its own clause here, so a
         // model that spawned a background child could still collect it. BR-71
         // decision 23 deleted that tool: collecting a background child is now
@@ -2055,6 +2063,31 @@ mod tests {
             &prefix,
             &no_frontend
         ));
+    }
+
+    #[test]
+    fn memory_bridge_code_execution_keeps_only_the_builtin_memory_tools_direct() {
+        let prefix = format!("{CODE_EXECUTION_EXTENSION}__");
+        let no_frontend = HashSet::new();
+        for name in [
+            "memory__retrieve_memories",
+            "memory__remember_memory",
+            "memory__remove_memory_category",
+            "memory__remove_specific_memory",
+        ] {
+            assert!(
+                survives_code_execution_filter(name, &prefix, &no_frontend),
+                "{name} must remain callable so global-memory consent can run"
+            );
+        }
+        for name in [
+            "memory__unexpected_tool",
+            "memory__remember",
+            "memory_extension__remember_memory",
+            "third_party__remember_memory",
+        ] {
+            assert!(!survives_code_execution_filter(name, &prefix, &no_frontend));
+        }
     }
 
     /// The checklist stays a direct call in Code Execution mode. Before this,

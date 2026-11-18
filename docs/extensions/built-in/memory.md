@@ -61,6 +61,8 @@ BioRouter itself cannot take that shortcut on the global store. Reading, changin
 - The `/agent/call_tool` API is refused for the same reason.
 - BioRouter's memory server run on its own — `biorouter mcp memory`, for another MCP client outside the app — serves the project-local store only. Nothing there can ask you, so nothing there reaches the machine-wide store.
 
+With Code Execution enabled, the four built-in memory tools remain available as direct calls so their approvals can be shown separately. A global-memory approval applies to that call; a later write asks again. Coding agents using Biorouter's tool bridge follow the same consent requirement.
+
 The project-local store is unaffected by all of this: it lives under the directory you opened, so it never crosses into another session.
 
 A stray file in the global store directory is ignored rather than fatal, and a category name is treated as a label — no control characters, and bounded in length — because those names are listed in every later session's system prompt.

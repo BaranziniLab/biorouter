@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
+import ts from 'typescript';
+import { remoteHttpBackendUrl } from './utils/remoteDictationHttp';
 
 /**
  * BR-71 §4.3: the renderer opens ONE WebSocket per window to
@@ -47,6 +50,11 @@ import { join } from 'node:path';
  * the very rule above), so an `https://` external daemon still hit the identical
  * failure with the meta tag alone blocking it. Any new source here belongs in
  * both files or in neither.
+ *
+ * The shared meta now permits the runtime-configurable transport schemes. The
+ * desktop header restricts origins, and the served shell has its own header
+ * retaining loopback-only cleartext access. The tests below exercise the real
+ * installed desktop callback and both effective policy pairs.
  *
  * WHAT THESE ASSERTIONS ARE, AND ARE NOT. They read source text; a CSP cannot be
  * exercised in jsdom, so this is a proxy for "the emitted policy admits the
@@ -120,6 +128,67 @@ function mainProcessExternalArm(): string {
     /if \(settings\.externalBiorouterd\?\.enabled && settings\.externalBiorouterd\.url\) \{([\s\S]*?)\n {4}\}/
   );
   if (!match) throw new Error('main.ts: could not find buildConnectSrc’s external-backend arm');
+  return match[1];
+}
+
+function mainProcessHeaderCsp(backendUrl?: string, enabled = true): string {
+  const source = readFileSync(resolveFromPackage('src/main.ts'), 'utf-8');
+  const parsed = ts.createSourceFile('main.ts', source, ts.ScriptTarget.Latest, true);
+  const install = parsed.statements.find(
+    (statement): statement is ts.FunctionDeclaration =>
+      ts.isFunctionDeclaration(statement) && statement.name?.text === 'installSessionHooks'
+  );
+  if (!install) throw new Error('main.ts has no installSessionHooks function');
+  type Headers = Record<string, string | string[]>;
+  type Details = { url: string; responseHeaders: Headers };
+  type HeaderCallback = (
+    details: Details,
+    callback: (result: { responseHeaders: Headers }) => void
+  ) => void;
+  const recorded: { handler?: HeaderCallback; csp?: string } = {};
+  runInNewContext(
+    ts.transpileModule(
+      `${install.getText(parsed)}\ninstallSessionHooks(ses, new URL('file:///renderer/index.html'));`,
+      {
+        compilerOptions: { target: ts.ScriptTarget.ES2022 },
+      }
+    ).outputText,
+    {
+      URL,
+      console,
+      loadSettings: () => ({ externalBiorouterd: { enabled, url: backendUrl } }),
+      remoteHttpBackendUrl,
+      ses: {
+        setPermissionCheckHandler: () => {},
+        setPermissionRequestHandler: () => {},
+        webRequest: {
+          onHeadersReceived: (callback: HeaderCallback) => {
+            recorded.handler = callback;
+          },
+        },
+      },
+    }
+  );
+  if (!recorded.handler)
+    throw new Error('installSessionHooks did not install a response-header callback');
+  recorded.handler(
+    { url: 'file:///renderer/index.html', responseHeaders: {} },
+    ({ responseHeaders }) => {
+      const value = responseHeaders['Content-Security-Policy'];
+      if (typeof value === 'string') recorded.csp = value;
+    }
+  );
+  if (!recorded.csp) throw new Error('the renderer response has no Content-Security-Policy');
+  return recorded.csp;
+}
+
+function servedShellCsp(): string {
+  const source = readFileSync(
+    resolveFromPackage('../../crates/biorouter-server/src/routes/web_ui.rs'),
+    'utf-8'
+  );
+  const match = source.match(/const SHELL_CSP: &str =\s*"([^"]*)";/);
+  if (!match) throw new Error('web_ui.rs has no literal SHELL_CSP');
   return match[1];
 }
 
@@ -227,6 +296,74 @@ describe('workspace channel CSP', () => {
     expect(hook).toContain(".replace(/^http/, 'ws')");
   });
 
+  it('both emitted desktop policies admit only the configured cleartext backend', () => {
+    const meta = connectSrcOf(metaCsp());
+    const header = connectSrcOf(mainProcessHeaderCsp('http://backend.example.org:8765/team'));
+    for (const url of [
+      'http://backend.example.org:8765/team/dictation/status',
+      'ws://backend.example.org:8765/team/ui/workspace',
+    ]) {
+      expect(policyAllows(meta, url) && policyAllows(header, url), url).toBe(true);
+    }
+    for (const url of [
+      'http://another.example.org:8765/dictation/status',
+      'ws://another.example.org:8765/ui/workspace',
+      'http://backend.example.org:8766/dictation/status',
+      'ws://backend.example.org:8766/ui/workspace',
+    ]) {
+      expect(policyAllows(meta, url) && policyAllows(header, url), url).toBe(false);
+    }
+  });
+
+  it('keeps an explicitly configured remote HTTP backend on its actual transport', () => {
+    expect(mainProcessHeaderCsp('http://backend.example.org:8765/team')).not.toContain(
+      'upgrade-insecure-requests'
+    );
+    for (const backend of [undefined, 'http://127.0.0.1:8765', 'https://backend.example.org']) {
+      expect(mainProcessHeaderCsp(backend)).toContain('upgrade-insecure-requests');
+    }
+    expect(mainProcessHeaderCsp('http://backend.example.org', false)).toContain(
+      'upgrade-insecure-requests'
+    );
+  });
+
+  it('does not admit another cleartext host when external transport is disabled or invalid', () => {
+    for (const [backend, enabled] of [
+      [undefined, true],
+      ['http://backend.example.org:8765', false],
+      ['not a URL', true],
+    ] as const) {
+      const header = connectSrcOf(mainProcessHeaderCsp(backend, enabled));
+      expect(policyAllows(header, 'http://backend.example.org:8765/dictation/status')).toBe(false);
+      expect(policyAllows(header, 'ws://backend.example.org:8765/ui/workspace')).toBe(false);
+      expect(policyAllows(header, 'http://127.0.0.1:8765/dictation/status')).toBe(true);
+      expect(policyAllows(header, 'ws://127.0.0.1:8765/ui/workspace')).toBe(true);
+      expect(policyAllows(header, 'https://api.github.com/repos/BaranziniLab/biorouter')).toBe(
+        true
+      );
+    }
+  });
+
+  it('the served shell retains its loopback-only cleartext boundary', () => {
+    const meta = connectSrcOf(metaCsp());
+    const header = connectSrcOf(servedShellCsp());
+    for (const url of [
+      'http://127.0.0.1:8765/dictation/status',
+      'ws://127.0.0.1:8765/ui/workspace',
+      'https://backend.example.org/dictation/status',
+      'wss://backend.example.org/ui/workspace',
+    ]) {
+      expect(policyAllows(meta, url) && policyAllows(header, url), url).toBe(true);
+    }
+    for (const url of [
+      'http://backend.example.org:8765/dictation/status',
+      'ws://backend.example.org:8765/ui/workspace',
+    ]) {
+      expect(policyAllows(meta, url) && policyAllows(header, url), url).toBe(false);
+    }
+    expect(servedShellCsp()).toContain("frame-ancestors 'none'");
+  });
+
   it('does not settle for scheme sources CSP will not stretch to the socket', () => {
     // The two ways someone "fixes" a blocked socket without naming its scheme:
     // widen to a wildcard, or lean on a scheme source that does not reach it.
@@ -237,10 +374,13 @@ describe('workspace channel CSP', () => {
       expect(connectSrc.split(/\s+/)).not.toContain('*');
       expect(policyAllows(connectSrc, 'ws://127.0.0.1:62736/ui/workspace')).toBe(true);
     }
-    // Cleartext WebSockets stay pinned to loopback, mirroring the meta policy's
-    // own cleartext http allowance (`http://127.0.0.1:*`, not blanket `http:`).
-    expect(connectSrcOf(metaCsp()).split(/\s+/)).not.toContain('ws:');
-    expect(policyAllows(connectSrcOf(metaCsp()), 'ws://evil.example/ui/workspace')).toBe(false);
+    // The runtime header supplies the origin boundary shared HTML cannot know.
+    const header = connectSrcOf(mainProcessHeaderCsp());
+    expect(header.split(/\s+/)).not.toContain('ws:');
+    expect(
+      policyAllows(connectSrcOf(metaCsp()), 'ws://evil.example/ui/workspace') &&
+        policyAllows(header, 'ws://evil.example/ui/workspace')
+    ).toBe(false);
   });
 
   it('the scheme matcher these assertions rest on is not vacuous', () => {
