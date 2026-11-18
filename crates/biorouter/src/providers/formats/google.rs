@@ -996,6 +996,55 @@ mod tests {
     use rmcp::{model::Content, object};
     use serde_json::json;
 
+    #[tokio::test]
+    async fn gemini4_streaming_keeps_signed_part_order_when_tools_are_batched() {
+        use futures::StreamExt;
+
+        let response = |model: &str, parts: Vec<Value>| {
+            json!({
+                "modelVersion": model,
+                "candidates": [{"content": {"role": "model", "parts": parts}}]
+            })
+        };
+        let chunk = response(
+            "gemini-4-hydrogen",
+            vec![
+                json!({"functionCall": {"id": "first", "name": "read", "args": {}}, "thoughtSignature": "CALL"}),
+                json!({"text": "After call", "thoughtSignature": "TRAILING"}),
+            ],
+        );
+        let lines = futures::stream::iter([Ok(format!("data: {chunk}"))]);
+        let stream = response_to_streaming_message_batching(lines, true);
+        futures::pin_mut!(stream);
+        let mut messages = Vec::new();
+        while let Some(item) = stream.next().await {
+            if let Some(message) = item.unwrap().0 {
+                messages.push(message);
+            }
+        }
+        let content: Vec<_> = messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .collect();
+        assert!(matches!(content[0], MessageContent::ToolRequest(_)));
+        assert!(matches!(content[1], MessageContent::Text(_)));
+        let payload = create_request(
+            &ModelConfig::new_or_fail("gemini-4-hydrogen"),
+            "system",
+            &messages,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(
+            payload["contents"][0]["parts"][0]["functionCall"]["id"],
+            "first"
+        );
+        assert_eq!(
+            payload["contents"][0]["parts"][1],
+            json!({"text": "After call", "thoughtSignature": "TRAILING"})
+        );
+    }
+
     fn google_native_foreign_fixture(tool_origin: bool) -> Message {
         let mut parts = vec![serde_json::json!({
             "text": "GOOGLE-PRIVATE-THOUGHT",

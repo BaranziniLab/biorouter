@@ -1396,44 +1396,11 @@ pub(crate) mod tests {
     /// picker chose.
     fn providers_that_lead_with_a_model_other_than_their_default(
     ) -> Vec<(&'static str, &'static str)> {
-        #[allow(unused_mut)]
-        let mut rows = vec![
-            (
-                "google",
-                "Gemini 3.x listed newest first; the default is the only Gemini 3.x Pro \
-                 (google.rs, above GOOGLE_DEFAULT_MODEL)",
-            ),
-            (
-                "llamacpp",
-                "the default is chosen from the machine's memory at runtime \
-                 (default_model_name), so no fixed position in the catalog can hold it",
-            ),
-            (
-                "openrouter",
-                "curated slugs listed newest first per vendor; the default is Sonnet 5 \
-                 on price (openrouter.rs, above OPENROUTER_DEFAULT_MODEL)",
-            ),
-            (
-                "tetrate",
-                "the list leads with the newest Claude; the default is the Haiku the \
-                 Tetrate sign-up flow configures (signup_tetrate::TETRATE_DEFAULT_MODEL)",
-            ),
-            (
-                "venice",
-                "its list is FALLBACK_MODELS, the offline fallback, which leads with the \
-                 small llama-3.2-3b",
-            ),
-        ];
-        // Registered only under `aws-providers`, like the AWS rows in the tier
-        // tables above; the last loop asserts every row names a registered
-        // provider, so an unconditional row fails `--no-default-features`.
-        #[cfg(feature = "aws-providers")]
-        rows.push((
-            "aws_bedrock",
-            "newest first on purpose; BEDROCK_DEFAULT_MODEL is a separate choice \
-             (bedrock.rs, above BEDROCK_KNOWN_MODELS)",
-        ));
-        rows
+        vec![(
+            "llamacpp",
+            "the default is chosen from the machine's memory at runtime \
+             (default_model_name), so no fixed position in the catalog can hold it",
+        )]
     }
 
     #[test]

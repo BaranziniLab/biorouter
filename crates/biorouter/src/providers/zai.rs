@@ -269,7 +269,21 @@ mod tests {
             .iter()
             .filter(|m| !ZAI_VISION_MODELS.contains(&m.name.as_str()))
         {
-            assert_eq!(model.supports_vision, None, "{} is text-only", model.name);
+            let expected = if model.name == ZAI_DEFAULT_MODEL {
+                Some(false)
+            } else {
+                None
+            };
+            assert_eq!(
+                model.supports_vision, expected,
+                "{} is text-only",
+                model.name
+            );
+            assert!(
+                model.supported_input_mime_types.is_none(),
+                "{} is text-only",
+                model.name
+            );
         }
 
         // Every 5.3 model is 1M-context, from the registry, not a pattern.

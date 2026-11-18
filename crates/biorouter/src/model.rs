@@ -131,7 +131,9 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("openai/gpt-6.1-sol", 1_050_000),
         ("openai/gpt-6.1-terra", 1_050_000),
         ("openai/gpt-6.2-astra", 1_050_000),
+        ("openai/gpt-6.2-astra-pro", 1_050_000),
         ("openai/gpt-6.2-sol", 1_050_000),
+        ("openai/gpt-6.2-sol-pro", 1_050_000),
         // ── Anthropic ──
         ("anthropic/claude-fable-5.1", 1_000_000),
         ("anthropic/claude-fable-5.2", 1_000_000),
@@ -280,6 +282,7 @@ static MODEL_CONTEXT_WINDOWS: Lazy<HashMap<&'static str, usize>> = Lazy::new(|| 
         ("deepseek-v4-pro", 1_000_000),
         ("deepseek/deepseek-v4-flash", 1_000_000),
         ("deepseek/deepseek-v4.1-flash", 1_048_576),
+        ("deepseek/deepseek-v4.1-flash-1017", 1_048_576),
         ("deepseek/deepseek-v4-pro", 1_000_000),
         // ── Z.ai GLM ──
         ("glm-4.5", 131_072),

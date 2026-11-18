@@ -3,7 +3,7 @@
 import type { App } from 'electron';
 import { EventEmitter } from 'node:events';
 import type { PathLike, Stats } from 'node:fs';
-import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   logInfo: vi.fn(),
@@ -83,6 +83,7 @@ describe('startBiorouterd logging', () => {
     // These tests exercise the historical per-window spawn contract. The
     // default shared-daemon path has its own approval-key regressions.
     process.env.BIOROUTER_SHARED_DAEMON = '0';
+    vi.stubEnv('BIOROUTER_DEV_PROFILE_ROOT', undefined);
     process.env[inheritedKey] = inheritedValue;
     mocks.logInfo.mockClear();
     mocks.logError.mockClear();
@@ -107,6 +108,10 @@ describe('startBiorouterd logging', () => {
       kill: vi.fn(),
       unref: vi.fn(),
     });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   // Issue #56 / AR-11, asserted rather than reviewed: the environment and argv
