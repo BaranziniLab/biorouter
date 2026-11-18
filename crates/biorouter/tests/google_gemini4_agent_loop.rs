@@ -341,13 +341,7 @@ async fn native_history_survives_agent_turns(batch_tools: bool, include_thought:
         .as_array()
         .unwrap()
         .iter()
-        .any(|message| {
-            message["parts"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|part| *part == final_part)
-        }));
+        .any(|message| { message["parts"].as_array().unwrap().contains(&final_part) }));
 }
 
 #[tokio::test]

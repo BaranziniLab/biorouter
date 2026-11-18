@@ -71,7 +71,9 @@ fn november_2026_models_have_exact_windows_before_provider_overrides() {
         128_000
     );
     assert_eq!(ModelConfig::context_window_for("gpt-6-astra"), 1_050_000);
-    assert!(biorouter::providers::codex::CODEX_CONTEXT_WINDOW < 1_050_000);
+    const {
+        assert!(biorouter::providers::codex::CODEX_CONTEXT_WINDOW < 1_050_000);
+    }
 }
 
 #[test]
