@@ -32,10 +32,14 @@ function resize() {
 }
 
 /** A viewport whose height, content height and scroll position the test controls. */
-function scriptViewport(viewport: HTMLElement, geometry: { height: number; content: number }) {
-  const state = { ...geometry, top: 0 };
+function scriptViewport(
+  viewport: HTMLElement,
+  geometry: { height: number; content: number; width?: number }
+) {
+  const state = { width: 0, ...geometry, top: 0 };
   const max = () => Math.max(0, state.content - state.height);
   Object.defineProperty(viewport, 'clientHeight', { configurable: true, get: () => state.height });
+  Object.defineProperty(viewport, 'clientWidth', { configurable: true, get: () => state.width });
   Object.defineProperty(viewport, 'scrollHeight', { configurable: true, get: () => state.content });
   Object.defineProperty(viewport, 'scrollTop', {
     configurable: true,
@@ -101,6 +105,36 @@ describe('ScrollArea resize anchor', () => {
 
     resize();
     expect(state.top).toBe(713 - 336);
+  });
+
+  it('leaves a reader at the top alone after a resize that did not move it', () => {
+    const { handle, viewport } = renderAnchored();
+    scriptViewport(viewport, { height: 400, content: 1000, width: 500 });
+    resize();
+
+    act(() => viewport.dispatchEvent(new Event('scroll')));
+    expect(handle.current?.isFollowing).toBe(false);
+  });
+
+  it('keeps following through native reflow scrolls before and after a width and height resize', () => {
+    const { handle, viewport } = renderAnchored();
+    const state = scriptViewport(viewport, { height: 400, content: 1000, width: 500 });
+    resize();
+    act(() => handle.current?.scrollToBottom('auto'));
+
+    state.width = 350;
+    state.height = 380;
+    state.content = 1600;
+    state.top = 800;
+    act(() => viewport.dispatchEvent(new Event('scroll')));
+    expect(handle.current?.isFollowing).toBe(true);
+    resize();
+    act(() => viewport.dispatchEvent(new Event('scroll')));
+    expect(handle.current?.isFollowing).toBe(true);
+
+    state.top = 400;
+    act(() => viewport.dispatchEvent(new Event('scroll')));
+    expect(handle.current?.isFollowing).toBe(false);
   });
 });
 
@@ -197,6 +231,27 @@ describe('ScrollArea growth follow', () => {
     grow(62);
     runFrames();
     expect(state.top).toBe(250);
+  });
+
+  it('resumes growth after the reader returns to the tail and scrolling settles', () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const { state, grow, viewport } = renderFollowing();
+      grow(600);
+      runFrames();
+      expect(state.top).toBe(600);
+      state.top = 250;
+      act(() => viewport.dispatchEvent(new Event('scroll')));
+      act(() => vi.advanceTimersByTime(150));
+      state.top = 600;
+      act(() => viewport.dispatchEvent(new Event('scroll')));
+      act(() => vi.advanceTimersByTime(150));
+      grow(62);
+      runFrames();
+      expect(state.top).toBe(662);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('keeps scrollTop for a growth the owner holds, and does not follow it on a later commit', () => {
