@@ -260,6 +260,19 @@ fn copy_install_tree(source: &Path, destination: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn open_install_lock_file(key: &str) -> anyhow::Result<std::fs::File> {
+    let lock_root = crate::config::paths::Paths::in_config_dir("extension-install-locks");
+    std::fs::create_dir_all(&lock_root)?;
+    let lock_name = format!("{:x}.lock", Sha256::digest(key.as_bytes()));
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_root.join(lock_name))?;
+    Ok(lock)
+}
+
 impl ExtensionInstallTransaction {
     pub fn new(source: InstallSource) -> Self {
         Self {
@@ -356,15 +369,7 @@ impl ExtensionInstallTransaction {
         let manifest = bundle.manifest().clone();
         let skills = bundle.skills().to_vec();
         let key = name_to_key(&manifest.name);
-        let lock_root = crate::config::paths::Paths::in_config_dir("extension-install-locks");
-        std::fs::create_dir_all(&lock_root)?;
-        let lock_name = format!("{:x}.lock", Sha256::digest(key.as_bytes()));
-        let lock = std::fs::OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(lock_root.join(lock_name))?;
+        let lock = open_install_lock_file(&key)?;
         if let Err(error) = fs2::FileExt::try_lock_exclusive(&lock) {
             if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
                 return Ok(InstallReport::failed(
