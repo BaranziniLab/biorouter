@@ -1253,8 +1253,9 @@ async fn drive_response(
     // re-reads the roster, throttled to the pane's refresh interval.
     let session_manager = session.agent.config.session_manager.clone();
     let parent_id = session.session_id.clone();
-    // Subagents the person's Stop stopped this turn, said once the turn ends.
-    let mut stopped_subagents: Vec<String> = Vec::new();
+    // Whether the person stopped this turn, and the subagents their Stop
+    // stopped, said once the turn ends.
+    let mut stop = TurnStop::default();
     let mut last_roster_read = std::time::Instant::now()
         .checked_sub(subagents::REFRESH_INTERVAL)
         .unwrap_or_else(std::time::Instant::now);
@@ -1297,7 +1298,7 @@ async fn drive_response(
                         match action {
                             StreamAction::Cancel => {
                                 session.agent.extension_manager.computer_use.revoke();
-                                stop_turn(&cancel, &parent_id, &mut stopped_subagents);
+                                stop.stop(&cancel, &parent_id);
                             }
                             // Park it to run after the current turn. We do NOT
                             // push to the scrollback here: the live stream preview
@@ -1323,7 +1324,7 @@ async fn drive_response(
                             app.push_note("Biorouter Copilot allowed for this task. Press Esc or Ctrl-C to stop.");
                         } else {
                             session.agent.extension_manager.computer_use.revoke();
-                            if permission == Permission::Cancel { cancel.cancel(); }
+                            if permission == Permission::Cancel { stop.cancel(&cancel); }
                         }
                     }
                 }
@@ -1351,8 +1352,9 @@ async fn drive_response(
                                     }),
                                 ));
                                 session.messages.push(resp);
-                                app.push_note("Tool call cancelled.");
-                                cancel.cancel();
+                                // The cancel note the turn's end stores is the one
+                                // line about it.
+                                stop.cancel(&cancel);
                                 // Drain any events the agent already queued so the
                                 // in-memory conversation doesn't desync.
                                 while stream.next().await.is_some() {}
@@ -1443,11 +1445,7 @@ async fn drive_response(
     commit_stream_to_session(app, &mut session.messages);
     // After the partial reply, not when Stop was pressed: a note pushed under
     // the live preview is wiped when the preview re-renders.
-    if let Some(line) =
-        crate::commands::session_watch::stopped_subagents_sentence(stopped_subagents.len())
-    {
-        app.push_note(&line);
-    }
+    finish_turn(session, app, &stop, &cancel).await;
     app.thinking = None;
     app.set_catalog(build_catalog(session).await);
     refresh_context(session, app).await;
@@ -1458,19 +1456,75 @@ async fn drive_response(
     Ok(())
 }
 
-/// The person's Stop while a turn runs (Ctrl-C, from the input or any pane).
-/// It ends the turn and, as the classic REPL's Ctrl-C, `biorouter session
-/// cancel` and the desktop's Stop do, stops the subagents this chat started
-/// (item B): they run on tokens of their own, so ending the turn alone left
-/// them running, and spending. Adds the children it stopped to `stopped`, once
-/// each: Stop pressed again while the turn unwinds names the ones still
-/// unwinding again, and they must not be counted twice.
-fn stop_turn(cancel: &CancellationToken, parent_id: &str, stopped: &mut Vec<String>) {
-    cancel.cancel();
-    for child in super::stop_chat_subagents(parent_id) {
-        if !stopped.contains(&child) {
-            stopped.push(child);
+/// How the person ended the turn that ran, if they did: what [`finish_turn`]
+/// reads once the turn is over.
+#[derive(Debug, Default)]
+struct TurnStop {
+    /// The person stopped the turn: Ctrl-C or Esc while it ran, or Cancel at a
+    /// tool approval or at the Copilot prompt. A turn the TUI itself cancels (a
+    /// failure, a form it cannot show) is not one.
+    by_person: bool,
+    /// The subagents the person's Stop stopped, each once.
+    subagents: Vec<String>,
+}
+
+impl TurnStop {
+    /// The person's Stop while a turn runs (Ctrl-C, from the input or any pane).
+    /// It ends the turn and, as the classic REPL's Ctrl-C, `biorouter session
+    /// cancel` and the desktop's Stop do, stops the subagents this chat started
+    /// (item B): they run on tokens of their own, so ending the turn alone left
+    /// them running, and spending. Records the children it stopped once each:
+    /// Stop pressed again while the turn unwinds names the ones still unwinding
+    /// again, and they must not be counted twice.
+    fn stop(&mut self, cancel: &CancellationToken, parent_id: &str) {
+        self.cancel(cancel);
+        for child in super::stop_chat_subagents(parent_id) {
+            if !self.subagents.contains(&child) {
+                self.subagents.push(child);
+            }
         }
+    }
+
+    /// The person's Cancel at a prompt the turn waits on: it ends the turn and
+    /// leaves the chat's subagents running.
+    fn cancel(&mut self, cancel: &CancellationToken) {
+        self.by_person = true;
+        cancel.cancel();
+    }
+}
+
+/// What a turn's end leaves for how it ended. A turn the person stopped before
+/// it finished stores the one cancel note every surface leaves
+/// ([`CliSession::record_cancelled_turn`]) and shows its words as the one line
+/// about the cancel, then the line naming the subagents the Stop stopped. A
+/// turn the TUI cancelled itself (a failure, a form it cannot show) was not
+/// cancelled by the person and leaves no note; a retry note nothing answered
+/// is retired, as the classic REPL does. A turn that finished first leaves
+/// nothing: its reply is whole.
+async fn finish_turn(
+    session: &mut CliSession,
+    app: &mut App,
+    stop: &TurnStop,
+    cancel: &CancellationToken,
+) {
+    if cancel.is_cancelled() {
+        if stop.by_person {
+            let (text, _) = session.record_cancelled_turn().await;
+            app.push_blank();
+            for line in text.lines() {
+                app.push_note(line);
+            }
+        } else {
+            session
+                .agent
+                .retire_unanswered_retry_note(session.session_id())
+                .await;
+        }
+    }
+    if let Some(line) =
+        crate::commands::session_watch::stopped_subagents_sentence(stop.subagents.len())
+    {
+        app.push_note(&line);
     }
 }
 
@@ -2018,6 +2072,19 @@ async fn dictation_slash(
     }
 }
 
+/// `/model` (`text` trimmed), answered here and never sent to the model: the
+/// chat's model by its display name, or the one route that switches it
+/// ([`CliSession::model_command_line`]). It used to fall to the catch-all, which
+/// pointed at the classic REPL, where `/model` reached the model (rq2-074).
+async fn model_slash(session: &CliSession, app: &mut App, text: &str) -> bool {
+    let Some(command) = super::input::model_command(text) else {
+        return false;
+    };
+    let line = session.model_command_line(command).await;
+    app.push_note(&line);
+    true
+}
+
 async fn handle_slash(
     session: &mut CliSession,
     app: &mut App,
@@ -2027,6 +2094,9 @@ async fn handle_slash(
 ) -> bool {
     #[cfg(feature = "dictation")]
     if dictation_slash(session, app, tui, rx, text.trim()).await {
+        return true;
+    }
+    if model_slash(session, app, text.trim()).await {
         return true;
     }
     match text.trim() {
@@ -3265,6 +3335,7 @@ async fn build_catalog(session: &CliSession) -> Vec<app::CompletionItem> {
     ));
     items.push(cmd("/diverge", "Diverge this chat into a new window"));
     items.push(cmd("/rename", "Rename this chat"));
+    items.push(cmd("/model", "Show this chat's model"));
     items.push(cmd("/exit", "Leave the chat"));
 
     for name in list_skills() {
@@ -3410,6 +3481,10 @@ fn help_into(app: &mut App) {
             "diverge this chat into a new window".to_string(),
         ),
         ("/rename <name>".to_string(), "rename this chat".to_string()),
+        (
+            "/model".to_string(),
+            "show this chat's model, and how to use another".to_string(),
+        ),
         (
             "/subagents [list|show|hide]".to_string(),
             "show or hide the subagent pane, or number this chat's subagents".to_string(),
@@ -4940,12 +5015,12 @@ mod tests {
 
         let mut app = App::new(StatusInfo::default());
         let turn = CancellationToken::new();
-        let mut stopped = Vec::new();
+        let mut stop = TurnStop::default();
         assert!(matches!(
             on_key_streaming(&mut app, ctrl('c')),
             StreamAction::Cancel
         ));
-        stop_turn(&turn, parent, &mut stopped);
+        stop.stop(&turn, parent);
 
         assert!(turn.is_cancelled(), "Stop no longer ends the turn");
         assert!(
@@ -4956,10 +5031,15 @@ mod tests {
         assert!(!other.is_cancelled(), "another chat's subagent was stopped");
 
         // Pressed again while both are still unwinding.
-        stop_turn(&turn, parent, &mut stopped);
-        assert_eq!(stopped, ["p10-tui-stop-child-1", "p10-tui-stop-child-2"]);
+        stop.stop(&turn, parent);
+        assert!(stop.by_person, "the Stop was the person's");
         assert_eq!(
-            crate::commands::session_watch::stopped_subagents_sentence(stopped.len()).as_deref(),
+            stop.subagents,
+            ["p10-tui-stop-child-1", "p10-tui-stop-child-2"]
+        );
+        assert_eq!(
+            crate::commands::session_watch::stopped_subagents_sentence(stop.subagents.len())
+                .as_deref(),
             Some("Also stopped 2 subagents this chat started.")
         );
 
@@ -4968,6 +5048,216 @@ mod tests {
                 biorouter::agents::subagent_result::SubagentResult::from_error("test cleanup"),
             );
         }
+    }
+
+    /// CANCEL-NOTE, the TUI's door: a turn the person stops (Ctrl-C or Esc while
+    /// it runs) leaves the one note every surface leaves, stored where the model
+    /// and the person read it, and shows its words as the one line about the
+    /// cancel. The TUI used to cancel its token and store nothing, so the chat's
+    /// record ended on the person's message as if nothing had been asked.
+    #[tokio::test]
+    async fn a_cancelled_tui_turn_stores_one_cancel_note() {
+        use crate::session::tests::{
+            is_cancel_note, stored_messages, test_cli_session, UnansweringModel,
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = std::sync::Arc::new(biorouter::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let mut session = test_cli_session(manager.clone(), "text").await;
+        let asked = std::sync::Arc::new(tokio::sync::Notify::new());
+        session
+            .agent
+            .update_provider(
+                std::sync::Arc::new(UnansweringModel {
+                    asked: asked.clone(),
+                }),
+                session.session_id(),
+            )
+            .await
+            .unwrap();
+        let prompt = "Write one sentence about foxes.";
+        let user_message = Message::user().with_text(prompt);
+        session.messages.push(user_message.clone());
+
+        // What `drive_response` does: the turn runs until the person's Stop.
+        let cancel = CancellationToken::new();
+        let mut stop = TurnStop::default();
+        let mut app = App::new(StatusInfo::default());
+        {
+            let config = SessionConfig {
+                id: session.session_id.clone(),
+                schedule_id: None,
+                max_turns: None,
+                max_tool_calls: None,
+                budget: None,
+                retry_config: None,
+                reasoning_effort: None,
+            };
+            let mut stream = session
+                .agent
+                .reply(user_message, config, Some(cancel.clone()))
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(60), async {
+                loop {
+                    tokio::select! {
+                        _ = asked.notified() => break,
+                        event = stream.next() => {
+                            assert!(event.is_some(), "the turn ended before it was stopped");
+                        }
+                    }
+                }
+            })
+            .await
+            .expect("the model is asked");
+            stop.stop(&cancel, session.session_id());
+        }
+        finish_turn(&mut session, &mut app, &stop, &cancel).await;
+
+        let stored = stored_messages(&manager, session.session_id()).await;
+        assert_eq!(
+            stored.iter().filter(|m| is_cancel_note(m)).count(),
+            1,
+            "one cancel note is stored: {stored:#?}"
+        );
+        assert!(
+            stored
+                .iter()
+                .any(|m| m.role == Role::User && m.as_concat_text() == prompt),
+            "the stored chat keeps the prompt: {stored:#?}"
+        );
+        assert_eq!(
+            session
+                .messages
+                .messages()
+                .iter()
+                .filter(|m| is_cancel_note(m))
+                .count(),
+            1,
+            "the chat's own copy holds the note too"
+        );
+        let shown = scrollback_text(&app);
+        assert_eq!(
+            shown
+                .matches(biorouter::agents::stopped_turn::TURN_STOPPED_NOTICE)
+                .count(),
+            1,
+            "the note's words are the one line about the cancel: {shown}"
+        );
+    }
+
+    /// A turn the TUI cancelled itself (a failure, a form it cannot show) was not
+    /// cancelled by the person, and a turn that finished was not cancelled at
+    /// all: neither leaves a cancel note.
+    #[tokio::test]
+    async fn a_tui_turn_the_person_did_not_stop_stores_no_cancel_note() {
+        use crate::session::tests::{is_cancel_note, stored_messages, test_cli_session};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = std::sync::Arc::new(biorouter::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let mut session = test_cli_session(manager.clone(), "text").await;
+        manager
+            .add_message(session.session_id(), &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        let mut app = App::new(StatusInfo::default());
+
+        let failed = CancellationToken::new();
+        failed.cancel();
+        finish_turn(&mut session, &mut app, &TurnStop::default(), &failed).await;
+        finish_turn(
+            &mut session,
+            &mut app,
+            &TurnStop::default(),
+            &CancellationToken::new(),
+        )
+        .await;
+
+        let stored = stored_messages(&manager, session.session_id()).await;
+        assert!(!stored.iter().any(is_cancel_note), "{stored:#?}");
+        assert!(scrollback_text(&app).is_empty(), "nothing is shown");
+    }
+
+    /// rq2-074/075: `/model` in the TUI fell to the catch-all, which sent people
+    /// to the classic REPL "for the full command set", where `/model` did not
+    /// exist either and went to the model. It is answered here: bare, with the
+    /// chat's model by its display name; with anything after it, with the resume
+    /// door, the one route that switches a chat's model and runs the privacy bind
+    /// gate on the way.
+    #[tokio::test]
+    async fn model_in_the_tui_is_answered_here_and_names_the_resume_route() {
+        use crate::session::tests::test_cli_session;
+
+        struct HaikuModel;
+
+        #[async_trait::async_trait]
+        impl biorouter::providers::base::Provider for HaikuModel {
+            fn metadata() -> biorouter::providers::base::ProviderMetadata {
+                biorouter::providers::base::ProviderMetadata::empty()
+            }
+            fn get_name(&self) -> &str {
+                "aws_bedrock"
+            }
+            fn get_model_config(&self) -> biorouter::model::ModelConfig {
+                biorouter::model::ModelConfig::new_or_fail("us.anthropic.claude-haiku-5-5")
+            }
+            async fn complete_with_model(
+                &self,
+                _model_config: &biorouter::model::ModelConfig,
+                _system: &str,
+                _messages: &[Message],
+                _tools: &[rmcp::model::Tool],
+            ) -> Result<
+                (Message, biorouter::providers::base::ProviderUsage),
+                biorouter::providers::errors::ProviderError,
+            > {
+                unreachable!("`/model` asks no model anything")
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let manager = std::sync::Arc::new(biorouter::session::SessionManager::new(
+            tmp.path().to_path_buf(),
+        ));
+        let session = test_cli_session(manager, "text").await;
+        session
+            .agent
+            .update_provider(std::sync::Arc::new(HaikuModel), session.session_id())
+            .await
+            .unwrap();
+        let route = format!(
+            "biorouter session --resume --session-id {} --provider <provider> --model <model>",
+            session.session_id()
+        );
+
+        let mut app = App::new(StatusInfo::default());
+        assert!(model_slash(&session, &mut app, "/model claude_code claude-haiku-5-5").await);
+        let shown = scrollback_text(&app);
+        assert!(
+            shown.starts_with("A running terminal chat cannot switch its model.")
+                && shown.ends_with(&route),
+            "{shown}"
+        );
+        assert!(!shown.contains("BIOROUTER_CLI_CLASSIC"), "{shown}");
+
+        let mut app = App::new(StatusInfo::default());
+        assert!(model_slash(&session, &mut app, "/model").await);
+        let shown = scrollback_text(&app);
+        assert!(
+            shown.starts_with("Model: Claude Haiku 5.5"),
+            "the model by its display name: {shown}"
+        );
+        assert!(!shown.contains("claude-haiku-5-5"), "{shown}");
+        assert!(!shown.contains("aws_bedrock"), "no provider key: {shown}");
+        assert!(shown.ends_with(&route), "{shown}");
+
+        let mut app = App::new(StatusInfo::default());
+        assert!(!model_slash(&session, &mut app, "/models").await);
+        assert!(scrollback_text(&app).is_empty());
     }
 
     fn open_research_child(app: &mut App) {

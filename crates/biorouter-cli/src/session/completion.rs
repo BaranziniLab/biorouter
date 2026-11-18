@@ -46,6 +46,8 @@ pub(crate) const SLASH_COMMANDS: &[&str] = &[
     "/effort",
     "/bug",
     "/mode",
+    // After `/mode`, so `/m` and `/mo` still ghost to it.
+    "/model",
     "/plan",
     "/endplan",
     "/workflow",
@@ -487,7 +489,8 @@ impl Completer for BioRouterCompleter {
             return Ok((pos, vec![]));
         }
 
-        if line.starts_with("/mode") {
+        // `/mode` and its names; `/model` is a command of its own.
+        if line == "/mode" || line.starts_with("/mode ") {
             return self.complete_mode_flags(line);
         }
 
@@ -622,6 +625,32 @@ mod tests {
                 "{command} is handled by the agent but missing from SLASH_COMMANDS"
             );
         }
+    }
+
+    /// rq2-074: `/model` is a command of its own. It is offered beside `/mode`,
+    /// `/m` still ghosts to `/mode`, and a line that starts with `/model` is no
+    /// longer read as `/mode` (which offered it nothing).
+    #[test]
+    fn model_completes_as_its_own_command() {
+        let completer = BioRouterCompleter::new(create_test_cache());
+        let history = rustyline::history::DefaultHistory::new();
+        let ctx = Context::new(&history);
+
+        let (_, candidates) = completer.complete("/mo", 3, &ctx).unwrap();
+        let offered: Vec<&str> = candidates.iter().map(|c| c.display.as_str()).collect();
+        assert!(
+            offered.contains(&"/mode") && offered.contains(&"/model"),
+            "{offered:?}"
+        );
+        let (_, candidates) = completer.complete("/model", 6, &ctx).unwrap();
+        assert!(
+            candidates.iter().any(|c| c.replacement == "/model "),
+            "{:?}",
+            candidates.iter().map(|c| &c.display).collect::<Vec<_>>()
+        );
+        let (_, candidates) = completer.complete("/mode ", 6, &ctx).unwrap();
+        assert!(candidates.iter().any(|c| c.display == "approve"));
+        assert_eq!(slash_ghost("/m"), Some("ode"));
     }
 
     #[test]
