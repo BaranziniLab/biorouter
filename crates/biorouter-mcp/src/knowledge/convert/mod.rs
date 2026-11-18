@@ -24,6 +24,34 @@ pub enum SourceInput {
     },
 }
 
+/// A source no converter could turn into text: a corrupt or encrypted PDF, a
+/// file of a type nothing here reads, a workbook with no cells.
+///
+/// It is the person's file that is wrong, not the daemon, so
+/// `POST /knowledge/bases/{id}/raw` answers 422 for it rather than 500, and its
+/// message is written for that person: it says the source could not be read,
+/// then gives the converter's reason in full (rq2-029). Fetching a URL and
+/// reading a local path are not conversion and are not marked.
+#[derive(Debug)]
+pub struct UnreadableSource {
+    reason: String,
+}
+
+impl UnreadableSource {
+    /// Does `error`, or anything it wraps, say the source itself was unreadable?
+    pub fn is(error: &anyhow::Error) -> bool {
+        error.downcast_ref::<Self>().is_some() || error.chain().any(|cause| cause.is::<Self>())
+    }
+}
+
+impl std::fmt::Display for UnreadableSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Could not read this source: {}", self.reason)
+    }
+}
+
+impl std::error::Error for UnreadableSource {}
+
 #[derive(Debug, Clone)]
 pub struct Converted {
     pub markdown: String,
@@ -132,7 +160,18 @@ async fn convert_file_async(
         .map_err(|error| anyhow::anyhow!("source conversion task failed: {error}"))?
 }
 
+/// Every failure past this point is about the bytes themselves, so each one is
+/// marked [`UnreadableSource`], carrying the converter's whole cause chain.
 fn convert_file(bytes: &[u8], filename: &str, mime: Option<&str>) -> Result<Converted> {
+    convert_bytes(bytes, filename, mime).map_err(|error| {
+        UnreadableSource {
+            reason: format!("{error:#}"),
+        }
+        .into()
+    })
+}
+
+fn convert_bytes(bytes: &[u8], filename: &str, mime: Option<&str>) -> Result<Converted> {
     let effective_mime = normalize_mime(filename, mime, bytes);
     match effective_mime.as_str() {
         "text/html" | "application/xhtml+xml" => {
@@ -306,6 +345,40 @@ mod tests {
         .unwrap();
         assert!(c.markdown.contains("# Hello"));
         assert_eq!(c.mime, "text/html");
+    }
+
+    /// rq2-029. A corrupt file is marked as the person's input, and the mark
+    /// survives the context a caller adds, which is how a route tells a 422
+    /// from a 500.
+    #[tokio::test]
+    async fn a_corrupt_pdf_is_an_unreadable_source_that_names_its_cause() {
+        let error = convert(&SourceInput::File {
+            bytes: b"%PDF-1.7\nthis is not a pdf body at all\n%%EOF\n".to_vec(),
+            filename: "broken.pdf".into(),
+            mime: Some("application/pdf".into()),
+        })
+        .await
+        .expect_err("a corrupt PDF does not convert");
+        assert!(UnreadableSource::is(&error), "{error:#}");
+        let message = error.to_string();
+        assert!(
+            message.starts_with("Could not read this source: ")
+                && message.contains("PDF text extraction failed"),
+            "{message}"
+        );
+        let wrapped = error.context("staging");
+        assert!(UnreadableSource::is(&wrapped), "{wrapped:#}");
+    }
+
+    /// A failure that is not about the bytes is not marked, so it stays a 500.
+    #[tokio::test]
+    async fn a_missing_local_path_is_not_an_unreadable_source() {
+        let error = convert(&SourceInput::Path(std::path::PathBuf::from(
+            "/nonexistent/biorouter-l3/source.pdf",
+        )))
+        .await
+        .expect_err("a missing path does not convert");
+        assert!(!UnreadableSource::is(&error), "{error:#}");
     }
 
     #[tokio::test]

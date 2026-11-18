@@ -1007,6 +1007,105 @@ async fn add_raw_source_html_multipart_uses_part_mime() {
     assert!(page["content"].as_str().unwrap().contains("# Hello"));
 }
 
+/// A file that names itself a PDF and is not one. Every extractor in the chain
+/// refuses it, which is the corrupt-upload case rq2-029 was reported from.
+const CORRUPT_PDF: &[u8] = b"%PDF-1.7\nthis is not a pdf body at all\n%%EOF\n";
+
+/// The `message` of a stream's `event: error` frame, or `None` without one.
+fn sse_error_message(body: &str) -> Option<String> {
+    let payload = body
+        .split("event: error\ndata: ")
+        .nth(1)?
+        .split("\n\n")
+        .next()?;
+    let frame: serde_json::Value = serde_json::from_str(payload).ok()?;
+    frame["message"].as_str().map(str::to_string)
+}
+
+/// rq2-029. A corrupt file is the person's input, not a fault of the daemon,
+/// so the raw route answers 422 and says what was wrong with it. It used to
+/// answer 500 for every failure, unreadable uploads included.
+#[tokio::test]
+async fn raw_route_answers_422_for_an_unreadable_file() {
+    let (_d, app) = build_test_router();
+    create_kb(app.clone(), "rawbad", "Raw Bad").await;
+
+    let res = app
+        .clone()
+        .oneshot(multipart_file_request(
+            "/bases/rawbad/raw",
+            "broken.pdf",
+            Some("application/pdf"),
+            CORRUPT_PDF.to_vec(),
+            &[],
+        ))
+        .await
+        .unwrap();
+    let status = res.status();
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let text = String::from_utf8_lossy(&body);
+    assert_eq!(
+        status, 422,
+        "an unreadable file is not a server fault: {text}"
+    );
+    assert!(
+        text.contains("Could not read this source") && text.contains("PDF text extraction failed"),
+        "the refusal must say the file could not be read, and why: {text}"
+    );
+}
+
+/// rq2-029. A digest of a corrupt PDF used to end in an error frame reading
+/// `add_raw_source`, an internal function name, with the converter's reason
+/// dropped because the route printed only the outermost context.
+///
+/// The model is an `ollama` provider on an address that resolves nowhere, the
+/// way `privacy_ratchet` builds one: the route needs a provider to construct,
+/// and the source fails to convert before any request could be sent.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_corrupt_pdf_names_its_cause() {
+    let _env = env_lock::lock_env([
+        ("BIOROUTER_KNOWLEDGE_TEST_MODE", None),
+        (
+            "OLLAMA_HOST",
+            Some("http://ollama.invalid:11434".to_string()),
+        ),
+        ("OLLAMA_TIMEOUT", Some("1".to_string())),
+    ]);
+    let (_d, app) = build_test_router();
+    create_kb(app.clone(), "ingbad", "Ingest Bad").await;
+
+    let res = app
+        .clone()
+        .oneshot(ingest_multipart_request(
+            "/bases/ingbad/ingest",
+            "broken.pdf",
+            Some("application/pdf"),
+            CORRUPT_PDF.to_vec(),
+            "ollama",
+            "qwen3.5:4b",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "the ingest route opens its stream");
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let body = String::from_utf8_lossy(&body);
+    let message = sse_error_message(&body)
+        .unwrap_or_else(|| panic!("a failed digest must end in an error frame: {body}"));
+    assert!(
+        message.contains("PDF text extraction failed"),
+        "the error frame must name the cause: {message}"
+    );
+    assert!(
+        !message.contains("add_raw_source"),
+        "the error frame must not show an internal function name: {message}"
+    );
+}
+
 #[tokio::test]
 async fn add_raw_source_accepts_supported_file_formats() {
     let (_d, app) = build_test_router();
