@@ -18265,6 +18265,10 @@ export type DeleteWorkflowErrors = {
      */
     401: unknown;
     /**
+     * A matching schedule does private work outside this caller's reach. Nothing was changed
+     */
+    403: unknown;
+    /**
      * Workflow not found
      */
     404: unknown;
