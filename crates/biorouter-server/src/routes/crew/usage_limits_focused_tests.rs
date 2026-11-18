@@ -370,7 +370,7 @@ mod signed_bridge {
                 mode: &mode,
                 institution_id: None,
                 policy_epoch: 1,
-                name: Some("Focused usage lab"),
+                name: Some("focused-usage-lab"),
                 capabilities: &CAPABILITIES,
             }
             .signing_payload(),
@@ -378,7 +378,7 @@ mod signed_bridge {
         json!({
             "protocol": 1, "workspace_id": WORKSPACE, "host_uid": HOST_UID,
             "mode": mode, "institution_id": null, "policy_epoch": 1,
-            "name": "Focused usage lab", "workspace_public_key": public,
+            "name": "focused-usage-lab", "workspace_public_key": public,
             "node_id": NODE, "challenge_nonce": nonce,
             "signature": v1, "signature_v2": v2, "capabilities": CAPABILITIES,
         })
@@ -387,7 +387,7 @@ mod signed_bridge {
     fn snapshot() -> Value {
         json!({
             "workspace": {
-                "id": WORKSPACE, "name": "Focused usage lab", "mode": "public",
+                "id": WORKSPACE, "name": "focused-usage-lab", "mode": "public",
                 "institution_id": null, "policy_epoch": 1,
                 "host_principal_id": "focused-principal-alice",
             },
@@ -579,7 +579,7 @@ mod signed_bridge {
                 workspace_public_key: workspace_key::Key::new().public_hex(),
                 socket_path: SOCKET.into(),
                 owner_uid: HOST_UID,
-                workspace_name: Some("Focused usage lab".into()),
+                workspace_name: Some("focused-usage-lab".into()),
                 host_username: Some("alice".into()),
                 host_display_name: Some("Synthetic Alice".into()),
                 mode: Some(biorouter_crew::Mode::Public),
