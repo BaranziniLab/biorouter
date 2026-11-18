@@ -515,13 +515,14 @@ impl PermissionInspector {
             let Ok(tool_call) = &request.tool_call else {
                 continue;
             };
-            match self.deterministic_verdict(
+            let verdict = self.deterministic_verdict(
                 &tool_call.name,
                 request,
                 biorouter_mode,
                 working_dir,
                 risks,
-            ) {
+            );
+            match always_confirm(verdict, session, &tool_call.name) {
                 Verdict::Decided(action, reason) => results.push(InspectionResult {
                     tool_request_id: request.id.clone(),
                     action,
@@ -562,6 +563,34 @@ impl PermissionInspector {
 
         Ok(results)
     }
+}
+
+/// What a person sees on the approval card for a tool the chat always confirms.
+pub const APP_ALWAYS_CONFIRM_REASON: &str =
+    "This app asks for your approval each time it uses this tool.";
+
+/// rq2-193/198/211: the chat's always-confirm set (an Agent Drafter app's
+/// `guardrails.needs_approval`, [`crate::config::permission::set_session_always_confirm`])
+/// raises an approval for a listed tool in every mode that runs tools, Auto
+/// included. It only ever raises: a denial stands, an ask keeps its own
+/// explanation when it has one, and the opt-in judge is not asked about a call
+/// that will be put to a person anyway. Chat mode never reaches here.
+fn always_confirm(verdict: Verdict, session: &crate::session::Session, tool_name: &str) -> Verdict {
+    if !crate::config::permission::session_always_confirms(session, tool_name) {
+        return verdict;
+    }
+    let stands = matches!(
+        verdict,
+        Verdict::Decided(InspectionAction::Deny, _)
+            | Verdict::Decided(InspectionAction::RequireApproval(Some(_)), _)
+    );
+    if stands {
+        return verdict;
+    }
+    Verdict::Decided(
+        InspectionAction::RequireApproval(Some(APP_ALWAYS_CONFIRM_REASON.to_string())),
+        APP_ALWAYS_CONFIRM_REASON.to_string(),
+    )
 }
 
 #[async_trait]
@@ -668,5 +697,133 @@ mod person_tool_tests {
             verdict(&inspector, "crew__change", BioRouterMode::Approve),
             InspectionAction::Deny
         );
+    }
+}
+
+#[cfg(test)]
+mod app_always_confirm_tests {
+    use super::*;
+    use crate::config::permission::set_session_always_confirm;
+
+    fn inspector(dir: &Path) -> PermissionInspector {
+        PermissionInspector::new(
+            Arc::new(ToolRiskRegistry::new()),
+            Arc::new(PermissionManager::new(dir.join("config"))),
+            Arc::new(ManagedPolicy::empty()),
+            Arc::new(tokio::sync::Mutex::new(None)),
+        )
+    }
+
+    fn request(name: &str) -> ToolRequest {
+        ToolRequest {
+            id: format!("call_{name}"),
+            tool_call: Ok(rmcp::model::CallToolRequestParams {
+                task: None,
+                meta: None,
+                name: name.to_owned().into(),
+                arguments: Some(rmcp::object!({"command": "echo hi"})),
+            }),
+            metadata: None,
+            tool_meta: None,
+        }
+    }
+
+    async fn action(
+        inspector: &PermissionInspector,
+        session: &crate::session::Session,
+        tool: &str,
+        mode: BioRouterMode,
+    ) -> InspectionAction {
+        let results = inspector
+            .inspect_graded(&[request(tool)], mode, session, &ToolRiskRegistry::new())
+            .await
+            .unwrap();
+        assert_eq!(results.len(), 1, "{tool} in {mode:?}: {results:?}");
+        results[0].action.clone()
+    }
+
+    /// rq2-193/198/211: an app's `guardrails.needs_approval` is a promise that
+    /// a person approves each listed tool. Auto mode approved everything, so
+    /// `developer__shell` ran with no approval frame. It asks in every mode
+    /// that runs tools now, and only for the listed tool in the app's chat.
+    #[tokio::test]
+    async fn a_tool_an_app_always_confirms_asks_in_every_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let inspector = inspector(dir.path());
+        let app_chat = crate::session::Session {
+            id: "inspector-always-confirm-app".into(),
+            ..Default::default()
+        };
+        let other_chat = crate::session::Session {
+            id: "inspector-always-confirm-other".into(),
+            ..Default::default()
+        };
+        set_session_always_confirm(&app_chat, &["developer__shell".to_string()]);
+
+        for mode in [
+            BioRouterMode::Auto,
+            BioRouterMode::Approve,
+            BioRouterMode::SmartApprove,
+        ] {
+            assert!(
+                matches!(
+                    action(&inspector, &app_chat, "developer__shell", mode).await,
+                    InspectionAction::RequireApproval(Some(_))
+                ),
+                "a tool the app always confirms must ask in {mode:?}"
+            );
+        }
+        assert_eq!(
+            action(
+                &inspector,
+                &app_chat,
+                "developer__text_editor",
+                BioRouterMode::Auto
+            )
+            .await,
+            InspectionAction::Allow,
+            "a tool the app did not list still follows the mode"
+        );
+        assert_eq!(
+            action(
+                &inspector,
+                &other_chat,
+                "developer__shell",
+                BioRouterMode::Auto
+            )
+            .await,
+            InspectionAction::Allow,
+            "another chat is not the app's"
+        );
+
+        // The person's own "always allow" does not lift the app's ask, and
+        // their "never allow" still denies.
+        inspector
+            .permission_manager
+            .update_user_permission("developer__shell", PermissionLevel::AlwaysAllow);
+        assert!(matches!(
+            action(
+                &inspector,
+                &app_chat,
+                "developer__shell",
+                BioRouterMode::Approve
+            )
+            .await,
+            InspectionAction::RequireApproval(Some(_))
+        ));
+        inspector
+            .permission_manager
+            .update_user_permission("developer__shell", PermissionLevel::NeverAllow);
+        assert_eq!(
+            action(
+                &inspector,
+                &app_chat,
+                "developer__shell",
+                BioRouterMode::Approve
+            )
+            .await,
+            InspectionAction::Deny
+        );
+        set_session_always_confirm(&app_chat, &[]);
     }
 }

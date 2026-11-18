@@ -78,8 +78,14 @@ impl Capabilities {
         if self.files.is_some() {
             v.push("files".to_string());
         }
-        if self.data.is_some() {
+        if let Some(data) = self.data.as_ref() {
             v.push("data".to_string());
+            // The knowledge-base grant, named on its own: SQL arming can
+            // withhold `data` (a missing database file), and that must never
+            // take `br.kb` away from an app that declared a knowledge source.
+            if data.declares_knowledge() {
+                v.push("data:knowledge".to_string());
+            }
         }
         if self.compute.is_some() {
             v.push("compute".to_string());
@@ -214,20 +220,32 @@ impl Default for UiCapability {
     }
 }
 
-/// A host directory mounted into the app workspace.
+/// A named folder inside the app workspace (`workspace/<name>`), with its
+/// access mode. The files server enforces the mode
+/// ([`crate::files_server::for_app`]).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceEntry {
-    /// Mount name exposed to the app (e.g. "data", "out").
+    /// The folder's name inside the workspace (e.g. "data", "out").
     pub name: String,
-    /// Absolute host dir to mount; `None` → a subdir of the app workspace.
+    /// A host folder to mount here. **Not mounted:** host folders wait for a
+    /// consent step that names the folder (owner decision, rq2-199). An entry
+    /// that sets it is still a folder inside the workspace, and the app's
+    /// capability report lists `files.local_dir` as withheld.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_dir: Option<String>,
-    /// "ro" | "rw".
+    /// "ro" (the default) refuses every write into the entry; "rw" accepts them.
     #[serde(default = "ro_mode")]
     pub mode: String,
-    /// An empty output dir created for the app to write into.
+    /// An output folder the app writes into: writable whatever `mode` says.
     #[serde(default)]
     pub out_dir: bool,
+}
+
+impl WorkspaceEntry {
+    /// Whether the files server accepts writes into this entry.
+    pub fn is_writable(&self) -> bool {
+        self.out_dir || self.mode.trim().eq_ignore_ascii_case("rw")
+    }
 }
 fn ro_mode() -> String {
     "ro".to_string()
@@ -279,6 +297,18 @@ pub struct DataSource {
 pub struct DataCapability {
     #[serde(default)]
     pub sources: Vec<DataSource>,
+}
+
+impl DataCapability {
+    /// Whether any source is a SQL database file, which arms `datasql`.
+    pub fn declares_sql(&self) -> bool {
+        self.sources.iter().any(|source| source.kind == "sql")
+    }
+
+    /// Whether any source is a knowledge base, which grants `br.kb`.
+    pub fn declares_knowledge(&self) -> bool {
+        self.sources.iter().any(|source| source.kind == "knowledge")
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -414,7 +444,12 @@ pub struct GuardrailsConfig {
     pub pii: PiiMode,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub checks: Vec<GuardrailCheck>,
-    /// Tools that always require human approval.
+    /// Tools that always require a person's approval, by full tool name
+    /// (`developer__shell`), in every permission mode. The app socket registers
+    /// the list for the app's chat on connect
+    /// (`biorouter::config::permission::set_session_always_confirm`), the
+    /// permission inspector asks for each call, and the page gets an
+    /// `approval` frame to answer with `br.approve` / `br.reject`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub needs_approval: Vec<String>,
     /// Persist a RunState + emit `approval{}` when no interactive UI is present.
@@ -1026,5 +1061,40 @@ mod theme_tests {
         assert!(is_safe_token_key("--br-accent-hover"));
         assert!(!is_safe_token_key("--br-")); // empty suffix
         assert!(!is_safe_token_key("accent")); // not a --br- prop
+    }
+}
+
+#[cfg(test)]
+mod advertised_tests {
+    use super::*;
+
+    fn capabilities(value: serde_json::Value) -> Capabilities {
+        serde_json::from_value(value).unwrap()
+    }
+
+    /// rq2-194/196: a `kind: "knowledge"` source is a knowledge-base grant, and
+    /// the `ready` frame names it as `data:knowledge`, a token SQL arming never
+    /// withholds. `br.kb` in the page checks for it.
+    #[test]
+    fn a_knowledge_source_is_advertised_as_the_knowledge_grant() {
+        let knowledge_only = capabilities(serde_json::json!({
+            "data": { "sources": [{ "name": "trial", "kind": "knowledge", "ids": ["trial-kb"] }] }
+        }));
+        let advertised = knowledge_only.advertised();
+        assert!(
+            advertised.contains(&"data:knowledge".to_string()),
+            "{advertised:?}"
+        );
+        assert!(advertised.contains(&"data".to_string()), "{advertised:?}");
+
+        let sql_only = capabilities(serde_json::json!({
+            "data": { "sources": [{ "name": "cohort", "kind": "sql", "file": "cohort.db" }] }
+        }));
+        assert!(
+            !sql_only
+                .advertised()
+                .contains(&"data:knowledge".to_string()),
+            "a SQL source grants no knowledge base"
+        );
     }
 }

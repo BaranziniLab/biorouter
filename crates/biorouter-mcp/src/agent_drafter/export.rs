@@ -961,7 +961,7 @@ fn walk_app(
             if depth == 0 && name == "manifest.json" {
                 continue;
             }
-            if looks_like_credential(&name) {
+            if looks_like_credential(&rel) {
                 report
                     .skipped
                     .push(format!("{rel}: looks like a credential file"));
@@ -978,23 +978,50 @@ fn walk_app(
     Ok(())
 }
 
-/// File names that hold credentials often enough that an export never carries
-/// them: dotenv files, private keys and certificates, and package-manager and
-/// cloud credential files.
-fn looks_like_credential(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    lower == ".env"
-        || lower.starts_with(".env.")
-        || [".pem", ".key", ".p12", ".pfx"]
-            .iter()
-            .any(|ext| lower.ends_with(ext))
+/// The secret guard's always-on floor ([`crate::secret_guard::DEFAULT_SECRET_PATTERNS`]),
+/// as a matcher over paths relative to the folder being exported. Built from
+/// the guard's own list, never a copy of it, so a file the floor keeps from
+/// every chat is also never exported.
+static SECRET_FLOOR: std::sync::LazyLock<ignore::gitignore::Gitignore> =
+    std::sync::LazyLock::new(|| {
+        let mut builder = ignore::gitignore::GitignoreBuilder::new(".");
+        for pattern in crate::secret_guard::DEFAULT_SECRET_PATTERNS {
+            let _ = builder.add_line(None, pattern);
+        }
+        builder
+            .build()
+            .unwrap_or_else(|_| ignore::gitignore::Gitignore::empty())
+    });
+
+/// Files that hold credentials often enough that an export never carries them,
+/// judged on `rel`, the file's path inside the folder being exported, with
+/// case folded: everything the secret guard's floor names (`.env*`,
+/// `secrets.*`, `*.pem`, SSH keys, `.netrc`, `.pgpass`, `.git-credentials`,
+/// `.aws/credentials`, `.docker/config.json`, ...), plus private key and
+/// certificate files, package-manager credential files, and credential and
+/// service account files by name (`credentials`, `credentials.*`,
+/// `*credentials*.json`, `service-account*.json`).
+fn looks_like_credential(rel: &str) -> bool {
+    let lower = rel.replace('\\', "/").to_ascii_lowercase();
+    let name = lower.rsplit('/').next().unwrap_or(&lower);
+    if SECRET_FLOOR
+        .matched_path_or_any_parents(Path::new(&lower), false)
+        .is_ignore()
+    {
+        return true;
+    }
+    [".pem", ".key", ".p12", ".pfx"]
+        .iter()
+        .any(|ext| name.ends_with(ext))
         || ["id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"]
             .iter()
-            .any(|key| lower.starts_with(key))
-        || matches!(
-            lower.as_str(),
-            ".netrc" | ".npmrc" | ".pypirc" | "credentials"
-        )
+            .any(|key| name.starts_with(key))
+        || matches!(name, ".netrc" | ".npmrc" | ".pypirc" | "credentials")
+        || name.starts_with(".env")
+        || name.starts_with("credentials.")
+        || name.starts_with("secrets.")
+        || (name.ends_with(".json")
+            && (name.contains("credentials") || name.starts_with("service-account")))
 }
 
 /// Where an authored file goes in the export: its own path, unless that path is
@@ -1641,7 +1668,7 @@ fn copy_tree(
                 )?;
             }
         } else if kind.is_file() {
-            if looks_like_credential(&shown) {
+            if looks_like_credential(&child) {
                 skipped.push(format!("{child}: looks like a credential file"));
                 continue;
             }
@@ -2319,6 +2346,78 @@ mod tests {
         let error = legacy_export_map(&f.store_root, "broken-page").unwrap_err();
         assert!(matches!(error, ExportError::Unexportable(_)), "{error}");
         assert!(error.to_string().contains("index.html"), "{error}");
+    }
+
+    /// rq2-164: the export's name filter matched an exact `credentials` but
+    /// not `credentials.json`, `secrets.yaml` or a service account key, so an
+    /// app folder holding one shipped it. It now asks the secret guard's floor
+    /// too, so an export never carries a file a chat may not read.
+    #[test]
+    fn credential_shaped_names_are_never_exported() {
+        for rel in [
+            "credentials.json",
+            "Credentials.JSON",
+            "config/credentials.yaml",
+            "gcp-credentials.json",
+            "my_credentials_prod.json",
+            "secrets.yaml",
+            "config/secrets.toml",
+            "service-account.json",
+            "service-account-prod.json",
+            ".git-credentials",
+            ".env.local",
+            ".pgpass",
+            "home/.aws/credentials",
+            "keys/.docker/config.json",
+        ] {
+            assert!(looks_like_credential(rel), "{rel} must never be exported");
+        }
+        for rel in [
+            "index.html",
+            "src/main.ts",
+            "config.json",
+            "assets/theme.css",
+            "data/accounts.csv",
+            "docs/service-overview.md",
+        ] {
+            assert!(!looks_like_credential(rel), "{rel} is an ordinary file");
+        }
+
+        let f = fixture();
+        let app = f.app("credential-names", ArtifactKind::Static);
+        for rel in [
+            "credentials.json",
+            "secrets.yaml",
+            "config/service-account.json",
+            ".git-credentials",
+            "config/gcp-credentials.json",
+        ] {
+            let path = join_rel(&app, rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, b"{\"private_key\":\"x\"}").unwrap();
+        }
+        let report = f
+            .export("credential-names", &ExportRequest::default())
+            .unwrap();
+        let dir = out(&report);
+        for rel in [
+            "credentials.json",
+            "secrets.yaml",
+            "config/service-account.json",
+            ".git-credentials",
+            "config/gcp-credentials.json",
+        ] {
+            assert!(!dir.join(rel).exists(), "{rel} was exported");
+            assert!(
+                report
+                    .skipped
+                    .iter()
+                    .any(|s| s == &format!("{rel}: looks like a credential file")),
+                "{rel} is listed in the report: {:?}",
+                report.skipped
+            );
+        }
+        assert!(dir.join("index.html").is_file());
     }
 
     #[test]

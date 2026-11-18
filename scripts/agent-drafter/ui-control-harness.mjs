@@ -1824,7 +1824,166 @@ async function runSelftest() {
     check(`an app page at ${pagePath} connects its socket under that page's prefix`, got === expected, got);
   }
 
+  await runKnowledgeGrantAndDefaultChatScenarios(JSDOM, bundle, WS_TOKEN, APP_ID);
+
   dom.window.close();
   log(failures === 0 ? "ALL PASS" : `${failures} FAILURE(S)`);
   return failures === 0 ? 0 : 1;
+}
+
+/** A fresh page on its own socket (it becomes the harness's `client`). */
+async function freshPage(JSDOM, bundle, bodyHtml, config) {
+  const surfacesBefore = received.filter((f) => f.type === "ui_surface").length;
+  const page = new JSDOM(
+    "<!doctype html><html><head><title>p</title></head><body>" + bodyHtml + "</body></html>",
+    { url: `http://127.0.0.1:${PORT}/`, runScripts: "outside-only", pretendToBeVisual: true }
+  );
+  const w = page.window;
+  w.WebSocket = globalThis.WebSocket;
+  w.console = { log() {}, info() {}, debug() {}, error() {}, warn() {} };
+  w.BIOROUTER_APP_CONFIG = config;
+  w.eval(bundle);
+  const up = await waitFor(
+    () => received.filter((f) => f.type === "ui_surface").length > surfacesBefore
+  );
+  return { page, w, up };
+}
+
+// ── Scenarios AA-AC: br.kb on a knowledge-only app, and the default chat ─────
+async function runKnowledgeGrantAndDefaultChatScenarios(JSDOM, bundle, wsToken, appId) {
+  // AA (rq2-194/196): a knowledge-only app's `ready` advertises `data:knowledge`
+  // and no bare `data` when its SQL arming withholds `data`. `br.kb` must
+  // round-trip on that token alone.
+  const aa = await freshPage(JSDOM, bundle, "", { appId, autoChat: false, ui: true, wsToken });
+  check("scenario AA page connects on its own socket", aa.up, "no ui_surface frame");
+  send({
+    type: "ready",
+    protocol: 2,
+    capabilities: ["ui", "data:knowledge"],
+    sessionId: "harness",
+    resumed: false,
+  });
+  await waitFor(() => aa.w.eval("window.Biorouter.has('data:knowledge')"));
+  const baseKb = received.length;
+  aa.w.eval(
+    "window.__kbk = 'pending';" +
+      "window.Biorouter.kb.search('trial').then(" +
+      "  function (r) { window.__kbk = r; }," +
+      "  function (e) { window.__kbk = 'ERR:' + (e && e.message); });"
+  );
+  const sentKb = await waitFor(() =>
+    received.slice(baseKb).some((f) => f.type === "kb" && f.op === "search")
+  );
+  check(
+    "a ready advertising only data:knowledge lets br.kb reach the daemon",
+    sentKb,
+    String(aa.w.eval("window.__kbk"))
+  );
+  const kbf = received.slice(baseKb).find((f) => f.type === "kb" && f.op === "search");
+  if (kbf) send({ type: "kb_result", reqId: kbf.reqId, result: { hits: [] } });
+  await waitFor(() => aa.w.eval("window.__kbk") !== "pending");
+  check(
+    "br.kb.search resolves on a knowledge-only grant",
+    typeof aa.w.eval("window.__kbk") === "object",
+    String(aa.w.eval("window.__kbk"))
+  );
+  aa.page.window.close();
+
+  // AB (rq2-209): a resumed session's default chat asks for the history and
+  // draws the earlier turns, once, before anything new.
+  const ab = await freshPage(JSDOM, bundle, '<div id="chat" data-br-chat></div>', {
+    appId,
+    autoChat: true,
+    ui: true,
+    wsToken,
+  });
+  check("scenario AB page connects on its own socket", ab.up, "no ui_surface frame");
+  const rows = () =>
+    Array.from(ab.w.document.querySelectorAll("#chat .br-chat__log > .br-msg")).map(
+      (el) => ({ cls: el.className, text: el.textContent || "" })
+    );
+  const baseHist = received.length;
+  send({
+    type: "ready",
+    protocol: 2,
+    capabilities: ["ui"],
+    sessionId: "harness",
+    resumed: true,
+    messageCount: 2,
+  });
+  const asked = await waitFor(() =>
+    received.slice(baseHist).some((f) => f.type === "history")
+  );
+  check("a resumed session's default chat asks for its history", asked, "no history frame");
+  send({
+    type: "history",
+    messages: [
+      { role: "user", text: "earlier question" },
+      { role: "assistant", text: "earlier **answer**" },
+      { role: "notice", text: "Usage limit reached for this chat: 900 tokens used." },
+    ],
+  });
+  await waitFor(() => rows().some((r) => /earlier answer/.test(r.text)));
+  const drawn = rows();
+  check(
+    "the default chat draws the earlier user and agent turns in order",
+    drawn.length >= 2 &&
+      /br-msg--user/.test(drawn[0].cls) &&
+      drawn[0].text === "earlier question" &&
+      /br-msg--agent/.test(drawn[1].cls) &&
+      /earlier answer/.test(drawn[1].text) &&
+      ab.w.document.querySelector("#chat .br-msg--agent strong") !== null,
+    JSON.stringify(drawn)
+  );
+  check(
+    "a stored notice in the history is drawn as a muted line",
+    drawn.some((r) => /br-msg--notice/.test(r.cls) && /Usage limit reached/.test(r.text)),
+    JSON.stringify(drawn)
+  );
+  const histRequests = () => received.slice(baseHist).filter((f) => f.type === "history").length;
+  send({
+    type: "ready",
+    protocol: 2,
+    capabilities: ["ui"],
+    sessionId: "harness",
+    resumed: true,
+    messageCount: 3,
+  });
+  await delay(150);
+  check(
+    "a second resumed ready (a reconnect) does not draw the history again",
+    histRequests() === 1 && rows().length === drawn.length,
+    JSON.stringify({ requests: histRequests(), rows: rows().length })
+  );
+
+  // AC (rq2-207/210): an `error` frame's own message is shown once, muted;
+  // "Could not reach the agent." is not added on top of it.
+  const sentence =
+    "Usage limit reached for this chat: 900 tokens used, of its limit of 100 tokens.";
+  const before = rows().length;
+  const basePrompt = received.length;
+  ab.w.eval(
+    "(function () { var i = document.querySelector('#chat .br-input');" +
+      " i.value = 'one more'; document.querySelector('#chat .br-btn').click(); })();"
+  );
+  const prompted = await waitFor(() =>
+    received.slice(basePrompt).some((f) => f.type === "prompt" && f.text === "one more")
+  );
+  check("the default chat sends the prompt", prompted, "no prompt frame");
+  send({ type: "error", code: "usage_limit", message: sentence });
+  await waitFor(() => rows().some((r) => r.text === sentence));
+  await delay(100);
+  const after = rows().slice(before);
+  check(
+    "an error frame's message is shown once, as a muted line",
+    after.filter((r) => r.text === sentence).length === 1 &&
+      after.some((r) => r.text === sentence && /br-msg--notice/.test(r.cls)),
+    JSON.stringify(after)
+  );
+  check(
+    "the error frame adds no 'Could not reach the agent.' line",
+    !after.some((r) => /Could not reach the agent/.test(r.text)),
+    JSON.stringify(after)
+  );
+  ab.page.window.close();
 }

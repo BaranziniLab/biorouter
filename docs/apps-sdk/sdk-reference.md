@@ -173,9 +173,9 @@ Only the Agent Drafter–specific blocks are shown.
               "allow_ask": true, "allow_signals": true, "allow_html": false,
               "allow_autorun": false,   // signal-triggered turns; user-granted only
               "max_panels": 12, "ask_timeout_s": 300 },
-      "files": { "entries": [{ "name": "data", "local_dir": "/abs/dir",
-                               "mode": "ro", "out_dir": false }],
-                 "max_file_bytes": 262144 },
+      "files": { "entries": [{ "name": "data", "mode": "ro", "out_dir": false },
+                             { "name": "out", "mode": "rw" }],
+                 "max_file_bytes": 262144 },        // local_dir: not mounted, see notes
       "data": { "sources": [
         { "name": "trial", "kind": "knowledge", "ids": ["trial-kb"],
           "read_only": true },                     // ingest needs read_only:false
@@ -249,6 +249,8 @@ These come from `manifest.rs`.
 
 - `capabilities.ui` is **on by default** (all sub-switches default on except `allow_html` and `allow_autorun`, which are off). `max_panels` default 12; `ask_timeout_s` default 300.
 - `allow_signals` lets the agent **listen** to declared `surface.signals`; it does **not** let a signal act. `allow_autorun` (default off, user-granted only — the agent can never self-grant) additionally lets a signal *start a turn*, and only when that signal opts in via `surface.signals[].autorun: true` and the server's autorun budgets hold (6/min, 60/session). Without it every signal is queue-only (context for the next turn).
+- `files.entries` name folders inside the app's workspace (`workspace/<name>`, created on connect). With entries, the files tools read anywhere in the workspace and write only into an entry whose `mode` is `"rw"` or that sets `out_dir`; a `"ro"` entry (the default mode) and every path outside the entries refuse writes, and the refusal names the writable entries. With no entries the whole workspace is writable. `max_file_bytes` caps one read or write (at most 5 MiB). `local_dir` is **not mounted**: a host folder needs a consent step that names it, which is not built, so the entry stays a folder inside the workspace and the capability report lists `files.local_dir` as withheld.
+- `guardrails.needs_approval` lists full tool names (`developer__shell`, `files__files_write`). Each listed call is put to a person in every permission mode, Auto included, and in the app's worker profiles too (a profile's own list is added to the app's). The page receives an `approval` frame; see [HITL](#brcontext-brwidgets-top-level-turns-and-events). The person's own "never allow" for a tool still denies it, and their "always allow" does not lift the app's ask.
 - `DataSource.ids` scopes a `kind:"knowledge"` source to specific KB id(s). Empty `ids` grants **nothing** by itself — the only exception is a back-compat implicit single grant of the agent's configured `knowledge_base`. A KB id not enumerated here is denied even if it exists (see the [security model](#security-model)). `read_only` defaults `true`; setting it `false` grants write (`br.kb.ingest`).
 - `ModelRoute` (at `orchestration.routes`) has optional `provider` + `model`; an absent field inherits the session's current value. Routes resolve against the *user's* configured providers only (apps never carry keys) and are subject to the provider-class rule in the [security model](#security-model).
 - Skills scoping is advisory — the named skills are surfaced to the agent, but BioRouter's skill enable/disable is global, so true per-app skill isolation is a follow-up.
@@ -357,7 +359,7 @@ br.kb.ingest(items, { onProgress?, timeoutMs? }) // write; default timeout 600 s
 br.kb.graphToNetwork(graph)                       // pure client-side {nodes,edges} → NetworkSpec
 ```
 
-Each op sends a `kb` frame and resolves on the matching `kb_result` (rejects on its `error`); `ingest` streams `kb_progress` to `onProgress`. If no KB grant was advertised in `ready`, reads and writes reject immediately with a clear error (no round-trip). Grants and the write rule are enforced server-side — see the [security model](#security-model).
+Each op sends a `kb` frame and resolves on the matching `kb_result` (rejects on its `error`); `ingest` streams `kb_progress` to `onProgress`. The grant is the `data:knowledge` token in `ready` (a `data` token is accepted too); if neither was advertised, reads and writes reject immediately with a clear error (no round-trip). Grants and the write rule are enforced server-side; see the [security model](#security-model).
 
 ```ts
 const spec = br.kb.graphToNetwork(await br.kb.graph());   // a KB explorer in a few lines
@@ -397,7 +399,9 @@ br.approve(requestId, action?)       // HITL: allow a paused tool  (default "all
 br.reject(requestId, reason?)        // HITL: deny a paused tool
 ```
 
-HITL is human-in-the-loop tool approval: the agent pauses on a tool listed in `guardrails.needs_approval` and the page answers.
+HITL is human-in-the-loop tool approval: the agent pauses on a tool listed in `guardrails.needs_approval`, in every permission mode, and the page answers with `br.approve` or `br.reject`. A call the permission mode itself asks about (Approve or Smart Approve) arrives the same way. An unanswered approval is denied after two minutes and the page gets `approval_refused` with reason `timeout`.
+
+The default chat (`autoChat`) draws a resumed session's earlier turns: on a `ready` frame with `resumed: true` and a `messageCount` above zero it calls `br.context.history()` once and draws the user, agent and `notice` rows above anything new. An `error` frame's own message is shown once, as a muted line ("Could not reach the agent." only when the connection itself failed).
 
 Fields: `br.config`, `br.sessionId`, `br.resumed`, `br.activeEndpoint`, `br.ui`.
 
@@ -502,15 +506,15 @@ The app talks to `biorouterd` over one WebSocket at `GET /apps/<id>/agent`. The 
 
 | `type` | Fields | Meaning |
 |---|---|---|
-| `ready` | `protocol` (2), `capabilities` [tokens], `sessionId`, `resumed`, `messageCount`, `catalogVersion`, `stateVersion`, `profiles` [worker-profile names], `surface:{ signals:[{name,coalesceMs}], actions:[name] }` | Sent on connect. `capabilities` = `manifest.agent.capabilities.advertised()` (retained by daemon settings for `vault`/`tracing`); `profiles` = the validated `orchestration.agents` names. |
+| `ready` | `protocol` (2), `capabilities` [tokens], `sessionId`, `resumed`, `messageCount`, `catalogVersion`, `stateVersion`, `profiles` [worker-profile names], `surface:{ signals:[{name,coalesceMs}], actions:[name] }` | Sent on connect. `capabilities` = `manifest.agent.capabilities.advertised()` (retained by daemon settings for `vault`/`tracing`), minus what this install withheld; a `kind:"knowledge"` source adds `data:knowledge`, the token `br.kb` checks, which a missing SQL file never withholds; `profiles` = the validated `orchestration.agents` names. |
 | `message` | `delta` | Assistant text stream. |
 | `thought` | `delta` | Thinking stream. |
 | `tool` | `name`, `id`, `status` (`pending`/`completed`/`failed`) | Tool activity. |
 | `output` | `callId?`, `value`, `schema?` | Structured result for a `br.call({outputSchema})` (from `emit_result`). |
 | `done` | — | Turn finished. |
-| `error` | `message` | Turn/session error. |
+| `error` | `message`, `code?` | Turn/session error; no `done` follows. `code: "usage_limit"` is a turn a usage limit stopped before its next model request, and `message` is the stop sentence the desktop shows. |
 | `context` | `used`, `limit`, `ratio` | Reply to a `tokens` request. |
-| `history` | `messages:[{role,text}]` | Reply to a `history` request. |
+| `history` | `messages:[{role,text}]` | Reply to a `history` request. `role` is `user`, `assistant`, or `notice` for a notice the daemon stored in the chat (a usage limit's stop sentence, for example). |
 | `model` | `ok`, `provider`, `model`, `route?`, `error?` | Reply to `modelselect` / route switch. |
 | `model_status` | `provider`, `model`, `ready`, `detail` | Reply to `model_status`. |
 | `guardrail` | `stage`, `name`, `blocked`, `reason` | e.g. PII input check. |
@@ -705,7 +709,7 @@ export.json                   # full mode, or a bundled daemon
 ```
 
 - **The entry page is the raw one.** The daemon that serves the installed copy adds the theme, the config island with that run's socket token, and the bundle tag. An export used to ship a page assembled at export time, with a config island that had no token; the SDK read that island first, so an exported agentic app could never reach its agent.
-- **Never exported:** the app's `workspace/` folder (its runtime data), any `.vault`, `.git` or `node_modules` folder at any depth, files named like credentials (`.env*`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*` and the other SSH key names, `.netrc`, `.npmrc`, `.pypirc`, `credentials`), and links. Each omission is listed in the export's report. The store refuses an app whose folder contains a link, so such an app is not exported at all until the link is removed.
+- **Never exported:** the app's `workspace/` folder (its runtime data), any `.vault`, `.git` or `node_modules` folder at any depth, files named like credentials (every name the [secret guard](../security/secret-guard.md)'s floor refuses, such as `.env*`, `secrets.*`, `.pgpass`, `.git-credentials`, `.aws/credentials` and `.docker/config.json`, plus `*.pem`, `*.key`, `*.p12`, `*.pfx`, `id_rsa*` and the other SSH key names, `.netrc`, `.npmrc`, `.pypirc`, `credentials`, `credentials.*`, `*credentials*.json` and `service-account*.json`, in any case), and links. Each omission is listed in the export's report. The store refuses an app whose folder contains a link, so such an app is not exported at all until the link is removed.
 - **No chat id.** `session_id` names a chat on the author's machine. On another machine it names nothing, or an unrelated chat.
 - **The launchers are executable** (`run.command`, `run.sh`, `biorouter-launch.sh`, and a bundled daemon), in the folder the tool writes, in each zip entry's unix mode, and after the desktop unpacks the zip.
 
@@ -780,7 +784,7 @@ The in-SDK capability re-consent screen the design describes is not built. `expo
 | `cargo test -p biorouter-mcp --lib agent_drafter::` | store, tools, render, bundler, `control.rs` `ui_*` tools, manifest/theme/surface types |
 | `cargo test -p biorouter-mcp --test ui_example_apps` | the example UI apps emit `ui` frames deterministically |
 | `cargo test -p biorouter-server --lib routes::apps` | WS frames, mid-turn dispatch, bridge rebind, parked `ui_ask`, KB grants, provider-class routing |
-| `node scripts/agent-drafter/ui-control-harness.mjs` | **SDK v2 self-test** — bundles the real `sdk.ts`, mounts it in jsdom against a mock daemon, and asserts state/bindings, `ui_patch`, signals, `app_call`, `br.call`, `br.kb`, `br.model`, theme/layout, presence, and `wsToken`. Needs esbuild + jsdom (`BIOROUTER_ESBUILD_BIN` / `BIOROUTER_JSDOM_DIR`, or a checkout with `ui/desktop/node_modules`). |
+| `node scripts/agent-drafter/ui-control-harness.mjs` | **SDK v2 self-test**: bundles the real `sdk.ts`, mounts it in jsdom against a mock daemon, and asserts state/bindings, `ui_patch`, signals, `app_call`, `br.call`, `br.kb` (including a knowledge-only `data:knowledge` grant), `br.model`, theme/layout, presence, `wsToken`, and the default chat's resumed history and error line. Needs esbuild + jsdom (`BIOROUTER_ESBUILD_BIN` / `BIOROUTER_JSDOM_DIR`, or a checkout with `ui/desktop/node_modules`). |
 | `node scripts/agent-drafter/ui-control-harness.mjs --app <dir> [--port 8899]` | serve a built app for a real browser to drive via `/__emit` + `/__frames` |
 | `ui/desktop/scripts/appcheck/check-ui-app.mjs` | drives a real agent and asserts `ui` frames arrive |
 

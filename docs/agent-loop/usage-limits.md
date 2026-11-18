@@ -105,6 +105,11 @@ estimate of the request about to be sent, with the limits in force.
   model request is made, and automatic compaction does not run, since a compaction is a
   model request. `/compact` typed into such a chat gets the same notice and compacts
   nothing.
+- **An app page** gets the stop sentence too: a turn the limit stops ends with the
+  socket's `error` frame, `code: "usage_limit"`, whose `message` is the notice, and no
+  `done` (see the [Apps SDK reference](../apps-sdk/sdk-reference.md)). The app's default
+  chat shows it as one muted line, and after a reload its history returns the stored
+  notice as a `notice` row.
 - **Model calls at the end of a turn** are held to the same check: the self-critique pass,
   the `/goal` judge and every prompt Stop hook are each a model request, so none runs once
   the chat or the month is at a limit or the next request is estimated past one. The turn
@@ -340,3 +345,5 @@ src/components/settings/usage src/components/usage src/components/ChatInput.usag
 - [Subagents](subagents.md): what a subagent spends and how it is started.
 - [Shared controls](../desktop-ui/shared-controls.md): the cost card's Limit section and the
   composer notice.
+- [Apps SDK reference](../apps-sdk/sdk-reference.md): the `error` frame an app page gets
+  when a limit stops its turn.
