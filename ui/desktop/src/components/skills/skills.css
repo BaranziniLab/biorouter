@@ -117,4 +117,10 @@
   border-radius: var(--radius-element);
   background-color: var(--background-fill);
 }
+/* A row never shrinks to fit the cap, so a long list scrolls. Each row truncates its text, and
+   `overflow: hidden` gives a flex item a minimum height of 0: without this, twenty rows each
+   shrank to about 4px and the well never scrolled. */
+.br-skill-components > li {
+  flex-shrink: 0;
+}
 /* @ws WS-SKILLS end: skill dialogs */

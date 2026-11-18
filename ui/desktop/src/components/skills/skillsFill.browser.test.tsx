@@ -84,11 +84,12 @@ function Market() {
 
 const page = location.hash.slice(1);
 createRoot(document.getElementById('root')).render(
-  page === 'rows' ? <Rows /> : page === 'market' ? <Market /> : page === 'write' ? <CustomSkillModal onClose={noop} onSaved={noop} /> : <AddSkillModal onClose={noop} onSaved={noop} />
+  page === 'rows' ? <Rows /> : page === 'market' ? <Market /> : page === 'write' ? <CustomSkillModal skills={[]} onClose={noop} onSaved={noop} /> : <AddSkillModal onClose={noop} onSaved={noop} />
 );
 `;
 
-const PREVIEW = {
+/** A lookup answer for a package of `count` skills. */
+const previewOf = (count: number) => ({
   status: 'needsChoice',
   planId: 'plan-1',
   preview: {
@@ -98,7 +99,7 @@ const PREVIEW = {
     version: '0.8.12',
     entryPoint: 'hyperframes',
     groups: {},
-    components: Array.from({ length: 12 }, (_, i) => ({
+    components: Array.from({ length: count }, (_, i) => ({
       name: `skill-${i}`,
       description: 'A component',
       directory: `skill-${i}`,
@@ -109,9 +110,10 @@ const PREVIEW = {
     ambiguity: null,
     source: { url: null, reference: null, resolvedCommit: null, installer: null },
     shadows: [],
-    fileCount: 12,
+    fileCount: count,
   },
-};
+});
+const PREVIEW = previewOf(12);
 
 const launchChromium = async (): Promise<Browser | null> => {
   for (const options of [{}, { channel: 'chromium' }, { channel: 'chrome' }] as const) {
@@ -167,7 +169,7 @@ describe('Skills and BAAM on the fill rule (R-27)', { timeout: 90_000 }, () => {
   async function open(
     hash: 'rows' | 'market' | 'add' | 'write',
     mode: 'light' | 'dark',
-    options: { forcedColors?: boolean; ready: string }
+    options: { forcedColors?: boolean; ready: string; preview?: ReturnType<typeof previewOf> }
   ): Promise<Page> {
     const tab = await browser!.newPage({ viewport: { width: 900, height: 900 } });
     if (options.forcedColors) await tab.emulateMedia({ forcedColors: 'active' });
@@ -185,7 +187,7 @@ describe('Skills and BAAM on the fill rule (R-27)', { timeout: 90_000 }, () => {
       route.fulfill({
         status: 200,
         contentType: 'application/json',
-        body: JSON.stringify(PREVIEW),
+        body: JSON.stringify(options.preview ?? PREVIEW),
       })
     );
     await tab.goto(`http://skills.test/#${hash}`);
@@ -612,6 +614,42 @@ describe('Skills and BAAM on the fill rule (R-27)', { timeout: 90_000 }, () => {
       } finally {
         await tab.close();
       }
+    }
+  });
+
+  // The well is a flex column capped at 140px, and each row carries `truncate`, whose
+  // `overflow: hidden` gives a flex item a minimum height of 0. So twenty rows shrank to about
+  // 4px each to fit the cap and the scroller never scrolled: HyperFrames' preview was a stack of
+  // specks (rq2-222). Twelve rows did not show it, because nothing measured a row.
+  it('a_twenty_skill_preview_shows_every_row_at_full_height', async (ctx) => {
+    if (!browser) return ctx.skip();
+    const tab = await open('add', 'light', { ready: '#skill-source-url', preview: previewOf(20) });
+    try {
+      await tab.fill('#skill-source-url', 'https://github.com/heygen-com/hyperframes');
+      await tab.getByRole('button', { name: 'Look up' }).click();
+      await tab.waitForSelector('.br-skill-components li');
+      const measured = await tab.evaluate(() => {
+        const list = document.querySelector('.br-skill-components')!;
+        const rows = [...list.querySelectorAll('li')];
+        return {
+          count: rows.length,
+          heights: rows.map((row) => row.clientHeight),
+          lines: rows.map((row) => row.scrollHeight),
+          clientHeight: list.clientHeight,
+          scrollHeight: list.scrollHeight,
+        };
+      });
+      expect(measured.count).toBe(20);
+      for (const [index, height] of measured.heights.entries()) {
+        // A full line of supporting text, and none of it clipped by the row itself.
+        expect(height, `row ${index}`).toBeGreaterThanOrEqual(16);
+        expect(height, `row ${index}`).toBeGreaterThanOrEqual(measured.lines[index]);
+      }
+      // The rows overflow the capped well, so it scrolls rather than squeezing them.
+      expect(measured.scrollHeight).toBeGreaterThan(measured.clientHeight);
+      await shoot(tab, 'add-preview-twenty');
+    } finally {
+      await tab.close();
     }
   });
 });

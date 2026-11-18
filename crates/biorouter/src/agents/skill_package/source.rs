@@ -43,8 +43,8 @@ pub enum ImportSource {
     Archive { path: PathBuf },
 }
 
-/// A resolved archive: its bytes, the wrapper directory name when we know it,
-/// and where it came from.
+/// A resolved archive: the files a plan can use (unwrapped; see
+/// [`archive::read_package`]), the candidate names, and where it came from.
 #[derive(Debug, Clone)]
 pub struct FetchedArchive {
     pub entries: Vec<Entry>,
@@ -138,7 +138,7 @@ async fn download(url: &str) -> Result<(Vec<u8>, Option<String>)> {
         .timeout(FETCH_TIMEOUT)
         .build()
         .context("building the download client")?;
-    let response = client
+    let mut response = client
         .get(url)
         .header("User-Agent", "biorouter-skill-import")
         .send()
@@ -157,14 +157,27 @@ async fn download(url: &str) -> Result<(Vec<u8>, Option<String>)> {
         .filter(|value| value.len() >= 7 && value.chars().all(|c| c.is_ascii_hexdigit()));
     if let Some(length) = response.content_length() {
         if length > MAX_ARCHIVE_BYTES {
-            bail!("that archive is larger than the {MAX_ARCHIVE_BYTES} byte limit");
+            bail!(archive::too_large_message(MAX_ARCHIVE_BYTES));
         }
     }
-    let bytes = response.bytes().await.context("reading the archive")?;
-    if bytes.len() as u64 > MAX_ARCHIVE_BYTES {
-        bail!("that archive is larger than the {MAX_ARCHIVE_BYTES} byte limit");
+    // ⚠ Counted while it arrives. codeload sends no `Content-Length` for a
+    // repository archive, so the check above never fires there, and reading
+    // the whole body before counting it held a repository of any size in
+    // memory first.
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.context("reading the archive")? {
+        append_within(&mut bytes, &chunk, MAX_ARCHIVE_BYTES)?;
     }
-    Ok((bytes.to_vec(), commit))
+    Ok((bytes, commit))
+}
+
+/// Append `chunk`, or refuse once the body would pass `limit`.
+fn append_within(body: &mut Vec<u8>, chunk: &[u8], limit: u64) -> Result<()> {
+    if (body.len() as u64).saturating_add(chunk.len() as u64) > limit {
+        bail!(archive::too_large_message(limit));
+    }
+    body.extend_from_slice(chunk);
+    Ok(())
 }
 
 /// Resolve a source into normalised archive entries.
@@ -173,10 +186,9 @@ pub async fn fetch(source: &ImportSource) -> Result<FetchedArchive> {
         ImportSource::Archive { path } => {
             let bytes =
                 std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
-            let entries = archive::read_zip(&bytes)?;
             // No hint about the wrapper: a local zip carries no record of how
-            // it was made, so `strip_wrapper` falls back to its reveal test.
-            let (entries, wrapper) = archive::strip_wrapper(entries, WrapperHint::Infer);
+            // it was made, so the reader falls back to its reveal test.
+            let (entries, wrapper) = archive::read_package(&bytes, WrapperHint::Infer)?;
             let mut id_hints = Vec::new();
             if let Some(stem) = archive_stem(path) {
                 id_hints.push(stem);
@@ -239,8 +251,7 @@ pub async fn fetch(source: &ImportSource) -> Result<FetchedArchive> {
                 Err(error) => return Err(error),
             };
 
-            let entries = archive::read_zip(&bytes)?;
-            let (entries, wrapper) = archive::strip_wrapper(entries, hint);
+            let (entries, wrapper) = archive::read_package(&bytes, hint)?;
             let mut id_hints = Vec::new();
             if let Some(hint) = id_hint {
                 id_hints.push(hint);
@@ -373,5 +384,17 @@ mod tests {
 
         let at_commit = parse_github(&url("https://github.com/o/r/commit/abc123")).unwrap();
         assert_eq!(at_commit.reference.as_deref(), Some("abc123"));
+    }
+
+    /// A download over the limit is refused while it arrives, with the same
+    /// sentence the reader gives, not after the whole body is held.
+    #[test]
+    fn a_download_is_refused_as_it_passes_the_limit_with_the_one_sentence() {
+        let mut body = Vec::new();
+        append_within(&mut body, &[0; 600], 1024).unwrap();
+        append_within(&mut body, &[0; 424], 1024).expect("exactly the limit fits");
+        let error = append_within(&mut body, &[0; 1], 1024).unwrap_err();
+        assert_eq!(error.to_string(), archive::too_large_message(1024));
+        assert_eq!(body.len(), 1024, "the refused chunk was not kept");
     }
 }

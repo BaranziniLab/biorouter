@@ -7,6 +7,7 @@ import { ModalShell } from '../ModalShell';
 import { focusFieldOnOpen } from '../baam/focusFieldOnOpen';
 import { parseSkillFrontmatter, toSlug, BIOROUTER_SKILLS_DIR } from './skillUtils';
 import { toastSuccess, toastError } from '../../toasts';
+import type { CatalogSkill } from '../../api';
 import { CUSTOM_SKILL_COPY } from './copy';
 
 const TEMPLATE = `---
@@ -33,9 +34,42 @@ Describe the step-by-step instructions for Biorouter to follow when this skill i
 interface Props {
   onClose: () => void;
   onSaved: () => void;
+  /**
+   * Every installed skill, from the Skills view's catalog, or `null` while it has not been read.
+   * A save is refused, with nothing written, when its name is taken (`takenNameRefusal`).
+   */
+  skills: readonly CatalogSkill[] | null;
 }
 
-export default function CustomSkillModal({ onClose, onSaved }: Props) {
+/**
+ * Why `name` cannot be saved, or `null` when nothing holds it.
+ *
+ * ⚠ A save is a plain `writeFile` to `<Biorouter skills>/<slug>/SKILL.md`, which replaces what is
+ * there, and `refuse_shipped` guards only the package importer. So the check is here, before the
+ * write: saving `office-word` overwrote the shipped file until the seeder restored it, and the
+ * person's text was lost without a word (rq2-247). Two ways a name is taken:
+ * - the same frontmatter name anywhere, because discovery keys on it and one would shadow the
+ *   other;
+ * - the same top folder in Biorouter's own root, a single skill's or a bundle's, because the
+ *   write lands in it.
+ * Shipped wins the wording when any holder is shipped.
+ */
+function takenNameRefusal(name: string, skills: readonly CatalogSkill[] | null): string | null {
+  if (skills === null) return CUSTOM_SKILL_COPY.cannotCheck;
+  const slug = toSlug(name);
+  const holders = skills.filter(
+    (skill) =>
+      skill.name === name ||
+      toSlug(skill.name) === slug ||
+      (skill.source.kind === 'biorouter' && skill.slug.split('/')[0].toLowerCase() === slug)
+  );
+  if (holders.length === 0) return null;
+  return holders.some((skill) => skill.builtin)
+    ? CUSTOM_SKILL_COPY.shipped(name)
+    : CUSTOM_SKILL_COPY.exists(name);
+}
+
+export default function CustomSkillModal({ onClose, onSaved, skills }: Props) {
   const [content, setContent] = useState(TEMPLATE);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
@@ -46,6 +80,11 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
     const parsed = parseSkillFrontmatter(content);
     if (!parsed) {
       setError(CUSTOM_SKILL_COPY.invalid);
+      return;
+    }
+    const refusal = takenNameRefusal(parsed.name, skills);
+    if (refusal) {
+      setError(refusal);
       return;
     }
     setError(null);

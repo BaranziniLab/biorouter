@@ -111,4 +111,12 @@ export const CUSTOM_SKILL_COPY = {
   saved: 'Skill saved',
   saveFailed: 'Save failed',
   couldNotWrite: (path: string) => `Could not write to ${path}`,
+  /**
+   * A refused save, one line each, and nothing is written. A shipped name would overwrite
+   * Biorouter's own file until the seeder put it back, losing the person's text; an installed
+   * name would overwrite or shadow a skill they already have.
+   */
+  shipped: (name: string) => `Biorouter ships a skill named ${name}. Choose another name.`,
+  exists: (name: string) => `A skill named ${name} is already installed. Choose another name.`,
+  cannotCheck: 'Could not read your installed skills to check this name. Try again.',
 } as const;
