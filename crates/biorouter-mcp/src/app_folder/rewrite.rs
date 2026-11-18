@@ -657,9 +657,27 @@ fn write_atomically(path: &Path, contents: &str) -> io::Result<()> {
 /// the marker once every store was read, whatever it held.
 pub fn finish_pending_rewrite(root: &AppRoot) -> RewriteReport {
     let rewrite = RootRewrite::after_move(root);
+    let base = canonical_base(root);
+    let on_disk = base
+        .as_deref()
+        .and_then(|base| author_on_disk(&fs::canonicalize(&root.current).ok()?, base));
+    let roots = root_spellings(root, base.as_deref());
+    let canonical_rewrite = RootRewrite::with_authors(
+        roots
+            .iter()
+            .map(|spelling| (spelling, on_disk.as_deref().unwrap_or(APP_AUTHOR))),
+    );
+    let profile = root.current.join("config").join("daemon-profile.json");
     let mut report = RewriteReport::default();
     for (path, format) in store_files(&root.current) {
-        match rewrite_file(&rewrite, &path, format) {
+        // The profile compares a canonical path even when its base has the
+        // same spelling as Paths and its author folder has another case.
+        let file_rewrite = if path == profile {
+            &canonical_rewrite
+        } else {
+            &rewrite
+        };
+        match rewrite_file(file_rewrite, &path, format) {
             StoreResult::Rewritten => report.files_rewritten.push(path),
             StoreResult::Unverified(why) => report.unverified.push(why),
             StoreResult::Failed(why) => report.failed.push(why),
