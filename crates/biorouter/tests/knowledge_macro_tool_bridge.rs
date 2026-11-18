@@ -532,6 +532,25 @@ async fn a_factory_completer_routes_approval_to_the_originating_chat() {
             },
             biorouter::pending_user_action::DecisionAuthority::unproven(),
         ),
+        biorouter::pending_user_action::ResolveOutcome::Unproven,
+    );
+    assert!(
+        PendingUserActions::global().is_pending(&request_id),
+        "an unproven answer must leave the approval pending"
+    );
+    assert!(
+        dispatch.calls.lock().unwrap().is_empty(),
+        "an unproven answer must not dispatch the sensitive call"
+    );
+    assert_eq!(
+        PendingUserActions::global().resolve_in_session(
+            &session_id,
+            &request_id,
+            UserActionOutcome::Approved {
+                permission: Permission::AllowOnce,
+            },
+            biorouter::pending_user_action::DecisionAuthority::from_local_human_surface(),
+        ),
         biorouter::pending_user_action::ResolveOutcome::Delivered,
     );
 
