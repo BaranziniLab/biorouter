@@ -27,12 +27,24 @@
  * all, fails it.
  */
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter, Outlet } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { runInNewContext } from 'node:vm';
+import ts from 'typescript';
 import { AppInner } from './App';
 import { echoPath } from './components/NotFoundView';
 import { BROWSER_SURFACE_MARKER } from './utils/surface';
+import { useChatGroups } from './contexts/ChatGroupsContext';
+import { useDiverge } from './hooks/useDiverge';
+import { getSession, type Message } from './api';
+
+const { routeDiverge, routeSession } = vi.hoisted(() => ({
+  routeDiverge: vi.fn(),
+  routeSession: vi.fn(),
+}));
 
 Object.defineProperty(window, 'history', {
   value: { replaceState: vi.fn(), state: null },
@@ -60,6 +72,8 @@ vi.mock('./api', () => ({
   // render, and the console noise buries a real failure.
   getActive: vi.fn().mockResolvedValue({ data: {} }),
   listBases: vi.fn().mockResolvedValue({ data: [] }),
+  divergeSession: routeDiverge,
+  getSession: routeSession,
 }));
 
 vi.mock('./sessions', () => ({
@@ -144,6 +158,70 @@ vi.mock('./components/Layout/AppLayout', () => ({
 }));
 
 vi.mock('./components/Hub', () => ({ default: () => <div data-testid="home-view">Home</div> }));
+
+vi.mock('./components/chatGroups/ChatGroupsShell', () => ({
+  default: () => <DivergeTranscriptFixture />,
+}));
+
+function DivergeTranscriptFixture() {
+  const groups = useChatGroups();
+  const { diverge } = useDiverge();
+  const sessionId = groups?.activeTab?.sessionId;
+  const [messages, setMessages] = React.useState<Message[]>([]);
+  React.useEffect(() => {
+    let current = true;
+    if (sessionId) {
+      void getSession({ path: { session_id: sessionId } }).then((response) => {
+        if (current) setMessages(response.data?.conversation ?? []);
+      });
+    }
+    return () => {
+      current = false;
+    };
+  }, [sessionId]);
+  return (
+    <section aria-label="Chat transcript" data-session-id={sessionId ?? ''}>
+      <h1>{groups?.activeTab?.title}</h1>
+      {messages.flatMap((message) =>
+        message.content.flatMap((part, index) =>
+          part.type === 'text' ? <p key={`${message.id}-${index}`}>{part.text}</p> : []
+        )
+      )}
+      <output data-testid="open-session-ids">
+        {Object.values(groups?.state.groups ?? {})
+          .flatMap((group) => group.tabs.map((tab) => tab.sessionId))
+          .join(',')}
+      </output>
+      <button onClick={() => sessionId && void diverge(sessionId, 2, 'answer-1')}>Diverge</button>
+    </section>
+  );
+}
+
+function installBrowserDivergeBridge() {
+  const source = readFileSync(join(__dirname, 'renderer.tsx'), 'utf8');
+  const parsed = ts.createSourceFile(
+    'renderer.tsx',
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX
+  );
+  const findMethod = (node: ts.Node): ts.Expression | undefined => {
+    if (ts.isPropertyAssignment(node) && node.name.getText(parsed) === 'createDivergedChatWindow') {
+      return node.initializer;
+    }
+    return ts.forEachChild(node, findMethod);
+  };
+  const method = findMethod(parsed);
+  if (!method) throw new Error('renderer.tsx has no browser createDivergedChatWindow bridge');
+  const code = `window.electron.createDivergedChatWindow = (${method.getText(parsed)});`;
+  runInNewContext(
+    ts.transpileModule(code, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022 },
+    }).outputText,
+    { window, CustomEvent: window.CustomEvent, URL, URLSearchParams }
+  );
+}
 
 /**
  * The other top-level views, stubbed. Their INTERNALS are irrelevant here — the
@@ -344,5 +422,83 @@ describe('the Dictionary route', () => {
     document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
     renderAt('/dictionary');
     expect(await screen.findByTestId('route-dictionary')).toBeInTheDocument();
+  });
+});
+
+describe('Diverge in a serve browser', () => {
+  afterEach(() => {
+    delete document.documentElement.dataset.biorouterSurface;
+    vi.restoreAllMocks();
+  });
+
+  it('opens the created branch transcript through the real route and tab provider', async () => {
+    const sourceMessages = [
+      {
+        id: 'question-1',
+        role: 'user',
+        created: 1,
+        content: [{ type: 'text', text: 'Retain this question' }],
+      },
+      {
+        id: 'answer-1',
+        role: 'assistant',
+        created: 2,
+        content: [{ type: 'text', text: 'Retain this answer' }],
+      },
+      {
+        id: 'question-2',
+        role: 'user',
+        created: 3,
+        content: [{ type: 'text', text: 'Source-only later question' }],
+      },
+    ];
+    const original = JSON.stringify(sourceMessages);
+    routeSession.mockImplementation(async ({ path }: { path: { session_id: string } }) => ({
+      data: {
+        id: path.session_id,
+        conversation:
+          path.session_id === 'source-chat' ? sourceMessages : sourceMessages.slice(0, 2),
+      },
+    }));
+    routeDiverge.mockResolvedValue({
+      data: {
+        sessionId: 'branch-chat',
+        workingDir: '/synthetic/work',
+        name: 'Original & branch (1)',
+      },
+    });
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    installBrowserDivergeBridge();
+    const openWindow = vi.spyOn(window, 'open');
+    renderAt('/pair?resumeSessionId=source-chat&resumeSessionTitle=Original');
+    expect(await screen.findByText('Source-only later question')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Diverge' }));
+
+    expect(
+      await screen.findByRole('heading', { name: 'Original & branch (1)' })
+    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole('region', { name: 'Chat transcript' })).toHaveAttribute(
+        'data-session-id',
+        'branch-chat'
+      );
+      expect(screen.getByText('Retain this answer')).toBeInTheDocument();
+      expect(screen.queryByText('Source-only later question')).not.toBeInTheDocument();
+    });
+    expect(screen.getByTestId('open-session-ids')).toHaveTextContent('source-chat,branch-chat');
+    expect(routeDiverge).toHaveBeenCalledTimes(1);
+    expect(routeDiverge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: { session_id: 'source-chat' },
+        body: { truncateAfter: 2, truncateAfterId: 'answer-1' },
+      })
+    );
+    expect(routeSession).toHaveBeenCalledWith(
+      expect.objectContaining({ path: { session_id: 'branch-chat' } })
+    );
+    expect(JSON.stringify(sourceMessages)).toBe(original);
+    expect(openWindow).not.toHaveBeenCalled();
+    openWindow.mockRestore();
   });
 });

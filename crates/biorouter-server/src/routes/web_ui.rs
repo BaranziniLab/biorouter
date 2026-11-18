@@ -526,9 +526,9 @@ fn with_base(shell: &str, mount: &str) -> String {
     }
 }
 
-/// The policy the shell is served under. Only `frame-ancestors`: the shell's
-/// own scripts and styles are whatever the build emitted, and this header is
-/// not the place to restate them.
+/// The shell's framing and connection boundaries. The shared desktop/browser
+/// meta policy admits runtime-configurable transport schemes, so this header
+/// retains the browser's loopback-only cleartext boundary.
 ///
 /// `frame-ancestors 'none'` (with `X-Frame-Options: DENY` for older engines)
 /// keeps any page, an app of this daemon included, from framing the shell and
@@ -538,7 +538,8 @@ fn with_base(shell: &str, mount: &str) -> String {
 /// which every app page is, so neither side keeps a scriptable handle on the
 /// other. The interface still opens an app in a new tab: the tab is opened
 /// blank, sent to the app, and cut off from the shell (`openAppInThisBrowser`).
-const SHELL_CSP: &str = "frame-ancestors 'none'";
+const SHELL_CSP: &str =
+    "frame-ancestors 'none'; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* https: wss:;";
 
 /// The shell's `Permissions-Policy`: the microphone for the shell's own
 /// document, and for no frame of another origin.
@@ -1645,6 +1646,48 @@ mod tests {
         assert!(value("content-security-policy").contains("frame-ancestors 'none'"));
         assert_eq!(value("x-frame-options"), "DENY");
         assert_eq!(value("cross-origin-opener-policy"), "same-origin");
+    }
+
+    #[tokio::test]
+    async fn the_served_shell_keeps_cleartext_connections_local() {
+        for path in ["/", "/sessions/abc"] {
+            let res = index(
+                State(ui_with(Some("tok"))),
+                cookie_request(Some("navigate"), Some("document")),
+                Query(IndexQuery { t: None }),
+                path.parse().unwrap(),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::OK, "{path}");
+            let policy = res
+                .headers()
+                .get(header::CONTENT_SECURITY_POLICY)
+                .unwrap()
+                .to_str()
+                .unwrap();
+            let connect = policy
+                .split(';')
+                .map(str::trim)
+                .find_map(|directive| directive.strip_prefix("connect-src "))
+                .unwrap_or_else(|| {
+                    panic!("the served shell has no connect-src boundary: {policy}")
+                });
+            let sources: std::collections::BTreeSet<_> = connect.split_whitespace().collect();
+            assert_eq!(
+                sources,
+                [
+                    "'self'",
+                    "http://127.0.0.1:*",
+                    "ws://127.0.0.1:*",
+                    "https:",
+                    "wss:"
+                ]
+                .into_iter()
+                .collect(),
+                "{path}: {policy}"
+            );
+            assert!(policy.contains("frame-ancestors 'none'"));
+        }
     }
 
     /// The shell may use the microphone, for dictation, and no frame of

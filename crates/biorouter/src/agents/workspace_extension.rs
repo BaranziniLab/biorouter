@@ -6857,7 +6857,8 @@ impl WorkspaceClient {
     /// what judges a phase gate that names no model when the chat has no
     /// decision model it may use. It is the model that reads this tool's
     /// result anyway, at the chat's own tier, so asking it crosses nothing.
-    /// `None` when no agent of that chat is loaded or it has no model.
+    /// The owning extension manager also covers in-process CLI agents that
+    /// are not registered with AgentManager. `None` when the agent has no model.
     async fn chat_model_of(
         &self,
         session_id: &str,
@@ -6865,6 +6866,14 @@ impl WorkspaceClient {
         #[cfg(test)]
         if let Some(model) = &self.chat_model_override {
             return Some(model.clone());
+        }
+        if let Some(manager) = self
+            .context
+            .extension_manager
+            .as_ref()
+            .and_then(std::sync::Weak::upgrade)
+        {
+            return manager.bound_model_provider().await;
         }
         let manager = crate::execution::manager::AgentManager::instance()
             .await
@@ -19309,6 +19318,150 @@ pub(crate) mod tests {
         assert!(text.contains("could not be evaluated"), "{text}");
         assert!(text.contains("no attempt was used"), "{text}");
         assert_eq!(chat.calls(), 0, "a named model's gate never falls back");
+    }
+
+    struct PrivateInProcessGateProvider(std::sync::Arc<dyn crate::providers::base::Provider>);
+
+    #[async_trait::async_trait]
+    impl crate::providers::base::Provider for PrivateInProcessGateProvider {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            <crate::agents::orchestration_plan::gate_chat_stub::ChatStub as crate::providers::base::Provider>::metadata()
+        }
+
+        fn get_name(&self) -> &str {
+            self.0.get_name()
+        }
+
+        fn tier(&self) -> crate::privacy::ProviderTier {
+            crate::privacy::ProviderTier::Private
+        }
+
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            self.0.get_model_config()
+        }
+
+        async fn complete_with_model(
+            &self,
+            model: &crate::model::ModelConfig,
+            system: &str,
+            messages: &[crate::conversation::message::Message],
+            tools: &[rmcp::model::Tool],
+        ) -> Result<
+            (
+                crate::conversation::message::Message,
+                crate::providers::base::ProviderUsage,
+            ),
+            crate::providers::errors::ProviderError,
+        > {
+            self.0
+                .complete_with_model(model, system, messages, tools)
+                .await
+        }
+    }
+
+    async fn in_process_gated_client(
+        models: Vec<crate::agents::decisions_extension::test_support::FakeModel>,
+        provider: std::sync::Arc<dyn crate::providers::base::Provider>,
+    ) -> (
+        WorkspaceClient,
+        String,
+        crate::agents::Agent,
+        tempfile::TempDir,
+    ) {
+        let (mut client, parent) = gated_client(models).await;
+        let permissions = tempfile::tempdir().unwrap();
+        let agent = crate::agents::Agent::with_config(
+            crate::agents::AgentConfig::new(
+                client.context.session_manager.clone(),
+                std::sync::Arc::new(crate::config::permission::PermissionManager::new(
+                    permissions.path().to_path_buf(),
+                )),
+                None,
+                crate::config::BioRouterMode::Auto,
+            )
+            .with_project_hooks(false),
+        );
+        *agent.provider.lock().await =
+            Some(std::sync::Arc::new(PrivateInProcessGateProvider(provider)));
+        client.context.extension_manager =
+            Some(std::sync::Arc::downgrade(&agent.extension_manager));
+        assert!(client.chat_model_override.is_none());
+        assert!(crate::execution::manager::AgentManager::instance()
+            .await
+            .unwrap()
+            .peek_agent(&parent)
+            .await
+            .is_none());
+        make_private(&client, &parent).await;
+        (client, parent, agent, permissions)
+    }
+
+    #[tokio::test]
+    async fn wave3_gate_an_in_process_chat_uses_its_live_bound_model_after_a_decision_failure() {
+        use crate::agents::orchestration_plan::gate_chat_stub::ChatStub;
+
+        let mut broken = local_model(0.99);
+        broken.fail_all = true;
+        let held = ChatStub::answering(r#"{"tests_pass":{"answer":"no","p_yes":0.2}}"#);
+        let (client, parent, agent, _permissions) =
+            in_process_gated_client(vec![broken], held.provider()).await;
+        let declared = orchestrate(&client, &parent, gated_plan_args()).await;
+        assert_eq!(declared.is_error, Some(false), "{}", result_text(&declared));
+
+        let complete = json!({ "action": "complete", "phase": "build" });
+        let first = orchestrate(&client, &parent, complete.clone()).await;
+        let text = result_text(&first);
+        assert!(text.contains("NOT completed"), "{text}");
+        assert_eq!(held.calls(), 1, "the in-process chat model judges the gate");
+        let snapshot = first.structured_content.unwrap();
+        assert_eq!(
+            snapshot["phases"][1]["gate"]["lastJudge"]["kind"],
+            "chat_model"
+        );
+        assert_eq!(snapshot["phases"][1]["gate"]["attempts"], 1);
+
+        let passed = ChatStub::answering(r#"{"tests_pass":{"answer":"yes","p_yes":0.95}}"#);
+        *agent.provider.lock().await = Some(std::sync::Arc::new(PrivateInProcessGateProvider(
+            passed.provider(),
+        )));
+        let second = orchestrate(&client, &parent, complete).await;
+        let text = result_text(&second);
+        assert!(text.contains("gate passed on attempt 2 of 2"), "{text}");
+        assert_eq!(passed.calls(), 1, "a rebind replaces the fallback model");
+        assert_eq!(held.calls(), 1, "the previous binding is not reused");
+        assert_eq!(
+            second.structured_content.unwrap()["phases"][1]["status"],
+            "completed"
+        );
+    }
+
+    #[tokio::test]
+    async fn wave3_gate_a_named_decision_model_precedes_the_in_process_chat_model() {
+        use crate::agents::orchestration_plan::gate_chat_stub::ChatStub;
+
+        let decision = local_model(0.95);
+        let calls = decision.calls.clone();
+        let chat = ChatStub::answering(r#"{"tests_pass":{"answer":"no","p_yes":0.1}}"#);
+        let (client, parent, _agent, _permissions) =
+            in_process_gated_client(vec![decision], chat.provider()).await;
+        let mut args = gated_plan_args();
+        args["phases"][1]["gate"]["model"] = json!("test_decision/tev1");
+        let declared = orchestrate(&client, &parent, args).await;
+        assert_eq!(declared.is_error, Some(false), "{}", result_text(&declared));
+        let completed = orchestrate(
+            &client,
+            &parent,
+            json!({ "action": "complete", "phase": "build" }),
+        )
+        .await;
+        let text = result_text(&completed);
+        assert!(text.contains("gate passed on attempt 1 of 2"), "{text}");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            chat.calls(),
+            0,
+            "an available named judge remains authoritative"
+        );
     }
 
     /// A phase an earlier gate holds is refused with the hold, and no gate is

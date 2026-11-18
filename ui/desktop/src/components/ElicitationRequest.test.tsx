@@ -131,4 +131,93 @@ describe('ElicitationRequest', () => {
     );
     expect(screen.getByText('Information request canceled')).toHaveClass('br-transcript-row-label');
   });
+
+  it('honors a settled answer received after the form mounted', () => {
+    const onSubmit = vi.fn(async () => undefined);
+    const view = render(
+      <ElicitationRequest
+        actionRequiredContent={action}
+        isCancelledMessage={false}
+        isClicked={false}
+        onSubmit={onSubmit}
+      />
+    );
+    expect(screen.getByRole('button', { name: 'Submit' })).toBeEnabled();
+
+    view.rerender(
+      <ElicitationRequest
+        actionRequiredContent={action}
+        isCancelledMessage={false}
+        isClicked
+        onSubmit={onSubmit}
+      />
+    );
+
+    expect(screen.getByText('Information sent')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Submit' })).toBeNull();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it('keeps a request canceled if an already in-flight delivery finishes after Stop', async () => {
+    let finish!: () => void;
+    const onSubmit = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        })
+    );
+    const view = render(
+      <ElicitationRequest
+        actionRequiredContent={action}
+        isCancelledMessage={false}
+        isClicked={false}
+        onSubmit={onSubmit}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    view.rerender(
+      <ElicitationRequest
+        actionRequiredContent={action}
+        isCancelledMessage
+        isClicked={false}
+        onSubmit={onSubmit}
+      />
+    );
+    finish();
+
+    await waitFor(() =>
+      expect(screen.getByText('Information request canceled')).toBeInTheDocument()
+    );
+    expect(screen.queryByText('Information sent')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Submit' })).toBeNull();
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an acknowledged answer sent when Stop arrives before its durable transcript row', async () => {
+    const onSubmit = vi.fn(async () => undefined);
+    const view = render(
+      <ElicitationRequest
+        actionRequiredContent={action}
+        isCancelledMessage={false}
+        isClicked={false}
+        onSubmit={onSubmit}
+      />
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    await waitFor(() => expect(screen.getByText('Information sent')).toBeInTheDocument());
+
+    view.rerender(
+      <ElicitationRequest
+        actionRequiredContent={action}
+        isCancelledMessage
+        isClicked={false}
+        onSubmit={onSubmit}
+      />
+    );
+
+    expect(screen.getByText('Information sent')).toBeInTheDocument();
+    expect(screen.queryByText('Information request canceled')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Submit' })).toBeNull();
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
 });

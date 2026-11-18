@@ -32,8 +32,8 @@ export interface UseDivergeResult {
    * conversation history up to the last complete assistant answer, leaving the
    * original untouched.
    *
-   * The branch always opens in a NEW focused Electron window, leaving the
-   * current window exactly where it is.
+   * The desktop opens a new focused window. A serve browser opens the branch
+   * in its existing chat area and keeps the source tab.
    *
    * `truncateAfterMs` and `truncateAfterId` identify the assistant message a
    * per-message Diverge button was clicked on; the durable id takes precedence
@@ -100,8 +100,8 @@ export function useDiverge(): UseDivergeResult {
         // Home picks up the branch without waiting for an unrelated turn.
         notifySessionListChanged();
 
-        // Open a NEW focused Electron window for the branch. The current
-        // window is never navigated or changed.
+        // The browser bridge opens this branch in the existing chat area;
+        // Electron opens its separate window.
         window.electron.createDivergedChatWindow(workingDir, newSessionId, branchName);
         return newSessionId;
       } catch (err) {

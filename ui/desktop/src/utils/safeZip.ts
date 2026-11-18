@@ -27,12 +27,29 @@ export function safeZipEntryTarget(baseDir: string, entryName: string): string {
   return resolved;
 }
 
+function checkExistingTarget(base: string, target: string): void {
+  const physicalBase = fs.realpathSync(base);
+  let physicalTarget = physicalBase;
+  // Resolve existing components before creating anything. An existing link
+  // whose destination cannot be resolved must not fall back to a lexical path.
+  for (const part of path.relative(base, target).split(path.sep).filter(Boolean)) {
+    physicalTarget = path.join(physicalTarget, part);
+    if (fs.lstatSync(physicalTarget, { throwIfNoEntry: false })) {
+      physicalTarget = fs.realpathSync(physicalTarget);
+    }
+    if (physicalTarget !== physicalBase && !physicalTarget.startsWith(physicalBase + path.sep)) {
+      throw new Error(`Unsafe zip entry path: ${target}`);
+    }
+  }
+}
+
 export function safeExtractZip(zip: AdmZip, destinationDir: string): void {
   const base = path.resolve(destinationDir);
   fs.mkdirSync(base, { recursive: true });
 
   for (const entry of zip.getEntries()) {
     const target = safeZipEntryTarget(base, entry.entryName);
+    checkExistingTarget(base, target);
     if (entry.isDirectory) {
       fs.mkdirSync(target, { recursive: true });
       continue;

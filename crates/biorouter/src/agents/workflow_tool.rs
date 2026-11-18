@@ -402,7 +402,7 @@ impl Agent {
             "delete",
             &session.id,
             &format!(
-                "Permanently delete the workflow '{}' ({})",
+                "Permanently delete the workflow '{}' ({}) and its future schedules",
                 manifest.workflow.title,
                 manifest.file_path.display()
             ),
@@ -412,7 +412,14 @@ impl Agent {
         )
         .await?;
 
-        let path = service::delete(&manifest.id).map_err(|e| err(e.to_string()))?;
+        let scheduler = self.scheduler().await.map_err(|e| err(e.to_string()))?;
+        let deletion = service::prepare_delete(&manifest.id, scheduler.as_ref())
+            .await
+            .map_err(|e| err(e.to_string()))?;
+        let path = deletion
+            .execute(scheduler.as_ref())
+            .await
+            .map_err(|e| err(e.to_string()))?;
         ok(format!(
             "Deleted '{}' ({}).",
             manifest.workflow.title,

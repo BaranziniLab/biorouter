@@ -400,6 +400,11 @@ queue the agent loop already drains** (`ActionRequiredManager`), carrying the sa
 `ActionRequired::ToolConfirmation` payload — including BR-63's risk grade and preview — that
 `handle_approval_tool_requests` yields on the agent's own path.
 
+The card carries the inspectors' actual reasons for the pending call. Findings that require a
+person's approval also require user-action proof and cannot create an `AlwaysAllow` rule. In
+particular, each global-memory write needs its own answer. Ordinary tool approvals still honor
+lasting allow and deny decisions.
+
 Three things follow, and each is the reason for the choice:
 
 - **The desktop needed no change.** It draws the dialog it already had, and

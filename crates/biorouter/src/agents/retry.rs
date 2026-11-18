@@ -39,6 +39,7 @@ const BIOROUTER_WORKFLOW_ON_FAILURE_TIMEOUT_SECONDS: &str =
 pub struct RetryManager {
     /// Current number of retry attempts
     attempts: Arc<Mutex<u32>>,
+    last_result: Mutex<std::result::Result<RetryResult, String>>,
 }
 
 impl Default for RetryManager {
@@ -52,13 +53,14 @@ impl RetryManager {
     pub fn new() -> Self {
         Self {
             attempts: Arc::new(Mutex::new(0)),
+            last_result: Mutex::new(Ok(RetryResult::Skipped)),
         }
     }
 
     /// Reset the retry attempts counter to 0
     pub async fn reset_attempts(&self) {
-        let mut attempts = self.attempts.lock().await;
-        *attempts = 0;
+        *self.attempts.lock().await = 0;
+        *self.last_result.lock().await = Ok(RetryResult::Skipped);
     }
 
     /// Increment the retry attempts counter and return the new value
@@ -71,6 +73,14 @@ impl RetryManager {
     /// Get the current retry attempts count
     pub async fn get_attempts(&self) -> u32 {
         *self.attempts.lock().await
+    }
+
+    pub(super) async fn last_result(&self) -> Result<RetryResult> {
+        self.last_result
+            .lock()
+            .await
+            .clone()
+            .map_err(anyhow::Error::msg)
     }
 
     /// Reset status for retry: clear message history and final output tool state
@@ -89,6 +99,29 @@ impl RetryManager {
     }
 
     pub async fn handle_retry_logic(
+        &self,
+        messages: &mut Conversation,
+        session_config: &SessionConfig,
+        initial_messages: &[Message],
+        final_output_tool: &Arc<Mutex<Option<crate::agents::final_output_tool::FinalOutputTool>>>,
+    ) -> Result<RetryResult> {
+        let result = self
+            .evaluate_retry_logic(
+                messages,
+                session_config,
+                initial_messages,
+                final_output_tool,
+            )
+            .await;
+        // Reply streams can end normally after exhaustion or a check error.
+        *self.last_result.lock().await = match &result {
+            Ok(result) => Ok(result.clone()),
+            Err(error) => Err(error.to_string()),
+        };
+        result
+    }
+
+    async fn evaluate_retry_logic(
         &self,
         messages: &mut Conversation,
         session_config: &SessionConfig,
@@ -480,6 +513,124 @@ mod tests {
             on_failure: None,
             timeout_seconds: Some(60),
             on_failure_timeout_seconds: Some(120),
+        }
+    }
+
+    async fn evaluate_observed_retry(
+        manager: &RetryManager,
+        retry_config: Option<RetryConfig>,
+    ) -> Result<RetryResult> {
+        let config = SessionConfig {
+            id: "retry-observation".to_string(),
+            schedule_id: None,
+            max_turns: None,
+            max_tool_calls: None,
+            budget: None,
+            retry_config,
+            reasoning_effort: None,
+        };
+        manager
+            .handle_retry_logic(
+                &mut Conversation::new_unvalidated(Vec::new()),
+                &config,
+                &[],
+                &Arc::new(Mutex::new(None)),
+            )
+            .await
+    }
+
+    #[tokio::test]
+    async fn wave3_retry_observation_resets_between_replies() {
+        let manager = RetryManager::new();
+        let dir = tempfile::tempdir().unwrap();
+        let required = dir.path().join("required");
+        let config = RetryConfig {
+            max_retries: 1,
+            checks: vec![SuccessCheck::FileExists {
+                path: required.to_string_lossy().into_owned(),
+            }],
+            ..create_test_retry_config()
+        };
+        assert_eq!(
+            evaluate_observed_retry(&manager, Some(config.clone()))
+                .await
+                .unwrap(),
+            RetryResult::Retried
+        );
+        assert_eq!(manager.get_attempts().await, 1);
+        assert_eq!(
+            evaluate_observed_retry(&manager, Some(config.clone()))
+                .await
+                .unwrap(),
+            RetryResult::MaxAttemptsReached
+        );
+        assert_eq!(
+            manager.last_result().await.unwrap(),
+            RetryResult::MaxAttemptsReached
+        );
+
+        manager.reset_attempts().await;
+        assert_eq!(manager.get_attempts().await, 0);
+        assert_eq!(manager.last_result().await.unwrap(), RetryResult::Skipped);
+        evaluate_observed_retry(&manager, None).await.unwrap();
+        assert_eq!(manager.last_result().await.unwrap(), RetryResult::Skipped);
+
+        std::fs::write(required, "complete").unwrap();
+        evaluate_observed_retry(&manager, Some(config))
+            .await
+            .unwrap();
+        assert_eq!(
+            manager.last_result().await.unwrap(),
+            RetryResult::SuccessChecksPassed
+        );
+    }
+
+    #[tokio::test]
+    async fn wave3_retry_observation_preserves_check_and_on_failure_errors() {
+        let manager = RetryManager::new();
+        let dir = tempfile::tempdir().unwrap();
+        let slow_command = if cfg!(target_os = "windows") {
+            "ping -n 3 127.0.0.1 >NUL"
+        } else {
+            "sleep 1"
+        };
+        for (checks, on_failure, timeout_seconds, expected) in [
+            (
+                vec![SuccessCheck::Shell {
+                    command: slow_command.to_string(),
+                }],
+                None,
+                Some(0),
+                "timed out",
+            ),
+            (
+                vec![SuccessCheck::FileExists {
+                    path: dir.path().join("missing").to_string_lossy().into_owned(),
+                }],
+                Some("exit 7".to_string()),
+                Some(10),
+                "On_failure command failed",
+            ),
+        ] {
+            manager.reset_attempts().await;
+            let error = evaluate_observed_retry(
+                &manager,
+                Some(RetryConfig {
+                    checks,
+                    on_failure,
+                    timeout_seconds,
+                    ..create_test_retry_config()
+                }),
+            )
+            .await
+            .unwrap_err();
+            assert!(error.to_string().contains(expected), "{error:#}");
+            assert_eq!(
+                manager.last_result().await.unwrap_err().to_string(),
+                error.to_string()
+            );
+            manager.reset_attempts().await;
+            assert_eq!(manager.last_result().await.unwrap(), RetryResult::Skipped);
         }
     }
 

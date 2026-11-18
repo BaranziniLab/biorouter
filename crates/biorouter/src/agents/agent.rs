@@ -8011,6 +8011,10 @@ impl Agent {
         self.retry_manager.get_attempts().await
     }
 
+    pub(crate) async fn workflow_retry_result(&self) -> Result<RetryResult> {
+        self.retry_manager.last_result().await
+    }
+
     async fn handle_retry_logic(
         &self,
         messages: &mut Conversation,

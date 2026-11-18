@@ -89,8 +89,8 @@ pub struct InstallClaim {
     pub install_id: String,
     pub extension_name: String,
     pub display_name: String,
-    /// The tree this run wrote, which is also where its `manifest.json` and its
-    /// built `.venv` are.
+    /// The stable package path. A parked upgrade restores the previous working
+    /// package here and re-extracts the recorded source when resumed.
     pub install_dir: PathBuf,
     /// Whether the tree was already there when this run started. A resume must
     /// not treat an upgrade's surviving tree as its own creation.

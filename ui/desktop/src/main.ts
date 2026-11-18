@@ -7735,6 +7735,10 @@ function installSessionHooks(ses: Electron.Session, appEntryUrl: URL): void {
     // beacon data, or connect to local services.
     const isArtifactWindow =
       details.url.startsWith('file://') && details.url.includes('biorouter-artifacts');
+    const external = isArtifactWindow ? undefined : loadSettings().externalBiorouterd;
+    const usesRemoteHttp = Boolean(
+      external?.enabled && external.url && remoteHttpBackendUrl(external.url)
+    );
 
     const csp = isArtifactWindow
       ? ARTIFACT_WRAPPER_CSP
@@ -7803,13 +7807,10 @@ function installSessionHooks(ses: Electron.Session, appEntryUrl: URL): void {
         "base-uri 'self';" +
         "manifest-src 'self';" +
         "worker-src 'self';" +
-        // Measured, because this directive reaches the renderer for the first
-        // time and an upgrade of the daemon's `http://127.0.0.1:<port>` would
-        // take the whole app down: Chromium does NOT upgrade a loopback URL
-        // (it is already potentially trustworthy). Under this exact policy a
-        // `fetch('http://127.0.0.1:…')` returned 200 and a
-        // `new WebSocket('ws://127.0.0.1:…')` reached the server unupgraded.
-        'upgrade-insecure-requests;';
+        // A configured HTTP server may not serve TLS. Preserve its chosen
+        // transport so the existing O-18 warning can ask before dictation;
+        // the connect-src allowlist still restricts its origin.
+        (usesRemoteHttp ? '' : 'upgrade-insecure-requests;');
 
     callback({
       responseHeaders: {

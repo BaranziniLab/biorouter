@@ -172,7 +172,11 @@ export default function WorkflowsView() {
     const workflowManifest = workflowToDelete;
     setIsDeletingWorkflow(true);
     try {
-      await deleteWorkflow({ body: { id: workflowManifest.id } });
+      await deleteWorkflow({
+        body: { id: workflowManifest.id },
+        headers: await userActionHeaders(),
+        throwOnError: true,
+      });
       await loadSavedWorkflows();
       setWorkflowToDelete(null);
       toastSuccess({ title: copy.deleted(workflowManifest.workflow.title) });

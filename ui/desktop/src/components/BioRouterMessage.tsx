@@ -33,7 +33,7 @@ import {
   StoredTurnErrorRetryContext,
   TurnErrorRow,
 } from './conversation/ChatTurnError';
-import { messageTurnWasStopped } from './conversation/turnStoppedNotice';
+import { isTurnStoppedNotice, messageTurnWasStopped } from './conversation/turnStoppedNotice';
 import { splitAssistantText } from './transcript/transcriptRhythm';
 import { ThinkingClock, thoughtTook, useThoughtDuration } from './transcript/thinkingClock';
 import type { ArtifactSource } from './artifacts/artifactTypes';
@@ -181,6 +181,36 @@ export default function BioRouterMessage({
   const confirmationExpired =
     confirmationId !== undefined && approvalCardExpired(messages, messageIndex, confirmationId);
   const hasElicitation = elicitationContent !== undefined;
+  const elicitationId =
+    elicitationContent?.data.actionType === 'elicitation' ? elicitationContent.data.id : undefined;
+  const elicitationState = useMemo(() => {
+    if (elicitationId === undefined || messageIndex < 0) return 'waiting';
+    // Keep the first durable outcome: a later Stop cannot undo an answer,
+    // and a stale answer after Stop cannot revive the canceled request.
+    for (let next = messageIndex + 1; next < messages.length; next++) {
+      const row = messages[next];
+      if (
+        row.role === 'user' &&
+        row.content.some(
+          (content) =>
+            content.type === 'actionRequired' &&
+            content.data.actionType === 'elicitationResponse' &&
+            content.data.id === elicitationId
+        )
+      ) {
+        return 'sent';
+      }
+      if (isTurnStoppedNotice(row)) return 'canceled';
+      if (
+        row.role === 'user' &&
+        row.metadata.userVisible &&
+        row.content.some((content) => content.type !== 'toolResponse')
+      ) {
+        break;
+      }
+    }
+    return 'waiting';
+  }, [elicitationId, messageIndex, messages]);
 
   const toolResponsesMap = useMemo(() => {
     const responseMap = new Map();
@@ -425,8 +455,8 @@ export default function BioRouterMessage({
 
             {hasElicitation && submitElicitationResponse && (
               <ElicitationRequest
-                isCancelledMessage={false}
-                isClicked={false}
+                isCancelledMessage={elicitationState === 'canceled'}
+                isClicked={elicitationState === 'sent'}
                 actionRequiredContent={elicitationContent}
                 onSubmit={submitElicitationResponse}
               />

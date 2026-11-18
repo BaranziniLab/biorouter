@@ -1063,7 +1063,7 @@ DD-85. With **Use external server** on in **Settings > App**, the laptop records
 | Part | Design |
 |---|---|
 | Capture | The laptop's renderer, a `file://` secure context whatever the backend URL; the laptop's own OS permission applies |
-| Transport | The chunked stream to the backend URL; `connect-src` already admits the external origin [C `main.ts` `buildConnectSrc`]; `X-Secret-Key` is the configured **Secret Key**, and the proof is the configured **User Action Key**, or empty [C `ExternalBackendSection.tsx` labels; `main.ts` `getUserActionKey`] |
+| Transport | The chunked stream to the backend URL; the desktop response policy admits only its configured external origin and WebSocket origin alongside loopback. The shared meta policy admits the transport schemes, while the served shell retains its own loopback-only cleartext boundary. A configured nonloopback HTTP backend is not silently upgraded to HTTPS [C `main.ts` `buildConnectSrc`, `index.html`, `routes/web_ui.rs`]; `X-Secret-Key` is the configured **Secret Key**, and the proof is the configured **User Action Key**, or empty [C `ExternalBackendSection.tsx` labels; `main.ts` `getUserActionKey`] |
 | Transcription | The backend host's `biorouterd` worker |
 | Models | The backend host's folder; Settings installs there with that server's **User Action Key** on a keyed daemon, or with the secret on a keyless one; the **Model folder** row names the backend's folder and account, and the reveal button is hidden unless the backend is on loopback |
 | Bias | The backend's dictionary under the caller's standing: with the key, as S1; without it, public only (O-17) |

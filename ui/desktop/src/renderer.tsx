@@ -267,7 +267,16 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
         if (!query) return;
         window.dispatchEvent(new CustomEvent('biorouter:open-seeded-chat', { detail: query }));
       },
-      createDivergedChatWindow: () => {},
+      createDivergedChatWindow: (
+        _workingDir: string | undefined,
+        sessionId: string,
+        title?: string
+      ) => {
+        if (!sessionId) return;
+        window.dispatchEvent(
+          new CustomEvent('biorouter:open-diverged-chat', { detail: { sessionId, title } })
+        );
+      },
       closeWindow: () => {},
       directoryChooser: async () => {
         const selected = promptForRemotePath('Enter a folder path on the Ubuntu server');
