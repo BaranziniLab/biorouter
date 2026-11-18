@@ -8942,7 +8942,7 @@
           "super::routes::knowledge"
         ],
         "summary": "Lint a knowledge base and stream the result.",
-        "description": "The stream's terminal `event: done` frame carries a `LintResult`: the\nautofix commit, if any, wrapped around a `LintReport` — the four hygiene\nlists this route has always returned, plus `diagnostics`, the typed findings.\nEach of those is a stable rule id (`kb.` for hygiene, `okf.` and `biookf.`\nfor the format layers), a severity, the subject it is about and a message;\na consumer matches on `rule` and never on `message`, which is prose.\n\nBoth schemas are published under `components.schemas` rather than as this\nresponse's body, because the body is an event stream and typing it as JSON\nwould be a false statement the generated client believes.\n\nRetired pre-OKF bases are refused before the macro starts. Startup removes\nthem, and every remaining base receives its current OKF or BioOKF format\nlayer in addition to the shared hygiene rules.",
+        "description": "The stream's terminal `event: done` frame carries a `LintResult`: the\nautofix commit, if any, wrapped around a `LintReport` — the four hygiene\nlists this route has always returned, plus `diagnostics`, the typed findings.\nEach of those is a stable rule id (`kb.` for hygiene, `okf.` and `biookf.`\nfor the format layers), a severity, the subject it is about and a message;\na consumer matches on `rule` and never on `message`, which is prose.\nAfter an autofix that committed, the report is a fresh scan of the committed\nbase, so it lists what the fix left rather than what it started from.\n\nBoth schemas are published under `components.schemas` rather than as this\nresponse's body, because the body is an event stream and typing it as JSON\nwould be a false statement the generated client believes.\n\nRetired pre-OKF bases are refused before the macro starts. Startup removes\nthem, and every remaining base receives its current OKF or BioOKF format\nlayer in addition to the shared hygiene rules.",
         "operationId": "lint",
         "parameters": [
           {
@@ -9354,6 +9354,9 @@
           },
           "400": {
             "description": "Bad request"
+          },
+          "422": {
+            "description": "The source could not be read, such as a corrupt PDF; the body gives the converter's reason"
           },
           "500": {
             "description": "Internal error"
@@ -12783,7 +12786,7 @@
         "operationId": "start_tunnel",
         "responses": {
           "200": {
-            "description": "Tunnel started successfully",
+            "description": "Tunnel starting. The state reads `starting` until the relay has taken the connection, then `running`",
             "content": {
               "application/json": {
                 "schema": {
@@ -12794,6 +12797,16 @@
           },
           "400": {
             "description": "Bad request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused: the request carried no proof it came from the person, or this daemon holds no user-action key at all. Nothing was changed",
             "content": {
               "application/json": {
                 "schema": {
@@ -12824,7 +12837,7 @@
         "operationId": "get_tunnel_status",
         "responses": {
           "200": {
-            "description": "Tunnel info",
+            "description": "Tunnel info. Without the person's proof, `url`, `hostname` and `secret` are empty",
             "content": {
               "application/json": {
                 "schema": {
@@ -12846,6 +12859,16 @@
         "responses": {
           "200": {
             "description": "Tunnel stopped successfully"
+          },
+          "403": {
+            "description": "Refused: the request carried no proof it came from the person, or this daemon holds no user-action key at all. Nothing was changed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           },
           "500": {
             "description": "Internal server error",
@@ -14505,7 +14528,7 @@
             "items": {
               "$ref": "#/components/schemas/Message"
             },
-            "description": "The rows the cancelled turn's Stop wrote to the transcript, in stored\norder: the prose its reply had streamed (text only), any steers it had\naccepted, and the \"Stopped.\" notice it now ends on (item 7). These are\nexactly what a reload of the chat will show, so the caller can make its\nview agree without re-reading the conversation — the notice's own frame\non the turn stream may arrive after a client has stopped listening.\n\nPresent only when this request cancelled a running turn AND waited for it\nto settle (`wait_for_idle` or `continuation_pending`); omitted otherwise."
+            "description": "The rows the cancelled turn's Stop wrote to the transcript, in stored\norder: the prose its reply had streamed (text only), any steers it had\naccepted, and the note saying the person cancelled it, which the model\nreads on its next turn too. These are\nexactly what a reload of the chat will show, so the caller can make its\nview agree without re-reading the conversation — the notice's own frame\non the turn stream may arrive after a client has stopped listening.\n\nPresent only when this request cancelled a running turn AND waited for it\nto settle (`wait_for_idle` or `continuation_pending`); omitted otherwise."
           },
           "stopped_subagents": {
             "type": "array",
@@ -22310,6 +22333,7 @@
           },
           "fixes_applied": {
             "type": "integer",
+            "description": "How many page writes the autofix committed: every successful\n`kb_write_page` and `kb_write_concept` call. Zero for a read-only lint\nand for an autofix that changed no page.",
             "minimum": 0
           },
           "report": {

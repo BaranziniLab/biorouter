@@ -497,7 +497,8 @@ export type CancelTurnResponse = {
     /**
      * The rows the cancelled turn's Stop wrote to the transcript, in stored
      * order: the prose its reply had streamed (text only), any steers it had
-     * accepted, and the "Stopped." notice it now ends on (item 7). These are
+     * accepted, and the note saying the person cancelled it, which the model
+     * reads on its next turn too. These are
      * exactly what a reload of the chat will show, so the caller can make its
      * view agree without re-reading the conversation — the notice's own frame
      * on the turn stream may arrive after a client has stopped listening.
@@ -4551,6 +4552,11 @@ export type LintResult = {
      * that ran without `autofix`, and therefore without a provider at all.
      */
     commit_sha?: string | null;
+    /**
+     * How many page writes the autofix committed: every successful
+     * `kb_write_page` and `kb_write_concept` call. Zero for a read-only lint
+     * and for an autofix that changed no page.
+     */
     fixes_applied: number;
     report: LintReport;
 };
@@ -15399,6 +15405,10 @@ export type AddRawSourceErrors = {
      */
     400: unknown;
     /**
+     * The source could not be read, such as a corrupt PDF; the body gives the converter's reason
+     */
+    422: unknown;
+    /**
      * Internal error
      */
     500: unknown;
@@ -18011,6 +18021,10 @@ export type StartTunnelErrors = {
      */
     400: ErrorResponse;
     /**
+     * Refused: the request carried no proof it came from the person, or this daemon holds no user-action key at all. Nothing was changed
+     */
+    403: ErrorResponse;
+    /**
      * Internal server error
      */
     500: ErrorResponse;
@@ -18020,7 +18034,7 @@ export type StartTunnelError = StartTunnelErrors[keyof StartTunnelErrors];
 
 export type StartTunnelResponses = {
     /**
-     * Tunnel started successfully
+     * Tunnel starting. The state reads `starting` until the relay has taken the connection, then `running`
      */
     200: TunnelInfo;
 };
@@ -18036,7 +18050,7 @@ export type GetTunnelStatusData = {
 
 export type GetTunnelStatusResponses = {
     /**
-     * Tunnel info
+     * Tunnel info. Without the person's proof, `url`, `hostname` and `secret` are empty
      */
     200: TunnelInfo;
 };
@@ -18051,6 +18065,10 @@ export type StopTunnelData = {
 };
 
 export type StopTunnelErrors = {
+    /**
+     * Refused: the request carried no proof it came from the person, or this daemon holds no user-action key at all. Nothing was changed
+     */
+    403: ErrorResponse;
     /**
      * Internal server error
      */
