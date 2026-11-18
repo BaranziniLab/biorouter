@@ -437,6 +437,16 @@ async fn slow_fired_hook_does_not_stall_the_turn() {
         1,
         "the slow hook should still be in flight, so the turn did not wait for it"
     );
+
+    agent
+        .hooks_manager()
+        .join_fired(std::time::Duration::from_secs(30))
+        .await;
+    assert_eq!(
+        agent.hooks_manager().pending_fire_count(),
+        0,
+        "the fixture must finish its slow hook before runtime teardown"
+    );
 }
 
 // ---- BR-19: input rewrite, PostToolUse block, and hook context on the tool path ----
