@@ -500,8 +500,7 @@ mod focused_decision_ledger {
         chat: &str,
         unrelated: &str,
         id: &str,
-        turn: &str,
-        origin: &str,
+        (turn, origin): (&str, &str),
         outcome: DecisionOutcome,
     ) {
         let query = DecisionQuery {
@@ -595,8 +594,7 @@ mod focused_decision_ledger {
             &f.crew_chat,
             &f.unrelated_chat,
             &id,
-            &turn,
-            &origin,
+            (&turn, &origin),
             DecisionOutcome::Passed,
         )
         .await;
@@ -698,8 +696,7 @@ mod focused_decision_ledger {
             &f.crew_chat,
             &f.unrelated_chat,
             &id,
-            &old_turn,
-            &origin,
+            (&old_turn, &origin),
             DecisionOutcome::Error,
         )
         .await;
@@ -757,8 +754,7 @@ mod focused_decision_ledger {
             &f.crew_chat,
             &f.unrelated_chat,
             &id,
-            &old_turn,
-            &origin,
+            (&old_turn, &origin),
             DecisionOutcome::Error,
         )
         .await;
