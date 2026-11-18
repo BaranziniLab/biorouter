@@ -247,11 +247,34 @@ MessagePort.prototype.postMessage = function (this: MessagePort, message: any, .
   if (message && message.type === 'flush') portEvents.push({ at: Date.now(), kind: 'flush' });
   return (realPostMessage as any).call(this, message, ...rest);
 };
+const workletObservations: Array<{
+  context: BaseAudioContext;
+  liveContextS: number | null;
+  liveDeliveredMs: number | null;
+  messages: Array<{ at: number; type: string; frame: number | null; frames: number; final: boolean }>;
+}> = [];
 const RealAudioWorkletNode = window.AudioWorkletNode;
 (window as any).AudioWorkletNode = class extends RealAudioWorkletNode {
   constructor(context: BaseAudioContext, name: string, options?: AudioWorkletNodeOptions) {
     super(context, name, options);
+    const observed: (typeof workletObservations)[number] = {
+      context, liveContextS: null, liveDeliveredMs: null, messages: [],
+    };
+    workletObservations.push(observed);
     this.port.addEventListener('message', (event: MessageEvent) => {
+      const data = event.data;
+      if (data && (data.type === 'live' || data.type === 'chunk')) {
+        if (data.type === 'live') {
+          observed.liveContextS ??= context.currentTime;
+          observed.liveDeliveredMs ??= trackDeliveredMs();
+        }
+        observed.messages.push({
+          at: Date.now(), type: data.type,
+          frame: typeof data.frame === 'number' ? data.frame : null,
+          frames: data.pcm instanceof ArrayBuffer ? data.pcm.byteLength / 2 : 0,
+          final: Boolean(data.final),
+        });
+      }
       if (event.data && event.data.final) portEvents.push({ at: Date.now(), kind: 'final' });
     });
   }
@@ -275,6 +298,18 @@ const trackDeliveredMs = (): number | null => {
 // track delivers (94.0 % of 4.10 s on one run) and less than the wall time (86.6 % in a
 // hidden window on another): the runner's loss, which only these two other measures see.
 const contextSeconds = (): number | null => contexts.at(-1)?.currentTime ?? null;
+let firstDictationWorklet = 0;
+const dictationAudioState = () => ({
+  trackDeliveredMs: trackDeliveredMs(),
+  worklets: workletObservations.slice(firstDictationWorklet).map((observed) => ({
+    contextId: contexts.indexOf(observed.context as AudioContext),
+    contextS: observed.context.currentTime,
+    state: observed.context.state,
+    liveContextS: observed.liveContextS,
+    liveDeliveredMs: observed.liveDeliveredMs,
+    messages: observed.messages.slice(),
+  })),
+});
 let capture: any = null;
 
 document.getElementById('capture')!.addEventListener('click', (event) => {
@@ -389,6 +424,8 @@ function analyse(chunks: Int16Array[], rate: number) {
   },
   // One whole dictation through the session and the transport.
   async prepareDictation() {
+    firstDictationWorklet = workletObservations.length;
+    (window as any).__dictationAudioPresses = [];
     const field = document.getElementById('field') as HTMLTextAreaElement;
     attachDictationComposer({
       key: 'probe',
@@ -423,6 +460,7 @@ function analyse(chunks: Int16Array[], rate: number) {
       'click',
       () => {
         ((window as any).__presses ??= []).push({ at: Date.now(), activity: getDictationSnapshot().activity });
+        (window as any).__dictationAudioPresses.push({ at: Date.now(), ...dictationAudioState() });
         // The first press starts; a press while recording stops and inserts.
         void startDictation({ key: 'probe', target: { target_kind: 'chat', session_id: 'probe-chat' } });
       },
@@ -438,6 +476,8 @@ function analyse(chunks: Int16Array[], rate: number) {
     recordingAt: (window as any).__recordingAt ?? null,
     busy: (window as any).__busy ?? [],
     fetches,
+    audioAtPresses: (window as any).__dictationAudioPresses ?? [],
+    audioAfterInsert: dictationAudioState(),
     portEvents,
   }),
 };
@@ -1024,6 +1064,22 @@ try {
   });
   await sleep(200);
   const dictated = await page.evaluate(() => window.probe.dictationState());
+  results.dictationDiagnostic = {
+    state: dictated,
+    daemon: {
+      bytes: daemon.bytes,
+      creates: daemon.creates,
+      puts: daemon.puts,
+      finishes: daemon.finishes,
+      deletes: daemon.deletes,
+      maxInflight: daemon.maxInflight,
+      statusReads: daemon.statusReads,
+      preflights: daemon.preflights ?? 0,
+      finishAnsweredAt: daemon.finishAnsweredAt ?? null,
+      uniqueBodyBytes: [...(daemon.bodies?.values() ?? [])].reduce((n, body) => n + body.length, 0),
+    },
+    rendererErrors: [...errors],
+  };
   // The page's own clock at each press, not the moment this script asked Playwright to click.
   assert.equal(dictated.presses.length, 2, `${dictated.presses.length} presses reached the page`);
   const pressAt = dictated.presses[0].at;
@@ -1125,13 +1181,36 @@ try {
   assert.deepEqual(errors, [], `renderer errors: ${errors.join(' | ')}`);
 } catch (error) {
   failure = error;
+  results.failure = {
+    name: error?.name ?? null,
+    message: String(error?.message ?? error),
+    stack: error?.stack ?? null,
+  };
 } finally {
   await app?.close().catch(() => undefined);
   server.close();
-  await fs.writeFile(
-    path.join(outputDir, 'dictation-capture.json'),
-    JSON.stringify(results, null, 2)
-  );
+  if (failure && daemon.bodies) {
+    try {
+      const received = [...daemon.bodies.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([, body]) => body);
+      await fs.writeFile(
+        path.join(outputDir, 'received.wav'),
+        monoWav(Buffer.concat(received), daemon.creates[0]?.body?.sample_rate ?? 16000)
+      );
+    } catch (error) {
+      results.audioEvidenceError = String(error?.message ?? error);
+    }
+  }
+  try {
+    await fs.writeFile(
+      path.join(outputDir, 'dictation-capture.json'),
+      JSON.stringify(results, null, 2)
+    );
+  } catch (error) {
+    console.error('Could not write dictation evidence:', error);
+    failure ??= error;
+  }
 }
 
 const ms = (n) => (typeof n === 'number' ? `${n.toFixed(1)} ms` : 'n/a');
