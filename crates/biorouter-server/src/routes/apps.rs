@@ -6675,6 +6675,7 @@ async fn handle_agent_socket_inner(
     // afterwards). `attach` must precede `configure_agent` so a replayed state
     // command lands in the new channel.
     let ui_bridge = ui_bridge_for(&session_id);
+    ui_bridge.set_surface_decl(manifest.surface.clone());
 
     // Restore any durable shared-state doc BEFORE attaching. `seed_state` no-ops
     // unless the bridge is pristine (version == 0), so a warm bridge (a reconnect
@@ -16065,6 +16066,104 @@ mod opening_is_not_activity_app_tests {
             Ok(mut map) => map.remove(session_id),
             Err(poisoned) => poisoned.into_inner().remove(session_id),
         };
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn an_app_without_ui_tools_enforces_its_schema_on_page_writes() {
+        use futures::SinkExt;
+        use tokio_tungstenite::tungstenite::Message as ClientMessage;
+
+        let state = crate::state::AppState::new().await.unwrap();
+        let store = super::store();
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let mut manifest = store
+            .create_with_id(
+                &format!("page-schema-{nonce}"),
+                "Page schema",
+                "",
+                ArtifactKind::Static,
+                "index.html",
+                &[],
+            )
+            .unwrap();
+        let mut agent = AgentConfig::default();
+        agent.capabilities.ui.enabled = false;
+        manifest.agent = Some(agent);
+        manifest.surface.state_initial = Some(serde_json::json!({ "count": 1 }));
+        manifest.surface.state_schema = Some(serde_json::json!({
+            "type": "object",
+            "properties": { "count": { "type": "integer" } }
+        }));
+        store.save_manifest(&manifest).unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = super::routes(state.clone());
+        let server = tokio::spawn(async move { axum::serve(listener, router).await });
+        let token = super::ws_token_for(&manifest.id, manifest.app_uid.as_deref());
+        let url = format!("ws://{addr}/apps/{}/agent?token={token}", manifest.id);
+        let (mut ws, _) = tokio_tungstenite::connect_async(url).await.unwrap();
+        let session_id = loop {
+            let frame = next_json(&mut ws, "ready").await;
+            if frame["type"] == "ready" {
+                break frame["sessionId"].as_str().unwrap().to_string();
+            }
+        };
+        let bridge = super::ui_bridge_for(&session_id);
+        assert_eq!(
+            bridge.state_snapshot(),
+            (serde_json::json!({ "count": 1 }), 0)
+        );
+        let snapshot = next_json(&mut ws, "initial state").await;
+        assert_eq!(snapshot["cmd"], "state", "{snapshot}");
+        assert_eq!(snapshot["mode"], "snapshot", "{snapshot}");
+
+        for write in [
+            serde_json::json!({ "set": { "path": "/count", "value": "invalid" } }),
+            serde_json::json!({ "patch": [{ "op": "replace", "path": "/count", "value": "invalid" }] }),
+        ] {
+            let mut write = write;
+            write["type"] = serde_json::json!("state_write");
+            write["baseVersion"] = serde_json::json!(0);
+            ws.send(ClientMessage::Text(write.to_string().into()))
+                .await
+                .unwrap();
+            let frame = next_json(&mut ws, "schema refusal").await;
+            assert_eq!(frame["cmd"], "notify", "{frame}");
+            let message = frame["message"].as_str().unwrap();
+            assert!(message.contains("state_schema"), "{message}");
+            assert!(message.contains("/count"), "{message}");
+            assert!(message.contains("integer"), "{message}");
+            assert_eq!(
+                bridge.state_snapshot(),
+                (serde_json::json!({ "count": 1 }), 0)
+            );
+        }
+
+        let write = serde_json::json!({
+            "type": "state_write",
+            "set": { "path": "/count", "value": 2 },
+            "baseVersion": 0
+        });
+        ws.send(ClientMessage::Text(write.to_string().into()))
+            .await
+            .unwrap();
+        let frame = next_json(&mut ws, "accepted write").await;
+        assert_eq!(frame["cmd"], "state", "{frame}");
+        assert_eq!(frame["mode"], "patch", "{frame}");
+        assert_eq!(
+            bridge.state_snapshot(),
+            (serde_json::json!({ "count": 2 }), 1)
+        );
+
+        ws.close(None).await.unwrap();
+        server.abort();
+        forget_bridge(&session_id);
+        store.delete(&manifest.id).unwrap();
     }
 
     /// The other half of an app connect. Closing or reloading an app's page

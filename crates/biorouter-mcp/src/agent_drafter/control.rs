@@ -451,6 +451,132 @@ pub enum StateWriteError {
     Invalid(String),
 }
 
+/// The app's declared `surface.state_schema`, compiled once per session bridge.
+///
+/// Every shared-state write (the page's `state_write`, the agent's `ui_state`
+/// and `ui_patch_state`) checks the document it would produce against this
+/// after the structural caps. No schema, or an empty one, leaves the caps as
+/// the only check. A schema that does not compile is reported once, when it is
+/// installed, and also leaves the caps in force: refusing every write would
+/// leave the whole app unable to change its state over one mistake in its
+/// manifest.
+#[derive(Default)]
+struct InstalledStateSchema {
+    /// The schema as declared, kept so reinstalling the same one (every
+    /// reconnect and every worker builds an `AppControlServer` over the same
+    /// bridge) neither recompiles it nor reports a compile failure again.
+    source: Option<Value>,
+    validator: Option<Arc<jsonschema::Validator>>,
+}
+
+impl InstalledStateSchema {
+    /// Install `schema`. Returns the compile failure to report, only the first
+    /// time this schema is installed.
+    fn install(&mut self, schema: Option<&Value>) -> Option<String> {
+        if self.source.as_ref() == schema {
+            return None;
+        }
+        self.source = schema.cloned();
+        self.validator = None;
+        let schema = schema?;
+        let unconstrained =
+            schema.is_null() || schema.as_object().is_some_and(serde_json::Map::is_empty);
+        if unconstrained {
+            return None;
+        }
+        match jsonschema::validator_for(schema) {
+            Ok(v) => {
+                self.validator = Some(Arc::new(v));
+                None
+            }
+            Err(e) => Some(format!(
+                "the app's surface.state_schema does not compile, so shared state writes are \
+                 checked against the structural caps only: {e}"
+            )),
+        }
+    }
+}
+
+/// The longest rendering of a schema violation a refusal quotes. A violation
+/// message embeds the offending value, which can be most of a 256 KB document.
+const STATE_SCHEMA_ERROR_MAX: usize = 240;
+
+/// Cut a violation's rendering to [`STATE_SCHEMA_ERROR_MAX`] bytes.
+fn bounded_schema_detail(mut detail: String) -> String {
+    if detail.len() > STATE_SCHEMA_ERROR_MAX {
+        let mut end = STATE_SCHEMA_ERROR_MAX;
+        while !detail.is_char_boundary(end) {
+            end -= 1;
+        }
+        detail.truncate(end);
+        detail.push('…');
+    }
+    detail
+}
+
+/// Check the document a write would produce (`next`) against the declared
+/// state schema. The refusal is one sentence naming the failing path and what
+/// the schema expects there.
+///
+/// The whole document must match, so a value that already broke the schema
+/// before the write (a doc persisted before the schema was enforced, or a
+/// `state_initial` that does not match it) refuses a write that leaves it in
+/// place. Two things keep that from reading as the writer's fault: a violation
+/// the write itself adds is named first, and when every violation predates the
+/// write (compared with `current`, the document before it) the refusal says so
+/// and that the write must also fix that path. Only a refusal pays for the
+/// comparison.
+fn check_state_schema(
+    validator: &jsonschema::Validator,
+    current: &Value,
+    next: &Value,
+) -> Result<(), String> {
+    if validator.is_valid(next) {
+        return Ok(());
+    }
+    let identity = |e: jsonschema::ValidationError<'_>| {
+        (
+            e.instance_path.to_string(),
+            e.schema_path.to_string(),
+            e.to_string(),
+        )
+    };
+    let before: HashSet<(String, String, String)> =
+        validator.iter_errors(current).map(identity).collect();
+    let after: Vec<(String, String, String)> = validator.iter_errors(next).map(identity).collect();
+    // `is_valid` said no, so there is an error; never let an empty list pass.
+    let Some(first) = after.first() else {
+        return Err(
+            "the write was refused because the state document would not match the app's \
+             state_schema"
+                .to_string(),
+        );
+    };
+    let (own, predates) = match after.iter().find(|e| !before.contains(*e)) {
+        Some(own) => (own, false),
+        None => (first, true),
+    };
+    let (path, _, detail) = own;
+    let at = if path.is_empty() {
+        "the document root".to_string()
+    } else {
+        path.clone()
+    };
+    let detail = bounded_schema_detail(detail.clone());
+    if predates {
+        Err(format!(
+            "the write was refused because the state document would still not match the \
+             app's state_schema at {at}, which already failed it before this write, so the \
+             write must also fix {at}: {detail}"
+        ))
+    } else {
+        Err(format!(
+            "the write was refused because the state document would not match the app's \
+             state_schema at {at}: {detail}"
+        ))
+    }
+}
+
 /// Enforce the structural caps on a candidate state document. Called after every
 /// mutation, against the post-mutation value, so a violation rejects the change.
 fn validate_state_doc(doc: &Value) -> Result<(), String> {
@@ -634,7 +760,7 @@ struct BridgeInner {
     /// single `ui_subscribe([])` would otherwise silently re-break the app.
     eager: Mutex<HashSet<String>>,
     /// The app's declared surface, mirrored onto the bridge (set by
-    /// [`AppControlServer::new`]) so the server-facing signal accessors
+    /// [`UiBridge::set_surface_decl`]) so the server-facing signal accessors
     /// ([`UiBridge::signal_decl`] / [`UiBridge::validate_signal`]) can resolve a
     /// declaration without holding the `AppControlServer`.
     surface_decl: Mutex<SurfaceDecl>,
@@ -646,6 +772,10 @@ struct BridgeInner {
     /// (`ui_state` / `ui_patch_state`) and the browser (`state_write`) mutate it;
     /// this bridge is the ordering authority.
     state: Mutex<StateDoc>,
+    /// The compiled `surface.state_schema` every write to [`Self::state`] must
+    /// satisfy. Installed by [`UiBridge::set_surface_decl`]. Lock order: taken
+    /// while [`Self::state`] is held, never the other way round.
+    state_schema: Mutex<InstalledStateSchema>,
     /// Panel ids currently mounted, oldest first.
     panels: Mutex<Vec<String>>,
     /// Instance registry (Apps SDK v2, Pillar 3): widget node id → its last-known
@@ -690,6 +820,7 @@ impl UiBridge {
                 surface_decl: Mutex::new(SurfaceDecl::default()),
                 app_call_timeout_s: AtomicU64::new(APP_CALL_TIMEOUT_S),
                 state: Mutex::new(StateDoc::default()),
+                state_schema: Mutex::new(InstalledStateSchema::default()),
                 panels: Mutex::new(Vec::new()),
                 instances: Mutex::new(HashMap::new()),
                 surface: Mutex::new(None),
@@ -804,6 +935,26 @@ impl UiBridge {
             .unwrap_or_else(|_| (Value::Object(serde_json::Map::new()), 0))
     }
 
+    /// Every check a candidate shared state document must pass before a write
+    /// commits: the structural caps, then the declared `state_schema` when one
+    /// is installed. All three write paths call this with the live document
+    /// (`current`, held under the state lock) and the document the write would
+    /// produce (`next`), so a refusal leaves the live document and its version
+    /// untouched.
+    fn validate_state_write(&self, current: &Value, next: &Value) -> Result<(), String> {
+        validate_state_doc(next)?;
+        let validator = self
+            .inner
+            .state_schema
+            .lock()
+            .map(|s| s.validator.clone())
+            .unwrap_or_else(|p| p.into_inner().validator.clone());
+        match validator {
+            Some(v) => check_state_schema(&v, current, next),
+            None => Ok(()),
+        }
+    }
+
     /// Seed the state document from durable persistence. Applies **only** while
     /// the session is still fresh (`version == 0`), so a restore can never clobber
     /// live in-session state; call it before the first [`attach`](Self::attach).
@@ -885,7 +1036,8 @@ impl UiBridge {
             }
         };
 
-        validate_state_doc(&next).map_err(StateWriteError::Invalid)?;
+        self.validate_state_write(&guard.doc, &next)
+            .map_err(StateWriteError::Invalid)?;
         let new_version = guard.version + 1;
         guard.doc = next;
         guard.version = new_version;
@@ -1087,8 +1239,15 @@ impl UiBridge {
     }
 
     /// Mirror the app's declared surface onto the bridge so the server-facing
-    /// signal accessors can resolve declarations. Called by
-    /// [`AppControlServer::new`]; no `apps.rs` change is required.
+    /// signal accessors can resolve declarations, and install its compiled
+    /// `state_schema` so every shared state write is checked against it.
+    ///
+    /// [`AppControlServer::new`] calls this, but no `AppControlServer` is built
+    /// for an app whose `ui` capability is off, and that app's page still sends
+    /// `state_write`. So the app socket must also call it for every connection,
+    /// or such a page is checked against the structural caps only. Calling it
+    /// again with the same surface is safe: the schema is neither recompiled nor
+    /// reported again.
     pub fn set_surface_decl(&self, surface: SurfaceDecl) {
         // Declaration IS subscription. Seed the eager floor from the surface
         // before storing it, so a signal the user fires *before the agent's first
@@ -1102,6 +1261,15 @@ impl UiBridge {
             .collect();
         if let Ok(mut e) = self.inner.eager.lock() {
             *e = eager;
+        }
+        let compile_failure = self
+            .inner
+            .state_schema
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .install(surface.state_schema.as_ref());
+        if let Some(reason) = compile_failure {
+            tracing::warn!("{reason}");
         }
         if let Ok(mut s) = self.inner.surface_decl.lock() {
             *s = surface;
@@ -2591,8 +2759,9 @@ impl AppControlServer {
         consult_enabled: bool,
     ) -> Self {
         // Mirror the declared surface onto the bridge so its server-facing signal
-        // accessors (signal_decl / validate_signal) can resolve declarations
-        // without holding this server — no apps.rs wiring required.
+        // accessors (signal_decl / validate_signal) and the state schema check
+        // work without holding this server. A ui-disabled app builds no server,
+        // so the app socket installs the surface itself as well.
         bridge.set_surface_decl(surface.clone());
         Self {
             tool_router: Self::tool_router(),
@@ -3259,7 +3428,9 @@ impl AppControlServer {
         }
 
         let version = if changed {
-            validate_state_doc(&next).map_err(invalid)?;
+            self.bridge
+                .validate_state_write(&guard.doc, &next)
+                .map_err(invalid)?;
             guard.doc = next;
             guard.version += 1;
             guard.version
@@ -3353,7 +3524,9 @@ impl AppControlServer {
                 "\"patch\" could not be applied to the current state: {e}"
             ))
         })?;
-        validate_state_doc(&next).map_err(invalid)?;
+        self.bridge
+            .validate_state_write(&guard.doc, &next)
+            .map_err(invalid)?;
         guard.doc = next;
         guard.version += 1;
         let version = guard.version;
@@ -5764,6 +5937,347 @@ mod tests {
         assert_eq!(d["declared"]["components"][0]["name"], "pathway_map");
         assert_eq!(d["state"]["version"], 0);
         assert!(d["state"]["keys"].as_array().unwrap().is_empty());
+    }
+
+    // ── Apps SDK v2: the declared state_schema is enforced on every write ───
+
+    /// A surface whose shared state declares `count` an integer and `label` a
+    /// string, the shape the APPS-23 reporter drove.
+    fn counted_surface() -> SurfaceDecl {
+        SurfaceDecl {
+            state_schema: Some(json!({
+                "type": "object",
+                "properties": {
+                    "count": { "type": "integer" },
+                    "label": { "type": "string" }
+                }
+            })),
+            ..Default::default()
+        }
+    }
+
+    /// A bridge with `counted_surface` installed the way the daemon installs it:
+    /// by constructing the session's `AppControlServer` over the bridge.
+    fn counted_server() -> (UiBridge, AppControlServer, mpsc::UnboundedReceiver<Value>) {
+        let bridge = UiBridge::new();
+        let (rx, _tok) = bridge.attach();
+        let s = AppControlServer::new(bridge.clone(), UiCapability::default(), counted_surface());
+        (bridge, s, rx)
+    }
+
+    /// The page's `state_write` (both the `set` and the `patch` form) is refused
+    /// when the document it would produce breaks the declared schema, the
+    /// refusal names the failing path and the expected type, and the live
+    /// document and its version are untouched.
+    #[test]
+    fn a_page_write_that_violates_the_declared_schema_is_refused() {
+        let (bridge, _s, _rx) = counted_server();
+
+        match bridge.apply_client_write(Some(("/count".into(), json!("not-a-number"))), None, 0) {
+            Err(StateWriteError::Invalid(msg)) => {
+                assert!(msg.contains("/count"), "names the failing path: {msg}");
+                assert!(msg.contains("integer"), "names the expected type: {msg}");
+                assert!(msg.contains("state_schema"), "names the contract: {msg}");
+            }
+            other => panic!("expected a schema refusal, got {other:?}"),
+        }
+        match bridge.apply_client_write(
+            None,
+            Some(json!([{ "op": "add", "path": "/label", "value": 7 }])),
+            0,
+        ) {
+            Err(StateWriteError::Invalid(msg)) => {
+                assert!(msg.contains("/label"), "{msg}");
+                assert!(msg.contains("string"), "{msg}");
+            }
+            other => panic!("expected a schema refusal, got {other:?}"),
+        }
+
+        let (doc, version) = bridge.state_snapshot();
+        assert_eq!(version, 0, "a refused write must not bump the version");
+        assert!(doc.as_object().unwrap().is_empty(), "{doc}");
+    }
+
+    /// The agent's two write tools refuse a schema violation as an error result,
+    /// push nothing at the page, and leave the document and version unchanged.
+    #[tokio::test]
+    async fn ui_state_and_ui_patch_state_refuse_a_schema_violation() {
+        let (bridge, s, mut rx) = counted_server();
+
+        let e = s
+            .ui_state(Parameters(StateParams {
+                set: Some(json!({ "count": "not-a-number" })),
+                remove: None,
+            }))
+            .await
+            .expect_err("ui_state must refuse a value the schema forbids");
+        assert!(e.message.contains("/count"), "{}", e.message);
+        assert!(e.message.contains("integer"), "{}", e.message);
+
+        let e = s
+            .ui_patch_state(Parameters(PatchStateParams {
+                patch: json!([{ "op": "add", "path": "/count", "value": "not-a-number" }]),
+            }))
+            .await
+            .expect_err("ui_patch_state must refuse a value the schema forbids");
+        assert!(e.message.contains("/count"), "{}", e.message);
+        assert!(e.message.contains("integer"), "{}", e.message);
+
+        let (doc, version) = bridge.state_snapshot();
+        assert_eq!(version, 0, "a refused write must not bump the version");
+        assert!(doc.as_object().unwrap().is_empty(), "{doc}");
+        assert!(
+            rx.try_recv().is_err(),
+            "a refused write must not reach the page"
+        );
+    }
+
+    /// Writes that satisfy the schema land from all three paths and each bumps
+    /// the version by one.
+    #[tokio::test]
+    async fn a_valid_write_still_lands_and_bumps_the_version() {
+        let (bridge, s, mut rx) = counted_server();
+
+        let (_ops, v1) = bridge
+            .apply_client_write(Some(("/count".into(), json!(3))), None, 0)
+            .expect("a conforming page write lands");
+        assert_eq!(v1, 1);
+
+        s.ui_state(Parameters(StateParams {
+            set: Some(json!({ "count": 4, "label": "cases" })),
+            remove: None,
+        }))
+        .await
+        .expect("a conforming ui_state lands");
+        assert_eq!(bridge.state_snapshot().1, 2);
+        assert_eq!(rx.try_recv().unwrap()["version"], 2);
+
+        let r = s
+            .ui_patch_state(Parameters(PatchStateParams {
+                patch: json!([{ "op": "replace", "path": "/count", "value": 5 }]),
+            }))
+            .await
+            .expect("a conforming ui_patch_state lands");
+        assert!(text_of(&r).contains("\"version\":3"), "{}", text_of(&r));
+        assert_eq!(rx.try_recv().unwrap()["version"], 3);
+
+        let (doc, version) = bridge.state_snapshot();
+        assert_eq!(version, 3);
+        assert_eq!(doc, json!({ "count": 5, "label": "cases" }));
+    }
+
+    /// The refusal is one sentence: the failing path, then what the schema
+    /// expected there, with a long offending value cut short.
+    #[test]
+    fn a_schema_refusal_is_one_bounded_sentence() {
+        let (bridge, _s, _rx) = counted_server();
+        let Err(StateWriteError::Invalid(msg)) =
+            bridge.apply_client_write(Some(("/count".into(), json!("x".repeat(5_000)))), None, 0)
+        else {
+            panic!("expected a schema refusal");
+        };
+        assert!(
+            msg.starts_with(
+                "the write was refused because the state document would not match the \
+                 app's state_schema at /count: "
+            ),
+            "{msg}"
+        );
+        assert!(
+            msg.len() < 500,
+            "a long value is cut short: {} bytes",
+            msg.len()
+        );
+        assert!(!msg.contains(". "), "one sentence: {msg}");
+    }
+
+    /// The structural caps still run first, so a cap message is not hidden by a
+    /// schema message, and a document the schema accepts is still capped.
+    #[tokio::test]
+    async fn the_caps_still_apply_under_a_schema() {
+        let (bridge, s, _rx) = counted_server();
+        let big = "x".repeat(STATE_MAX_BYTES + 1_000);
+        let e = s
+            .ui_state(Parameters(StateParams {
+                set: Some(json!({ "label": big })),
+                remove: None,
+            }))
+            .await
+            .unwrap_err();
+        assert!(e.message.contains("bytes"), "{}", e.message);
+        assert_eq!(bridge.state_snapshot().1, 0);
+    }
+
+    /// A schema that does not compile is reported once, however many times the
+    /// session's servers install it, and leaves the caps as the only check.
+    #[test]
+    fn an_uncompilable_state_schema_is_reported_once_and_keeps_the_caps() {
+        let broken = json!({ "type": 12 });
+        let mut slot = InstalledStateSchema::default();
+        let first = slot.install(Some(&broken));
+        assert!(
+            first
+                .as_deref()
+                .is_some_and(|r| r.contains("state_schema does not compile")),
+            "{first:?}"
+        );
+        assert!(slot.install(Some(&broken)).is_none(), "reported only once");
+
+        let bridge = UiBridge::new();
+        let surface = SurfaceDecl {
+            state_schema: Some(broken),
+            ..Default::default()
+        };
+        let _s1 = AppControlServer::new(bridge.clone(), UiCapability::default(), surface.clone());
+        let _s2 = AppControlServer::new(bridge.clone(), UiCapability::default(), surface);
+        let (_ops, v) = bridge
+            .apply_client_write(Some(("/count".into(), json!("anything"))), None, 0)
+            .expect("an uncompilable schema checks nothing beyond the caps");
+        assert_eq!(v, 1);
+        let big = "x".repeat(STATE_MAX_BYTES + 1_000);
+        match bridge.apply_client_write(Some(("/blob".into(), json!(big))), None, 1) {
+            Err(StateWriteError::Invalid(msg)) => assert!(msg.contains("bytes"), "{msg}"),
+            other => panic!("the caps must still refuse, got {other:?}"),
+        }
+    }
+
+    /// No schema, or an empty one, keeps the caps as the only check; a later
+    /// manifest that adds a schema takes effect on the same bridge.
+    #[test]
+    fn no_schema_checks_only_the_caps_and_a_new_schema_takes_effect() {
+        let bridge = UiBridge::new();
+        let _s = AppControlServer::new(
+            bridge.clone(),
+            UiCapability::default(),
+            SurfaceDecl {
+                state_schema: Some(json!({})),
+                ..Default::default()
+            },
+        );
+        bridge
+            .apply_client_write(Some(("/count".into(), json!("free text"))), None, 0)
+            .expect("an empty schema constrains nothing");
+
+        let _s = AppControlServer::new(bridge.clone(), UiCapability::default(), counted_surface());
+        match bridge.apply_client_write(Some(("/count".into(), json!("still text"))), None, 1) {
+            Err(StateWriteError::Invalid(msg)) => assert!(msg.contains("/count"), "{msg}"),
+            other => panic!("the newly installed schema must apply, got {other:?}"),
+        }
+    }
+
+    /// The bridge alone carries the schema: installing the surface with
+    /// `set_surface_decl`, as the socket loop must for an app whose `ui`
+    /// capability is off (no `AppControlServer` is built then), arms the page's
+    /// `state_write`, and a later `AppControlServer` over the same surface (a
+    /// reconnect, or a worker with `ui`) keeps it in force.
+    #[test]
+    fn the_surface_alone_arms_the_page_path_without_an_app_control_server() {
+        let bridge = UiBridge::new();
+        bridge.set_surface_decl(counted_surface());
+
+        match bridge.apply_client_write(Some(("/count".into(), json!("not-a-number"))), None, 0) {
+            Err(StateWriteError::Invalid(msg)) => {
+                assert!(msg.contains("/count") && msg.contains("integer"), "{msg}")
+            }
+            other => panic!("the installed surface must arm the page path, got {other:?}"),
+        }
+        let (_ops, v) = bridge
+            .apply_client_write(Some(("/count".into(), json!(3))), None, 0)
+            .expect("a conforming page write lands");
+        assert_eq!(v, 1);
+
+        bridge.set_surface_decl(counted_surface());
+        let _s = AppControlServer::new(bridge.clone(), UiCapability::default(), counted_surface());
+        match bridge.apply_client_write(Some(("/count".into(), json!("x"))), None, 1) {
+            Err(StateWriteError::Invalid(msg)) => assert!(msg.contains("/count"), "{msg}"),
+            other => panic!("reinstalling the same surface keeps the schema, got {other:?}"),
+        }
+        assert_eq!(bridge.state_snapshot(), (json!({ "count": 3 }), 1));
+    }
+
+    /// A bridge seeded with a document that already breaks the schema (a doc
+    /// persisted before the schema was enforced, or a `state_initial` that does
+    /// not match it), with `counted_surface` installed.
+    fn bridge_seeded_with_a_stale_count() -> (UiBridge, AppControlServer) {
+        let bridge = UiBridge::new();
+        bridge.seed_state(json!({ "count": "legacy" }), 4);
+        let s = AppControlServer::new(bridge.clone(), UiCapability::default(), counted_surface());
+        (bridge, s)
+    }
+
+    /// When a write adds a violation of its own, the refusal names that one,
+    /// not a violation the document already held before the write.
+    #[test]
+    fn a_write_is_named_for_its_own_violation_before_one_the_doc_already_held() {
+        let (bridge, _s) = bridge_seeded_with_a_stale_count();
+        match bridge.apply_client_write(Some(("/label".into(), json!(7))), None, 4) {
+            Err(StateWriteError::Invalid(msg)) => {
+                assert!(
+                    msg.contains("/label"),
+                    "names the write's own violation: {msg}"
+                );
+                assert!(msg.contains("string"), "{msg}");
+                assert!(!msg.contains("/count"), "not the stale one: {msg}");
+                assert!(!msg.contains("already failed"), "{msg}");
+            }
+            other => panic!("expected a schema refusal, got {other:?}"),
+        }
+        assert_eq!(bridge.state_snapshot(), (json!({ "count": "legacy" }), 4));
+    }
+
+    /// A write that only leaves a value the document already broke the schema
+    /// with is refused on all three paths, and the refusal says the value
+    /// predates the write and that the write must also fix it; a write that
+    /// fixes it lands.
+    #[tokio::test]
+    async fn a_refusal_for_a_value_the_doc_already_held_says_the_write_must_fix_it() {
+        let (bridge, s) = bridge_seeded_with_a_stale_count();
+        let says_it_predates = |msg: &str| {
+            assert!(msg.contains("/count"), "names the stale path: {msg}");
+            assert!(
+                msg.contains("which already failed it before this write"),
+                "says the value predates the write: {msg}"
+            );
+            assert!(msg.contains("must also fix /count"), "{msg}");
+            assert!(!msg.contains(". "), "one sentence: {msg}");
+        };
+
+        match bridge.apply_client_write(Some(("/label".into(), json!("ok"))), None, 4) {
+            Err(StateWriteError::Invalid(msg)) => says_it_predates(&msg),
+            other => panic!("expected a schema refusal, got {other:?}"),
+        }
+        let e = s
+            .ui_state(Parameters(StateParams {
+                set: Some(json!({ "label": "ok" })),
+                remove: None,
+            }))
+            .await
+            .unwrap_err();
+        says_it_predates(&e.message);
+        let e = s
+            .ui_patch_state(Parameters(PatchStateParams {
+                patch: json!([{ "op": "add", "path": "/label", "value": "ok" }]),
+            }))
+            .await
+            .unwrap_err();
+        says_it_predates(&e.message);
+        assert_eq!(bridge.state_snapshot(), (json!({ "count": "legacy" }), 4));
+
+        let (_ops, v) = bridge
+            .apply_client_write(
+                None,
+                Some(json!([
+                    { "op": "replace", "path": "/count", "value": 2 },
+                    { "op": "add", "path": "/label", "value": "ok" }
+                ])),
+                4,
+            )
+            .expect("a write that fixes the stale value lands");
+        assert_eq!(v, 5);
+        assert_eq!(
+            bridge.state_snapshot().0,
+            json!({ "count": 2, "label": "ok" })
+        );
     }
 
     // ── Apps SDK v2: catalog kinds ──────────────────────────────────────────
