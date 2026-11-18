@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 
 /**
  * Which composer takes the caret when several mount at once.
@@ -129,5 +129,25 @@ describe('a composer takes the caret when it mounts only if asked to', () => {
       </>
     );
     expect(document.activeElement).toBe(box('focused'));
+  });
+
+  it('leaves the caret in a running terminal when a composer mounts', async () => {
+    const terminal = render(
+      <section data-testid="in-app-terminal-dock">
+        <textarea aria-label="Terminal input" />
+      </section>
+    );
+    const input = terminal.getByRole('textbox', { name: 'Terminal input' });
+    input.focus();
+    expect(document.activeElement).toBe(input);
+
+    await act(async () => {
+      render(
+        <React.StrictMode>
+          <Pane label="remounted" />
+        </React.StrictMode>
+      );
+    });
+    expect(document.activeElement).toBe(input);
   });
 });

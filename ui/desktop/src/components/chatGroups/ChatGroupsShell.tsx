@@ -10,7 +10,6 @@ import {
   type AnimationEvent,
 } from 'react';
 import BaseChat from '../BaseChat';
-import InAppTerminalDock from '../InAppTerminalDock';
 import { ChatType } from '../../types/chat';
 import { useChatGroups } from '../../contexts/ChatGroupsContext';
 import { useTerminalDock } from '../../contexts/TerminalDockContext';
@@ -21,6 +20,7 @@ import { Plus } from '../icons/app-icons';
 import { ChatGroupSplitter } from './ChatGroupSplitter';
 import { ChatDropOverlay, ChatTabGhost } from './ChatDropOverlay';
 import { ChatPaneFrame } from './ChatPaneFrame';
+import { usePaneTerminalDocks } from './usePaneTerminalDocks';
 import { CompactPane, type CompactPaneInputs, type PaneIdentity } from './CompactPane';
 import type { PaneResize } from './paneGrowPlan';
 import { tabKindSource, tabShownTitle } from './tabIdentity';
@@ -1253,6 +1253,11 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
     },
     [dispatch, activeGroupId]
   );
+  const { registerHost: registerTerminalHost, docks: terminalDocks } = usePaneTerminalDocks(
+    groups?.state,
+    terminalDock,
+    handleFocusGroup
+  );
 
   const layout = groups?.state.layout;
   const groupCount = useMemo(() => (layout ? groupCountOf(layout) : 1), [layout]);
@@ -1369,13 +1374,6 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
     if (!group) return <div key={groupId} />;
     const activeTab = group.tabs.find((t) => t.tabId === group.activeTabId);
     const isActiveGroup = groupId === groups.state.activeGroupId;
-    // Every terminal key this group can own: one per tab, plus the empty-tab
-    // key. The pane renders only its OWN terminals (a terminal belongs to one
-    // pane), and shows the one whose tab is active in THIS pane — so a 4-way
-    // split can have four terminals open at once, each scoped to its pane and
-    // each the width of its pane, never a bar spanning the whole window.
-    const groupTabKeys = [...group.tabs.map((t) => t.tabId), `${groupId}-empty`];
-
     // Rung 5: what this pane's placeholder shows and does if the split leaves it
     // too small for its chat. The same inputs the strip reads, so a compact
     // pane's glyph and title can never disagree with its tab.
@@ -1488,8 +1486,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         groupCount={groupCount}
         dropZone={drag.dropTarget?.groupId === groupId ? drag.dropTarget.zone : null}
         onFocusGroup={handleFocusGroup}
-        terminalDock={terminalDock}
-        groupTabKeys={groupTabKeys}
+        registerTerminalHost={registerTerminalHost}
         // The tab is the chat's identity: keying on tabId (not sessionId) keeps
         // a tab's mount stable across a session bind. The SAME id keys the tab's
         // terminal, so it too survives the bind and switching tabs switches it.
@@ -1537,12 +1534,11 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         {/* treeRef: rung 4 measures the room the GROUPS have, which the sidebar
             can change without the window moving, and a compact pane's Make
             wider plans in the same box (rung 5). */}
-        {/* Terminals render INSIDE their pane now (see ChatGroupPane), not here
-            at the shell as a full-width bar below every group. A terminal belongs
-            to one pane, is the width of that pane, and a split can show several
-            at once — each scoped to its own session's working directory. */}
+        {/* Stable terminal portal containers stay inside each pane's content column.
+            Their React owner stays here when merging or splitting replaces the tree. */}
         <div ref={treeRef} data-chat-groups-tree="" className="flex min-h-0 flex-1">
           {tree}
+          {terminalDocks}
         </div>
       </div>
       {/* The ghost renders at the SHELL, not in the source strip: it is fixed to
@@ -1628,9 +1624,7 @@ interface ChatGroupPaneProps {
   groupCount: number;
   dropZone: import('./dropZones').DropZone | null;
   onFocusGroup: (groupId: ChatGroupId) => void;
-  terminalDock: ReturnType<typeof useTerminalDock>;
-  /** Every terminal key this group can own (one per tab + the empty-tab key). */
-  groupTabKeys: string[];
+  registerTerminalHost: (groupId: ChatGroupId, host: HTMLDivElement | null) => void;
   tabKey: string;
   /** See `BaseChat`'s prop: the placeholder pane skips the rotating greeting. */
   suppressGreeting: boolean;
@@ -1659,8 +1653,7 @@ function ChatGroupPane({
   groupCount,
   dropZone,
   onFocusGroup,
-  terminalDock,
-  groupTabKeys,
+  registerTerminalHost,
   tabKey,
   sessionId,
   suppressGreeting,
@@ -1672,6 +1665,10 @@ function ChatGroupPane({
   onSessionLoaded,
   compact,
 }: ChatGroupPaneProps) {
+  const terminalHostRef = useCallback(
+    (host: HTMLDivElement | null) => registerTerminalHost(groupId, host),
+    [groupId, registerTerminalHost]
+  );
   // Extensions load per-session, so in a 4-way split four chats each finish
   // their own load and each has something to report. Telling the toast layer
   // which chat you are actually in lets a background group's clean load stay
@@ -1761,29 +1758,7 @@ function ChatGroupPane({
               autoFocusComposer={isActiveGroup && !isTabKeyboardFocusPending(tabKey)}
             />
           </div>
-          {/* This pane's OWN terminals, stacked below its chat inside the pane's
-              flex column — so a terminal is the width of its pane and belongs to
-              exactly one pane, never a full-window bar. Every terminal in the group
-              stays mounted so its shell keeps running; only the one whose tab is
-              active in THIS pane is visible (open). `onClose` HIDES a terminal (its
-              panes live on); `onEmptied`, fired when its last pane closes, DESTROYS
-              it. Each reads its own frozen cwd — its tab's session folder, captured
-              on open. */}
-          {terminalDock?.terminals
-            .filter((terminal) => groupTabKeys.includes(terminal.key))
-            .map((terminal) => (
-              <InAppTerminalDock
-                key={terminal.key}
-                // Also its scope for "Run this code block": a Run clicked in this
-                // tab's transcript must land in THIS terminal, not in whichever
-                // pane happens to hold focus.
-                dockKey={terminal.key}
-                open={terminal.showing && terminal.key === tabKey}
-                workingDir={terminal.workingDir}
-                onClose={() => terminalDock.setOpen(terminal.key, false)}
-                onEmptied={() => terminalDock.remove(terminal.key)}
-              />
-            ))}
+          <div ref={terminalHostRef} className="contents" />
         </>
       }
       renderCompact={({ answer, animateIn, box }) => (
