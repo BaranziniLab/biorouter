@@ -3929,6 +3929,129 @@ fn repetition_denial_abort(
     Some((code, notice))
 }
 
+#[cfg(test)]
+mod repetition_denial_feedback_tests {
+    use super::*;
+    use crate::agents::turn_guard::TurnToolGuard;
+    use serde_json::json;
+
+    fn request(id: &str, command: &str) -> ToolRequest {
+        ToolRequest {
+            id: id.to_string(),
+            tool_call: ToolResult::Ok(CallToolRequestParams {
+                task: None,
+                meta: None,
+                name: "fixture__probe".into(),
+                arguments: json!({"command": command}).as_object().cloned(),
+            }),
+            metadata: None,
+            tool_meta: None,
+        }
+    }
+
+    fn denial(request: &ToolRequest, inspector: &str) -> InspectionResult {
+        InspectionResult {
+            tool_request_id: request.id.clone(),
+            action: InspectionAction::Deny,
+            reason: "fixture policy denial".to_string(),
+            confidence: 1.0,
+            inspector_name: inspector.to_string(),
+            finding_id: None,
+        }
+    }
+
+    fn permissions(denied: Vec<ToolRequest>) -> PermissionCheckResult {
+        PermissionCheckResult {
+            approved: vec![],
+            needs_approval: vec![],
+            denied,
+        }
+    }
+
+    #[test]
+    fn first_repetition_denial_leaves_one_feedback_opportunity() {
+        let denied = request("first", "one");
+        let inspections = [denial(
+            &denied,
+            crate::tool_monitor::REPETITION_INSPECTOR_NAME,
+        )];
+        let mut guard = TurnToolGuard::new();
+
+        assert!(repetition_denial_abort(
+            &inspections,
+            &permissions(vec![denied.clone()]),
+            &mut guard,
+        )
+        .is_none());
+        assert!(guard.is_blocked(&denied));
+    }
+
+    #[test]
+    fn two_denied_requests_in_one_batch_are_terminal_and_both_remain_blocked() {
+        let first = request("first", "one");
+        let second = request("second", "two");
+        let inspections = [
+            denial(&first, crate::tool_monitor::REPETITION_INSPECTOR_NAME),
+            denial(&second, crate::tool_monitor::REPETITION_INSPECTOR_NAME),
+        ];
+        let mut guard = TurnToolGuard::new();
+
+        let abort = repetition_denial_abort(
+            &inspections,
+            &permissions(vec![first.clone(), second.clone()]),
+            &mut guard,
+        );
+
+        assert!(matches!(abort, Some((TurnAbortCode::ToolLoop { .. }, _))));
+        assert!(guard.is_blocked(&first));
+        assert!(guard.is_blocked(&second));
+    }
+
+    #[test]
+    fn duplicate_inspection_rows_do_not_consume_two_feedback_strikes() {
+        let denied = request("first", "one");
+        let inspection = denial(&denied, crate::tool_monitor::REPETITION_INSPECTOR_NAME);
+        let inspections = [inspection.clone(), inspection];
+        let mut guard = TurnToolGuard::new();
+
+        assert!(repetition_denial_abort(
+            &inspections,
+            &permissions(vec![denied.clone()]),
+            &mut guard,
+        )
+        .is_none());
+        assert!(guard.is_blocked(&denied));
+    }
+
+    #[test]
+    fn other_inspector_denials_never_block_a_repetition_signature() {
+        let denied = request("first", "one");
+        let inspections = [denial(&denied, "fixture_non_repetition")];
+        let mut guard = TurnToolGuard::new();
+
+        assert!(repetition_denial_abort(
+            &inspections,
+            &permissions(vec![denied.clone()]),
+            &mut guard,
+        )
+        .is_none());
+        assert!(!guard.is_blocked(&denied));
+    }
+
+    #[test]
+    fn an_inspection_for_a_request_not_in_denied_never_consumes_feedback() {
+        let denied = request("first", "one");
+        let inspections = [denial(
+            &denied,
+            crate::tool_monitor::REPETITION_INSPECTOR_NAME,
+        )];
+        let mut guard = TurnToolGuard::new();
+
+        assert!(repetition_denial_abort(&inspections, &permissions(vec![]), &mut guard).is_none());
+        assert!(!guard.is_blocked(&denied));
+    }
+}
+
 /// PAR-04: give every tool a cancel abandoned an explicit "cancelled" result.
 ///
 /// The batch loop breaks the instant the token trips, abandoning every tool
@@ -33490,3 +33613,7 @@ mod effort_tier_tests;
 #[cfg(test)]
 #[path = "agent_mid_turn_switch_tests.rs"]
 mod mid_turn_switch_tests;
+
+#[cfg(test)]
+#[path = "agent_issue545_tests.rs"]
+mod issue545_tests;

@@ -4754,6 +4754,66 @@ fn extension_listing_lines(
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn issue522_real_todo_update_dispatch_accepts_a_prose_path_mention() {
+        let (dir, em, _sm, id) = manager_with_a_session().await;
+        let em = Arc::new(em);
+        em.set_working_dir(dir.path().to_path_buf()).await;
+        em.add_extension(ExtensionConfig::Platform {
+            name: "todo".into(),
+            description: "Todo".into(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        })
+        .await
+        .unwrap();
+        let cap = crate::privacy::CallCapability::for_test_restricted();
+        let write = em
+            .dispatch_tool_call(
+                &id,
+                CallToolRequestParams {
+                    task: None,
+                    name: "todo__todo_write".into(),
+                    arguments: Some(object!({"content": "- [ ] prepare local prerequisites"})),
+                    meta: None,
+                },
+                cap,
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap()
+            .result
+            .await
+            .unwrap();
+        assert_ne!(write.is_error, Some(true));
+        let result = em
+            .dispatch_tool_call(
+                &id,
+                CallToolRequestParams {
+                    task: None,
+                    name: "todo__todo_update".into(),
+                    arguments: Some(
+                        object!({"id": "1", "text": "configuration/.env copy still needs the user"}),
+                    ),
+                    meta: None,
+                },
+                cap,
+                CancellationToken::new(),
+            )
+            .await
+            .expect("prose is not a file access")
+            .result
+            .await
+            .unwrap();
+        assert_ne!(result.is_error, Some(true));
+        assert!(result
+            .content
+            .iter()
+            .filter_map(|part| part.as_text())
+            .any(|part| part.text.contains("configuration/.env")));
+    }
+
     include!("computer_use_nested_tests.rs");
     use super::*;
     use rmcp::model::CallToolResult;

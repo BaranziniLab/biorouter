@@ -1142,4 +1142,28 @@ mod tests {
         );
         assert_eq!(ToolErrorKind::parse("wat"), None);
     }
+
+    #[test]
+    fn issue537_a_nonretryable_timeout_header_does_not_recommend_retrying() {
+        let error = ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            "The foreground command was killed by its fixed budget.",
+            Some(json!({"error": {"kind": "timeout", "retryable": false}})),
+        );
+        let classified = classify_error_data(&error);
+        assert_eq!(classified.kind, ToolErrorKind::Timeout);
+        assert!(!classified.retryable);
+        let header = classified.header();
+        assert!(header.contains("kind=timeout retryable=false"));
+        assert!(!header.contains("One retry"));
+    }
+
+    #[test]
+    fn issue537_an_ordinary_retryable_timeout_keeps_retry_guidance() {
+        assert!(
+            ToolError::new(ToolErrorKind::Timeout, "ordinary upstream timeout")
+                .header()
+                .contains("One retry")
+        );
+    }
 }

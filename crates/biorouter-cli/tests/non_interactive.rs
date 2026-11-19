@@ -23,7 +23,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use biorouter::conversation::message::Message;
 use biorouter::session::session_manager::SessionType;
@@ -106,9 +106,19 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
+enum OutputScenario {
+    PrivacyControl,
+    TextOnly,
+    AlwaysRead,
+    WriteAfterGate { path: PathBuf },
+    AuthFailure,
+}
+
 struct OutputFixture {
     calls: AtomicUsize,
     external_file: PathBuf,
+    scenario: OutputScenario,
+    requests: Mutex<Vec<serde_json::Value>>,
 }
 
 async fn output_fixture_completion(
@@ -116,10 +126,20 @@ async fn output_fixture_completion(
     axum::Json(request): axum::Json<serde_json::Value>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    let completion_id = format!(
-        "cli-output-fixture-{}",
-        fixture.calls.fetch_add(1, Ordering::SeqCst)
-    );
+    let call_index = fixture.calls.fetch_add(1, Ordering::SeqCst);
+    if matches!(&fixture.scenario, OutputScenario::PrivacyControl) || call_index < 3 {
+        fixture.requests.lock().unwrap().push(request.clone());
+    }
+    if matches!(&fixture.scenario, OutputScenario::AuthFailure) {
+        return (
+            axum::http::StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({
+                "error":{"message":"synthetic credential rejection","type":"authentication_error"}
+            })),
+        )
+            .into_response();
+    }
+    let completion_id = format!("cli-output-fixture-{call_index}");
     let editor_advertised = request["tools"].as_array().is_some_and(|tools| {
         tools
             .iter()
@@ -128,15 +148,36 @@ async fn output_fixture_completion(
     let tool_completed = request["messages"]
         .as_array()
         .is_some_and(|messages| messages.iter().any(|message| message["role"] == "tool"));
-    let message = if editor_advertised && !tool_completed {
-        serde_json::json!({"role":"assistant", "content":null, "tool_calls":[{
-            "id":"cli-output-read", "type":"function", "function":{
-                "name":"developer__text_editor",
-                "arguments":serde_json::json!({"command":"view", "path":fixture.external_file}).to_string()
+    let message = match &fixture.scenario {
+        OutputScenario::PrivacyControl => {
+            if editor_advertised && !tool_completed {
+                serde_json::json!({"role":"assistant", "content":null, "tool_calls":[{
+                    "id":"cli-output-read", "type":"function", "function":{
+                        "name":"developer__text_editor",
+                        "arguments":serde_json::json!({"command":"view", "path":fixture.external_file}).to_string()
+                    }
+                }]})
+            } else {
+                serde_json::json!({"role":"assistant", "content":"CLI_OUTPUT_CONTROL"})
             }
-        }]})
-    } else {
-        serde_json::json!({"role":"assistant", "content":"CLI_OUTPUT_CONTROL"})
+        }
+        OutputScenario::AlwaysRead if editor_advertised && call_index < 4 => {
+            serde_json::json!({"role":"assistant", "content":null, "tool_calls":[{
+                "id":format!("cli-output-read-{call_index}"), "type":"function", "function":{
+                    "name":"developer__text_editor",
+                    "arguments":serde_json::json!({"command":"view", "path":fixture.external_file}).to_string()
+                }
+            }]})
+        }
+        OutputScenario::WriteAfterGate { path } if call_index == 1 && editor_advertised => {
+            serde_json::json!({"role":"assistant", "content":null, "tool_calls":[{
+                "id":"cli-output-write", "type":"function", "function":{
+                    "name":"developer__text_editor",
+                    "arguments":serde_json::json!({"command":"write", "path":path,"file_text":"42\n"}).to_string()
+                }
+            }]})
+        }
+        _ => serde_json::json!({"role":"assistant", "content":"CLI_OUTPUT_CONTROL"}),
     };
     let reason = if message["tool_calls"].is_array() {
         "tool_calls"
@@ -216,8 +257,20 @@ async fn run_output_format(
     format: &str,
     input: OutputInput,
 ) -> Output {
+    run_output_format_with_args(sandbox, endpoint, format, input, &[]).await
+}
+
+async fn run_output_format_with_args(
+    sandbox: &Sandbox,
+    endpoint: &str,
+    format: &str,
+    input: OutputInput,
+    extra_args: &[&str],
+) -> Output {
     let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_biorouter"));
-    command.args(["run", "--output-format", format]);
+    command
+        .args(["run", "--output-format", format])
+        .args(extra_args);
     match input {
         OutputInput::Text => {
             command.args(["--text", "Output fixture control"]);
@@ -364,6 +417,8 @@ async fn run_output_formats_keep_machine_stdout_parseable() {
     let fixture = Arc::new(OutputFixture {
         calls: AtomicUsize::new(0),
         external_file,
+        scenario: OutputScenario::PrivacyControl,
+        requests: Mutex::new(Vec::new()),
     });
     let shutdown = tokio_util::sync::CancellationToken::new();
     let stop = shutdown.clone();
@@ -403,6 +458,287 @@ async fn run_output_formats_keep_machine_stdout_parseable() {
     );
     shutdown.cancel();
     server.await.unwrap();
+}
+
+async fn run_finalizer_fixture(
+    sandbox: &Sandbox,
+    format: &str,
+    scenario: OutputScenario,
+    extra_args: &[&str],
+) -> (Output, Arc<OutputFixture>) {
+    std::fs::write(
+        sandbox.config_yaml(),
+        "BIOROUTER_PROVIDER: ollama\nBIOROUTER_MODEL: cli-output-fixture:local\ncomputer_use_capabilities_version: 2\nBIOROUTER_DONE_GATE_MAX_ITERATIONS: 1\nextensions:\n  code_execution:\n    enabled: false\n    type: platform\n    name: code_execution\n    description: Disabled for direct file-access fixture\n    bundled: true\n    available_tools: []\n",
+    )
+    .unwrap();
+    let external_file = sandbox.home.join("control-input.txt");
+    std::fs::write(&external_file, "CAP_READ_CONTROL\n").unwrap();
+    let fixture = Arc::new(OutputFixture {
+        calls: AtomicUsize::new(0),
+        external_file,
+        scenario,
+        requests: Mutex::new(Vec::new()),
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let stop = shutdown.clone();
+    let router = output_fixture_router(fixture.clone());
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(stop.cancelled_owned())
+            .await
+            .unwrap();
+    });
+    let output =
+        run_output_format_with_args(sandbox, &endpoint, format, OutputInput::Text, extra_args)
+            .await;
+    shutdown.cancel();
+    server.await.unwrap();
+    (output, fixture)
+}
+
+fn finalizer_report(output: &Output, format: &str, expected_exit: i32) -> serde_json::Value {
+    let stdout = text(&output.stdout);
+    assert_eq!(
+        output.status.code(),
+        Some(expected_exit),
+        "{format}: {stdout}\n{}",
+        text(&output.stderr)
+    );
+    match format {
+        "json" => {
+            let document: serde_json::Value = serde_json::from_slice(&output.stdout)
+                .unwrap_or_else(|error| {
+                    panic!("entire stdout must be one JSON object: {error}\n{stdout}")
+                });
+            assert!(document.is_object(), "{format}: {stdout}");
+            assert!(document["messages"].is_array(), "{format}: {stdout}");
+            assert_eq!(
+                document["metadata"]["status"],
+                if expected_exit == 75 {
+                    "failed"
+                } else {
+                    "completed"
+                }
+            );
+            if expected_exit == 75 {
+                assert_eq!(document["metadata"]["error"], "provider_failure");
+            }
+            document["metadata"].clone()
+        }
+        "stream-json" => {
+            let events: Vec<serde_json::Value> = stdout
+                .lines()
+                .map(|line| {
+                    serde_json::from_str(line).unwrap_or_else(|error| {
+                        panic!("every stdout line must be JSON: {error}\n{stdout}")
+                    })
+                })
+                .collect();
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event["type"] == "complete")
+                    .count(),
+                1,
+                "{format}: {stdout}"
+            );
+            assert_eq!(events.last().unwrap()["type"], "complete");
+            let aborted: Vec<_> = events
+                .iter()
+                .enumerate()
+                .filter(|(_, event)| event["type"] == "aborted")
+                .collect();
+            let errors: Vec<_> = events
+                .iter()
+                .enumerate()
+                .filter(|(_, event)| event["type"] == "error")
+                .collect();
+            if expected_exit == 75 {
+                assert_eq!(aborted.len(), 1, "{format}: {stdout}");
+                assert_eq!(aborted[0].1["code"], "provider_failure");
+                assert!(aborted[0].0 < events.len() - 1);
+                assert!(errors.iter().all(|(index, _)| *index < aborted[0].0));
+            } else {
+                assert!(aborted.is_empty(), "{format}: {stdout}");
+                assert!(errors.is_empty(), "{format}: {stdout}");
+            }
+            events.last().unwrap().clone()
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn assert_turn_report(report: &serde_json::Value, reason: &str, actions: u64, tool_calls: u64) {
+    assert_eq!(report["stop_reason"], reason, "{report}");
+    assert_eq!(report["actions"].as_u64(), Some(actions), "{report}");
+    assert_eq!(report["tool_calls"].as_u64(), Some(tool_calls), "{report}");
+    assert!(
+        report["wall_s"]
+            .as_f64()
+            .is_some_and(|wall_s| wall_s >= 0.0),
+        "{report}"
+    );
+}
+
+fn assert_missing_files(report: &serde_json::Value, paths: &[&str]) {
+    let missing = report["missing_files"].as_array().unwrap();
+    assert_eq!(missing.len(), paths.len(), "{report}");
+    for path in paths {
+        assert!(
+            missing
+                .iter()
+                .any(|failure| failure.to_string().contains(path)),
+            "missing required-file failure for {path}: {report}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn finalizer_defaults_remain_unchanged_without_require_file() {
+    for format in ["json", "stream-json"] {
+        let sandbox = Sandbox::new();
+        let answer = sandbox.home.join("answer.txt");
+        let (output, fixture) = run_finalizer_fixture(
+            &sandbox,
+            format,
+            OutputScenario::WriteAfterGate {
+                path: answer.clone(),
+            },
+            &[],
+        )
+        .await;
+        let report = finalizer_report(&output, format, 0);
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+        assert!(!answer.exists());
+        assert!(text(&output.stdout).contains("CLI_OUTPUT_CONTROL"));
+        assert_turn_report(&report, "end_turn", 1, 0);
+        assert!(
+            report["missing_files"].is_null() || report["missing_files"] == serde_json::json!([]),
+            "{report}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn explicit_turn_limit_reports_exit_3() {
+    for format in ["json", "stream-json"] {
+        let sandbox = Sandbox::new();
+        let (output, fixture) = run_finalizer_fixture(
+            &sandbox,
+            format,
+            OutputScenario::AlwaysRead,
+            &["--max-turns", "1"],
+        )
+        .await;
+        let report = finalizer_report(&output, format, 3);
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+        assert_turn_report(&report, "turn_limit", 1, 1);
+        assert!(text(&output.stdout).contains("CAP_READ_CONTROL"));
+        assert_eq!(
+            std::fs::read_to_string(&fixture.external_file).unwrap(),
+            "CAP_READ_CONTROL\n"
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn require_file_continues_then_reports_success() {
+    for format in ["json", "stream-json"] {
+        let sandbox = Sandbox::new();
+        let answer = sandbox.home.join("answer.txt");
+        let (output, fixture) = run_finalizer_fixture(
+            &sandbox,
+            format,
+            OutputScenario::WriteAfterGate {
+                path: answer.clone(),
+            },
+            &["--require-file", "answer.txt"],
+        )
+        .await;
+        let report = finalizer_report(&output, format, 0);
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(std::fs::read(&answer).unwrap(), b"42\n");
+        assert_missing_files(&report, &[]);
+        assert_turn_report(&report, "end_turn", 3, 1);
+        let requests = fixture.requests.lock().unwrap();
+        let corrective_messages = requests[1]["messages"].to_string();
+        assert!(corrective_messages.contains("answer.txt"));
+        assert!(corrective_messages.to_lowercase().contains("write"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn require_file_exhaustion_reports_exit_4() {
+    for format in ["json", "stream-json"] {
+        let sandbox = Sandbox::new();
+        let absent = sandbox.home.join("answer.txt");
+        let empty = sandbox.home.join("trace.md");
+        let directory = sandbox.home.join("result-dir");
+        std::fs::write(&empty, b"").unwrap();
+        std::fs::create_dir(&directory).unwrap();
+        let (output, fixture) = run_finalizer_fixture(
+            &sandbox,
+            format,
+            OutputScenario::TextOnly,
+            &[
+                "--require-file",
+                "answer.txt",
+                "--require-file",
+                "trace.md",
+                "--require-file",
+                "result-dir",
+            ],
+        )
+        .await;
+        let report = finalizer_report(&output, format, 4);
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 2);
+        assert_missing_files(&report, &["answer.txt", "trace.md", "result-dir"]);
+        assert!(!absent.exists());
+        assert!(empty.is_file());
+        assert_eq!(std::fs::metadata(&empty).unwrap().len(), 0);
+        assert!(directory.is_dir());
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_missing_required_file_dominates_an_explicit_cap() {
+    for format in ["json", "stream-json"] {
+        let sandbox = Sandbox::new();
+        let (output, fixture) = run_finalizer_fixture(
+            &sandbox,
+            format,
+            OutputScenario::AlwaysRead,
+            &["--max-turns", "1", "--require-file", "answer.txt"],
+        )
+        .await;
+        let report = finalizer_report(&output, format, 4);
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+        assert_turn_report(&report, "turn_limit", 1, 1);
+        assert_missing_files(&report, &["answer.txt"]);
+        assert!(!sandbox.home.join("answer.txt").exists());
+        assert!(text(&output.stdout).contains("CAP_READ_CONTROL"));
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_genuine_abort_dominates_caps_and_required_files() {
+    for format in ["json", "stream-json"] {
+        let sandbox = Sandbox::new();
+        let (output, fixture) = run_finalizer_fixture(
+            &sandbox,
+            format,
+            OutputScenario::AuthFailure,
+            &["--max-turns", "1", "--require-file", "answer.txt"],
+        )
+        .await;
+        let report = finalizer_report(&output, format, 75);
+        assert_eq!(fixture.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(report["stop_reason"], "aborted");
+        assert_missing_files(&report, &["answer.txt"]);
+        assert!(!sandbox.home.join("answer.txt").exists());
+    }
 }
 
 /// Every file under `dir` with its bytes, sorted by path.
@@ -948,4 +1284,82 @@ fn explain_refuses_what_run_refuses_and_says_what_a_monitor_does() {
         "{stderr}"
     );
     assert!(!text(&out.stdout).contains("Supervision"), "{stderr}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn issue543_headless_approval_refusal_reaches_the_fixture_without_claiming_a_user_decline() {
+    let sandbox = Sandbox::new();
+    let file = sandbox.home.join("issue543-unapproved.txt");
+    std::fs::write(&file, "ISSUE543_UNAPPROVED_BYTES_MUST_NOT_APPEAR").unwrap();
+    std::fs::write(sandbox.config_yaml(),
+        "BIOROUTER_PROVIDER: ollama\nBIOROUTER_MODEL: cli-output-fixture:local\nBIOROUTER_MODE: approve\ncomputer_use_capabilities_version: 2\nextensions:\n  code_execution:\n    enabled: false\n    type: platform\n    name: code_execution\n    description: Disabled for direct approval fixture\n    bundled: true\n    available_tools: []\n",
+    ).unwrap();
+    let fixture = Arc::new(OutputFixture {
+        calls: AtomicUsize::new(0),
+        external_file: file,
+        scenario: OutputScenario::PrivacyControl,
+        requests: std::sync::Mutex::new(Vec::new()),
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let stop = shutdown.clone();
+    let router = output_fixture_router(Arc::clone(&fixture));
+    let server = tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(stop.cancelled_owned())
+            .await
+            .unwrap();
+    });
+    let output = run_output_format(&sandbox, &endpoint, "json", OutputInput::Text).await;
+    shutdown.cancel();
+    server.await.unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        text(&output.stdout),
+        text(&output.stderr)
+    );
+    let document: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("one JSON output document");
+    assert!(document.to_string().contains("CLI_OUTPUT_CONTROL"));
+    assert!(
+        fixture.calls.load(Ordering::SeqCst) >= 2,
+        "the refusal must reach a later real fixture request"
+    );
+    let requests = fixture.requests.lock().unwrap();
+    let replies: Vec<_> = requests
+        .iter()
+        .filter_map(|request| request["messages"].as_array())
+        .flatten()
+        .filter(|message| message["role"] == "tool")
+        .filter_map(|message| message["content"].as_str())
+        .collect();
+    assert!(
+        !replies.is_empty(),
+        "the fixture never received the denied tool's result"
+    );
+    for reply in replies {
+        let lower = reply.to_lowercase();
+        assert!(
+            !lower.contains("user has declined") && !lower.contains("user declined"),
+            "{reply}"
+        );
+        assert!(lower.contains("not run"), "{reply}");
+        assert!(
+            ["nobody", "unattended", "no human", "no person"]
+                .iter()
+                .any(|word| lower.contains(word)),
+            "{reply}"
+        );
+        assert!(
+            !reply.contains("ISSUE543_UNAPPROVED_BYTES_MUST_NOT_APPEAR"),
+            "unapproved content reached the fixture"
+        );
+    }
+    assert!(!text(&output.stdout).contains("ISSUE543_UNAPPROVED_BYTES_MUST_NOT_APPEAR"));
+    assert_eq!(
+        std::fs::read_to_string(&fixture.external_file).unwrap(),
+        "ISSUE543_UNAPPROVED_BYTES_MUST_NOT_APPEAR"
+    );
 }

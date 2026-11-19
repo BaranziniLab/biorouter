@@ -848,3 +848,74 @@ fn home_dir() -> Option<String> {
         .filter(|h| !h.is_empty())
         .or_else(|| std::env::var("USERPROFILE").ok().filter(|h| !h.is_empty()))
 }
+
+#[cfg(test)]
+mod issue543_redirect_tests {
+    use super::*;
+
+    #[test]
+    fn issue543_redirects_end_at_unquoted_shell_boundaries_and_accept_clobber() {
+        for (command, expected) in [
+            ("x=$(ls 2>/dev/null)", vec!["/dev/null"]),
+            ("ls 2>/dev/null|head", vec!["/dev/null"]),
+            ("ls 2>/dev/null&& echo ok", vec!["/dev/null"]),
+            ("echo x >| /etc/passwd", vec!["/etc/passwd"]),
+            ("echo x >|/etc/passwd", vec!["/etc/passwd"]),
+            (
+                "echo x >/tmp/ordinary|echo y >/etc/passwd",
+                vec!["/tmp/ordinary", "/etc/passwd"],
+            ),
+        ] {
+            assert_eq!(redirect_targets(command), expected, "{command}");
+        }
+    }
+
+    #[test]
+    fn issue543_redirect_capture_keeps_complete_quoted_and_escaped_words() {
+        for command in [
+            r#"echo x > "/tmp/name)|& with spaces""#,
+            r#"echo x > '/tmp/name)|& with spaces'"#,
+            r#"echo x > /tmp/name\)\|\&\ with\ spaces"#,
+            r#"echo x > "/tmp/name)"'|& with spaces'"#,
+        ] {
+            let captured = redirect_targets(command);
+            assert_eq!(captured.len(), 1, "{command}: {captured:?}");
+            let expected = "/tmp/name)|& with spaces";
+            let decoded = shlex::split(&captured[0])
+                .filter(|words| words.len() == 1)
+                .map(|mut words| words.remove(0));
+            assert!(
+                captured[0] == expected || decoded.as_deref() == Some(expected),
+                "redirect target was truncated: {command}: {captured:?}"
+            );
+        }
+        for command in ["echo x 2>&1", "echo x 1>&2", "knowledge/<type>/<slug>.md"] {
+            assert!(redirect_targets(command).is_empty(), "{command}");
+        }
+    }
+
+    #[test]
+    fn issue543_policy_parser_preserves_protected_redirect_destinations() {
+        let env =
+            EnvFacts::for_platform(Platform::Linux, "/home/issue543/project", "/home/issue543");
+        for command in [
+            "echo x >/etc/passwd",
+            "echo x >|/etc/passwd",
+            r#"echo x > "/tmp/name)/../../etc/passwd""#,
+            r#"echo x > "/tmp/name)"/../../etc/passwd"#,
+            r#"echo x > /tmp/name\)/../../etc/passwd"#,
+        ] {
+            let parsed = ParsedCommand::parse_for(command, Platform::Linux, &env);
+            assert!(
+                parsed
+                    .segments
+                    .iter()
+                    .flat_map(|segment| &segment.targets)
+                    .any(|target| target.path.norm == "/etc/passwd"
+                        && target.blast == Blast::SystemDir),
+                "protected redirect vanished from policy targets: {command}: {:?}",
+                parsed.segments
+            );
+        }
+    }
+}

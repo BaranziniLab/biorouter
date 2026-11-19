@@ -2082,4 +2082,326 @@ mod tests {
         assert!(g.is_denied(Path::new(".env")));
         assert!(g.is_denied(Path::new("secrets.yaml")));
     }
+
+    fn issue546_assert_heredoc_denied(fake: &FakeHome, command: &str) {
+        let (g, env) = (fake.guard(), fake.env());
+        assert!(
+            scan_command(&g, &env, command).is_some(),
+            "the command guard allowed protected here-document input: {command}"
+        );
+        assert!(
+            resolve::Resolver::new(&g, &env)
+                .scan_command(command, &[resolve::Base::Dir(fake.project.clone())])
+                .is_err(),
+            "the resolver alone allowed protected here-document input: {command}"
+        );
+    }
+
+    #[test]
+    fn issue546_quoted_r_data_is_not_a_shell_path() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        for delimiter in ["'EOF'", "\"EOF\"", "\\EOF", "'E'OF"] {
+            let command = format!(
+                "cat > summarize.R <<{delimiter}\nres <- data.frame(IHS = c(1, Inf))\nres$IHS[is.finite(res$IHS)]\nEOF\n"
+            );
+            assert_eq!(scan_command(&g, &env, &command), None, "{command}");
+        }
+    }
+
+    #[test]
+    fn issue546_backquoted_markdown_data_is_not_shell_execution() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let command =
+            "cat > notes.md <<'EOF'\nUse `res$IHS[is.finite(res$IHS)]` when filtering.\nEOF\n";
+        assert_eq!(scan_command(&g, &env, command), None);
+    }
+
+    #[test]
+    fn issue546_six_hundred_punctuated_prose_words_are_allowed() {
+        let fake = FakeHome::new();
+        let (g, env) = (fake.guard(), fake.env());
+        let body = (0..600)
+            .map(|index| format!("sentence{index}."))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let command = format!("cat > notes.md <<'EOF'\n{body}\nEOF\n");
+        assert_eq!(scan_command(&g, &env, &command), None);
+    }
+
+    #[test]
+    fn issue546_unknown_stdin_receivers_keep_the_secret_floor() {
+        let fake = FakeHome::new();
+        for receiver in ["unclassified_reader", "at now", "batch", "crontab -"] {
+            issue546_assert_heredoc_denied(
+                &fake,
+                &format!("{receiver} <<'EOF'\ncd ~/.aws\ncat credentials\nEOF\n"),
+            );
+        }
+    }
+
+    #[test]
+    fn issue546_executable_and_filename_stdin_keep_the_secret_floor() {
+        let fake = FakeHome::new();
+        for command in [
+            "bash <<'EOF'\ncd ~/.aws\ncat credentials\nEOF\n",
+            "fish <<'EOF'\ncd ~/.aws; cat credentials\nEOF\n",
+            "cat <<'EOF' | sh\ncd ~/.aws\ncat credentials\nEOF\n",
+            "cd ~/.aws && xargs cat <<'EOF'\ncredentials\nEOF\n",
+            "cd ~/.aws && while read f; do cat \"$f\"; done <<'EOF'\ncredentials\nEOF\n",
+            "cat > x.sh <<'EOF'\ncd ~/.aws\ncat credentials\nEOF\nbash x.sh\n",
+            "xargs sh -c <<'EOF'\ncd ~/.aws && cat credentials\nEOF\n",
+            "docker exec -i fixture sh <<'EOF'\ncd ~/.aws && cat credentials\nEOF\n",
+            "python3 - <<'EOF'\nimport os\nos.system('cat ~/.aws/credentials')\nEOF\n",
+            "tar -T - <<'EOF'\n$HOME/.aws/credentials\nEOF\n",
+            "cat > notes.md <<EOF\n$(cat ~/.aws/credentials)\nEOF\n",
+        ] {
+            issue546_assert_heredoc_denied(&fake, command);
+        }
+    }
+
+    #[test]
+    fn issue546_literal_and_obfuscated_body_paths_keep_the_secret_floor() {
+        let fake = FakeHome::new();
+        for command in [
+            "cat > notes.md <<'EOF'\n~/.aws/credentials\nEOF\n",
+            "cat > notes.md <<'EOF'\ncd ~/.aws\ncat cred\"\"entials\nEOF\n",
+            "cat > notes.md <<'EOF'\ncd ~/.aws\ncat $'cred\\x65ntials'\nEOF\n",
+            "cat > notes.md <<'EOF'\ncd ~/.aws\ncat cred$(printf e)ntials\nEOF\n",
+        ] {
+            issue546_assert_heredoc_denied(&fake, command);
+        }
+    }
+
+    #[test]
+    fn issue546_body_handling_does_not_hide_a_later_outer_access() {
+        let fake = FakeHome::new();
+        issue546_assert_heredoc_denied(
+            &fake,
+            "cat > notes.md <<'EOF'\nordinary prose\nEOF\ncd ~/.aws && cat credentials\n",
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn issue546_quoted_data_keeps_symlink_target_denial() {
+        let fake = FakeHome::new().with_links();
+        let g = fake.guard();
+        assert!(!g.is_denied(&fake.project.join("creds-link")));
+        for command in [
+            "cat > notes.md <<'EOF'\ncat creds-link\nEOF\n",
+            "cat > notes.md <<'EOF'\ncat aws-link/credentials\nEOF\n",
+        ] {
+            issue546_assert_heredoc_denied(&fake, command);
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn issue546_quoted_body_link_past_the_budget_is_refused() {
+        let fake = FakeHome::new();
+        for padding in [8, 600] {
+            let body = padded_link_command(&fake, padding);
+            let g = fake.guard();
+            assert!(!g.is_denied(&fake.project.join("ln/zz")));
+            issue546_assert_heredoc_denied(&fake, "cat ln/zz");
+            issue546_assert_heredoc_denied(
+                &fake,
+                &format!("cat > notes.md <<'EOF'\n{body}\nEOF\n"),
+            );
+        }
+    }
+}
+
+// External candidate: append to secret_guard.rs after the existing test modules.
+#[cfg(test)]
+mod issue522_guard_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn issue522_conventional_env_templates_are_allowed_by_both_builders() {
+        use biorouter_sandbox::bounded_fs::{AccessMode, BoundedFs};
+
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("config")).unwrap();
+        let names = [
+            ".env.example",
+            ".env.sample",
+            ".env.template",
+            ".env.dist",
+            ".env.tpl",
+            ".env.defaults",
+            ".env.production.example",
+        ];
+        for name in names {
+            std::fs::write(root.path().join("config").join(name), "REGION=\n").unwrap();
+        }
+        let bounded = BoundedFs::open(root.path()).unwrap();
+        let path = bounded
+            .bind("config/.env.example", AccessMode::Read)
+            .unwrap();
+        let guards = [
+            SecretGuard::for_dir(root.path()),
+            SecretGuard::for_bounded_path(&path).unwrap(),
+        ];
+        for guard in guards {
+            for name in names {
+                let relative = format!("config/{name}");
+                assert!(!guard.is_denied(Path::new(&relative)), "{relative}");
+                assert!(
+                    guard
+                        .find_denied_access(json!({"path": relative}).as_object().unwrap())
+                        .is_none(),
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn issue522_slash_mentions_in_prose_and_code_are_not_file_access() {
+        let root = tempfile::tempdir().unwrap();
+        let guard = SecretGuard::for_dir(root.path());
+        for key in [
+            "text",
+            "content",
+            "message",
+            "title",
+            "description",
+            "commit_message",
+            "code",
+        ] {
+            let args = serde_json::Map::from_iter([(
+                key.to_string(),
+                json!("configuration/.env copy still needs the user"),
+            )]);
+            assert!(
+                guard.find_denied_access(&args).is_none(),
+                "prose key {key} was treated as an access"
+            );
+        }
+        assert!(guard
+            .find_denied_access(
+                json!({"updates": [{"id": "1", "text": "configuration/.env needs the user"}]})
+                    .as_object()
+                    .unwrap()
+            )
+            .is_none());
+    }
+
+    #[test]
+    fn issue522_copy_template_reports_the_protected_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let guard = SecretGuard::for_dir(root.path());
+        let denied = guard
+            .find_denied_access(
+                json!({"command": "cp config/.env.example config/.env"})
+                    .as_object()
+                    .unwrap(),
+            )
+            .expect("the .env destination stays protected");
+        let shown = denied.shown.replace('\\', "/");
+        assert!(
+            shown.ends_with("config/.env"),
+            "wrong operand refused: {shown}"
+        );
+        assert!(
+            !shown.contains(".env.example"),
+            "template source was refused: {shown}"
+        );
+    }
+
+    #[test]
+    fn issue522_typed_paths_and_resolved_commands_keep_the_secret_floor() {
+        let root = tempfile::tempdir().unwrap();
+        let guard = SecretGuard::for_dir(root.path());
+        let env = ShellEnv::with_vars([("HOME", root.path().to_string_lossy().into_owned())]);
+        for args in [
+            json!({"path": "config/.env"}),
+            json!({"file_path": "config/.env.local"}),
+            json!({"resource": "config/.env.production"}),
+            json!({"path": ".env.example/id_rsa"}),
+            json!({"command": "cat 'config/.env'"}),
+            json!({"shell_command": "cat config/.e\"\"nv"}),
+            json!({"command": "cat config/$'.e\\x6ev'"}),
+            json!({"command": "sh -c 'cat config/.env'"}),
+            json!({"command": "cat \"$HOME/.aws/credentials\""}),
+            json!({"command": "cat ~/.ssh/id_ed25519"}),
+            json!({"command": "cat keys/server.pem"}),
+            json!({"command": "cp config/.env.template config/.env.production"}),
+        ] {
+            assert!(
+                guard
+                    .find_denied_access_in(args.as_object().unwrap(), &env)
+                    .is_some(),
+                "protected access passed: {args}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn issue522_template_alias_cannot_reopen_a_real_secret() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(".env"), "SYNTHETIC=only\n").unwrap();
+        std::fs::write(root.path().join("id_rsa"), "synthetic private fixture\n").unwrap();
+        for (template, target) in [(".env.example", ".env"), (".env.sample", "id_rsa")] {
+            std::os::unix::fs::symlink(root.path().join(target), root.path().join(template))
+                .unwrap();
+        }
+        let guard = SecretGuard::for_dir(root.path());
+        for template in [".env.example", ".env.sample"] {
+            for key in ["path", "resource"] {
+                let args = serde_json::Map::from_iter([(key.to_string(), json!(template))]);
+                assert!(
+                    guard.find_denied_access(&args).is_some(),
+                    "template alias reopened {template} through {key}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn issue522_explicit_project_policy_can_still_deny_a_template() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join(".biorouterignore"), ".env.example\n").unwrap();
+        use biorouter_sandbox::bounded_fs::{AccessMode, BoundedFs};
+
+        std::fs::write(root.path().join(".env.example"), "REGION=\n").unwrap();
+        let bounded = BoundedFs::open(root.path()).unwrap();
+        let path = bounded.bind(".env.example", AccessMode::Read).unwrap();
+        for guard in [
+            SecretGuard::for_dir(root.path()),
+            SecretGuard::for_bounded_path(&path).unwrap(),
+        ] {
+            assert!(guard.is_denied(Path::new(".env.example")));
+            assert!(guard.is_denied(Path::new(".env")));
+            assert!(guard.is_denied(Path::new("keys/server.pem")));
+        }
+    }
+}
+
+#[cfg(test)]
+mod issue522_unclassified_controls {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn issue522_unclassified_fields_and_command_aliases_keep_literal_refusals() {
+        let root = tempfile::tempdir().unwrap();
+        let guard = SecretGuard::for_dir(root.path());
+        for args in [
+            json!({"resource": "configuration/.env"}),
+            json!({"unknown_argument": "configuration/.env"}),
+            json!({"shell_script": "cat configuration/.env"}),
+            json!({"text": "ordinary note", "nested": {"path": "configuration/.env"}}),
+            json!({"code": "// ordinary source", "command": "cat configuration/.env"}),
+        ] {
+            assert!(guard
+                .find_denied_access(args.as_object().unwrap())
+                .is_some());
+        }
+    }
 }

@@ -88,17 +88,30 @@ mod tests {
     }
 
     #[test]
-    fn policy_denial_becomes_a_terminal_abort_immediately() {
+    fn first_policy_denial_blocks_the_signature_without_ending_feedback() {
         let mut guard = TurnToolGuard::new();
-        let denied = request("1", "ui_describe", json!({"app": "trial"}));
+        let denied = request("1", "fixture__probe", json!({"command": "first"}));
+
+        assert_eq!(guard.enforce_denial(&denied), None);
+        assert!(guard.is_blocked(&denied));
+    }
+
+    #[test]
+    fn second_policy_denial_is_terminal_for_a_different_signature() {
+        let mut guard = TurnToolGuard::new();
+        let first = request("1", "fixture__probe", json!({"command": "first"}));
+        let second = request("2", "fixture__other", json!({"command": "second"}));
+
+        let _ = guard.enforce_denial(&first);
 
         assert_eq!(
-            guard.enforce_denial(&denied),
+            guard.enforce_denial(&second),
             Some(TurnAbortCode::ToolLoop {
-                tool: "ui_describe".to_string(),
+                tool: "fixture__other".to_string(),
             })
         );
-        assert!(guard.is_blocked(&denied));
+        assert!(guard.is_blocked(&first));
+        assert!(guard.is_blocked(&second));
     }
 
     #[test]

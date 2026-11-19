@@ -2514,4 +2514,82 @@ mod tests {
             );
         }
     }
+    #[test]
+    fn issue_524_supplied_token_is_absent_from_every_banner_route() {
+        let secret = "issue-524-synthetic-token";
+        for token in [
+            BrowserToken::Variable(secret.into()),
+            BrowserToken::Flag(secret.into()),
+        ] {
+            for (host, loopback, proxy, container) in [
+                ("127.0.0.1", true, false, false),
+                ("0.0.0.0", false, false, false),
+                ("0.0.0.0", false, false, true),
+                ("0.0.0.0", false, true, false),
+            ] {
+                let url = if proxy {
+                    with_token("https://lab.example/user/test/biorouter/", token.value())
+                } else {
+                    browser_url(host, 18765, token.value())
+                };
+                let local = proxy.then_some("http://127.0.0.1:18765/");
+                let output = banner_text(
+                    &url,
+                    host,
+                    18765,
+                    &token,
+                    loopback,
+                    local,
+                    "Dictation: test fixture",
+                    container,
+                    "lab.example",
+                );
+                assert!(
+                    !output.contains(secret),
+                    "a supplied access token reached a banner route: loopback={loopback}, proxy={proxy}, container={container}"
+                );
+                assert!(output.contains("18765") || output.contains("https://lab.example/"));
+                assert!(output.contains("Dictation: test fixture"));
+            }
+        }
+    }
+
+    #[test]
+    fn issue_524_tokenless_banner_keeps_its_explicit_access_warning() {
+        let output = banner_text(
+            "http://127.0.0.1:18765/",
+            "127.0.0.1",
+            18765,
+            &BrowserToken::Off,
+            true,
+            None,
+            "Dictation: test fixture",
+            false,
+            "lab.example",
+        );
+        assert!(output.contains("http://127.0.0.1:18765/"));
+        assert!(output.contains("No access token"));
+        assert!(!output.contains("?t="));
+    }
+
+    #[test]
+    fn issue_524_default_output_omits_a_minted_token_and_encoded_query() {
+        let token = BrowserToken::Minted("synthetic a&b#c".into());
+        let url = browser_url("127.0.0.1", 18765, token.value());
+        let shown = banner_text(
+            &url,
+            "127.0.0.1",
+            18765,
+            &token,
+            true,
+            None,
+            "Dictation: fixture",
+            false,
+            "lab.example",
+        );
+        assert!(!shown.contains("synthetic a&b#c"));
+        assert!(!shown.contains("synthetic%20a%26b%23c"));
+        assert!(!shown.contains("?t="));
+        assert!(shown.contains("http://127.0.0.1:18765/"));
+    }
 }

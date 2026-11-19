@@ -7,17 +7,26 @@ use axum::Router;
 use biorouter::config::Config;
 use biorouter_server::state::AppState;
 use serde_json::{json, Value};
+use serial_test::serial;
 use tower::ServiceExt;
 
 const USER_ACTION_KEY: &str = "synthetic-desktop-user-action";
-const SYNTHETIC_KEY: &str = "synthetic-google-api-key";
+const SECRET_MASK: &str = "••••••••";
+
+async fn app() -> Router {
+    assert!(biorouter::config::test_binary_credentials::os_store_is_kept_off());
+    let digest: [u8; 32] =
+        <sha2::Sha256 as sha2::Digest>::digest(USER_ACTION_KEY.as_bytes()).into();
+    biorouter_server::auth::install_user_action_digest(Some(digest));
+    biorouter_server::routes::config_management::routes(AppState::new().await.unwrap())
+}
 
 async fn request(
     app: &Router,
     path: &str,
     body: Value,
     proof: Option<&str>,
-) -> (StatusCode, HeaderMap, Value) {
+) -> (StatusCode, HeaderMap, String) {
     let mut builder = Request::post(path).header("content-type", "application/json");
     if let Some(proof) = proof {
         builder = builder.header("X-User-Action", proof);
@@ -30,141 +39,113 @@ async fn request(
     let status = response.status();
     let headers = response.headers().clone();
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
-    let body = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    let body = String::from_utf8(bytes.to_vec()).unwrap();
     (status, headers, body)
 }
 
-#[tokio::test]
-async fn a_saved_provider_secret_is_previewed_only_for_a_proven_person_and_declared_key() {
-    for (key, value) in [
-        ("GOOGLE_API_KEY", SYNTHETIC_KEY),
-        ("ANTHROPIC_API_KEY", "synthetic-anthropic-key"),
-        ("GOOGLE_HOST", "synthetic-not-a-secret-field"),
-        ("GITHUB_COPILOT_TOKEN", "synthetic-oauth-token"),
-    ] {
-        std::env::remove_var(key);
-        Config::global().set_secret(key, &value).unwrap();
+fn assert_no_credential_bytes(body: &str, credential: &str) {
+    if credential.is_empty() {
+        return;
     }
-    let digest: [u8; 32] =
-        <sha2::Sha256 as sha2::Digest>::digest(USER_ACTION_KEY.as_bytes()).into();
-    biorouter_server::auth::install_user_action_digest(Some(digest));
-    let state = AppState::new().await.unwrap();
-    let app = biorouter_server::routes::config_management::routes(state);
+    let chars: Vec<char> = credential.chars().collect();
+    let mut fragments = vec![credential.to_string()];
+    if chars.len() >= 8 {
+        fragments.extend([
+            chars[..4].iter().collect::<String>(),
+            chars[chars.len() - 4..].iter().collect::<String>(),
+        ]);
+    }
+    for fragment in fragments {
+        assert!(
+            !body.contains(&fragment),
+            "response exposed synthetic credential bytes {fragment:?}: {body:?}"
+        );
+    }
+}
 
-    let (status, _, masked) = request(
-        &app,
+async fn assert_fixed_config_mask(app: &Router) {
+    let (status, _, body) = request(
+        app,
         "/config/read",
         json!({ "key": "GOOGLE_API_KEY", "is_secret": true }),
         None,
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(masked, json!({ "maskedValue": "••••••••" }));
+    let value: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(value, json!({ "maskedValue": SECRET_MASK }));
+}
 
-    let query = json!({ "provider": "google", "key": "GOOGLE_API_KEY" });
-    for proof in [None, Some("wrong-proof")] {
-        let (status, _, body) = request(
-            &app,
-            "/config/provider-secret/preview",
-            query.clone(),
-            proof,
-        )
-        .await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
-        assert_ne!(body, json!(SYNTHETIC_KEY));
-    }
-
-    let (status, headers, body) = request(
-        &app,
-        "/config/provider-secret/preview",
-        query,
-        Some(USER_ACTION_KEY),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, json!("synt••••••••-key"));
-    assert_ne!(body, json!(SYNTHETIC_KEY));
-    assert_eq!(headers.get("cache-control").unwrap(), "no-store");
-
+async fn assert_preview_route_absent(app: &Router, credentials: &[&str]) {
     let (status, _, body) = request(
-        &app,
-        "/config/provider-secret/reveal",
+        app,
+        "/config/provider-secret/preview",
         json!({ "provider": "google", "key": "GOOGLE_API_KEY" }),
         Some(USER_ACTION_KEY),
     )
     .await;
+    for credential in credentials {
+        assert_no_credential_bytes(&body, credential);
+    }
     assert_eq!(status, StatusCode::NOT_FOUND);
-    assert_ne!(body, json!(SYNTHETIC_KEY));
+}
 
-    for (secret, expected) in [
-        ("abcd", "••••••••"),
-        ("abcdefgh", "••••••••"),
-        ("abcdefghi", "abcd••••••••fghi"),
-        ("甲乙丙丁中戊己庚辛", "甲乙丙丁••••••••戊己庚辛"),
-    ] {
-        Config::global()
-            .set_secret("GOOGLE_API_KEY", &secret)
-            .unwrap();
-        let (status, _, body) = request(
-            &app,
-            "/config/provider-secret/preview",
-            json!({ "provider": "google", "key": "GOOGLE_API_KEY" }),
-            Some(USER_ACTION_KEY),
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(body, json!(expected));
-        assert_ne!(body, json!(secret));
-    }
-
-    for query in [
-        json!({ "provider": "google", "key": "ANTHROPIC_API_KEY" }),
-        json!({ "provider": "google", "key": "GOOGLE_HOST" }),
-        json!({ "provider": "not-a-provider", "key": "GOOGLE_API_KEY" }),
-        json!({ "provider": "github_copilot", "key": "GITHUB_COPILOT_TOKEN" }),
-    ] {
-        let (status, _, body) = request(
-            &app,
-            "/config/provider-secret/preview",
-            query,
-            Some(USER_ACTION_KEY),
-        )
-        .await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        assert_ne!(body, json!(SYNTHETIC_KEY));
-    }
-
-    let custom = biorouter::config::declarative_providers::create_custom_provider(
-        "openai_compatible",
-        "Secret fixture".to_string(),
-        "https://example.invalid/v1".to_string(),
-        "synthetic-custom-key".to_string(),
-        vec!["fixture-model".to_string()],
-        Some(true),
-        None,
-    )
-    .unwrap();
-    std::env::remove_var(&custom.api_key_env);
-    biorouter::providers::refresh_custom_providers()
-        .await
-        .unwrap();
-    let (status, _, body) = request(
-        &app,
-        "/config/provider-secret/preview",
-        json!({ "provider": custom.name, "key": custom.api_key_env }),
-        Some(USER_ACTION_KEY),
-    )
-    .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, json!("synt••••••••-key"));
-
+#[tokio::test]
+#[serial]
+async fn an_environment_only_key_cannot_be_retrieved_by_the_preview_path() {
+    let app = app().await;
+    let credential = "ENVO-synthetic-environment-only-ENDX";
+    let _env = env_lock::lock_env([("GOOGLE_API_KEY", Some(credential))]);
     Config::global().delete_secret("GOOGLE_API_KEY").unwrap();
-    let (status, _, _) = request(
-        &app,
-        "/config/provider-secret/preview",
-        json!({ "provider": "google", "key": "GOOGLE_API_KEY" }),
-        Some(USER_ACTION_KEY),
-    )
-    .await;
-    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    assert_fixed_config_mask(&app).await;
+    assert_preview_route_absent(&app, &[credential]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn neither_a_saved_key_nor_its_environment_override_is_retrievable() {
+    let app = app().await;
+    let saved = "SAVE-synthetic-saved-credential-ENDS";
+    let environment = "ENVS-synthetic-environment-shadow-ENDE";
+    let _env = env_lock::lock_env([("GOOGLE_API_KEY", Some(environment))]);
+    Config::global()
+        .set_secret("GOOGLE_API_KEY", &saved)
+        .unwrap();
+    assert_eq!(
+        Config::global()
+            .all_secrets()
+            .unwrap()
+            .get("GOOGLE_API_KEY"),
+        Some(&json!(saved))
+    );
+
+    assert_fixed_config_mask(&app).await;
+    assert_preview_route_absent(&app, &[saved, environment]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn stored_keys_of_different_lengths_and_unicode_are_always_fully_masked() {
+    let app = app().await;
+    let _env = env_lock::lock_env([("GOOGLE_API_KEY", None::<&str>)]);
+    let credentials = [
+        "LONG-synthetic-stored-credential-MARK",
+        "",
+        "短",
+        "四字短鍵",
+        "NINE0TAIL",
+        "EIGHSTOP",
+        "abcdefghijklmnop",
+        "abcdefghijklmnopq",
+        "甲乙丙丁戊己庚辛壬癸子丑寅卯辰巳",
+    ];
+
+    for credential in credentials {
+        Config::global()
+            .set_secret("GOOGLE_API_KEY", &credential)
+            .unwrap();
+        assert_fixed_config_mask(&app).await;
+        assert_preview_route_absent(&app, &[credential]).await;
+    }
 }

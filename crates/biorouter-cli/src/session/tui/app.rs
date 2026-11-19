@@ -1503,6 +1503,51 @@ fn truncate_lines(s: &str, max_lines: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    fn issue525_tui_projection(request_tool: &str, debug: bool) -> String {
+        use biorouter::conversation::message::Message;
+        use rmcp::model::{CallToolRequestParams, CallToolResult, Meta};
+
+        let mut app = super::App::new(super::StatusInfo::default());
+        let request = Message::assistant().with_tool_request("tui-525", Ok(CallToolRequestParams {
+            task: None, name: request_tool.into(),
+            arguments: Some(serde_json::json!({"tool_graph": [{"tool": "developer/shell", "description": "list files"}], "code": "// SOURCE_ONLY_TUI_525"}).as_object().unwrap().clone()),
+            meta: None,
+        }));
+        app.push_message(&request, debug);
+        let mut result = CallToolResult::success(Vec::new());
+        result.meta = Some(Meta(serde_json::json!({"biorouter/tool-calls": [{"tool": "developer__shell", "args": "{\"command\":\"printf EVALUATED_ONLY_TUI_525\"}", "status": "ok", "result_bytes": 0}]}).as_object().unwrap().clone()));
+        app.push_message(
+            &Message::assistant().with_tool_response("tui-525", Ok(result)),
+            debug,
+        );
+        app.scrollback
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn issue525_tui_shows_the_evaluated_inner_arguments() {
+        for debug in [false, true] {
+            let shown = issue525_tui_projection("code_execution__execute_code", debug);
+            assert!(
+                shown.contains("EVALUATED_ONLY_TUI_525"),
+                "actual arguments missing: {shown}"
+            );
+        }
+    }
+
+    #[test]
+    fn issue525_tui_ignores_foreign_tool_call_metadata() {
+        let shown = issue525_tui_projection("fixture__run", false);
+        assert!(
+            !shown.contains("EVALUATED_ONLY_TUI_525"),
+            "foreign result was attributed as evaluated native calls: {shown}"
+        );
+    }
+
     use super::tool_output_preview;
     #[cfg(feature = "dictation")]
     use super::{App, StatusInfo};

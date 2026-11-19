@@ -4933,6 +4933,136 @@ impl McpClientTrait for CodeExecutionClient {
 
 #[cfg(test)]
 mod tests {
+
+    #[tokio::test]
+    async fn issue522_outer_code_prose_reaches_only_its_benign_evaluated_inner_call() {
+        let temp = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            temp.path().to_path_buf(),
+        ));
+        let session = session_manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "issue522 outer dispatch".into(),
+                crate::session::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let manager = Arc::new(crate::agents::ExtensionManager::new(
+            Arc::new(Mutex::new(None)),
+            Arc::clone(&session_manager),
+        ));
+        manager.set_working_dir(temp.path().to_path_buf()).await;
+        manager
+            .add_client(
+                "fixture".into(),
+                crate::agents::extension::ExtensionConfig::Platform {
+                    name: "fixture".into(),
+                    description: "Synthetic result".into(),
+                    bundled: Some(true),
+                    available_tools: Vec::new(),
+                },
+                Arc::new(ToolResultClient {
+                    tool_name: "run".into(),
+                    result: CallToolResult::success(vec![Content::text("issue522-inner-reached")]),
+                }),
+                None,
+                None,
+            )
+            .await;
+        let code_client = CodeExecutionClient::new(PlatformExtensionContext {
+            extension_manager: Some(Arc::downgrade(&manager)),
+            session_manager,
+        })
+        .unwrap();
+        manager
+            .add_client(
+                "code_execution".into(),
+                crate::agents::extension::ExtensionConfig::Platform {
+                    name: "code_execution".into(),
+                    description: "Code execution".into(),
+                    bundled: Some(true),
+                    available_tools: Vec::new(),
+                },
+                Arc::new(code_client),
+                None,
+                None,
+            )
+            .await;
+        let result = manager.dispatch_tool_call(&session.id, CallToolRequestParams {
+            task: None, name: "code_execution__execute_code".into(),
+            arguments: Some(object!({"code": "import { run } from \"fixture\";\n// configuration/.env still needs the user\nrecord_result(run({note: \"benign\"}));"})), meta: None,
+        }, crate::privacy::CallCapability::for_test_restricted(), CancellationToken::new()).await.expect("source prose must not refuse the outer call").result.await.unwrap();
+        assert_ne!(result.is_error, Some(true), "{result:?}");
+        assert!(result_text(&result).contains("issue522-inner-reached"));
+        let meta = result.meta.as_ref().unwrap();
+        let calls = meta.get(TOOL_CALLS_META_KEY).unwrap().as_array().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["tool"], "fixture__run");
+        assert_eq!(calls[0]["status"], "ok");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(calls[0]["args"].as_str().unwrap()).unwrap(),
+            serde_json::json!({"note": "benign"})
+        );
+    }
+
+    #[tokio::test]
+    async fn issue522_runtime_assembled_secret_path_is_still_refused_at_inner_dispatch() {
+        for code in [
+            r#"import { run } from "fixture"; const path = "configuration/" + ".env"; record_result(run({path}));"#,
+            r#"import { run } from "fixture"; record_result(run({path: "configuration/\u002eenv"}));"#,
+            r#"import { run } from "fixture"; record_result(run({path: "configuration/\x2eenv"}));"#,
+        ] {
+            let result = execute_with_tool_result(
+                code,
+                CallToolResult::success(vec![Content::text("ISSUE522-MUST-NOT-DISPATCH")]),
+            )
+            .await;
+            let meta = result.meta.as_ref().unwrap();
+            let calls = meta.get(TOOL_CALLS_META_KEY).unwrap().as_array().unwrap();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0]["tool"], "fixture__run");
+            assert_eq!(calls[0]["status"], "error");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(calls[0]["args"].as_str().unwrap())
+                    .unwrap(),
+                serde_json::json!({"path": "configuration/.env"})
+            );
+            assert!(!result_text(&result).contains("ISSUE522-MUST-NOT-DISPATCH"));
+            assert!(
+                result_text(&result).contains("secret/credential deny pattern"),
+                "{result:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn issue525_evaluated_arguments_reach_meta_without_entering_model_content() {
+        let result = execute_with_tool_result(
+            r#"import { run } from "fixture"; const suffix = "evaluated-525"; run({command: "printf " + suffix});"#,
+            CallToolResult::success(vec![Content::text("synthetic complete")]),
+        ).await;
+        assert_ne!(result.is_error, Some(true));
+        let calls = result
+            .meta
+            .as_ref()
+            .unwrap()
+            .get(TOOL_CALLS_META_KEY)
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0]["tool"], "fixture__run");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(calls[0]["args"].as_str().unwrap()).unwrap(),
+            serde_json::json!({"command": "printf evaluated-525"})
+        );
+        assert!(
+            !result_text(&result).contains("printf evaluated-525"),
+            "telemetry must stay out of model content"
+        );
+    }
+
     use super::*;
     use rmcp::object;
     use std::sync::Arc;

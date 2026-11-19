@@ -2157,6 +2157,215 @@ pub fn preview() {
 
 #[cfg(test)]
 mod tests {
+
+    // must skip lane_b_renderer_capture_child; each child invokes that exact helper.
+    fn lane_b_capture_renderer(case: &str) -> String {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "session::output::tests::lane_b_renderer_capture_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("BIOROUTER_LANE_B_RENDER_CASE", case)
+            .env("BIOROUTER_DISABLE_KEYRING", "true")
+            .env("NO_COLOR", "1")
+            .env("TERM", "dumb")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "renderer child failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout =
+            String::from_utf8(output.stdout).expect("renderer stdout must stay valid UTF-8");
+        assert!(
+            stdout.contains("test result: ok. 1 passed"),
+            "child did not run exactly one helper: {stdout}"
+        );
+        console::strip_ansi_codes(&stdout).into_owned()
+    }
+
+    #[test]
+    fn issue525_only_matching_pending_requests_can_show_call_records() {
+        for case in ["wrong-response-id", "unsolicited-meta"] {
+            let shown = lane_b_capture_renderer(case);
+            assert!(!shown.contains("EVALUATED_ONLY_525"), "{case}: {shown}");
+        }
+        let shown = lane_b_capture_renderer("repeated-response");
+        assert_eq!(shown.matches("EVALUATED_ONLY_525").count(), 1, "{shown}");
+    }
+
+    #[test]
+    fn issue525_omitted_calls_are_named_and_malformed_records_are_skipped() {
+        let shown = lane_b_capture_renderer("dropped-meta");
+        assert!(shown.contains("EVALUATED_ONLY_525"), "{shown}");
+        assert!(shown.contains("5 additional calls not recorded"), "{shown}");
+        assert!(!shown.contains("SHOULD_NOT_RENDER_525"), "{shown}");
+    }
+
+    #[test]
+    fn lane_b_renderer_capture_child() {
+        let Ok(case) = std::env::var("BIOROUTER_LANE_B_RENDER_CASE") else {
+            return;
+        };
+        let debug = case.ends_with("-debug");
+        let graph = if case == "empty-graph" {
+            serde_json::json!([])
+        } else {
+            serde_json::json!([{"tool": "developer/shell", "description": "list files"}])
+        };
+        let request_name = if case == "foreign-meta" {
+            "developer__shell"
+        } else {
+            "code_execution__execute_code"
+        };
+        let request = ToolRequest {
+            id: "lane-b-render-525".into(),
+            tool_call: Ok(CallToolRequestParams {
+                task: None, name: request_name.into(),
+                arguments: Some(serde_json::json!({"tool_graph": graph, "code": "// SOURCE_ONLY_525; actual arguments exist only in result metadata"}).as_object().unwrap().clone()),
+                meta: None,
+            }),
+            metadata: None, tool_meta: None,
+        };
+        if case != "unsolicited-meta" {
+            render_tool_request(&request, Theme::Ansi, debug);
+        }
+        if case == "empty-graph" {
+            return;
+        }
+        let args = match case.as_str() {
+            "long-default" | "long-debug" => serde_json::to_string(
+                &serde_json::json!({"command": format!("printf {}TAIL_525", "🧬".repeat(256))}),
+            )
+            .unwrap(),
+            "redaction-debug" => serde_json::to_string(
+                &serde_json::json!({"command": format!("printf sk-proj-{}", "Y".repeat(40))}),
+            )
+            .unwrap(),
+            "malformed-meta" => "{\"command\":\"printf ACTUAL_TRUNCATED_525…".into(),
+            _ => serde_json::to_string(
+                &serde_json::json!({"command": "printf EVALUATED_ONLY_525 && uname -a"}),
+            )
+            .unwrap(),
+        };
+        let mut result = CallToolResult::success(Vec::new());
+        result.meta = Some(Meta(
+            serde_json::json!({"biorouter/tool-calls": [{
+                "tool": "developer__shell", "args": args, "status": "ok", "result_bytes": 0
+            }]})
+            .as_object()
+            .unwrap()
+            .clone(),
+        ));
+        if case == "dropped-meta" {
+            let meta = result.meta.as_mut().unwrap();
+            meta.insert("biorouter/tool-calls-dropped".into(), serde_json::json!(5));
+            meta.get_mut("biorouter/tool-calls")
+                .unwrap()
+                .as_array_mut()
+                .unwrap()
+                .extend([
+                    serde_json::json!({"tool": "bad", "args": 7, "status": "ok"}),
+                    serde_json::json!({"tool": "bad", "args": "SHOULD_NOT_RENDER_525"}),
+                ]);
+        }
+        let response = ToolResponse {
+            id: if case == "wrong-response-id" {
+                "unrelated-response-525".into()
+            } else {
+                request.id
+            },
+            tool_result: Ok(result),
+            metadata: None,
+        };
+        let before = response.tool_result.as_ref().unwrap().meta.clone();
+        render_tool_response(&response, Theme::Ansi, debug);
+        assert_eq!(response.tool_result.as_ref().unwrap().meta, before);
+        if case == "repeated-response" {
+            render_tool_response(&response, Theme::Ansi, debug);
+        }
+    }
+
+    #[test]
+    fn issue525_transcript_uses_evaluated_meta_not_only_graph_label() {
+        let shown = lane_b_capture_renderer("evaluated");
+        assert!(
+            shown.contains("list files"),
+            "existing graph heading disappeared: {shown}"
+        );
+        assert!(
+            shown.contains("developer"),
+            "real tool name missing: {shown}"
+        );
+        assert!(
+            shown.contains("EVALUATED_ONLY_525"),
+            "actual evaluated command missing: {shown}"
+        );
+        assert!(
+            shown.contains("uname -a"),
+            "compound command missing: {shown}"
+        );
+    }
+
+    #[test]
+    fn issue525_default_truncates_utf8_and_debug_shows_recorded_tail() {
+        let compact = lane_b_capture_renderer("long-default");
+        let debug = lane_b_capture_renderer("long-debug");
+        assert!(
+            compact.contains("printf"),
+            "evaluated arguments absent: {compact}"
+        );
+        assert!(
+            !compact.contains("TAIL_525"),
+            "default display did not truncate"
+        );
+        assert!(
+            debug.contains("TAIL_525"),
+            "debug must show the complete recorded arguments"
+        );
+        assert!(debug.contains('🧬'));
+    }
+
+    #[test]
+    fn issue525_existing_token_redaction_applies_even_in_debug() {
+        let shown = lane_b_capture_renderer("redaction-debug");
+        assert!(
+            shown.contains("REDACTED"),
+            "the existing redactor was not used: {shown}"
+        );
+        assert!(!shown.contains(&format!("sk-proj-{}", "Y".repeat(40))));
+    }
+
+    #[test]
+    fn issue525_empty_graph_keeps_the_default_request_fallback() {
+        let shown = lane_b_capture_renderer("empty-graph");
+        assert!(
+            shown.contains("SOURCE_ONLY_525"),
+            "empty graph no longer uses the default renderer: {shown}"
+        );
+    }
+
+    #[test]
+    fn issue525_foreign_result_meta_is_not_executed_call_evidence() {
+        let shown = lane_b_capture_renderer("foreign-meta");
+        assert!(
+            !shown.contains("EVALUATED_ONLY_525"),
+            "another tool's metadata was shown as native executed calls: {shown}"
+        );
+    }
+
+    #[test]
+    fn issue525_truncated_args_remain_visible_without_json_parse_panics() {
+        let shown = lane_b_capture_renderer("malformed-meta");
+        assert!(
+            shown.contains("ACTUAL_TRUNCATED_525"),
+            "truncated producer args were silently dropped: {shown}"
+        );
+    }
+
     use super::*;
     use base64::Engine as _;
     use rmcp::model::{CallToolResult, Content, Meta, RawResource, ResourceContents};

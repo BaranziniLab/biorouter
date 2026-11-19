@@ -5881,3 +5881,89 @@ mod local_model_help_tests {
         );
     }
 }
+
+#[cfg(test)]
+mod issue_539_input_tests {
+    use super::*;
+
+    #[test]
+    fn issue_539_file_input_keeps_system_and_file_contents() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("instructions.txt");
+        std::fs::write(&file, "FILE_INSTRUCTIONS").unwrap();
+        let options = InputOptions {
+            instructions: Some(file.to_string_lossy().into_owned()),
+            system: Some("CALLER_SYSTEM".into()),
+            ..Default::default()
+        };
+        let (input, workflow) = parse_run_input(&options, true).unwrap().unwrap();
+        assert_eq!(input.contents.as_deref(), Some("FILE_INSTRUCTIONS"));
+        assert_eq!(
+            input.additional_system_prompt.as_deref(),
+            Some("CALLER_SYSTEM")
+        );
+        assert!(workflow.is_none());
+    }
+
+    #[test]
+    fn issue_539_file_without_system_preserves_absence() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("instructions.txt");
+        std::fs::write(&file, "FILE_INSTRUCTIONS").unwrap();
+        let options = InputOptions {
+            instructions: Some(file.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let (input, _) = parse_run_input(&options, true).unwrap().unwrap();
+        assert_eq!(input.additional_system_prompt, None);
+    }
+
+    #[test]
+    fn issue_539_text_input_keeps_the_existing_system_contract() {
+        let options = InputOptions {
+            input_text: Some("TEXT_INSTRUCTIONS".into()),
+            system: Some("CALLER_SYSTEM".into()),
+            ..Default::default()
+        };
+        let (input, workflow) = parse_run_input(&options, true).unwrap().unwrap();
+        assert_eq!(input.contents.as_deref(), Some("TEXT_INSTRUCTIONS"));
+        assert_eq!(
+            input.additional_system_prompt.as_deref(),
+            Some("CALLER_SYSTEM")
+        );
+        assert!(workflow.is_none());
+    }
+}
+
+#[cfg(test)]
+mod issue_524_cli_tests {
+    use super::*;
+
+    #[test]
+    fn issue_524_print_url_is_an_explicit_serve_option() {
+        assert!(Cli::try_parse_from(["biorouter", "serve", "--print-url"]).is_ok());
+        assert!(Cli::try_parse_from(["biorouter", "run", "--print-url"]).is_err());
+    }
+}
+
+#[cfg(test)]
+mod issue_526_cli_tests {
+    use super::*;
+
+    #[test]
+    fn issue_526_provider_secret_stdin_is_explicit_and_not_a_run_option() {
+        assert!(Cli::try_parse_from([
+            "biorouter",
+            "configure",
+            "--provider",
+            "versa_azure",
+            "--secret-stdin"
+        ])
+        .is_ok());
+        assert!(Cli::try_parse_from(["biorouter", "configure", "--secret-stdin"]).is_err());
+        assert!(
+            Cli::try_parse_from(["biorouter", "configure", "--provider", "versa_azure"]).is_err()
+        );
+        assert!(Cli::try_parse_from(["biorouter", "run", "--secret-stdin"]).is_err());
+    }
+}

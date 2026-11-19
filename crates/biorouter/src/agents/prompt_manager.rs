@@ -2096,3 +2096,46 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod issue_544_replace_controls {
+    use super::*;
+
+    #[test]
+    fn issue_544_existing_replace_setter_keeps_subagent_prompt_and_extras_once() {
+        let mut manager = PromptManager::new();
+        manager.set_system_prompt_override(
+            "SUBAGENT_REPLACE_ONLY\n<tool-output untrusted=\"true\">data</tool-output>".into(),
+        );
+        manager.add_system_prompt_extra("CALLER_EXTRA_ONCE".into());
+        let prompt = manager
+            .builder()
+            .with_prompt_variant(PromptVariant::SmallLocal)
+            .build();
+        assert!(prompt.starts_with("SUBAGENT_REPLACE_ONLY"));
+        assert_eq!(
+            prompt.matches("<tool-output untrusted=\"true\">").count(),
+            1
+        );
+        assert_eq!(prompt.matches("CALLER_EXTRA_ONCE").count(), 1);
+        assert!(!prompt.contains("# Current Tool State"));
+        assert!(!prompt.contains("Running on a Smaller Model"));
+    }
+
+    #[test]
+    fn issue_544_withheld_capability_does_not_expose_private_instructions() {
+        let mut withheld =
+            ExtensionInfo::capability("withheld_private", "PRIVATE_WITHHELD_GUIDANCE", false);
+        withheld.tool_roster_known = true;
+        withheld.available_tools = vec!["private_write".into()];
+        withheld.directly_callable_tools = Vec::new();
+        withheld.withheld_note = Some("WITHHELD_FOR_THIS_TURN".into());
+        let prompt = PromptManager::new()
+            .builder()
+            .with_extension(withheld)
+            .build();
+        assert!(prompt.contains("WITHHELD_FOR_THIS_TURN"));
+        assert!(!prompt.contains("PRIVATE_WITHHELD_GUIDANCE"));
+        assert!(!prompt.contains("private_write"));
+    }
+}

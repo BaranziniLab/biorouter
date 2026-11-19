@@ -2358,3 +2358,414 @@ async fn stop_while_a_retry_waits(how: Abandoned) {
     })
     .await;
 }
+
+#[derive(Clone, Copy)]
+enum Issue542Step {
+    Empty,
+    Whitespace,
+    Answer,
+    Thinking,
+    StructuredReasoning,
+    Tool,
+    Transient,
+    PartialTransient,
+    LegacyTransient,
+    Fatal,
+    Wait,
+}
+
+struct Issue542Provider {
+    steps: Vec<Issue542Step>,
+    calls: AtomicUsize,
+    sent: Mutex<Vec<Vec<Message>>>,
+    tool_directory: Mutex<Option<String>>,
+    waiting: tokio::sync::Notify,
+}
+
+impl Issue542Provider {
+    fn new(steps: Vec<Issue542Step>) -> Self {
+        Self {
+            steps,
+            calls: AtomicUsize::new(0),
+            sent: Mutex::default(),
+            tool_directory: Mutex::default(),
+            waiting: tokio::sync::Notify::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl Provider for Issue542Provider {
+    async fn complete_with_model(
+        &self,
+        _model: &ModelConfig,
+        _system: &str,
+        _messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        Ok((
+            Message::assistant().with_text("synthetic name"),
+            ProviderUsage::new("mock-model".into(), Usage::default()),
+        ))
+    }
+
+    async fn stream(
+        &self,
+        _system: &str,
+        messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<MessageStream, ProviderError> {
+        self.sent.lock().unwrap().push(messages.to_vec());
+        let call = self.calls.fetch_add(1, Ordering::SeqCst);
+        let step = *self
+            .steps
+            .get(call)
+            .expect("an unplanned extra provider attempt");
+        if matches!(step, Issue542Step::Wait) {
+            self.waiting.notify_one();
+            std::future::pending::<()>().await;
+        }
+        let mut usage =
+            ProviderUsage::new("mock-model".into(), Usage::new(Some(1), Some(1), Some(2)));
+        usage.finish_reason = Some("stop".into());
+        let message = match step {
+            Issue542Step::Empty => None,
+            Issue542Step::Whitespace => Some(Message::assistant().with_text(" \n\t")),
+            Issue542Step::Answer => Some(Message::assistant().with_text("finished")),
+            Issue542Step::Thinking => Some(
+                Message::assistant()
+                    .with_content(MessageContent::thinking("synthetic reasoning", "")),
+            ),
+            Issue542Step::Tool => {
+                usage.finish_reason = Some("tool_calls".into());
+                let command = if cfg!(windows) {
+                    "[System.IO.File]::AppendAllText('issue-542-effects.txt', 'done')"
+                } else {
+                    "printf done >> issue-542-effects.txt"
+                };
+                Some(Message::assistant().with_id("issue-542-tool-turn").with_tool_request("issue-542-effect", Ok(CallToolRequestParams {
+                    task: None,
+                    meta: None,
+                    name: "developer__shell".into(),
+                    arguments: Some(object!({"command":command,"working_directory":self.tool_directory.lock().unwrap().clone()})),
+                })))
+            }
+            Issue542Step::StructuredReasoning => {
+                let frame = json!({"id":"structured-reasoning","choices":[{"index":0,"delta":{"reasoning_details":[{"type":"reasoning.summary","summary":"synthetic reasoning","index":0,"format":"unknown"}]},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}});
+                let frames = vec![Ok(format!("data: {frame}")), Ok("data: [DONE]".to_string())];
+                let decoded = biorouter::providers::formats::openai::response_to_streaming_message(
+                    futures::stream::iter(frames),
+                );
+                return Ok(Box::pin(decoded.map(|item| {
+                    item.map_err(|error| {
+                        error
+                            .downcast::<ProviderError>()
+                            .unwrap_or_else(|error| ProviderError::RequestFailed(error.to_string()))
+                    })
+                })));
+            }
+            Issue542Step::Transient
+            | Issue542Step::PartialTransient
+            | Issue542Step::LegacyTransient
+            | Issue542Step::Fatal => {
+                let error = match step {
+                    Issue542Step::LegacyTransient => {
+                        json!({"code":500,"type":"server_error","message":"synthetic transient"})
+                    }
+                    Issue542Step::Fatal => {
+                        json!({"code":401,"metadata":{"error_type":"authentication"},"message":"PRIVATE_PROVIDER_PAYLOAD"})
+                    }
+                    _ => {
+                        json!({"code":503,"metadata":{"error_type":"provider_unavailable"},"message":"PRIVATE_PROVIDER_PAYLOAD"})
+                    }
+                };
+                let mut frames = Vec::new();
+                if matches!(step, Issue542Step::PartialTransient) {
+                    frames.push(Ok(format!("data: {}", json!({"id":"issue-542-partial","choices":[{"index":0,"delta":{"content":"partial result"},"finish_reason":null}]}))));
+                }
+                frames.push(Ok(format!("data: {}", json!({"error":error,"choices":[{"index":0,"delta":{},"finish_reason":"error"}]}))));
+                let decoded = biorouter::providers::formats::openai::response_to_streaming_message(
+                    futures::stream::iter(frames),
+                );
+                return Ok(Box::pin(decoded.map(|item| {
+                    item.map_err(|error| {
+                        error
+                            .downcast::<ProviderError>()
+                            .unwrap_or_else(|error| ProviderError::RequestFailed(error.to_string()))
+                    })
+                })));
+            }
+            Issue542Step::Wait => unreachable!(),
+        };
+        Ok(Box::pin(futures::stream::iter(vec![Ok((
+            message,
+            Some(usage),
+            None,
+        ))])))
+    }
+
+    fn supports_streaming(&self) -> bool {
+        true
+    }
+    fn get_model_config(&self) -> ModelConfig {
+        ModelConfig::new_or_fail("mock-model")
+    }
+    fn metadata() -> ProviderMetadata {
+        AlternatingStormProvider::metadata()
+    }
+    fn get_name(&self) -> &str {
+        "output-recovery-mock"
+    }
+}
+
+struct Issue542Reply {
+    aborted: bool,
+    stored: Vec<Message>,
+    effect: String,
+}
+
+async fn issue_542_reply(provider: Arc<Issue542Provider>) -> Issue542Reply {
+    with_config_overrides(
+        HashMap::from([
+            ("BIOROUTER_MISTAKE_STREAK_DETECTION".into(), "true".into()),
+            ("BIOROUTER_PROVIDER_ERROR_RETRIES".into(), "1".into()),
+        ]),
+        async {
+            let (agent, sessions, id, work, _data, _permissions) =
+                test_agent(provider.clone()).await;
+            *provider.tool_directory.lock().unwrap() =
+                Some(work.path().to_string_lossy().into_owned());
+            let stream = agent
+                .reply(
+                    Message::user().with_text("Complete the synthetic task."),
+                    SessionConfig {
+                        id: id.clone(),
+                        schedule_id: None,
+                        max_turns: Some(8),
+                        max_tool_calls: None,
+                        budget: None,
+                        retry_config: None,
+                        reasoning_effort: None,
+                    },
+                    None,
+                )
+                .await
+                .unwrap();
+            tokio::pin!(stream);
+            let mut aborted = false;
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while let Some(event) = stream.next().await {
+                    aborted |= matches!(event.unwrap(), AgentEvent::TurnAborted { .. });
+                }
+            })
+            .await
+            .expect("bounded synthetic reply");
+            let stored = sessions
+                .get_session(&id, true)
+                .await
+                .unwrap()
+                .conversation
+                .unwrap()
+                .messages()
+                .to_vec();
+            let effect = std::fs::read_to_string(work.path().join("issue-542-effects.txt"))
+                .unwrap_or_default();
+            Issue542Reply {
+                aborted,
+                stored,
+                effect,
+            }
+        },
+    )
+    .await
+}
+
+#[tokio::test]
+async fn issue_542_empty_and_whitespace_replies_get_one_hidden_corrective_attempt() {
+    for step in [Issue542Step::Empty, Issue542Step::Whitespace] {
+        let provider = Arc::new(Issue542Provider::new(vec![step, Issue542Step::Answer]));
+        let reply = issue_542_reply(provider.clone()).await;
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        assert!(!reply.aborted);
+        assert!(reply
+            .stored
+            .iter()
+            .any(|message| message.as_concat_text().contains("finished")));
+        let sent = provider.sent.lock().unwrap();
+        assert!(sent[1].iter().any(|message| !message.is_user_visible()
+            && message
+                .as_concat_text()
+                .to_ascii_lowercase()
+                .contains("empty")));
+    }
+}
+
+#[tokio::test]
+async fn issue_542_repeated_empty_replies_stop_after_exactly_two_attempts() {
+    let provider = Arc::new(Issue542Provider::new(vec![
+        Issue542Step::Empty,
+        Issue542Step::Empty,
+    ]));
+    let reply = issue_542_reply(provider.clone()).await;
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    assert!(
+        reply.aborted,
+        "an empty reply cannot be a successful completed turn"
+    );
+}
+
+#[tokio::test]
+async fn issue_542_an_intervening_tool_does_not_replenish_the_empty_reply_budget() {
+    let provider = Arc::new(Issue542Provider::new(vec![
+        Issue542Step::Empty,
+        Issue542Step::Tool,
+        Issue542Step::Empty,
+    ]));
+    let reply = issue_542_reply(provider.clone()).await;
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
+    assert!(reply.aborted);
+    assert_eq!(reply.effect, "done");
+    assert_eq!(reply.stored.iter().flat_map(|message| &message.content).filter(|content| matches!(content, MessageContent::ToolResponse(response) if response.id == "issue-542-effect")).count(), 1);
+}
+
+#[tokio::test]
+async fn issue_542_transient_stream_retry_keeps_completed_tool_work_exactly_once() {
+    let provider = Arc::new(Issue542Provider::new(vec![
+        Issue542Step::Tool,
+        Issue542Step::Transient,
+        Issue542Step::Answer,
+    ]));
+    let reply = issue_542_reply(provider.clone()).await;
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
+    assert!(!reply.aborted);
+    assert_eq!(reply.effect, "done");
+    let sent = provider.sent.lock().unwrap();
+    for request in &sent[1..] {
+        assert_eq!(request.iter().flat_map(|message| &message.content).filter(|content| matches!(content, MessageContent::ToolResponse(response) if response.id == "issue-542-effect")).count(), 1);
+    }
+}
+
+#[tokio::test]
+async fn issue_542_partial_stream_retry_preserves_the_prefix_without_exposing_raw_errors() {
+    let provider = Arc::new(Issue542Provider::new(vec![
+        Issue542Step::PartialTransient,
+        Issue542Step::Answer,
+    ]));
+    let reply = issue_542_reply(provider.clone()).await;
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+    assert!(!reply.aborted);
+    let sent = provider.sent.lock().unwrap();
+    assert!(sent[1]
+        .iter()
+        .any(|message| message.as_concat_text().contains("partial result")));
+    assert!(reply.stored.iter().all(|message| !message
+        .as_concat_text()
+        .contains("PRIVATE_PROVIDER_PAYLOAD")));
+}
+
+#[tokio::test]
+async fn issue_542_reasoning_and_nonempty_answers_are_not_empty_replies() {
+    for step in [
+        Issue542Step::Thinking,
+        Issue542Step::StructuredReasoning,
+        Issue542Step::Answer,
+    ] {
+        let provider = Arc::new(Issue542Provider::new(vec![step]));
+        let reply = issue_542_reply(provider.clone()).await;
+        assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+        assert!(!reply.aborted);
+    }
+}
+
+#[tokio::test]
+async fn issue_542_authentication_stream_error_stops_without_a_retry() {
+    let provider = Arc::new(Issue542Provider::new(vec![Issue542Step::Fatal]));
+    let reply = issue_542_reply(provider.clone()).await;
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 1);
+    assert!(reply.aborted);
+}
+
+#[tokio::test]
+async fn issue_542_cancel_while_the_retried_request_waits_never_starts_another_attempt() {
+    with_config_overrides(
+        HashMap::from([
+            ("BIOROUTER_MISTAKE_STREAK_DETECTION".into(), "true".into()),
+            ("BIOROUTER_PROVIDER_ERROR_RETRIES".into(), "1".into()),
+        ]),
+        async {
+            let provider = Arc::new(Issue542Provider::new(vec![
+                Issue542Step::LegacyTransient,
+                Issue542Step::Wait,
+            ]));
+            let (agent, _sessions, id, _work, _data, _permissions) =
+                test_agent(provider.clone()).await;
+            let cancel = tokio_util::sync::CancellationToken::new();
+            let stream = agent
+                .reply(
+                    Message::user().with_text("Synthetic cancellation."),
+                    SessionConfig {
+                        id,
+                        schedule_id: None,
+                        max_turns: Some(8),
+                        max_tool_calls: None,
+                        budget: None,
+                        retry_config: None,
+                        reasoning_effort: None,
+                    },
+                    Some(cancel.clone()),
+                )
+                .await
+                .unwrap();
+            tokio::pin!(stream);
+            tokio::time::timeout(Duration::from_secs(10), async {
+                let stop = async {
+                    provider.waiting.notified().await;
+                    cancel.cancel();
+                };
+                let drain = async {
+                    while let Some(event) = stream.next().await {
+                        event.unwrap();
+                    }
+                };
+                tokio::join!(stop, drain);
+            })
+            .await
+            .expect("cancellation must settle a held retry");
+            assert_eq!(provider.calls.load(Ordering::SeqCst), 2);
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn issue_542_already_cancelled_reply_never_enters_the_provider() {
+    let provider = Arc::new(Issue542Provider::new(vec![]));
+    let (agent, _sessions, id, _work, _data, _permissions) = test_agent(provider.clone()).await;
+    let cancel = tokio_util::sync::CancellationToken::new();
+    cancel.cancel();
+    let stream = agent
+        .reply(
+            Message::user().with_text("Cancelled synthetic request."),
+            SessionConfig {
+                id,
+                schedule_id: None,
+                max_turns: Some(8),
+                max_tool_calls: None,
+                budget: None,
+                retry_config: None,
+                reasoning_effort: None,
+            },
+            Some(cancel),
+        )
+        .await
+        .unwrap();
+    tokio::pin!(stream);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(event) = stream.next().await {
+            event.unwrap();
+        }
+    })
+    .await
+    .expect("already-cancelled reply must settle");
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
+}

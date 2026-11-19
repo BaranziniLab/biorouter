@@ -770,3 +770,439 @@ mod tests {
         assert!(matches!(wait, ConfirmationWait::Confirmed(_)));
     }
 }
+
+#[cfg(test)]
+mod issue543_approval_tests {
+    use super::*;
+    #[cfg(unix)]
+    use crate::agents::agent::ToolStreamItem;
+    use crate::agents::agent::{AgentConfig, ConfirmationOutcome};
+    use crate::agents::extension::ExtensionConfig;
+    use crate::config::{BioRouterMode, PermissionManager};
+    use crate::conversation::message::MessageContent;
+    #[cfg(unix)]
+    use crate::hooks::{HookDefinition, HookEvent, HookMatcherGroup};
+    use crate::hooks::{HooksConfig, HooksManager};
+    use crate::permission::permission_confirmation::PrincipalType;
+    use crate::session::session_manager::SessionType;
+    use crate::session::SessionManager;
+    #[cfg(unix)]
+    use crate::tool_inspection::InspectionAction;
+    use crate::tool_inspection::InspectionResult;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    const TOOL: &str = "issue543probe__probe";
+
+    struct ProbeClient(Arc<AtomicUsize>);
+
+    #[async_trait::async_trait]
+    impl crate::agents::mcp_client::McpClientTrait for ProbeClient {
+        async fn list_tools(
+            &self,
+            _cursor: Option<String>,
+            _cancel: CancellationToken,
+        ) -> Result<rmcp::model::ListToolsResult, rmcp::ServiceError> {
+            Ok(rmcp::model::ListToolsResult {
+                tools: vec![rmcp::model::Tool::new(
+                    "probe",
+                    "inert counted probe",
+                    serde_json::Map::new(),
+                )],
+                next_cursor: None,
+                meta: None,
+            })
+        }
+
+        async fn call_tool(
+            &self,
+            name: &str,
+            _arguments: Option<rmcp::model::JsonObject>,
+            _meta: crate::agents::mcp_client::McpMeta,
+            _cancel: CancellationToken,
+        ) -> Result<rmcp::model::CallToolResult, rmcp::ServiceError> {
+            assert_eq!(name, "probe");
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(rmcp::model::CallToolResult {
+                content: vec![Content::text("ISSUE543_PROBE_RAN")],
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            })
+        }
+
+        fn get_info(&self) -> Option<&rmcp::model::InitializeResult> {
+            None
+        }
+    }
+
+    struct Fixture {
+        _dir: tempfile::TempDir,
+        agent: Agent,
+        session: Session,
+        calls: Arc<AtomicUsize>,
+        parent: Option<String>,
+    }
+
+    async fn fixture(delegated: bool, hooks: HooksConfig) -> Fixture {
+        let dir = tempfile::TempDir::new().unwrap();
+        let sessions = Arc::new(SessionManager::new(dir.path().join("sessions")));
+        let permissions = Arc::new(PermissionManager::new(dir.path().join("permissions")));
+        let mut agent = Agent::with_config(
+            AgentConfig::new(
+                Arc::clone(&sessions),
+                permissions,
+                None,
+                BioRouterMode::Approve,
+            )
+            .with_project_hooks(false),
+        );
+        agent.hooks_manager = Arc::new(HooksManager::with_config(
+            hooks,
+            false,
+            Arc::clone(&agent.provider),
+        ));
+        agent
+            .extension_manager
+            .set_working_dir(dir.path().to_path_buf())
+            .await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        let config = ExtensionConfig::stdio(
+            "issue543probe",
+            "unused-fixture-command",
+            "inert probe",
+            30_u64,
+        );
+        agent
+            .extension_manager
+            .add_client(
+                config.key(),
+                config,
+                Arc::new(ProbeClient(Arc::clone(&calls))),
+                None,
+                None,
+            )
+            .await;
+        let mut session = sessions
+            .create_session(
+                dir.path().to_path_buf(),
+                "issue543".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let parent =
+            delegated.then(|| format!("issue543-absent-ancestor-{}", uuid::Uuid::new_v4()));
+        session.parent_session_id = parent.clone();
+        Fixture {
+            _dir: dir,
+            agent,
+            session,
+            calls,
+            parent,
+        }
+    }
+
+    fn request() -> ToolRequest {
+        ToolRequest {
+            id: format!("issue543-{}", uuid::Uuid::new_v4()),
+            tool_call: Ok(rmcp::model::CallToolRequestParams {
+                task: None,
+                meta: None,
+                name: TOOL.into(),
+                arguments: Some(rmcp::object!({})),
+            }),
+            metadata: None,
+            tool_meta: None,
+        }
+    }
+
+    #[cfg(unix)]
+    fn human_only(request: &ToolRequest) -> Vec<InspectionResult> {
+        vec![InspectionResult {
+            tool_request_id: request.id.clone(),
+            action: InspectionAction::RequireApproval(Some("synthetic managed ask".into())),
+            reason: "synthetic managed ask".into(),
+            confidence: 1.0,
+            inspector_name: crate::permission::managed_inspector::MANAGED_INSPECTOR_NAME.into(),
+            finding_id: Some("ISSUE543-HUMAN".into()),
+        }]
+    }
+
+    #[cfg(unix)]
+    fn allow_hook() -> HooksConfig {
+        let mut hooks = HooksConfig::default();
+        hooks.events.insert(
+            HookEvent::PermissionRequest,
+            vec![HookMatcherGroup {
+                matcher: Some(TOOL.into()),
+                input_matcher: None,
+                hooks: vec![HookDefinition::Command {
+                    command:
+                        r#"printf '%s\n' '{"hookSpecificOutput":{"permissionDecision":"allow"}}'"#
+                            .into(),
+                    timeout: Some(2),
+                }],
+            }],
+        );
+        hooks
+    }
+
+    async fn drain(
+        f: &Fixture,
+        request: &ToolRequest,
+        results: &[InspectionResult],
+        response: Arc<Mutex<Message>>,
+        futures: Arc<Mutex<Vec<(String, ToolStream)>>>,
+        answer_as_person: bool,
+    ) -> Vec<Message> {
+        let requests = [request.clone()];
+        let responses = HashMap::from([(request.id.clone(), response)]);
+        let cancel = CancellationToken::new();
+        let mut stream = f.agent.handle_approval_tool_requests(
+            &requests,
+            futures,
+            &responses,
+            Some(cancel.clone()),
+            &f.session,
+            results,
+        );
+        let mut observed = Vec::new();
+        loop {
+            let next = tokio::time::timeout(Duration::from_secs(5), stream.next()).await;
+            let next = match next {
+                Ok(next) => next,
+                Err(_) => {
+                    cancel.cancel();
+                    f.agent.forget_confirmation(&request.id);
+                    crate::agents::approval_relay::forget(&crate::agents::approval_relay::AskId {
+                        session_id: f.session.id.clone(),
+                        request_id: request.id.clone(),
+                    });
+                    panic!("approval stream parked instead of finishing or surfacing its card");
+                }
+            };
+            let Some(message) = next else { break };
+            let message = message.unwrap();
+            if message
+                .content
+                .iter()
+                .any(|content| matches!(content, MessageContent::ActionRequired(_)))
+            {
+                if answer_as_person {
+                    assert_eq!(
+                        f.agent
+                            .handle_confirmation(
+                                request.id.clone(),
+                                PermissionConfirmation {
+                                    principal_type: PrincipalType::Tool,
+                                    permission: Permission::DenyOnce,
+                                }
+                            )
+                            .await,
+                        ConfirmationOutcome::Delivered
+                    );
+                } else {
+                    // Finish the current implementation's unwanted card without a TTL wait.
+                    cancel.cancel();
+                }
+            }
+            observed.push(message);
+        }
+        observed
+    }
+
+    fn card_count(messages: &[Message]) -> usize {
+        messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .filter(|content| matches!(content, MessageContent::ActionRequired(_)))
+            .count()
+    }
+
+    async fn assert_retired(f: &Fixture, request: &ToolRequest) {
+        assert!(!f.agent.has_pending_confirmation(&request.id));
+        assert!(crate::agents::approval_relay::lookup(&request.id, &f.session.id).is_none());
+        if let Some(parent) = &f.parent {
+            assert!(crate::agents::approval_relay::lookup(&request.id, parent).is_none());
+        }
+        assert_eq!(
+            f.agent
+                .handle_confirmation(
+                    request.id.clone(),
+                    PermissionConfirmation {
+                        principal_type: PrincipalType::Tool,
+                        permission: Permission::AllowOnce,
+                    }
+                )
+                .await,
+            ConfirmationOutcome::Unknown,
+            "a stale allow must not revive a refused call"
+        );
+        assert_eq!(
+            f.agent.config.permission_manager.get_user_permission(TOOL),
+            None
+        );
+    }
+
+    async fn assert_unattended_refusal(
+        f: &Fixture,
+        request: &ToolRequest,
+        results: &[InspectionResult],
+    ) {
+        let response = Arc::new(Mutex::new(Message::user()));
+        let futures = Arc::new(Mutex::new(Vec::new()));
+        let observed = crate::user_surface::without_human_surface(drain(
+            f,
+            request,
+            results,
+            Arc::clone(&response),
+            Arc::clone(&futures),
+            false,
+        ))
+        .await;
+        assert!(
+            futures.lock().await.is_empty(),
+            "an unattended refusal must not queue dispatch"
+        );
+        assert_eq!(f.calls.load(Ordering::SeqCst), 0);
+        assert_retired(f, request).await;
+        assert_eq!(
+            card_count(&observed),
+            0,
+            "nobody can answer an unattended card"
+        );
+        assert!(observed.iter().all(|message| !message.is_agent_visible()));
+        let response = response.lock().await;
+        let replies: Vec<_> = response
+            .content
+            .iter()
+            .filter_map(MessageContent::as_tool_response)
+            .collect();
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].id, request.id);
+        let result = replies[0].tool_result.as_ref().unwrap();
+        assert_eq!(result.is_error, Some(true));
+        let text = response
+            .content
+            .iter()
+            .filter_map(MessageContent::as_tool_response_text)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .to_lowercase();
+        assert!(text.contains("not run"), "{text}");
+        assert!(
+            ["nobody", "unattended", "no human", "no person"]
+                .iter()
+                .any(|word| text.contains(word)),
+            "{text}"
+        );
+        assert!(
+            !text.contains("user has declined") && !text.contains("user declined"),
+            "{text}"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn issue543_unattended_root_refuses_without_a_card() {
+        let f = fixture(false, HooksConfig::default()).await;
+        assert_unattended_refusal(&f, &request(), &[]).await;
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn issue543_unattended_exhausted_delegate_refuses_without_a_card() {
+        let f = fixture(true, HooksConfig::default()).await;
+        assert_unattended_refusal(&f, &request(), &[]).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn issue543_unattended_human_only_ask_cannot_be_allowed_by_a_hook() {
+        let f = fixture(false, allow_hook()).await;
+        let request = request();
+        assert_unattended_refusal(&f, &request, &human_only(&request)).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn issue543_person_surface_preserves_human_only_hook_restriction() {
+        let f = fixture(false, allow_hook()).await;
+        let request = request();
+        let response = Arc::new(Mutex::new(Message::user()));
+        let futures = Arc::new(Mutex::new(Vec::new()));
+        let observed = drain(
+            &f,
+            &request,
+            &human_only(&request),
+            Arc::clone(&response),
+            Arc::clone(&futures),
+            true,
+        )
+        .await;
+        assert_eq!(
+            card_count(&observed),
+            1,
+            "a hook cannot answer the managed ask"
+        );
+        assert!(futures.lock().await.is_empty());
+        assert_eq!(f.calls.load(Ordering::SeqCst), 0);
+        assert_retired(&f, &request).await;
+        let text = response
+            .lock()
+            .await
+            .content
+            .iter()
+            .filter_map(MessageContent::as_tool_response_text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(text, DECLINED_RESPONSE);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn issue543_unattended_already_delegable_hook_allow_still_runs_only_the_probe() {
+        let f = fixture(false, allow_hook()).await;
+        let request = request();
+        let response = Arc::new(Mutex::new(Message::user()));
+        let futures = Arc::new(Mutex::new(Vec::new()));
+        let observed = crate::user_surface::without_human_surface(drain(
+            &f,
+            &request,
+            &[],
+            response,
+            Arc::clone(&futures),
+            false,
+        ))
+        .await;
+        assert_eq!(card_count(&observed), 0);
+        let mut queued = std::mem::take(&mut *futures.lock().await);
+        assert_eq!(
+            queued.len(),
+            1,
+            "the already-authorized probe must reach dispatch"
+        );
+        let (id, mut stream) = queued.pop().unwrap();
+        assert_eq!(id, request.id);
+        let mut results = 0;
+        while let Some(item) = tokio::time::timeout(Duration::from_secs(5), stream.next())
+            .await
+            .unwrap()
+        {
+            if let ToolStreamItem::Result(result) = item {
+                let result = result.unwrap();
+                assert_eq!(result.is_error, Some(false));
+                assert!(result.content.iter().any(|content| content
+                    .as_text()
+                    .is_some_and(|text| text.text == "ISSUE543_PROBE_RAN")));
+                results += 1;
+            }
+        }
+        assert_eq!(results, 1);
+        assert_eq!(f.calls.load(Ordering::SeqCst), 1);
+        assert_retired(&f, &request).await;
+    }
+}

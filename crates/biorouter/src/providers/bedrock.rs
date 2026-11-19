@@ -867,6 +867,123 @@ mod tests {
         );
     }
 
+    fn issue_527_fixture() -> (String, Vec<Message>, Vec<rmcp::model::Tool>) {
+        (
+            "synthetic cache fixture ".repeat(1024),
+            vec![
+                Message::user().with_text("old user content"),
+                Message::assistant().with_text("old answer"),
+                Message::user().with_text("stable previous question"),
+                Message::assistant().with_text("previous answer"),
+                Message::user().with_text("current question"),
+            ],
+            vec![rmcp::model::Tool::new(
+                "fixture__lookup".to_string(),
+                "Synthetic wire-only lookup".to_string(),
+                rmcp::object!({"type": "object", "properties": {}}),
+            )],
+        )
+    }
+
+    fn issue_527_captured_json(
+        captured: aws_smithy_http_client::test_util::CaptureRequestReceiver,
+    ) -> serde_json::Value {
+        let request = captured.expect_request();
+        serde_json::from_slice(request.body().bytes().expect("buffered request"))
+            .expect("valid captured JSON")
+    }
+
+    fn issue_527_cache_point_count(value: &serde_json::Value) -> usize {
+        match value {
+            serde_json::Value::Object(fields) => {
+                usize::from(fields.contains_key("cachePoint"))
+                    + fields
+                        .values()
+                        .map(issue_527_cache_point_count)
+                        .sum::<usize>()
+            }
+            serde_json::Value::Array(items) => items.iter().map(issue_527_cache_point_count).sum(),
+            _ => 0,
+        }
+    }
+
+    fn issue_527_assert_cache_points(json: &serde_json::Value, system: &str) {
+        let point = serde_json::json!({"cachePoint": {"type": "default"}});
+        let system_blocks = json["system"].as_array().expect("system blocks");
+        assert_eq!(system_blocks.len(), 2);
+        assert_eq!(system_blocks[0], serde_json::json!({"text": system}));
+        assert_eq!(system_blocks[1], point);
+        let tools = json["toolConfig"]["tools"].as_array().expect("tools");
+        assert_eq!(tools.len(), 2);
+        assert_eq!(tools[0]["toolSpec"]["name"], "fixture__lookup");
+        assert_eq!(tools[1], point);
+        let messages = json["messages"].as_array().expect("messages");
+        assert_eq!(messages.len(), 5);
+        for index in [2, 4] {
+            assert_eq!(messages[index]["role"], "user");
+            assert_eq!(
+                messages[index]["content"].as_array().unwrap().last(),
+                Some(&point)
+            );
+        }
+        for index in [0, 1, 3] {
+            assert_eq!(issue_527_cache_point_count(&messages[index]), 0);
+        }
+        assert_eq!(issue_527_cache_point_count(json), 4);
+    }
+
+    #[tokio::test]
+    async fn issue_527_converse_places_four_cache_points_for_verified_55_models() {
+        for model in [
+            "us.anthropic.claude-opus-5-5",
+            "us.anthropic.claude-sonnet-5-5",
+            "us.anthropic.claude-haiku-5-5",
+        ] {
+            let (provider, captured) = capturing_provider().await;
+            let config = ModelConfig::new_or_fail(model);
+            let (system, messages, tools) = issue_527_fixture();
+            let _ = provider.converse(&config, &system, &messages, &tools).await;
+            issue_527_assert_cache_points(&issue_527_captured_json(captured), &system);
+        }
+    }
+
+    #[tokio::test]
+    async fn issue_527_converse_stream_places_four_cache_points_for_verified_55_models() {
+        for model in [
+            "us.anthropic.claude-opus-5-5",
+            "us.anthropic.claude-sonnet-5-5",
+            "us.anthropic.claude-haiku-5-5",
+        ] {
+            let (provider, captured) = capturing_provider().await;
+            let config = ModelConfig::new_or_fail(model);
+            let (system, messages, tools) = issue_527_fixture();
+            let _ = provider
+                .converse_stream(&config, &system, &messages, &tools)
+                .await;
+            issue_527_assert_cache_points(&issue_527_captured_json(captured), &system);
+        }
+    }
+
+    #[tokio::test]
+    async fn issue_527_unknown_claude_id_keeps_both_wire_paths_uncached() {
+        let config = ModelConfig::new_or_fail("us.anthropic.claude-invented-5-5");
+        let (system, messages, tools) = issue_527_fixture();
+        let (provider, captured) = capturing_provider().await;
+        let _ = provider.converse(&config, &system, &messages, &tools).await;
+        assert_eq!(
+            issue_527_cache_point_count(&issue_527_captured_json(captured)),
+            0
+        );
+        let (provider, captured) = capturing_provider().await;
+        let _ = provider
+            .converse_stream(&config, &system, &messages, &tools)
+            .await;
+        assert_eq!(
+            issue_527_cache_point_count(&issue_527_captured_json(captured)),
+            0
+        );
+    }
+
     #[tokio::test]
     async fn converse_sends_configured_inference_fields_on_the_wire() {
         let (provider, captured) = capturing_provider().await;

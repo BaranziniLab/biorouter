@@ -7003,4 +7003,439 @@ mod tests {
             cleanup_test_service(running_service, peer);
         });
     }
+
+    #[cfg(unix)]
+    mod issues536_538 {
+        use super::*;
+
+        type ShellOutcome = Result<CallToolResult, ErrorData>;
+
+        fn text(result: &CallToolResult) -> String {
+            result
+                .content
+                .iter()
+                .filter_map(|content| content.as_text().map(|text| text.text.as_str()))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        async fn call(
+            server: DeveloperServer,
+            peer: rmcp::service::Peer<RoleServer>,
+            command: String,
+            background: bool,
+            ct: CancellationToken,
+        ) -> ShellOutcome {
+            server
+                .shell(
+                    Parameters(ShellParams {
+                        working_directory: None,
+                        command,
+                        background: Some(background),
+                        label: None,
+                    }),
+                    RequestContext {
+                        ct,
+                        id: NumberOrString::Number(536538),
+                        meta: Default::default(),
+                        extensions: Default::default(),
+                        peer,
+                    },
+                )
+                .await
+        }
+
+        async fn marker(path: &std::path::Path, seconds: u64) -> bool {
+            timeout(Duration::from_secs(seconds), async {
+                while !path.exists() {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .is_ok()
+        }
+
+        async fn finish(
+            task: &mut tokio::task::JoinHandle<ShellOutcome>,
+            ct: &CancellationToken,
+        ) -> Option<ShellOutcome> {
+            if let Ok(result) = timeout(Duration::from_secs(20), &mut *task).await {
+                return result.ok();
+            }
+            ct.cancel();
+            if timeout(Duration::from_secs(5), &mut *task).await.is_err() {
+                task.abort();
+                let _ = task.await;
+            }
+            None
+        }
+
+        async fn group_absent(owner_file: &std::path::Path) -> bool {
+            let Some(pid) = fs::read_to_string(owner_file)
+                .ok()
+                .and_then(|value| value.trim().parse::<i32>().ok())
+                .filter(|pid| *pid > 1)
+            else {
+                return false;
+            };
+            timeout(Duration::from_secs(5), async {
+                loop {
+                    // The nonce-directory marker is written by our own group leader.
+                    let result = unsafe { libc::kill(-pid, 0) };
+                    if result == -1
+                        && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                    {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .is_ok()
+        }
+
+        fn log_path(reply: &str) -> Option<PathBuf> {
+            reply.split_whitespace().find_map(|word| {
+                let path = PathBuf::from(word.trim_matches(|c: char| {
+                    matches!(c, '`' | '\'' | '"' | ',' | ';' | '(' | ')' | '.')
+                }));
+                (path.is_absolute() && path.is_file()).then_some(path)
+            })
+        }
+
+        fn terminal(log: &str, status: i32) -> bool {
+            log.contains(&format!("status {status}")) || log.contains(&format!("exited({status})"))
+        }
+
+        #[test]
+        #[serial]
+        fn issue536_shell_exit_returns_before_pipe_eof_without_breaking_the_late_writer() {
+            run_shell_test(|| async {
+                let dir = tempfile::tempdir().unwrap();
+                fs::write(
+                    dir.path().join("holder.sh"),
+                    "i=0\nwhile [ ! -f release ] && [ \"$i\" -lt 240 ]; do\n  sleep 0.05\n  i=$((i+1))\ndone\nprintf 'late-writer\\n' || exit 41\n: > writer-done\n",
+                )
+                .unwrap();
+                let server = create_test_server()
+                    .with_working_dir(dir.path().to_path_buf())
+                    .with_foreground_timeout(Some(Duration::from_secs(30)));
+                let service = serve_directly(server.clone(), create_test_transport(), None);
+                let peer = service.peer().clone();
+                let ct = CancellationToken::new();
+                let mut task = tokio::spawn(call(
+                    server,
+                    peer.clone(),
+                    "printf '%s\\n' $$ > owner; nohup sh holder.sh & printf 'foreground-ready\\n'; exit 0".to_string(),
+                    false,
+                    ct.clone(),
+                ));
+                let early = timeout(Duration::from_secs(4), &mut task).await;
+                let returned_before_release = early.is_ok();
+                fs::write(dir.path().join("release"), b"release").unwrap();
+                let result = match early {
+                    Ok(result) => result.ok(),
+                    Err(_) => finish(&mut task, &ct).await,
+                };
+                let writer_finished = marker(&dir.path().join("writer-done"), 15).await;
+                let absent = group_absent(&dir.path().join("owner")).await;
+                cleanup_test_service(service, peer);
+
+                assert!(
+                    writer_finished,
+                    "closing a held pipe must not kill its late writer"
+                );
+                assert!(
+                    absent,
+                    "the finite fixture's exact owned group must be gone"
+                );
+                assert!(
+                    returned_before_release,
+                    "the exited shell must not await pipe EOF"
+                );
+                let result = result.expect("bounded shell task must finish").unwrap();
+                assert_eq!(result.is_error, Some(false));
+                let reply = text(&result);
+                assert!(reply.contains("foreground-ready"));
+                assert!(!reply.contains("late-writer"));
+                assert!(reply.to_ascii_lowercase().contains("pipe"));
+                assert!(
+                    !reply.contains("shell_status"),
+                    "this leftover is not a registered job"
+                );
+            });
+        }
+
+        #[test]
+        #[serial]
+        fn issue536_closed_pipes_do_not_disable_the_live_shell_watchdog() {
+            run_shell_test(|| async {
+                let dir = tempfile::tempdir().unwrap();
+                let server = create_test_server()
+                    .with_working_dir(dir.path().to_path_buf())
+                    .with_foreground_timeout(Some(Duration::from_millis(500)));
+                let service = serve_directly(server.clone(), create_test_transport(), None);
+                let peer = service.peer().clone();
+                let ct = CancellationToken::new();
+                let started = Instant::now();
+                let mut task = tokio::spawn(call(
+                    server,
+                    peer.clone(),
+                    "printf '%s\\n' $$ > owner; exec 1>&- 2>&-; i=0; while [ \"$i\" -lt 100 ]; do sleep 0.05; i=$((i+1)); done; : > survived".to_string(),
+                    false,
+                    ct.clone(),
+                ));
+                let result = finish(&mut task, &ct).await;
+                let elapsed = started.elapsed();
+                let absent = group_absent(&dir.path().join("owner")).await;
+                cleanup_test_service(service, peer);
+
+                assert!(
+                    absent,
+                    "the exact owned group must be gone before assertions"
+                );
+                assert!(
+                    elapsed < Duration::from_secs(3),
+                    "EOF must not suspend the watchdog"
+                );
+                let error = result
+                    .expect("bounded shell task must finish")
+                    .expect_err("the live shell exceeded its budget");
+                assert!(error.message.contains("foreground limit"));
+                assert!(!dir.path().join("survived").exists());
+            });
+        }
+
+        #[test]
+        #[serial]
+        fn issue537_watchdog_returns_a_bounded_unicode_tail_and_nonretryable_envelope() {
+            run_shell_test(|| async {
+                let dir = tempfile::tempdir().unwrap();
+                let server = create_test_server()
+                    .with_working_dir(dir.path().to_path_buf())
+                    .with_foreground_timeout(Some(Duration::from_secs(2)));
+                let service = serve_directly(server.clone(), create_test_transport(), None);
+                let peer = service.peer().clone();
+                let ct = CancellationToken::new();
+                let mut task = tokio::spawn(call(
+                    server,
+                    peer.clone(),
+                    "printf '%s\\n' $$ > owner; i=1; while [ \"$i\" -le 300 ]; do printf 'stream-%05d-終\\n' \"$i\"; i=$((i+1)); done; printf 'tail-終-marker\\n'; : > output-ready; i=0; while [ \"$i\" -lt 160 ]; do sleep 0.05; i=$((i+1)); done; : > survived".to_string(),
+                    false,
+                    ct.clone(),
+                ));
+                let result = finish(&mut task, &ct).await;
+                let absent = group_absent(&dir.path().join("owner")).await;
+                cleanup_test_service(service, peer);
+
+                assert!(absent, "the exact watchdog-owned group must be gone");
+                assert!(dir.path().join("output-ready").exists());
+                assert!(!dir.path().join("survived").exists());
+                let error = result
+                    .expect("bounded shell task must finish")
+                    .expect_err("watchdog remains an Err(ErrorData)");
+                assert!(error.message.contains("stream-00300-終"));
+                assert!(error.message.contains("tail-終-marker"));
+                assert!(!error.message.contains("stream-00001-終"));
+                assert!(error.message.chars().count() <= SHELL_PREVIEW_MAX_CHARS + 2_400);
+                assert!(error.message.lines().count() <= SHELL_INLINE_MAX_LINES + 25);
+                assert!(error.message.contains("background=true"));
+                let envelope = error.data.as_ref().and_then(|data| data.get("error"));
+                assert_eq!(
+                    envelope
+                        .and_then(|value| value.get("kind"))
+                        .and_then(|value| value.as_str()),
+                    Some("timeout")
+                );
+                assert_eq!(
+                    envelope
+                        .and_then(|value| value.get("retryable"))
+                        .and_then(|value| value.as_bool()),
+                    Some(false)
+                );
+            });
+        }
+
+        #[test]
+        #[serial]
+        fn issue538_a_quick_background_failure_is_reported_inline_with_its_readable_log() {
+            run_shell_test(|| async {
+                let dir = tempfile::tempdir().unwrap();
+                let server = create_test_server().with_working_dir(dir.path().to_path_buf());
+                let service = serve_directly(server.clone(), create_test_transport(), None);
+                let peer = service.peer().clone();
+                let ct = CancellationToken::new();
+                let mut task = tokio::spawn(call(
+                    server.clone(),
+                    peer.clone(),
+                    "printf 'synthetic-failure-detail\\n' >&2; exit 7".to_string(),
+                    true,
+                    ct.clone(),
+                ));
+                let result = finish(&mut task, &ct).await;
+                // This private manager read is teardown, not a tool granted to the model.
+                let completed = server.background_jobs.wait("job-1", 5).await;
+                let reply = result
+                    .as_ref()
+                    .and_then(|result| result.as_ref().ok())
+                    .map(text);
+                let log = reply
+                    .as_deref()
+                    .and_then(log_path)
+                    .and_then(|path| fs::read_to_string(path).ok());
+                cleanup_test_service(service, peer);
+
+                assert!(completed.unwrap().contains("exited(7)"));
+                let result = result
+                    .expect("bounded background call must finish")
+                    .unwrap();
+                assert_eq!(result.is_error, Some(true));
+                let reply = reply.unwrap();
+                assert!(reply.contains("synthetic-failure-detail"));
+                assert!(terminal(&reply, 7));
+                let log = log.expect("the reply must expose the existing private bounded log");
+                assert!(log.contains("synthetic-failure-detail"));
+                assert!(terminal(&log, 7));
+            });
+        }
+
+        #[test]
+        #[serial]
+        fn issue538_a_running_job_exposes_its_unique_private_log_without_status_tool_access() {
+            use std::os::unix::fs::PermissionsExt;
+
+            run_shell_test(|| async {
+                let dir = tempfile::tempdir().unwrap();
+                let server = create_test_server().with_working_dir(dir.path().to_path_buf());
+                let service = serve_directly(server.clone(), create_test_transport(), None);
+                let peer = service.peer().clone();
+                let ct = CancellationToken::new();
+                let mut task = tokio::spawn(call(
+                    server.clone(),
+                    peer.clone(),
+                    "printf '%s\\n' $$ > owner; printf 'running-output\\n'; : > started; i=0; while [ ! -f release ] && [ \"$i\" -lt 240 ]; do sleep 0.05; i=$((i+1)); done; printf 'completed-output\\n'; exit 0".to_string(),
+                    true,
+                    ct.clone(),
+                ));
+                let early = timeout(Duration::from_secs(4), &mut task).await;
+                let returned_before_release = early.is_ok();
+                let result = match early {
+                    Ok(result) => result.ok(),
+                    Err(_) => {
+                        fs::write(dir.path().join("release"), b"release").unwrap();
+                        finish(&mut task, &ct).await
+                    }
+                };
+                let started = marker(&dir.path().join("started"), 2).await;
+                let reply = result
+                    .as_ref()
+                    .and_then(|result| result.as_ref().ok())
+                    .map(text);
+                let path = reply.as_deref().and_then(log_path);
+                let partial = if let Some(path) = &path {
+                    let _ = timeout(Duration::from_secs(2), async {
+                        while !fs::read_to_string(path)
+                            .unwrap_or_default()
+                            .contains("running-output")
+                        {
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                        }
+                    })
+                    .await;
+                    fs::read_to_string(path).ok()
+                } else {
+                    None
+                };
+                let mode = path
+                    .as_ref()
+                    .and_then(|path| fs::metadata(path).ok())
+                    .map(|meta| meta.permissions().mode() & 0o777);
+                fs::write(dir.path().join("release"), b"release").unwrap();
+                let completed = server.background_jobs.wait("job-1", 5).await;
+                let absent = group_absent(&dir.path().join("owner")).await;
+                let final_log = path.as_ref().and_then(|path| fs::read_to_string(path).ok());
+                let second_ct = CancellationToken::new();
+                let mut second_task = tokio::spawn(call(
+                    server.clone(),
+                    peer.clone(),
+                    "printf 'second-job\\n'".to_string(),
+                    true,
+                    second_ct.clone(),
+                ));
+                let second = finish(&mut second_task, &second_ct).await;
+                let second_completed = server.background_jobs.wait("job-2", 5).await;
+                let second_path = second
+                    .as_ref()
+                    .and_then(|result| result.as_ref().ok())
+                    .map(text)
+                    .as_deref()
+                    .and_then(log_path);
+                cleanup_test_service(service, peer);
+
+                assert!(started);
+                assert!(absent, "the finite job's exact owned group must be gone");
+                assert!(
+                    returned_before_release,
+                    "a running job must return while its finite child is held"
+                );
+                assert!(completed.unwrap().contains("exited(0)"));
+                assert!(second_completed.unwrap().contains("exited(0)"));
+                assert_eq!(
+                    result
+                        .expect("bounded background call must finish")
+                        .unwrap()
+                        .is_error,
+                    Some(false)
+                );
+                let partial =
+                    partial.expect("running output must be readable without shell_status");
+                assert!(partial.contains("running-output"));
+                assert!(!partial.contains("completed-output"));
+                assert!(
+                    !terminal(&partial, 0),
+                    "a held job must not claim an exit status"
+                );
+                assert_eq!(mode, Some(0o600));
+                let path = path.unwrap();
+                let temp_root = std::env::temp_dir().canonicalize().unwrap();
+                assert!(path.canonicalize().unwrap().starts_with(temp_root));
+                assert_ne!(
+                    path,
+                    second_path.expect("each new job must expose its own log")
+                );
+                let final_log = final_log.unwrap();
+                assert!(final_log.contains("completed-output"));
+                assert!(terminal(&final_log, 0));
+            });
+        }
+        #[test]
+        fn issue538_background_guidance_describes_a_shell_readable_log() {
+            let tools = DeveloperServer::tool_router().list_all();
+            let shell = tools.iter().find(|tool| tool.name == "shell").unwrap();
+            assert!(shell
+                .description
+                .as_deref()
+                .unwrap_or_default()
+                .contains("log"));
+            let schema = serde_json::to_value(&shell.input_schema).unwrap();
+            let background = schema
+                .get("properties")
+                .and_then(|value| value.get("background"));
+            let description = background
+                .and_then(|value| value.get("description"))
+                .and_then(|value| value.as_str())
+                .unwrap_or_default();
+            assert!(
+                description.contains("log"),
+                "background=true must describe an observable route without companion grants"
+            );
+            let timeout_message = crate::developer::shell::foreground_timeout_message(
+                "synthetic-command",
+                Duration::from_secs(2),
+                Duration::from_secs(2),
+            );
+            assert!(timeout_message.contains("background=true"));
+            assert!(timeout_message.contains("log") || timeout_message.contains("file"));
+        }
+    }
 }

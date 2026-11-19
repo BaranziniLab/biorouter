@@ -1102,4 +1102,29 @@ available_tools: []
             panic!("unexpected result of deserialization: {}", config)
         }
     }
+
+    #[test]
+    fn issue538_shell_only_rosters_do_not_silently_grant_job_tools() {
+        let shell_only = ExtensionConfig::Builtin {
+            name: "developer".to_string(),
+            description: String::new(),
+            display_name: None,
+            timeout: None,
+            bundled: Some(true),
+            available_tools: vec!["shell".to_string()],
+        };
+        assert!(shell_only.is_tool_available("shell"));
+        assert!(!shell_only.is_tool_available("shell_status"));
+        assert!(!shell_only.is_tool_available("shell_kill"));
+        let mut default = shell_only;
+        if let ExtensionConfig::Builtin {
+            available_tools, ..
+        } = &mut default
+        {
+            available_tools.clear();
+        }
+        assert!(default.is_tool_available("shell"));
+        assert!(default.is_tool_available("shell_status"));
+        assert!(default.is_tool_available("shell_kill"));
+    }
 }
