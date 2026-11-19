@@ -1806,7 +1806,11 @@ impl CliSession {
             max_tool_calls: None,
             budget: None,
             retry_config: self.retry_config.clone(),
-            reasoning_effort: None,
+            // Headless runs had no way to set the effort, so a benchmark could only force it from a
+            // relay. BIOROUTER_RUN_EFFORT (quick|normal|deep, or low|medium|high) sets it per run.
+            reasoning_effort: std::env::var("BIOROUTER_RUN_EFFORT")
+                .ok()
+                .and_then(|raw| biorouter::agents::effort::ReasoningEffort::parse(&raw)),
         };
         let user_message = self
             .messages
