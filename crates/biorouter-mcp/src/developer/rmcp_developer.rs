@@ -373,6 +373,59 @@ fn detach_capture(capture: &SharedShellCapture) -> String {
     std::mem::take(&mut capture.text)
 }
 
+/// The error a foreground command gets when its budget kills it (P03): the
+/// actionable message, the tail of what the command printed before the kill,
+/// and an explicit error envelope.
+///
+/// The envelope matters because without one the agent's error taxonomy
+/// classified the kill from its text, found "timeout" inside the name of the
+/// budget's environment variable and called it `retryable=true`, with advice
+/// that one retry is reasonable. An identical retry is killed again.
+fn foreground_timeout_error(
+    command: &str,
+    elapsed: Duration,
+    limit: Duration,
+    printed: &str,
+) -> ErrorData {
+    let message = foreground_timeout_message(command, elapsed, limit);
+    let summary = message.lines().next().unwrap_or_default().to_string();
+    ErrorData::new(
+        ErrorCode::INTERNAL_ERROR,
+        format!("{message}\n{}", printed_before_kill(printed)),
+        Some(serde_json::json!({
+            "error": {
+                "kind": "timeout",
+                "retryable": false,
+                // Short on purpose: the taxonomy persists this message, and
+                // the model reads the full one.
+                "message": summary,
+            }
+        })),
+    )
+}
+
+/// The last lines a killed command printed, bounded the way a spilled
+/// foreground output's preview is (the last [`SHELL_INLINE_MAX_LINES`] lines,
+/// at most [`SHELL_PREVIEW_MAX_CHARS`] characters of them). A partial last line
+/// with no newline (a `\r` progress bar) never reached the buffer.
+fn printed_before_kill(printed: &str) -> String {
+    if printed.trim().is_empty() {
+        return "It printed nothing before it was killed.".to_string();
+    }
+    let lines: Vec<&str> = printed.lines().collect();
+    let start = lines.len().saturating_sub(SHELL_INLINE_MAX_LINES);
+    let last_lines = lines[start..].join("\n");
+    let (tail, clipped) = tail_chars(&last_lines, SHELL_PREVIEW_MAX_CHARS);
+    let shown = if clipped {
+        format!("the last {} characters", tail.chars().count())
+    } else if start > 0 {
+        format!("the last {} of {} lines", lines.len() - start, lines.len())
+    } else {
+        "all of it".to_string()
+    };
+    format!("Output before the kill ({shown}):\n{tail}")
+}
+
 /// A finished reader's outcome, as the errors the shell tool has always
 /// returned for a failed read or a panicked reader task.
 fn shell_reader_result(
@@ -1410,7 +1463,7 @@ impl DeveloperServer {
     /// appending `&`; this returns a job_id you can watch with shell_status / shell_kill.
     #[tool(
         name = "shell",
-        description = "Execute a command in the shell.This will return the output and error concatenated into a single string, as you would see from running on the command line. There will also be an indication of if the command succeeded or failed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. For a long-lived command (dev server, build, test suite, training run) that you need to keep running and observe, set background=true instead of appending `&`: it returns a job_id immediately, and you then use shell_status to peek or wait, or shell_kill to stop it. A foreground command has a wall-clock budget (240s by default): if it exceeds it, its whole process group is killed and the call fails, so anything that may run longer belongs in background=true."
+        description = "Execute a command in the shell.This will return the output and error concatenated into a single string, as you would see from running on the command line. There will also be an indication of if the command succeeded or failed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. For a long-lived command (dev server, build, test suite, training run) that you need to keep running and observe, set background=true instead of appending `&`: it returns a job_id immediately, and you then use shell_status to peek or wait, or shell_kill to stop it. A foreground command has a wall-clock budget (240s by default; keep each foreground command, any sleep included, under about 200s): if it exceeds it, its whole process group is killed and the call fails, so anything that may run longer belongs in background=true."
     )]
     pub async fn shell(
         &self,
@@ -1443,6 +1496,24 @@ impl DeveloperServer {
         // Validate the shell command against the directory it will really run
         // in, so a relative path is judged where it resolves (H1).
         self.validate_shell_command(command, working_dir.as_deref())?;
+
+        // P03: a foreground command that opens with a sleep the budget cannot
+        // outlast is refused before it runs, instead of being killed after it
+        // spent the whole budget to report the same thing.
+        if !params.background.unwrap_or(false) {
+            if let (Some(limit), Some(secs)) = (
+                self.foreground_timeout,
+                super::shell::leading_sleep_secs(command),
+            ) {
+                if secs >= limit.as_secs_f64() {
+                    return Err(ErrorData::new(
+                        ErrorCode::INVALID_PARAMS,
+                        super::shell::sleep_over_budget_message(secs, limit),
+                        None,
+                    ));
+                }
+            }
+        }
 
         // Snapshot the pre-command content of any file this command redirects
         // to (`>`/`>>`), so `undo_edit` can revert shell-driven writes, not just
@@ -1877,16 +1948,15 @@ impl DeveloperServer {
                 reaper.disarm();
                 // Never wait on the reader here: a descendant that left the
                 // process group can keep the pipe open with no end of file.
-                detach_capture(&capture);
+                // What it read before the kill goes back with the error (P03);
+                // it used to be dropped with the reader.
+                let printed = detach_capture(&capture);
 
-                Err(ErrorData::new(
-                    ErrorCode::INTERNAL_ERROR,
-                    foreground_timeout_message(
-                        &command_text,
-                        elapsed,
-                        budget.unwrap_or_default(),
-                    ),
-                    None,
+                Err(foreground_timeout_error(
+                    &command_text,
+                    elapsed,
+                    budget.unwrap_or_default(),
+                    &printed,
                 ))
             }
         }
@@ -6585,6 +6655,124 @@ mod tests {
 
             cleanup_test_service(running_service, peer);
         });
+    }
+
+    /// P03: what a killed command printed before the budget fired goes back
+    /// with the error, and the error carries its own envelope, so the taxonomy
+    /// no longer reads `retryable=true` out of the environment variable's name.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn a_killed_command_returns_what_it_printed_and_is_not_retryable() {
+        run_shell_test(|| async {
+            let server = create_test_server().with_foreground_timeout(Some(Duration::from_secs(1)));
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+
+            let error = run_foreground(&server, &peer, 7311, "echo start; sleep 5".to_string())
+                .await
+                .expect_err("a command over its budget must fail");
+            let message = error.message.to_string();
+            assert!(message.contains("foreground limit"), "{message}");
+            assert!(
+                message.contains("Output before the kill (all of it):\nstart"),
+                "the output printed before the kill must come back: {message}"
+            );
+            let envelope = error
+                .data
+                .as_ref()
+                .and_then(|d| d.get("error"))
+                .expect("the kill names its own error kind");
+            assert_eq!(envelope["kind"], "timeout", "{envelope}");
+            assert_eq!(
+                envelope["retryable"], false,
+                "the same command is killed the same way: {envelope}"
+            );
+            // The redirect remedy works with any roster; shell_status is only
+            // an option that a roster may not grant.
+            let redirect = message.find("cmd > log 2>&1 &").expect("{message}");
+            let status = message.find("shell_status").expect("{message}");
+            assert!(redirect < status, "{message}");
+
+            cleanup_test_service(running_service, peer);
+        });
+    }
+
+    /// …bounded the way a spilled output's preview is: the last 100 lines.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn a_killed_command_returns_only_the_tail_of_a_long_output() {
+        run_shell_test(|| async {
+            let server = create_test_server().with_foreground_timeout(Some(Duration::from_secs(1)));
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+
+            let error = run_foreground(
+                &server,
+                &peer,
+                7312,
+                "i=1; while [ $i -le 300 ]; do echo line-$i; i=$((i+1)); done; sleep 5".to_string(),
+            )
+            .await
+            .expect_err("a command over its budget must fail");
+            let message = error.message.to_string();
+            assert!(message.contains("(the last 100 of 300 lines)"), "{message}");
+            assert!(message.contains("\nline-201\n"), "{message}");
+            assert!(message.ends_with("line-300"), "{message}");
+            assert!(!message.contains("line-200\n"), "{message}");
+
+            cleanup_test_service(running_service, peer);
+        });
+    }
+
+    /// P03: a command that opens with a sleep the budget cannot outlast is
+    /// refused at once rather than killed after it, and a short poll still runs.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn a_leading_sleep_over_the_budget_is_refused_before_it_runs() {
+        run_shell_test(|| async {
+            let server =
+                create_test_server().with_foreground_timeout(Some(Duration::from_secs(240)));
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+
+            let dir = tempfile::tempdir().unwrap();
+            let ran = dir.path().join("ran");
+            let began = Instant::now();
+            let error = run_foreground(
+                &server,
+                &peer,
+                7313,
+                format!("sleep 240; touch \"{}\"", ran.display()),
+            )
+            .await
+            .expect_err("a 240 s sleep under a 240 s budget is refused");
+            assert!(began.elapsed() < Duration::from_secs(2));
+            assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+            assert!(error.message.starts_with("Not run"), "{}", error.message);
+            assert!(error.message.contains("240s"), "{}", error.message);
+            assert!(!ran.exists());
+
+            let result = run_foreground(&server, &peer, 7314, "sleep 1; echo polled".to_string())
+                .await
+                .expect("a short poll runs");
+            assert!(shell_model_text(&result).contains("polled"));
+
+            cleanup_test_service(running_service, peer);
+        });
+    }
+
+    #[test]
+    fn the_shell_description_states_a_margin_under_the_budget() {
+        let tools = DeveloperServer::tool_router().list_all();
+        let shell = tools
+            .iter()
+            .find(|t| t.name == "shell")
+            .expect("the shell tool");
+        let description = shell.description.as_deref().unwrap_or_default();
+        assert!(description.contains("under about 200s"), "{description}");
     }
 
     /// Issue #72, the visibility half: a foreground command is listed as active

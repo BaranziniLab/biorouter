@@ -185,6 +185,28 @@ impl ToolErrorKind {
             }
         }
     }
+
+    /// [`Self::guidance`] for an error whose retry verdict may differ from the
+    /// kind's default, because the tool's own envelope overrode it.
+    ///
+    /// A timeout the tool marks `retryable: false` (the shell's foreground
+    /// budget, which kills an identical retry the same way) used to read
+    /// `retryable=false` and then "One retry … is reasonable" in one header.
+    /// Only the two kinds that are retryable by default can be overridden into
+    /// a contradiction, so every other case keeps its usual sentence.
+    pub fn guidance_for(self, retryable: bool) -> &'static str {
+        match (self, retryable) {
+            (Self::Timeout, false) => {
+                "The call exceeded its deadline, and the same call will exceed it again. \
+                 Narrow it or run it another way."
+            }
+            (Self::Transient, false) => {
+                "A dependency failed, and the tool reports that repeating the call will not help. \
+                 Take another route."
+            }
+            _ => self.guidance(),
+        }
+    }
 }
 
 /// Where in a file the failure points, when the error text says so (`file:line`
@@ -262,7 +284,7 @@ impl ToolError {
             "[tool_error kind={} retryable={}{at}] {}",
             self.kind.as_str(),
             self.retryable,
-            self.kind.guidance()
+            self.kind.guidance_for(self.retryable)
         )
     }
 
@@ -813,6 +835,50 @@ fn annotated_content(content: Vec<Content>, error: &ToolError) -> Vec<Content> {
 mod tests {
     use super::*;
     use std::borrow::Cow;
+
+    /// P03 (BioRouterBench harness review): the shell's foreground kill says
+    /// `{kind: timeout, retryable: false}` itself, because an identical retry is
+    /// killed the same way. The header must not then advise one retry.
+    #[test]
+    fn a_timeout_the_tool_calls_final_does_not_advise_a_retry() {
+        let killed = ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            "The foreground shell command was killed after 4m0s because it exceeded the 240s \
+             foreground limit: sleep 300\n... BIOROUTER_SHELL_FOREGROUND_TIMEOUT_SECS ...",
+            Some(json!({"error": {
+                "kind": "timeout",
+                "retryable": false,
+                "message": "The foreground shell command was killed after 4m0s",
+            }})),
+        );
+        let error = classify_error_data(&killed);
+        assert_eq!(error.kind, ToolErrorKind::Timeout);
+        assert!(!error.retryable);
+        let header = error.header();
+        assert!(
+            header.starts_with("[tool_error kind=timeout retryable=false]"),
+            "{header}"
+        );
+        assert!(!header.contains("One retry"), "{header}");
+        assert!(
+            header.contains("same call will exceed it again"),
+            "{header}"
+        );
+
+        // A timeout classified the usual way keeps its usual advice.
+        let plain = classify_text("request timed out");
+        assert!(plain.retryable);
+        assert!(plain.header().contains("One retry"), "{}", plain.header());
+        // So does a kind whose default the override agrees with.
+        assert_eq!(
+            ToolErrorKind::NotFound.guidance_for(false),
+            ToolErrorKind::NotFound.guidance()
+        );
+        assert_eq!(
+            ToolErrorKind::Transient.guidance_for(true),
+            ToolErrorKind::Transient.guidance()
+        );
+    }
 
     /// A person reads the tool's own words, not the header and its advice to the agent;
     /// a header with nothing after it keeps its guidance; text with no header is untouched.
