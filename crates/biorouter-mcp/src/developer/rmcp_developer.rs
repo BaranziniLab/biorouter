@@ -146,7 +146,7 @@ fn streamed_shell_line(line: &str) -> Option<&str> {
 /// The `data` of one live `shell_output` logging notification.
 ///
 /// `type`, `stream` and `output` are the shape every client already reads;
-/// `seq` is additive (see `DeveloperServer::stream_shell_output`), and so is
+/// `seq` is additive (see `DeveloperServer::spawn_shell_reader`), and so is
 /// `progress_token` (see [`with_progress_token`]).
 fn shell_output_notification_data(
     stream: &str,
@@ -325,6 +325,70 @@ const SHELL_INLINE_MAX_CHARS: usize = 40_000;
 /// The tail preview of a spilled output never exceeds this many characters,
 /// however long its last lines are.
 const SHELL_PREVIEW_MAX_CHARS: usize = 8_000;
+
+/// How long a foreground call waits for its output pipes to close once the
+/// shell itself has exited.
+///
+/// A shell that backgrounds work with `&` (`cd x && nohup job > log 2>&1 &`
+/// under bash, `nohup job &` under any shell) can leave a process holding the
+/// call's stdout or stderr after the shell exits. The call used to wait for end
+/// of file on both pipes, so it blocked until that process ended, which the
+/// foreground budget then killed. The same 2 s grace the background supervisor
+/// gives its readers (`finish_output` in `background.rs`).
+const FOREGROUND_PIPE_GRACE: Duration = Duration::from_secs(2);
+
+/// The line a foreground call adds when it returned while a process the shell
+/// started still held the output pipe.
+const FOREGROUND_DETACHED_NOTE: &str = "[shell: the shell exited, but a process it started in the \
+background still holds the output pipe, so this call returned without waiting for it. That process \
+keeps running and anything it prints from now on is discarded. To read a background command's \
+output later, redirect it to a file (`cmd > log 2>&1 &`) and read the file, or run it with \
+background=true.]";
+
+/// What a foreground command has printed so far, shared between the task that
+/// reads its pipes and `execute_shell_command`, which may have to return before
+/// the pipes close.
+#[derive(Default)]
+struct ShellCapture {
+    text: String,
+    /// Set once the call has stopped listening. The reader then keeps draining
+    /// the pipes, so a process that outlived the shell does not die of a closed
+    /// pipe on its next write, but it no longer appends or notifies: the call it
+    /// would report to has finished.
+    detached: bool,
+}
+
+type SharedShellCapture = Arc<std::sync::Mutex<ShellCapture>>;
+
+fn lock_capture(capture: &SharedShellCapture) -> std::sync::MutexGuard<'_, ShellCapture> {
+    capture
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Stop the reader appending and notifying, and take what it collected.
+fn detach_capture(capture: &SharedShellCapture) -> String {
+    let mut capture = lock_capture(capture);
+    capture.detached = true;
+    std::mem::take(&mut capture.text)
+}
+
+/// A finished reader's outcome, as the errors the shell tool has always
+/// returned for a failed read or a panicked reader task.
+fn shell_reader_result(
+    joined: Result<std::io::Result<()>, tokio::task::JoinError>,
+) -> Result<(), ErrorData> {
+    match joined {
+        Ok(read) => {
+            read.map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))
+        }
+        Err(e) => Err(ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            e.to_string(),
+            None,
+        )),
+    }
+}
 
 /// The last `max_chars` characters of `text`, and whether anything was cut.
 /// Char-based, so it never splits a multibyte character.
@@ -1729,34 +1793,56 @@ impl DeveloperServer {
             progress_token.clone(),
         ));
 
-        // Stream the output and wait for completion with cancellation support
-        let output_task = self.stream_shell_output(
+        // Stream the output while waiting for completion with cancellation
+        // support. The reader runs in its own task and writes into `capture`,
+        // so the arms below can return what it read without waiting for it.
+        let capture = SharedShellCapture::default();
+        let mut reader = Self::spawn_shell_reader(
             child.stdout.take().unwrap(),
             child.stderr.take().unwrap(),
             peer.clone(),
             progress_token,
+            capture.clone(),
         );
 
         let budget = self.foreground_timeout;
 
         tokio::select! {
-            output_result = output_task => {
-                // Wait for the process to complete. PAR-02: the status is the
-                // only signal that a silent command failed — carry it out.
-                let waited = child.wait().await;
-                // The pid has been reaped (or the wait failed and nothing more
-                // can be done with it); either way it is no longer ours to
-                // signal, and after reaping it can be recycled.
+            // The command is over when the shell itself exits, not when its
+            // pipes close: a process it backgrounded can hold them open for as
+            // long as it runs. The output normally follows within milliseconds,
+            // so give the reader a short grace; past it, return what was read
+            // and leave the reader draining quietly.
+            waited = child.wait() => {
+                // PAR-02: the status is the only signal that a silent command
+                // failed — carry it out. The pid has been reaped (or the wait
+                // failed and nothing more can be done with it); either way it
+                // is no longer ours to signal, and after reaping it can be
+                // recycled. A process the shell left behind keeps running, as a
+                // `job > log 2>&1 &` always did.
                 reaper.disarm();
                 let exit_status = waited.map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))?;
+                let note = match tokio::time::timeout(FOREGROUND_PIPE_GRACE, &mut reader).await {
+                    Ok(joined) => {
+                        shell_reader_result(joined)?;
+                        None
+                    }
+                    Err(_) => Some(FOREGROUND_DETACHED_NOTE),
+                };
+                let mut out = detach_capture(&capture);
+                if let Some(note) = note {
+                    if !out.is_empty() && !out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                    out.push_str(note);
+                    out.push('\n');
+                }
                 // BR-69: prepend the sandbox tier line when the gate is on.
-                output_result.map(|out| {
-                    let out = match sandbox_status_line {
-                        Some(line) => format!("{line}\n{out}"),
-                        None => out,
-                    };
-                    (out, exit_status.code())
-                })
+                let out = match sandbox_status_line {
+                    Some(line) => format!("{line}\n{out}"),
+                    None => out,
+                };
+                Ok((out, exit_status.code()))
             }
             _ = cancellation_token.cancelled() => {
                 tracing::info!("Cancellation token triggered! Attempting to kill process and all child processes");
@@ -1771,6 +1857,8 @@ impl DeveloperServer {
                     }
                 }
                 reaper.disarm();
+                // Nobody reads this call's output any more.
+                detach_capture(&capture);
 
                 Err(ErrorData::new(
                     ErrorCode::INTERNAL_ERROR,
@@ -1787,6 +1875,9 @@ impl DeveloperServer {
                 );
                 let _ = kill_process_group(&mut child, pid).await;
                 reaper.disarm();
+                // Never wait on the reader here: a descendant that left the
+                // process group can keep the pipe open with no end of file.
+                detach_capture(&capture);
 
                 Err(ErrorData::new(
                     ErrorCode::INTERNAL_ERROR,
@@ -1847,9 +1938,11 @@ impl DeveloperServer {
         })
     }
 
-    /// Stream shell output in real-time and return the combined output.
+    /// Stream shell output in real-time into `capture`, in a task of its own.
     ///
     /// Merges stdout and stderr streams and sends each line as a logging notification.
+    /// The task ends at end of file on both pipes; `execute_shell_command`
+    /// may stop waiting for that sooner (see [`ShellCapture::detached`]).
     ///
     /// Each notification carries the line as the command printed it — leading
     /// whitespace intact, only the line terminator removed (see
@@ -1862,18 +1955,17 @@ impl DeveloperServer {
     ///
     /// `progress_token` is the tool call's own, echoed on every line (see
     /// [`with_progress_token`]) so the client routes the line to this call.
-    async fn stream_shell_output(
-        &self,
+    fn spawn_shell_reader(
         stdout: tokio::process::ChildStdout,
         stderr: tokio::process::ChildStderr,
         peer: rmcp::service::Peer<RoleServer>,
         progress_token: Option<ProgressToken>,
-    ) -> Result<String, ErrorData> {
+        capture: SharedShellCapture,
+    ) -> tokio::task::JoinHandle<std::io::Result<()>> {
         let stdout = BufReader::new(stdout);
         let stderr = BufReader::new(stderr);
 
-        let output_task = tokio::spawn(async move {
-            let mut combined_output = String::new();
+        tokio::spawn(async move {
             // Counts the lines this command streamed, so it is contiguous over
             // exactly the notifications a client can receive. Advanced for a
             // send that fails too: that only happens once the transport is
@@ -1893,7 +1985,15 @@ impl DeveloperServer {
                 // Convert to UTF-8 to avoid corrupted output
                 let line_str = String::from_utf8_lossy(&line);
 
-                combined_output.push_str(&line_str);
+                {
+                    let mut captured = lock_capture(&capture);
+                    if captured.detached {
+                        // Keep draining so the writer is not killed by a
+                        // closed pipe, but the call has already returned.
+                        continue;
+                    }
+                    captured.text.push_str(&line_str);
+                }
 
                 // Stream each line back to the client in real-time
                 if let Some(output) = streamed_shell_line(&line_str) {
@@ -1918,19 +2018,8 @@ impl DeveloperServer {
                     }
                 }
             }
-            Ok::<_, std::io::Error>(combined_output)
-        });
-
-        match output_task.await {
-            Ok(result) => {
-                result.map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))
-            }
-            Err(e) => Err(ErrorData::new(
-                ErrorCode::INTERNAL_ERROR,
-                e.to_string(),
-                None,
-            )),
-        }
+            Ok::<_, std::io::Error>(())
+        })
     }
 
     /// Validate that shell output doesn't exceed size limits.
@@ -6299,6 +6388,200 @@ mod tests {
                 .await
                 .expect("a quick command must still succeed");
             assert_eq!(result.is_error, Some(false));
+
+            cleanup_test_service(running_service, peer);
+        });
+    }
+
+    /// The text the model reads from a shell result: its first block, which is
+    /// the assistant-audience one.
+    fn shell_model_text(result: &CallToolResult) -> String {
+        result
+            .content
+            .first()
+            .and_then(|c| c.as_text())
+            .map(|t| t.text.clone())
+            .unwrap_or_default()
+    }
+
+    /// One foreground `shell` call through the tool's own entry point.
+    async fn run_foreground(
+        server: &DeveloperServer,
+        peer: &rmcp::service::Peer<RoleServer>,
+        request: i64,
+        command: String,
+    ) -> Result<CallToolResult, ErrorData> {
+        let context = RequestContext {
+            ct: Default::default(),
+            id: NumberOrString::Number(request),
+            meta: Default::default(),
+            extensions: Default::default(),
+            peer: peer.clone(),
+        };
+        server
+            .shell(
+                Parameters(ShellParams {
+                    working_directory: None,
+                    command,
+                    background: None,
+                    label: None,
+                }),
+                context,
+            )
+            .await
+    }
+
+    async fn wait_for_file(path: &Path, max: Duration) -> bool {
+        let deadline = Instant::now() + max;
+        while !path.exists() && Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        path.exists()
+    }
+
+    /// P02 (BioRouterBench harness review): `cd X && nohup job > log 2>&1 &`
+    /// followed by `echo started` blocked the call until the job ended, because
+    /// bash's subshell for the asynchronous `&&` list still holds the call's
+    /// pipes, and the foreground budget then killed the job with the process
+    /// group. The call must return once the shell exits, and the job must keep
+    /// running.
+    ///
+    /// The idiom runs under bash explicitly: zsh, a developer Mac's `$SHELL`,
+    /// does not hold the pipe in this spelling, so the test would pass there
+    /// without the fix.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn a_backgrounded_and_list_returns_when_the_shell_exits() {
+        run_shell_test(|| async {
+            let server =
+                create_test_server().with_foreground_timeout(Some(Duration::from_secs(60)));
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+
+            let dir = tempfile::tempdir().unwrap();
+            let done = dir.path().join("done");
+            let script = dir.path().join("idiom.sh");
+            std::fs::write(
+                &script,
+                format!(
+                    "cd \"{}\" && nohup sh -c 'sleep 6; touch \"{}\"' > job.log 2>&1 &\necho started\n",
+                    dir.path().display(),
+                    done.display()
+                ),
+            )
+            .unwrap();
+
+            let began = Instant::now();
+            let result = run_foreground(
+                &server,
+                &peer,
+                7301,
+                format!("bash \"{}\"", script.display()),
+            )
+            .await
+            .expect("the idiom must not fail");
+            let elapsed = began.elapsed();
+            let text = shell_model_text(&result);
+
+            assert!(
+                elapsed < Duration::from_secs(4),
+                "the call must return when the shell exits, not when the 6 s job ends; \
+                 took {elapsed:?}: {text}"
+            );
+            assert!(text.contains("started"), "{text}");
+            assert!(
+                text.contains("still holds the output pipe"),
+                "the call must say why it did not wait: {text}"
+            );
+            assert_eq!(result.is_error, Some(false), "{text}");
+            assert!(
+                wait_for_file(&done, Duration::from_secs(15)).await,
+                "the backgrounded job must keep running after the call returned"
+            );
+
+            cleanup_test_service(running_service, peer);
+        });
+    }
+
+    /// …and under `nohup job &` the process holding the pipe is the job itself
+    /// (nohup moves output to nohup.out only when stdout is a terminal), so it
+    /// writes into the call's pipe after the call returned. Closing the read end
+    /// would kill it with SIGPIPE on that write; the reader keeps draining, and
+    /// what it drains is not appended to a result that was already returned.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn a_job_that_writes_after_the_call_returned_is_not_killed_by_a_closed_pipe() {
+        run_shell_test(|| async {
+            let server =
+                create_test_server().with_foreground_timeout(Some(Duration::from_secs(60)));
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+
+            let dir = tempfile::tempdir().unwrap();
+            let done = dir.path().join("done");
+            let command = format!(
+                "nohup sh -c 'sleep 5; echo late-line; sleep 1; echo later-line; touch \"{}\"' &\necho started",
+                done.display()
+            );
+
+            let began = Instant::now();
+            let result = run_foreground(&server, &peer, 7302, command)
+                .await
+                .expect("the idiom must not fail");
+            let elapsed = began.elapsed();
+            let text = shell_model_text(&result);
+
+            assert!(
+                elapsed < Duration::from_secs(4),
+                "the call must not wait for the 6 s job; took {elapsed:?}: {text}"
+            );
+            assert!(text.contains("started"), "{text}");
+            assert!(!text.contains("late-line"), "{text}");
+            assert!(
+                wait_for_file(&done, Duration::from_secs(15)).await,
+                "a job that printed after the call returned must not die of a closed pipe"
+            );
+
+            cleanup_test_service(running_service, peer);
+        });
+    }
+
+    /// The command ends when the shell exits, so a shell that closes its own
+    /// output and keeps running stays under the foreground budget. When the
+    /// call waited for end of file first and only then for the shell, this
+    /// command was past every watchdog (until the extension's own 300 s
+    /// timeout).
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn a_shell_that_closes_its_output_is_still_bounded_by_the_budget() {
+        run_shell_test(|| async {
+            let server = create_test_server().with_foreground_timeout(Some(Duration::from_secs(1)));
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+
+            let began = Instant::now();
+            let result = timeout(
+                Duration::from_secs(30),
+                run_foreground(
+                    &server,
+                    &peer,
+                    7303,
+                    "exec > /dev/null 2>&1; sleep 20".to_string(),
+                ),
+            )
+            .await
+            .expect("the call must not hang past the budget");
+            let elapsed = began.elapsed();
+            let error = result.expect_err("a command over its budget must fail");
+            assert!(
+                error.message.contains("foreground limit"),
+                "{}",
+                error.message
+            );
+            assert!(elapsed < Duration::from_secs(8), "took {elapsed:?}");
 
             cleanup_test_service(running_service, peer);
         });
