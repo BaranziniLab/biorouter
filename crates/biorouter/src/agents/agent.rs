@@ -3888,9 +3888,9 @@ async fn dispatch_post_tool_hooks(
 
 /// The terminal abort a repetition-policy denial produces, if this batch has one.
 ///
-/// `RepetitionInspector` is the sole policy authority; `TurnToolGuard` only
-/// converts its exact-request `Deny` into a terminal event and has no
-/// independent counter or threshold.
+/// `RepetitionInspector` is the sole policy authority; `TurnToolGuard` records
+/// every valid denied signature, permits feedback for the first one this turn,
+/// and converts each later valid denial into a terminal event.
 ///
 /// Split out of the `reply_internal` generator to keep its `poll` frame small —
 /// see [`ToolBatchMaps`].
@@ -3899,34 +3899,48 @@ fn repetition_denial_abort(
     permission_check_result: &PermissionCheckResult,
     turn_guard: &mut super::turn_guard::TurnToolGuard,
 ) -> Option<(TurnAbortCode, String)> {
-    let (result, request) = inspection_results
-        .iter()
-        .filter(|result| {
-            result.inspector_name == crate::tool_monitor::REPETITION_INSPECTOR_NAME
-                && result.action == InspectionAction::Deny
-        })
-        .find_map(|result| {
-            permission_check_result
-                .denied
-                .iter()
-                .find(|request| request.id == result.tool_request_id)
-                .map(|request| (result, request))
-        })?;
-    let code = turn_guard.enforce_denial(request)?;
-    warn!(
-        tool_request_id = %request.id,
-        "repetition policy denied a tool signature; terminating this user turn"
-    );
-    // The turn's ending is read by the PERSON (the desktop's turn row, the
-    // CLI's last line); `result.reason` is the agent's and stays the denied
-    // call's tool result. See `repetition_stop_notice`.
-    let tool_name = request
-        .tool_call
-        .as_ref()
-        .map(|call| call.name.to_string())
-        .unwrap_or_default();
-    let notice = crate::tool_monitor::repetition_stop_notice(result, &tool_name);
-    Some((code, notice))
+    let mut seen_request_ids = HashSet::new();
+    let mut terminal = None;
+
+    for result in inspection_results.iter().filter(|result| {
+        result.inspector_name == crate::tool_monitor::REPETITION_INSPECTOR_NAME
+            && result.action == InspectionAction::Deny
+    }) {
+        let Some(request) = permission_check_result
+            .denied
+            .iter()
+            .find(|request| request.id == result.tool_request_id)
+        else {
+            continue;
+        };
+        if !seen_request_ids.insert(result.tool_request_id.clone()) {
+            continue;
+        }
+
+        let Some(code) = turn_guard.enforce_denial(request) else {
+            continue;
+        };
+        if terminal.is_some() {
+            continue;
+        }
+
+        warn!(
+            tool_request_id = %request.id,
+            "repetition policy denied a tool signature; terminating this user turn"
+        );
+        // The turn's ending is read by the PERSON (the desktop's turn row, the
+        // CLI's last line); `result.reason` is the agent's and stays the denied
+        // call's tool result. See `repetition_stop_notice`.
+        let tool_name = request
+            .tool_call
+            .as_ref()
+            .map(|call| call.name.to_string())
+            .unwrap_or_default();
+        let notice = crate::tool_monitor::repetition_stop_notice(result, &tool_name);
+        terminal = Some((code, notice));
+    }
+
+    terminal
 }
 
 #[cfg(test)]
@@ -8731,6 +8745,7 @@ impl Agent {
     /// command). The rewrite is applied here — after the hooks ran, before
     /// anything is dispatched — and the requests the caller goes on to persist
     /// are the rewritten ones, so the transcript matches what actually executed.
+    #[allow(clippy::too_many_arguments)]
     async fn inspect_and_gate_tool_requests(
         &self,
         remaining_requests: &mut Vec<ToolRequest>,
@@ -8739,6 +8754,7 @@ impl Agent {
         session: &Session,
         request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
         cancel_token: Option<CancellationToken>,
+        turn_guard: &super::turn_guard::TurnToolGuard,
     ) -> Result<(
         Vec<InspectionResult>,
         PermissionCheckResult,
@@ -8793,6 +8809,27 @@ impl Agent {
             self.planning_gate_denials(&session.id, remaining_requests)
                 .await,
         );
+
+        for request in remaining_requests.iter() {
+            let already_denied = inspection_results.iter().any(|result| {
+                result.tool_request_id == request.id
+                    && result.inspector_name == crate::tool_monitor::REPETITION_INSPECTOR_NAME
+                    && result.action == InspectionAction::Deny
+            });
+            if turn_guard.is_blocked(request) && !already_denied {
+                inspection_results.push(InspectionResult {
+                    tool_request_id: request.id.clone(),
+                    action: InspectionAction::Deny,
+                    reason: "This exact tool call signature was already blocked by the repetition policy earlier in this turn."
+                        .to_string(),
+                    confidence: 1.0,
+                    inspector_name: crate::tool_monitor::REPETITION_INSPECTOR_NAME.to_string(),
+                    finding_id: Some(
+                        crate::tool_monitor::REPETITION_HARD_FINDING_ID.to_string(),
+                    ),
+                });
+            }
+        }
 
         let permission_check_result = self
             .tool_inspection_manager
@@ -16400,6 +16437,7 @@ impl Agent {
                                             &session,
                                             &request_to_response_map,
                                             cancel_token.clone(),
+                                            &turn_guard,
                                         );
                                         futures::pin_mut!(gate);
                                         self.loop_phase.enter(crate::agents::loop_phase::LoopPhase::Gating);

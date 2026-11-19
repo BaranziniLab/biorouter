@@ -20,6 +20,21 @@ Additional keyboard shortcuts:
     )
 }
 
+pub fn get_cli_prompt_for_surface(interactive: bool, output_format: &str) -> String {
+    if interactive {
+        return get_cli_prompt();
+    }
+
+    let execution_guidance = "This is a non-interactive run. When tool execution is needed, use the offered tools and verify the result. Ending with a final response without a tool call ends this non-interactive run.";
+    if output_format == "text" {
+        format!(
+            "Your output is shown in a terminal in a monospace font, so keep responses short and skip decorative formatting; a one-line answer is good when it suffices.\n\n{execution_guidance}"
+        )
+    } else {
+        execution_guidance.to_string()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

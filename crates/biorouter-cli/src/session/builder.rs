@@ -1525,7 +1525,10 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     // Add CLI-specific system prompt extension
     session
         .agent
-        .extend_system_prompt(super::prompt::get_cli_prompt())
+        .extend_system_prompt(super::prompt::get_cli_prompt_for_surface(
+            session_config.interactive,
+            &session_config.output_format,
+        ))
         .await;
 
     if let Some(additional_prompt) = session_config.additional_system_prompt {

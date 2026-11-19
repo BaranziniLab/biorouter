@@ -94,3 +94,110 @@ async fn issue_542_a_bare_error_finish_is_not_a_successful_stop() {
     let error = error_from_chunk(json!({"id":"synthetic","choices":[{"index":0,"delta":{"content":""},"finish_reason":"error"}]})).await;
     assert!(is_recoverable(&error), "{error:?}");
 }
+
+#[tokio::test]
+async fn issue_542_specific_context_code_retains_compaction_with_a_generic_error_type() {
+    let error = error_from_frame(json!({
+        "code": "context_length_exceeded",
+        "type": "invalid_request_error",
+        "message": "PRIVATE_PROVIDER_PAYLOAD"
+    }))
+    .await;
+
+    assert!(
+        matches!(error, ProviderError::ContextLengthExceeded(_)),
+        "context_length_exceeded must retain the compaction variant: {error:?}"
+    );
+    assert!(
+        !error.to_string().contains("PRIVATE_PROVIDER_PAYLOAD"),
+        "provider payload must not leak through the compaction error: {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn issue_542_authentication_status_retains_the_credential_refresh_variant() {
+    let cases = [
+        (
+            "numeric 401 with generic invalid request type",
+            json!({
+                "code": 401,
+                "type": "invalid_request_error",
+                "message": "PRIVATE_PROVIDER_PAYLOAD"
+            }),
+        ),
+        (
+            "string 401 with context-length metadata",
+            json!({
+                "code": "401",
+                "type": "server_error",
+                "metadata": {"error_type": "context_length_exceeded"},
+                "message": "PRIVATE_PROVIDER_PAYLOAD"
+            }),
+        ),
+        (
+            "numeric 403 with generic invalid request type",
+            json!({
+                "code": 403,
+                "type": "invalid_request_error",
+                "message": "PRIVATE_PROVIDER_PAYLOAD"
+            }),
+        ),
+        (
+            "string 403 with context-length metadata",
+            json!({
+                "code": "403",
+                "type": "server_error",
+                "metadata": {"error_type": "context_length_exceeded"},
+                "message": "PRIVATE_PROVIDER_PAYLOAD"
+            }),
+        ),
+        (
+            "ordinary server error type",
+            json!({
+                "code": 401,
+                "type": "server_error",
+                "message": "PRIVATE_PROVIDER_PAYLOAD"
+            }),
+        ),
+    ];
+
+    for (label, frame) in cases {
+        let error = error_from_frame(frame).await;
+        assert!(
+            matches!(error, ProviderError::Authentication(_)),
+            "{label} must retain the authentication variant: {error:?}"
+        );
+        assert!(
+            !is_recoverable(&error),
+            "{label} must not be recoverable: {error:?}"
+        );
+        assert!(
+            !error.to_string().contains("PRIVATE_PROVIDER_PAYLOAD"),
+            "{label} must not leak the provider payload: {error:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn issue_542_content_filter_code_cannot_be_retried_as_a_server_error() {
+    let error = error_from_frame(json!({
+        "code": "content_filter",
+        "type": "server_error",
+        "message": "PRIVATE_PROVIDER_PAYLOAD"
+    }))
+    .await;
+
+    assert_eq!(
+        error.kind(),
+        biorouter::providers::errors::ProviderErrorKind::Policy,
+        "content_filter must retain fatal policy classification: {error:?}"
+    );
+    assert!(
+        !is_recoverable(&error),
+        "content_filter must not be retried as a server error: {error:?}"
+    );
+    assert!(
+        !error.to_string().contains("PRIVATE_PROVIDER_PAYLOAD"),
+        "provider payload must not leak through the policy error: {error:?}"
+    );
+}

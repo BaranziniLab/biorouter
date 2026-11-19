@@ -3578,7 +3578,7 @@ fn parse_run_input(
             Ok(Some((
                 InputConfig {
                     contents: Some(contents),
-                    additional_system_prompt: None,
+                    additional_system_prompt: input_opts.system.clone(),
                 },
                 None,
             )))
