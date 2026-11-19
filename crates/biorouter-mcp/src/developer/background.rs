@@ -933,9 +933,61 @@ mod tests {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     mod issue_523 {
         use super::*;
+        use futures::FutureExt;
+
+        const READY_MS: u64 = 750;
+        const ADVISORY_MS: u64 = 2000;
+
+        async fn finish_finite_jobs(jobs: &BackgroundJobs) -> Result<(), String> {
+            tokio::time::timeout(std::time::Duration::from_secs(8), async {
+                let tracked = jobs.jobs.lock().await.values().cloned().collect::<Vec<_>>();
+                for job in &tracked {
+                    let mut done = job.done_rx.clone();
+                    done.wait_for(|done| *done)
+                        .await
+                        .map_err(|_| "fixture supervisor stopped before completion".to_string())?;
+                }
+                for job in &tracked {
+                    let pid = job
+                        .pid
+                        .and_then(|pid| i32::try_from(pid).ok())
+                        .filter(|pid| *pid > 1)
+                        .ok_or_else(|| "fixture has no recorded process group".to_string())?;
+                    loop {
+                        let result = unsafe { libc::kill(-pid, 0) };
+                        if result == -1
+                            && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                        {
+                            break;
+                        }
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    }
+                }
+                Ok(())
+            })
+            .await
+            .map_err(|_| {
+                "finite fixture process group did not disappear within eight seconds".to_string()
+            })?
+        }
+
+        macro_rules! with_finite_jobs {
+            ($jobs:ident, $body:block) => {{
+                let outcome = std::panic::AssertUnwindSafe(async $body)
+                    .catch_unwind()
+                    .await;
+                finish_finite_jobs(&$jobs)
+                    .await
+                    .expect("finite fixture cleanup failed");
+                match outcome {
+                    Ok(observations) => observations,
+                    Err(panic) => std::panic::resume_unwind(panic),
+                }
+            }};
+        }
 
         async fn read_holder_pid(path: &Path) -> Option<u32> {
-            tokio::time::timeout(std::time::Duration::from_millis(JOB_WAIT_MS), async {
+            tokio::time::timeout(std::time::Duration::from_millis(READY_MS), async {
                 loop {
                     if let Ok(text) = std::fs::read_to_string(path) {
                         if let Ok(pid) = text.trim().parse() {
@@ -954,7 +1006,7 @@ mod tests {
             id: &str,
             needle: &str,
         ) -> Result<String, String> {
-            let deadline = Instant::now() + std::time::Duration::from_millis(JOB_WAIT_MS);
+            let deadline = Instant::now() + std::time::Duration::from_millis(ADVISORY_MS);
             loop {
                 let snapshot = jobs.snapshot(id).await?;
                 let found = snapshot.contains(needle);
@@ -969,30 +1021,33 @@ mod tests {
         async fn issue_523_internal_pipe_holder_has_an_honest_process_group_advisory() {
             let dir = tempfile::tempdir().unwrap();
             let jobs = new_jobs();
-            let id = jobs
-                .spawn(
-                    "(printf 'work finished\n'; sleep 30 & printf '%s\n' \"$!\" > holder.pid) | cat",
-                    Some("issue523".to_string()),
-                    Some(dir.path().to_path_buf()),
-                    None,
+            let (output, before_kill, advisory, holder, after_kill) = with_finite_jobs!(jobs, {
+                let id = jobs
+                    .spawn(
+                        "(printf 'work finished\n'; sleep 5 & printf '%s\n' \"$!\" > holder.pid) | cat",
+                        Some("issue523".to_string()),
+                        Some(dir.path().to_path_buf()),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                let job = jobs.job(&id).await.unwrap();
+                let holder = read_holder_pid(&dir.path().join("holder.pid")).await;
+                let output = collect_output_until(&jobs, &id, "work finished", READY_MS).await;
+                let advisory = collect_snapshots_until(
+                    &jobs,
+                    &id,
+                    "process-group members with parents outside this job",
                 )
-                .await
-                .unwrap();
-            let job = jobs.job(&id).await.unwrap();
-            let holder = read_holder_pid(&dir.path().join("holder.pid")).await;
-            let output = collect_output_until(&jobs, &id, "work finished", JOB_WAIT_MS).await;
-            let advisory = collect_snapshots_until(
-                &jobs,
-                &id,
-                "process-group members with parents outside this job",
-            )
-            .await;
-            let before_kill = job.status.lock().await.clone();
-            let kill = jobs.kill(&id).await;
-            let after_kill = job.status.lock().await.clone();
-            kill.unwrap();
-            let holder = holder.expect("fixture did not publish its inherited-pipe holder pid");
-            let advisory = advisory.unwrap();
+                .await;
+                let before_kill = job.status.lock().await.clone();
+                let kill = jobs.kill(&id).await;
+                let after_kill = job.status.lock().await.clone();
+                kill.unwrap();
+                let holder = holder.expect("fixture did not publish its inherited-pipe holder pid");
+                let advisory = advisory.unwrap();
+                (output, before_kill, advisory, holder, after_kill)
+            });
 
             assert!(output.contains("work finished"), "fixture output: {output}");
             assert_eq!(before_kill, JobStatus::Running);
@@ -1012,25 +1067,28 @@ mod tests {
         async fn issue_523_legitimate_pipeline_waits_for_its_real_exit() {
             let dir = tempfile::tempdir().unwrap();
             let jobs = new_jobs();
-            let id = jobs
-                .spawn(
-                    "(printf 'pipeline-started\n'; while [ ! -e release ]; do sleep 0.02; done; printf 'natural-end\n') | cat",
-                    Some("issue523-live-pipeline".to_string()),
-                    Some(dir.path().to_path_buf()),
-                    None,
-                )
-                .await
-                .unwrap();
-            let first = collect_output_until(&jobs, &id, "pipeline-started", JOB_WAIT_MS).await;
-            let while_running = jobs.wait(&id, 0).await;
-            let release = std::fs::write(dir.path().join("release"), []);
-            let terminal = wait_terminal(&jobs, &id, JOB_WAIT_MS).await;
-            let final_output = jobs.snapshot(&id).await;
-            let cleanup = jobs.kill(&id).await;
-            cleanup.unwrap();
-            release.unwrap();
-            let final_output = final_output.unwrap();
-            let while_running = while_running.unwrap();
+            let (first, while_running, terminal, final_output) = with_finite_jobs!(jobs, {
+                let id = jobs
+                    .spawn(
+                        "(printf 'pipeline-started\n'; i=0; while [ ! -e release ] && [ \"$i\" -lt 150 ]; do sleep 0.02; i=$((i+1)); done; [ -e release ] || exit 91; printf 'natural-end\n') | cat",
+                        Some("issue523-live-pipeline".to_string()),
+                        Some(dir.path().to_path_buf()),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                let first = collect_output_until(&jobs, &id, "pipeline-started", READY_MS).await;
+                let while_running = jobs.wait(&id, 0).await;
+                let release = std::fs::write(dir.path().join("release"), []);
+                let terminal = wait_terminal(&jobs, &id, JOB_WAIT_MS).await;
+                let final_output = jobs.snapshot(&id).await;
+                let cleanup = jobs.kill(&id).await;
+                cleanup.unwrap();
+                release.unwrap();
+                let final_output = final_output.unwrap();
+                let while_running = while_running.unwrap();
+                (first, while_running, terminal, final_output)
+            });
 
             assert!(first.contains("pipeline-started"), "{first}");
             assert!(while_running.contains("status: running"), "{while_running}");
@@ -1046,19 +1104,23 @@ mod tests {
         async fn issue_523_nonzero_pipeline_retains_its_os_status() {
             let dir = tempfile::tempdir().unwrap();
             let jobs = new_jobs();
-            let id = jobs
-                .spawn(
-                    "printf 'payload\n' | cat; exit 7",
-                    None,
-                    Some(dir.path().to_path_buf()),
-                    None,
-                )
-                .await
-                .unwrap();
-            let terminal = wait_terminal(&jobs, &id, JOB_WAIT_MS).await;
-            let snapshot = jobs.snapshot(&id).await;
-            jobs.kill(&id).await.unwrap();
-            let snapshot = snapshot.unwrap();
+            let (terminal, snapshot) = with_finite_jobs!(jobs, {
+                let id = jobs
+                    .spawn(
+                        "printf 'payload\n' | cat; exit 7",
+                        None,
+                        Some(dir.path().to_path_buf()),
+                        None,
+                    )
+                    .await
+                    .unwrap();
+                let terminal = wait_terminal(&jobs, &id, JOB_WAIT_MS).await;
+                let snapshot = jobs.snapshot(&id).await;
+                jobs.kill(&id).await.unwrap();
+                let snapshot = snapshot.unwrap();
+                (terminal, snapshot)
+            });
+
             assert_eq!(terminal, JobStatus::Exited(7));
             assert!(
                 snapshot.contains("status: exited(7), non-zero"),
@@ -1071,38 +1133,48 @@ mod tests {
         async fn issue_523_group_kill_spares_a_second_live_job() {
             let dir = tempfile::tempdir().unwrap();
             let jobs = new_jobs();
-            let first = jobs
-                .spawn(
-                    "(printf 'first-ready\n'; sleep 30 &) | cat",
-                    Some("issue523-first".to_string()),
-                    Some(dir.path().to_path_buf()),
-                    None,
-                )
-                .await
-                .unwrap();
-            let first_job = jobs.job(&first).await.unwrap();
-            let second_spawn = jobs
-                .spawn(
-                    "printf 'second-ready\n'; sleep 30",
-                    Some("issue523-second".to_string()),
-                    Some(dir.path().to_path_buf()),
-                    None,
-                )
-                .await;
-            if second_spawn.is_err() {
-                jobs.kill(&first).await.unwrap();
-            }
-            let second = second_spawn.unwrap();
-            let second_job = jobs.job(&second).await.unwrap();
-            let first_output =
-                collect_output_until(&jobs, &first, "first-ready", JOB_WAIT_MS).await;
-            let second_output =
-                collect_output_until(&jobs, &second, "second-ready", JOB_WAIT_MS).await;
-            let first_kill = jobs.kill(&first).await;
-            let second_after_first_kill = second_job.status.lock().await.clone();
-            let second_kill = jobs.kill(&second).await;
-            first_kill.unwrap();
-            second_kill.unwrap();
+            let (first_output, second_output, second_after_first_kill, first_job, second_job) =
+                with_finite_jobs!(jobs, {
+                    let first = jobs
+                        .spawn(
+                            "(printf 'first-ready\n'; sleep 5 &) | cat",
+                            Some("issue523-first".to_string()),
+                            Some(dir.path().to_path_buf()),
+                            None,
+                        )
+                        .await
+                        .unwrap();
+                    let first_job = jobs.job(&first).await.unwrap();
+                    let second_spawn = jobs
+                        .spawn(
+                            "printf 'second-ready\n'; sleep 5",
+                            Some("issue523-second".to_string()),
+                            Some(dir.path().to_path_buf()),
+                            None,
+                        )
+                        .await;
+                    if second_spawn.is_err() {
+                        jobs.kill(&first).await.unwrap();
+                    }
+                    let second = second_spawn.unwrap();
+                    let second_job = jobs.job(&second).await.unwrap();
+                    let first_output =
+                        collect_output_until(&jobs, &first, "first-ready", READY_MS).await;
+                    let second_output =
+                        collect_output_until(&jobs, &second, "second-ready", READY_MS).await;
+                    let first_kill = jobs.kill(&first).await;
+                    let second_after_first_kill = second_job.status.lock().await.clone();
+                    let second_kill = jobs.kill(&second).await;
+                    first_kill.unwrap();
+                    second_kill.unwrap();
+                    (
+                        first_output,
+                        second_output,
+                        second_after_first_kill,
+                        first_job,
+                        second_job,
+                    )
+                });
 
             assert!(first_output.contains("first-ready"), "{first_output}");
             assert!(second_output.contains("second-ready"), "{second_output}");

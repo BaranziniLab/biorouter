@@ -646,3 +646,109 @@ async fn two_repetition_denials_in_one_batch_leave_no_feedback_request() {
     })
     .await;
 }
+
+struct CurrentUserTurnProvider {
+    inner: Arc<LongTaskProvider>,
+}
+
+#[async_trait]
+impl Provider for CurrentUserTurnProvider {
+    async fn complete_with_model(
+        &self,
+        model_config: &ModelConfig,
+        system_prompt: &str,
+        messages: &[Message],
+        tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        let start = messages
+            .iter()
+            .rposition(|message| {
+                message.role == rmcp::model::Role::User
+                    && message.metadata.user_visible
+                    && !message
+                        .content
+                        .iter()
+                        .any(|content| content.as_tool_response().is_some())
+            })
+            .unwrap_or(0);
+        self.inner
+            .complete_with_model(model_config, system_prompt, &messages[start..], tools)
+            .await
+    }
+
+    fn get_model_config(&self) -> ModelConfig {
+        self.inner.get_model_config()
+    }
+
+    fn metadata() -> ProviderMetadata {
+        LongTaskProvider::metadata()
+    }
+
+    fn get_name(&self) -> &str {
+        self.inner.get_name()
+    }
+}
+
+#[tokio::test]
+#[cfg_attr(not(unix), ignore = "requires the POSIX shell fixture")]
+async fn a_new_user_turn_gets_its_own_repetition_feedback_opportunity() {
+    biorouter::config::with_config_overrides(repetition_fixture_overrides(), async {
+        let first_provider = LongTaskProvider::new(Work::RecoverAfterDenial);
+        let fixture = TestAgent::new(first_provider.clone()).await;
+        let first = fixture.run(fixture.config(), None).await;
+
+        assert_eq!(
+            first_provider.denial_feedback_calls.load(Ordering::SeqCst),
+            1
+        );
+        assert!(visible_text(&first).contains(FINISHED));
+        assert!(!is_tool_loop(&first));
+
+        let second_provider = LongTaskProvider::new(Work::RecoverAfterDenial);
+        fixture
+            .agent
+            .update_provider(
+                Arc::new(CurrentUserTurnProvider {
+                    inner: second_provider.clone(),
+                }),
+                &fixture.session_id,
+            )
+            .await
+            .unwrap();
+        let second = fixture.run(fixture.config(), None).await;
+
+        assert_eq!(
+            second_provider.denial_feedback_calls.load(Ordering::SeqCst),
+            1
+        );
+        assert_eq!(second_provider.calls.load(Ordering::SeqCst), 6);
+        assert!(visible_text(&second).contains(FINISHED));
+        assert!(!is_tool_loop(&second));
+        assert_eq!(
+            std::fs::read(fixture._work.path().join(REPETITION_DISPATCHES)).unwrap(),
+            b"........",
+            "each distinct user turn admits four calls and denies its own fifth"
+        );
+        let stored = fixture
+            .sessions
+            .get_session(&fixture.session_id, true)
+            .await
+            .unwrap()
+            .conversation
+            .unwrap();
+        assert_eq!(
+            stored
+                .messages()
+                .iter()
+                .filter(|message| {
+                    message.role == rmcp::model::Role::User
+                        && message.metadata.user_visible
+                        && message.as_concat_text() == "Finish every step of this task."
+                })
+                .count(),
+            2,
+            "the two replies must use one persisted session with two genuine user turns"
+        );
+    })
+    .await;
+}

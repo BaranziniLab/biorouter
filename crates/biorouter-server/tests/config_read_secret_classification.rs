@@ -217,3 +217,125 @@ async fn served_config_read_classifies_secrets_before_trusting_the_false_flag() 
     assert!(auth::served_person_present(&headers));
     exercise(&daemon().await, &person).await;
 }
+
+const UNKNOWN_ENV_KEY: &str = "CONFIG_READ_OPAQUE_FIXTURE_7C6B";
+const UNKNOWN_ENV_VALUE: &str = "UNKN-synthetic-unclassified-environment-only-ENDU";
+
+async fn exercise_unknown_environment(app: &Router, person: &[(&str, &str)]) {
+    let metadata = biorouter::providers::providers().await;
+    assert!(metadata.into_iter().all(|(provider, _)| provider
+        .config_keys
+        .iter()
+        .all(|key| !key.name.eq_ignore_ascii_case(UNKNOWN_ENV_KEY))));
+    assert!(!Config::global()
+        .all_values()
+        .unwrap()
+        .contains_key(UNKNOWN_ENV_KEY));
+    assert!(!Config::global()
+        .all_secrets()
+        .unwrap()
+        .contains_key(UNKNOWN_ENV_KEY));
+    let _env = env_lock::lock_env([
+        (UNKNOWN_ENV_KEY, Some(UNKNOWN_ENV_VALUE)),
+        ("GOOGLE_HOST", Some(HOST)),
+    ]);
+    let bearer = [("X-Secret-Key", DAEMON_SECRET)];
+    let mut person_with_bearer = person.to_vec();
+    person_with_bearer.push(("X-Secret-Key", DAEMON_SECRET));
+    let model = [
+        ("X-Secret-Key", DAEMON_SECRET),
+        ("X-Caller-Provider", "anthropic"),
+    ];
+    let (status, body) = read(app, "GOOGLE_HOST", false, &bearer).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(serde_json::from_str::<Value>(&body).unwrap(), json!(HOST));
+    for denied in [
+        Vec::new(),
+        vec![("X-Secret-Key", "synthetic-wrong-daemon-secret")],
+        person.to_vec(),
+    ] {
+        let (status, body) = read(app, UNKNOWN_ENV_KEY, false, &denied).await;
+        assert!(!body.contains(UNKNOWN_ENV_VALUE));
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let lower_key = UNKNOWN_ENV_KEY.to_ascii_lowercase();
+    let mut observations = Vec::new();
+    for (label, headers) in [
+        ("daemon bearer", bearer.as_slice()),
+        ("bearer plus person proof", person_with_bearer.as_slice()),
+        ("bearer plus model caller", model.as_slice()),
+    ] {
+        for key in [UNKNOWN_ENV_KEY, lower_key.as_str()] {
+            let (status, body) = read(app, key, false, headers).await;
+            observations.push((label, key, status, body));
+        }
+    }
+    for (label, key, status, body) in observations {
+        for fragment in [UNKNOWN_ENV_VALUE, "UNKN", "ENDU"] {
+            assert!(
+                !body.contains(fragment),
+                "{label} retrieved synthetic unclassified environment bytes under {key}: {body:?}"
+            );
+        }
+        if let Ok(decoded) = serde_json::from_str::<Value>(&body) {
+            let normalized = decoded.to_string();
+            for fragment in [UNKNOWN_ENV_VALUE, "UNKN", "ENDU"] {
+                assert!(
+                    !normalized.contains(fragment),
+                    "{label} retrieved decoded synthetic unclassified environment bytes under {key}: {body:?}"
+                );
+            }
+        }
+        if status == StatusCode::OK {
+            let value: Value = serde_json::from_str(&body).unwrap();
+            assert!(value.is_null() || value == json!({ "maskedValue": SECRET_MASK }));
+        } else {
+            assert!(
+                status.is_client_error(),
+                "unexpected status {status}: {body:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn desktop_config_read_does_not_export_an_unclassified_environment_value() {
+    if !test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    let digest: [u8; 32] =
+        <sha2::Sha256 as sha2::Digest>::digest(USER_ACTION_KEY.as_bytes()).into();
+    auth::install_user_action_digest(Some(digest));
+    let mut headers = HeaderMap::new();
+    headers.insert("X-User-Action", USER_ACTION_KEY.parse().unwrap());
+    assert_eq!(auth::user_action_proof(&headers), UserActionProof::Proven);
+    exercise_unknown_environment(&daemon().await, &[("X-User-Action", USER_ACTION_KEY)]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn served_config_read_does_not_export_an_unclassified_environment_value() {
+    if !test_sandbox::in_a_process_of_its_own() {
+        return;
+    }
+    biorouter_server::launch::record_launch_state(false);
+    auth::install_served_operator(BROWSER_TOKEN.to_string(), ProviderTier::Public);
+    let cookie = format!("biorouter_session={BROWSER_TOKEN}");
+    let person = [
+        ("cookie", cookie.as_str()),
+        ("sec-fetch-site", "same-origin"),
+        ("sec-fetch-mode", "cors"),
+        ("sec-fetch-dest", "empty"),
+    ];
+    let mut headers = HeaderMap::new();
+    for (name, value) in person {
+        headers.insert(name, value.parse().unwrap());
+    }
+    assert_eq!(
+        auth::user_action_proof(&headers),
+        UserActionProof::NoKeyInstalled
+    );
+    assert!(auth::served_person_present(&headers));
+    exercise_unknown_environment(&daemon().await, &person).await;
+}
