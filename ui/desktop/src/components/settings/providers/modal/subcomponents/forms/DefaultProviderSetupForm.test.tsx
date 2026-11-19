@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { useEffect, useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderDetails } from '../../../../../../api';
@@ -154,7 +154,7 @@ describe('providerFieldName: a key named in sentence case', () => {
 });
 
 describe('DefaultProviderSetupForm — secrets are masked', () => {
-  it('shows only a read-only masked preview for an existing provider key', async () => {
+  it('keeps a fixed saved-provider mask through local Edit and Cancel without retrieval or deletion', async () => {
     const google = {
       ...bedrock,
       name: 'google',
@@ -164,22 +164,52 @@ describe('DefaultProviderSetupForm — secrets are masked', () => {
       },
     } as ProviderDetails;
     mocks.read.mockResolvedValue({ maskedValue: '••••••••' });
-    mocks.previewProviderSecret.mockResolvedValue({ data: 'synt••••••••-key' });
+    mocks.previewProviderSecret.mockRejectedValue(new Error('Saved-key retrieval is forbidden.'));
     const onValues = vi.fn();
     render(<Harness provider={google} onValues={onValues} />);
 
     const input = await screen.findByLabelText('Google API key');
-    await waitFor(() => expect(input).toHaveValue('synt••••••••-key'));
+    await waitFor(() => expect(input).toHaveValue('••••••••'));
+    await act(async () => {});
     expect(input).toHaveAttribute('type', 'text');
     expect(input).toHaveAttribute('readonly');
-    expect(input).toHaveAccessibleDescription(/remove it first/i);
     expect(screen.queryByRole('button', { name: 'Show Google API key' })).toBeNull();
-    expect(mocks.previewProviderSecret).toHaveBeenCalledWith(
-      expect.objectContaining({ body: { provider: 'google', key: 'GOOGLE_API_KEY' } })
-    );
+    expect(mocks.previewProviderSecret).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(onValues).toHaveBeenLastCalledWith({
       GOOGLE_API_KEY: { serverValue: { maskedValue: '••••••••' } },
     });
+
+    const field = input.closest<HTMLElement>('[data-slot="field"]');
+    expect(field).not.toBeNull();
+    fireEvent.click(within(field!).getByRole('button', { name: /\b(?:edit|replace)\b/i }));
+    const candidate = await screen.findByLabelText('Google API key');
+    expect(candidate).not.toHaveAttribute('readonly');
+    expect(candidate).toHaveAttribute('type', 'password');
+    expect(candidate).toHaveValue('');
+    await waitFor(() => expect(candidate).toHaveFocus());
+    fireEvent.change(candidate, { target: { value: 'synthetic-new-google-key' } });
+    expect(candidate).toHaveValue('synthetic-new-google-key');
+    expect(mocks.removeConfig).not.toHaveBeenCalled();
+    expect(mocks.readConfig).not.toHaveBeenCalled();
+
+    const candidateField = candidate.closest<HTMLElement>('[data-slot="field"]');
+    expect(candidateField).not.toBeNull();
+    fireEvent.click(within(candidateField!).getByRole('button', { name: 'Cancel' }));
+    const restored = await screen.findByLabelText('Google API key');
+    await waitFor(() => expect(restored).toHaveValue('••••••••'));
+    expect(restored).toHaveAttribute('readonly');
+    const restoredField = restored.closest<HTMLElement>('[data-slot="field"]');
+    expect(restoredField).not.toBeNull();
+    await waitFor(() =>
+      expect(within(restoredField!).getByRole('button', { name: /\b(?:edit|replace)\b/i })).toHaveFocus()
+    );
+    const restoredValues = onValues.mock.lastCall?.[0] as Record<string, ConfigInput> | undefined;
+    expect(restoredValues?.GOOGLE_API_KEY?.serverValue).toEqual({ maskedValue: '••••••••' });
+    expect(restoredValues?.GOOGLE_API_KEY?.value ?? '').toBe('');
+    expect(mocks.previewProviderSecret).not.toHaveBeenCalled();
+    expect(mocks.removeConfig).not.toHaveBeenCalled();
+    expect(mocks.readConfig).not.toHaveBeenCalled();
   });
 
   it('does not try to reveal an OAuth token from the provider store', async () => {
@@ -582,13 +612,14 @@ describe('CustomProviderForm for a provider with no key saved', () => {
     expect(onSubmit).toHaveBeenCalled();
   });
 
-  it('shows a saved custom-provider key as a read-only preview without writing it again', async () => {
+  it('keeps a fixed custom-provider mask through local Edit and Cancel without retrieval or resubmission', async () => {
     const onSubmit = vi.fn();
-    mocks.previewProviderSecret.mockResolvedValue({ data: 'synt••••••••-key' });
+    const onCancel = vi.fn();
+    mocks.previewProviderSecret.mockRejectedValue(new Error('Saved-key retrieval is forbidden.'));
     const { container } = render(
       <CustomProviderForm
         onSubmit={onSubmit}
-        onCancel={vi.fn()}
+        onCancel={onCancel}
         initialData={definition}
         isEditable={false}
         hasSavedKey
@@ -596,11 +627,42 @@ describe('CustomProviderForm for a provider with no key saved', () => {
       />
     );
     const input = container.querySelector('#api-key') as HTMLInputElement;
-    await waitFor(() => expect(input).toHaveValue('synt••••••••-key'));
+    await waitFor(() => expect(input).toHaveValue('••••••••'));
+    await act(async () => {});
     expect(input).toHaveAttribute('readonly');
-    expect(mocks.previewProviderSecret).toHaveBeenCalledWith(
-      expect.objectContaining({ body: { provider: 'deepseek', key: 'DEEPSEEK_API_KEY' } })
+    expect(mocks.previewProviderSecret).not.toHaveBeenCalled();
+    expect(screen.queryByRole('alert')).toBeNull();
+
+    const field = input.closest<HTMLElement>('[data-slot="field"]');
+    expect(field).not.toBeNull();
+    fireEvent.click(within(field!).getByRole('button', { name: /\b(?:edit|replace)\b/i }));
+    const candidate = await screen.findByLabelText(customProviderCopy.apiKey);
+    expect(candidate).not.toHaveAttribute('readonly');
+    expect(candidate).toHaveAttribute('type', 'password');
+    expect(candidate).toHaveValue('');
+    await waitFor(() => expect(candidate).toHaveFocus());
+    fireEvent.change(candidate, { target: { value: 'synthetic-new-custom-key' } });
+    expect(candidate).toHaveValue('synthetic-new-custom-key');
+    expect(mocks.removeConfig).not.toHaveBeenCalled();
+    expect(mocks.readConfig).not.toHaveBeenCalled();
+    expect(onSubmit).not.toHaveBeenCalled();
+
+    const candidateField = candidate.closest<HTMLElement>('[data-slot="field"]');
+    expect(candidateField).not.toBeNull();
+    fireEvent.click(within(candidateField!).getByRole('button', { name: 'Cancel' }));
+    const restored = await screen.findByLabelText(customProviderCopy.apiKey);
+    await waitFor(() => expect(restored).toHaveValue('••••••••'));
+    expect(restored).toHaveAttribute('readonly');
+    const restoredField = restored.closest<HTMLElement>('[data-slot="field"]');
+    expect(restoredField).not.toBeNull();
+    await waitFor(() =>
+      expect(within(restoredField!).getByRole('button', { name: /\b(?:edit|replace)\b/i })).toHaveFocus()
     );
+    expect(mocks.previewProviderSecret).not.toHaveBeenCalled();
+    expect(mocks.removeConfig).not.toHaveBeenCalled();
+    expect(mocks.readConfig).not.toHaveBeenCalled();
+    expect(onCancel).not.toHaveBeenCalled();
+    expect(onSubmit).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: customProviderCopy.update }));
     expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ api_key: '' }));

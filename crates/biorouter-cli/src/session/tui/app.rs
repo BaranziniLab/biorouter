@@ -1510,7 +1510,7 @@ mod tests {
 
         let mut app = super::App::new(super::StatusInfo::default());
         let request = Message::assistant().with_tool_request("tui-525", Ok(CallToolRequestParams {
-            task: None, name: request_tool.into(),
+            task: None, name: request_tool.to_owned().into(),
             arguments: Some(serde_json::json!({"tool_graph": [{"tool": "developer/shell", "description": "list files"}], "code": "// SOURCE_ONLY_TUI_525"}).as_object().unwrap().clone()),
             meta: None,
         }));
