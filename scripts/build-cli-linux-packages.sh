@@ -154,6 +154,8 @@ docker run --rm --platform linux/amd64 -e ROSETTA_ADVERTISE_AVX=1 -v "$ROOT/$OUT
   debian:bookworm-slim bash -euxc '
   apt-get update -q
   apt-get install -y --no-install-recommends "/pkg/'"$(basename "$DEB")"'"
+  BIOROUTER_DEV_PROFILE_ROOT=$(mktemp -d)
+  export BIOROUTER_DISABLE_KEYRING=true BIOROUTER_DEV_PROFILE_ROOT
   eval "$GGML_SCAN"
   dpkg -L "$(dpkg-deb -f "/pkg/'"$(basename "$DEB")"'" Package)" | scan_ggml_list
   test -x /usr/libexec/biorouter/computer-use/ocu
@@ -195,6 +197,8 @@ docker run --rm --platform linux/amd64 -e ROSETTA_ADVERTISE_AVX=1 -v "$ROOT/$OUT
   -v "$ROOT/scripts/dictation-self-test.sh":/smoke/dictation-self-test.sh:ro \
   rockylinux:9 bash -euxc '
   dnf install -y "/pkg/'"$(basename "$RPM")"'"
+  BIOROUTER_DEV_PROFILE_ROOT=$(mktemp -d)
+  export BIOROUTER_DISABLE_KEYRING=true BIOROUTER_DEV_PROFILE_ROOT
   eval "$GGML_SCAN"
   rpm -ql "$(rpm -qp --qf "%{NAME}" "/pkg/'"$(basename "$RPM")"'")" | scan_ggml_list
   test -x /usr/libexec/biorouter/computer-use/ocu

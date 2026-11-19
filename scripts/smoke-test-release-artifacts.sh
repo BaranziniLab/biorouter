@@ -120,7 +120,11 @@ smoke_mac() (
   require_file "$dmg"
   mount="$(mktemp -d "/tmp/biorouter-${arch}-mount.XXXXXX")"
   tmp="$(mktemp -d "/tmp/biorouter-${arch}-smoke.XXXXXX")"
-  mkdir -m 700 "$tmp/userData"
+  mkdir -m 700 "$tmp/userData" "$tmp/.config" "$tmp/.local" "$tmp/.cache" "$tmp/temp"
+  mkdir -m 700 "$tmp/.local/share" "$tmp/.local/state"
+  : >"$tmp/.smoke.env"
+  [ ! -e "$tmp/.config/biorouter/crew" ] && [ ! -L "$tmp/.config/biorouter/crew" ] \
+    || die "$arch smoke profile already contains Crew state"
   hdiutil attach -nobrowse -readonly -mountpoint "$mount" "$dmg" >/dev/null
   mounted=true
   local app="$mount/Biorouter.app"
@@ -163,7 +167,10 @@ smoke_mac() (
   # it the smoke run wrote into the operator's real profile, beside an app they may be using.
   # The app sets no userData path of its own, and Electron honours the switch (measured on the
   # Linux build: main.log and the whole profile moved into the given directory).
-  HOME="$tmp" BIOROUTER_DISABLE_KEYRING=true XDG_STATE_HOME="$tmp/.local/state" \
+  HOME="$tmp" USERPROFILE="$tmp" BIOROUTER_DISABLE_KEYRING=true \
+    XDG_CONFIG_HOME="$tmp/.config" XDG_DATA_HOME="$tmp/.local/share" \
+    XDG_STATE_HOME="$tmp/.local/state" XDG_CACHE_HOME="$tmp/.cache" \
+    CONFIG_DIR="$tmp/.config/biorouter" TMPDIR="$tmp/temp/" DOTENV_CONFIG_PATH="$tmp/.smoke.env" \
     /usr/bin/env -u BIOROUTER_PATH_ROOT -u BIOROUTER_DEV_PROFILE_ROOT "${runner[@]}" "$app/Contents/MacOS/Biorouter" --use-mock-keychain --user-data-dir="$tmp/userData" \
     >"$tmp/app.log" 2>&1 &
   pid=$!
@@ -364,6 +371,8 @@ smoke_deb() {
     debian:bookworm-slim bash -euxc '
       apt-get update -qq
       apt-get install -y -qq /pkg/biorouter.deb xvfb >/dev/null
+      BIOROUTER_DEV_PROFILE_ROOT=$(mktemp -d)
+      export BIOROUTER_DISABLE_KEYRING=true BIOROUTER_DEV_PROFILE_ROOT
       /usr/lib/biorouter/resources/bin/biorouter --version | grep -q "$VERSION"
       /usr/lib/biorouter/resources/bin/biorouterd --version | grep -q "$VERSION"
       test "$(stat -c %s /usr/lib/biorouter/resources/bin/biorouter)" -le "$CEIL_BIOROUTER"
@@ -388,6 +397,8 @@ smoke_rpm() {
     "${DICTATION_DOCKER_ARGS[@]}" \
     rockylinux:9 bash -euxc '
       dnf install -y -q /pkg/biorouter.rpm xorg-x11-server-Xvfb >/dev/null
+      BIOROUTER_DEV_PROFILE_ROOT=$(mktemp -d)
+      export BIOROUTER_DISABLE_KEYRING=true BIOROUTER_DEV_PROFILE_ROOT
       /usr/lib/Biorouter/resources/bin/biorouter --version | grep -q "$VERSION"
       /usr/lib/Biorouter/resources/bin/biorouterd --version | grep -q "$VERSION"
       test "$(stat -c %s /usr/lib/Biorouter/resources/bin/biorouter)" -le "$CEIL_BIOROUTER"
@@ -416,6 +427,8 @@ smoke_cli_packages() {
     -v "$deb":/pkg/biorouter-cli.deb:ro debian:bookworm-slim bash -euxc '
       apt-get update -qq
       apt-get install -y -qq /pkg/biorouter-cli.deb >/dev/null
+      BIOROUTER_DEV_PROFILE_ROOT=$(mktemp -d)
+      export BIOROUTER_DISABLE_KEYRING=true BIOROUTER_DEV_PROFILE_ROOT
       biorouter --version | grep -q "$VERSION"
       biorouterd --version | grep -q "$VERSION"
       test "$(stat -c %s /usr/bin/biorouter)" -le "$CEIL_BIOROUTER"
@@ -431,6 +444,8 @@ smoke_cli_packages() {
     "${DICTATION_DOCKER_ARGS[@]}" -v "$status_dir":/status \
     -v "$rpm":/pkg/biorouter-cli.rpm:ro rockylinux:9 bash -euxc '
       dnf install -y -q /pkg/biorouter-cli.rpm >/dev/null
+      BIOROUTER_DEV_PROFILE_ROOT=$(mktemp -d)
+      export BIOROUTER_DISABLE_KEYRING=true BIOROUTER_DEV_PROFILE_ROOT
       biorouter --version | grep -q "$VERSION"
       biorouterd --version | grep -q "$VERSION"
       test "$(stat -c %s /usr/bin/biorouter)" -le "$CEIL_BIOROUTER"
@@ -466,7 +481,8 @@ smoke_serve() {
       # The interface ships at the FHS location, because <exe dir>/../web from
       # /usr/bin would be /usr/web.
       test -s /usr/share/biorouter/web/index.html
-      export HOME=/tmp/biorouter-home
+      HOME=$(mktemp -d /tmp/biorouter-home.XXXXXX)
+      export HOME BIOROUTER_DISABLE_KEYRING=true BIOROUTER_DEV_PROFILE_ROOT="$HOME"
       biorouter serve --host 127.0.0.1 --port 18080 --token smoketoken \
         >/tmp/serve.log 2>&1 &
       pid=$!

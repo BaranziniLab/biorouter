@@ -26,7 +26,9 @@ $daemon = $null
 $changedEnvironment = @('LOCALAPPDATA', 'APPDATA', 'SQUIRREL_TEMP', 'BIOROUTER_PATH_ROOT',
     'BIOROUTER_DISABLE_KEYRING', 'BIOROUTER_DEV_PROFILE_ROOT', 'BIOROUTER_DEV_PROFILE_NAME',
     'BIOROUTER_SHARED_DAEMON', 'BIOROUTER_EXTERNAL_BACKEND', 'BIOROUTER_EXTERNAL_BACKEND_URL',
-    'BIOROUTER_PORT', 'BIOROUTER_SERVER__SECRET_KEY', 'ENABLE_PLAYWRIGHT', 'PLAYWRIGHT_CDP_PORT', 'DOTENV_CONFIG_PATH')
+    'BIOROUTER_PORT', 'BIOROUTER_SERVER__SECRET_KEY', 'ENABLE_PLAYWRIGHT', 'PLAYWRIGHT_CDP_PORT', 'DOTENV_CONFIG_PATH',
+    'HOME', 'USERPROFILE', 'CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
+    'TEMP', 'TMP', 'TMPDIR')
 $originalEnvironment = @{}
 $originalEnvironmentPresent = @{}
 foreach ($name in $changedEnvironment) {
@@ -129,8 +131,24 @@ try {
     $env:SQUIRREL_TEMP = $local
     $env:BIOROUTER_PATH_ROOT = Join-Path $root 'profile'
     $env:BIOROUTER_DISABLE_KEYRING = 'true'
+    $env:HOME = Join-Path $root 'home'
+    $env:USERPROFILE = $env:HOME
+    New-Item -ItemType Directory -Path $env:HOME -Force | Out-Null
+    $env:CONFIG_DIR = Join-Path $env:BIOROUTER_PATH_ROOT 'config'
+    $env:XDG_CONFIG_HOME = Join-Path $root 'xdg-config'
+    $env:XDG_DATA_HOME = Join-Path $root 'xdg-data'
+    $env:XDG_CACHE_HOME = Join-Path $root 'xdg-cache'
+    $env:XDG_STATE_HOME = Join-Path $root 'xdg-state'
+    $env:TEMP = Join-Path $root 'temp'
+    $env:TMP = $env:TEMP
+    $env:TMPDIR = $env:TEMP
+    New-Item -ItemType Directory -Force -Path $env:CONFIG_DIR, $env:XDG_CONFIG_HOME,
+        $env:XDG_DATA_HOME, $env:XDG_CACHE_HOME, $env:XDG_STATE_HOME, $env:TEMP | Out-Null
+    if (@(Get-ChildItem -LiteralPath $env:CONFIG_DIR -Force).Count -ne 0) {
+        throw 'Packaged startup requires an empty owned config directory, with no saved Crew state.'
+    }
     foreach ($name in @('BIOROUTER_DEV_PROFILE_ROOT', 'BIOROUTER_DEV_PROFILE_NAME',
-        'BIOROUTER_SHARED_DAEMON', 'BIOROUTER_EXTERNAL_BACKEND', 'BIOROUTER_EXTERNAL_BACKEND_URL')) {
+        'BIOROUTER_SHARED_DAEMON', 'BIOROUTER_EXTERNAL_BACKEND', 'BIOROUTER_EXTERNAL_BACKEND_URL', 'DOTENV_CONFIG_PATH')) {
         Remove-Item -LiteralPath "Env:$name" -ErrorAction SilentlyContinue
     }
     $defaultInstall = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'biorouter_app'
@@ -200,7 +218,12 @@ try {
     $port = Get-FreePort
     $env:BIOROUTER_PORT = [string]$port
     $env:BIOROUTER_SERVER__SECRET_KEY = [Guid]::NewGuid().ToString('N')
-    $daemonProcess = Start-OwnedProcess -File $daemon -Arguments @('agent') -Label 'daemon'
+    $env:BIOROUTER_DEV_PROFILE_ROOT = [IO.Path]::GetFullPath($root)
+    try {
+        $daemonProcess = Start-OwnedProcess -File $daemon -Arguments @('agent') -Label 'daemon'
+    } finally {
+        Remove-Item -LiteralPath Env:BIOROUTER_DEV_PROFILE_ROOT -ErrorAction SilentlyContinue
+    }
     $ready = $false
     $deadline = [DateTime]::UtcNow.AddSeconds(60)
     while ([DateTime]::UtcNow -lt $deadline -and -not $daemonProcess.HasExited) {

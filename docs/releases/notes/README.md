@@ -22,6 +22,7 @@ paper trail behind a feature (design specs, implementation plans, review records
 
 | Document | What it covers |
 | -------- | -------------- |
+| [v1.94.5](v1.94.5.md) | Adds dictation, enforced monthly budgets, compact panes, account-aware model choices and reliability fixes across browser access, CLI, workflows and extensions. |
 | [v1.94.1](v1.94.1.md) | Improves Ollama setup checks and recovery, clarifies Unlimited and Set a limit controls, and stops Biorouter Copilot status checks on Windows from launching hostname processes. |
 | [v1.94.0](v1.94.0.md) | Adds explicit approval for folder access outside the project, removes the old default limits from ordinary chats, improves interrupted-reply recovery, and updates Versa API Bedrock models. |
 | [v1.89.2](v1.89.2.md) | August 20, 2026. A patch by version number and a substantial one by content: more than 120 commits finishing four areas that were visibly incomplete in v1.89.1. Adds **Claude Code** and **Codex** as providers that run on the subscription you already pay for, with no API key, handing the child agent Biorouter's own tools over a private MCP bridge that Biorouter serves and polices; moves knowledge bases onto the **Open Knowledge Format** with **BioOKF** as a strict biomedical profile, typed edges and a merge; stops the desktop app freezing at launch; and lets you generate diagnostics from a private chat, with a warning about what the file holds. |

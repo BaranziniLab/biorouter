@@ -959,6 +959,8 @@ check_capture_not_in_daemon() {
     code="$(docker run --rm -e PACKAGES="$packages" -v "$linux":/biorouterd:ro debian:bullseye sh -c '
       apt-get update -q >/dev/null 2>&1
       [ -z "$PACKAGES" ] || apt-get install -y --no-install-recommends $PACKAGES >/dev/null 2>&1
+      BIOROUTER_DEV_PROFILE_ROOT=$(mktemp -d)
+      export BIOROUTER_DISABLE_KEYRING=true BIOROUTER_DEV_PROFILE_ROOT
       /biorouterd __br-dictation-worker capture </dev/null >/dev/null 2>&1
       echo $?' 2>/dev/null | tail -1)"
     if [ "$code" != 2 ]; then

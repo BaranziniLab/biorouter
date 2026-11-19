@@ -33,7 +33,9 @@ $environmentNames = @('ENABLE_PLAYWRIGHT', 'PLAYWRIGHT_CDP_PORT', 'BIOROUTER_DEV
     'BIOROUTER_DEV_PROFILE_NAME', 'BIOROUTER_DEV_AUTO_CONFIRM_SHARE', 'BIOROUTER_SHARED_DAEMON',
     'BIOROUTER_EXTERNAL_BACKEND', 'BIOROUTER_EXTERNAL_BACKEND_URL', 'BIOROUTER_PORT',
     'BIOROUTER_SERVER__SECRET_KEY', 'BIOROUTER_PATH_ROOT', 'BIOROUTER_DISABLE_KEYRING',
-    'LOCALAPPDATA', 'APPDATA', 'HOME', 'USERPROFILE', 'DOTENV_CONFIG_PATH')
+    'LOCALAPPDATA', 'APPDATA', 'HOME', 'USERPROFILE', 'DOTENV_CONFIG_PATH',
+    'CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME',
+    'TEMP', 'TMP', 'TMPDIR')
 $originalEnvironment = @{}
 $originalEnvironmentPresent = @{}
 foreach ($name in $environmentNames) {
@@ -255,6 +257,19 @@ try {
     $env:APPDATA = Join-Path $root 'roaming'
     $env:HOME = Join-Path $root 'home'
     $env:USERPROFILE = $env:HOME
+    $env:CONFIG_DIR = Join-Path $env:BIOROUTER_PATH_ROOT 'config'
+    $env:XDG_CONFIG_HOME = Join-Path $root 'xdg-config'
+    $env:XDG_DATA_HOME = Join-Path $root 'xdg-data'
+    $env:XDG_CACHE_HOME = Join-Path $root 'xdg-cache'
+    $env:XDG_STATE_HOME = Join-Path $root 'xdg-state'
+    $env:TEMP = Join-Path $root 'temp'
+    $env:TMP = $env:TEMP
+    $env:TMPDIR = $env:TEMP
+    New-Item -ItemType Directory -Force -Path $env:CONFIG_DIR, $env:XDG_CONFIG_HOME,
+        $env:XDG_DATA_HOME, $env:XDG_CACHE_HOME, $env:XDG_STATE_HOME, $env:TEMP | Out-Null
+    if (@(Get-ChildItem -LiteralPath $env:CONFIG_DIR -Force).Count -ne 0) {
+        throw 'Packaged startup requires an empty owned config directory, with no saved Crew state.'
+    }
     $portListener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, 0)
     $portListener.Start()
     $cdpPort = $portListener.LocalEndpoint.Port

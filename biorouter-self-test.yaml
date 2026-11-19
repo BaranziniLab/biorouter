@@ -195,6 +195,8 @@ instructions: |
   - Create and launch one static Agent Drafter app with the configured preview id through `execute_code`
   - Verify both previews survive the nested tool call and the app launch returns its `/apps/<id>/` path
   - Change an already-open report and app; verify same-tab updates and preserved user edits
+  - Keep the existing preview attached to its active pane across compact/restore; preserve drafts, selected text and unsaved embedded content
+  - Keep a selected live app preview when a same-app static card arrives; unrelated artifacts must still open normally
   - Check absolute and later shorthand report links against the actual session directory
   - In a disposable chat, select response text and choose Ask about it or Quote it; verify a removable source-labelled quotation appears without sending and preserves the draft and resource chips
   - Switch away from the existing chat tab and back; verify the draft, quote and resource chips survive within the app session, then remove the quote and verify removal survives another switch
@@ -320,11 +322,17 @@ instructions: |
 
   {% if test_depth != "fixture_only" and (test_phases == "all" or "providers" in test_phases) %}
   ### Phase 4C: Provider and Conversation Boundaries
+  {% if test_depth == "quick" %}
+  - Validate refreshed catalogue defaults, saved choices, model limits and host-specific prices with the named deterministic fixtures only
+  - Keep the explicitly selected workflow provider/model and isolated profile unchanged
+  - Report real accounts and rendered desktop/serve behavior as NOT OBSERVABLE
+  {% else %}
   - Validate content-filter error frames without exposing raw provider payloads
   - Verify Quick, Normal, and Deep produce model-compatible requests
   - Keep each conversation and unsent draft's reasoning choice independent
   - Verify saved-credential deletion refuses shared and protected credentials
   - Use synthetic credentials and isolated profiles for all destructive checks
+  {% endif %}
   
   {% endif %}
 
@@ -371,7 +379,7 @@ extensions:
 # {% endif %}
 
 # {% endif %}
-# {% if test_phases != "crew" %}
+# {% if test_phases != "crew" and not (test_phases == "providers" and test_depth == "quick") %}
   - type: builtin
     name: computercontroller
     display_name: Biorouter Copilot
@@ -381,7 +389,7 @@ extensions:
 
 # {% endif %}
 # {% if test_depth != "fixture_only" %}
-# {% if test_phases != "crew" %}
+# {% if test_phases != "crew" and not (test_phases == "providers" and test_depth == "quick") %}
   - type: builtin
     name: webdocuments
     display_name: Web & Documents
@@ -773,6 +781,9 @@ prompt: |
   5. With the report open, update a numeric value using the same byte width and recompute its comparison. Require the existing preview to update after the successful write, without opening another tab. Update the existing self-test app's visible title through the current tool schema and include a small editable notes field for the next check, rebuilding if necessary; require its existing managed preview to update at the same URL.
   6. In the desktop, type an unsaved form value and blur the field before another app update. Require an explicit Update ready action, with the typed value intact. Annotation, resize, and active or reconnecting app work must also defer automatic reload. Explicit refresh must retain app IndexedDB state. External websites must not reload because a local tool finished. Do not broaden network or private-file permissions to pass these checks.
   7. Create small synthetic Markdown, CSV, TSV, Python, R, and plain-text fixtures under {{ workspace_dir }}/preview-links only. Include repeated text `LYCHEE5` and a long code line. Verify the exact saved contents and return clickable absolute links. In the desktop, inspect the paper ground, syntax tokens, orange selection, and horizontal scrolling. Repeatedly open and close the panel, resize the actual window between stacked and side layouts, and check that an embedded page keeps its unsaved value. Enable Reduce Motion and verify that transitions stop. A delayed older open must not replace a newer file or reopen a closed panel. Never use a DevTools viewport override as evidence of a real window resize.
+     With the same fixtures open in split panes, switch the active pane and verify that its existing preview follows it. Use the existing Make wider and Merge panes actions; preserve preview tabs, draft/selection and unsaved embedded values across compact/restore. Background-pane activity must not resize the whole window. Keep the existing components, tokens, shapes, folded controls, motion and reduced-motion behavior.
+     While a live app preview is selected, update the same app and then emit its static card. The live URL must remain selected; closing it must not let the already-banked same-app card reopen it during re-scan or rerender. An unrelated artifact must still open normally.
+     During an already-authorized synthetic stream, drag the actual splitter through compact and restored layouts. A reader at the tail must keep following, a reader above the tail must stay in place, and returning to the tail must resume following. Do not start another model/provider run to obtain this scenario. Without a real rendered surface, mark these assertions NOT OBSERVABLE.
   8. Use docs/desktop-ui/markdown-showcase.md as a synthetic Markdown template in both a chat response and a document preview. Inspect heading accents, soft gray sentence-case table headers, horizontal separators, callout tint, nested lists, Unicode, math, and distinct code headers. At narrow width, focus the table region by keyboard and scroll to its final column; require full numeric values and authored alignment. Copy both labelled and unlabelled code fences and compare the clipboard with the original content. Verify the default Appearance text size is Standard (1×), then switch through Large (1.07×) and Larger (1.15×), reload, and confirm the selection persists and visibly affects chat, document, menus, controls, and code without clipping. Check that padding, control heights, gaps, and the final-message-to-footer gap grow with the preference. Move the pointer away from messages to hide timestamp/actions, then hover each user and agent message to reveal only its footer without layout movement; verify keyboard access to Copy and Diverge and narrow-pane wrapping. Record any surface unavailable to inspect as NOT OBSERVABLE.
   9. Inspect a successful short tool call and a failed tool call. One click must reveal inputs and results or the diagnostic, without another disclosure for short text. Verify long content has a readable preview and Show more / Show less, hover changes text contrast without a background glow, and failures have no red background. Check keyboard expansion and reduced-motion behavior.
   10. Record setup, exact verified file links, successful write/build results, preview URI, and validation outcome in {{ workspace_dir }}/phase2c_previews.md. If desktop interaction is unavailable, record click navigation, same-tab visual updates, edit preservation, styling, and motion as NOT OBSERVABLE, never PASS; source-file existence is not GUI evidence.
@@ -924,7 +935,39 @@ prompt: |
   Run commands sequentially; a missing test, zero-test result, or skipped assertion is not a pass.
   Do not change source files to make a test pass.
 
-  From the repository root, activate `bin/activate-hermit` and set `CARGO_BUILD_JOBS=8`.
+  From the repository root, use the activated toolchain with at most two Cargo workers.
+  Preserve a lower supplied `CARGO_BUILD_JOBS`; otherwise set it to `2`.
+  Respect a supplied `BIOROUTER_SELF_TEST_CARGO` or `CARGO`; otherwise use the activated `cargo`.
+  Prepare the toolchain before isolating this run; do not bootstrap, download or raise the cap.
+
+  {% if test_depth == "quick" %}
+  This bounded provider smoke run keeps the explicitly selected workflow provider/model. Do not switch providers/models, start local inference, download anything,
+  run a Codex/Claude Code turn, log in, request Copilot consent, or read/change the owner profile.
+  Use isolated HOME/config/application roots, an absolute Crew root, keyring disabled,
+  and an already-prepared Cargo/Node toolchain and tests.
+  Missing prerequisites are BLOCKED; do not install or repair the environment.
+
+  Run only these commands sequentially with `RUST_TEST_THREADS=1`; capture exit codes, actual
+  names and nonzero counts. The counts below are source expectations, not execution evidence:
+  - `"${BIOROUTER_SELF_TEST_CARGO:-${CARGO:-cargo}}" test --offline --locked -p biorouter --features local-dictation,privacy-test-auth --test context_windows november_ -- --test-threads=1` (2)
+  - `"${BIOROUTER_SELF_TEST_CARGO:-${CARGO:-cargo}}" test --offline --locked -p biorouter --features local-dictation,privacy-test-auth --lib providers::pricing::tests::november_ -- --test-threads=1` (9)
+  - `"${BIOROUTER_SELF_TEST_CARGO:-${CARGO:-cargo}}" test --offline --locked -p biorouter --features local-dictation,privacy-test-auth --test provider_model_refresh_openai_codex openai_model_refresh_offers_the_current_flagship_and_exact_new_models -- --exact --test-threads=1` (1; metadata only, no Codex process)
+  - `"${BIOROUTER_SELF_TEST_CARGO:-${CARGO:-cargo}}" test --offline --locked -p biorouter --features local-dictation,privacy-test-auth --test provider_catalogue_refresh baseten_ -- --test-threads=1` (2; local synthetic HTTP only)
+  - `"${BIOROUTER_SELF_TEST_CARGO:-${CARGO:-cargo}}" test --offline --locked -p biorouter --features local-dictation,privacy-test-auth --test provider_model_refresh_xai xai_chat_catalogue_ -- --test-threads=1` (2; metadata only)
+  - `"${BIOROUTER_SELF_TEST_CARGO:-${CARGO:-cargo}}" test --offline --locked -p biorouter --features local-dictation,privacy-test-auth --test github_copilot_account_catalogue_refresh copilot_refresh_ -- --test-threads=1` (10; synthetic account/HTTP fixtures, no authentication)
+  - `"${BIOROUTER_SELF_TEST_CARGO:-${CARGO:-cargo}}" test --offline --locked -p biorouter-cli --features biorouter/privacy-test-auth --lib commands::configure::unlisted_provider_model_tests::copilot_cli_ -- --test-threads=1` (4; selection helpers, no configuration writes)
+  - `"${BIOROUTER_SELF_TEST_CARGO:-${CARGO:-cargo}}" test --offline --locked -p biorouter --features local-dictation,privacy-test-auth --lib providers::live_catalog::tests::an_older_published_feed_cannot_drop_the_new_bundled_k31_model -- --exact --test-threads=1` (1)
+  - `"${BIOROUTER_SELF_TEST_CARGO:-${CARGO:-cargo}}" test --offline --locked -p biorouter --features local-dictation,privacy-test-auth --lib providers::live_catalog::tests::the_published_feed_format_parses -- --exact --test-threads=1` (1)
+  - From `ui/desktop`, `node node_modules/vitest/vitest.mjs run --maxWorkers=1 --reporter=verbose src/components/settings/models/modelInterface.test.ts src/components/settings/models/subcomponents/SwitchModelModal.providerDefaults.test.tsx` (20 source-declared cases)
+
+  Validate API versus coding-agent context budgets, foreground output limits, host-specific
+  vision/cache/prices, unchanged historical IDs and saved choices, account-provided defaults,
+  authoritative empty catalogues and documented static fallback. Unknown hosted retail stays
+  unknown; Baseten vision must not become a general Z.ai capability. Do not infer live provider
+  availability, billing or successful remote turns from these fixtures. No credential deletion
+  or real setup flow is part of this quick run. Report desktop/serve selection, compact previews,
+  real account availability and live Quick/Deep interactions as NOT OBSERVABLE here.
+  {% else %}
   Use these exact focused commands; do not run broad `cargo test ... -- --list` discovery,
   which can execute harnessless integration binaries even when a filter selects no tests:
   - `cargo test -p biorouter --test openai_stream_boundaries`
@@ -961,6 +1004,8 @@ prompt: |
      text, independent reasoning controls, private-model preservation, and live Versa Quick/Deep
      completion. Mark them NOT OBSERVABLE when this workflow has no desktop driver; unit tests do
      not establish those outcomes. Do not initiate a real login or alter the user's CLI installation.
+
+  {% endif %}
 
   Log results to: {{ workspace_dir }}/phase4c_provider_boundaries.md
   {% endif %}

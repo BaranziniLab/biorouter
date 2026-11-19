@@ -1,6 +1,12 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import ElicitationRequest from './ElicitationRequest';
+import { APPROVAL_COPY } from './toolCallCopy';
+import { BROWSER_SURFACE_MARKER } from '../utils/surface';
+
+afterEach(() => {
+  delete document.documentElement.dataset.biorouterSurface;
+});
 
 vi.mock('./ui/JsonSchemaForm', () => ({
   default: ({
@@ -219,5 +225,65 @@ describe('ElicitationRequest', () => {
     expect(screen.queryByText('Information request canceled')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Submit' })).toBeNull();
     expect(onSubmit).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ordinary elicitation surface boundaries', () => {
+  it('explains the desktop requirement before offering an unusable browser form', () => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    const onSubmit = vi.fn(async () => undefined);
+    render(
+      <ElicitationRequest
+        actionRequiredContent={action}
+        isCancelledMessage={false}
+        isClicked={false}
+        onSubmit={onSubmit}
+      />
+    );
+
+    expect(screen.getByRole('status')).toHaveTextContent(APPROVAL_COPY.browserCannotApprove);
+    expect(
+      screen.getByRole('button', { name: 'About ' + APPROVAL_COPY.browserCannotApproveName })
+    ).toHaveAccessibleDescription(APPROVAL_COPY.browserCannotApproveWhy);
+    expect(screen.queryByRole('button', { name: 'Submit' })).toBeNull();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { isClicked: true, isCancelledMessage: false, label: 'Information sent' },
+    { isClicked: false, isCancelledMessage: true, label: 'Information request canceled' },
+  ])('keeps the settled $label row in the browser', ({ isClicked, isCancelledMessage, label }) => {
+    document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+    render(
+      <ElicitationRequest
+        actionRequiredContent={action}
+        isCancelledMessage={isCancelledMessage}
+        isClicked={isClicked}
+        onSubmit={vi.fn(async () => undefined)}
+      />
+    );
+
+    expect(screen.getByText(label)).toHaveClass('br-transcript-row-label');
+    expect(screen.queryByText(APPROVAL_COPY.browserCannotApprove)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Submit' })).toBeNull();
+  });
+
+  it('shows the generated client error body without marking an answer sent', async () => {
+    const message = 'Verified human authority is required to answer this request';
+    const onSubmit = vi.fn().mockRejectedValue({ error: message });
+    render(
+      <ElicitationRequest
+        actionRequiredContent={action}
+        isCancelledMessage={false}
+        isClicked={false}
+        onSubmit={onSubmit}
+      />
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Submit' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent(message));
+    expect(screen.getByRole('alert')).not.toHaveTextContent('[object Object]');
+    expect(screen.getByRole('button', { name: 'Submit' })).toBeInTheDocument();
+    expect(screen.queryByText('Information sent')).toBeNull();
   });
 });

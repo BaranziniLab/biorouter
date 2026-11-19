@@ -132,10 +132,15 @@ launch() {
   shift
   home="/tmp/biorouter-home-$label"
   app_log="/tmp/biorouter-$label.log"
-  mkdir -p "$home/userData"
-  chmod 700 "$home" "$home/userData"
+  mkdir -p "$home/userData" "$home/.config" "$home/.local/share" "$home/.cache" "$home/temp"
+  chmod 700 "$home" "$home/userData" "$home/.config" "$home/.local/share" "$home/.cache" "$home/temp"
+  : >"$home/.smoke.env"
   rm -f "$home/userData/logs/main.log"
-  env -u BIOROUTER_PATH_ROOT -u BIOROUTER_DEV_PROFILE_ROOT -u XDG_STATE_HOME HOME="$home" "$@" \
+  env -u BIOROUTER_PATH_ROOT -u BIOROUTER_DEV_PROFILE_ROOT \
+    HOME="$home" USERPROFILE="$home" XDG_CONFIG_HOME="$home/.config" \
+    XDG_DATA_HOME="$home/.local/share" XDG_STATE_HOME="$home/.local/state" \
+    XDG_CACHE_HOME="$home/.cache" CONFIG_DIR="$home/.config/biorouter" \
+    TMPDIR="$home/temp/" DOTENV_CONFIG_PATH="$home/.smoke.env" "$@" \
     "$APP" "${chromium_args[@]}" --user-data-dir="$home/userData" >"$app_log" 2>&1 &
   app_pid=$!
   started+=("$app_pid")
@@ -196,6 +201,7 @@ say "Xvfb is ready on $DISPLAY"
 
 # First launch and relaunch must reach the window without a prompt.
 rm -rf /tmp/biorouter-home-shared
+[ ! -e /tmp/biorouter-home-shared ] && [ ! -L /tmp/biorouter-home-shared ] || fail "shared smoke profile is not fresh"
 launch shared
 require_ready 90
 require_key
@@ -238,6 +244,7 @@ say "fatal startup error: bounded SIGTERM passed"
 
 # 3. Per-window daemon: biorouterd starts and the window loads.
 rm -rf /tmp/biorouter-home-per-window
+[ ! -e /tmp/biorouter-home-per-window ] && [ ! -L /tmp/biorouter-home-per-window ] || fail "per-window smoke profile is not fresh"
 launch per-window BIOROUTER_SHARED_DAEMON=0
 have_daemon() {
   daemon_pid="$(descendants_named "$app_pid" biorouterd)"
