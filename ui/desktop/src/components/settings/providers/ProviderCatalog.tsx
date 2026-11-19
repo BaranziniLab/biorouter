@@ -660,7 +660,8 @@ export default function ProviderCatalog({
   const handleCloseCustomModal = useCallback(() => {
     setShowCustomProviderModal(false);
     setEditingProvider(null);
-  }, []);
+    if (editingProvider) refreshProviders?.();
+  }, [editingProvider, refreshProviders]);
 
   const onCloseProviderConfig = useCallback(() => {
     const closed = configuringProvider?.name;
@@ -1048,6 +1049,11 @@ export default function ProviderCatalog({
         initialData={initialData}
         isEditable={editable}
         hasSavedKey={editingProvider?.isConfigured ?? true}
+        savedKey={
+          editingProvider
+            ? { provider: editingProvider.id, key: editingProvider.config.api_key_env }
+            : undefined
+        }
         onSubmit={editingProvider ? handleUpdateCustomProvider : handleCreateCustomProvider}
         onCancel={handleCloseCustomModal}
         removal={customProviderRemoval}
