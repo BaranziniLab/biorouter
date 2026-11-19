@@ -949,3 +949,343 @@ fn explain_refuses_what_run_refuses_and_says_what_a_monitor_does() {
     );
     assert!(!text(&out.stdout).contains("Supervision"), "{stderr}");
 }
+
+/// One scripted reply of [`ScriptedModel`]: assistant text, or one
+/// `developer__shell` call.
+#[derive(Clone, Debug)]
+enum Scripted {
+    Text(&'static str),
+    Shell(&'static str),
+}
+
+/// A fake OpenAI-compatible model for headless runs: it answers the agent's
+/// requests (the ones that carry tools) from `script` in order, repeating the
+/// last entry, and answers anything else (a title) with plain text. It counts
+/// the agent's requests and notes whether one of them carried the
+/// `--require-file` gate's instruction.
+struct ScriptedModel {
+    script: Vec<Scripted>,
+    agent_requests: AtomicUsize,
+    gate_instruction_seen: std::sync::atomic::AtomicBool,
+}
+
+impl ScriptedModel {
+    fn new(script: Vec<Scripted>) -> Arc<Self> {
+        Arc::new(Self {
+            script,
+            agent_requests: AtomicUsize::new(0),
+            gate_instruction_seen: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+}
+
+async fn scripted_completion(
+    axum::extract::State(model): axum::extract::State<Arc<ScriptedModel>>,
+    axum::Json(request): axum::Json<serde_json::Value>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let has_tools = request["tools"]
+        .as_array()
+        .is_some_and(|tools| !tools.is_empty());
+    let reply = if has_tools {
+        if request
+            .to_string()
+            .contains("must leave these files behind")
+        {
+            model.gate_instruction_seen.store(true, Ordering::SeqCst);
+        }
+        let n = model.agent_requests.fetch_add(1, Ordering::SeqCst);
+        model.script[n.min(model.script.len() - 1)].clone()
+    } else {
+        Scripted::Text("Scripted title")
+    };
+    let (delta, reason) = match reply {
+        Scripted::Text(text) => (
+            serde_json::json!({"role":"assistant", "content": text}),
+            "stop",
+        ),
+        Scripted::Shell(command) => (
+            serde_json::json!({"role":"assistant", "content": null, "tool_calls":[{
+                "index": 0, "id": "scripted-shell", "type": "function", "function": {
+                    "name": "developer__shell",
+                    "arguments": serde_json::json!({"command": command}).to_string()
+                }
+            }]}),
+            "tool_calls",
+        ),
+    };
+    let chunk = serde_json::json!({
+        "id":"scripted", "object":"chat.completion.chunk", "created":1,
+        "model":"cli-output-fixture:local",
+        "choices":[{"index":0,"delta":delta,"finish_reason":null}]
+    });
+    let end = serde_json::json!({
+        "id":"scripted", "object":"chat.completion.chunk", "created":1,
+        "model":"cli-output-fixture:local",
+        "choices":[{"index":0,"delta":{},"finish_reason":reason}]
+    });
+    (
+        [(axum::http::header::CONTENT_TYPE, "text/event-stream")],
+        format!("data: {chunk}\n\ndata: {end}\n\ndata: [DONE]\n\n"),
+    )
+        .into_response()
+}
+
+/// Serve `model` on a loopback port in the Ollama shape the CLI's `ollama`
+/// provider expects (its native route 404s, so it speaks `/v1`). Returns the
+/// endpoint and a guard that stops the server when dropped.
+async fn serve_scripted_model(model: Arc<ScriptedModel>) -> (String, tokio_util::sync::DropGuard) {
+    use axum::routing::{get, post};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+    let router = axum::Router::new()
+        .route(
+            "/api/show",
+            post(|| async {
+                axum::Json(serde_json::json!({
+                    "capabilities":["completion","tools"],
+                    "model_info":{"general.architecture":"llama","llama.context_length":1048576},
+                    "parameters":"num_ctx 1048576"
+                }))
+            }),
+        )
+        .route(
+            "/api/version",
+            get(|| async { axum::Json(serde_json::json!({"version":"0.12.0"})) }),
+        )
+        .route(
+            "/api/tags",
+            get(|| async {
+                axum::Json(serde_json::json!({"models":[{"name":"cli-output-fixture:local"}]}))
+            }),
+        )
+        .route(
+            "/api/chat",
+            post(|| async { (axum::http::StatusCode::NOT_FOUND, "404 page not found") }),
+        )
+        .route("/v1/chat/completions", post(scripted_completion))
+        .with_state(model);
+    let shutdown = tokio_util::sync::CancellationToken::new();
+    let stop = shutdown.clone();
+    tokio::spawn(async move {
+        axum::serve(listener, router)
+            .with_graceful_shutdown(stop.cancelled_owned())
+            .await
+            .unwrap();
+    });
+    (endpoint, shutdown.drop_guard())
+}
+
+/// A sandbox whose `config.yaml` points `biorouter` at the scripted model,
+/// with tools called directly (no code execution wrapper).
+fn headless_sandbox() -> Sandbox {
+    let sandbox = Sandbox::new();
+    std::fs::write(
+        sandbox.config_yaml(),
+        "BIOROUTER_PROVIDER: ollama\nBIOROUTER_MODEL: cli-output-fixture:local\ncomputer_use_capabilities_version: 2\nextensions:\n  code_execution:\n    enabled: false\n    type: platform\n    name: code_execution\n    description: Disabled for direct tool calls\n    bundled: true\n    available_tools: []\n",
+    )
+    .unwrap();
+    sandbox
+}
+
+/// Run `biorouter run <args>` headless in Autonomous mode (no approvals), in
+/// the sandbox's home folder, against `endpoint`, with `env` added.
+async fn run_headless(
+    sandbox: &Sandbox,
+    endpoint: &str,
+    args: &[&str],
+    env: &[(&str, &str)],
+) -> Output {
+    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_biorouter"));
+    command.arg("run").args(args);
+    command
+        .env_clear()
+        .env("HOME", &sandbox.home)
+        .env("USERPROFILE", &sandbox.home)
+        .env("APPDATA", sandbox.home.join("AppData/Roaming"))
+        .env("LOCALAPPDATA", sandbox.home.join("AppData/Local"))
+        .env("XDG_CONFIG_HOME", sandbox.home.join(".config"))
+        .env("XDG_DATA_HOME", sandbox.home.join(".local/share"))
+        .env("XDG_STATE_HOME", sandbox.home.join(".local/state"))
+        .env("BIOROUTER_PATH_ROOT", &sandbox.root)
+        .env("BIOROUTER_DISABLE_KEYRING", "true")
+        .env("BIOROUTER_CLASSIC", "1")
+        .env("BIOROUTER_MODE", "auto")
+        .env("OLLAMA_HOST", endpoint)
+        .env("OLLAMA_NUM_CTX", "1048576")
+        .env("TOKIO_WORKER_THREADS", "2")
+        .env("DO_NOT_TRACK", "1")
+        .current_dir(&sandbox.home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    for key in ["PATH", "SystemRoot", "WINDIR", "TMP", "TEMP", "TMPDIR"] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(90), command.output())
+        .await
+        .expect("the isolated CLI must finish within 90 seconds")
+        .expect("run the isolated CLI")
+}
+
+/// The last stream-json event, which must be `complete`.
+fn complete_event(output: &Output) -> serde_json::Value {
+    let stdout = text(&output.stdout);
+    let events: Vec<serde_json::Value> = stdout
+        .lines()
+        .map(|line| {
+            serde_json::from_str::<serde_json::Value>(line)
+                .unwrap_or_else(|error| panic!("every stdout line must be JSON: {error}\n{stdout}"))
+        })
+        .collect();
+    let last = events
+        .last()
+        .cloned()
+        .unwrap_or_else(|| panic!("no stream-json events: {}", text(&output.stderr)));
+    assert_eq!(last["type"], "complete", "{stdout}");
+    last
+}
+
+/// P01 (model free): the model first ends its turn in prose with no tool call
+/// and no file written, and would write the file only if asked again. Without
+/// a gate the run stops after that one request and exits 0 with nothing on
+/// disk. With `--require-file` the gate sends it back: a second request
+/// carries the gate's instruction, the shell call writes the file, a third
+/// request ends the turn, and the run exits 0 with the file present.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn require_file_sends_a_prose_ending_back_to_work_and_off_it_does_not() {
+    let script = || {
+        vec![
+            Scripted::Text("I could not finish the analysis, so no files were written."),
+            Scripted::Shell("printf '42\\n' > answer.txt"),
+            Scripted::Text("answer.txt is written."),
+        ]
+    };
+
+    // Gate off.
+    let model = ScriptedModel::new(script());
+    let (endpoint, _server) = serve_scripted_model(model.clone()).await;
+    let sandbox = headless_sandbox();
+    let output = run_headless(
+        &sandbox,
+        &endpoint,
+        &[
+            "--output-format",
+            "stream-json",
+            "--text",
+            "Write answer.txt",
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    assert_eq!(model.agent_requests.load(Ordering::SeqCst), 1);
+    assert!(!sandbox.home.join("answer.txt").exists());
+    let complete = complete_event(&output);
+    assert!(
+        complete.get("missing_files").is_none(),
+        "no required files, no field: {complete}"
+    );
+
+    // Gate on.
+    let model = ScriptedModel::new(script());
+    let (endpoint, _server) = serve_scripted_model(model.clone()).await;
+    let sandbox = headless_sandbox();
+    let output = run_headless(
+        &sandbox,
+        &endpoint,
+        &[
+            "--output-format",
+            "stream-json",
+            "--text",
+            "Write answer.txt",
+            "--require-file",
+            "answer.txt",
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "{}\n{}",
+        text(&output.stdout),
+        text(&output.stderr)
+    );
+    assert_eq!(
+        model.agent_requests.load(Ordering::SeqCst),
+        3,
+        "prose, then the gated retry that writes, then the closing reply"
+    );
+    assert!(model.gate_instruction_seen.load(Ordering::SeqCst));
+    assert_eq!(
+        std::fs::read_to_string(sandbox.home.join("answer.txt")).unwrap(),
+        "42\n"
+    );
+    let complete = complete_event(&output);
+    assert_eq!(
+        complete["missing_files"],
+        serde_json::json!([]),
+        "{complete}"
+    );
+}
+
+/// P01: a model that never writes the file. The gate asks once
+/// (`BIOROUTER_DONE_GATE_MAX_ITERATIONS=1`), the model gives up again, and the
+/// run must not report plain success: it exits 4, names the file on stderr
+/// and in `missing_files`. The files come from `BIOROUTER_RUN_REQUIRE_FILES`,
+/// the switch a harness uses without changing the command line, and a
+/// zero-byte placeholder does not count.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_unmet_require_file_gate_exits_4_and_names_the_files() {
+    for format in ["stream-json", "json"] {
+        let model = ScriptedModel::new(vec![Scripted::Text(
+            "I cannot complete the required deliverables.",
+        )]);
+        let (endpoint, _server) = serve_scripted_model(model.clone()).await;
+        let sandbox = headless_sandbox();
+        std::fs::write(sandbox.home.join("trace.md"), b"").unwrap();
+        let output = run_headless(
+            &sandbox,
+            &endpoint,
+            &["--output-format", format, "--text", "Write the files"],
+            &[
+                ("BIOROUTER_RUN_REQUIRE_FILES", "answer.txt:trace.md"),
+                ("BIOROUTER_DONE_GATE_MAX_ITERATIONS", "1"),
+            ],
+        )
+        .await;
+        let stderr = text(&output.stderr);
+        assert_eq!(output.status.code(), Some(4), "{format}: {stderr}");
+        assert!(
+            stderr.contains("This run ended without its required files (exit status 4)"),
+            "{stderr}"
+        );
+        assert_eq!(
+            model.agent_requests.load(Ordering::SeqCst),
+            2,
+            "{format}: one gated retry, then the give-up"
+        );
+        assert!(model.gate_instruction_seen.load(Ordering::SeqCst));
+        let missing = if format == "json" {
+            let document: serde_json::Value = serde_json::from_slice(&output.stdout)
+                .unwrap_or_else(|e| panic!("one JSON document: {e}\n{}", text(&output.stdout)));
+            document["metadata"]["missing_files"].clone()
+        } else {
+            complete_event(&output)["missing_files"].clone()
+        };
+        let missing: Vec<String> = serde_json::from_value(missing).unwrap();
+        assert_eq!(missing.len(), 2, "{missing:?}");
+        assert!(
+            missing[0].contains("`answer.txt` does not exist"),
+            "{missing:?}"
+        );
+        assert!(missing[1].contains("`trace.md` is empty"), "{missing:?}");
+    }
+}

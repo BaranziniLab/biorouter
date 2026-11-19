@@ -8553,6 +8553,12 @@ export type SuccessCheck = {
     type: 'FileExists';
 } | {
     /**
+     * The file that must exist and be non-empty.
+     */
+    path: string;
+    type: 'FileNonEmpty';
+} | {
+    /**
      * The shell command whose output is inspected.
      */
     command: string;

@@ -2699,6 +2699,11 @@ struct ReplyLoopPolicy {
     budget: BudgetTracker,
 }
 
+/// A done gate installed on one agent for one session id
+/// ([`Agent::set_session_done_gate`]).
+pub(super) type SessionDoneGate =
+    std::sync::Mutex<Option<(String, crate::agents::done_gate::DoneGateConfig)>>;
+
 /// Resolve [`ReplyLoopPolicy`] for one reply.
 ///
 /// Split out of the `reply_internal` generator to keep its `poll` frame small —
@@ -2706,6 +2711,7 @@ struct ReplyLoopPolicy {
 fn resolve_reply_loop_policy(
     effort: ReasoningEffort,
     session_config: &SessionConfig,
+    session_done_gate: &SessionDoneGate,
 ) -> ReplyLoopPolicy {
     ReplyLoopPolicy {
         max_turns: effort.scale_turns(
@@ -2732,7 +2738,15 @@ fn resolve_reply_loop_policy(
         post_edit_diag_config:
             crate::agents::post_edit_diagnostics::PostEditDiagnosticsConfig::from_config(),
         self_critique_config: crate::agents::self_critique::SelfCritiqueConfig::from_config(),
-        done_gate_config: crate::agents::done_gate::DoneGateConfig::from_config(),
+        // A gate installed for this session (`biorouter run --require-file`)
+        // takes precedence over the global one.
+        done_gate_config: session_done_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|(id, _)| *id == session_config.id)
+            .map(|(_, gate)| gate.clone())
+            .unwrap_or_else(crate::agents::done_gate::DoneGateConfig::from_config),
         stall_config: crate::agents::stall::StallCheckConfig::from_config(Config::global()),
         mistake_config: crate::agents::mistakes::MistakeConfig::from_config(Config::global()),
         budget: BudgetTracker::new(ReplyBudget::resolve(
@@ -5258,6 +5272,9 @@ pub struct Agent {
     pub(super) live_acks: LiveAcks,
     /// How the last reply loop on this agent ended. See [`TurnExit`].
     pub(super) turn_exit: std::sync::Mutex<Option<TurnExit>>,
+    /// A done gate for one session, set by a headless caller
+    /// ([`Agent::set_session_done_gate`]). Read once per reply.
+    pub(super) session_done_gate: SessionDoneGate,
     /// Bumped on every accepted steer. A `watch` rather than the `Notify`
     /// above because several waits may be listening at once — the tool batch's
     /// status wake and a `workspace_watch` parked inside it — and `notify_one`
@@ -6627,6 +6644,7 @@ impl Agent {
             usage_limit_reply: Default::default(),
             live_acks: Default::default(),
             turn_exit: std::sync::Mutex::new(None),
+            session_done_gate: std::sync::Mutex::new(None),
             steer_arrivals: tokio::sync::watch::Sender::new(0),
             announced_steer_seq: std::sync::atomic::AtomicU64::new(0),
             pending_retry_note: std::sync::Mutex::new(None),
@@ -11559,6 +11577,24 @@ impl Agent {
         self.subagent_tool_enabled.store(enabled, Ordering::Relaxed);
     }
 
+    /// Install a done gate (BR-48) for `session_id` alone, or remove it with
+    /// `None`. While set, every reply of that session uses it in place of the
+    /// global `BIOROUTER_DONE_GATE*` configuration; replies of any other session
+    /// on this agent are unaffected. `biorouter run --require-file` sets it once,
+    /// as it builds its session, so the agent loop's configuration path is
+    /// unchanged for everyone else.
+    pub fn set_session_done_gate(
+        &self,
+        session_id: &str,
+        gate: Option<crate::agents::done_gate::DoneGateConfig>,
+    ) {
+        *self
+            .session_done_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            gate.map(|gate| (session_id.to_string(), gate));
+    }
+
     pub fn set_dictionary_learning(&self, enabled: bool) {
         self.dictionary_learning.store(enabled, Ordering::Release);
     }
@@ -15180,7 +15216,7 @@ impl Agent {
                 stall_config,
                 mistake_config,
                 mut budget,
-            } = resolve_reply_loop_policy(effort, &session_config);
+            } = resolve_reply_loop_policy(effort, &session_config, &self.session_done_gate);
             // BR-47: consecutive post-edit reflections this reply. Bounded by
             // `post_edit_diag_config.max_reflections` so a file that never parses
             // clean cannot wedge the turn — mirrors the PostToolUse block cap. Reset
@@ -17514,7 +17550,7 @@ impl Agent {
                                 let (feedback, published) = persist_steering_message(
                                     &session_manager,
                                     &session_config.id,
-                                    crate::agents::done_gate::gate_instruction(&failures),
+                                    done_gate_config.instruction(&failures),
                                 ).await?;
                                 if let Some(published) = published {
                                     yield published;
@@ -31939,12 +31975,53 @@ mod max_turns_setting_tests {
         }
     }
 
+    fn no_gate() -> SessionDoneGate {
+        std::sync::Mutex::new(None)
+    }
+
+    /// `biorouter run --require-file`: a gate installed for one session id wins
+    /// over the global (default off) gate for that session, and only for it.
+    #[tokio::test]
+    async fn a_session_done_gate_applies_to_its_session_only() {
+        crate::config::with_config_overrides(
+            HashMap::from([("BIOROUTER_DONE_GATE".to_string(), "false".to_string())]),
+            async {
+                let session = session_without_limit();
+                let off = resolve_reply_loop_policy(ReasoningEffort::Normal, &session, &no_gate());
+                assert!(!off.done_gate_config.is_active());
+
+                let gate = crate::agents::done_gate::DoneGateConfig::required_files(&[
+                    "answer.txt".to_string(),
+                ]);
+                let installed: SessionDoneGate =
+                    std::sync::Mutex::new(Some((session.id.clone(), gate)));
+                let on = resolve_reply_loop_policy(ReasoningEffort::Normal, &session, &installed);
+                assert!(on.done_gate_config.is_active());
+                assert_eq!(
+                    on.done_gate_config.kind,
+                    crate::agents::done_gate::DoneGateKind::RequiredFiles
+                );
+
+                let mut other = session_without_limit();
+                other.id = "another-session".to_string();
+                let elsewhere =
+                    resolve_reply_loop_policy(ReasoningEffort::Normal, &other, &installed);
+                assert!(!elsewhere.done_gate_config.is_active());
+            },
+        )
+        .await;
+    }
+
     async fn resolved_with_stored(value: &str) -> u32 {
         crate::config::with_config_overrides(
             HashMap::from([("BIOROUTER_MAX_TURNS".to_string(), value.to_string())]),
             async {
-                resolve_reply_loop_policy(ReasoningEffort::Normal, &session_without_limit())
-                    .max_turns
+                resolve_reply_loop_policy(
+                    ReasoningEffort::Normal,
+                    &session_without_limit(),
+                    &no_gate(),
+                )
+                .max_turns
             },
         )
         .await
@@ -31984,7 +32061,7 @@ mod max_turns_setting_tests {
                     ReasoningEffort::Normal,
                     ReasoningEffort::Deep,
                 ] {
-                    let policy = resolve_reply_loop_policy(effort, &session);
+                    let policy = resolve_reply_loop_policy(effort, &session, &no_gate());
                     assert_eq!(policy.max_turns, 0);
                     assert_eq!(policy.max_tool_calls, 0);
                 }
@@ -32001,8 +32078,11 @@ mod max_turns_setting_tests {
                 ("BIOROUTER_MAX_TOOL_CALLS".to_string(), "0".to_string()),
             ]),
             async {
-                let policy =
-                    resolve_reply_loop_policy(ReasoningEffort::Normal, &session_without_limit());
+                let policy = resolve_reply_loop_policy(
+                    ReasoningEffort::Normal,
+                    &session_without_limit(),
+                    &no_gate(),
+                );
                 assert_eq!(policy.max_turns, 0);
                 assert_eq!(policy.max_tool_calls, 0);
             },

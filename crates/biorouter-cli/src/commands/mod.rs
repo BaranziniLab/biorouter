@@ -6,6 +6,7 @@ pub(crate) mod crew_step;
 pub mod decide;
 pub mod decision_pull;
 pub mod decision_tier;
+pub mod deliverables;
 pub mod dictate;
 pub mod dictation;
 pub mod dictionary;

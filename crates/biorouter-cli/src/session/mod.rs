@@ -129,6 +129,11 @@ struct JsonMetadata {
     /// The abort code, when `status == "failed"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// The required files (`--require-file`) the run ended without, each as
+    /// its check's reason. Present only when the run had required files, and
+    /// empty when every one was there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    missing_files: Option<Vec<String>>,
 }
 
 #[derive(Serialize, Debug)]
@@ -158,6 +163,10 @@ enum StreamEvent {
     },
     Complete {
         total_tokens: Option<i32>,
+        /// As in the `json` document's metadata: the required files the run
+        /// ended without, present only when it had any.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        missing_files: Option<Vec<String>>,
     },
 }
 
@@ -253,6 +262,14 @@ pub struct CliSession {
     /// queries the (by then closed) store — without this snapshot every
     /// `--no-session` run reported zero tokens and zero messages.
     final_session_snapshot: Option<biorouter::session::Session>,
+    /// The files a headless run must leave behind (`--require-file`,
+    /// `BIOROUTER_RUN_REQUIRE_FILES`). Empty for every other session.
+    required_files: Vec<String>,
+    /// Which of [`Self::required_files`] were missing or empty when the last
+    /// turn ended, checked once just before the final output. Behind a lock
+    /// because that output is written while the reply stream still borrows
+    /// the session.
+    missing_files: std::sync::Mutex<Vec<crate::commands::deliverables::MissingFile>>,
 }
 
 #[cfg(feature = "dictation")]
@@ -487,7 +504,82 @@ impl CliSession {
             last_abort: None,
             ephemeral_store_dir: None,
             final_session_snapshot: None,
+            required_files: Vec::new(),
+            missing_files: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Give this headless run its deliverable gate: the agent is kept working
+    /// while any of `paths` is missing, empty or a directory (a done gate
+    /// installed for this session alone, ahead of the global one), and a run
+    /// that still ends without one exits 4 with the files named
+    /// ([`crate::commands::deliverables`]).
+    pub fn require_files(&mut self, paths: Vec<String>) {
+        self.agent.set_session_done_gate(
+            &self.session_id,
+            (!paths.is_empty())
+                .then(|| biorouter::agents::done_gate::DoneGateConfig::required_files(&paths)),
+        );
+        self.required_files = paths;
+    }
+
+    /// Check [`Self::required_files`] against the session working directory,
+    /// the same way the gate did, and remember the ones that do not count.
+    async fn check_required_files(&self) {
+        use biorouter::agents::retry::{run_success_check, CheckOutcome};
+        use biorouter::agents::types::SuccessCheck;
+        let mut missing = Vec::new();
+        if self.required_files.is_empty() {
+            *self.lock_missing_files() = missing;
+            return;
+        }
+        let working_dir = self
+            .agent
+            .config
+            .session_manager
+            .get_session(&self.session_id, false)
+            .await
+            .map(|session| session.working_dir)
+            .ok()
+            .or_else(|| std::env::current_dir().ok());
+        for path in &self.required_files {
+            let check = SuccessCheck::FileNonEmpty { path: path.clone() };
+            let reason = match run_success_check(
+                &check,
+                std::time::Duration::from_secs(30),
+                working_dir.as_deref(),
+            )
+            .await
+            {
+                Ok(CheckOutcome::Pass) => continue,
+                Ok(CheckOutcome::Fail(reason)) => reason,
+                Err(e) => format!("expected file `{path}` could not be checked: {e}"),
+            };
+            missing.push(crate::commands::deliverables::MissingFile {
+                path: path.clone(),
+                reason,
+            });
+        }
+        *self.lock_missing_files() = missing;
+    }
+
+    fn lock_missing_files(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Vec<crate::commands::deliverables::MissingFile>> {
+        self.missing_files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The `missing_files` field of the final output: `None` without
+    /// required files, else the reasons of those missing.
+    fn missing_files_report(&self) -> Option<Vec<String>> {
+        (!self.required_files.is_empty()).then(|| {
+            self.lock_missing_files()
+                .iter()
+                .map(|file| file.reason.clone())
+                .collect()
+        })
     }
 
     /// #31: adopt the private `--no-session` store's temp directory so it
@@ -1762,6 +1854,16 @@ impl CliSession {
             let message = format!("the turn did not complete: {}", code.wire_code());
             return Err(TurnFailed::new(code, message).into());
         }
+        // A run told to leave files behind that ended without them did not do
+        // what was asked, whatever ended its turn: exit 4, after an abort's
+        // own status and ahead of a stop's 3 (whose line is still printed).
+        let missing = self.lock_missing_files().clone();
+        if !missing.is_empty() {
+            if let Some(stopped) = &stopped {
+                eprintln!("{stopped}");
+            }
+            return Err(crate::commands::deliverables::DeliverablesMissing::new(&missing).into());
+        }
         match stopped {
             Some(stopped) => Err(stopped.into()),
             None => Ok(()),
@@ -2343,6 +2445,9 @@ impl CliSession {
     /// prints exactly one document (status derived from [`Self::last_abort`])
     /// and `stream-json` always terminates with `complete` (#31/#41).
     async fn emit_final_output(&self) -> Result<()> {
+        // Checked here, on every way out of a turn, so the final output and
+        // the exit status agree on which required files are missing.
+        self.check_required_files().await;
         let is_json_mode = self.output_format == "json";
         let is_stream_json_mode = self.output_format == "stream-json";
         if is_json_mode {
@@ -2356,7 +2461,10 @@ impl CliSession {
                 .await
                 .ok()
                 .and_then(|s| s.total_tokens);
-            emit_stream_event(&StreamEvent::Complete { total_tokens });
+            emit_stream_event(&StreamEvent::Complete {
+                total_tokens,
+                missing_files: self.missing_files_report(),
+            });
         } else {
             println!();
         }
@@ -2388,11 +2496,13 @@ impl CliSession {
                 total_tokens: session.total_tokens,
                 status: status.to_string(),
                 error,
+                missing_files: self.missing_files_report(),
             },
             Err(_) => JsonMetadata {
                 total_tokens: None,
                 status: status.to_string(),
                 error,
+                missing_files: self.missing_files_report(),
             },
         };
         let json_output = JsonOutput {

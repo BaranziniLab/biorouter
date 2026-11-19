@@ -85,6 +85,16 @@ pub enum SuccessCheck {
         /// The file (or directory) that must exist.
         path: String,
     },
+    /// Pass when `path` is a regular file with at least one byte in it. A
+    /// directory, a zero-byte file and a missing path all fail, so a
+    /// placeholder created with `touch` does not count as a deliverable. A
+    /// relative `path` resolves the way [`FileExists`](SuccessCheck::FileExists)
+    /// does. `biorouter run --require-file` builds its gate from these.
+    #[serde(alias = "file_non_empty", alias = "filenonempty")]
+    FileNonEmpty {
+        /// The file that must exist and be non-empty.
+        path: String,
+    },
     /// BR-48: run `command` and pass when its combined stdout+stderr contains
     /// `substring`. Unlike [`Shell`](SuccessCheck::Shell), the exit status is
     /// ignored — this checks the *content* of the output (e.g. `0 failed`,

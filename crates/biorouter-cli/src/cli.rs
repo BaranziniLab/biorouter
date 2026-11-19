@@ -381,6 +381,17 @@ pub struct RunBehavior {
         hide = true
     )]
     pub scheduled_job_id: Option<String>,
+
+    /// Files the run must leave behind, non-empty, before it may finish
+    #[arg(
+        long = "require-file",
+        value_name = "PATH",
+        action = clap::ArgAction::Append,
+        conflicts_with = "interactive",
+        help = "A file the run must leave behind, non-empty, before it may finish (repeatable)",
+        long_help = "A file the run must leave behind before it may finish. When the agent tries to end its turn while the file is missing, empty or a directory, it is told so and keeps working, up to BIOROUTER_DONE_GATE_MAX_ITERATIONS times (default 3). A run that still ends without it exits with status 4. A relative path resolves against the session working directory. Can be given several times; BIOROUTER_RUN_REQUIRE_FILES (paths separated by ':') adds more. Not available with --interactive."
+    )]
+    pub require_files: Vec<String>,
 }
 
 /// The provider and model a NEW session row would run with.
@@ -3186,6 +3197,7 @@ async fn handle_shared_run(
         ("--render-workflow", input.render_workflow),
         ("--no-session", behavior.no_session),
         ("--scheduled-job-id", behavior.scheduled_job_id.is_some()),
+        ("--require-file", !behavior.require_files.is_empty()),
     ])?;
     let mut options =
         shared_conversation_options(identifier, behavior.resume, session, extensions, model)?;
@@ -3648,6 +3660,31 @@ fn parse_run_input(
     }
 }
 
+/// The environment variable a harness sets to give `biorouter run` its
+/// required files without changing the command line (paths separated as
+/// `PATH` is: `:` on Unix, `;` on Windows).
+pub const REQUIRE_FILES_ENV: &str = "BIOROUTER_RUN_REQUIRE_FILES";
+
+/// The files a headless run must leave behind: the `--require-file` flags,
+/// then the environment variable's entries, blanks dropped, each once.
+pub fn required_run_files(flags: &[String], env: Option<&std::ffi::OsStr>) -> Vec<String> {
+    let mut required: Vec<String> = Vec::new();
+    let from_env = env
+        .map(|raw| {
+            std::env::split_paths(raw)
+                .map(|path| path.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    for path in flags.iter().cloned().chain(from_env) {
+        let path = path.trim().to_string();
+        if !path.is_empty() && !required.contains(&path) {
+            required.push(path);
+        }
+    }
+    required
+}
+
 async fn handle_run_command(
     input_opts: InputOptions,
     identifier: Option<Identifier>,
@@ -3727,6 +3764,20 @@ async fn handle_run_command(
         decisions: session_opts.decisions(),
     })
     .await;
+
+    // A headless run's deliverable gate: `--require-file` (which clap keeps
+    // away from `--interactive`) plus `BIOROUTER_RUN_REQUIRE_FILES`, which a
+    // harness can set without changing the command line. Never installed for
+    // an interactive chat.
+    if !run_behavior.interactive {
+        let required = required_run_files(
+            &run_behavior.require_files,
+            std::env::var_os(REQUIRE_FILES_ENV).as_deref(),
+        );
+        if !required.is_empty() {
+            session.require_files(required);
+        }
+    }
 
     if run_behavior.interactive {
         session.interactive(input_config.contents).await
@@ -4960,6 +5011,55 @@ mod cli_tests {
         .expect("shared run options parse");
         assert!(!needs_tool_bridge(&run.command));
         assert!(matches!(run.command, Some(Command::Run { .. })));
+    }
+
+    /// P01: `--require-file` is a `run` flag (not a session option, so it can
+    /// never reach an interactive chat), repeatable, refused beside
+    /// `--interactive`, and `BIOROUTER_RUN_REQUIRE_FILES` adds to it.
+    #[test]
+    fn require_file_is_a_repeatable_headless_run_flag() {
+        let parsed = Cli::try_parse_from([
+            "biorouter",
+            "run",
+            "--text",
+            "synthetic prompt",
+            "--require-file",
+            "answer.txt",
+            "--require-file",
+            "/app/trace.md",
+        ])
+        .expect("repeated --require-file parses");
+        let Some(Command::Run { run_behavior, .. }) = parsed.command else {
+            panic!("run parses as Command::Run");
+        };
+        assert_eq!(run_behavior.require_files, ["answer.txt", "/app/trace.md"]);
+
+        let error = Cli::try_parse_from([
+            "biorouter",
+            "run",
+            "--interactive",
+            "--text",
+            "synthetic prompt",
+            "--require-file",
+            "answer.txt",
+        ])
+        .err()
+        .expect("--require-file conflicts with --interactive");
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+
+        assert!(
+            Cli::try_parse_from(["biorouter", "session", "--require-file", "x"]).is_err(),
+            "an interactive session has no --require-file"
+        );
+
+        let flags = vec!["answer.txt".to_string(), "trace.md".to_string()];
+        let env = std::env::join_paths(["trace.md", "", "/app/extra.csv"]).unwrap();
+        assert_eq!(
+            required_run_files(&flags, Some(env.as_os_str())),
+            ["answer.txt", "trace.md", "/app/extra.csv"],
+            "flags first, then the variable's entries, blanks dropped, each once"
+        );
+        assert!(required_run_files(&[], None).is_empty());
     }
 
     #[test]
