@@ -134,6 +134,34 @@ struct JsonMetadata {
     /// empty when every one was there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     missing_files: Option<Vec<String>>,
+    /// Why the last turn ended ([`StopReport`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stop_reason: Option<String>,
+    /// Model requests the turn's loop made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    actions: Option<u32>,
+    /// Tool calls the turn's loop dispatched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<u32>,
+    /// Seconds from sending the prompt to the end of the turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    wall_s: Option<f64>,
+}
+
+/// Why a turn ended and what it did, for the `complete` event and the `json`
+/// document. `stop_reason` is one of `end_turn`, `turn_limit`,
+/// `tool_call_limit`, `stall_stop`, `budget_stop`, `usage_limit_stop`,
+/// `monitor_stop`, `aborted` (the code is in the `aborted` event or the
+/// `error` field), `cancelled`, or `deliverables_missing` (the turn ended on
+/// its own but a `--require-file` file is missing). The counts come from the
+/// agent loop ([`biorouter::agents::turn_stop_record`]) and are absent when no
+/// loop ran.
+#[derive(Debug, Clone, PartialEq)]
+struct StopReport {
+    stop_reason: String,
+    actions: Option<u32>,
+    tool_calls: Option<u32>,
+    wall_s: f64,
 }
 
 #[derive(Serialize, Debug)]
@@ -167,6 +195,13 @@ enum StreamEvent {
         /// ended without, present only when it had any.
         #[serde(skip_serializing_if = "Option::is_none")]
         missing_files: Option<Vec<String>>,
+        /// Why the turn ended, as in [`StopReport`].
+        stop_reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        actions: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_calls: Option<u32>,
+        wall_s: f64,
     },
 }
 
@@ -270,6 +305,11 @@ pub struct CliSession {
     /// because that output is written while the reply stream still borrows
     /// the session.
     missing_files: std::sync::Mutex<Vec<crate::commands::deliverables::MissingFile>>,
+    /// When the last turn's prompt was sent, for the final output's `wall_s`.
+    turn_started: Option<std::time::Instant>,
+    /// Whether the last turn ended because it was cancelled (Ctrl-C), which
+    /// drops the reply stream before the agent loop can record its stop.
+    turn_cancelled: bool,
 }
 
 #[cfg(feature = "dictation")]
@@ -506,6 +546,8 @@ impl CliSession {
             final_session_snapshot: None,
             required_files: Vec::new(),
             missing_files: std::sync::Mutex::new(Vec::new()),
+            turn_started: None,
+            turn_cancelled: false,
         }
     }
 
@@ -1882,6 +1924,20 @@ impl CliSession {
         if let Some(stop) = self.agent.take_monitor_stop(&self.session_id) {
             return Some(monitor_stopped(&stop.name, &self.session_id, no_session));
         }
+        // P06: an action, tool-call, stall, budget or usage limit stopped the
+        // turn short of its work. It ended normally in the agent loop (and stays
+        // resumable there); only the run's exit status says so.
+        if let Some(stop) = self
+            .agent
+            .last_turn_stop()
+            .filter(|stop| stop.reason.is_limit_stop())
+        {
+            return Some(crate::commands::supervision_stop::limit_stopped(
+                &stop,
+                &self.session_id,
+                no_session,
+            ));
+        }
         let plan = biorouter::agents::orchestration_plan::snapshot(
             &self.agent.config.session_manager,
             &self.session_id,
@@ -1898,6 +1954,8 @@ impl CliSession {
         cancel_token: CancellationToken,
     ) -> Result<()> {
         self.last_abort = None;
+        self.turn_started = Some(std::time::Instant::now());
+        self.turn_cancelled = false;
         let is_json_mode = self.output_format == "json";
         let is_stream_json_mode = self.output_format == "stream-json";
 
@@ -2432,10 +2490,42 @@ impl CliSession {
                     record_cancelled_turn_in(&self.agent, &self.session_id, &mut self.messages)
                         .await;
                 self.render_cancel_note(&text, note.as_ref());
+                self.turn_cancelled = true;
             }
         }
 
         self.emit_final_output().await
+    }
+
+    /// Why the last turn ended ([`StopReport`]): an abort first, then a cancel,
+    /// then what the agent loop recorded. A turn that ended on its own while a
+    /// required file is missing reads `deliverables_missing`.
+    fn stop_report(&self) -> StopReport {
+        use biorouter::agents::turn_stop_record::TurnStopReason;
+        let recorded = self.agent.last_turn_stop();
+        let stop_reason = if self.last_abort.is_some() {
+            TurnStopReason::Aborted.as_str()
+        } else if self.turn_cancelled {
+            TurnStopReason::Cancelled.as_str()
+        } else {
+            match recorded.map(|stop| stop.reason) {
+                None | Some(TurnStopReason::EndTurn) if !self.lock_missing_files().is_empty() => {
+                    "deliverables_missing"
+                }
+                Some(reason) => reason.as_str(),
+                None => TurnStopReason::EndTurn.as_str(),
+            }
+        };
+        let wall_s = self
+            .turn_started
+            .map(|started| (started.elapsed().as_secs_f64() * 1000.0).round() / 1000.0)
+            .unwrap_or_default();
+        StopReport {
+            stop_reason: stop_reason.to_string(),
+            actions: recorded.map(|stop| stop.actions),
+            tool_calls: recorded.map(|stop| stop.tool_calls),
+            wall_s,
+        }
     }
 
     /// The ONE structured-output finalizer: every exit from
@@ -2461,9 +2551,14 @@ impl CliSession {
                 .await
                 .ok()
                 .and_then(|s| s.total_tokens);
+            let report = self.stop_report();
             emit_stream_event(&StreamEvent::Complete {
                 total_tokens,
                 missing_files: self.missing_files_report(),
+                stop_reason: report.stop_reason,
+                actions: report.actions,
+                tool_calls: report.tool_calls,
+                wall_s: report.wall_s,
             });
         } else {
             println!();
@@ -2485,6 +2580,7 @@ impl CliSession {
             "completed"
         };
         let error = self.last_abort.as_ref().map(|c| c.wire_code().to_string());
+        let report = self.stop_report();
         let metadata = match self
             .agent
             .config
@@ -2497,12 +2593,20 @@ impl CliSession {
                 status: status.to_string(),
                 error,
                 missing_files: self.missing_files_report(),
+                stop_reason: Some(report.stop_reason),
+                actions: report.actions,
+                tool_calls: report.tool_calls,
+                wall_s: Some(report.wall_s),
             },
             Err(_) => JsonMetadata {
                 total_tokens: None,
                 status: status.to_string(),
                 error,
                 missing_files: self.missing_files_report(),
+                stop_reason: Some(report.stop_reason),
+                actions: report.actions,
+                tool_calls: report.tool_calls,
+                wall_s: Some(report.wall_s),
             },
         };
         let json_output = JsonOutput {

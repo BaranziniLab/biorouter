@@ -120,6 +120,7 @@ mod tool_execution;
 pub mod tool_errors;
 pub mod turn_abort;
 pub mod turn_guard;
+pub mod turn_stop_record;
 pub mod types;
 // Per-chat, default per-chat and monthly usage limits, enforced before every
 // model request (`docs/agent-loop/usage-limits.md`).

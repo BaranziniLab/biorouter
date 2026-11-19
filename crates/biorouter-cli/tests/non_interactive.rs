@@ -1289,3 +1289,117 @@ async fn an_unmet_require_file_gate_exits_4_and_names_the_files() {
         assert!(missing[1].contains("`trace.md` is empty"), "{missing:?}");
     }
 }
+
+/// P06: a run `--max-turns` stops reports it. The model calls a tool on every
+/// request; with `--max-turns 1` the loop stops before a second request. The
+/// `complete` event (and the `json` document) say `turn_limit` with the counts,
+/// and the run exits 3 with one line naming the limit, where it used to exit 0
+/// like a finished run.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_turn_limit_stop_is_reported_and_exits_3() {
+    for format in ["stream-json", "json"] {
+        let model = ScriptedModel::new(vec![Scripted::Shell("true")]);
+        let (endpoint, _server) = serve_scripted_model(model.clone()).await;
+        let sandbox = headless_sandbox();
+        let output = run_headless(
+            &sandbox,
+            &endpoint,
+            &[
+                "--output-format",
+                format,
+                "--max-turns",
+                "1",
+                "--text",
+                "Keep going",
+            ],
+            &[],
+        )
+        .await;
+        let stderr = text(&output.stderr);
+        assert_eq!(output.status.code(), Some(3), "{format}: {stderr}");
+        assert!(
+            stderr.contains(
+                "This run was stopped by its action limit (1 action without user input), not \
+                 because its work was finished (exit status 3, stop reason turn_limit)."
+            ),
+            "{stderr}"
+        );
+        assert_eq!(model.agent_requests.load(Ordering::SeqCst), 1, "{format}");
+        let report = if format == "json" {
+            let document: serde_json::Value = serde_json::from_slice(&output.stdout)
+                .unwrap_or_else(|e| panic!("one JSON document: {e}\n{}", text(&output.stdout)));
+            assert_eq!(document["metadata"]["status"], "completed");
+            document["metadata"].clone()
+        } else {
+            complete_event(&output)
+        };
+        assert_eq!(report["stop_reason"], "turn_limit", "{report}");
+        assert_eq!(report["actions"], 1, "{report}");
+        assert_eq!(report["tool_calls"], 1, "{report}");
+        assert!(report["wall_s"].as_f64().is_some(), "{report}");
+    }
+}
+
+/// P06: a turn the model ends on its own reports `end_turn` and exits 0, with
+/// its counts. A cap stop that also leaves a required file missing exits 4:
+/// the missing deliverable outranks the stop, whose line is still printed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_ordinary_end_reports_end_turn_and_a_capped_run_missing_files_exits_4() {
+    let model = ScriptedModel::new(vec![
+        Scripted::Shell("printf 'ok\\n' > answer.txt"),
+        Scripted::Text("Done."),
+    ]);
+    let (endpoint, _server) = serve_scripted_model(model.clone()).await;
+    let sandbox = headless_sandbox();
+    let output = run_headless(
+        &sandbox,
+        &endpoint,
+        &[
+            "--output-format",
+            "stream-json",
+            "--text",
+            "Write answer.txt",
+        ],
+        &[],
+    )
+    .await;
+    assert_eq!(output.status.code(), Some(0), "{}", text(&output.stderr));
+    let complete = complete_event(&output);
+    assert_eq!(complete["stop_reason"], "end_turn", "{complete}");
+    assert_eq!(complete["actions"], 2, "{complete}");
+    assert_eq!(complete["tool_calls"], 1, "{complete}");
+
+    let model = ScriptedModel::new(vec![Scripted::Shell("true")]);
+    let (endpoint, _server) = serve_scripted_model(model.clone()).await;
+    let sandbox = headless_sandbox();
+    let output = run_headless(
+        &sandbox,
+        &endpoint,
+        &[
+            "--output-format",
+            "stream-json",
+            "--max-turns",
+            "1",
+            "--require-file",
+            "answer.txt",
+            "--text",
+            "Write answer.txt",
+        ],
+        &[],
+    )
+    .await;
+    let stderr = text(&output.stderr);
+    assert_eq!(output.status.code(), Some(4), "{stderr}");
+    assert!(stderr.contains("stop reason turn_limit"), "{stderr}");
+    assert!(
+        stderr.contains("This run ended without its required files (exit status 4)"),
+        "{stderr}"
+    );
+    let complete = complete_event(&output);
+    assert_eq!(complete["stop_reason"], "turn_limit", "{complete}");
+    assert_eq!(
+        complete["missing_files"].as_array().map(Vec::len),
+        Some(1),
+        "{complete}"
+    );
+}

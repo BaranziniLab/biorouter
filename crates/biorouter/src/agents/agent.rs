@@ -5275,6 +5275,10 @@ pub struct Agent {
     /// A done gate for one session, set by a headless caller
     /// ([`Agent::set_session_done_gate`]). Read once per reply.
     pub(super) session_done_gate: SessionDoneGate,
+    /// Why the last reply loop ended, with its counts. See
+    /// [`crate::agents::turn_stop_record`].
+    pub(super) turn_stop_record:
+        std::sync::Mutex<Option<crate::agents::turn_stop_record::TurnStopRecord>>,
     /// Bumped on every accepted steer. A `watch` rather than the `Notify`
     /// above because several waits may be listening at once — the tool batch's
     /// status wake and a `workspace_watch` parked inside it — and `notify_one`
@@ -6645,6 +6649,7 @@ impl Agent {
             live_acks: Default::default(),
             turn_exit: std::sync::Mutex::new(None),
             session_done_gate: std::sync::Mutex::new(None),
+            turn_stop_record: std::sync::Mutex::new(None),
             steer_arrivals: tokio::sync::watch::Sender::new(0),
             announced_steer_seq: std::sync::atomic::AtomicU64::new(0),
             pending_retry_note: std::sync::Mutex::new(None),
@@ -7506,6 +7511,39 @@ impl Agent {
             .turn_exit
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(exit);
+    }
+
+    /// Record why the reply loop is ending ([`crate::agents::turn_stop_record`]),
+    /// beside [`Self::record_turn_exit`]. Scalars only, so a call from the
+    /// `reply_internal` generator adds nothing to its frame.
+    pub(super) fn record_turn_stop(
+        &self,
+        reason: crate::agents::turn_stop_record::TurnStopReason,
+        actions: u32,
+        tool_calls: u32,
+        limit: Option<u32>,
+    ) {
+        *self
+            .turn_stop_record
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(crate::agents::turn_stop_record::TurnStopRecord {
+                reason,
+                actions,
+                tool_calls,
+                limit,
+            });
+    }
+
+    /// Why this agent's last reply loop ended, and its counts. `None` when no
+    /// loop ran since the reply began (a command answered in the prologue, a
+    /// reply that failed to start). Not consumed: a headless caller reads it as
+    /// often as it reports.
+    pub fn last_turn_stop(&self) -> Option<crate::agents::turn_stop_record::TurnStopRecord> {
+        *self
+            .turn_stop_record
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn turn_exit_is_resumable(&self) -> bool {
@@ -12289,6 +12327,14 @@ impl Agent {
                     )
             )
         });
+        // A new reply has not stopped yet. An elicitation answer belongs to a
+        // turn still running, whose stop is recorded when it ends.
+        if !answers_an_elicitation {
+            *self
+                .turn_stop_record
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
         let decision_turn = (!answers_an_elicitation).then(|| {
             crate::decision::monitor::DecisionTurnGuard::begin(
                 Arc::clone(&self.decisions.monitors),
@@ -13614,6 +13660,12 @@ impl Agent {
         let hit = self.usage_limit_hold(session_id).await?;
         self.usage_limit_reply.mark_interrupted();
         self.record_turn_exit(TurnExit::Final);
+        self.record_turn_stop(
+            crate::agents::turn_stop_record::TurnStopReason::UsageLimitStop,
+            0,
+            0,
+            None,
+        );
         emit_loop_safety(
             LoopSafetyKind::UsageLimitStop,
             session_id,
@@ -15284,6 +15336,12 @@ impl Agent {
                         None,
                         None,
                     );
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::Cancelled,
+                        turns_taken,
+                        tool_calls_taken,
+                        None,
+                    );
                     break;
                 }
 
@@ -15296,6 +15354,12 @@ impl Agent {
                     match action {
                         StructuredFinalOutputAction::Emit(final_output) => {
                             self.record_turn_exit(TurnExit::Final);
+                            self.record_turn_stop(
+                                crate::agents::turn_stop_record::TurnStopReason::EndTurn,
+                                turns_taken,
+                                tool_calls_taken,
+                                None,
+                            );
                             yield AgentEvent::Message(assistant_text(final_output));
                             break;
                         }
@@ -15341,6 +15405,14 @@ impl Agent {
                 }
                 if max_turns > 0 && turns_taken > max_turns {
                     self.record_turn_exit(TurnExit::ResumableForUserInput);
+                    // This iteration's request is not sent: the completed
+                    // actions are one fewer than the count that tripped.
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::TurnLimit,
+                        turns_taken.saturating_sub(1),
+                        tool_calls_taken,
+                        Some(max_turns),
+                    );
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     emit_loop_safety(
@@ -15378,6 +15450,12 @@ impl Agent {
                 }
                 if max_tool_calls > 0 && tool_calls_taken > max_tool_calls {
                     self.record_turn_exit(TurnExit::ResumableForUserInput);
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::ToolCallLimit,
+                        turns_taken.saturating_sub(1),
+                        tool_calls_taken,
+                        Some(max_tool_calls),
+                    );
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     emit_loop_safety(
@@ -15418,6 +15496,12 @@ impl Agent {
                 }
                 if stall_deadline.is_some_and(|deadline| turns_taken > deadline) {
                     self.record_turn_exit(TurnExit::ResumableForUserInput);
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::StallStop,
+                        turns_taken.saturating_sub(1),
+                        tool_calls_taken,
+                        None,
+                    );
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     let reason = stall_watch
@@ -15454,6 +15538,12 @@ impl Agent {
                     // A spend cap is not "actions without user input": a steer
                     // buys no extra model call here, and is stored unanswered.
                     self.record_turn_exit(TurnExit::Final);
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::BudgetStop,
+                        turns_taken.saturating_sub(1),
+                        tool_calls_taken,
+                        None,
+                    );
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     let snapshot = budget.snapshot_at(reply_started.elapsed());
@@ -15504,6 +15594,13 @@ impl Agent {
                     }
                     UsageLimitGate::Stop(events) => {
                         native_supervision_required = true;
+                        // Asked before this iteration's request, which is not sent.
+                        self.record_turn_stop(
+                            crate::agents::turn_stop_record::TurnStopReason::UsageLimitStop,
+                            turns_taken.saturating_sub(1),
+                            tool_calls_taken,
+                            None,
+                        );
                         for event in events {
                             yield event;
                         }
@@ -17424,6 +17521,12 @@ impl Agent {
 
                 if let Some((code, message)) = pending_turn_abort.take() {
                     self.record_turn_exit(TurnExit::Final);
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::Aborted,
+                        turns_taken,
+                        tool_calls_taken,
+                        None,
+                    );
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     deferred_turn_abort = Some((code, message));
@@ -17436,6 +17539,12 @@ impl Agent {
                 // call (monitors, done gate, self-critique, Stop hooks, `/goal`).
                 if self.usage_limit_reply.stopped() {
                     native_supervision_required = true;
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::UsageLimitStop,
+                        turns_taken,
+                        tool_calls_taken,
+                        None,
+                    );
                     break;
                 }
 
@@ -17480,6 +17589,12 @@ impl Agent {
                         // is left in it is stored as unanswered, or a steer
                         // the person typed continues the turn.
                         self.record_turn_exit(TurnExit::ResumableForUserInput);
+                        self.record_turn_stop(
+                            crate::agents::turn_stop_record::TurnStopReason::MonitorStop,
+                            turns_taken,
+                            tool_calls_taken,
+                            None,
+                        );
                         crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                         native_supervision_required = true;
                         break;
@@ -17627,6 +17742,12 @@ impl Agent {
                             // A safety stop, as at the post-iteration point:
                             // no commit point, the queue stays open.
                             self.record_turn_exit(TurnExit::ResumableForUserInput);
+                            self.record_turn_stop(
+                                crate::agents::turn_stop_record::TurnStopReason::MonitorStop,
+                                turns_taken,
+                                tool_calls_taken,
+                                None,
+                            );
                             crate::agents::subagent_handle::begin_parent_closing(
                                 &session_config.id,
                             );
@@ -17649,6 +17770,12 @@ impl Agent {
                             tokio::task::yield_now().await;
                             continue;
                         }
+                        self.record_turn_stop(
+                            crate::agents::turn_stop_record::TurnStopReason::EndTurn,
+                            turns_taken,
+                            tool_calls_taken,
+                            None,
+                        );
                         // Subagents get an observe-only SubagentStop instead of a
                         // blockable Stop (avoids nested runaway loops).
                         let mut payload = crate::hooks::HookPayload::new(
@@ -17741,6 +17868,12 @@ impl Agent {
                                 tokio::task::yield_now().await;
                                 continue;
                             }
+                            self.record_turn_stop(
+                                crate::agents::turn_stop_record::TurnStopReason::EndTurn,
+                                turns_taken,
+                                tool_calls_taken,
+                                None,
+                            );
                             break;
                         }
                         TurnStop::KeepWorking { feedback, notice } => {

@@ -1430,7 +1430,7 @@ on.
 | 0 | The run finished, including a run whose phase plan still has phases pending |
 | 1 | A failure, such as a workflow that was not started |
 | 2 | The command needs a terminal it does not have |
-| 3 | The chat's supervision ended the run short of its work: a monitor stopped the turn, or the plan ended with a phase its gate holds (its last check did not pass) or a phase left blocked |
+| 3 | The run was stopped short of its work: a monitor stopped the turn, the plan ended with a phase its gate holds (its last check did not pass) or a phase left blocked, or a limit stopped the turn (the action limit `--max-turns`, the tool-call limit, the stall stop, the reply budget or a usage limit) |
 | 4 | The run ended without a file it was told to leave behind (`--require-file`): one line on stderr names each missing or empty file |
 | 70 and up | A turn that aborted: 70 a provider failure, 75 a provider that refused the credentials, 76 a tool loop, 77 a worker that never answered, 78 a session store failure, 79 to 81 a provider reply that could not be completed |
 
@@ -1440,7 +1440,26 @@ On status 3, one line on stderr says what stopped the run and how to carry the c
 ```text
 Monitor 'Form reached' stopped this run (exit status 3). To carry on, send the chat a message: biorouter run --resume --session-id 20261110_5 --text "<message>", or open it with biorouter session --resume --session-id 20261110_5.
 This run ended with phase "verify" held by its gate, which did not pass (exit status 3). See the gates with biorouter session gates 20261110_5. To carry on, …
+This run was stopped by its action limit (200 actions without user input), not because its work was finished (exit status 3, stop reason turn_limit). To carry on, …
 ```
+
+When several apply, an aborted turn's status wins, then 4, then 3.
+
+**Why the run ended, in `json` and `stream-json`.** The `complete` event that ends a
+`stream-json` run, and the `metadata` of the `json` document, carry:
+
+- `stop_reason`: `end_turn` (the model ended its turn), `turn_limit`, `tool_call_limit`,
+  `stall_stop`, `budget_stop`, `usage_limit_stop`, `monitor_stop`, `aborted` (the code is in the
+  `aborted` event, or in `metadata.error`), `cancelled`, or `deliverables_missing` (the turn ended
+  on its own but a `--require-file` file is missing)
+- `actions` and `tool_calls`: the model requests and the tool calls the turn's loop made. Provider
+  retries and Biorouter's own side requests (a title, a summary) are not counted. Absent when no
+  loop ran
+- `wall_s`: seconds from sending the prompt to the end of the turn
+- `missing_files`: only with `--require-file`, one reason per required file that is missing,
+  empty or a directory, and an empty list when all are there
+
+`metadata.status` keeps its meaning: `failed` only for a turn that aborted.
 
 A `--no-session` run has no chat to carry on and says so. Only `biorouter run` exits 3 for this:
 the debug chat for a failed extension and `biorouter bench` treat such a turn as completed.
