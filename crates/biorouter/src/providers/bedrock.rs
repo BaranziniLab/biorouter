@@ -932,6 +932,238 @@ mod tests {
         assert_eq!(issue_527_cache_point_count(json), 4);
     }
 
+    fn issue_527_guard_response(
+        status: u16,
+        error_type: Option<&str>,
+        body: &str,
+    ) -> aws_sdk_bedrockruntime::config::http::HttpResponse {
+        use aws_smithy_runtime_api::http::StatusCode;
+        use aws_smithy_types::body::SdkBody;
+
+        let mut response = aws_sdk_bedrockruntime::config::http::HttpResponse::new(
+            StatusCode::try_from(status).unwrap(),
+            SdkBody::from(body.as_bytes().to_vec()),
+        );
+        response
+            .headers_mut()
+            .insert("content-type", "application/json");
+        if let Some(error_type) = error_type {
+            response
+                .headers_mut()
+                .insert("x-amzn-errortype", error_type.to_owned());
+        }
+        response
+    }
+
+    fn issue_527_guard_success(
+        streaming: bool,
+    ) -> aws_sdk_bedrockruntime::config::http::HttpResponse {
+        let mut response = issue_527_guard_response(
+            200,
+            None,
+            if streaming {
+                ""
+            } else {
+                r#"{"output":{"message":{"role":"assistant","content":[{"text":"done"}]}},"stopReason":"end_turn","usage":{"inputTokens":1,"outputTokens":1,"totalTokens":2},"metrics":{"latencyMs":0}}"#
+            },
+        );
+        if streaming {
+            response
+                .headers_mut()
+                .insert("content-type", "application/vnd.amazon.eventstream");
+        }
+        response
+    }
+
+    fn issue_527_guard_replay(
+        responses: Vec<aws_sdk_bedrockruntime::config::http::HttpResponse>,
+    ) -> aws_smithy_http_client::test_util::StaticReplayClient {
+        use aws_sdk_bedrockruntime::config::http::HttpRequest;
+        use aws_smithy_http_client::test_util::{ReplayEvent, StaticReplayClient};
+        use aws_smithy_types::body::SdkBody;
+
+        StaticReplayClient::new(
+            responses
+                .into_iter()
+                .map(|response| ReplayEvent::new(HttpRequest::new(SdkBody::empty()), response))
+                .collect(),
+        )
+    }
+
+    fn issue_527_guard_requests(
+        client: &aws_smithy_http_client::test_util::StaticReplayClient,
+    ) -> Vec<serde_json::Value> {
+        client
+            .actual_requests()
+            .map(|request| {
+                serde_json::from_slice(request.body().bytes().expect("buffered SDK request"))
+                    .expect("SDK JSON request")
+            })
+            .collect()
+    }
+
+    async fn issue_527_assert_wire_error_preserves_cache_policy(
+        label: &str,
+        status: u16,
+        error_type: Option<&str>,
+        body: &str,
+        streaming_first: bool,
+    ) {
+        let first_client = issue_527_guard_replay(vec![
+            issue_527_guard_response(status, error_type, body),
+            issue_527_guard_success(streaming_first),
+        ]);
+        let (provider, _) = capturing_provider().await;
+        let provider = provider.with_http_client(first_client.clone());
+        let config =
+            ModelConfig::new_or_fail("us.anthropic.claude-opus-5-5").with_max_tokens(Some(1234));
+        let (system, messages, tools) = issue_527_fixture();
+        let first_failed = if streaming_first {
+            provider
+                .converse_stream(&config, &system, &messages, &tools)
+                .await
+                .is_err()
+        } else {
+            provider
+                .converse(&config, &system, &messages, &tools)
+                .await
+                .is_err()
+        };
+        let first_requests = issue_527_guard_requests(&first_client);
+
+        let next_client = issue_527_guard_replay(vec![issue_527_guard_success(!streaming_first)]);
+        let provider = provider.with_http_client(next_client.clone());
+        let next_succeeded = if streaming_first {
+            provider
+                .converse(&config, &system, &messages, &tools)
+                .await
+                .is_ok()
+        } else {
+            provider
+                .converse_stream(&config, &system, &messages, &tools)
+                .await
+                .is_ok()
+        };
+        let next_requests = issue_527_guard_requests(&next_client);
+
+        assert!(
+            !first_requests.is_empty(),
+            "{label}: fixture must capture the initial SDK request"
+        );
+        assert!(
+            next_succeeded,
+            "{label}: fixture next valid call must succeed"
+        );
+        assert_eq!(
+            next_requests.len(),
+            1,
+            "{label}: fixture next valid request"
+        );
+        let initial_points = issue_527_cache_point_count(&first_requests[0]);
+        let next_points = issue_527_cache_point_count(&next_requests[0]);
+        assert!(
+            first_failed,
+            "{label}: the original wire failure must surface; requests={}, initial points={initial_points}, next points={next_points}",
+            first_requests.len()
+        );
+        assert_eq!(first_requests.len(), 1, "{label}: no compatibility resend");
+        assert_eq!(
+            next_points, initial_points,
+            "{label}: an unrelated failure must not disable caching across APIs"
+        );
+    }
+
+    #[tokio::test]
+    async fn issue_527_unknown_wire_codes_do_not_retry_or_disable_caching() {
+        for (label, error_type, body) in [
+            (
+                "nested code namespace",
+                None,
+                r#"{"code":"ns#Other#ValidationException","message":"cachepoint is not supported"}"#,
+            ),
+            (
+                "whitespace is part of the unknown code",
+                None,
+                r#"{"code":" ValidationException ","message":"cachepoint is not supported"}"#,
+            ),
+            (
+                "header and body code conflict",
+                Some("ValidationException"),
+                r#"{"code":"AccessDeniedException","message":"cachepoint is not supported"}"#,
+            ),
+            (
+                "body code and type conflict",
+                Some("ValidationException"),
+                r#"{"code":"ValidationException","__type":"AccessDeniedException","message":"cachepoint is not supported"}"#,
+            ),
+        ] {
+            for streaming_first in [false, true] {
+                issue_527_assert_wire_error_preserves_cache_policy(
+                    label,
+                    400,
+                    error_type,
+                    body,
+                    streaming_first,
+                )
+                .await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn issue_527_invalid_raw_evidence_does_not_retry_or_disable_caching() {
+        let oversized = serde_json::json!({
+            "code": "ValidationException",
+            "message": "cachepoint is not supported",
+            "padding": "x".repeat(4200),
+        })
+        .to_string();
+        assert!(oversized.len() > 4096);
+        for (label, error_type, body) in [
+            (
+                "typed message deserialization failure",
+                None,
+                r#"{"code":"ValidationException","message":123,"Message":"cachepoint is not supported"}"#,
+            ),
+            (
+                "duplicate message hides a typed deserialization failure",
+                None,
+                r#"{"code":"ValidationException","message":123,"message":"cachepoint is not supported"}"#,
+            ),
+            (
+                "oversized complete typed validation body",
+                None,
+                oversized.as_str(),
+            ),
+            (
+                "present null code is not absent",
+                None,
+                r#"{"code":null,"message":"cachepoint is not supported"}"#,
+            ),
+            (
+                "present numeric code is not absent",
+                Some("ValidationException"),
+                r#"{"code":123,"message":"cachepoint is not supported"}"#,
+            ),
+            (
+                "malformed whole JSON body",
+                None,
+                r#"{"message":"cachepoint is not supported""#,
+            ),
+        ] {
+            for streaming_first in [false, true] {
+                issue_527_assert_wire_error_preserves_cache_policy(
+                    label,
+                    400,
+                    error_type,
+                    body,
+                    streaming_first,
+                )
+                .await;
+            }
+        }
+    }
+
     #[tokio::test]
     async fn issue_527_converse_places_four_cache_points_for_verified_55_models() {
         for model in [
