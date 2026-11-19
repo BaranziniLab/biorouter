@@ -30,6 +30,16 @@
 //!   to finish so a flaky/unsatisfiable check cannot wedge the turn.
 //! * `BIOROUTER_DONE_GATE_TIMEOUT_SECS` (u64) — per-check timeout, default
 //!   [`DEFAULT_CHECK_TIMEOUT_SECS`].
+//!
+//! **A per-session gate for headless runs.** `biorouter run --require-file
+//! <path>` (or `BIOROUTER_RUN_REQUIRE_FILES`, read by the CLI only) builds a
+//! [`DoneGateConfig::required_files`] gate and installs it on the run's agent
+//! for that one session ([`crate::agents::Agent::set_session_done_gate`]). It
+//! takes precedence over the global gate above for that session, keeps the
+//! global iteration and timeout keys, and is never installed for an
+//! interactive chat. Its checks are [`SuccessCheck::FileNonEmpty`], and its
+//! instruction asks the model to write the files with what it has rather than
+//! to explain why it cannot ([`DoneGateKind::RequiredFiles`]).
 
 use std::time::Duration;
 
@@ -47,6 +57,18 @@ pub const DEFAULT_MAX_ITERATIONS: u32 = 3;
 /// wall-clock backstop.
 pub const DEFAULT_CHECK_TIMEOUT_SECS: u64 = 300;
 
+/// What a gate is for, which decides the instruction a failure injects.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoneGateKind {
+    /// The user's own checks (BR-48): fix what failed, or say why it cannot be
+    /// satisfied.
+    Checks,
+    /// The files a headless run was told to leave behind
+    /// (`biorouter run --require-file`): write them with the best result the
+    /// model has, and state any limitation inside them.
+    RequiredFiles,
+}
+
 /// BR-48 policy, resolved once per reply (config reads touch the filesystem).
 ///
 /// Not `PartialEq`/`Eq`: `SuccessCheck::JsonSchema` carries a `serde_json::Value`
@@ -55,6 +77,9 @@ pub const DEFAULT_CHECK_TIMEOUT_SECS: u64 = 300;
 pub struct DoneGateConfig {
     /// Master switch. **Default OFF** — the checks cost real work each turn.
     pub enabled: bool,
+    /// Which instruction a failure injects. [`DoneGateKind::Checks`] for the
+    /// global, user-configured gate.
+    pub kind: DoneGateKind,
     /// The checks that must all pass before the turn may finish.
     pub checks: Vec<SuccessCheck>,
     /// Per-reply corrective-attempt ceiling. `0` also disables the gate.
@@ -68,6 +93,7 @@ impl Default for DoneGateConfig {
         Self {
             // BR-48 MUST default OFF: running checks on every turn is not free.
             enabled: false,
+            kind: DoneGateKind::Checks,
             checks: Vec::new(),
             max_iterations: DEFAULT_MAX_ITERATIONS,
             timeout: Duration::from_secs(DEFAULT_CHECK_TIMEOUT_SECS),
@@ -109,9 +135,42 @@ impl DoneGateConfig {
             .unwrap_or(DEFAULT_CHECK_TIMEOUT_SECS);
         Self {
             enabled,
+            kind: DoneGateKind::Checks,
             checks,
             max_iterations,
             timeout: Duration::from_secs(timeout_secs.max(1)),
+        }
+    }
+
+    /// The gate `biorouter run --require-file` installs for its session: one
+    /// [`SuccessCheck::FileNonEmpty`] per path, enabled whatever
+    /// `BIOROUTER_DONE_GATE` says, with the attempt cap and timeout still read
+    /// from `BIOROUTER_DONE_GATE_MAX_ITERATIONS` and
+    /// `BIOROUTER_DONE_GATE_TIMEOUT_SECS`. The global check list is not added:
+    /// this gate takes its place for the session.
+    pub fn required_files(paths: &[String]) -> Self {
+        Self::required_files_from(Config::global(), paths)
+    }
+
+    pub fn required_files_from(config: &Config, paths: &[String]) -> Self {
+        let tuned = Self::from(config);
+        Self {
+            enabled: true,
+            kind: DoneGateKind::RequiredFiles,
+            checks: paths
+                .iter()
+                .map(|path| SuccessCheck::FileNonEmpty { path: path.clone() })
+                .collect(),
+            max_iterations: tuned.max_iterations,
+            timeout: tuned.timeout,
+        }
+    }
+
+    /// The hidden instruction a failed check injects, by [`Self::kind`].
+    pub(crate) fn instruction(&self, failures: &[String]) -> String {
+        match self.kind {
+            DoneGateKind::Checks => gate_instruction(failures),
+            DoneGateKind::RequiredFiles => required_files_instruction(failures),
         }
     }
 
@@ -138,6 +197,28 @@ pub(crate) fn gate_instruction(failures: &[String]) -> String {
          pass. Do NOT restart from scratch, and do NOT claim the work is done \
          while a check is still failing; if a check cannot be satisfied, say so \
          explicitly and explain why."
+    )
+}
+
+/// The instruction a `--require-file` gate injects. The checks gate's text
+/// invites "say so explicitly and explain why", which a model that has already
+/// given up answers by giving up again; a headless run's caller wants the files
+/// with whatever result exists, so this one asks for that, and forbids claiming
+/// a file that no command wrote.
+pub(crate) fn required_files_instruction(failures: &[String]) -> String {
+    let list = failures
+        .iter()
+        .map(|f| format!("• {}", crate::agents::goal::ellipsize(f, 500)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "This run must leave these files behind before it may finish, and they are \
+         not there yet:\n\n{list}\n\n\
+         Write each missing or empty file now with a tool call, using the best result \
+         you have. If part of the task could not be done, still write the file and \
+         state the limitation inside it. Do NOT restart from scratch, and do NOT say \
+         a file exists unless a command in this run wrote it. The check re-runs when \
+         you finish."
     )
 }
 
@@ -228,6 +309,43 @@ mod tests {
         let notice = giveup_notice(3, &["tests still failing".to_string()]);
         assert!(notice.contains("3 attempt"));
         assert!(notice.contains("tests still failing"));
+    }
+
+    #[test]
+    fn required_files_gate_is_active_with_non_empty_checks_and_its_own_text() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = Config::new_with_file_secrets(
+            dir.path().join("config.yaml"),
+            dir.path().join("secrets.yaml"),
+        )
+        .unwrap();
+        let gate = DoneGateConfig::required_files_from(
+            &config,
+            &["answer.txt".to_string(), "/app/trace.md".to_string()],
+        );
+        assert!(
+            gate.is_active(),
+            "a --require-file gate needs no global switch"
+        );
+        assert_eq!(gate.kind, DoneGateKind::RequiredFiles);
+        assert_eq!(gate.max_iterations, DEFAULT_MAX_ITERATIONS);
+        assert_eq!(gate.checks.len(), 2);
+        assert!(gate
+            .checks
+            .iter()
+            .all(|check| matches!(check, SuccessCheck::FileNonEmpty { .. })));
+        let text = gate.instruction(&["expected file `answer.txt` does not exist".to_string()]);
+        assert!(text.contains("answer.txt"), "{text}");
+        assert!(text.contains("best result you have"), "{text}");
+        assert!(
+            !text.contains("explain why"),
+            "the deliverable gate must not invite a give-up: {text}"
+        );
+        // The global gate keeps its own wording.
+        let global = DoneGateConfig::default();
+        assert!(global
+            .instruction(&["x".to_string()])
+            .contains("Do NOT restart from scratch"));
     }
 
     #[test]

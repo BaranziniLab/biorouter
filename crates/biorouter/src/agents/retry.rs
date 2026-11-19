@@ -289,6 +289,22 @@ pub async fn run_success_check(
                 )))
             }
         }
+        SuccessCheck::FileNonEmpty { path } => {
+            let resolved = resolve_check_path(path, cwd);
+            Ok(match tokio::fs::metadata(&resolved).await {
+                Ok(meta) if meta.is_file() && meta.len() > 0 => CheckOutcome::Pass,
+                Ok(meta) if meta.is_dir() => {
+                    CheckOutcome::Fail(format!("expected file `{path}` is a directory, not a file"))
+                }
+                Ok(meta) if meta.is_file() => {
+                    CheckOutcome::Fail(format!("expected file `{path}` is empty"))
+                }
+                Ok(_) => {
+                    CheckOutcome::Fail(format!("expected file `{path}` is not a regular file"))
+                }
+                Err(_) => CheckOutcome::Fail(format!("expected file `{path}` does not exist")),
+            })
+        }
         SuccessCheck::OutputContains { command, substring } => {
             let result = execute_shell_command_in(command, timeout, cwd).await?;
             let mut combined = String::from_utf8_lossy(&result.stdout).into_owned();
@@ -844,6 +860,59 @@ mod tests {
             CheckOutcome::Fail(reason) => assert!(reason.contains("nope.csv")),
             CheckOutcome::Pass => panic!("missing file must fail"),
         }
+    }
+
+    /// `FileExists` passes on a zero-byte placeholder and on a directory;
+    /// `FileNonEmpty` (what `biorouter run --require-file` checks) passes only
+    /// on a regular file holding at least one byte.
+    #[tokio::test]
+    async fn file_non_empty_check_refuses_empty_files_and_directories() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(dir.path().join("answer.txt"), b"42\n").unwrap();
+        std::fs::write(dir.path().join("empty.txt"), b"").unwrap();
+        std::fs::create_dir(dir.path().join("a_dir")).unwrap();
+
+        let check = |path: &str| SuccessCheck::FileNonEmpty {
+            path: path.to_string(),
+        };
+        assert_eq!(
+            run_success_check(&check("answer.txt"), T, Some(dir.path()))
+                .await
+                .unwrap(),
+            CheckOutcome::Pass
+        );
+        for (path, expected) in [
+            ("empty.txt", "is empty"),
+            ("a_dir", "is a directory"),
+            ("missing.txt", "does not exist"),
+        ] {
+            match run_success_check(&check(path), T, Some(dir.path()))
+                .await
+                .unwrap()
+            {
+                CheckOutcome::Fail(reason) => {
+                    assert!(reason.contains(path), "{reason}");
+                    assert!(reason.contains(expected), "{reason}");
+                }
+                CheckOutcome::Pass => panic!("{path} must fail a non-empty file check"),
+            }
+        }
+        // The hole this variant closes: the older check passes on both.
+        for path in ["empty.txt", "a_dir"] {
+            let exists = SuccessCheck::FileExists {
+                path: path.to_string(),
+            };
+            assert_eq!(
+                run_success_check(&exists, T, Some(dir.path()))
+                    .await
+                    .unwrap(),
+                CheckOutcome::Pass
+            );
+        }
+        // The JSON shape a config or an environment variable would carry.
+        let parsed: Vec<SuccessCheck> =
+            serde_json::from_str(r#"[{"type":"file_non_empty","path":"answer.txt"}]"#).unwrap();
+        assert!(matches!(parsed[0], SuccessCheck::FileNonEmpty { .. }));
     }
 
     #[tokio::test]

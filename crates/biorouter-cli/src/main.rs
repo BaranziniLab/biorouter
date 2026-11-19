@@ -1,5 +1,6 @@
 use biorouter::agents::turn_abort::{exit as abort_exit, TurnFailed};
 use biorouter_cli::cli::{cli, read_command_line};
+use biorouter_cli::commands::deliverables::{self, DeliverablesMissing};
 use biorouter_cli::commands::needs_terminal::{self, NeedsTerminal};
 use biorouter_cli::commands::supervision_stop::{self, SupervisionStopped};
 use std::process::ExitCode;
@@ -115,6 +116,12 @@ async fn async_main() -> ExitCode {
             if let Some(stopped) = e.downcast_ref::<SupervisionStopped>() {
                 eprintln!("{stopped}");
                 return ExitCode::from(supervision_stop::EXIT_CODE);
+            }
+            // A run told to leave files behind (`--require-file`) that ended
+            // without them: one line naming them, exit 4.
+            if let Some(missing) = e.downcast_ref::<DeliverablesMissing>() {
+                eprintln!("{missing}");
+                return ExitCode::from(deliverables::EXIT_CODE);
             }
             eprintln!("Error: {e:?}");
             // A turn that ran but did not complete its work gets its own exit

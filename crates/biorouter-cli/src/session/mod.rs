@@ -129,6 +129,39 @@ struct JsonMetadata {
     /// The abort code, when `status == "failed"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    /// The required files (`--require-file`) the run ended without, each as
+    /// its check's reason. Present only when the run had required files, and
+    /// empty when every one was there.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    missing_files: Option<Vec<String>>,
+    /// Why the last turn ended ([`StopReport`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stop_reason: Option<String>,
+    /// Model requests the turn's loop made.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    actions: Option<u32>,
+    /// Tool calls the turn's loop dispatched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_calls: Option<u32>,
+    /// Seconds from sending the prompt to the end of the turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    wall_s: Option<f64>,
+}
+
+/// Why a turn ended and what it did, for the `complete` event and the `json`
+/// document. `stop_reason` is one of `end_turn`, `turn_limit`,
+/// `tool_call_limit`, `stall_stop`, `budget_stop`, `usage_limit_stop`,
+/// `monitor_stop`, `aborted` (the code is in the `aborted` event or the
+/// `error` field), `cancelled`, or `deliverables_missing` (the turn ended on
+/// its own but a `--require-file` file is missing). The counts come from the
+/// agent loop ([`biorouter::agents::turn_stop_record`]) and are absent when no
+/// loop ran.
+#[derive(Debug, Clone, PartialEq)]
+struct StopReport {
+    stop_reason: String,
+    actions: Option<u32>,
+    tool_calls: Option<u32>,
+    wall_s: f64,
 }
 
 #[derive(Serialize, Debug)]
@@ -158,6 +191,17 @@ enum StreamEvent {
     },
     Complete {
         total_tokens: Option<i32>,
+        /// As in the `json` document's metadata: the required files the run
+        /// ended without, present only when it had any.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        missing_files: Option<Vec<String>>,
+        /// Why the turn ended, as in [`StopReport`].
+        stop_reason: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        actions: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        tool_calls: Option<u32>,
+        wall_s: f64,
     },
 }
 
@@ -253,6 +297,19 @@ pub struct CliSession {
     /// queries the (by then closed) store — without this snapshot every
     /// `--no-session` run reported zero tokens and zero messages.
     final_session_snapshot: Option<biorouter::session::Session>,
+    /// The files a headless run must leave behind (`--require-file`,
+    /// `BIOROUTER_RUN_REQUIRE_FILES`). Empty for every other session.
+    required_files: Vec<String>,
+    /// Which of [`Self::required_files`] were missing or empty when the last
+    /// turn ended, checked once just before the final output. Behind a lock
+    /// because that output is written while the reply stream still borrows
+    /// the session.
+    missing_files: std::sync::Mutex<Vec<crate::commands::deliverables::MissingFile>>,
+    /// When the last turn's prompt was sent, for the final output's `wall_s`.
+    turn_started: Option<std::time::Instant>,
+    /// Whether the last turn ended because it was cancelled (Ctrl-C), which
+    /// drops the reply stream before the agent loop can record its stop.
+    turn_cancelled: bool,
 }
 
 #[cfg(feature = "dictation")]
@@ -487,7 +544,84 @@ impl CliSession {
             last_abort: None,
             ephemeral_store_dir: None,
             final_session_snapshot: None,
+            required_files: Vec::new(),
+            missing_files: std::sync::Mutex::new(Vec::new()),
+            turn_started: None,
+            turn_cancelled: false,
         }
+    }
+
+    /// Give this headless run its deliverable gate: the agent is kept working
+    /// while any of `paths` is missing, empty or a directory (a done gate
+    /// installed for this session alone, ahead of the global one), and a run
+    /// that still ends without one exits 4 with the files named
+    /// ([`crate::commands::deliverables`]).
+    pub fn require_files(&mut self, paths: Vec<String>) {
+        self.agent.set_session_done_gate(
+            &self.session_id,
+            (!paths.is_empty())
+                .then(|| biorouter::agents::done_gate::DoneGateConfig::required_files(&paths)),
+        );
+        self.required_files = paths;
+    }
+
+    /// Check [`Self::required_files`] against the session working directory,
+    /// the same way the gate did, and remember the ones that do not count.
+    async fn check_required_files(&self) {
+        use biorouter::agents::retry::{run_success_check, CheckOutcome};
+        use biorouter::agents::types::SuccessCheck;
+        let mut missing = Vec::new();
+        if self.required_files.is_empty() {
+            *self.lock_missing_files() = missing;
+            return;
+        }
+        let working_dir = self
+            .agent
+            .config
+            .session_manager
+            .get_session(&self.session_id, false)
+            .await
+            .map(|session| session.working_dir)
+            .ok()
+            .or_else(|| std::env::current_dir().ok());
+        for path in &self.required_files {
+            let check = SuccessCheck::FileNonEmpty { path: path.clone() };
+            let reason = match run_success_check(
+                &check,
+                std::time::Duration::from_secs(30),
+                working_dir.as_deref(),
+            )
+            .await
+            {
+                Ok(CheckOutcome::Pass) => continue,
+                Ok(CheckOutcome::Fail(reason)) => reason,
+                Err(e) => format!("expected file `{path}` could not be checked: {e}"),
+            };
+            missing.push(crate::commands::deliverables::MissingFile {
+                path: path.clone(),
+                reason,
+            });
+        }
+        *self.lock_missing_files() = missing;
+    }
+
+    fn lock_missing_files(
+        &self,
+    ) -> std::sync::MutexGuard<'_, Vec<crate::commands::deliverables::MissingFile>> {
+        self.missing_files
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The `missing_files` field of the final output: `None` without
+    /// required files, else the reasons of those missing.
+    fn missing_files_report(&self) -> Option<Vec<String>> {
+        (!self.required_files.is_empty()).then(|| {
+            self.lock_missing_files()
+                .iter()
+                .map(|file| file.reason.clone())
+                .collect()
+        })
     }
 
     /// #31: adopt the private `--no-session` store's temp directory so it
@@ -1762,6 +1896,16 @@ impl CliSession {
             let message = format!("the turn did not complete: {}", code.wire_code());
             return Err(TurnFailed::new(code, message).into());
         }
+        // A run told to leave files behind that ended without them did not do
+        // what was asked, whatever ended its turn: exit 4, after an abort's
+        // own status and ahead of a stop's 3 (whose line is still printed).
+        let missing = self.lock_missing_files().clone();
+        if !missing.is_empty() {
+            if let Some(stopped) = &stopped {
+                eprintln!("{stopped}");
+            }
+            return Err(crate::commands::deliverables::DeliverablesMissing::new(&missing).into());
+        }
         match stopped {
             Some(stopped) => Err(stopped.into()),
             None => Ok(()),
@@ -1780,6 +1924,20 @@ impl CliSession {
         if let Some(stop) = self.agent.take_monitor_stop(&self.session_id) {
             return Some(monitor_stopped(&stop.name, &self.session_id, no_session));
         }
+        // P06: an action, tool-call, stall, budget or usage limit stopped the
+        // turn short of its work. It ended normally in the agent loop (and stays
+        // resumable there); only the run's exit status says so.
+        if let Some(stop) = self
+            .agent
+            .last_turn_stop()
+            .filter(|stop| stop.reason.is_limit_stop())
+        {
+            return Some(crate::commands::supervision_stop::limit_stopped(
+                &stop,
+                &self.session_id,
+                no_session,
+            ));
+        }
         let plan = biorouter::agents::orchestration_plan::snapshot(
             &self.agent.config.session_manager,
             &self.session_id,
@@ -1796,6 +1954,8 @@ impl CliSession {
         cancel_token: CancellationToken,
     ) -> Result<()> {
         self.last_abort = None;
+        self.turn_started = Some(std::time::Instant::now());
+        self.turn_cancelled = false;
         let is_json_mode = self.output_format == "json";
         let is_stream_json_mode = self.output_format == "stream-json";
 
@@ -2330,10 +2490,42 @@ impl CliSession {
                     record_cancelled_turn_in(&self.agent, &self.session_id, &mut self.messages)
                         .await;
                 self.render_cancel_note(&text, note.as_ref());
+                self.turn_cancelled = true;
             }
         }
 
         self.emit_final_output().await
+    }
+
+    /// Why the last turn ended ([`StopReport`]): an abort first, then a cancel,
+    /// then what the agent loop recorded. A turn that ended on its own while a
+    /// required file is missing reads `deliverables_missing`.
+    fn stop_report(&self) -> StopReport {
+        use biorouter::agents::turn_stop_record::TurnStopReason;
+        let recorded = self.agent.last_turn_stop();
+        let stop_reason = if self.last_abort.is_some() {
+            TurnStopReason::Aborted.as_str()
+        } else if self.turn_cancelled {
+            TurnStopReason::Cancelled.as_str()
+        } else {
+            match recorded.map(|stop| stop.reason) {
+                None | Some(TurnStopReason::EndTurn) if !self.lock_missing_files().is_empty() => {
+                    "deliverables_missing"
+                }
+                Some(reason) => reason.as_str(),
+                None => TurnStopReason::EndTurn.as_str(),
+            }
+        };
+        let wall_s = self
+            .turn_started
+            .map(|started| (started.elapsed().as_secs_f64() * 1000.0).round() / 1000.0)
+            .unwrap_or_default();
+        StopReport {
+            stop_reason: stop_reason.to_string(),
+            actions: recorded.map(|stop| stop.actions),
+            tool_calls: recorded.map(|stop| stop.tool_calls),
+            wall_s,
+        }
     }
 
     /// The ONE structured-output finalizer: every exit from
@@ -2343,6 +2535,9 @@ impl CliSession {
     /// prints exactly one document (status derived from [`Self::last_abort`])
     /// and `stream-json` always terminates with `complete` (#31/#41).
     async fn emit_final_output(&self) -> Result<()> {
+        // Checked here, on every way out of a turn, so the final output and
+        // the exit status agree on which required files are missing.
+        self.check_required_files().await;
         let is_json_mode = self.output_format == "json";
         let is_stream_json_mode = self.output_format == "stream-json";
         if is_json_mode {
@@ -2356,7 +2551,15 @@ impl CliSession {
                 .await
                 .ok()
                 .and_then(|s| s.total_tokens);
-            emit_stream_event(&StreamEvent::Complete { total_tokens });
+            let report = self.stop_report();
+            emit_stream_event(&StreamEvent::Complete {
+                total_tokens,
+                missing_files: self.missing_files_report(),
+                stop_reason: report.stop_reason,
+                actions: report.actions,
+                tool_calls: report.tool_calls,
+                wall_s: report.wall_s,
+            });
         } else {
             println!();
         }
@@ -2377,6 +2580,7 @@ impl CliSession {
             "completed"
         };
         let error = self.last_abort.as_ref().map(|c| c.wire_code().to_string());
+        let report = self.stop_report();
         let metadata = match self
             .agent
             .config
@@ -2388,11 +2592,21 @@ impl CliSession {
                 total_tokens: session.total_tokens,
                 status: status.to_string(),
                 error,
+                missing_files: self.missing_files_report(),
+                stop_reason: Some(report.stop_reason),
+                actions: report.actions,
+                tool_calls: report.tool_calls,
+                wall_s: Some(report.wall_s),
             },
             Err(_) => JsonMetadata {
                 total_tokens: None,
                 status: status.to_string(),
                 error,
+                missing_files: self.missing_files_report(),
+                stop_reason: Some(report.stop_reason),
+                actions: report.actions,
+                tool_calls: report.tool_calls,
+                wall_s: Some(report.wall_s),
             },
         };
         let json_output = JsonOutput {

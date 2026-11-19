@@ -30095,6 +30095,26 @@
           },
           {
             "type": "object",
+            "description": "Pass when `path` is a regular file with at least one byte in it. A\ndirectory, a zero-byte file and a missing path all fail, so a\nplaceholder created with `touch` does not count as a deliverable. A\nrelative `path` resolves the way [`FileExists`](SuccessCheck::FileExists)\ndoes. `biorouter run --require-file` builds its gate from these.",
+            "required": [
+              "path",
+              "type"
+            ],
+            "properties": {
+              "path": {
+                "type": "string",
+                "description": "The file that must exist and be non-empty."
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "FileNonEmpty"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
             "description": "BR-48: run `command` and pass when its combined stdout+stderr contains\n`substring`. Unlike [`Shell`](SuccessCheck::Shell), the exit status is\nignored — this checks the *content* of the output (e.g. `0 failed`,\n`PASS`, a coverage percentage).",
             "required": [
               "command",

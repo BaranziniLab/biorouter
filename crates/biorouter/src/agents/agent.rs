@@ -2699,6 +2699,11 @@ struct ReplyLoopPolicy {
     budget: BudgetTracker,
 }
 
+/// A done gate installed on one agent for one session id
+/// ([`Agent::set_session_done_gate`]).
+pub(super) type SessionDoneGate =
+    std::sync::Mutex<Option<(String, crate::agents::done_gate::DoneGateConfig)>>;
+
 /// Resolve [`ReplyLoopPolicy`] for one reply.
 ///
 /// Split out of the `reply_internal` generator to keep its `poll` frame small —
@@ -2706,6 +2711,7 @@ struct ReplyLoopPolicy {
 fn resolve_reply_loop_policy(
     effort: ReasoningEffort,
     session_config: &SessionConfig,
+    session_done_gate: &SessionDoneGate,
 ) -> ReplyLoopPolicy {
     ReplyLoopPolicy {
         max_turns: effort.scale_turns(
@@ -2732,7 +2738,15 @@ fn resolve_reply_loop_policy(
         post_edit_diag_config:
             crate::agents::post_edit_diagnostics::PostEditDiagnosticsConfig::from_config(),
         self_critique_config: crate::agents::self_critique::SelfCritiqueConfig::from_config(),
-        done_gate_config: crate::agents::done_gate::DoneGateConfig::from_config(),
+        // A gate installed for this session (`biorouter run --require-file`)
+        // takes precedence over the global one.
+        done_gate_config: session_done_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|(id, _)| *id == session_config.id)
+            .map(|(_, gate)| gate.clone())
+            .unwrap_or_else(crate::agents::done_gate::DoneGateConfig::from_config),
         stall_config: crate::agents::stall::StallCheckConfig::from_config(Config::global()),
         mistake_config: crate::agents::mistakes::MistakeConfig::from_config(Config::global()),
         budget: BudgetTracker::new(ReplyBudget::resolve(
@@ -5258,6 +5272,13 @@ pub struct Agent {
     pub(super) live_acks: LiveAcks,
     /// How the last reply loop on this agent ended. See [`TurnExit`].
     pub(super) turn_exit: std::sync::Mutex<Option<TurnExit>>,
+    /// A done gate for one session, set by a headless caller
+    /// ([`Agent::set_session_done_gate`]). Read once per reply.
+    pub(super) session_done_gate: SessionDoneGate,
+    /// Why the last reply loop ended, with its counts. See
+    /// [`crate::agents::turn_stop_record`].
+    pub(super) turn_stop_record:
+        std::sync::Mutex<Option<crate::agents::turn_stop_record::TurnStopRecord>>,
     /// Bumped on every accepted steer. A `watch` rather than the `Notify`
     /// above because several waits may be listening at once — the tool batch's
     /// status wake and a `workspace_watch` parked inside it — and `notify_one`
@@ -6627,6 +6648,8 @@ impl Agent {
             usage_limit_reply: Default::default(),
             live_acks: Default::default(),
             turn_exit: std::sync::Mutex::new(None),
+            session_done_gate: std::sync::Mutex::new(None),
+            turn_stop_record: std::sync::Mutex::new(None),
             steer_arrivals: tokio::sync::watch::Sender::new(0),
             announced_steer_seq: std::sync::atomic::AtomicU64::new(0),
             pending_retry_note: std::sync::Mutex::new(None),
@@ -7488,6 +7511,39 @@ impl Agent {
             .turn_exit
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(exit);
+    }
+
+    /// Record why the reply loop is ending ([`crate::agents::turn_stop_record`]),
+    /// beside [`Self::record_turn_exit`]. Scalars only, so a call from the
+    /// `reply_internal` generator adds nothing to its frame.
+    pub(super) fn record_turn_stop(
+        &self,
+        reason: crate::agents::turn_stop_record::TurnStopReason,
+        actions: u32,
+        tool_calls: u32,
+        limit: Option<u32>,
+    ) {
+        *self
+            .turn_stop_record
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            Some(crate::agents::turn_stop_record::TurnStopRecord {
+                reason,
+                actions,
+                tool_calls,
+                limit,
+            });
+    }
+
+    /// Why this agent's last reply loop ended, and its counts. `None` when no
+    /// loop ran since the reply began (a command answered in the prologue, a
+    /// reply that failed to start). Not consumed: a headless caller reads it as
+    /// often as it reports.
+    pub fn last_turn_stop(&self) -> Option<crate::agents::turn_stop_record::TurnStopRecord> {
+        *self
+            .turn_stop_record
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn turn_exit_is_resumable(&self) -> bool {
@@ -11559,6 +11615,24 @@ impl Agent {
         self.subagent_tool_enabled.store(enabled, Ordering::Relaxed);
     }
 
+    /// Install a done gate (BR-48) for `session_id` alone, or remove it with
+    /// `None`. While set, every reply of that session uses it in place of the
+    /// global `BIOROUTER_DONE_GATE*` configuration; replies of any other session
+    /// on this agent are unaffected. `biorouter run --require-file` sets it once,
+    /// as it builds its session, so the agent loop's configuration path is
+    /// unchanged for everyone else.
+    pub fn set_session_done_gate(
+        &self,
+        session_id: &str,
+        gate: Option<crate::agents::done_gate::DoneGateConfig>,
+    ) {
+        *self
+            .session_done_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            gate.map(|gate| (session_id.to_string(), gate));
+    }
+
     pub fn set_dictionary_learning(&self, enabled: bool) {
         self.dictionary_learning.store(enabled, Ordering::Release);
     }
@@ -12253,6 +12327,14 @@ impl Agent {
                     )
             )
         });
+        // A new reply has not stopped yet. An elicitation answer belongs to a
+        // turn still running, whose stop is recorded when it ends.
+        if !answers_an_elicitation {
+            *self
+                .turn_stop_record
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        }
         let decision_turn = (!answers_an_elicitation).then(|| {
             crate::decision::monitor::DecisionTurnGuard::begin(
                 Arc::clone(&self.decisions.monitors),
@@ -13578,6 +13660,12 @@ impl Agent {
         let hit = self.usage_limit_hold(session_id).await?;
         self.usage_limit_reply.mark_interrupted();
         self.record_turn_exit(TurnExit::Final);
+        self.record_turn_stop(
+            crate::agents::turn_stop_record::TurnStopReason::UsageLimitStop,
+            0,
+            0,
+            None,
+        );
         emit_loop_safety(
             LoopSafetyKind::UsageLimitStop,
             session_id,
@@ -15180,7 +15268,7 @@ impl Agent {
                 stall_config,
                 mistake_config,
                 mut budget,
-            } = resolve_reply_loop_policy(effort, &session_config);
+            } = resolve_reply_loop_policy(effort, &session_config, &self.session_done_gate);
             // BR-47: consecutive post-edit reflections this reply. Bounded by
             // `post_edit_diag_config.max_reflections` so a file that never parses
             // clean cannot wedge the turn — mirrors the PostToolUse block cap. Reset
@@ -15248,6 +15336,12 @@ impl Agent {
                         None,
                         None,
                     );
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::Cancelled,
+                        turns_taken,
+                        tool_calls_taken,
+                        None,
+                    );
                     break;
                 }
 
@@ -15260,6 +15354,12 @@ impl Agent {
                     match action {
                         StructuredFinalOutputAction::Emit(final_output) => {
                             self.record_turn_exit(TurnExit::Final);
+                            self.record_turn_stop(
+                                crate::agents::turn_stop_record::TurnStopReason::EndTurn,
+                                turns_taken,
+                                tool_calls_taken,
+                                None,
+                            );
                             yield AgentEvent::Message(assistant_text(final_output));
                             break;
                         }
@@ -15305,6 +15405,14 @@ impl Agent {
                 }
                 if max_turns > 0 && turns_taken > max_turns {
                     self.record_turn_exit(TurnExit::ResumableForUserInput);
+                    // This iteration's request is not sent: the completed
+                    // actions are one fewer than the count that tripped.
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::TurnLimit,
+                        turns_taken.saturating_sub(1),
+                        tool_calls_taken,
+                        Some(max_turns),
+                    );
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     emit_loop_safety(
@@ -15342,6 +15450,12 @@ impl Agent {
                 }
                 if max_tool_calls > 0 && tool_calls_taken > max_tool_calls {
                     self.record_turn_exit(TurnExit::ResumableForUserInput);
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::ToolCallLimit,
+                        turns_taken.saturating_sub(1),
+                        tool_calls_taken,
+                        Some(max_tool_calls),
+                    );
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     emit_loop_safety(
@@ -15382,6 +15496,12 @@ impl Agent {
                 }
                 if stall_deadline.is_some_and(|deadline| turns_taken > deadline) {
                     self.record_turn_exit(TurnExit::ResumableForUserInput);
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::StallStop,
+                        turns_taken.saturating_sub(1),
+                        tool_calls_taken,
+                        None,
+                    );
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     let reason = stall_watch
@@ -15418,6 +15538,12 @@ impl Agent {
                     // A spend cap is not "actions without user input": a steer
                     // buys no extra model call here, and is stored unanswered.
                     self.record_turn_exit(TurnExit::Final);
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::BudgetStop,
+                        turns_taken.saturating_sub(1),
+                        tool_calls_taken,
+                        None,
+                    );
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     let snapshot = budget.snapshot_at(reply_started.elapsed());
@@ -15468,6 +15594,13 @@ impl Agent {
                     }
                     UsageLimitGate::Stop(events) => {
                         native_supervision_required = true;
+                        // Asked before this iteration's request, which is not sent.
+                        self.record_turn_stop(
+                            crate::agents::turn_stop_record::TurnStopReason::UsageLimitStop,
+                            turns_taken.saturating_sub(1),
+                            tool_calls_taken,
+                            None,
+                        );
                         for event in events {
                             yield event;
                         }
@@ -17388,6 +17521,12 @@ impl Agent {
 
                 if let Some((code, message)) = pending_turn_abort.take() {
                     self.record_turn_exit(TurnExit::Final);
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::Aborted,
+                        turns_taken,
+                        tool_calls_taken,
+                        None,
+                    );
                     crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                     native_supervision_required = true;
                     deferred_turn_abort = Some((code, message));
@@ -17400,6 +17539,12 @@ impl Agent {
                 // call (monitors, done gate, self-critique, Stop hooks, `/goal`).
                 if self.usage_limit_reply.stopped() {
                     native_supervision_required = true;
+                    self.record_turn_stop(
+                        crate::agents::turn_stop_record::TurnStopReason::UsageLimitStop,
+                        turns_taken,
+                        tool_calls_taken,
+                        None,
+                    );
                     break;
                 }
 
@@ -17444,6 +17589,12 @@ impl Agent {
                         // is left in it is stored as unanswered, or a steer
                         // the person typed continues the turn.
                         self.record_turn_exit(TurnExit::ResumableForUserInput);
+                        self.record_turn_stop(
+                            crate::agents::turn_stop_record::TurnStopReason::MonitorStop,
+                            turns_taken,
+                            tool_calls_taken,
+                            None,
+                        );
                         crate::agents::subagent_handle::begin_parent_closing(&session_config.id);
                         native_supervision_required = true;
                         break;
@@ -17514,7 +17665,7 @@ impl Agent {
                                 let (feedback, published) = persist_steering_message(
                                     &session_manager,
                                     &session_config.id,
-                                    crate::agents::done_gate::gate_instruction(&failures),
+                                    done_gate_config.instruction(&failures),
                                 ).await?;
                                 if let Some(published) = published {
                                     yield published;
@@ -17591,6 +17742,12 @@ impl Agent {
                             // A safety stop, as at the post-iteration point:
                             // no commit point, the queue stays open.
                             self.record_turn_exit(TurnExit::ResumableForUserInput);
+                            self.record_turn_stop(
+                                crate::agents::turn_stop_record::TurnStopReason::MonitorStop,
+                                turns_taken,
+                                tool_calls_taken,
+                                None,
+                            );
                             crate::agents::subagent_handle::begin_parent_closing(
                                 &session_config.id,
                             );
@@ -17613,6 +17770,12 @@ impl Agent {
                             tokio::task::yield_now().await;
                             continue;
                         }
+                        self.record_turn_stop(
+                            crate::agents::turn_stop_record::TurnStopReason::EndTurn,
+                            turns_taken,
+                            tool_calls_taken,
+                            None,
+                        );
                         // Subagents get an observe-only SubagentStop instead of a
                         // blockable Stop (avoids nested runaway loops).
                         let mut payload = crate::hooks::HookPayload::new(
@@ -17705,6 +17868,12 @@ impl Agent {
                                 tokio::task::yield_now().await;
                                 continue;
                             }
+                            self.record_turn_stop(
+                                crate::agents::turn_stop_record::TurnStopReason::EndTurn,
+                                turns_taken,
+                                tool_calls_taken,
+                                None,
+                            );
                             break;
                         }
                         TurnStop::KeepWorking { feedback, notice } => {
@@ -31939,12 +32108,53 @@ mod max_turns_setting_tests {
         }
     }
 
+    fn no_gate() -> SessionDoneGate {
+        std::sync::Mutex::new(None)
+    }
+
+    /// `biorouter run --require-file`: a gate installed for one session id wins
+    /// over the global (default off) gate for that session, and only for it.
+    #[tokio::test]
+    async fn a_session_done_gate_applies_to_its_session_only() {
+        crate::config::with_config_overrides(
+            HashMap::from([("BIOROUTER_DONE_GATE".to_string(), "false".to_string())]),
+            async {
+                let session = session_without_limit();
+                let off = resolve_reply_loop_policy(ReasoningEffort::Normal, &session, &no_gate());
+                assert!(!off.done_gate_config.is_active());
+
+                let gate = crate::agents::done_gate::DoneGateConfig::required_files(&[
+                    "answer.txt".to_string(),
+                ]);
+                let installed: SessionDoneGate =
+                    std::sync::Mutex::new(Some((session.id.clone(), gate)));
+                let on = resolve_reply_loop_policy(ReasoningEffort::Normal, &session, &installed);
+                assert!(on.done_gate_config.is_active());
+                assert_eq!(
+                    on.done_gate_config.kind,
+                    crate::agents::done_gate::DoneGateKind::RequiredFiles
+                );
+
+                let mut other = session_without_limit();
+                other.id = "another-session".to_string();
+                let elsewhere =
+                    resolve_reply_loop_policy(ReasoningEffort::Normal, &other, &installed);
+                assert!(!elsewhere.done_gate_config.is_active());
+            },
+        )
+        .await;
+    }
+
     async fn resolved_with_stored(value: &str) -> u32 {
         crate::config::with_config_overrides(
             HashMap::from([("BIOROUTER_MAX_TURNS".to_string(), value.to_string())]),
             async {
-                resolve_reply_loop_policy(ReasoningEffort::Normal, &session_without_limit())
-                    .max_turns
+                resolve_reply_loop_policy(
+                    ReasoningEffort::Normal,
+                    &session_without_limit(),
+                    &no_gate(),
+                )
+                .max_turns
             },
         )
         .await
@@ -31984,7 +32194,7 @@ mod max_turns_setting_tests {
                     ReasoningEffort::Normal,
                     ReasoningEffort::Deep,
                 ] {
-                    let policy = resolve_reply_loop_policy(effort, &session);
+                    let policy = resolve_reply_loop_policy(effort, &session, &no_gate());
                     assert_eq!(policy.max_turns, 0);
                     assert_eq!(policy.max_tool_calls, 0);
                 }
@@ -32001,8 +32211,11 @@ mod max_turns_setting_tests {
                 ("BIOROUTER_MAX_TOOL_CALLS".to_string(), "0".to_string()),
             ]),
             async {
-                let policy =
-                    resolve_reply_loop_policy(ReasoningEffort::Normal, &session_without_limit());
+                let policy = resolve_reply_loop_policy(
+                    ReasoningEffort::Normal,
+                    &session_without_limit(),
+                    &no_gate(),
+                );
                 assert_eq!(policy.max_turns, 0);
                 assert_eq!(policy.max_tool_calls, 0);
             },
