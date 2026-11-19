@@ -6023,6 +6023,11 @@ export type PreviewBody = {
     path: string;
 };
 
+export type PreviewProviderSecretRequest = {
+    key: string;
+    provider: string;
+};
+
 /**
  * An image attachment to preview (`POST /crew/transfers/preview`).
  */
@@ -6866,11 +6871,6 @@ export type RetryConfig = {
      * Timeout in seconds for individual shell commands (default: 300 seconds)
      */
     timeout_seconds?: number | null;
-};
-
-export type RevealProviderSecretRequest = {
-    key: string;
-    provider: string;
 };
 
 /**
@@ -10870,14 +10870,14 @@ export type GetPricingResponses = {
 
 export type GetPricingResponse = GetPricingResponses[keyof GetPricingResponses];
 
-export type RevealProviderSecretData = {
-    body: RevealProviderSecretRequest;
+export type PreviewProviderSecretData = {
+    body: PreviewProviderSecretRequest;
     path?: never;
     query?: never;
-    url: '/config/provider-secret/reveal';
+    url: '/config/provider-secret/preview';
 };
 
-export type RevealProviderSecretErrors = {
+export type PreviewProviderSecretErrors = {
     /**
      * The request did not prove a desktop user action
      */
@@ -10892,14 +10892,14 @@ export type RevealProviderSecretErrors = {
     500: unknown;
 };
 
-export type RevealProviderSecretResponses = {
+export type PreviewProviderSecretResponses = {
     /**
-     * The requested provider secret
+     * A masked provider secret preview
      */
     200: string;
 };
 
-export type RevealProviderSecretResponse = RevealProviderSecretResponses[keyof RevealProviderSecretResponses];
+export type PreviewProviderSecretResponse = PreviewProviderSecretResponses[keyof PreviewProviderSecretResponses];
 
 export type GetProviderSetupAccessData = {
     body?: never;

@@ -171,7 +171,7 @@ export const providerSetupCopy = {
   advanced: 'Advanced',
   advancedSummary: (labels: readonly string[]) => labels.join(' · '),
   cancel: 'Cancel',
-  remove: 'Remove',
+  remove: 'Remove setup',
   delete: 'Delete',
   ok: 'OK',
   save: 'Save',

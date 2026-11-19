@@ -15,7 +15,7 @@ import { useProvidersAreHostManaged } from '../../../../../../utils/providerSetu
 import { HOST_MANAGED_CUSTOM_URL } from '../../../../../privacy/hostManagedModelCopy';
 import { machineStringProps } from '../../../../config/machineString';
 import { customProviderCopy } from '../../../copy';
-import { loadProviderSecret } from '../../../../../../utils/providerSecret';
+import { SavedProviderSecret } from './SavedProviderSecret';
 import '../../../providers.css';
 
 /**
@@ -106,13 +106,14 @@ export default function CustomProviderForm({
   const localModelHelpId = useInfoTipId();
   const streamingHelpId = useInfoTipId();
   /** An edit of a provider whose key is saved: a blank key keeps it. */
-  const keepsSavedKey = initialData !== null && hasSavedKey;
+  const [removedSavedKey, setRemovedSavedKey] = useState(false);
+  const keepsSavedKey = initialData !== null && hasSavedKey && !removedSavedKey;
   /**
    * W2-PRV-2, round 4. In a browser served by `biorouter serve` that the daemon
    * has not admitted to provider setup (SD-18), the daemon refuses to move a
    * saved key to a new URL, since nothing there can confirm a person asked.
-   * Typing the key again replaces it, and that is allowed. An admitted browser
-   * moves it as the desktop does.
+   * An admitted browser moves it as the desktop does. An unadmitted browser
+   * must remove the saved key and add a new one before moving the URL.
    */
   const hostManaged = useProvidersAreHostManaged();
   const urlNeedsTypedKey = keepsSavedKey && hostManaged;
@@ -159,7 +160,7 @@ export default function CustomProviderForm({
     if (!apiUrl) errors.apiUrl = 'API URL is required';
     if (!isLocalModel && !apiKey && !keepsSavedKey) errors.apiKey = 'API key is required';
     if (urlNeedsTypedKey && !apiKey && apiUrl !== initialData?.api_url) {
-      errors.apiKey = 'Type the key again to move this provider to a new URL.';
+      errors.apiKey = 'Remove the saved key, then add a new key to change this URL.';
     }
     if (!models) errors.models = 'At least one model is required';
 
@@ -313,21 +314,26 @@ export default function CustomProviderForm({
 
         <div className="flex flex-col gap-2">
           <Field id="api-key" label={customProviderCopy.apiKey} error={validationErrors.apiKey}>
-            {/* The same primitive the built-in providers' form uses for every secret
-              parameter, so the two forms mask — and reveal — a key the same way. */}
-            <SecretInput
-              revealLabel={customProviderCopy.apiKey}
-              value={apiKey}
-              {...machineStringProps}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder={keepsSavedKey ? 'Leave blank to keep existing key' : 'Your API key'}
-              disabled={isLocalModel}
-              loadSavedValue={
-                keepsSavedKey && savedKey
-                  ? () => loadProviderSecret(savedKey.provider, savedKey.key)
-                  : undefined
-              }
-            />
+            {keepsSavedKey ? (
+              <SavedProviderSecret
+                provider={savedKey?.provider}
+                secretKey={savedKey?.key}
+                label={customProviderCopy.apiKey}
+                onRemoved={() => {
+                  setRemovedSavedKey(true);
+                  setApiKey('');
+                }}
+              />
+            ) : (
+              <SecretInput
+                revealLabel={customProviderCopy.apiKey}
+                value={apiKey}
+                {...machineStringProps}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="Your API key"
+                disabled={isLocalModel}
+              />
+            )}
           </Field>
           {!initialData && (
             <div className="br-provider-check-row" data-testid="custom-provider-local-row">

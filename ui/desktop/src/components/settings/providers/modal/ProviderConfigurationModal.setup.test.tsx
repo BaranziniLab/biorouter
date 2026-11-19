@@ -12,6 +12,12 @@ import ProviderConfigurationModal from './ProviderConfiguationModal';
 import { providerSetupCopy } from '../copy';
 import { uiCopy } from '../../../ui/copy';
 
+vi.mock('../../../../utils/providerSecret', () => ({
+  SECRET_MASK: '••••••••',
+  loadProviderSecretPreview: async () => '••••••••',
+  removeProviderSecret: vi.fn(),
+}));
+
 const mocks = vi.hoisted(() => ({
   submit: vi.fn(),
   status: vi.fn(),

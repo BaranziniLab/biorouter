@@ -17,7 +17,7 @@ import { sentenceCase } from '../../../../config/configLabels';
 import { machineStringProps } from '../../../../config/machineString';
 import { providerSetupCopy } from '../../../copy';
 import { useHandFocusOnReady } from '../../../../models/dialogFocus';
-import { loadProviderSecret } from '../../../../../../utils/providerSecret';
+import { SavedProviderSecret } from './SavedProviderSecret';
 
 type ValidationErrors = Record<string, string>;
 
@@ -294,19 +294,19 @@ export default function DefaultProviderSetupForm({
           info={`Saved as ${parameter.name}.`}
           error={validationErrors[parameter.name]}
         >
-          {/* F5: a secret is masked, exactly as the custom-provider form masks
-              its key — the same primitive, so the two cannot diverge again. A
-              non-secret parameter (an endpoint, a region) stays readable. */}
-          {parameter.secret ? (
-            <SecretInput
-              {...fieldProps}
-              revealLabel={getFieldName(parameter)}
-              loadSavedValue={
-                !parameter.oauth_flow && configValues[parameter.name]?.serverValue
-                  ? () => loadProviderSecret(provider.name, parameter.name)
-                  : undefined
+          {parameter.secret &&
+          !parameter.oauth_flow &&
+          configValues[parameter.name]?.serverValue ? (
+            <SavedProviderSecret
+              provider={provider.name}
+              secretKey={parameter.name}
+              label={getFieldName(parameter)}
+              onRemoved={() =>
+                setConfigValues((prev) => ({ ...prev, [parameter.name]: { value: '' } }))
               }
             />
+          ) : parameter.secret ? (
+            <SecretInput {...fieldProps} revealLabel={getFieldName(parameter)} />
           ) : (
             <Input {...fieldProps} type="text" />
           )}

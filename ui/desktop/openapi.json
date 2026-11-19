@@ -1911,17 +1911,17 @@
         }
       }
     },
-    "/config/provider-secret/reveal": {
+    "/config/provider-secret/preview": {
       "post": {
         "tags": [
           "super::routes::config_management"
         ],
-        "operationId": "reveal_provider_secret",
+        "operationId": "preview_provider_secret",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/RevealProviderSecretRequest"
+                "$ref": "#/components/schemas/PreviewProviderSecretRequest"
               }
             }
           },
@@ -1929,7 +1929,7 @@
         },
         "responses": {
           "200": {
-            "description": "The requested provider secret",
+            "description": "A masked provider secret preview",
             "content": {
               "text/plain": {
                 "schema": {
@@ -25335,6 +25335,21 @@
           }
         }
       },
+      "PreviewProviderSecretRequest": {
+        "type": "object",
+        "required": [
+          "provider",
+          "key"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          }
+        }
+      },
       "PreviewRequest": {
         "type": "object",
         "description": "An image attachment to preview (`POST /crew/transfers/preview`).",
@@ -27031,21 +27046,6 @@
             "description": "Timeout in seconds for individual shell commands (default: 300 seconds)",
             "nullable": true,
             "minimum": 0
-          }
-        }
-      },
-      "RevealProviderSecretRequest": {
-        "type": "object",
-        "required": [
-          "provider",
-          "key"
-        ],
-        "properties": {
-          "key": {
-            "type": "string"
-          },
-          "provider": {
-            "type": "string"
           }
         }
       },

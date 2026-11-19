@@ -660,7 +660,8 @@ export default function ProviderCatalog({
   const handleCloseCustomModal = useCallback(() => {
     setShowCustomProviderModal(false);
     setEditingProvider(null);
-  }, []);
+    if (editingProvider) refreshProviders?.();
+  }, [editingProvider, refreshProviders]);
 
   const onCloseProviderConfig = useCallback(() => {
     const closed = configuringProvider?.name;

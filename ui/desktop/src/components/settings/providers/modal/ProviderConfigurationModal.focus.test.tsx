@@ -92,11 +92,11 @@ describe('the Configure dialog and the keyboard', () => {
 
     // A configured provider has a Remove button, which is the first tabbable control while the
     // fields still read "Loading…". Radix used to pick it.
-    expect(screen.getByRole('button', { name: 'Remove' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Remove setup' })).toBeInTheDocument();
     await waitFor(() => expect(dialog.querySelector('input[type="password"]')).not.toBeNull());
     const key = dialog.querySelector('input[type="password"]') as HTMLInputElement;
     await waitFor(() => expect(key).toHaveFocus());
-    expect(screen.getByRole('button', { name: 'Remove' })).not.toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Remove setup' })).not.toHaveFocus();
   });
 
   it('leaves focus where the person put it when they moved before the fields loaded', async () => {

@@ -4,6 +4,12 @@ import type { ProviderDetails } from '../../../../api';
 import ProviderConfigurationModal from './ProviderConfiguationModal';
 import { providerSetupCopy } from '../copy';
 
+vi.mock('../../../../utils/providerSecret', () => ({
+  SECRET_MASK: '••••••••',
+  loadProviderSecretPreview: async () => '••••••••',
+  removeProviderSecret: vi.fn(),
+}));
+
 /**
  * W1-35: Remove clears what Biorouter saved for a built-in provider, but a key in the environment
  * the daemon was started in keeps it configured. The row then still read "Configured" and nothing

@@ -1,36 +1,72 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { loadProviderSecret } from './providerSecret';
+import { loadProviderSecretPreview, removeProviderSecret } from './providerSecret';
 
 const mocks = vi.hoisted(() => ({
-  reveal: vi.fn(),
+  preview: vi.fn(),
+  remove: vi.fn(),
+  read: vi.fn(),
   headers: vi.fn(),
 }));
-
-vi.mock('../api', () => ({ revealProviderSecret: mocks.reveal }));
+vi.mock('../api', () => ({
+  previewProviderSecret: mocks.preview,
+  removeConfig: mocks.remove,
+  readConfig: mocks.read,
+}));
 vi.mock('./userAction', () => ({ userActionHeaders: mocks.headers }));
 
-describe('loadProviderSecret', () => {
-  beforeEach(() => {
-    vi.resetAllMocks();
-  });
+beforeEach(() => {
+  vi.resetAllMocks();
+  mocks.headers.mockResolvedValue({ 'X-User-Action': 'synthetic-user-action' });
+});
 
-  it('sends the user-action proof only with the requested provider and key', async () => {
-    mocks.headers.mockResolvedValue({ 'X-User-Action': 'synthetic-user-action' });
-    mocks.reveal.mockResolvedValue({ data: 'synthetic-provider-key' });
-
-    await expect(loadProviderSecret('google', 'GOOGLE_API_KEY')).resolves.toBe(
-      'synthetic-provider-key'
+describe('saved provider key preview', () => {
+  it('sends user-action proof and accepts only a masked preview', async () => {
+    mocks.preview.mockResolvedValue({ data: 'synt••••••••-key' });
+    await expect(loadProviderSecretPreview('google', 'GOOGLE_API_KEY')).resolves.toBe(
+      'synt••••••••-key'
     );
-    expect(mocks.reveal).toHaveBeenCalledWith({
+    expect(mocks.preview).toHaveBeenCalledWith({
       body: { provider: 'google', key: 'GOOGLE_API_KEY' },
       headers: { 'X-User-Action': 'synthetic-user-action' },
       throwOnError: true,
     });
   });
 
-  it('refuses a response without a string value', async () => {
-    mocks.headers.mockResolvedValue({});
-    mocks.reveal.mockResolvedValue({ data: undefined });
-    await expect(loadProviderSecret('google', 'GOOGLE_API_KEY')).rejects.toThrow();
+  it.each([undefined, 'synthetic-full-key', 'short', 'synt••••••••too-long'])(
+    'refuses an unmasked or malformed preview',
+    async (data) => {
+      mocks.preview.mockResolvedValue({ data });
+      await expect(loadProviderSecretPreview('google', 'GOOGLE_API_KEY')).rejects.toThrow();
+    }
+  );
+
+  it('accepts the fully masked form for short keys', async () => {
+    mocks.preview.mockResolvedValue({ data: '••••••••' });
+    await expect(loadProviderSecretPreview('google', 'GOOGLE_API_KEY')).resolves.toBe('••••••••');
+  });
+});
+
+describe('removing a saved provider key', () => {
+  it('deletes only the named secret and verifies it is absent', async () => {
+    mocks.remove.mockResolvedValue({ data: 'removed' });
+    mocks.read.mockResolvedValue({ data: null });
+    await expect(removeProviderSecret('GOOGLE_API_KEY')).resolves.toBeUndefined();
+    expect(mocks.remove).toHaveBeenCalledWith({
+      body: { key: 'GOOGLE_API_KEY', is_secret: true },
+      headers: { 'X-User-Action': 'synthetic-user-action' },
+      throwOnError: true,
+    });
+    expect(mocks.read).toHaveBeenCalledWith({
+      body: { key: 'GOOGLE_API_KEY', is_secret: true },
+      throwOnError: true,
+    });
+  });
+
+  it('does not claim the key is removed when the environment still supplies it', async () => {
+    mocks.remove.mockResolvedValue({ data: 'removed' });
+    mocks.read.mockResolvedValue({ data: { maskedValue: '••••••••' } });
+    await expect(removeProviderSecret('GOOGLE_API_KEY')).rejects.toThrow(
+      'Key is still present'
+    );
   });
 });

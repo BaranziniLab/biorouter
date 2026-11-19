@@ -85,7 +85,7 @@ pub struct ConfigKeyQuery {
 }
 
 #[derive(Deserialize, ToSchema)]
-pub struct RevealProviderSecretRequest {
+pub struct PreviewProviderSecretRequest {
     pub provider: String,
     pub key: String,
 }
@@ -1154,18 +1154,18 @@ pub async fn read_config(
 
 #[utoipa::path(
     post,
-    path = "/config/provider-secret/reveal",
-    request_body = RevealProviderSecretRequest,
+    path = "/config/provider-secret/preview",
+    request_body = PreviewProviderSecretRequest,
     responses(
-        (status = 200, description = "The requested provider secret", body = String),
+        (status = 200, description = "A masked provider secret preview", body = String),
         (status = 403, description = "The request did not prove a desktop user action"),
         (status = 404, description = "The provider secret is unavailable"),
         (status = 500, description = "The provider secret could not be read"),
     )
 )]
-pub async fn reveal_provider_secret(
+pub async fn preview_provider_secret(
     headers: http::HeaderMap,
-    Json(query): Json<RevealProviderSecretRequest>,
+    Json(query): Json<PreviewProviderSecretRequest>,
 ) -> Result<(http::HeaderMap, Json<String>), StatusCode> {
     if !is_user_action(&headers) {
         return Err(StatusCode::FORBIDDEN);
@@ -1193,7 +1193,18 @@ pub async fn reveal_provider_secret(
         http::header::CACHE_CONTROL,
         http::HeaderValue::from_static("no-store"),
     );
-    Ok((response_headers, Json(value)))
+    let chars: Vec<char> = value.chars().collect();
+    let preview = if chars.len() <= 8 {
+        SECRET_MASK.to_string()
+    } else {
+        format!(
+            "{}{}{}",
+            chars[..4].iter().collect::<String>(),
+            SECRET_MASK,
+            chars[chars.len() - 4..].iter().collect::<String>(),
+        )
+    };
+    Ok((response_headers, Json(preview)))
 }
 
 #[utoipa::path(
@@ -3023,8 +3034,8 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/config/remove", post(remove_config))
         .route("/config/read", post(read_config))
         .route(
-            "/config/provider-secret/reveal",
-            post(reveal_provider_secret),
+            "/config/provider-secret/preview",
+            post(preview_provider_secret),
         )
         .route("/config/extensions", get(get_extensions))
         .route("/config/extensions", post(add_extension))

@@ -35,7 +35,7 @@ async fn request(
 }
 
 #[tokio::test]
-async fn a_saved_provider_secret_is_revealed_only_for_a_proven_person_and_declared_key() {
+async fn a_saved_provider_secret_is_previewed_only_for_a_proven_person_and_declared_key() {
     for (key, value) in [
         ("GOOGLE_API_KEY", SYNTHETIC_KEY),
         ("ANTHROPIC_API_KEY", "synthetic-anthropic-key"),
@@ -63,22 +63,59 @@ async fn a_saved_provider_secret_is_revealed_only_for_a_proven_person_and_declar
 
     let query = json!({ "provider": "google", "key": "GOOGLE_API_KEY" });
     for proof in [None, Some("wrong-proof")] {
-        let (status, _, body) =
-            request(&app, "/config/provider-secret/reveal", query.clone(), proof).await;
+        let (status, _, body) = request(
+            &app,
+            "/config/provider-secret/preview",
+            query.clone(),
+            proof,
+        )
+        .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert_ne!(body, json!(SYNTHETIC_KEY));
     }
 
     let (status, headers, body) = request(
         &app,
-        "/config/provider-secret/reveal",
+        "/config/provider-secret/preview",
         query,
         Some(USER_ACTION_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, json!(SYNTHETIC_KEY));
+    assert_eq!(body, json!("synt••••••••-key"));
+    assert_ne!(body, json!(SYNTHETIC_KEY));
     assert_eq!(headers.get("cache-control").unwrap(), "no-store");
+
+    let (status, _, body) = request(
+        &app,
+        "/config/provider-secret/reveal",
+        json!({ "provider": "google", "key": "GOOGLE_API_KEY" }),
+        Some(USER_ACTION_KEY),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_ne!(body, json!(SYNTHETIC_KEY));
+
+    for (secret, expected) in [
+        ("abcd", "••••••••"),
+        ("abcdefgh", "••••••••"),
+        ("abcdefghi", "abcd••••••••fghi"),
+        ("甲乙丙丁中戊己庚辛", "甲乙丙丁••••••••戊己庚辛"),
+    ] {
+        Config::global()
+            .set_secret("GOOGLE_API_KEY", &secret)
+            .unwrap();
+        let (status, _, body) = request(
+            &app,
+            "/config/provider-secret/preview",
+            json!({ "provider": "google", "key": "GOOGLE_API_KEY" }),
+            Some(USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body, json!(expected));
+        assert_ne!(body, json!(secret));
+    }
 
     for query in [
         json!({ "provider": "google", "key": "ANTHROPIC_API_KEY" }),
@@ -88,7 +125,7 @@ async fn a_saved_provider_secret_is_revealed_only_for_a_proven_person_and_declar
     ] {
         let (status, _, body) = request(
             &app,
-            "/config/provider-secret/reveal",
+            "/config/provider-secret/preview",
             query,
             Some(USER_ACTION_KEY),
         )
@@ -113,18 +150,18 @@ async fn a_saved_provider_secret_is_revealed_only_for_a_proven_person_and_declar
         .unwrap();
     let (status, _, body) = request(
         &app,
-        "/config/provider-secret/reveal",
+        "/config/provider-secret/preview",
         json!({ "provider": custom.name, "key": custom.api_key_env }),
         Some(USER_ACTION_KEY),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body, json!("synthetic-custom-key"));
+    assert_eq!(body, json!("synt••••••••-key"));
 
     Config::global().delete_secret("GOOGLE_API_KEY").unwrap();
     let (status, _, _) = request(
         &app,
-        "/config/provider-secret/reveal",
+        "/config/provider-secret/preview",
         json!({ "provider": "google", "key": "GOOGLE_API_KEY" }),
         Some(USER_ACTION_KEY),
     )

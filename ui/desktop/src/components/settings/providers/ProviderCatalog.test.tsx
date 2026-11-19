@@ -24,7 +24,9 @@ const mocks = vi.hoisted(() => ({
   updateCustomProvider: vi.fn(),
   createCustomProvider: vi.fn(),
   removeCustomProvider: vi.fn(),
-  revealProviderSecret: vi.fn(),
+  previewProviderSecret: vi.fn(),
+  removeConfig: vi.fn(),
+  readConfig: vi.fn(),
 }));
 
 vi.mock('../../../api', async (importOriginal) => ({
@@ -37,7 +39,9 @@ vi.mock('../../../api', async (importOriginal) => ({
   updateCustomProvider: mocks.updateCustomProvider,
   createCustomProvider: mocks.createCustomProvider,
   removeCustomProvider: mocks.removeCustomProvider,
-  revealProviderSecret: mocks.revealProviderSecret,
+  previewProviderSecret: mocks.previewProviderSecret,
+  removeConfig: mocks.removeConfig,
+  readConfig: mocks.readConfig,
 }));
 // The configure modal asks which provider is bound before offering "Remove".
 vi.mock('../../ModelAndProviderContext', () => ({
@@ -1059,7 +1063,7 @@ describe('a declarative provider nobody has set up', () => {
  * made it, so the catalog's update carries that proof.
  */
 describe('updating a custom provider', () => {
-  it('reveals the saved key for the selected custom provider', async () => {
+  it('shows only a masked preview for the selected custom provider', async () => {
     mocks.getCustomProvider.mockResolvedValue({
       data: {
         is_editable: true,
@@ -1073,7 +1077,7 @@ describe('updating a custom provider', () => {
         },
       },
     });
-    mocks.revealProviderSecret.mockResolvedValue({ data: 'synthetic-custom-key' });
+    mocks.previewProviderSecret.mockResolvedValue({ data: 'synt••••••••-key' });
     const lab = {
       ...provider('custom_lab', { is_configured: true }, 'Lab gateway'),
       provider_type: 'Custom',
@@ -1088,14 +1092,57 @@ describe('updating a custom provider', () => {
     );
     fireEvent.click(await screen.findByTestId('provider-card-custom_lab'));
     const dialog = await screen.findByRole('dialog');
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Show API key' }));
-    expect(await within(dialog).findByDisplayValue('synthetic-custom-key')).toBeInTheDocument();
-    expect(mocks.revealProviderSecret).toHaveBeenCalledWith(
+    const input = await within(dialog).findByDisplayValue('synt••••••••-key');
+    expect(input).toHaveAttribute('readonly');
+    expect(mocks.previewProviderSecret).toHaveBeenCalledWith(
       expect.objectContaining({
         body: { provider: 'custom_lab', key: 'CUSTOM_LAB_API_KEY' },
         headers: { 'X-User-Action': 'test-key' },
       })
     );
+  });
+
+  it('refreshes the catalog when closing after a custom provider key is removed', async () => {
+    mocks.getCustomProvider.mockResolvedValue({
+      data: {
+        is_editable: true,
+        config: {
+          engine: 'openai',
+          display_name: 'Lab gateway',
+          base_url: 'https://lab.example/v1',
+          api_key_env: 'CUSTOM_LAB_API_KEY',
+          models: [{ name: 'lab-model' }],
+          supports_streaming: true,
+        },
+      },
+    });
+    mocks.previewProviderSecret.mockResolvedValue({ data: 'synt••••••••-key' });
+    mocks.removeConfig.mockResolvedValue({ data: 'removed' });
+    mocks.readConfig.mockResolvedValue({ data: null });
+    const refreshProviders = vi.fn();
+    const lab = {
+      ...provider('custom_lab', { is_configured: true }, 'Lab gateway'),
+      provider_type: 'Custom',
+    } as ProviderDetails;
+    render(
+      <ProviderCatalog
+        providers={[lab]}
+        mode="settings"
+        refreshProviders={refreshProviders}
+        initialTab="public"
+      />
+    );
+    fireEvent.click(await screen.findByTestId('provider-card-custom_lab'));
+    const dialog = await screen.findByRole('dialog');
+    await within(dialog).findByDisplayValue('synt••••••••-key');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove API key' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove API key' }));
+    await waitFor(() =>
+      expect(within(dialog).getByLabelText('API key')).toHaveAttribute('type', 'password')
+    );
+    const callsBeforeClose = refreshProviders.mock.calls.length;
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(refreshProviders).toHaveBeenCalledTimes(callsBeforeClose + 1);
   });
 
   it('sends the proof that the user made the change', async () => {
