@@ -477,6 +477,8 @@ fn interactive_model_search(models: &[String]) -> anyhow::Result<String> {
     }
 }
 
+const MAX_MODELS: usize = 10;
+
 /// The models `configure` offers first, each with the hint shown beside it.
 ///
 /// For Ollama these are the pulled tags of Biorouter's two supported local
@@ -485,8 +487,8 @@ fn interactive_model_search(models: &[String]) -> anyhow::Result<String> {
 /// models (its list is whatever the user pulled), so before this the dialog
 /// listed the pulled tags alphabetically and pre-selected the first: on a
 /// machine holding `deepseek-r1:8b` and `qwen3.8:27b`, Enter chose a model that
-/// never calls tools. For every other provider these are its known models the
-/// listing returned, as before.
+/// never calls tools. Coding-agent account catalogues keep their default-first order.
+/// Other providers use their known models that the listing returned.
 ///
 /// ⚠ A cloud tag is never a variant. `gemma4:31b-cloud` starts with
 /// `gemma4:31b-`, and it is a real Ollama cloud model: Ollama forwards it to
@@ -501,6 +503,19 @@ fn suggested_models(
     models: &[String],
     known_models: &[String],
 ) -> Vec<(String, String)> {
+    if matches!(provider_name, "codex" | "github_copilot") {
+        return models
+            .iter()
+            .take(MAX_MODELS)
+            .enumerate()
+            .map(|(index, model)| {
+                (
+                    model.clone(),
+                    if index == 0 { "Recommended" } else { "" }.to_string(),
+                )
+            })
+            .collect();
+    }
     if provider_name == "ollama" {
         use biorouter::providers::ollama::OLLAMA_RECOMMENDED_MODELS;
         let mut suggested = Vec::new();
@@ -684,8 +699,6 @@ fn select_model_from_list(
     provider_meta: &biorouter::providers::base::ProviderMetadata,
     current: Option<&str>,
 ) -> anyhow::Result<String> {
-    const MAX_MODELS: usize = 10;
-
     let known_models: Vec<String> = provider_meta
         .known_models
         .iter()
@@ -703,26 +716,15 @@ fn select_model_from_list(
     // Otherwise, show all models without search.
     if models.len() > MAX_MODELS {
         if !suggested.is_empty() {
-            let mut model_items: Vec<(String, String, String)> = suggested
-                .iter()
-                .map(|(m, hint)| (m.clone(), m.clone(), hint.clone()))
-                .collect();
-
-            model_items.insert(
-                0,
-                (
-                    "search_all".to_string(),
-                    "Search all models...".to_string(),
-                    "Search complete model list".to_string(),
-                ),
-            );
+            let (mut model_items, initial) =
+                long_model_list(&provider_meta.name, models, &known_models, current);
 
             if provider_meta.allows_unlisted_models {
                 model_items.push(unlisted_model_item());
             }
 
             let mut select = cliclack::select("Select a model:").items(&model_items);
-            if let Some(initial) = preselected_model(&model_items, current) {
+            if let Some(initial) = initial {
                 select = select.initial_value(initial);
             }
             let selection = select.interact()?;
@@ -738,15 +740,61 @@ fn select_model_from_list(
             Ok(interactive_model_search(models)?)
         }
     } else {
-        let mut model_items = short_model_list(&provider_meta.name, models, &suggested);
+        let (mut model_items, initial) =
+            short_model_selection(&provider_meta.name, models, &suggested, current);
 
         if provider_meta.allows_unlisted_models {
             model_items.push(unlisted_model_item());
         }
 
-        let initial = preselected_model(&model_items, current);
         pick_model(&model_items, initial, provider_meta)
     }
+}
+
+fn long_model_list(
+    provider_name: &str,
+    models: &[String],
+    known_models: &[String],
+    current: Option<&str>,
+) -> (Vec<(String, String, String)>, Option<String>) {
+    let mut items: Vec<(String, String, String)> =
+        suggested_models(provider_name, models, known_models)
+            .into_iter()
+            .map(|(model, hint)| (model.clone(), model, hint))
+            .collect();
+    items.insert(
+        if matches!(provider_name, "codex" | "github_copilot") {
+            items.len()
+        } else {
+            0
+        },
+        (
+            "search_all".to_string(),
+            "Search all models...".to_string(),
+            "Search complete model list".to_string(),
+        ),
+    );
+    if matches!(provider_name, "codex" | "github_copilot") {
+        items = with_model_in_use(items, current);
+    }
+    let initial = preselected_model(&items, current);
+    (items, initial)
+}
+
+fn short_model_selection(
+    provider_name: &str,
+    models: &[String],
+    suggested: &[(String, String)],
+    current: Option<&str>,
+) -> (Vec<(String, String, String)>, Option<String>) {
+    let items = short_model_list(provider_name, models, suggested);
+    let items = if matches!(provider_name, "codex" | "github_copilot") {
+        with_model_in_use(items, current)
+    } else {
+        items
+    };
+    let initial = preselected_model(&items, current);
+    (items, initial)
 }
 
 /// The hint beside an Ollama cloud model in the list.
@@ -1940,7 +1988,7 @@ pub async fn configure_default_worker_dialog() -> anyhow::Result<()> {
         .filter(|worker| &worker.provider == provider_name)
         .map(|worker| worker.model.clone());
     let model: String = match models_res {
-        Ok(Some(models)) if !models.is_empty() => {
+        Ok(Some(models)) if !models.is_empty() || provider_meta.name == "github_copilot" => {
             select_model_from_list(&models, provider_meta, current_model.as_deref())?
         }
         _ => {
@@ -3339,7 +3387,8 @@ mod ollama_model_choice_tests {
 #[cfg(test)]
 mod unlisted_provider_model_tests {
     use super::{
-        chat_providers, known_model_items, preselected_model, with_model_in_use, UNLISTED_MODEL_KEY,
+        chat_providers, known_model_items, long_model_list, preselected_model,
+        short_model_selection, suggested_models, with_model_in_use, UNLISTED_MODEL_KEY,
     };
     use biorouter::providers::base::ProviderMetadata;
     use biorouter::providers::providers;
@@ -3356,6 +3405,153 @@ mod unlisted_provider_model_tests {
 
     fn values(items: &[(String, String, String)]) -> Vec<&str> {
         items.iter().map(|(value, _, _)| value.as_str()).collect()
+    }
+
+    fn codex_account_models() -> Vec<String> {
+        std::iter::once("account-default".to_string())
+            .chain((1..12).map(|index| format!("account-model-{index}")))
+            .collect()
+    }
+
+    #[test]
+    fn copilot_cli_account_default_stays_first_above_ten_models() {
+        let models = codex_account_models();
+        for known in [
+            vec!["account-model-2".to_string(), "account-model-1".to_string()],
+            Vec::new(),
+        ] {
+            let suggested = suggested_models("github_copilot", &models, &known);
+            assert_eq!(
+                suggested[0],
+                ("account-default".to_string(), "Recommended".to_string())
+            );
+            let (items, initial) = long_model_list("github_copilot", &models, &known, None);
+            assert_eq!(items[0].0, "account-default");
+            assert_eq!(items[1].0, "account-model-1");
+            assert_eq!(items.last().unwrap().0, "search_all");
+            assert_eq!(initial, None);
+        }
+    }
+
+    #[test]
+    fn copilot_cli_long_account_list_preserves_saved_bindings() {
+        let models = codex_account_models();
+        let known = vec!["account-model-2".to_string()];
+        for saved in ["account-model-11", "claude-opus-4.8", "gpt-5.6-terra"] {
+            let (items, initial) = long_model_list("github_copilot", &models, &known, Some(saved));
+            assert_eq!(items[0].0, "account-default");
+            assert_eq!(initial.as_deref(), Some(saved));
+            assert_eq!(items.iter().filter(|(id, _, _)| id == saved).count(), 1);
+        }
+    }
+
+    #[test]
+    fn copilot_cli_short_account_list_keeps_order_and_saved_choice() {
+        let models = vec!["claude-sonnet-5.5".to_string(), "gpt-5.3-codex".to_string()];
+        let suggested = suggested_models("github_copilot", &models, &["gpt-5.3-codex".to_string()]);
+        let (items, initial) = short_model_selection(
+            "github_copilot",
+            &models,
+            &suggested,
+            Some("claude-opus-4.8"),
+        );
+        assert_eq!(
+            values(&items),
+            ["claude-sonnet-5.5", "claude-opus-4.8", "gpt-5.3-codex"]
+        );
+        assert_eq!(initial.as_deref(), Some("claude-opus-4.8"));
+    }
+
+    #[test]
+    fn copilot_cli_empty_account_list_keeps_no_named_fallback_and_saved_explicit_choice() {
+        let known = vec!["gpt-5.3-codex".to_string(), "gpt-5.6-terra".to_string()];
+        let suggested = suggested_models("github_copilot", &[], &known);
+        assert!(suggested.is_empty());
+        let (items, initial) = short_model_selection("github_copilot", &[], &suggested, None);
+        assert!(
+            items.is_empty(),
+            "successful empty must not expand capability metadata"
+        );
+        assert_eq!(initial, None);
+        let (items, initial) =
+            short_model_selection("github_copilot", &[], &suggested, Some("claude-opus-4.8"));
+        assert_eq!(values(&items), ["claude-opus-4.8"]);
+        assert_eq!(items[0].2, "In use");
+        assert_eq!(initial.as_deref(), Some("claude-opus-4.8"));
+    }
+
+    #[test]
+    fn codex_live_catalogue_default_stays_first_when_more_than_ten_models_are_available() {
+        let models = codex_account_models();
+        for known in [
+            vec!["account-model-2".to_string(), "account-model-1".to_string()],
+            Vec::new(),
+        ] {
+            let (items, initial) = long_model_list("codex", &models, &known, None);
+            assert_eq!(items[0].0, "account-default");
+            assert_eq!(items[0].2, "Recommended");
+            assert_eq!(items[1].0, "account-model-1");
+            assert_eq!(initial, None);
+            assert!(values(&items).contains(&"search_all"));
+        }
+    }
+
+    #[test]
+    fn codex_live_catalogue_preserves_a_saved_model_beyond_the_recommended_rows() {
+        let models = codex_account_models();
+        let known = vec!["account-model-2".to_string()];
+        for saved in ["account-model-11", "saved-older-model"] {
+            let (items, initial) = long_model_list("codex", &models, &known, Some(saved));
+            assert_eq!(items[0].0, "account-default");
+            assert!(values(&items).contains(&saved));
+            assert_eq!(initial.as_deref(), Some(saved));
+            assert_eq!(
+                items.iter().filter(|(model, _, _)| model == saved).count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn codex_live_catalogue_keeps_other_providers_existing_search_and_selection() {
+        let models = codex_account_models();
+        let known = vec!["account-model-2".to_string()];
+        let (items, initial) = long_model_list("example", &models, &known, Some("account-model-2"));
+        assert_eq!(items[0].0, "search_all");
+        assert_eq!(items[1].0, "account-model-2");
+        assert_eq!(initial.as_deref(), Some("account-model-2"));
+    }
+
+    #[test]
+    fn codex_short_live_catalogue_retains_a_saved_model_missing_from_the_account_list() {
+        let models = vec!["account-default".to_string(), "account-model-1".to_string()];
+        let suggested = suggested_models("codex", &models, &[]);
+        let (items, initial) =
+            short_model_selection("codex", &models, &suggested, Some("saved-older-model"));
+        assert_eq!(items[0].0, "account-default");
+        assert_eq!(items[1].0, "saved-older-model");
+        assert_eq!(initial.as_deref(), Some("saved-older-model"));
+        assert_eq!(
+            items
+                .iter()
+                .filter(|(model, _, _)| model == "saved-older-model")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn codex_short_live_catalogue_keeps_live_order_and_existing_saved_choices() {
+        let models = vec!["account-default".to_string(), "account-model-1".to_string()];
+        let suggested = suggested_models("codex", &models, &[]);
+        for (current, expected) in [
+            (None, None),
+            (Some("account-model-1"), Some("account-model-1")),
+        ] {
+            let (items, initial) = short_model_selection("codex", &models, &suggested, current);
+            assert_eq!(values(&items), ["account-default", "account-model-1"]);
+            assert_eq!(initial.as_deref(), expected);
+        }
     }
 
     /// Phase C, T1 F3: Versa API Bedrock has no model listing, so `configure`

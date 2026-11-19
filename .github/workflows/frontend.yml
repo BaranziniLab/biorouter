@@ -72,6 +72,19 @@ jobs:
           cache: npm
           cache-dependency-path: ui/desktop/package-lock.json
 
+      - name: Release CI adoption provenance regressions
+        if: ${{ !cancelled() }}
+        working-directory: ${{ github.workspace }}
+        timeout-minutes: 5
+        env:
+          BIOROUTER_DISABLE_KEYRING: "true"
+        shell: bash
+        run: |
+          node --test --test-concurrency=1 --test-reporter=tap scripts/tests/release-adopt-ci.test.mjs | tee "$RUNNER_TEMP/release-adopt-ci.tap"
+          for expected in '1..22' '# tests 22' '# pass 22' '# fail 0' '# cancelled 0' '# skipped 0' '# todo 0'; do
+            grep -Fx "$expected" "$RUNNER_TEMP/release-adopt-ci.tap"
+          done
+
       - name: Install dependencies
         run: npm ci
 

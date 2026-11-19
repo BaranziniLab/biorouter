@@ -493,7 +493,10 @@ pub fn save_workflow_to_file(
 
     let file_path_value = match file_path {
         Some(path) => path,
-        None => generate_workflow_filename(&workflow.title, &workflow_library_dir),
+        None => {
+            fs::create_dir_all(&workflow_library_dir)?;
+            generate_workflow_filename(&workflow.title, &workflow_library_dir.canonicalize()?)
+        }
     };
 
     if let Some(parent) = file_path_value.parent() {

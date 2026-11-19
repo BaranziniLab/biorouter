@@ -10,7 +10,8 @@ use crate::conversation::message::Message;
 use crate::model::ModelConfig;
 use crate::providers::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage};
 use crate::providers::formats::google::{
-    create_request, get_usage, response_to_message, response_to_streaming_message,
+    create_request, get_usage, response_to_message_for_model,
+    response_to_streaming_message_for_model, uses_gemini4_response_history,
 };
 use anyhow::Result;
 use async_stream::try_stream;
@@ -25,24 +26,17 @@ use tokio_util::codec::{FramedRead, LinesCodec};
 use tokio_util::io::StreamReader;
 
 pub const GOOGLE_API_HOST: &str = "https://generativelanguage.googleapis.com";
-// gemini-3.1-pro-preview is still the only Gemini 3.x Pro (a Feb 2026 public
-// preview; no 3.5-3.8 Pro exists as of Sep 2026), so it stays the default.
-pub const GOOGLE_DEFAULT_MODEL: &str = "gemini-3.1-pro-preview";
-// Google tells new projects to use 3.8 Flash or 3.5 Flash-Lite
-// (ai.google.dev/gemini-api/docs/models, Sep 2026); the fast slot takes the
-// cheaper of the two.
+// Google's current starting recommendation balances agentic capability and
+// latency: https://aistudio.google.com/docs/latest-model (November 2026).
+pub const GOOGLE_DEFAULT_MODEL: &str = "gemini-4-hydrogen";
+// Flash-Lite remains Google's budget option for high-volume routing.
 pub const GOOGLE_DEFAULT_FAST_MODEL: &str = "gemini-3.5-flash-lite";
-// Verified against ai.google.dev/gemini-api/docs/models + deprecations
-// (Sep 25, 2026). Every entry here answers a chat and accepts images, because
-// `metadata()` marks all of them vision-capable. Removed:
-// - gemini-2.5-flash-image: deprecated, shuts down Oct 2, 2026.
-// - gemini-2.5-flash-preview-tts / gemini-2.5-pro-preview-tts: text in,
-//   audio out, so they cannot answer a chat (and were wrongly flagged vision).
-// Earlier removals: gemini-3-pro-preview (shut down Mar 9, 2026), the whole
-// gemini-2.0 family (Jun 1, 2026), and the 09-2025 / image / native-audio 2.5
-// previews. gemini-3-flash-preview has no shutdown date, but Google names
-// gemini-3.6-flash as its replacement.
+// Text replies and image input only; Live, TTS, video and embedding models
+// need different APIs. https://aistudio.google.com/docs/models
 pub const GOOGLE_KNOWN_MODELS: &[&str] = &[
+    "gemini-4-hydrogen",
+    "gemini-4-argon",
+    "gemini-4-carbon",
     // Gemini 3.x models (all GA except the two -preview ids)
     "gemini-3.8-flash",
     "gemini-3.7-flash",
@@ -55,16 +49,15 @@ pub const GOOGLE_KNOWN_MODELS: &[&str] = &[
     // Gemini 3.x image models
     "gemini-3.1-flash-image",
     "gemini-3-pro-image",
-    // Gemini 2.5 models. On Sep 18, 2026 Google said these are NOT deprecated
-    // on the Gemini API and have no shutdown date, but only keys that used them
-    // before can call them. The Oct 2026 retirement is Vertex AI's, not this
-    // API's.
+    // Existing-user API access only. Pro and Flash route to 3.8 Flash and
+    // 3.5 Flash-Lite on December 1, 2026; Flash-Lite has no retirement date.
+    // https://aistudio.google.com/docs/deprecations
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.5-flash-lite",
 ];
 
-pub const GOOGLE_DOC_URL: &str = "https://ai.google.dev/gemini-api/docs/models";
+pub const GOOGLE_DOC_URL: &str = "https://aistudio.google.com/docs/models";
 
 #[derive(Debug, serde::Serialize)]
 pub struct GoogleProvider {
@@ -120,7 +113,7 @@ impl GoogleProvider {
 #[async_trait]
 impl Provider for GoogleProvider {
     fn metadata() -> ProviderMetadata {
-        // Every chat-capable Gemini model (2.5 and 3.x) accepts images. The
+        // Every chat-capable Gemini model (2.5, 3.x and 4) accepts images. The
         // audio-output models (TTS, Live) do not, which is why none of them is
         // in GOOGLE_KNOWN_MODELS; the test module below holds that line.
         let models: Vec<ModelInfo> = GOOGLE_KNOWN_MODELS
@@ -171,7 +164,14 @@ impl Provider for GoogleProvider {
             .with_retry(|| async { self.post(&model_config.model_name, &payload).await })
             .await?;
 
-        let message = response_to_message(unescape_json_values(&response))?;
+        // Native signatures cover literal JSON values, including backslashes.
+        let replay_response = if uses_gemini4_response_history(&response, &model_config.model_name)
+        {
+            response.clone()
+        } else {
+            unescape_json_values(&response)
+        };
+        let message = response_to_message_for_model(replay_response, &model_config.model_name)?;
         let usage = get_usage(&response)?;
         let response_model = match response.get("modelVersion") {
             Some(model_version) => model_version.as_str().unwrap_or_default().to_string(),
@@ -219,13 +219,14 @@ impl Provider for GoogleProvider {
             })?;
 
         let stream = response.bytes_stream().map_err(io::Error::other);
+        let model_name = self.model.model_name.clone();
 
         Ok(Box::pin(try_stream! {
             let stream_reader = StreamReader::new(stream);
             let framed = FramedRead::new(stream_reader, LinesCodec::new())
                 .map_err(anyhow::Error::from);
 
-            let message_stream = response_to_streaming_message(framed);
+            let message_stream = response_to_streaming_message_for_model(framed, &model_name);
             pin!(message_stream);
             while let Some(message) = message_stream.next().await {
                 let (message, usage, pending) = message.map_err(|e|
@@ -282,8 +283,8 @@ mod tests {
 
     /// `metadata()` marks every entry vision-capable, so a model that cannot
     /// take an image, or cannot answer a chat at all, must never be listed.
-    /// The 2.5 TTS previews were both (text in, audio out) and were listed
-    /// until Sep 2026; gemini-2.5-flash-image shuts down Oct 2, 2026.
+    /// The 2.5 TTS previews produce audio, and the older image generator is
+    /// not offered for agent chat.
     #[test]
     fn no_audio_output_or_retired_model_is_advertised() {
         for id in GOOGLE_KNOWN_MODELS {

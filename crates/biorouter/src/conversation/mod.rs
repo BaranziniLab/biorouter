@@ -1,6 +1,7 @@
 use crate::conversation::message::{Message, MessageContent, MessageMetadata};
-use rmcp::model::Role;
+use rmcp::model::{Role, TextContent};
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::sync::Arc;
 use thiserror::Error;
@@ -32,6 +33,9 @@ pub(crate) fn without_bedrock_reasoning(conversation: &Conversation) -> Conversa
             .iter()
             .cloned()
             .filter_map(|mut message| {
+                if has_native_replay_content(&message) {
+                    return Some(message);
+                }
                 let had_bedrock_reasoning = message.content.iter().any(|content| {
                     matches!(
                         content,
@@ -130,15 +134,16 @@ impl Conversation {
             .last_mut()
             .filter(|m| m.id.is_some() && m.id == message.id)
         {
-            match (last.content.last_mut(), message.content.last()) {
+            let merged = match (last.content.last_mut(), message.content.last()) {
                 (Some(MessageContent::Text(ref mut last)), Some(MessageContent::Text(new)))
                     if message.content.len() == 1 =>
                 {
-                    last.text.push_str(&new.text);
+                    merge_streamed_text(last, new)
                 }
-                (_, _) => {
-                    last.content.extend(message.content);
-                }
+                _ => false,
+            };
+            if !merged {
+                last.content.extend(message.content);
             }
         } else {
             messages.push(message);
@@ -164,11 +169,14 @@ impl Conversation {
             return false;
         };
         for next in content.iter().cloned() {
-            match (message.content.last_mut(), next) {
+            let merged = match (message.content.last_mut(), &next) {
                 (Some(MessageContent::Text(existing)), MessageContent::Text(next)) => {
-                    existing.text.push_str(&next.text);
+                    merge_streamed_text(existing, next)
                 }
-                (_, next) => message.content.push(next),
+                _ => false,
+            };
+            if !merged {
+                message.content.push(next);
             }
         }
         true
@@ -375,7 +383,7 @@ fn run_passes<const N: usize>(
 }
 
 fn merge_text_content_in_message(mut msg: Message) -> Message {
-    if msg.role != Role::Assistant || has_signed_reasoning(&msg) {
+    if msg.role != Role::Assistant || preserves_provider_parts(&msg) {
         return msg;
     }
     msg.content = msg
@@ -418,7 +426,7 @@ fn trim_assistant_text_whitespace(messages: Vec<Message>) -> (Vec<Message>, Vec<
     let fixed_messages = messages
         .into_iter()
         .map(|mut message| {
-            if message.role == Role::Assistant && !has_signed_reasoning(&message) {
+            if message.role == Role::Assistant && !preserves_provider_parts(&message) {
                 for content in &mut message.content {
                     if let MessageContent::Text(text) = content {
                         let trimmed = text.text.trim_end();
@@ -443,10 +451,11 @@ fn remove_empty_messages(messages: Vec<Message>) -> (Vec<Message>, Vec<String>) 
     let filtered_messages = messages
         .into_iter()
         .filter(|msg| {
-            if msg
-                .content
-                .iter()
-                .all(|c| c.as_text().is_some_and(str::is_empty))
+            if !has_native_replay_content(msg)
+                && msg
+                    .content
+                    .iter()
+                    .all(|c| c.as_text().is_some_and(str::is_empty))
             {
                 issues.push("Removed empty message".to_string());
                 false
@@ -463,7 +472,7 @@ fn fix_tool_calling(mut messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
     let mut pending_tool_requests: HashSet<String> = HashSet::new();
 
     for message in &mut messages {
-        let signed_reasoning = has_signed_reasoning(message);
+        let preserve_parts = preserves_provider_parts(message);
         let mut content_to_remove = Vec::new();
 
         match message.role {
@@ -505,7 +514,7 @@ fn fix_tool_calling(mut messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
                 for (idx, content) in message.content.iter().enumerate() {
                     match content {
                         MessageContent::ToolResponse(resp) => {
-                            if !signed_reasoning {
+                            if !preserve_parts {
                                 content_to_remove.push(idx);
                                 issues.push(format!(
                                     "Removed tool response '{}' from assistant message",
@@ -514,7 +523,7 @@ fn fix_tool_calling(mut messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
                             }
                         }
                         MessageContent::FrontendToolRequest(req) => {
-                            if !signed_reasoning {
+                            if !preserve_parts {
                                 content_to_remove.push(idx);
                                 issues.push(format!(
                                     "Removed frontend tool request '{}' from assistant message",
@@ -537,7 +546,7 @@ fn fix_tool_calling(mut messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
     }
 
     for message in &mut messages {
-        if message.role == Role::Assistant && !has_signed_reasoning(message) {
+        if message.role == Role::Assistant && !preserves_provider_parts(message) {
             let mut content_to_remove = Vec::new();
             for (idx, content) in message.content.iter().enumerate() {
                 if let MessageContent::ToolRequest(req) = content {
@@ -612,6 +621,76 @@ pub(crate) fn has_signed_reasoning(message: &Message) -> bool {
     })
 }
 
+fn has_google_native_part(metadata: Option<&Map<String, Value>>) -> bool {
+    metadata.is_some_and(|metadata| {
+        metadata
+            .get("googleNativePart")
+            .is_some_and(Value::is_object)
+    })
+}
+
+fn has_mistral_content_capture(metadata: Option<&Map<String, Value>>) -> bool {
+    metadata.is_some_and(|metadata| {
+        metadata
+            .get("mistral_content_provider")
+            .and_then(Value::as_str)
+            == Some("mistral")
+            && metadata
+                .get("mistral_content")
+                .and_then(Value::as_array)
+                .is_some_and(|chunks| !chunks.is_empty())
+    })
+}
+
+pub(crate) fn has_google_native_replay_content(message: &Message) -> bool {
+    message.role == Role::Assistant
+        && message.content.iter().any(|content| match content {
+            MessageContent::Text(text) => {
+                has_google_native_part(text.meta.as_ref().map(|meta| &meta.0))
+            }
+            MessageContent::ToolRequest(request) => {
+                has_google_native_part(request.metadata.as_ref())
+            }
+            _ => false,
+        })
+}
+
+pub(crate) fn has_native_replay_content(message: &Message) -> bool {
+    message.role == Role::Assistant
+        && message.content.iter().any(|content| {
+            let metadata = match content {
+                MessageContent::Text(text) => text.meta.as_ref().map(|meta| &meta.0),
+                MessageContent::ToolRequest(request) => request.metadata.as_ref(),
+                _ => None,
+            };
+            has_google_native_part(metadata) || has_mistral_content_capture(metadata)
+        })
+}
+
+fn preserves_provider_parts(message: &Message) -> bool {
+    has_signed_reasoning(message) || has_native_replay_content(message)
+}
+
+fn merge_streamed_text(existing: &mut TextContent, next: &TextContent) -> bool {
+    let existing_metadata = existing.meta.as_ref().map(|meta| &meta.0);
+    let next_metadata = next.meta.as_ref().map(|meta| &meta.0);
+    if has_google_native_part(existing_metadata) || has_google_native_part(next_metadata) {
+        return false;
+    }
+    let existing_mistral = has_mistral_content_capture(existing_metadata);
+    let next_mistral = has_mistral_content_capture(next_metadata);
+    if existing_mistral != next_mistral {
+        return false;
+    }
+    existing.text.push_str(&next.text);
+    if next_mistral {
+        // Mistral captures are cumulative; retaining each streamed copy would
+        // make the persisted history grow quadratically with reply length.
+        existing.meta = next.meta.clone();
+    }
+    true
+}
+
 pub fn merge_consecutive_messages(messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
     let mut issues = Vec::new();
     let mut merged_messages: Vec<Message> = Vec::new();
@@ -623,8 +702,8 @@ pub fn merge_consecutive_messages(messages: Vec<Message>) -> (Vec<Message>, Vec<
                 && !is_pin_boundary(last)
                 && !is_pin_boundary(&message)
                 && !is_provenance_boundary(last, &message)
-                && !has_signed_reasoning(last)
-                && !has_signed_reasoning(&message)
+                && !preserves_provider_parts(last)
+                && !preserves_provider_parts(&message)
             {
                 last.content.extend(message.content);
                 issues.push(format!("Merged consecutive {} messages", effective));
@@ -659,14 +738,14 @@ fn fix_lead_trail(mut messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
     let mut issues = Vec::new();
 
     if let Some(first) = messages.first() {
-        if first.role == Role::Assistant && !has_signed_reasoning(first) {
+        if first.role == Role::Assistant && !preserves_provider_parts(first) {
             messages.remove(0);
             issues.push("Removed leading assistant message".to_string());
         }
     }
 
     if let Some(last) = messages.last() {
-        if last.role == Role::Assistant && !has_signed_reasoning(last) {
+        if last.role == Role::Assistant && !preserves_provider_parts(last) {
             messages.pop();
             issues.push("Removed trailing assistant message".to_string());
         }
@@ -735,6 +814,159 @@ mod tests {
 
         assert_eq!(schema["type"], "array");
         assert_eq!(schema["items"]["$ref"], "#/components/schemas/Message");
+    }
+
+    #[test]
+    fn native_parts_append_to_earlier_stream_preserves_text_signatures() {
+        use crate::model::ModelConfig;
+        use crate::providers::formats::google::{create_request, response_to_message_for_model};
+        use serde_json::json;
+
+        let parts = [
+            json!({"text": "First ", "thoughtSignature": "FIRST"}),
+            json!({"text": "second ", "thoughtSignature": "SECOND"}),
+        ];
+        let messages: Vec<_> = parts
+            .iter()
+            .map(|part| {
+                response_to_message_for_model(
+                    json!({"candidates": [{"content": {"parts": [part]}}]}),
+                    "gemini-4-hydrogen",
+                )
+                .unwrap()
+                .with_id("native-stream".to_string())
+            })
+            .collect();
+        let mut conversation = Conversation::new_unvalidated([
+            messages[0].clone(),
+            Message::user().with_text("intervening result"),
+        ]);
+        assert!(conversation.append_content_to_message_id("native-stream", &messages[1].content));
+        let payload = create_request(
+            &ModelConfig::new_or_fail("gemini-4-hydrogen"),
+            "system",
+            conversation.messages(),
+            &[],
+        )
+        .unwrap();
+        assert_eq!(payload["contents"][0]["parts"], json!(parts));
+    }
+
+    #[tokio::test]
+    async fn native_parts_mistral_stream_keeps_the_latest_cumulative_capture() {
+        use crate::model::ModelConfig;
+        use crate::providers::formats::openai::{
+            create_request, prepare_mistral_request, response_to_streaming_message,
+            stamp_reasoning_provenance,
+        };
+        use crate::providers::utils::ImageFormat;
+        use futures::StreamExt;
+        use serde_json::json;
+
+        let chunks = [
+            vec![
+                json!({"type": "thinking", "thinking": [{"type": "text", "text": "Plan"}]}),
+                json!({"type": "text", "text": "First "}),
+            ],
+            vec![json!({"type": "text", "text": "second "})],
+        ];
+        let expected: Vec<_> = chunks.iter().flatten().cloned().collect();
+        let lines: Vec<_> = chunks
+            .into_iter()
+            .map(|content| {
+                let chunk = json!({
+                    "id": "mistral-native-stream",
+                    "choices": [{"index": 0, "delta": {"content": content}}]
+                });
+                Ok(format!("data: {chunk}"))
+            })
+            .collect();
+        let stream = response_to_streaming_message(futures::stream::iter(lines));
+        futures::pin_mut!(stream);
+        let mut conversation = Conversation::empty();
+        conversation.push(Message::user().with_text("inspect"));
+        while let Some(item) = stream.next().await {
+            if let Some(mut message) = item.unwrap().0 {
+                stamp_reasoning_provenance(&mut message, "mistral");
+                conversation.push(message);
+            }
+        }
+        assert_eq!(conversation.messages()[1].content.len(), 1);
+        conversation.push(Message::user().with_text("continue"));
+        let model = ModelConfig::new_or_fail("mistral-large-4");
+        let mut payload = create_request(
+            &model,
+            "system",
+            conversation.messages(),
+            &[],
+            &ImageFormat::OpenAi,
+            false,
+        )
+        .unwrap();
+        prepare_mistral_request(&mut payload, &model, conversation.messages(), "mistral");
+        let assistant = payload["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .unwrap();
+        assert_eq!(assistant["content"], json!(expected));
+    }
+
+    #[test]
+    fn native_parts_mixed_provenance_keeps_boundaries_and_ordinary_text_coalesces() {
+        use crate::providers::formats::openai::{response_to_message, stamp_reasoning_provenance};
+        use serde_json::json;
+
+        let captured = |provider: Option<&str>, text: &str| {
+            let mut message = response_to_message(&json!({
+                "choices": [{"message": {"content": [{"type": "text", "text": text}]}}]
+            }))
+            .unwrap()
+            .with_id("same-stream".to_string());
+            if let Some(provider) = provider {
+                stamp_reasoning_provenance(&mut message, provider);
+            }
+            message
+        };
+        for (first, second, expected_parts) in [
+            (None, None, 1),
+            (Some("other"), Some("other"), 1),
+            (Some("mistral"), Some("mistral"), 1),
+            (Some("mistral"), Some("other"), 2),
+            (Some("other"), Some("mistral"), 2),
+            (Some("mistral"), None, 2),
+            (None, Some("mistral"), 2),
+        ] {
+            let mut conversation = Conversation::empty();
+            conversation.push(captured(first, "First "));
+            conversation.push(captured(second, "second "));
+            assert_eq!(
+                conversation.messages()[0].content.len(),
+                expected_parts,
+                "capture provenance {first:?} then {second:?}"
+            );
+        }
+
+        let mut ordinary = Conversation::empty();
+        ordinary.push(Message::user().with_text("inspect"));
+        ordinary.push(
+            Message::assistant()
+                .with_text("First ")
+                .with_id("ordinary".to_string()),
+        );
+        ordinary.push(
+            Message::assistant()
+                .with_text("second ")
+                .with_id("ordinary".to_string()),
+        );
+        ordinary.push(Message::user().with_text("continue"));
+        ordinary.push(Message::assistant().with_text(""));
+        ordinary.push(Message::user().with_text("last"));
+        let (normalized, _) = fix_conversation(ordinary);
+        assert_eq!(normalized.messages()[1].content.len(), 1);
+        assert_eq!(normalized.messages()[1].as_concat_text(), "First second");
+        assert_eq!(normalized.len(), 3);
     }
 
     macro_rules! assert_has_issues_unordered {

@@ -3,29 +3,22 @@
   <head>
     <meta charset="UTF-8"/>
     <!--
-      BR-71 §4.3 — connect-src carries TWO WebSocket sources, and both are load-bearing.
-      CSP will not stretch one scheme over another except on CSP3 §6.6.2.6's short list
-      (http→https, ws→wss/http/https, wss→https). So `http://127.0.0.1:*` does NOT cover
-      the loopback workspace socket and `https:` does NOT cover an external TLS backend's
-      socket; each needs naming. Missing either blocks `hooks/useWorkspaceChannel.ts`
-      before the request leaves the renderer, and every `workspace_list` then reports
-      `gui_attached: false` with the app on screen — the whole GUI half silently inert.
-      This policy and `buildConnectSrc()` in src/main.ts BOTH apply to the window and the
-      stricter wins, so they must stay in step; `src/workspaceChannelCsp.test.ts` pins it.
-      ⚠ "BOTH apply" became true only in September 2026. Until then this window rendered in
-      a `persist:` partition while every hook — the header included — sat on
-      `session.defaultSession`, a different Session object, so this meta tag was the ONLY
-      policy enforcing. `src/rendererSessionHooks.test.ts` pins the mechanism that makes the
-      sentence true; a pin on the policy strings cannot see which of them is live.
-      `wss:` is blanket where `ws:` is loopback-only, mirroring this policy's own
-      cleartext-vs-TLS asymmetry for http (`http://127.0.0.1:*` vs blanket `https:`).
+      The desktop's external backend is configured at runtime, while this file is shared
+      with serve. The meta policy therefore admits each transport scheme; the desktop
+      session's response policy in src/main.ts restricts cleartext connections to loopback
+      and the configured backend origin. The served shell's response policy in
+      routes/web_ui.rs keeps cleartext connections on loopback. CSP policies intersect,
+      so a loopback-only meta policy would block a configured HTTP backend regardless
+      of the desktop header. Both policies must name WebSocket schemes explicitly.
+      workspaceChannelCsp.test.ts checks these effective pairs, and
+      rendererSessionHooks.test.ts checks that the desktop policy reaches its partition.
 
       `frame-src` is `'self'` alone: every frame this document creates is `srcdoc`,
       and the `blob: https: http:` it carried until September 2026 was dead — see the
       comment on the same directive in src/main.ts. The two must move together, which
       `src/frameSrcCsp.test.ts` pins.
     -->
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; img-src 'self' data: blob: https:; connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:* https: wss:; object-src 'none'; font-src 'self' data: https:; media-src 'self' mediastream:; form-action 'none'; base-uri 'self'; manifest-src 'self'; worker-src 'self'; frame-src 'self';"/>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; img-src 'self' data: blob: https:; connect-src 'self' http: ws: https: wss:; object-src 'none'; font-src 'self' data: https:; media-src 'self' mediastream:; form-action 'none'; base-uri 'self'; manifest-src 'self'; worker-src 'self'; frame-src 'self';"/>
     <title>Biorouter</title>
     <!--
       Relative on purpose. Vite emits it beside the bundle and rewrites this to

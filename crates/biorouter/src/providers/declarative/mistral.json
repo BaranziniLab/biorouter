@@ -7,6 +7,18 @@
   "base_url": "https://api.mistral.ai/v1/chat/completions",
   "models": [
     {
+      "name": "mistral-large-4",
+      "context_limit": 1000000,
+      "supports_vision": true,
+      "supported_input_mime_types": [
+        "image/png",
+        "image/jpeg",
+        "image/jpg",
+        "image/webp",
+        "image/gif"
+      ]
+    },
+    {
       "name": "mistral-medium-3-5",
       "context_limit": 262144,
       "supports_vision": true,

@@ -70,13 +70,13 @@ pub struct TurnCost {
     pub long_context: bool,
 }
 
-/// A higher price a request pays when its prompt is larger than
-/// `threshold_prompt_tokens`. The prompt is the request's whole input: fresh
-/// input plus cache read plus cache write. Once over the threshold the WHOLE
-/// request bills at the multiplied rates, not only the tokens past it.
+/// A higher price selected by the request's whole prompt: fresh input plus
+/// cache read plus cache write. The whole request bills at the multiplied
+/// rates, including when the provider makes the threshold inclusive.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LongContextTier {
     pub threshold_prompt_tokens: i64,
+    pub inclusive_threshold: bool,
     pub input_multiplier: f64,
     pub output_multiplier: f64,
     pub cache_read_multiplier: f64,
@@ -87,12 +87,13 @@ impl LongContextTier {
     /// Whether a request with this prompt size pays the tier.
     pub fn applies_to_prompt(&self, prompt_tokens: i64) -> bool {
         prompt_tokens > self.threshold_prompt_tokens
+            || (self.inclusive_threshold && prompt_tokens == self.threshold_prompt_tokens)
     }
 
     /// Whether requests in `band` ([`prompt_band`]) pay the tier. Exact
     /// because every tier's threshold is one of [`LONG_CONTEXT_THRESHOLDS`]:
-    /// a band at or above the threshold holds only prompts above it, and a
-    /// band below it holds only prompts at or below it.
+    /// a band starts at each tier's first billed prompt size, preserving the
+    /// provider's inclusive or exclusive boundary.
     pub fn applies_to_band(&self, band: i64) -> bool {
         band > 0 && band >= self.threshold_prompt_tokens
     }
@@ -119,13 +120,18 @@ impl LongContextTier {
 /// a threshold missing here would be priced wrong; a test checks every tier.
 pub const LONG_CONTEXT_THRESHOLDS: [i64; 3] = [100_000, 200_000, 272_000];
 
-/// The largest threshold in [`LONG_CONTEXT_THRESHOLDS`] the prompt is above,
-/// or 0. The SQL twin is `prompt_band_sql!` in `session::session_manager`.
+/// The largest billed threshold in [`LONG_CONTEXT_THRESHOLDS`], or 0. xAI's
+/// 200K boundary is inclusive; the others are exclusive. The SQL twin is
+/// `prompt_band_sql!` in `session::session_manager`.
 pub fn prompt_band(prompt_tokens: i64) -> i64 {
     LONG_CONTEXT_THRESHOLDS
         .iter()
         .rev()
-        .find(|threshold| prompt_tokens > **threshold)
+        .find(|threshold| {
+            prompt_tokens > **threshold
+                || (**threshold == XAI_LONG_CONTEXT.threshold_prompt_tokens
+                    && prompt_tokens == **threshold)
+        })
         .copied()
         .unwrap_or(0)
 }
@@ -138,17 +144,18 @@ pub fn prompt_band(prompt_tokens: i64) -> i64 {
 /// as a multiple of the uncached input rate.
 const OPENAI_LONG_CONTEXT: LongContextTier = LongContextTier {
     threshold_prompt_tokens: 272_000,
+    inclusive_threshold: false,
     input_multiplier: 2.0,
     output_multiplier: 1.5,
     cache_read_multiplier: 2.0,
     cache_write_multiplier: 2.0,
 };
 
-/// xAI's long-context tier for Grok 4.5-4.7, as [`xai_pricing`] documents it:
-/// $4/$12 instead of $2/$6 once a prompt reaches 200K tokens. "Reaches" is
-/// modelled as "is above", so a prompt of exactly 200,000 reads the base rate.
+/// xAI's pricing sheet selects its long card at >=200K prompt tokens, including
+/// Grok 4.3/4.20 and Build (https://docs.x.ai/developers/pricing.md, 2026-11-18).
 const XAI_LONG_CONTEXT: LongContextTier = LongContextTier {
     threshold_prompt_tokens: 200_000,
+    inclusive_threshold: true,
     input_multiplier: 2.0,
     output_multiplier: 2.0,
     cache_read_multiplier: 2.0,
@@ -166,6 +173,7 @@ const XAI_LONG_CONTEXT: LongContextTier = LongContextTier {
 /// prompt of exactly 100,000 reads the short card.
 const HAIKU_5_5_LONG_CONTEXT: LongContextTier = LongContextTier {
     threshold_prompt_tokens: 100_000,
+    inclusive_threshold: false,
     input_multiplier: 5.0,
     output_multiplier: 5.0,
     cache_read_multiplier: 5.0,
@@ -182,7 +190,7 @@ fn prices_with_claude_family(provider: &str) -> bool {
 }
 
 /// The GPT models OpenAI's price sheet gives a long-context column (read
-/// 2026-11-10). Every one bills cached input at 0.1x its input rate.
+/// 2026-11-18). GPT6.1/6.2 cache reads are 0.05x; earlier rows use 0.1x.
 /// `gpt-5.6` is OpenAI's alias for `gpt-5.6-sol`.
 const OPENAI_TIERED_GPT_MODELS: &[&str] = &[
     "gpt-5.4",
@@ -194,7 +202,18 @@ const OPENAI_TIERED_GPT_MODELS: &[&str] = &[
     "gpt-6-sol",
     "gpt-6-astra",
     "gpt-6-luna",
+    "gpt-6.1-sol",
+    "gpt-6.1-terra",
+    "gpt-6.2-astra",
+    "gpt-6.2-sol",
 ];
+
+fn is_november_gpt(model: &str) -> bool {
+    matches!(
+        without_date_suffix(model),
+        "gpt-6.1-sol" | "gpt-6.1-terra" | "gpt-6.2-astra" | "gpt-6.2-sol"
+    )
+}
 
 /// The providers that bill OpenAI's GPT models at OpenAI's list structure:
 /// OpenAI itself, Azure OpenAI and UCSF Versa's Azure gateway.
@@ -227,10 +246,18 @@ fn without_date_suffix(model: &str) -> &str {
 
 /// The tiered GPT model `model` names on an OpenAI-structured provider.
 fn openai_tiered_gpt(provider: &str, model: &str) -> Option<&'static str> {
-    if !bills_openai_list_structure(provider) {
+    let base = without_date_suffix(if provider == "openrouter" {
+        model.strip_prefix("openai/")?
+    } else {
+        model
+    });
+    if is_november_gpt(base) {
+        if !matches!(provider, "openai" | "openrouter") {
+            return None;
+        }
+    } else if !bills_openai_list_structure(provider) {
         return None;
     }
-    let base = without_date_suffix(model);
     OPENAI_TIERED_GPT_MODELS
         .iter()
         .find(|known| known.eq_ignore_ascii_case(base))
@@ -251,7 +278,20 @@ pub fn long_context_tier(provider: &str, model: &str) -> Option<LongContextTier>
         return Some(HAIKU_5_5_LONG_CONTEXT);
     }
     match (provider.as_str(), model.as_str()) {
-        ("xai" | "x-ai", "grok-4.7" | "grok-4.6" | "grok-4.5") => Some(XAI_LONG_CONTEXT),
+        ("openrouter", "anthropic/claude-haiku-5.5") => Some(HAIKU_5_5_LONG_CONTEXT),
+        (
+            "xai" | "x-ai",
+            "grok-4.7"
+            | "grok-4.6"
+            | "grok-4.5"
+            | "grok-4.3"
+            | "grok-4.3-latest"
+            | "grok-latest"
+            | "grok-4.20-0309-reasoning"
+            | "grok-4.20-0309-non-reasoning"
+            | "grok-4.20-multi-agent-0309"
+            | "grok-build-0.1",
+        ) => Some(XAI_LONG_CONTEXT),
         _ => None,
     }
 }
@@ -259,7 +299,8 @@ pub fn long_context_tier(provider: &str, model: &str) -> Option<LongContextTier>
 /// Fill in OpenAI's published cache rates where the resolved price has none.
 /// The canonical catalog and provider metadata carry no cache rates, so every
 /// cached token of a GPT-5.4+ request was left out of its cost. Cache read is
-/// 0.1x input on every tiered model; cache write is 1.25x input on GPT-5.6
+/// 0.1x input on earlier tiered models and 0.05x on GPT6.1/6.2; cache write is
+/// 1.25x input on GPT5.6 and GPT6.1/6.2
 /// (OpenAI's Sol model page; Azure lists $6.25 on $5, $2.50 on $2 and $0.25
 /// on $0.20 for Sol, Terra and Luna). OpenAI's usage reports no cache-write
 /// bucket today, so the write rate prices nothing until one appears.
@@ -272,9 +313,11 @@ fn with_openai_cache_rates(
         return pricing;
     };
     if pricing.cache_read_cost.is_none() {
-        pricing.cache_read_cost = Some(pricing.input_token_cost * 0.1);
+        pricing.cache_read_cost =
+            Some(pricing.input_token_cost * if is_november_gpt(base) { 0.05 } else { 0.1 });
     }
-    if pricing.cache_write_cost.is_none() && base.starts_with("gpt-5.6") {
+    if pricing.cache_write_cost.is_none() && (base.starts_with("gpt-5.6") || is_november_gpt(base))
+    {
         pricing.cache_write_cost = Some(pricing.input_token_cost * 1.25);
     }
     pricing
@@ -550,6 +593,7 @@ fn explicit_provider_model_pricing(provider: &str, model: &str) -> Option<Provid
         "baseten" => baseten_pricing(model),
         "baseten_decision" => baseten_decision_pricing(model),
         "inception" => inception_pricing(model),
+        "google" => google_pricing_at(model, chrono::Utc::now().date_naive()),
         "mistral" | "mistralai" => mistral_pricing(model),
         "xai" | "x-ai" => xai_pricing(model),
         // Claude, natively and on Bedrock. Bedrock also serves non-Anthropic
@@ -562,7 +606,13 @@ fn explicit_provider_model_pricing(provider: &str, model: &str) -> Option<Provid
         // unpriced and the rest carried no cache rates.
         // The same set as `prices_with_claude_family`, which a test keeps in step.
         "anthropic" | "claude" | "bedrock" | "aws_bedrock" | "aws-bedrock" | "versa_bedrock" => {
-            claude_family_pricing(model)
+            if claude_version(model) == Some(("fable", 5, Some(2)))
+                && !matches!(provider, "anthropic" | "claude")
+            {
+                None
+            } else {
+                claude_family_pricing(model)
+            }
         }
         _ => None,
     }
@@ -609,6 +659,9 @@ fn blocks_fallback_pricing(provider: &str) -> bool {
 }
 
 fn canonical_model_pricing(provider: &str, model: &str) -> Option<ProviderModelPricing> {
+    if newly_unverified_hosted_price(provider, model) {
+        return None;
+    }
     let canonical = maybe_get_canonical_model(provider, model)?;
     Some(ProviderModelPricing {
         input_token_cost: canonical.pricing.prompt?,
@@ -618,6 +671,41 @@ fn canonical_model_pricing(provider: &str, model: &str) -> Option<ProviderModelP
         currency: "$".to_string(),
         context_length: u32::try_from(canonical.context_length).ok(),
     })
+}
+
+/// Capability mapping may identify a hosted model without establishing the
+/// host's bill. Keep existing historical cards; new hosted choices need their
+/// own rate metadata rather than a first-party retail fallback.
+fn newly_unverified_hosted_price(provider: &str, model: &str) -> bool {
+    if !matches!(
+        provider,
+        "azure_openai"
+            | "versa_azure"
+            | "gcp_vertex_ai"
+            | "databricks"
+            | "tetrate"
+            | "bedrock"
+            | "aws_bedrock"
+            | "aws-bedrock"
+            | "versa_bedrock"
+    ) {
+        return false;
+    }
+    let model = model.strip_prefix("databricks-").unwrap_or(model);
+    let model = model
+        .strip_prefix("openai/")
+        .or_else(|| model.strip_prefix("google/"))
+        .unwrap_or(model);
+    is_november_gpt(model)
+        || matches!(model, "gpt-6-1-sol" | "gpt-6-1-terra")
+        || matches!(
+            model,
+            "gemini-4-hydrogen" | "gemini-4-argon" | "gemini-4-carbon"
+        )
+        || matches!(
+            claude_version(model),
+            Some(("fable", 5, Some(2))) | Some(("sonnet" | "haiku", 5, Some(5)))
+        )
 }
 
 /// First-party Claude list prices (USD per MTok), applied to the Claude API
@@ -657,6 +745,7 @@ fn claude_family_pricing(model: &str) -> Option<ProviderModelPricing> {
     let cached = ProviderModelPricing::usd_per_million_cached;
     let with_cache = ProviderModelPricing::usd_per_million_with_cache;
     let pricing = match claude_version(model)? {
+        ("fable", 5, Some(2)) => with_cache(8.0, 40.0, 1_000_000, 0.025, 1.25),
         // Fable 5.1 / Mythos 5.1: cache hits at 0.025x ($0.25), not 0.1x.
         ("fable" | "mythos", 5, Some(1)) => with_cache(10.0, 50.0, 1_000_000, 0.025, 1.25),
         ("fable" | "mythos", 5, None) => cached(10.0, 50.0, 1_000_000),
@@ -734,6 +823,31 @@ fn claude_version(model: &str) -> Option<(&'static str, u32, Option<u32>)> {
 
 fn openrouter_pricing(model: &str) -> Option<ProviderModelPricing> {
     match model {
+        "anthropic/claude-fable-5.2" => Some(ProviderModelPricing::usd_per_million_with_cache(
+            8.0, 40.0, 1_000_000, 0.025, 1.25,
+        )),
+        "anthropic/claude-sonnet-5.5" => Some(ProviderModelPricing::usd_per_million_with_cache(
+            2.0, 10.0, 1_000_000, 0.05, 1.25,
+        )),
+        "anthropic/claude-haiku-5.5" => Some(ProviderModelPricing::usd_per_million_cached(
+            0.10, 0.50, 1_000_000,
+        )),
+        "moonshotai/kimi-k3.1-pro" => Some(ProviderModelPricing {
+            cache_read_cost: Some(0.20 / 1_000_000.0),
+            ..ProviderModelPricing::usd_per_million(0.2403, 8.4023, 1_048_576)
+        }),
+        "mistralai/mistral-large-4-0" => Some(ProviderModelPricing {
+            cache_read_cost: Some(0.07 / 1_000_000.0),
+            ..ProviderModelPricing::usd_per_million(0.70, 2.10, 1_048_576)
+        }),
+        "google/gemini-4-hydrogen" => Some(ProviderModelPricing {
+            cache_read_cost: Some(0.075 / 1_000_000.0),
+            ..ProviderModelPricing::usd_per_million(1.50, 7.50, 1_048_576)
+        }),
+        "google/gemini-4-argon" | "google/gemini-4-carbon" => Some(ProviderModelPricing {
+            cache_read_cost: Some(0.10 / 1_000_000.0),
+            ..ProviderModelPricing::usd_per_million(2.00, 10.00, 1_048_576)
+        }),
         "deepseek/deepseek-v4-flash" => {
             Some(ProviderModelPricing::usd_per_million(0.09, 0.18, 1_048_576))
         }
@@ -854,6 +968,8 @@ fn deepseek_pricing(model: &str) -> Option<ProviderModelPricing> {
 /// The async resolved path prefers the JSON metadata; this table serves
 /// sync-only callers and is the async fallback.
 pub(crate) const MOONSHOT_SYNC_PRICING: &[(&str, f64, f64, u32)] = &[
+    ("kimi-k3.1-pro", 2.00, 10.00, 1_000_000),
+    ("kimi-k3.1-pro-highspeed", 4.00, 20.00, 1_000_000),
     // GA 2026-07-16.
     ("kimi-k3", 3.00, 15.00, 1_048_576),
     ("kimi-k2.7-code", 0.95, 4.00, 262_144),
@@ -879,7 +995,12 @@ fn moonshot_pricing(model: &str) -> Option<ProviderModelPricing> {
         .chain(MOONSHOT_UNLISTED_PRICING)
         .find(|(name, _, _, _)| *name == model)
         .map(|&(_, input, output, context)| {
-            ProviderModelPricing::usd_per_million(input, output, context)
+            let mut pricing = ProviderModelPricing::usd_per_million(input, output, context);
+            if matches!(model, "kimi-k3.1-pro" | "kimi-k3.1-pro-highspeed") {
+                pricing.cache_read_cost = Some(0.20 / 1_000_000.0);
+                pricing.cache_write_cost = Some(input / 1_000_000.0);
+            }
+            pricing
         })
 }
 
@@ -907,6 +1028,8 @@ pub(crate) const BASETEN_SYNC_PRICING: &[(&str, f64, f64, f64, u32)] = &[
     ("zai-org/glm-5.3-fast", 2.10, 6.60, 0.21, 1_048_576),
     ("zai-org/glm-5.3-flash", 0.15, 0.50, 0.03, 1_048_576),
     ("moonshotai/kimi-k3", 3.00, 15.00, 0.30, 1_048_576),
+    // Baseten's own pricing page and exact /v1/models window, checked 2026-11-18.
+    ("moonshotai/kimi-k3.1-pro", 2.00, 10.00, 0.20, 1_048_576),
     (
         "deepseek-ai/deepseek-v4.1-flash",
         0.30,
@@ -959,7 +1082,7 @@ fn baseten_pricing(model: &str) -> Option<ProviderModelPricing> {
 }
 
 /// Baseten's decision models, USD per million INPUT tokens, as the live feed
-/// listed them on 2026-11-04. Output is billed at $0.00 (a decision model
+/// listed them on 2026-11-18. Output is billed at $0.00 (a decision model
 /// answers with one token per question), and every one has a 16,384-token
 /// window.
 ///
@@ -1007,6 +1130,11 @@ fn baseten_decision_pricing(model: &str) -> Option<ProviderModelPricing> {
 
 fn inception_pricing(model: &str) -> Option<ProviderModelPricing> {
     match model {
+        // Current launch card; no end date is published for the 50% promotion.
+        "mercury-3" => Some(ProviderModelPricing {
+            cache_read_cost: Some(0.01 / 1_000_000.0),
+            ..ProviderModelPricing::usd_per_million(0.10, 0.35, 1_000_000)
+        }),
         // Mercury 2.5 (2026-09-08) at its list price. A launch promotion bills
         // it 80% off ($0.04/$0.15) with no stated end date; the list price is
         // kept so a report never understates once the promotion lapses.
@@ -1022,6 +1150,10 @@ fn inception_pricing(model: &str) -> Option<ProviderModelPricing> {
 
 fn mistral_pricing(model: &str) -> Option<ProviderModelPricing> {
     match model {
+        "mistral-large-4" | "mistral-large-4-0" => Some(ProviderModelPricing {
+            cache_read_cost: Some(0.07 / 1_000_000.0),
+            ..ProviderModelPricing::usd_per_million(0.70, 2.10, 1_000_000)
+        }),
         "mistral-medium-3-5" | "mistral-medium-latest" => {
             Some(ProviderModelPricing::usd_per_million(1.50, 7.50, 262_144))
         }
@@ -1041,27 +1173,44 @@ fn mistral_pricing(model: &str) -> Option<ProviderModelPricing> {
     }
 }
 
+fn google_pricing_at(model: &str, date: chrono::NaiveDate) -> Option<ProviderModelPricing> {
+    let (input, output) = match model {
+        "gemini-4-hydrogen" => (1.50, 7.50),
+        "gemini-4-argon" | "gemini-4-carbon" => {
+            if date < chrono::NaiveDate::from_ymd_opt(2026, 12, 1).unwrap() {
+                (2.00, 10.00)
+            } else {
+                (4.00, 20.00)
+            }
+        }
+        _ => return None,
+    };
+    Some(ProviderModelPricing {
+        cache_read_cost: Some(input * 0.05 / 1_000_000.0),
+        ..ProviderModelPricing::usd_per_million(input, output, 1_048_576)
+    })
+}
+
 /// xAI bills a long-context tier once a prompt reaches 200K tokens (Grok
 /// 4.5-4.7: $4/$12 instead of $2/$6). This table holds the short-context rate;
 /// [`long_context_tier`] carries the long one ([`XAI_LONG_CONTEXT`]).
 fn xai_pricing(model: &str) -> Option<ProviderModelPricing> {
-    match model {
+    let (input, output, cache_read, context) = match model {
         // Grok 4.5 (2026-07-08), 4.6 (2026-08-12) and 4.7 (2026-09-21), the
         // latter xAI's current flagship: 500K context per docs.x.ai.
-        "grok-4.7" | "grok-4.6" | "grok-4.5" => {
-            Some(ProviderModelPricing::usd_per_million(2.00, 6.00, 500_000))
-        }
-        "grok-4.3" | "grok-4.3-latest" | "grok-latest" => {
-            Some(ProviderModelPricing::usd_per_million(1.25, 2.50, 1_000_000))
-        }
+        "grok-4.7" | "grok-4.6" => (2.00, 6.00, 0.50, 500_000),
+        "grok-4.5" => (2.00, 6.00, 0.30, 500_000),
+        "grok-4.3" | "grok-4.3-latest" | "grok-latest" => (1.25, 2.50, 0.20, 1_000_000),
         "grok-4.20-0309-reasoning"
         | "grok-4.20-0309-non-reasoning"
-        | "grok-4.20-multi-agent-0309" => {
-            Some(ProviderModelPricing::usd_per_million(1.25, 2.50, 1_000_000))
-        }
-        "grok-build-0.1" => Some(ProviderModelPricing::usd_per_million(1.00, 2.00, 256_000)),
-        _ => None,
-    }
+        | "grok-4.20-multi-agent-0309" => (1.25, 2.50, 0.20, 1_000_000),
+        "grok-build-0.1" => (1.00, 2.00, 0.20, 256_000),
+        _ => return None,
+    };
+    Some(ProviderModelPricing {
+        cache_read_cost: Some(cache_read / 1_000_000.0),
+        ..ProviderModelPricing::usd_per_million(input, output, context)
+    })
 }
 
 /// Estimated dollar cost of one completion, or `None` when the model's price is
@@ -1097,6 +1246,223 @@ pub fn estimate_cost_usd(
 mod tests {
     use super::*;
     use crate::providers::base::ModelInfo;
+
+    #[test]
+    fn november_openai_cache_rates_and_long_requests_use_the_new_rate_card() {
+        for (id, input, output) in [
+            ("gpt-6.2-astra", 8.0, 40.0),
+            ("gpt-6.2-sol", 2.0, 10.0),
+            ("gpt-6.1-sol", 2.0, 10.0),
+            ("gpt-6.1-terra", 1.0, 5.0),
+        ] {
+            let pricing = provider_model_pricing("openai", id).unwrap();
+            assert!(
+                (pricing.input_token_cost * 1e6 - input).abs() < 1e-12,
+                "{id}"
+            );
+            assert!(
+                (pricing.output_token_cost * 1e6 - output).abs() < 1e-12,
+                "{id}"
+            );
+            assert!(
+                (pricing.cache_read_cost.unwrap() * 1e6 - input * 0.05).abs() < 1e-12,
+                "{id}"
+            );
+            assert!(
+                (pricing.cache_write_cost.unwrap() * 1e6 - input * 1.25).abs() < 1e-12,
+                "{id}"
+            );
+            let short = request_cost("openai", id, &usage_of(100_000, 1_000, 10_000)).unwrap();
+            let want = (100_000.0 * input + 1_000.0 * output + 10_000.0 * input * 0.05) / 1e6;
+            assert!(!short.long_context, "{id}");
+            assert!(!short.cache_excluded, "{id}");
+            assert!((short.cost - want).abs() < 1e-12, "{id}: {}", short.cost);
+            let long = request_cost("openai", id, &usage_of(250_000, 1_000, 50_000)).unwrap();
+            let want =
+                (250_000.0 * input * 2.0 + 1_000.0 * output * 1.5 + 50_000.0 * input * 0.1) / 1e6;
+            assert!(long.long_context, "{id}");
+            assert!((long.cost - want).abs() < 1e-12, "{id}: {}", long.cost);
+        }
+        let legacy = provider_model_pricing("openai", "gpt-6-sol").unwrap();
+        assert!((legacy.cache_read_cost.unwrap() * 1e6 - 0.2).abs() < 1e-12);
+        assert!(provider_model_pricing("codex", "gpt-6.2-astra").is_none());
+    }
+
+    #[test]
+    fn november_fable_is_not_priced_as_fable_5_1() {
+        let pricing = provider_model_pricing("anthropic", "claude-fable-5-2").unwrap();
+        assert!((pricing.input_token_cost * 1e6 - 8.0).abs() < 1e-12);
+        assert!((pricing.output_token_cost * 1e6 - 40.0).abs() < 1e-12);
+        assert!((pricing.cache_read_cost.unwrap() * 1e6 - 0.2).abs() < 1e-12);
+        assert!((pricing.cache_write_cost.unwrap() * 1e6 - 10.0).abs() < 1e-12);
+        let old = provider_model_pricing("anthropic", "claude-fable-5-1").unwrap();
+        assert!((old.input_token_cost * 1e6 - 10.0).abs() < 1e-12);
+        assert!(provider_model_pricing("claude_code", "claude-fable-5-2").is_none());
+    }
+
+    #[test]
+    fn november_new_direct_models_include_their_own_cache_rates() {
+        for (provider, id, input, output, cache) in [
+            ("moonshot", "kimi-k3.1-pro", 2.0, 10.0, 0.2),
+            ("moonshot", "kimi-k3.1-pro-highspeed", 4.0, 20.0, 0.2),
+            ("inception", "mercury-3", 0.1, 0.35, 0.01),
+            ("mistral", "mistral-large-4", 0.7, 2.1, 0.07),
+            ("google", "gemini-4-hydrogen", 1.5, 7.5, 0.075),
+        ] {
+            let cost = request_cost(provider, id, &usage_of(50_000, 1_000, 10_000)).unwrap();
+            let want = (50_000.0 * input + 1_000.0 * output + 10_000.0 * cache) / 1e6;
+            assert!(!cost.cache_excluded, "{provider}/{id}");
+            assert!(
+                (cost.cost - want).abs() < 1e-12,
+                "{provider}/{id}: {}",
+                cost.cost
+            );
+        }
+    }
+
+    #[test]
+    fn november_xai_cache_and_older_long_context_cards_are_not_dropped() {
+        for (id, input, output, cache) in [
+            ("grok-4.7", 2.0, 6.0, 0.5),
+            ("grok-4.5", 2.0, 6.0, 0.3),
+            ("grok-4.3", 1.25, 2.5, 0.2),
+            ("grok-build-0.1", 1.0, 2.0, 0.2),
+        ] {
+            let short = request_cost("xai", id, &usage_of(100_000, 1_000, 10_000)).unwrap();
+            let want = (100_000.0 * input + 1_000.0 * output + 10_000.0 * cache) / 1e6;
+            assert!(!short.cache_excluded, "{id}");
+            assert!((short.cost - want).abs() < 1e-12, "{id}: {}", short.cost);
+            let long = request_cost("xai", id, &usage_of(250_000, 1_000, 10_000)).unwrap();
+            let want = (250_000.0 * input + 1_000.0 * output + 10_000.0 * cache) * 2.0 / 1e6;
+            assert!(long.long_context, "{id}");
+            assert!((long.cost - want).abs() < 1e-12, "{id}: {}", long.cost);
+            assert!(
+                !request_cost("xai", id, &usage_of(189_999, 1_000, 10_000))
+                    .unwrap()
+                    .long_context,
+                "{id}"
+            );
+            assert!(
+                request_cost("xai", id, &usage_of(190_000, 1_000, 10_000))
+                    .unwrap()
+                    .long_context,
+                "{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn november_azure_capability_mapping_does_not_invent_new_retail_prices() {
+        for id in [
+            "gpt-6.2-sol-2026-11-17",
+            "gpt-6.2-astra-2026-11-17",
+            "gpt-6.1-sol-2026-09-29",
+            "gpt-6.1-terra-2026-10-26",
+        ] {
+            assert!(provider_model_pricing("azure_openai", id).is_none(), "{id}");
+            assert!(
+                resolve_pricing_with_metadata("azure_openai", id, None).is_none(),
+                "{id}"
+            );
+        }
+        let id = "gpt-6.2-sol-2026-11-17";
+        let metadata = ProviderMetadata::with_models(
+            "azure_openai",
+            "Azure",
+            "test",
+            id,
+            vec![ModelInfo::with_cost(id, 1_050_000, 3e-6, 15e-6)],
+            "",
+            vec![],
+        );
+        let verified = resolve_pricing_with_metadata("azure_openai", id, Some(&metadata)).unwrap();
+        assert_eq!(verified.input_token_cost, 3e-6);
+        assert_eq!(verified.output_token_cost, 15e-6);
+        assert_eq!(verified.cache_read_cost, None);
+        assert_eq!(verified.cache_write_cost, None);
+        assert_eq!(long_context_tier("azure_openai", id), None);
+    }
+
+    #[test]
+    fn november_google_promotion_changes_only_its_direct_scheduled_card() {
+        let before = chrono::NaiveDate::from_ymd_opt(2026, 11, 30).unwrap();
+        let after = chrono::NaiveDate::from_ymd_opt(2026, 12, 1).unwrap();
+        for id in ["gemini-4-argon", "gemini-4-carbon"] {
+            let launch = google_pricing_at(id, before).unwrap();
+            let standard = google_pricing_at(id, after).unwrap();
+            assert_eq!(launch.input_token_cost, 2e-6);
+            assert_eq!(launch.output_token_cost, 10e-6);
+            assert!((launch.cache_read_cost.unwrap() - 0.1e-6).abs() < 1e-15);
+            assert_eq!(standard.input_token_cost, 4e-6);
+            assert_eq!(standard.output_token_cost, 20e-6);
+            assert!((standard.cache_read_cost.unwrap() - 0.2e-6).abs() < 1e-15);
+            assert_eq!(standard.cache_write_cost, None);
+        }
+        assert_eq!(
+            google_pricing_at("gemini-4-hydrogen", before),
+            google_pricing_at("gemini-4-hydrogen", after)
+        );
+    }
+
+    #[test]
+    fn november_hosted_prices_remain_unknown_without_the_hosts_rate() {
+        for (provider, id) in [
+            ("versa_azure", "gpt-6.2-sol-2026-11-17"),
+            ("gcp_vertex_ai", "gemini-4-hydrogen"),
+            ("gcp_vertex_ai", "claude-sonnet-5-5"),
+            ("databricks", "databricks-gpt-6-1-sol"),
+            ("databricks", "databricks-claude-sonnet-5-5"),
+            ("databricks", "databricks-gemini-4-argon"),
+            ("tetrate", "gpt-6.2-sol"),
+            ("aws_bedrock", "us.anthropic.claude-fable-5-2"),
+            ("versa_bedrock", "us.anthropic.claude-fable-5-2"),
+        ] {
+            assert!(
+                provider_model_pricing(provider, id).is_none(),
+                "{provider}/{id}"
+            );
+            assert!(
+                resolve_pricing_with_metadata(provider, id, None).is_none(),
+                "{provider}/{id}"
+            );
+        }
+    }
+
+    #[test]
+    fn november_direct_and_openrouter_kimi_cards_stay_distinct() {
+        let direct = provider_model_pricing("moonshot", "kimi-k3.1-pro").unwrap();
+        let highspeed = provider_model_pricing("moonshot", "kimi-k3.1-pro-highspeed").unwrap();
+        let route = provider_model_pricing("openrouter", "moonshotai/kimi-k3.1-pro").unwrap();
+        assert_eq!(direct.context_length, Some(1_000_000));
+        assert_eq!(direct.input_token_cost, 2e-6);
+        assert_eq!(direct.cache_write_cost, Some(2e-6));
+        assert_eq!(highspeed.input_token_cost, 4e-6);
+        assert_eq!(highspeed.cache_write_cost, Some(4e-6));
+        assert_eq!(route.context_length, Some(1_048_576));
+        assert!((route.input_token_cost - 0.2403e-6).abs() < 1e-15);
+        assert!((route.output_token_cost - 8.4023e-6).abs() < 1e-15);
+        assert!((route.cache_read_cost.unwrap() - 0.2e-6).abs() < 1e-15);
+        assert_eq!(route.cache_write_cost, None);
+    }
+
+    #[test]
+    fn november_baseten_k31_uses_its_own_host_card_and_exact_context() {
+        let id = "moonshotai/Kimi-K3.1-Pro";
+        let pricing = provider_model_pricing("baseten", id).unwrap();
+        assert_eq!(pricing.context_length, Some(1_048_576));
+        assert_eq!(pricing.input_token_cost, 2e-6);
+        assert_eq!(pricing.output_token_cost, 10e-6);
+        assert!((pricing.cache_read_cost.unwrap() - 0.2e-6).abs() < 1e-15);
+        assert_eq!(pricing.cache_write_cost, None);
+        let cost = request_cost("baseten", id, &usage_of(50_000, 1_000, 10_000)).unwrap();
+        assert!(!cost.cache_excluded);
+        assert!((cost.cost - 0.112).abs() < 1e-12);
+        assert!(maybe_get_canonical_model("baseten", id).is_none());
+        let legacy = provider_model_pricing("baseten", "moonshotai/Kimi-K3").unwrap();
+        assert_eq!(legacy.context_length, Some(1_048_576));
+        assert_eq!(legacy.input_token_cost, 3e-6);
+        assert_eq!(legacy.output_token_cost, 15e-6);
+    }
 
     #[test]
     fn estimate_cost_prices_a_provider_override() {
@@ -1764,7 +2130,7 @@ mod tests {
             "claude-opus-5-6",
             "claude-sonnet-5-1",
             "claude-haiku-5",
-            "claude-fable-5-2",
+            "claude-fable-5-3",
             "claude-mythos-preview",
             "claude-instant-1.2",
         ] {
@@ -2050,6 +2416,11 @@ mod tests {
     fn every_tiered_gpt_model_has_the_openai_tier_and_cache_rate() {
         for model in OPENAI_TIERED_GPT_MODELS {
             for provider in ["openai", "azure_openai", "versa_azure"] {
+                if is_november_gpt(model) && provider != "openai" {
+                    assert_eq!(long_context_tier(provider, model), None);
+                    assert!(provider_model_pricing(provider, model).is_none());
+                    continue;
+                }
                 assert_eq!(
                     long_context_tier(provider, model),
                     Some(OPENAI_LONG_CONTEXT),
@@ -2059,7 +2430,11 @@ mod tests {
                     .unwrap_or_else(|| panic!("{provider}/{model} must be priced"));
                 let read = pricing.cache_read_cost.expect("cache read rate");
                 assert!(
-                    (read - pricing.input_token_cost * 0.1).abs() < 1e-18,
+                    (read
+                        - pricing.input_token_cost
+                            * if is_november_gpt(model) { 0.05 } else { 0.1 })
+                    .abs()
+                        < 1e-18,
                     "{provider}/{model}"
                 );
             }
@@ -2113,8 +2488,6 @@ mod tests {
                 "versa_bedrock",
                 "us.anthropic.claude-haiku-4-5-20251001-v1:0",
             ),
-            // Haiku 5.5 through a provider this table does not price.
-            ("openrouter", "anthropic/claude-haiku-5.5"),
             // A name that only contains a tiered one.
             ("openai", "gpt-5.6-sol-mini"),
         ] {
@@ -2146,6 +2519,7 @@ mod tests {
             ("aws_bedrock", "us.anthropic.claude-haiku-5-5"),
             ("bedrock", "us.anthropic.claude-haiku-5-5"),
             ("versa_bedrock", "us.anthropic.claude-haiku-5-5"),
+            ("openrouter", "anthropic/claude-haiku-5.5"),
         ] {
             assert_eq!(
                 long_context_tier(provider, model),
@@ -2206,9 +2580,9 @@ mod tests {
         let long = request_cost("xai", "grok-4.7", &usage_of(250_000, 1_000, 0)).unwrap();
         assert!(long.long_context);
         assert!((long.cost - (250_000.0 * 4.0 + 1_000.0 * 12.0) / 1e6).abs() < 1e-9);
-        let short = request_cost("xai", "grok-4.7", &usage_of(200_000, 1_000, 0)).unwrap();
+        let short = request_cost("xai", "grok-4.7", &usage_of(199_999, 1_000, 0)).unwrap();
         assert!(!short.long_context);
-        assert_eq!(long_context_tier("xai", "grok-4.3"), None);
+        assert_eq!(long_context_tier("xai", "grok-4.3"), Some(XAI_LONG_CONTEXT));
     }
 
     #[test]
@@ -2248,7 +2622,7 @@ mod tests {
         assert_eq!(prompt_band(0), 0);
         assert_eq!(prompt_band(100_000), 0);
         assert_eq!(prompt_band(100_001), 100_000);
-        assert_eq!(prompt_band(200_000), 100_000);
+        assert_eq!(prompt_band(200_000), 200_000);
         assert_eq!(prompt_band(200_001), 200_000);
         assert_eq!(prompt_band(272_000), 200_000);
         assert_eq!(prompt_band(272_001), 272_000);

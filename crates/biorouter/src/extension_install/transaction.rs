@@ -29,6 +29,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
@@ -49,7 +50,7 @@ use super::brxt::{
     BrxtBundle, BrxtEnvVar, BrxtManifest, BundledSkill,
 };
 use super::claim::{self, ClaimSource, InstallClaim};
-use super::credentials::{request_credentials, revoke, CredentialSpec, DEFAULT_CREDENTIAL_TTL};
+use super::credentials::{request_credentials, CredentialSpec, DEFAULT_CREDENTIAL_TTL};
 
 /// Where the bundle comes from.
 #[derive(Debug, Clone)]
@@ -213,14 +214,63 @@ pub struct ExtensionInstallTransaction {
 #[derive(Default)]
 struct Undo {
     install_dir: Option<PathBuf>,
-    /// Only true when THIS run extracted the tree. An install over an existing
-    /// one must not delete the tree it found — a failed upgrade that removes a
-    /// working extension is worse than a failed upgrade.
+    /// Armed before extraction so even a partial first extraction is owned.
     created_install_dir: bool,
+    previous_install: Option<tempfile::TempDir>,
+    install_lock: Option<std::fs::File>,
     config_key: Option<String>,
-    /// Only keys this run wrote. A key the machine already held is left alone:
-    /// deleting it would break every other extension sharing it.
-    written_secrets: Vec<String>,
+    written_secrets: Vec<StoredSecretUndo>,
+}
+
+struct StoredSecretUndo {
+    key: String,
+    previous: Option<serde_json::Value>,
+}
+
+fn copy_install_tree(source: &Path, destination: &Path) -> anyhow::Result<()> {
+    let metadata = std::fs::symlink_metadata(source)?;
+    if metadata.file_type().is_symlink() {
+        let target = std::fs::read_link(source)?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, destination)?;
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::FileTypeExt;
+            if metadata.file_type().is_symlink_dir() {
+                std::os::windows::fs::symlink_dir(target, destination)?;
+            } else {
+                std::os::windows::fs::symlink_file(target, destination)?;
+            }
+        }
+    } else if metadata.is_dir() {
+        std::fs::create_dir(destination)?;
+        for entry in std::fs::read_dir(source)? {
+            let entry = entry?;
+            copy_install_tree(&entry.path(), &destination.join(entry.file_name()))?;
+        }
+        std::fs::set_permissions(destination, metadata.permissions())?;
+    } else if metadata.is_file() {
+        std::fs::copy(source, destination)?;
+    } else {
+        anyhow::bail!(
+            "Cannot back up this extension file type: {}",
+            source.display()
+        );
+    }
+    Ok(())
+}
+
+fn open_install_lock_file(key: &str) -> anyhow::Result<std::fs::File> {
+    let lock_root = crate::config::paths::Paths::in_config_dir("extension-install-locks");
+    std::fs::create_dir_all(&lock_root)?;
+    let lock_name = format!("{:x}.lock", Sha256::digest(key.as_bytes()));
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(lock_root.join(lock_name))?;
+    Ok(lock)
 }
 
 impl ExtensionInstallTransaction {
@@ -287,8 +337,10 @@ impl ExtensionInstallTransaction {
         match self.run_inner(&mut policy, cancel).await {
             Ok(report) => report,
             Err(e) => {
-                let reason = format!("{e:#}");
-                self.rollback();
+                let reason = match self.rollback() {
+                    Ok(()) => format!("{e:#}"),
+                    Err(undo_error) => format!("{e:#}; {undo_error:#}"),
+                };
                 InstallReport::failed(self.install_id.clone(), reason)
             }
         }
@@ -317,6 +369,22 @@ impl ExtensionInstallTransaction {
         let manifest = bundle.manifest().clone();
         let skills = bundle.skills().to_vec();
         let key = name_to_key(&manifest.name);
+        let lock = open_install_lock_file(&key)?;
+        if let Err(error) = fs2::FileExt::try_lock_exclusive(&lock) {
+            if error.raw_os_error() == fs2::lock_contended_error().raw_os_error() {
+                return Ok(InstallReport::failed(
+                    self.install_id.clone(),
+                    format!(
+                        "An install for `{}` is already in progress. Retry when it finishes.",
+                        manifest.name
+                    ),
+                ));
+            }
+            return Err(error.into());
+        }
+        // Keep the sidecar open through rollback; replacing the package must
+        // not release its lease while another transaction can still write it.
+        self.undo.install_lock = Some(lock);
         // #42. Sampled HERE — the first point the extension's real name is
         // known, and still before this run has written a byte of config — so
         // the register step below decides against the operator's switch as it
@@ -343,9 +411,18 @@ impl ExtensionInstallTransaction {
         // Before the first byte is written, so a tree that appears on disk is
         // always a tree something on disk claims.
         self.record_claim(self.claim_for(&ctx));
-        bundle.extract_to(&install_dir)?;
         self.undo.install_dir = Some(install_dir.clone());
         self.undo.created_install_dir = !existed;
+        if existed {
+            let backup = tempfile::Builder::new()
+                .prefix(".install-backup-")
+                .tempdir_in(&root)?;
+            // Nest the package so a surviving backup cannot contribute a
+            // manifest or skills. Build at the final path for absolute venvs.
+            copy_install_tree(&install_dir, &backup.path().join("package"))?;
+            self.undo.previous_install = Some(backup);
+        }
+        bundle.extract_to(&install_dir)?;
         run_uv_sync(&install_dir)?;
 
         // ── credentials ───────────────────────────────────────────────────
@@ -354,6 +431,7 @@ impl ExtensionInstallTransaction {
             .settle_credentials(&ctx, &mut values, policy, cancel)
             .await?
         {
+            self.restore_previous_install()?;
             return Ok(stopped);
         }
         let ResolvedValues { envs, mut env_keys } = values;
@@ -489,7 +567,12 @@ impl ExtensionInstallTransaction {
                             && !values.env_keys.contains(&k)
                         {
                             values.env_keys.push(k.clone());
-                            self.undo.written_secrets.push(k);
+                            if matches!(policy, CredentialPolicy::Ask { .. }) {
+                                self.undo.written_secrets.push(StoredSecretUndo {
+                                    key: k,
+                                    previous: None,
+                                });
+                            }
                         }
                     }
                 }
@@ -506,7 +589,7 @@ impl ExtensionInstallTransaction {
                     );
                 }
                 Collected::Cancelled => {
-                    return Ok(Some(self.stop(ctx, &unmet, InstallState::Cancelled)));
+                    return Ok(Some(self.stop(ctx, &unmet, InstallState::Cancelled)?));
                 }
                 Collected::Refused if unmet_required.is_empty() => {
                     // Only optional values are missing, and nobody can be
@@ -520,7 +603,7 @@ impl ExtensionInstallTransaction {
                         InstallState::NeedsCredentials {
                             keys: unmet_required,
                         },
-                    )));
+                    )?));
                 }
             }
         }
@@ -541,22 +624,22 @@ impl ExtensionInstallTransaction {
                 InstallState::NeedsCredentials {
                     keys: still_missing,
                 },
-            )));
+            )?));
         }
         Ok(None)
     }
 
-    /// Stop before registration: keep the extracted tree, undo this run's
-    /// config and credentials, and record what a retry still needs.
+    /// Stop before registration and record what a retry still needs. The caller
+    /// restores an upgrade's previous tree; a first install keeps its new tree.
     fn stop(
         &mut self,
         ctx: &InstallContext<'_>,
         pending: &[BrxtEnvVar],
         state: InstallState,
-    ) -> InstallReport {
+    ) -> anyhow::Result<InstallReport> {
         self.park_for_resume(ctx, pending);
-        self.rollback_config_only();
-        self.report(state, ctx.manifest, ctx.skills, &[])
+        self.rollback_config_only()?;
+        Ok(self.report(state, ctx.manifest, ctx.skills, &[]))
     }
 
     /// Write the values the caller already had, splitting credentials from
@@ -571,18 +654,22 @@ impl ExtensionInstallTransaction {
         let config = crate::config::Config::global();
         for key in secret_keys {
             let value = &self.supplied[&key];
+            let previous = config.all_secrets()?.get(&key).cloned();
+            self.undo.written_secrets.push(StoredSecretUndo {
+                key: key.clone(),
+                previous,
+            });
             config
                 .set_secret(&key, value)
                 .map_err(|e| anyhow::anyhow!("Failed to store `{key}`: {e}"))?;
-            env_keys.push(key.clone());
-            self.undo.written_secrets.push(key);
+            env_keys.push(key);
         }
         envs.extend(settings);
         Ok(())
     }
 
     async fn collect_credentials(
-        &self,
+        &mut self,
         manifest: &BrxtManifest,
         unmet: &[BrxtEnvVar],
         policy: &mut CredentialPolicy,
@@ -601,6 +688,11 @@ impl ExtensionInstallTransaction {
                     }
                     let secret = unmet.iter().any(|v| v.key == key && v.secret);
                     if secret {
+                        let previous = config.all_secrets()?.get(&key).cloned();
+                        self.undo.written_secrets.push(StoredSecretUndo {
+                            key: key.clone(),
+                            previous,
+                        });
                         config
                             .set_secret(&key, &value)
                             .map_err(|e| anyhow::anyhow!("Failed to store `{key}`: {e}"))?;
@@ -725,29 +817,89 @@ impl ExtensionInstallTransaction {
         self.record_claim(self.claim_for(ctx).parked(keys));
     }
 
-    /// Undo the registration and the credentials, but keep the extracted tree
-    /// and its built environment.
-    ///
-    /// The tree is the expensive half and contains nothing sensitive, and
-    /// `run_uv_sync` is incremental against the surviving `.venv`. A resumed
-    /// install *does* re-download and re-extract — `run_inner` extracts
-    /// unconditionally — it just does not pay for the environment again.
-    fn rollback_config_only(&mut self) {
+    /// Undo registration and credentials. The caller restores an upgrade's
+    /// working tree before returning; a first install keeps its built tree.
+    /// A resume re-downloads and re-extracts its recorded source.
+    fn rollback_config_only(&mut self) -> anyhow::Result<()> {
         if let Some(key) = self.undo.config_key.take() {
             remove_extension(&key);
         }
-        revoke(&std::mem::take(&mut self.undo.written_secrets));
+        let config = crate::config::Config::global();
+        let mut problems = Vec::new();
+        for undo in std::mem::take(&mut self.undo.written_secrets) {
+            let restored = match &undo.previous {
+                Some(previous) => config.set_secret(&undo.key, previous),
+                None => config.delete_secret(&undo.key),
+            };
+            if let Err(error) = restored {
+                problems.push(format!(
+                    "Could not restore credential `{}`: {error}",
+                    undo.key
+                ));
+                self.undo.written_secrets.push(undo);
+            }
+        }
+        if !problems.is_empty() {
+            anyhow::bail!(problems.join("; "));
+        }
+        Ok(())
+    }
+
+    fn restore_previous_install(&mut self) -> anyhow::Result<()> {
+        let Some(backup) = self.undo.previous_install.take() else {
+            return Ok(());
+        };
+        let directory = self
+            .undo
+            .install_dir
+            .as_ref()
+            .expect("a package backup has an install directory");
+        let restored = (|| -> std::io::Result<()> {
+            match std::fs::remove_dir_all(directory) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
+            std::fs::rename(backup.path().join("package"), directory)
+        })();
+        if let Err(error) = restored {
+            let retained = backup.keep();
+            anyhow::bail!(
+                "Could not restore the previous extension: {error}. Its backup remains at {}",
+                retained.join("package").display()
+            );
+        }
+        Ok(())
     }
 
     /// Undo everything this run created.
-    fn rollback(&mut self) {
-        self.rollback_config_only();
-        if self.undo.created_install_dir {
+    fn rollback(&mut self) -> anyhow::Result<()> {
+        let credentials = self.rollback_config_only();
+        let restored = self.restore_previous_install();
+        let removed = if self.undo.created_install_dir {
             if let Some(dir) = self.undo.install_dir.take() {
-                let _ = std::fs::remove_dir_all(&dir);
+                match std::fs::remove_dir_all(&dir) {
+                    Ok(()) => Ok(()),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(error) => Err(anyhow::anyhow!(
+                        "Could not remove the failed install at {}: {error}",
+                        dir.display()
+                    )),
+                }
+            } else {
+                Ok(())
             }
-        }
+        } else {
+            Ok(())
+        };
         claim::remove_claim(&self.install_id);
+        match (credentials, restored.and(removed)) {
+            (Err(credentials), Err(package)) => {
+                Err(anyhow::anyhow!("{credentials:#}; {package:#}"))
+            }
+            (Err(error), _) | (_, Err(error)) => Err(error),
+            (Ok(()), Ok(())) => Ok(()),
+        }
     }
 
     fn report(

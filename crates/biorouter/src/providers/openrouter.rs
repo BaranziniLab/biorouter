@@ -1,5 +1,6 @@
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::StreamExt;
 use serde_json::{json, Value};
 
 use super::api_client::{ApiClient, AuthMethod};
@@ -19,29 +20,36 @@ use crate::providers::formats::openai::{create_request, get_usage};
 use crate::providers::formats::openrouter as openrouter_format;
 use rmcp::model::Tool;
 
-// Sonnet 5 is Anthropic's current Sonnet: GA on OpenRouter since Jun 30, 2026,
-// cheaper than Sonnet 4.6 ($2/$10 vs $3/$15 per MTok) with the same 1M/128K
-// limits. Sonnet 4.6 is still active and stays listed.
-pub const OPENROUTER_DEFAULT_MODEL: &str = "anthropic/claude-sonnet-5";
+// The daily Claude flagship follows the user's capable-model preference.
+// Route policies and explicit saved choices remain independent of this default.
+pub const OPENROUTER_DEFAULT_MODEL: &str = "anthropic/claude-opus-5.5";
 pub const OPENROUTER_DEFAULT_FAST_MODEL: &str = "google/gemini-3.5-flash";
 pub const OPENROUTER_MODEL_PREFIX_ANTHROPIC: &str = "anthropic";
 
 // OpenRouter can run many models; this is a curated list of current,
 // tool-capable slugs verified against the live /api/v1/models catalog
-// (Sep 25, 2026): every slug below lists `tools` in its supported_parameters
+// (2026-11-17 refresh): new slugs list chat/completions and `tools`
 // and none carries an expiration_date. x-ai/grok-code-fast-1 was removed from
 // OpenRouter. There is no gpt-6-terra; Terra exists only as gpt-5.6-terra.
 pub const OPENROUTER_KNOWN_MODELS: &[&str] = &[
     "anthropic/claude-opus-5.5",
+    "anthropic/claude-sonnet-5.5",
+    "anthropic/claude-haiku-5.5",
     "anthropic/claude-fable-5.1",
     "anthropic/claude-opus-4.8",
     "anthropic/claude-sonnet-5",
     "anthropic/claude-sonnet-4.6",
     "anthropic/claude-haiku-4.5",
+    "openai/gpt-6.2-sol",
+    "openai/gpt-6.2-astra",
+    "openai/gpt-6.2-sol-pro",
+    "openai/gpt-6.2-astra-pro",
     "openai/gpt-6-astra",
     "openai/gpt-6-sol",
     "openai/gpt-6-luna",
     "openai/gpt-5.6-terra",
+    "google/gemini-4-hydrogen",
+    "google/gemini-4-argon",
     "google/gemini-3.1-pro-preview",
     "google/gemini-3.8-flash",
     "google/gemini-3.5-flash",
@@ -49,10 +57,12 @@ pub const OPENROUTER_KNOWN_MODELS: &[&str] = &[
     "x-ai/grok-4.3",
     "x-ai/grok-4.20",
     "x-ai/grok-build-0.1",
+    "deepseek/deepseek-v4.1-flash-1017",
     "deepseek/deepseek-v4-pro",
     "deepseek/deepseek-v4.1-flash",
     "deepseek/deepseek-v4-flash",
     "qwen/qwen3-coder-next",
+    "moonshotai/kimi-k3.1-pro",
     "moonshotai/kimi-k3",
     "moonshotai/kimi-k2.7-code",
     "moonshotai/kimi-k2.6",
@@ -60,6 +70,7 @@ pub const OPENROUTER_KNOWN_MODELS: &[&str] = &[
     "z-ai/glm-5.2",
     "z-ai/glm-5.1",
     "minimax/minimax-m3",
+    "mistralai/mistral-large-4-0",
 ];
 pub const OPENROUTER_DOC_URL: &str = "https://openrouter.ai/models";
 
@@ -77,14 +88,18 @@ fn openrouter_model_supports_vision(name: &str) -> bool {
         "anthropic/claude-",
         "google/gemini-",
         "openai/gpt-6-",
+        "openai/gpt-6.",
         "openai/gpt-5.6-",
     ];
     const IMAGE_INPUT_SLUGS: &[&str] = &[
+        "moonshotai/kimi-k3.1-pro",
         "moonshotai/kimi-k3",
         "moonshotai/kimi-k2.6",
         "moonshotai/kimi-k2.7-code",
         "minimax/minimax-m3",
         "deepseek/deepseek-v4.1-flash",
+        "deepseek/deepseek-v4.1-flash-1017",
+        "mistralai/mistral-large-4-0",
     ];
     let normalized = name.to_ascii_lowercase();
     openrouter_model_is_png_jpeg_only(&normalized)
@@ -253,37 +268,46 @@ fn update_request_for_anthropic(original_payload: &Value) -> Value {
     payload
 }
 
-fn is_gemini_model(model_name: &str) -> bool {
-    model_name.starts_with("google/")
-}
-
-async fn create_request_based_on_model(
-    provider: &OpenRouterProvider,
+fn create_request_based_on_model(
+    model_config: &ModelConfig,
     system: &str,
     messages: &[Message],
     tools: &[Tool],
+    for_streaming: bool,
 ) -> Result<Value> {
+    let mut request_config = model_config.clone();
+    // Shared OpenAI shaping expects its native id, while OpenRouter routing
+    // needs the namespaced slug restored after those parameter rules run.
+    let openai_model = model_config.model_name.strip_prefix("openai/");
+    if let Some(model) = openai_model {
+        request_config.model_name = model.to_string();
+    }
+    if model_config.model_name.starts_with("google/gemini-4") {
+        request_config.temperature = None;
+    }
     let mut payload = create_request(
-        &provider.model,
+        &request_config,
         system,
         messages,
         tools,
         &super::utils::ImageFormat::OpenAi,
-        false,
+        for_streaming,
     )?;
-
-    if provider.supports_cache_control().await {
+    if openai_model.is_some() {
+        if let Some(model) = payload["model"].as_str() {
+            payload["model"] = Value::String(format!("openai/{model}"));
+        }
+    }
+    if model_config
+        .model_name
+        .starts_with(OPENROUTER_MODEL_PREFIX_ANTHROPIC)
+    {
         payload = update_request_for_anthropic(&payload);
     }
-
-    if is_gemini_model(&provider.model.model_name) {
-        openrouter_format::add_reasoning_details_to_request(&mut payload, messages);
-    }
-
+    openrouter_format::add_reasoning_details_to_request(&mut payload, messages);
     if let Some(obj) = payload.as_object_mut() {
         obj.insert("transforms".to_string(), json!(["middle-out"]));
     }
-
     Ok(payload)
 }
 
@@ -334,7 +358,7 @@ impl Provider for OpenRouterProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<(Message, ProviderUsage), ProviderError> {
-        let payload = create_request_based_on_model(self, system, messages, tools).await?;
+        let payload = create_request_based_on_model(model_config, system, messages, tools, false)?;
         let mut log = RequestLog::start(model_config, &payload)?;
 
         let response = self
@@ -345,11 +369,7 @@ impl Provider for OpenRouterProvider {
             .await?;
 
         let response_model = get_model(&response);
-        let message = if is_gemini_model(&self.model.model_name) {
-            openrouter_format::response_to_message(&response)?
-        } else {
-            crate::providers::formats::openai::response_to_message(&response)?
-        };
+        let message = openrouter_format::response_to_message(&response)?;
 
         let usage = response.get("usage").map(get_usage).unwrap_or_else(|| {
             tracing::debug!("Failed to get usage data");
@@ -399,6 +419,30 @@ impl Provider for OpenRouterProvider {
             .filter_map(|model| {
                 // Get the model ID
                 let id = model.get("id").and_then(|v| v.as_str())?;
+
+                if id.ends_with(":batch") {
+                    return None;
+                }
+                if let Some(endpoints) = model.get("endpoints").and_then(Value::as_array) {
+                    if !endpoints
+                        .iter()
+                        .any(|endpoint| endpoint.as_str() == Some("/api/v1/chat/completions"))
+                    {
+                        return None;
+                    }
+                }
+                if let Some(expiration) = model
+                    .get("expiration_date")
+                    .filter(|value| !value.is_null())
+                {
+                    let expires = expiration
+                        .as_str()
+                        .and_then(|date| date.get(..10))
+                        .and_then(|date| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok());
+                    if expires.is_none_or(|date| date < chrono::Utc::now().date_naive()) {
+                        return None;
+                    }
+                }
 
                 // Check if the model supports tools
                 let supported_params =
@@ -452,26 +496,7 @@ impl Provider for OpenRouterProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<MessageStream, ProviderError> {
-        let mut payload = create_request(
-            &self.model,
-            system,
-            messages,
-            tools,
-            &super::utils::ImageFormat::OpenAi,
-            true,
-        )?;
-
-        if self.supports_cache_control().await {
-            payload = update_request_for_anthropic(&payload);
-        }
-
-        if is_gemini_model(&self.model.model_name) {
-            openrouter_format::add_reasoning_details_to_request(&mut payload, messages);
-        }
-
-        if let Some(obj) = payload.as_object_mut() {
-            obj.insert("transforms".to_string(), json!(["middle-out"]));
-        }
+        let payload = create_request_based_on_model(&self.model, system, messages, tools, true)?;
 
         let mut log = RequestLog::start(&self.model, &payload)?;
 
@@ -488,7 +513,19 @@ impl Provider for OpenRouterProvider {
                 let _ = log.error(e);
             })?;
 
-        stream_openai_compat(response, log)
+        let stream = stream_openai_compat(response, log)?;
+        Ok(Box::pin(stream.map(|item| {
+            item.map(|(message, usage, pending)| {
+                let message = message.map(|mut message| {
+                    openrouter_format::stamp_reasoning_details_provenance(
+                        &mut message,
+                        "openrouter",
+                    );
+                    message
+                });
+                (message, usage, pending)
+            })
+        })))
     }
 }
 
@@ -505,8 +542,8 @@ mod tests {
     }
 
     #[test]
-    fn default_is_claude_sonnet_5_and_advertised() {
-        assert_eq!(OPENROUTER_DEFAULT_MODEL, "anthropic/claude-sonnet-5");
+    fn default_is_claude_opus_55_and_advertised() {
+        assert_eq!(OPENROUTER_DEFAULT_MODEL, "anthropic/claude-opus-5.5");
         assert!(OPENROUTER_KNOWN_MODELS.contains(&OPENROUTER_DEFAULT_MODEL));
         assert!(OPENROUTER_KNOWN_MODELS.contains(&OPENROUTER_DEFAULT_FAST_MODEL));
         assert_eq!(
@@ -556,5 +593,160 @@ mod tests {
             assert_eq!(info.supports_vision, Some(true), "{slug}");
             assert_eq!(info.supported_input_mime_types, png_jpeg, "{slug}");
         }
+    }
+}
+
+#[cfg(test)]
+mod hosted_refresh_tests {
+    use super::*;
+
+    #[test]
+    fn hosted_refresh_openrouter_daily_claude_order_excludes_batch_routes() {
+        let metadata = OpenRouterProvider::metadata();
+        assert_eq!(metadata.default_model, "anthropic/claude-opus-5.5");
+        let offered: Vec<_> = metadata
+            .known_models
+            .iter()
+            .take(3)
+            .map(|m| m.name.as_str())
+            .collect();
+        assert_eq!(
+            offered,
+            [
+                "anthropic/claude-opus-5.5",
+                "anthropic/claude-sonnet-5.5",
+                "anthropic/claude-haiku-5.5"
+            ]
+        );
+        assert!(metadata
+            .known_models
+            .iter()
+            .all(|m| !m.name.ends_with(":batch")));
+        for name in [
+            "openai/gpt-6.2-sol",
+            "openai/gpt-6.2-astra",
+            "moonshotai/kimi-k3.1-pro",
+        ] {
+            let model = metadata
+                .known_models
+                .iter()
+                .find(|m| m.name == name)
+                .unwrap_or_else(|| panic!("{name} missing"));
+            assert_eq!(model.supports_vision, Some(true), "{name}");
+        }
+        assert!(!metadata
+            .known_models
+            .iter()
+            .any(|m| m.name == "anthropic/claude-fable-5.2"));
+    }
+}
+
+#[cfg(test)]
+mod hosted_refresh_wire_tests {
+    use super::*;
+    use crate::conversation::message::MessageContent;
+    use rmcp::model::{CallToolResult, Content};
+    use wiremock::matchers::method;
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn provider(host: String, model: &str) -> OpenRouterProvider {
+        OpenRouterProvider {
+            api_client: ApiClient::new(host, AuthMethod::BearerToken("fixture".into())).unwrap(),
+            model: ModelConfig::new_or_fail(model).with_temperature(Some(0.0)),
+            supports_streaming: true,
+            name: "openrouter".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn hosted_refresh_openrouter_namespaced_gpt_keeps_its_reasoning_parameter_rules() {
+        let provider = provider("https://openrouter.invalid".into(), "openai/gpt-6.2-sol");
+        let payload = create_request_based_on_model(
+            &provider.model,
+            "system",
+            &[Message::user().with_text("hello")],
+            &[],
+            false,
+        )
+        .unwrap();
+        assert_eq!(payload["model"], "openai/gpt-6.2-sol");
+        assert!(payload.get("temperature").is_none());
+        assert_eq!(payload["reasoning_effort"], "medium");
+    }
+
+    #[tokio::test]
+    async fn hosted_refresh_openrouter_selected_model_and_reasoning_details_survive_tool_followup()
+    {
+        let server = MockServer::start().await;
+        let details = json!([{"type":"reasoning.encrypted","data":"opaque-signature","format":"anthropic-claude-v1","id":"reasoning-1"}]);
+        Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"model":"anthropic/claude-opus-5.5","choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"lookup-1","type":"function","function":{"name":"lookup","arguments":"{}"}}],"reasoning_details":details}}],"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16}}))).mount(&server).await;
+        let provider = provider(server.uri(), "anthropic/claude-sonnet-5");
+        let requested = ModelConfig::new_or_fail("anthropic/claude-opus-5.5");
+        let history = vec![Message::user().with_text("lookup")];
+        let (assistant, _) = provider
+            .complete_with_model(&requested, "system", &history, &[])
+            .await
+            .unwrap();
+        assert!(assistant
+            .content
+            .iter()
+            .any(|c| matches!(c, MessageContent::ToolRequest(_))));
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(
+            body["model"], "anthropic/claude-opus-5.5",
+            "per-call selection must not be replaced by the bound model"
+        );
+        let history = vec![
+            history[0].clone(),
+            assistant,
+            Message::user().with_tool_response(
+                "lookup-1",
+                Ok(CallToolResult::success(vec![Content::text("found")])),
+            ),
+        ];
+        provider
+            .complete_with_model(&requested, "system", &history, &[])
+            .await
+            .unwrap();
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests[1].body).unwrap();
+        assert_eq!(body["messages"][2]["reasoning_details"], details);
+        assert_eq!(body["messages"][3]["tool_call_id"], "lookup-1");
+    }
+
+    #[tokio::test]
+    async fn hosted_refresh_openrouter_live_catalogue_excludes_incompatible_routes() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(json!({"data":[
+            {"id":"anthropic/claude-sonnet-5.5","supported_parameters":["tools"],"endpoints":["/api/v1/chat/completions"],"expiration_date":null},
+            {"id":"openai/gpt-6.2-sol:batch","supported_parameters":["tools"],"endpoints":["/api/v1/batches"]},
+            {"id":"retired/model","supported_parameters":["tools"],"expiration_date":"2020-01-01"},
+            {"id":"responses/only","supported_parameters":["tools"],"endpoints":["/api/v1/responses"]},
+            {"id":"text/only","supported_parameters":["temperature"],"endpoints":["/api/v1/chat/completions"]}
+        ]}))).mount(&server).await;
+        let supported = provider(server.uri(), "anthropic/claude-opus-5.5")
+            .fetch_supported_models()
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(supported, ["anthropic/claude-sonnet-5.5"]);
+        assert!(
+            !supported.iter().any(|m| m == "anthropic/claude-opus-5.5"),
+            "an unavailable flagship must not be inserted into the account response"
+        );
+    }
+}
+
+#[cfg(test)]
+pub(super) fn hosted_refresh_reasoning_origin_test_provider(
+    host: String,
+    model: &str,
+) -> OpenRouterProvider {
+    OpenRouterProvider {
+        api_client: ApiClient::new(host, AuthMethod::BearerToken("fixture".into())).unwrap(),
+        model: ModelConfig::new_or_fail(model),
+        supports_streaming: true,
+        name: "openrouter".into(),
     }
 }

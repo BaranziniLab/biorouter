@@ -430,26 +430,41 @@ async fn list_workflows(
     responses(
         (status = 204, description = "Workflow deleted successfully"),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "A matching schedule does private work outside this caller's reach. Nothing was changed"),
         (status = 404, description = "Workflow not found"),
         (status = 500, description = "Internal server error")
     ),
     tag = "Workflow Management"
 )]
-async fn delete_workflow(Json(request): Json<DeleteWorkflowRequest>) -> StatusCode {
-    // Through the core, so the id->path cache is invalidated by the same call
-    // that removes the file. A bare `fs::remove_file` here left the deleted
-    // workflow resolvable until the next `GET /workflows/list`.
-    match service::delete(&request.id) {
-        Ok(_) => StatusCode::NO_CONTENT,
-        Err(err) => {
-            tracing::error!("Failed to delete workflow {}: {}", request.id, err);
-            if err.to_string().contains("not found") {
-                StatusCode::NOT_FOUND
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
+async fn delete_workflow(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+    Json(request): Json<DeleteWorkflowRequest>,
+) -> Result<StatusCode, axum::response::Response> {
+    use axum::response::IntoResponse;
+
+    let delete_error = |err: anyhow::Error| {
+        tracing::error!("Failed to delete workflow {}: {}", request.id, err);
+        if err.to_string().contains("not found") {
+            StatusCode::NOT_FOUND.into_response()
+        } else {
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
+    };
+    let scheduler = state.scheduler();
+    let deletion = service::prepare_delete(&request.id, scheduler.as_ref())
+        .await
+        .map_err(&delete_error)?;
+    for job in deletion.schedules() {
+        crate::routes::session_reach::schedule_reach(state.session_manager(), Some(job), &headers)
+            .await
+            .map_err(IntoResponse::into_response)?;
     }
+    deletion
+        .execute(scheduler.as_ref())
+        .await
+        .map(|_| StatusCode::NO_CONTENT)
+        .map_err(delete_error)
 }
 
 #[utoipa::path(
@@ -718,6 +733,242 @@ pub fn routes(state: Arc<AppState>) -> Router {
 mod tests {
     use super::*;
     use biorouter::workflow::Workflow;
+
+    async fn wave3_workflow_state() -> Arc<AppState> {
+        use biorouter::execution::manager::AgentManager;
+
+        let mut state = AppState::new().await.unwrap();
+        // The global manager's cron worker may belong to an earlier test's dropped runtime.
+        let manager = AgentManager::new(
+            Arc::new(biorouter::session::SessionManager::instance()),
+            biorouter::scheduler::get_default_scheduler_storage_path().unwrap(),
+            AgentManager::shared_config_root().to_path_buf(),
+            None,
+        )
+        .await
+        .unwrap();
+        Arc::make_mut(&mut state).agent_manager = Arc::new(manager);
+        state
+    }
+
+    fn wave3_scheduled_job(
+        id: String,
+        source: &std::path::Path,
+    ) -> biorouter::scheduler::ScheduledJob {
+        biorouter::scheduler::ScheduledJob {
+            id,
+            source: source.to_string_lossy().into_owned(),
+            cron: "0 0 0 1 1 *".to_string(),
+            last_run: None,
+            currently_running: false,
+            paused: false,
+            current_session_id: None,
+            process_start_time: None,
+            run_count: 0,
+            max_runs: None,
+            creator_session_id: None,
+            last_error: None,
+            last_attempt: None,
+            owns_source: None,
+            armed_with_private_reach: None,
+        }
+    }
+
+    async fn wave3_delete_request(
+        state: Arc<AppState>,
+        id: &str,
+        proof: bool,
+    ) -> axum::response::Response {
+        use crate::routes::session::diverge_tests::TEST_USER_ACTION_KEY;
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+
+        let mut request = Request::builder()
+            .method("POST")
+            .uri("/workflows/delete")
+            .header("content-type", "application/json");
+        if proof {
+            request = request.header("X-User-Action", TEST_USER_ACTION_KEY);
+        }
+        routes(state)
+            .oneshot(
+                request
+                    .body(Body::from(serde_json::json!({"id": id}).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn wave3_workflow_delete_removes_matching_future_schedules_and_preserves_other_files() {
+        use crate::routes::session::diverge_tests::install_test_user_action_key;
+        use biorouter::scheduler::{get_default_scheduler_storage_path, ScheduledJob, Scheduler};
+
+        install_test_user_action_key();
+        let state = wave3_workflow_state().await;
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let workflow = Workflow::builder()
+            .title(format!("Delete schedule fixture {suffix}"))
+            .description("Synthetic workflow deletion")
+            .prompt("Synthetic fixture")
+            .build()
+            .unwrap();
+        let saved = service::save(&workflow, service::SaveTarget::Library).unwrap();
+        let id = service::short_id_from_path(saved.to_string_lossy().as_ref());
+        assert_eq!(service::resolve_id(&id).unwrap(), saved);
+        let dir = tempfile::tempdir().unwrap();
+        let other = dir.path().join(saved.file_name().unwrap());
+        std::fs::copy(&saved, &other).unwrap();
+        let alias = saved
+            .parent()
+            .unwrap()
+            .join("..")
+            .join(saved.parent().unwrap().file_name().unwrap())
+            .join(saved.file_name().unwrap());
+        let target_ids = [
+            format!("delete-target-{suffix}"),
+            format!("delete-alias-{suffix}"),
+        ];
+        let other_id = format!("delete-other-{suffix}");
+        let scheduler = state.scheduler();
+        for (job_id, source) in [
+            (target_ids[0].clone(), saved.as_path()),
+            (target_ids[1].clone(), alias.as_path()),
+            (other_id.clone(), other.as_path()),
+        ] {
+            scheduler
+                .add_scheduled_job(wave3_scheduled_job(job_id, source), false)
+                .await
+                .unwrap();
+        }
+        let before = scheduler.list_scheduled_jobs().await;
+        assert!(target_ids
+            .iter()
+            .all(|id| before.iter().any(|job| &job.id == id)));
+
+        let response = wave3_delete_request(state.clone(), &id, true).await;
+        let status = response.status();
+        let remaining = scheduler.list_scheduled_jobs().await;
+        let storage = get_default_scheduler_storage_path().unwrap();
+        let persisted: Vec<ScheduledJob> =
+            serde_json::from_slice(&std::fs::read(&storage).unwrap()).unwrap();
+        let reloaded = Scheduler::new(
+            storage,
+            Arc::new(biorouter::session::SessionManager::instance()),
+        )
+        .await
+        .unwrap();
+        let after_reload = reloaded.list_scheduled_jobs().await;
+        let source_removed = !saved.exists();
+        let other_preserved = other.exists();
+        for job_id in target_ids.iter().chain(std::iter::once(&other_id)) {
+            let _ = scheduler.remove_scheduled_job(job_id, false).await;
+        }
+        let _ = std::fs::remove_file(&saved);
+        service::invalidate();
+
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(source_removed);
+        assert!(
+            other_preserved,
+            "a different workflow with the same filename must survive"
+        );
+        for list in [&remaining, &persisted, &after_reload] {
+            assert!(
+                target_ids
+                    .iter()
+                    .all(|id| list.iter().all(|job| &job.id != id)),
+                "deleted workflow retained a future registration: {list:?}"
+            );
+            assert!(list.iter().any(|job| job.id == other_id));
+        }
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn wave3_workflow_delete_refuses_a_private_schedule_before_mutation() {
+        use crate::routes::session::diverge_tests::install_test_user_action_key;
+        use biorouter::model::ModelConfig;
+        use biorouter::privacy::SessionClassification;
+        use biorouter::session::SessionType;
+
+        install_test_user_action_key();
+        assert!(biorouter::privacy::privacy_tiers_enabled());
+        let state = wave3_workflow_state().await;
+        let suffix = uuid::Uuid::new_v4().simple().to_string();
+        let workflow = Workflow::builder()
+            .title(format!("Private deletion fixture {suffix}"))
+            .description("Synthetic private schedule deletion")
+            .prompt("Synthetic fixture")
+            .build()
+            .unwrap();
+        let saved = service::save(&workflow, service::SaveTarget::Library).unwrap();
+        let id = service::short_id_from_path(saved.to_string_lossy().as_ref());
+        let creator = state
+            .session_manager()
+            .create_session(
+                saved.parent().unwrap().to_path_buf(),
+                "Synthetic private schedule creator".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        state
+            .session_manager()
+            .update(&creator.id)
+            .provider_name("versa_azure")
+            .model_config(ModelConfig::new("gpt-4o").unwrap())
+            .raise_privacy(
+                SessionClassification::Private,
+                "synthetic scheduler fixture",
+            )
+            .apply()
+            .await
+            .unwrap();
+        let job_id = format!("private-delete-{suffix}");
+        let mut job = wave3_scheduled_job(job_id.clone(), &saved);
+        job.creator_session_id = Some(creator.id.clone());
+        let scheduler = state.scheduler();
+        scheduler.add_scheduled_job(job, false).await.unwrap();
+
+        let response = wave3_delete_request(state.clone(), &id, false).await;
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let source_preserved = saved.exists();
+        let job_preserved = scheduler
+            .list_scheduled_jobs()
+            .await
+            .iter()
+            .any(|job| job.id == job_id);
+        let _ = scheduler.remove_scheduled_job(&job_id, false).await;
+        let _ = std::fs::remove_file(&saved);
+        service::invalidate();
+        state
+            .session_manager()
+            .delete_session(&creator.id)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
+        assert!(
+            source_preserved,
+            "refusal must precede deleting the source file"
+        );
+        assert!(
+            job_preserved,
+            "refusal must precede removing future registrations"
+        );
+    }
 
     #[tokio::test]
     async fn test_decode_and_encode_workflow() {

@@ -64,7 +64,8 @@ use crate::conversation::message::{
 };
 use crate::conversation::tool_result_serde::call_tool_result;
 use crate::conversation::{
-    debug_conversation_fix, fix_conversation, has_signed_reasoning, Conversation,
+    debug_conversation_fix, fix_conversation, has_native_replay_content, has_signed_reasoning,
+    Conversation,
 };
 use crate::managed::ManagedPolicy;
 use crate::mcp_utils::ToolResult;
@@ -4198,7 +4199,9 @@ fn fold_iteration_into_conversation(
 ) {
     let continues_signed_construction = continues_bedrock_assistant_construction(&messages_to_add);
     let replay_messages = canonicalize_signed_replay_suffix(&messages_to_add);
-    let response_has_signed_reasoning = replay_messages.iter().any(has_signed_reasoning);
+    let response_has_signed_reasoning = replay_messages
+        .iter()
+        .any(|message| has_signed_reasoning(message) && !has_native_replay_content(message));
     if !did_retry_reset_this_iteration {
         conversation.extend(messages_to_add);
     }
@@ -8006,6 +8009,10 @@ impl Agent {
     /// Get the current retry attempts count
     pub async fn get_retry_attempts(&self) -> u32 {
         self.retry_manager.get_attempts().await
+    }
+
+    pub(crate) async fn workflow_retry_result(&self) -> Result<RetryResult> {
+        self.retry_manager.last_result().await
     }
 
     async fn handle_retry_logic(
@@ -16140,15 +16147,16 @@ impl Agent {
 
                                 let num_tool_requests = frontend_requests.len() + remaining_requests.len();
                                 if num_tool_requests == 0 {
-                                    let merged_into_signed_turn =
-                                        continues_signed_turn(&response, &messages_to_add)
+                                    let merged_into_provider_turn =
+                                        (continues_signed_turn(&response, &messages_to_add)
+                                            || has_native_replay_content(&response))
                                             && response.id.as_deref().is_some_and(|response_id| {
                                                 messages_to_add.append_content_to_message_id(
                                                     response_id,
                                                     &response.content,
                                                 )
                                             });
-                                    if !merged_into_signed_turn {
+                                    if !merged_into_provider_turn {
                                         messages_to_add.push(response.clone());
                                     }
                                     continue;
@@ -16632,6 +16640,7 @@ impl Agent {
 
                                 let signed_provider_turn =
                                     continues_signed_turn(&response, &messages_to_add);
+                                let native_provider_turn = has_native_replay_content(&response);
 
                                 if signed_provider_turn
                                     && signed_stream_truncation_is_recoverable(
@@ -16665,18 +16674,15 @@ impl Agent {
                                         TurnAbortCode::SignedStreamTruncated,
                                         SIGNED_STREAM_TRUNCATED_NOTICE.to_string(),
                                     ));
-                                } else if signed_provider_turn {
-                                    // A Bedrock reasoning signature authenticates
-                                    // the provider-authored assistant block list,
-                                    // including original tool arguments and order.
+                                } else if signed_provider_turn || native_provider_turn {
+                                    // Bedrock signatures and native provider history
+                                    // require the original assistant block list,
+                                    // including tool arguments and order.
                                     // Execution uses the separate categorized /
                                     // coerced / hook-rewritten ToolRequest values;
                                     // persistence must keep this immutable copy.
-                                    // On streaming Bedrock responses the earlier
-                                    // reasoning chunk shares this id, so
-                                    // Conversation::push reconstructs the one
-                                    // signed assistant message before any tool
-                                    // result is appended.
+                                    // Rejoin same-id stream parts across result
+                                    // rows so batching cannot split that list.
                                     let merged = response.id.as_deref().is_some_and(|response_id| {
                                         messages_to_add.append_content_to_message_id(
                                             response_id,

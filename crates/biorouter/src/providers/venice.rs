@@ -1,19 +1,18 @@
 use anyhow::Result;
 use async_trait::async_trait;
-use chrono::Utc;
 use serde::Serialize;
 use serde_json::{json, Value};
 
 use super::api_client::{ApiClient, AuthMethod};
-use super::base::{ConfigKey, Provider, ProviderMetadata, ProviderUsage, Usage};
+use super::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage};
 use super::errors::ProviderError;
+use super::formats::openai;
 use super::retry::ProviderRetry;
-use super::utils::map_http_error_to_provider_error;
-use crate::conversation::message::{Message, MessageContent};
+use super::utils::{map_http_error_to_provider_error, ImageFormat};
+use crate::conversation::message::Message;
 
-use crate::mcp_utils::ToolResult;
 use crate::model::ModelConfig;
-use rmcp::model::{object, CallToolRequestParams, Role, Tool};
+use rmcp::model::Tool;
 
 // ---------- Capability Flags ----------
 #[derive(Debug)]
@@ -59,15 +58,16 @@ fn strip_flags(model: &str) -> &str {
 // ---------- END Helpers ----------
 
 pub const VENICE_DOC_URL: &str = "https://docs.venice.ai/";
-pub const VENICE_DEFAULT_MODEL: &str = "llama-3.3-70b";
+pub const VENICE_DEFAULT_MODEL: &str = "deepseek-v4-1-flash-1017-uncensored";
 pub const VENICE_DEFAULT_HOST: &str = "https://api.venice.ai";
 pub const VENICE_DEFAULT_BASE_PATH: &str = "api/v1/chat/completions";
 pub const VENICE_DEFAULT_MODELS_PATH: &str = "api/v1/models";
 
 // Fallback models to use when API is unavailable
-const FALLBACK_MODELS: [&str; 3] = [
-    "llama-3.2-3b",  // Small model with function calling
-    "llama-3.3-70b", // Default model with function calling
+const FALLBACK_MODELS: [&str; 4] = [
+    VENICE_DEFAULT_MODEL,
+    "llama-3.2-3b",
+    "llama-3.3-70b",
     "mistral-small-3-2-24b-instruct",
 ];
 
@@ -187,12 +187,21 @@ impl VeniceProvider {
 #[async_trait]
 impl Provider for VeniceProvider {
     fn metadata() -> ProviderMetadata {
-        ProviderMetadata::new(
+        ProviderMetadata::with_models(
             "venice",
             "Venice.ai",
             "Venice.ai models (Llama, DeepSeek, Mistral) with function calling",
             VENICE_DEFAULT_MODEL,
-            FALLBACK_MODELS.to_vec(),
+            FALLBACK_MODELS
+                .iter()
+                .map(|model| {
+                    if *model == VENICE_DEFAULT_MODEL {
+                        ModelInfo::new(*model, 1_000_000).with_vision()
+                    } else {
+                        ModelInfo::new(*model, ModelConfig::context_window_for(model))
+                    }
+                })
+                .collect(),
             VENICE_DOC_URL,
             vec![
                 ConfigKey::new("VENICE_API_KEY", true, true, None),
@@ -257,278 +266,277 @@ impl Provider for VeniceProvider {
         messages: &[Message],
         tools: &[Tool],
     ) -> Result<(Message, ProviderUsage), ProviderError> {
-        // Create properly formatted messages for Venice API
-        let mut formatted_messages = Vec::new();
-
-        // Add the system message if present
-        if !system.is_empty() {
-            formatted_messages.push(json!({
-                "role": "system",
-                "content": system
-            }));
-        }
-
-        // Format regular messages according to Venice API requirements
-        for msg in messages {
-            // Venice API expects 'content' to be a string, not an array of MessageContent
-            let content = match msg.role {
-                Role::User => {
-                    // For user messages, concatenate all text content
-                    let text_content: String = msg
-                        .content
-                        .iter()
-                        .filter_map(|c| c.as_text())
-                        .collect::<Vec<_>>()
-                        .join("\n");
-
-                    // If we have text content, use it directly
-                    if !text_content.is_empty() {
-                        text_content
-                    } else {
-                        // Otherwise, try to get a reasonable string representation
-                        msg.as_concat_text()
-                    }
-                }
-                _ => {
-                    // For assistant messages, handle possible tool calls
-                    let has_tool_calls = msg
-                        .content
-                        .iter()
-                        .any(|c| matches!(c, MessageContent::ToolRequest(_)));
-
-                    if has_tool_calls {
-                        // If there are tool calls, we'll handle them separately
-                        // Just use an empty string for content
-                        "".to_string()
-                    } else {
-                        // Otherwise use text content
-                        msg.as_concat_text()
-                    }
-                }
-            };
-
-            // Create basic message with content as string
-            let mut venice_msg = json!({
-                "role": match msg.role {
-                    Role::User => "user",
-                    Role::Assistant => "assistant",
-                },
-                "content": content
-            });
-
-            // Add debug information to tracing
-            tracing::debug!(
-                "Venice message format: role={:?}, content_len={}, has_tool_calls={}",
-                msg.role,
-                content.len(),
-                msg.content
-                    .iter()
-                    .any(|c| matches!(c, MessageContent::ToolRequest(_)))
-            );
-
-            // For assistant messages with tool calls, add them in Venice format
-            if msg.role == Role::Assistant {
-                let tool_calls: Vec<_> = msg
-                    .content
-                    .iter()
-                    .filter_map(|c| c.as_tool_request())
-                    .collect();
-
-                if !tool_calls.is_empty() {
-                    // Transform our tool calls to Venice format
-                    let venice_tool_calls: Vec<Value> = tool_calls
-                        .iter()
-                        .filter_map(|tr| {
-                            if let ToolResult::Ok(tool_call) = &tr.tool_call {
-                                // Safely convert arguments to a JSON string
-                                let args_str = tool_call
-                                    .arguments
-                                    .as_ref() // borrow the Option contents
-                                    .map(|map| serde_json::to_string(map).unwrap_or_default())
-                                    .unwrap_or_default();
-
-                                // Log tool call details for debugging
-                                tracing::debug!(
-                                    "Tool call conversion: id={}, name={}, args_len={}",
-                                    tr.id,
-                                    tool_call.name,
-                                    args_str.len()
-                                );
-
-                                // Convert to Venice format
-                                Some(json!({
-                                    "id": tr.id,
-                                    "type": "function",
-                                    "function": {
-                                        "name": tool_call.name,
-                                        "arguments": args_str
-                                    }
-                                }))
-                            } else {
-                                tracing::warn!("Skipping tool call with error: id={}", tr.id);
-                                None
-                            }
-                        })
-                        .collect();
-
-                    if !venice_tool_calls.is_empty() {
-                        tracing::debug!("Adding {} tool calls to message", venice_tool_calls.len());
-                        venice_msg["tool_calls"] = json!(venice_tool_calls);
-                    }
-                }
-            }
-
-            // For tool messages with tool responses, add required tool_call_id
-            // Check for tool responses regardless of role - they should have an ID
-            // that corresponds to the tool call they're responding to
+        let mut config = model_config.clone();
+        config.model_name = strip_flags(&config.model_name).to_string();
+        let mut payload = openai::create_request(
+            &config,
+            system,
+            messages,
+            tools,
+            &ImageFormat::OpenAi,
+            false,
+        )?;
+        payload["stream"] = json!(false);
+        if config.model_name == VENICE_DEFAULT_MODEL {
+            if let Some(effort) = config
+                .reasoning_effort
+                .and_then(|effort| effort.provider_effort())
             {
-                let tool_responses: Vec<_> = msg
-                    .content
-                    .iter()
-                    .filter_map(|c| c.as_tool_response())
-                    .collect();
-
-                if !tool_responses.is_empty() && !tool_responses[0].id.is_empty() {
-                    venice_msg["tool_call_id"] = json!(tool_responses[0].id);
-                    // Venice expects tool messages to have 'role' = 'tool'
-                    venice_msg["role"] = json!("tool");
-                }
+                payload["reasoning_effort"] = json!(effort);
             }
-
-            formatted_messages.push(venice_msg);
         }
 
-        // Build Venice-specific payload
-        let mut payload = json!({
-            "model": strip_flags(&model_config.model_name),
-            "messages": formatted_messages,
-            "stream": false,
-            "temperature": 0.7,
-            "max_tokens": 2048,
-        });
-
-        if !tools.is_empty() {
-            // Format tools specifically for Venice API
-            let formatted_tools: Vec<serde_json::Value> = tools
-                .iter()
-                .map(|tool| {
-                    // Format each tool in the expected Venice format
-                    json!({
-                        "type": "function",
-                        "function": {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": tool.input_schema
-                        }
-                    })
-                })
-                .collect();
-
-            payload["tools"] = json!(formatted_tools);
-        }
-
-        tracing::debug!("Sending request to Venice API");
-        tracing::debug!("Venice request payload: {}", payload.to_string());
-
-        // Send request with retry
         let response = self
             .with_retry(|| self.post(&self.base_path, &payload))
             .await?;
-
-        // Parse the response - response is already a Value from our post method
-        let response_json = response;
-
-        // Handle tool calls from the response if present
-        let tool_calls = response_json["choices"]
-            .get(0)
-            .and_then(|choice| choice["message"]["tool_calls"].as_array());
-
-        if let Some(tool_calls) = tool_calls {
-            if !tool_calls.is_empty() {
-                // Extract tool calls and format for our internal model
-                let mut content = Vec::new();
-
-                for tool_call in tool_calls {
-                    let id = tool_call["id"].as_str().unwrap_or("unknown").to_string();
-                    let function = tool_call["function"].clone();
-                    let name = function["name"].as_str().unwrap_or("unknown").to_string();
-
-                    // Parse arguments string to Value if it's a string
-                    let arguments = if let Some(args_str) = function["arguments"].as_str() {
-                        serde_json::from_str::<Value>(args_str)
-                            .unwrap_or(function["arguments"].clone())
-                    } else {
-                        function["arguments"].clone()
-                    };
-
-                    let tool_call = CallToolRequestParams {
-                        task: None,
-                        name: name.into(),
-                        arguments: Some(object(arguments)),
-                        meta: None,
-                    };
-
-                    // Create a ToolRequest MessageContent
-                    let tool_request = MessageContent::tool_request(id, ToolResult::Ok(tool_call));
-
-                    content.push(tool_request);
-                }
-
-                // Create message and add each content item
-                let mut message = Message::assistant();
-                for item in content {
-                    message = message.with_content(item);
-                }
-
-                return Ok((
-                    message,
-                    ProviderUsage::new(
-                        strip_flags(&model_config.model_name).to_string(),
-                        Usage::default(),
-                    ),
-                ));
-            }
+        if !response["choices"][0]["message"].is_object() {
+            return Err(ProviderError::RequestFailed(
+                "Invalid response format: missing message".to_string(),
+            ));
         }
-
-        // If we get here, it's a regular text response
-        // Extract content
-        let content = response_json["choices"]
-            .get(0)
-            .and_then(|choice| choice["message"]["content"].as_str())
-            .ok_or_else(|| {
-                tracing::error!("Invalid response format: {:?}", response_json);
-                ProviderError::RequestFailed("Invalid response format: missing content".to_string())
-            })?
-            .to_string();
-
-        // Create a vector with a single text content item
-        let content = vec![MessageContent::text(content)];
-
-        // Extract usage
-        let usage_data = &response_json["usage"];
-        let usage = Usage::new(
-            usage_data["prompt_tokens"].as_i64().map(|v| v as i32),
-            usage_data["completion_tokens"].as_i64().map(|v| v as i32),
-            usage_data["total_tokens"].as_i64().map(|v| v as i32),
-        );
-
-        Ok((
-            Message::new(Role::Assistant, Utc::now().timestamp(), content),
-            ProviderUsage::new(strip_flags(&self.model.model_name).to_string(), usage),
-        ))
+        let mut message = openai::response_to_message(&response)?;
+        openai::stamp_reasoning_provenance(&mut message, &self.name);
+        let mut usage =
+            ProviderUsage::new(config.model_name, openai::get_usage(&response["usage"]));
+        usage.finish_reason = response["choices"][0]["finish_reason"]
+            .as_str()
+            .map(str::to_string);
+        Ok((message, usage))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::conversation::message::MessageContent;
+    use rmcp::model::{object, CallToolRequestParams, CallToolResult, Content};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn model_refresh_provider(server: &MockServer) -> VeniceProvider {
+        let mut model = ModelConfig::new_or_fail("llama-3.3-70b")
+            .with_temperature(Some(0.25))
+            .with_max_tokens(Some(8_192));
+        model.model_name = "deepseek-v4-1-flash-1017-uncensored".to_string();
+        VeniceProvider {
+            api_client: ApiClient::new(
+                server.uri(),
+                AuthMethod::BearerToken("synthetic-venice-key".to_string()),
+            )
+            .unwrap(),
+            base_path: VENICE_DEFAULT_BASE_PATH.to_string(),
+            models_path: VENICE_DEFAULT_MODELS_PATH.to_string(),
+            model,
+            name: "venice".to_string(),
+        }
+    }
+
+    async fn model_refresh_server(message: Value) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices": [{"message": message, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        server
+    }
+
+    async fn model_refresh_payload(server: &MockServer) -> Value {
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        serde_json::from_slice(&requests[0].body).unwrap()
+    }
+
+    #[tokio::test]
+    async fn model_refresh_preserves_user_image_blocks() {
+        let server =
+            model_refresh_server(json!({"role": "assistant", "content": "A chart."})).await;
+        let provider = model_refresh_provider(&server);
+        provider
+            .complete_with_model(
+                &provider.model,
+                "Read the chart.",
+                &[Message::user()
+                    .with_text("Describe the result.")
+                    .with_image("aW1hZ2U=", "image/png")],
+                &[],
+            )
+            .await
+            .unwrap();
+
+        let payload = model_refresh_payload(&server).await;
+        let content = payload["messages"][1]["content"]
+            .as_array()
+            .expect("Venice vision input must retain typed text and image blocks");
+        assert!(content.iter().any(|part| part["type"] == "text"));
+        assert!(content.iter().any(|part| {
+            part["type"] == "image_url"
+                && part["image_url"]["url"] == "data:image/png;base64,aW1hZ2U="
+        }));
+    }
+
+    #[tokio::test]
+    async fn model_refresh_honors_configured_output_budget_and_temperature() {
+        let server = model_refresh_server(json!({"role": "assistant", "content": "Ready."})).await;
+        let provider = model_refresh_provider(&server);
+        provider
+            .complete_with_model(
+                &provider.model,
+                "",
+                &[Message::user().with_text("Proceed.")],
+                &[],
+            )
+            .await
+            .unwrap();
+
+        let payload = model_refresh_payload(&server).await;
+        let budget = payload
+            .get("max_completion_tokens")
+            .or_else(|| payload.get("max_tokens"));
+        assert_eq!(budget, Some(&json!(8_192)));
+        assert_eq!(payload["temperature"], json!(0.25));
+        assert_eq!(payload["model"], VENICE_DEFAULT_MODEL);
+        assert!(payload.get("reasoning_effort").is_none());
+    }
+
+    #[tokio::test]
+    async fn model_refresh_retains_tool_reply_text_reasoning_and_usage() {
+        let server = model_refresh_server(json!({
+            "role": "assistant",
+            "content": "I will inspect both.",
+            "reasoning_content": "Compare both sources before answering.",
+            "tool_calls": [{
+                "id": "lookup-1",
+                "type": "function",
+                "function": {"name": "lookup", "arguments": "{\"source\":1}"}
+            }]
+        }))
+        .await;
+        let provider = model_refresh_provider(&server);
+        let (reply, usage) = provider
+            .complete_with_model(
+                &provider.model,
+                "",
+                &[Message::user().with_text("Compare.")],
+                &[],
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(reply.as_concat_text(), "I will inspect both.");
+        let request = reply
+            .content
+            .iter()
+            .find_map(MessageContent::as_tool_request)
+            .unwrap();
+        assert_eq!(request.id, "lookup-1");
+        assert_eq!(
+            request.metadata.as_ref().unwrap().get("reasoning_content"),
+            Some(&json!("Compare both sources before answering."))
+        );
+        assert_eq!(usage.usage.input_tokens, Some(11));
+        assert_eq!(usage.usage.output_tokens, Some(7));
+        assert_eq!(usage.usage.total_tokens, Some(18));
+        assert_eq!(usage.finish_reason.as_deref(), Some("stop"));
+        assert_eq!(
+            request.metadata.as_ref().unwrap().get("reasoning_provider"),
+            Some(&json!("venice"))
+        );
+    }
+
+    #[tokio::test]
+    async fn model_refresh_keeps_each_tool_result_in_its_own_message() {
+        let server =
+            model_refresh_server(json!({"role": "assistant", "content": "Compared."})).await;
+        let provider = model_refresh_provider(&server);
+        let mut assistant = Message::assistant()
+            .with_text("Inspecting both sources.")
+            .with_tool_request(
+                "lookup-1",
+                Ok(CallToolRequestParams {
+                    task: None,
+                    name: "lookup".into(),
+                    arguments: Some(object(json!({"source": 1}))),
+                    meta: None,
+                }),
+            )
+            .with_tool_request(
+                "lookup-2",
+                Ok(CallToolRequestParams {
+                    task: None,
+                    name: "lookup".into(),
+                    arguments: Some(object(json!({"source": 2}))),
+                    meta: None,
+                }),
+            );
+        for content in &mut assistant.content {
+            if let MessageContent::ToolRequest(request) = content {
+                request.metadata = Some(object(json!({
+                    "reasoning_content": "Private reasoning from the prior response.",
+                    "reasoning_provider": "venice"
+                })));
+            }
+        }
+        let results = Message::user()
+            .with_tool_response(
+                "lookup-1",
+                Ok(CallToolResult::success(vec![Content::text("first")])),
+            )
+            .with_tool_response(
+                "lookup-2",
+                Ok(CallToolResult::success(vec![Content::text("second")])),
+            );
+        provider
+            .complete_with_model(&provider.model, "", &[assistant, results], &[])
+            .await
+            .unwrap();
+
+        let payload = model_refresh_payload(&server).await;
+        let assistant = payload["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|message| message["role"] == "assistant")
+            .unwrap();
+        assert_eq!(assistant["content"], "Inspecting both sources.");
+        assert_eq!(assistant["tool_calls"].as_array().unwrap().len(), 2);
+        assert!(assistant.get("reasoning_content").is_none());
+        let tool_messages: Vec<_> = payload["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|message| message["role"] == "tool")
+            .collect();
+        assert_eq!(tool_messages.len(), 2);
+        assert_eq!(tool_messages[0]["tool_call_id"], "lookup-1");
+        assert_eq!(tool_messages[1]["tool_call_id"], "lookup-2");
+        assert!(tool_messages[0]["content"].to_string().contains("first"));
+        assert!(tool_messages[1]["content"].to_string().contains("second"));
+        assert!(tool_messages
+            .iter()
+            .all(|message| message.get("reasoning_content").is_none()));
+    }
 
     #[test]
     fn test_metadata_structure() {
         let metadata = VeniceProvider::metadata();
 
-        assert_eq!(metadata.default_model, "llama-3.3-70b");
-        assert!(!metadata.known_models.is_empty());
+        assert_eq!(metadata.default_model, VENICE_DEFAULT_MODEL);
+        let default = metadata
+            .known_models
+            .iter()
+            .find(|model| model.name == VENICE_DEFAULT_MODEL)
+            .unwrap();
+        assert_eq!(default.context_limit, 1_000_000);
+        assert_eq!(default.supports_vision, Some(true));
+        assert!(metadata
+            .known_models
+            .iter()
+            .any(|model| model.name == "llama-3.3-70b"));
 
         assert_eq!(metadata.config_keys.len(), 4);
         assert_eq!(metadata.config_keys[0].name, "VENICE_API_KEY");

@@ -4,7 +4,8 @@ use super::embedding::{EmbeddingCapable, EmbeddingRequest, EmbeddingResponse};
 use super::errors::ProviderError;
 use super::formats::openai::{
     add_reasoning_content_to_request, content_filter_block_in_completion, create_request,
-    get_usage, model_uses_responses_api, response_to_message, stamp_reasoning_provenance,
+    get_usage, model_uses_responses_api, prepare_mistral_request, response_to_message,
+    stamp_reasoning_provenance,
 };
 use super::formats::openai_responses::{
     create_responses_request, get_responses_usage, responses_api_to_message, stream_responses_api,
@@ -30,17 +31,16 @@ use crate::providers::base::MessageStream;
 use crate::providers::utils::RequestLog;
 use rmcp::model::Tool;
 
-/// GPT-6 Sol (GA 2026-09-22): the like-for-like successor of the previous
-/// default `gpt-5.6` (an alias of `gpt-5.6-sol`) at half its price — $2 in /
-/// $10 out per MTok against $4 / $20 — with the same 1,050,000-token window.
-/// Astra is the more capable tier, at five times Sol's price.
-pub const OPEN_AI_DEFAULT_MODEL: &str = "gpt-6-sol";
+/// OpenAI recommends GPT-6.2 Astra as the starting flagship; Sol is its
+/// lower-cost everyday alternative (developers.openai.com/api/docs/models,
+/// verified 2026-11-17). Both support 1,050,000 context and 128,000 output tokens.
+pub const OPEN_AI_DEFAULT_MODEL: &str = "gpt-6.2-astra";
 /// GPT-6 Luna ($0.10 / $0.50 per MTok, 1,050,000 tokens) replaced `gpt-5.4-mini`
 /// ($0.75 / $4.50, 400,000 tokens): cheaper and a wider window, for the
 /// background calls — titles, summaries — the fast model exists for.
 pub const OPEN_AI_DEFAULT_FAST_MODEL: &str = "gpt-6-luna";
 // Verified against OpenAI's model pages, deprecations page and changelog on
-// 2026-09-25. Context windows are per-model pages at
+// 2026-11-17. Context windows are per-model pages at
 // developers.openai.com/api/docs/models. Models marked [responses] route to
 // /v1/responses instead of /v1/chat/completions.
 //
@@ -49,25 +49,25 @@ pub const OPEN_AI_DEFAULT_FAST_MODEL: &str = "gpt-6-luna";
 //     deprecated the only snapshot behind each (gpt-5-2025-08-07,
 //     gpt-5-mini-2025-08-07, gpt-5-nano-2025-08-07, o3-2025-04-16) on
 //     2026-06-11, with API shutdown on 2026-12-11. The named replacements are
-//     gpt-5.6-sol (for gpt-5 and o3), gpt-5.6-terra and gpt-5.6-luna, all listed
+//     gpt-6.1-sol (for gpt-5 and o3), gpt-6.1-terra and gpt-6-luna, all listed
 //     below. Their `MODEL_CONTEXT_WINDOWS` entries stay, so a stored session
 //     that names one still resolves its window until the shutdown.
-//   * o1, o3-mini, o4-mini and gpt-4.1-nano — shutting down 2026-10-23.
+//   * o1, o3-mini, o4-mini and gpt-4.1-nano — shut down 2026-10-23.
 //   * gpt-5.1-codex — shut down 2026-07-23.
-//   * gpt-4o is NOT API-deprecated: only its gpt-4o-2024-05-13 snapshot is
-//     (shutdown 2026-10-23). It is simply not offered; gpt-4.1 and gpt-4o-mini
-//     cover the non-reasoning tier.
-//   * There is no gpt-6-terra. Terra exists only as gpt-5.6-terra.
+// Retained for explicit choices: gpt-4.1/mini and gpt-4o-mini shut down
+// 2027-01-14; gpt-5.4-nano, gpt-5.3-codex and gpt-5.1 shut down 2027-04-01.
+// Exact model IDs matter: Terra is gpt-6.1-terra, not gpt-6-terra, and no
+// unsuffixed gpt-6.2 or gpt-6.2-luna is documented.
 pub const OPEN_AI_KNOWN_MODELS: &[(&str, usize)] = &[
-    // GPT-6 family [responses] — Astra GA 2026-09-03, Sol and Luna GA
-    // 2026-09-22. All three: 1,050,000-token window (922,000 in), 128k max
-    // output, text + image input. Tool calling needs /v1/responses: Chat
-    // Completions allows function tools only with reasoning_effort `none`. Sol
-    // is kept first so it stays the default the UI resolves to. Prompts over
-    // 272k input tokens bill 2x input / 1.5x output for the whole request.
-    ("gpt-6-sol", 1_050_000),
-    ("gpt-6-astra", 1_050_000),
+    // Featured order follows the official catalog. GPT-6.2 launched 2026-11-17;
+    // function tools require Responses even though Chat Completions is supported.
+    ("gpt-6.2-astra", 1_050_000),
+    ("gpt-6.2-sol", 1_050_000),
+    ("gpt-6.1-terra", 1_050_000),
     ("gpt-6-luna", 1_050_000),
+    ("gpt-6.1-sol", 1_050_000),
+    ("gpt-6-astra", 1_050_000),
+    ("gpt-6-sol", 1_050_000),
     // GPT-5.6 family [responses] — released 2026-07-09. All three variants
     // share a 1,050,000 context window / 128k max output. `gpt-5.6` is OpenAI's
     // documented alias for `gpt-5.6-sol`. Sol prices >272k-token prompts at 2x
@@ -86,13 +86,13 @@ pub const OPEN_AI_KNOWN_MODELS: &[(&str, usize)] = &[
     ("gpt-5.4-nano", 400_000),
     // Codex (agentic coding) [responses]
     ("gpt-5.3-codex", 400_000),
-    // GPT-5.2 / 5.1 (previous generation, still active; Chat Completions)
+    // GPT-5.2 / 5.1 (previous generation; Chat Completions)
     ("gpt-5.2", 400_000),
     ("gpt-5.1", 400_000),
     // GPT-4.1 family (non-reasoning)
     ("gpt-4.1", 1_047_576),
     ("gpt-4.1-mini", 1_047_576),
-    // GPT-4o mini (active; non-reasoning)
+    // GPT-4o mini (non-reasoning)
     ("gpt-4o-mini", 128_000),
 ];
 
@@ -349,6 +349,10 @@ impl Provider for OpenAiProvider {
         // modalities: text, image" (read 2026-09-25), so the old exclusion of
         // codex variants as text-focused was wrong for it.
         const OPEN_AI_VISION_MODELS: &[&str] = &[
+            "gpt-6.2-astra",
+            "gpt-6.2-sol",
+            "gpt-6.1-sol",
+            "gpt-6.1-terra",
             "gpt-6-sol",
             "gpt-6-astra",
             "gpt-6-luna",
@@ -472,6 +476,7 @@ impl Provider for OpenAiProvider {
             if replays_reasoning_content(&self.name) {
                 add_reasoning_content_to_request(&mut payload, messages, &self.name);
             }
+            prepare_mistral_request(&mut payload, model_config, messages, &self.name);
 
             let mut log = RequestLog::start(&self.model, &payload)?;
             let json_response = self
@@ -585,6 +590,7 @@ impl Provider for OpenAiProvider {
             if replays_reasoning_content(&self.name) {
                 add_reasoning_content_to_request(&mut payload, messages, &self.name);
             }
+            prepare_mistral_request(&mut payload, model, messages, &self.name);
             let mut log = RequestLog::start(model, &payload)?;
 
             let response = self
@@ -895,8 +901,8 @@ mod model_capability_tests {
     }
 
     #[test]
-    fn default_model_is_gpt_6_sol_and_is_a_listed_model() {
-        assert_eq!(OPEN_AI_DEFAULT_MODEL, "gpt-6-sol");
+    fn default_model_is_gpt_6_2_astra_and_is_a_listed_model() {
+        assert_eq!(OPEN_AI_DEFAULT_MODEL, "gpt-6.2-astra");
         assert_eq!(
             OPEN_AI_KNOWN_MODELS.first().map(|(name, _)| *name),
             Some(OPEN_AI_DEFAULT_MODEL),
@@ -911,9 +917,15 @@ mod model_capability_tests {
         }
     }
 
-    /// GPT-6 on the OpenAI API: Astra (GA 2026-09-03), Sol and Luna (GA
-    /// 2026-09-22). There is no `gpt-6-terra`.
-    const GPT_6_IDS: &[&str] = &["gpt-6-sol", "gpt-6-astra", "gpt-6-luna"];
+    const GPT_6_IDS: &[&str] = &[
+        "gpt-6.2-astra",
+        "gpt-6.2-sol",
+        "gpt-6.1-sol",
+        "gpt-6.1-terra",
+        "gpt-6-sol",
+        "gpt-6-astra",
+        "gpt-6-luna",
+    ];
 
     #[test]
     fn gpt_6_family_is_advertised_with_its_window_vision_and_responses_route() {
@@ -949,7 +961,7 @@ mod model_capability_tests {
             !OPEN_AI_KNOWN_MODELS
                 .iter()
                 .any(|(name, _)| *name == "gpt-6-terra"),
-            "gpt-6-terra does not exist; Terra is gpt-5.6-terra"
+            "gpt-6-terra is not an official model ID"
         );
     }
 
@@ -1107,6 +1119,222 @@ impl EmbeddingCapable for OpenAiProvider {
             .into_iter()
             .map(|d| d.embedding)
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod mistral_protocol_tests {
+    use super::*;
+    use crate::conversation::message::MessageContent;
+    use serde_json::json;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn provider(server: &MockServer) -> OpenAiProvider {
+        let client = ApiClient::new(
+            server.uri(),
+            AuthMethod::BearerToken("synthetic-mistral-key".to_string()),
+        )
+        .unwrap();
+        let mut model = ModelConfig::new_or_fail("mistral-medium-3-5");
+        model.model_name = "mistral-large-4".to_string();
+        let mut provider = OpenAiProvider::new(client, model);
+        provider.name = "mistral".to_string();
+        provider
+    }
+
+    fn chunks() -> Value {
+        json!([
+            {"type": "thinking", "thinking": [{"type": "text", "text": "Count the samples."}]},
+            {"type": "text", "text": "Checking."}
+        ])
+    }
+
+    async fn answer(provider: &OpenAiProvider, history: &[Message], streamed: bool) -> Message {
+        if !streamed {
+            return provider
+                .complete_with_model(&provider.model, "system", history, &[])
+                .await
+                .unwrap()
+                .0;
+        }
+        let mut stream = provider.stream("system", history, &[]).await.unwrap();
+        let mut combined = crate::conversation::Conversation::default();
+        while let Some(item) = stream.next().await {
+            if let Some(message) = item.unwrap().0 {
+                combined.push(message);
+            }
+        }
+        assert_eq!(combined.len(), 1, "one streamed provider turn");
+        combined.last().unwrap().clone()
+    }
+
+    async fn assert_chunk_history(streamed: bool, with_tool: bool) {
+        let server = MockServer::start().await;
+        let template = if streamed {
+            let mut values = [
+                json!({"choices":[{"index":0,"delta":{"content":[chunks()[0].clone()]}}]}),
+                json!({"choices":[{"index":0,"delta":{"content":[
+                    {"type":"thinking","thinking":[{"type":"text","text":"Check labels."}]},
+                    chunks()[1].clone()
+                ]}}]}),
+                json!({"choices":[{"index":0,"delta":{"content":" now."}}]}),
+                json!({"choices":[{"index":0,"delta":{"tool_calls":[{
+                    "index":0,"id":"count_1","type":"function",
+                    "function":{"name":"sample_count","arguments":"{}"}
+                }]},"finish_reason":"tool_calls"}]}),
+            ];
+            for value in &mut values {
+                value["id"] = json!("mistral-native-protocol-turn");
+            }
+            let mut sse = values
+                .iter()
+                .map(|value| format!("data: {value}\n\n"))
+                .collect::<String>();
+            sse.push_str("data: [DONE]\n\n");
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(sse)
+        } else {
+            let mut response = json!({"model":"mistral-large-4", "choices":[{
+                "index":0,"message":{"role":"assistant","content":chunks()},
+                "finish_reason":"stop"
+            }]});
+            if with_tool {
+                response["choices"][0]["message"]["tool_calls"] = json!([{
+                    "id":"count_1","type":"function",
+                    "function":{"name":"sample_count","arguments":"{}"}
+                }]);
+                response["choices"][0]["finish_reason"] = json!("tool_calls");
+            }
+            ResponseTemplate::new(200).set_body_json(response)
+        };
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(template)
+            .mount(&server)
+            .await;
+        let provider = provider(&server);
+        let mut history = vec![Message::user().with_text("Count the samples")];
+        let reply = answer(&provider, &history, streamed).await;
+        assert_eq!(
+            reply.as_concat_text(),
+            if streamed {
+                "Checking. now."
+            } else {
+                "Checking."
+            }
+        );
+        let persisted = serde_json::to_value(&reply).unwrap();
+        history.push(serde_json::from_value(persisted).unwrap());
+        if with_tool {
+            history.push(Message::user().with_tool_response(
+                "count_1",
+                Ok(rmcp::model::CallToolResult::success(vec![
+                    rmcp::model::Content::text("12"),
+                ])),
+            ));
+        } else {
+            history.push(Message::user().with_text("Now explain the count"));
+        }
+        answer(&provider, &history, streamed).await;
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests[1].body).unwrap();
+        let assistant = body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["role"] == "assistant")
+            .unwrap();
+        let replayed = assistant["content"]
+            .as_array()
+            .expect("Mistral history must preserve structured thinking and answer chunks");
+        assert_eq!(replayed[0], chunks()[0]);
+        if streamed {
+            assert_eq!(
+                replayed[1],
+                json!({"type":"thinking","thinking":[{"type":"text","text":"Check labels."}]})
+            );
+            assert_eq!(replayed[2], chunks()[1]);
+            assert_eq!(replayed[3], json!({"type":"text","text":" now."}));
+        } else {
+            assert_eq!(replayed[1], chunks()[1]);
+        }
+    }
+
+    #[tokio::test]
+    async fn mistral_complete_replays_thinking_and_text_through_a_tool_turn() {
+        assert_chunk_history(false, true).await;
+    }
+
+    #[tokio::test]
+    async fn mistral_complete_replays_thinking_after_a_text_only_answer() {
+        assert_chunk_history(false, false).await;
+    }
+
+    #[tokio::test]
+    async fn mistral_stream_accepts_mixed_chunk_and_string_deltas_and_replays_them() {
+        assert_chunk_history(true, true).await;
+    }
+
+    #[tokio::test]
+    async fn mistral_never_replays_foreign_provider_chunk_metadata() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "choices":[{"message":{"role":"assistant","content":"ready"}}]
+            })))
+            .mount(&server)
+            .await;
+        let provider = provider(&server);
+        let mut foreign = Message::assistant().with_text("Foreign answer");
+        if let MessageContent::Text(text) = &mut foreign.content[0] {
+            let mut meta = rmcp::model::Meta::new();
+            meta.insert("mistral_content".to_string(), chunks());
+            meta.insert(
+                "mistral_content_provider".to_string(),
+                json!("other_provider"),
+            );
+            text.meta = Some(meta);
+        }
+        answer(&provider, &[foreign], false).await;
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["messages"][1]["content"], "Foreign answer");
+    }
+
+    #[tokio::test]
+    async fn mistral_large4_effort_uses_its_supported_ladder() {
+        use crate::agents::effort::ReasoningEffort;
+        for (effort, expected) in [
+            (ReasoningEffort::Quick, Some("low")),
+            (ReasoningEffort::Normal, None),
+            (ReasoningEffort::Deep, Some("high")),
+        ] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/v1/chat/completions"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "choices":[{"message":{"role":"assistant","content":"ready"}}]
+                })))
+                .mount(&server)
+                .await;
+            let mut provider = provider(&server);
+            provider.model = effort.apply_to_model(provider.model);
+            answer(
+                &provider,
+                &[Message::user().with_text("Reply ready")],
+                false,
+            )
+            .await;
+            let requests = server.received_requests().await.unwrap();
+            let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+            assert_eq!(
+                body.get("reasoning_effort").and_then(Value::as_str),
+                expected
+            );
+        }
     }
 }
 

@@ -675,6 +675,12 @@ async fn prepare_turn(
         return None;
     }
 
+    if session.session_type != biorouter::session::SessionType::SubAgent {
+        let _ =
+            biorouter::agents::boxed_off_frame(|| state.load_session_extensions(&session, &agent))
+                .await;
+    }
+
     // BR-71 §4.5: a human typing into a subagent's tab (its composer posts to
     // /reply like any other tab) is an intervention the parent must hear about.
     // It has to happen HERE, above the accumulator seed below, so the row the

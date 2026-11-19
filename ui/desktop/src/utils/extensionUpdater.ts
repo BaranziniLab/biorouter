@@ -12,7 +12,6 @@
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs/promises';
-import { mkdirSync } from 'fs';
 import { BrowserWindow } from 'electron';
 import { compareVersions } from 'compare-versions';
 import AdmZip from 'adm-zip';
@@ -241,12 +240,17 @@ async function checkExtensionUpdate(
 async function applyUpdate(
   info: ExtensionUpdateInfo,
   send: (e: ExtensionUpdateEvent) => void
-): Promise<void> {
-  const tmpDir = path.join(os.tmpdir(), `biorouter-ext-update-${info.name}-${Date.now()}`);
-  const tmpBrxt = path.join(tmpDir, `${info.name}.brxt`);
+): Promise<boolean> {
+  let tmpDir: string | undefined;
+  let backupRoot: string | undefined;
+  let backupDir: string | undefined;
+  let backupReady = false;
+  let retainBackup = false;
+  let error: string | undefined;
 
   try {
-    mkdirSync(tmpDir, { recursive: true });
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'biorouter-ext-update-'));
+    const tmpBrxt = path.join(tmpDir, 'extension.brxt');
 
     send({
       type: 'update-start',
@@ -262,8 +266,13 @@ async function applyUpdate(
     });
     send({ type: 'update-progress', ext: info.name, percent: 100 });
 
-    // Extract into install dir (zip-slip guarded: rejects entries escaping installDir)
     const zip = new AdmZip(tmpBrxt);
+    // Keep the backup nested so a surviving backup cannot be scanned as an
+    // installed extension. Build at the stable path: venv launchers embed it.
+    backupRoot = await fs.mkdtemp(path.join(path.dirname(info.installDir), '.update-'));
+    backupDir = path.join(backupRoot, 'package');
+    await fs.cp(info.installDir, backupDir, { recursive: true, verbatimSymlinks: true });
+    backupReady = true;
     safeExtractZip(zip, info.installDir);
 
     // Re-run uv sync to apply any dependency changes.
@@ -279,31 +288,60 @@ async function applyUpdate(
         `exited with status ${uvResult.code}`;
       throw new Error(`uv sync failed: ${detail}`);
     }
-
-    send({
-      type: 'update-done',
-      ext: info.name,
-      displayName: info.displayName,
-      to: info.latestVersion,
-    });
-    log.info(`[ExtensionUpdater] Updated ${info.name} → ${info.latestVersion}`);
   } catch (err) {
-    const msg = (err as Error).message;
-    log.error(`[ExtensionUpdater] Failed to update ${info.name}:`, msg);
-    send({ type: 'update-error', ext: info.name, error: msg });
+    error = (err as Error).message;
+    if (backupReady && backupDir) {
+      try {
+        await fs.rm(info.installDir, { recursive: true, force: true });
+        await fs.rename(backupDir, info.installDir);
+      } catch (restoreError) {
+        retainBackup = true;
+        error += `. Could not restore the previous version: ${(restoreError as Error).message}. Its backup remains at ${backupDir}`;
+      }
+    }
   } finally {
-    // Cleanup temp dir
-    try {
-      await fs.rm(tmpDir, { recursive: true, force: true });
-    } catch {
-      /* best-effort cleanup — ignore if the temp dir is already gone */
+    for (const directory of [tmpDir, retainBackup ? undefined : backupRoot]) {
+      if (!directory) continue;
+      try {
+        await fs.rm(directory, { recursive: true, force: true });
+      } catch {
+        /* best-effort cleanup — ignore if the temp dir is already gone */
+      }
     }
   }
+
+  if (error !== undefined) {
+    log.error(`[ExtensionUpdater] Failed to update ${info.name}:`, error);
+    send({ type: 'update-error', ext: info.name, error });
+    return false;
+  }
+
+  send({
+    type: 'update-done',
+    ext: info.name,
+    displayName: info.displayName,
+    to: info.latestVersion,
+  });
+  log.info(`[ExtensionUpdater] Updated ${info.name} → ${info.latestVersion}`);
+  return true;
 }
 
 // ─── Public entry point ───────────────────────────────────────────────────────
 
-export async function runExtensionUpdateCheck(): Promise<void> {
+let updateCheckInFlight: Promise<void> | undefined;
+
+export function runExtensionUpdateCheck(): Promise<void> {
+  // Startup and menu requests share the check so a failed update cannot roll
+  // its older snapshot back over another check's committed package.
+  if (!updateCheckInFlight) {
+    updateCheckInFlight = checkInstalledExtensionUpdates().finally(() => {
+      updateCheckInFlight = undefined;
+    });
+  }
+  return updateCheckInFlight;
+}
+
+async function checkInstalledExtensionUpdates(): Promise<void> {
   // The directory is logged because it is now variable: when this check turns
   // out to have touched the wrong tree, the log says which tree it was.
   log.info(`[ExtensionUpdater] Starting extension update check in ${biorouterExtensionsDir()}`);
@@ -341,8 +379,7 @@ export async function runExtensionUpdateCheck(): Promise<void> {
       from: updateInfo.currentVersion,
       to: updateInfo.latestVersion,
     });
-    await applyUpdate(updateInfo, send);
-    updatedCount++;
+    if (await applyUpdate(updateInfo, send)) updatedCount++;
   }
 
   send({ type: 'all-done', updatedCount });

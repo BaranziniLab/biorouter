@@ -4,10 +4,50 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 use uuid::Uuid;
 
 use crate::conversation::message::{Message, MessageContent};
+
+#[derive(Clone)]
+pub(crate) struct OrdinaryElicitationCancellation {
+    request: CancellationToken,
+    call_lifetimes: Vec<CancellationToken>,
+}
+
+impl OrdinaryElicitationCancellation {
+    pub(crate) fn new(request: CancellationToken, call_lifetimes: Vec<CancellationToken>) -> Self {
+        Self {
+            request,
+            call_lifetimes,
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.request.is_cancelled()
+            || (!self.call_lifetimes.is_empty()
+                && self
+                    .call_lifetimes
+                    .iter()
+                    .all(CancellationToken::is_cancelled))
+    }
+
+    pub(crate) async fn cancelled(&self) {
+        let calls = async {
+            if self.call_lifetimes.is_empty() {
+                std::future::pending::<()>().await;
+            }
+            for lifetime in &self.call_lifetimes {
+                lifetime.cancelled().await;
+            }
+        };
+        tokio::select! {
+            _ = self.request.cancelled() => {}
+            _ = calls => {}
+        }
+    }
+}
 
 struct PendingRequest {
     /// The session allowed to answer. An unattributed request starts as `None`
@@ -18,6 +58,23 @@ struct PendingRequest {
     /// a cancellation unparks the waiting tool call with a **model-visible**
     /// `ElicitationAction::Cancel` instead of leaving it to time out.
     response_tx: Option<tokio::sync::oneshot::Sender<Option<Value>>>,
+    cancellation: Option<OrdinaryElicitationCancellation>,
+}
+
+impl PendingRequest {
+    fn claim_sender(&mut self) -> Option<tokio::sync::oneshot::Sender<Option<Value>>> {
+        if self
+            .cancellation
+            .as_ref()
+            .is_some_and(OrdinaryElicitationCancellation::is_cancelled)
+        {
+            if let Some(sender) = self.response_tx.take() {
+                let _ = sender.send(None);
+            }
+            return None;
+        }
+        self.response_tx.take()
+    }
 }
 
 /// One delivery scope's request queue plus its wake-up.
@@ -53,6 +110,33 @@ impl ScopeState {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain(..)
             .collect()
+    }
+
+    fn remove(&self, id: &str) {
+        self.queue
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .retain(|message| action_required_id(message).as_deref() != Some(id));
+    }
+}
+
+struct PendingRequestRegistration<'a> {
+    manager: &'a ActionRequiredManager,
+    session_id: Option<&'a str>,
+    id: &'a str,
+}
+
+impl Drop for PendingRequestRegistration<'_> {
+    fn drop(&mut self) {
+        self.manager
+            .pending
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(self.id);
+        match self.session_id {
+            Some(session_id) => self.manager.scope(session_id).remove(self.id),
+            None => self.manager.unscoped.remove(self.id),
+        }
     }
 }
 
@@ -187,6 +271,36 @@ impl ActionRequiredManager {
         timeout_duration: Duration,
         session_id: Option<&str>,
     ) -> Result<Option<Value>> {
+        self.request_and_wait_inner(message, schema, timeout_duration, session_id, None)
+            .await
+    }
+
+    pub(crate) async fn request_and_wait_cancellable(
+        &self,
+        message: String,
+        schema: Value,
+        timeout_duration: Duration,
+        session_id: Option<&str>,
+        cancellation: OrdinaryElicitationCancellation,
+    ) -> Result<Option<Value>> {
+        self.request_and_wait_inner(
+            message,
+            schema,
+            timeout_duration,
+            session_id,
+            Some(cancellation),
+        )
+        .await
+    }
+
+    async fn request_and_wait_inner(
+        &self,
+        message: String,
+        schema: Value,
+        timeout_duration: Duration,
+        session_id: Option<&str>,
+        cancellation: Option<OrdinaryElicitationCancellation>,
+    ) -> Result<Option<Value>> {
         // ⚠ The unbounded half of the same refusal `PendingUserActions::park`
         // makes. Any MCP server can reach here through `create_elicitation`, so
         // the set of calls that might ask a question is not enumerable — which
@@ -198,16 +312,22 @@ impl ActionRequiredManager {
         }
 
         let id = Uuid::new_v4().to_string();
-        let (tx, rx) = tokio::sync::oneshot::channel();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
         let pending_request = PendingRequest {
             session_id: session_id.map(str::to_string),
             response_tx: Some(tx),
+            cancellation: cancellation.clone(),
         };
 
         self.pending
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .insert(id.clone(), pending_request);
+        let _registration = PendingRequestRegistration {
+            manager: self,
+            session_id,
+            id: &id,
+        };
 
         let action_required_message = Message::assistant().with_content(
             MessageContent::action_required_elicitation(id.clone(), message, schema),
@@ -215,7 +335,30 @@ impl ActionRequiredManager {
 
         self.publish(session_id, action_required_message);
 
-        let result = match timeout(timeout_duration, rx).await {
+        let response = async {
+            match cancellation {
+                Some(cancellation) => tokio::select! {
+                    biased;
+                    response = &mut rx => response,
+                    _ = cancellation.cancelled() => {
+                        let cancelled_before_claim = self.pending
+                            .lock()
+                            .unwrap_or_else(PoisonError::into_inner)
+                            .get_mut(&id)
+                            .is_some_and(|request| request.response_tx.take().is_some());
+                        if cancelled_before_claim {
+                            Ok(None)
+                        } else {
+                            // A response already owns the sender. Preserve that claim's
+                            // result even if Stop arrives before its persistence/delivery.
+                            rx.await
+                        }
+                    }
+                },
+                None => rx.await,
+            }
+        };
+        match timeout(timeout_duration, response).await {
             Ok(Ok(user_data)) => Ok(user_data),
             Ok(Err(_)) => {
                 warn!("Response channel closed for request: {}", id);
@@ -225,14 +368,7 @@ impl ActionRequiredManager {
                 warn!("Timeout waiting for response: {}", id);
                 Err(anyhow::anyhow!("Timeout waiting for user response"))
             }
-        };
-
-        self.pending
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .remove(&id);
-
-        result
+        }
     }
 
     /// Resolves as soon as an elicitation request may be waiting for
@@ -333,7 +469,7 @@ impl ActionRequiredManager {
             let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
             match pending.get_mut(request_id) {
                 Some(request) if request.session_id.as_deref() == Some(session_id) => {
-                    Some(request.response_tx.take()?)
+                    Some(request.claim_sender()?)
                 }
                 Some(_) => return None,
                 None => None,
@@ -390,7 +526,7 @@ impl ActionRequiredManager {
             let mut pending = self.pending.lock().unwrap_or_else(PoisonError::into_inner);
             pending.get_mut(&request_id).and_then(|request| {
                 if request.session_id.as_deref() == Some(session_id) {
-                    request.response_tx.take()
+                    request.claim_sender()
                 } else {
                     None
                 }
@@ -716,5 +852,120 @@ mod tests {
             waiter.await.unwrap().unwrap(),
             Some(serde_json::json!({"right": true}))
         );
+    }
+
+    fn spawn_ordinary_waiter(
+        manager: &Arc<ActionRequiredManager>,
+        session_id: &'static str,
+    ) -> tokio::task::JoinHandle<Result<Option<Value>>> {
+        let manager = Arc::clone(manager);
+        tokio::spawn(async move {
+            manager
+                .request_and_wait(
+                    "Synthetic cohort?".into(),
+                    serde_json::json!({"type":"object"}),
+                    Duration::from_secs(30),
+                    Some(session_id),
+                )
+                .await
+        })
+    }
+
+    #[tokio::test]
+    async fn elicitation_dropped_waiter_removes_an_undrained_card() {
+        let manager = Arc::new(ActionRequiredManager::new());
+        let session_id = "dropped-undrained";
+        let waiter = spawn_ordinary_waiter(&manager, session_id);
+        timeout(Duration::from_secs(5), manager.request_arrived(session_id))
+            .await
+            .expect("the ordinary card is queued");
+        let id = manager
+            .pending
+            .lock()
+            .unwrap()
+            .keys()
+            .next()
+            .cloned()
+            .expect("the queued card has a pending waiter");
+
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+
+        let entry_removed = !manager.pending.lock().unwrap().contains_key(&id);
+        let unclaimable = manager
+            .claim_ordinary_elicitation(session_id, &id)
+            .is_none();
+        let queue_empty = manager.drain_requests(session_id).is_empty();
+        assert_eq!(
+            (entry_removed, unclaimable, queue_empty),
+            (true, true, true),
+            "abandoning a waiter must remove its sender and queued card"
+        );
+    }
+
+    #[tokio::test]
+    async fn elicitation_dropped_waiter_removes_an_already_drained_request() {
+        let manager = Arc::new(ActionRequiredManager::new());
+        let session_id = "dropped-drained";
+        let waiter = spawn_ordinary_waiter(&manager, session_id);
+        let id = next_request_id(&manager, session_id).await;
+
+        waiter.abort();
+        assert!(waiter.await.unwrap_err().is_cancelled());
+
+        let entry_removed = !manager.pending.lock().unwrap().contains_key(&id);
+        let unclaimable = manager
+            .claim_ordinary_elicitation(session_id, &id)
+            .is_none();
+        assert_eq!(
+            (entry_removed, unclaimable),
+            (true, true),
+            "a displayed card must stop accepting answers when its waiter is abandoned"
+        );
+        assert!(manager.drain_requests(session_id).is_empty());
+    }
+
+    #[tokio::test]
+    async fn elicitation_dropped_waiter_keeps_other_live_requests_deliverable() {
+        let manager = Arc::new(ActionRequiredManager::new());
+        let abandoned = spawn_ordinary_waiter(&manager, "surviving-same-session");
+        let abandoned_id = next_request_id(&manager, "surviving-same-session").await;
+        let same_session = spawn_ordinary_waiter(&manager, "surviving-same-session");
+        let other_session = spawn_ordinary_waiter(&manager, "surviving-other-session");
+        let same_id = next_request_id(&manager, "surviving-same-session").await;
+        let other_id = next_request_id(&manager, "surviving-other-session").await;
+        assert_ne!(same_id, abandoned_id);
+
+        abandoned.abort();
+        assert!(abandoned.await.unwrap_err().is_cancelled());
+
+        let same_data = serde_json::json!({"cohort":"same-session"});
+        let other_data = serde_json::json!({"cohort":"other-session"});
+        manager
+            .submit_response("surviving-same-session", same_id, same_data.clone())
+            .await
+            .expect("the other request in the same session stays live");
+        manager
+            .submit_response("surviving-other-session", other_id, other_data.clone())
+            .await
+            .expect("the other session's request stays live");
+        assert_eq!(
+            timeout(Duration::from_secs(5), same_session)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            Some(same_data)
+        );
+        assert_eq!(
+            timeout(Duration::from_secs(5), other_session)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            Some(other_data)
+        );
+        assert!(manager.drain_requests("surviving-same-session").is_empty());
+        assert!(manager.drain_requests("surviving-other-session").is_empty());
     }
 }

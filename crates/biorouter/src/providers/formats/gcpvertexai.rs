@@ -78,6 +78,8 @@ pub const EU_REGIONAL_LOCATION: &str = "europe-west1";
 /// - Gemini 3.x GA models (3.8 / 3.7 / 3.6 Flash, 3.5 Flash-Lite, 3.1
 ///   Flash-Lite) are served at `global` plus the `us` / `eu` multi-regions;
 ///   3.5 Flash adds some non-US regions but neither us-central1 nor us-east5.
+/// - Gemini 4 Hydrogen is served at `global` plus `us` / `eu`; Argon also
+///   serves europe-west2 and asia-southeast1, honored when configured.
 /// - The Gemini 3 previews (3.1 Pro Preview, 3 Flash Preview) are `global`
 ///   ONLY.
 /// - Claude Opus 4.7, Opus 4.8 and every Claude 5.x model (Sonnet 5, Opus 5,
@@ -127,14 +129,12 @@ pub enum ModelError {
     UnsupportedLocation(String),
 }
 
-/// Default model for GCP Vertex AI: Gemini 3.8 Flash, GA on Vertex since
-/// 2026-09-02 and the first featured model on its Google-models page. Like
-/// every Gemini 3.x model it is not served in us-central1, so it reaches the
-/// global endpoint through [`GcpVertexAIModel::preferred_location`].
-pub const DEFAULT_MODEL: &str = "gemini-3.8-flash";
+/// Daily Gemini flagship on Vertex. Availability follows the configured
+/// project and the model's regional endpoint policy.
+pub const DEFAULT_MODEL: &str = "gemini-4-hydrogen";
 
 // Verified against Anthropic's Vertex model-id table and the Vertex model and
-// lifecycle pages (2026-09-25). Claude 4.6+ models have no @date suffix on
+// lifecycle pages (2026-11-17). Claude 4.6+ models have no @date suffix on
 // Vertex; the 4.5 generation keeps it. Removed on 2026-09-25: gemini-3-pro
 // (never a Vertex id — only gemini-3-pro-preview was ever published, and it is
 // gone), gemini-3.1-pro (the id is gemini-3.1-pro-preview), and gemini-2.5-pro
@@ -150,6 +150,8 @@ pub const DEFAULT_MODEL: &str = "gemini-3.8-flash";
 // enabled in the project's Model Garden.
 pub const KNOWN_MODELS: &[&str] = &[
     DEFAULT_MODEL,
+    "gemini-4-argon",
+    "gemini-3.8-flash",
     "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
@@ -161,6 +163,8 @@ pub const KNOWN_MODELS: &[&str] = &[
     // their thinking blocks to the conversation; `create_anthropic_request`
     // strips replayed ones.
     "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "claude-haiku-5-5",
     "claude-fable-5-1",
     "claude-opus-5",
     "claude-fable-5",
@@ -262,14 +266,15 @@ impl GcpVertexAIModel {
     /// A regional model goes where it is configured, as before. A model only
     /// served outside the single regions goes straight to the global endpoint
     /// instead of failing at the configured region first — which, with the
-    /// default us-central1, is every Gemini 3.x model including the default,
+    /// default us-central1, is every Gemini 3.x/4.x model and the default,
     /// and every Claude 5.x model. A user who configured the `us` or `eu`
     /// multi-region keeps it for the models served there, so data stays in
     /// that geography (the provider's `route` gives such a request no
     /// fallback to global); global-only previews still have to go global. A
     /// configured single region that happens to serve one of these models
     /// (3.5 Flash is in a few non-US regions) is not consulted — setting
-    /// `us` or `eu` is how a user keeps them in one geography.
+    /// `us` or `eu` is how a user keeps them in one geography. Argon also
+    /// honors its supported europe-west2 and asia-southeast1 single regions.
     ///
     /// ⚠ A regional Claude or Gemini model is NOT served at the `us` / `eu`
     /// multi-region (the Sonnet 4.6, Opus 4.6, Haiku 4.5 and Gemini 2.5 pages
@@ -282,6 +287,11 @@ impl GcpVertexAIModel {
     /// A MaaS model keeps the multi-region, and the provider's `route` gives
     /// it no fallback outside it, so an unserved model surfaces its error.
     pub fn preferred_location(&self, configured: &str) -> String {
+        if matches!(self, Self::Gemini(name) if name.starts_with("gemini-4-argon"))
+            && matches!(configured, "europe-west2" | "asia-southeast1")
+        {
+            return configured.to_string();
+        }
         let configured_is_multi_region = MULTI_REGION_LOCATIONS.contains(&configured);
         match self.availability() {
             ModelAvailability::Regional => match (configured, self) {
@@ -467,9 +477,28 @@ pub fn create_request(
     messages: &[Message],
     tools: &[Tool],
 ) -> Result<(Value, RequestContext)> {
+    create_request_with_streaming(model_config, system, messages, tools, false)
+}
+
+pub fn create_streaming_request(
+    model_config: &ModelConfig,
+    system: &str,
+    messages: &[Message],
+    tools: &[Tool],
+) -> Result<(Value, RequestContext)> {
+    create_request_with_streaming(model_config, system, messages, tools, true)
+}
+
+fn create_request_with_streaming(
+    model_config: &ModelConfig,
+    system: &str,
+    messages: &[Message],
+    tools: &[Tool],
+    streaming: bool,
+) -> Result<(Value, RequestContext)> {
     let context = RequestContext::new(&model_config.model_name)?;
 
-    let request = match &context.model {
+    let mut request = match &context.model {
         GcpVertexAIModel::Claude(_) => {
             create_anthropic_request(model_config, system, messages, tools)?
         }
@@ -484,6 +513,23 @@ pub fn create_request(
         }
     };
 
+    // Vertex v1 returns a single segment. The unified Gemini 4 window is not
+    // a single-output allowance; larger decodes need v1beta1 continuation.
+    let output_cap = match &context.model {
+        GcpVertexAIModel::Gemini(name) if name.starts_with("gemini-4-hydrogen") => Some(65_536),
+        GcpVertexAIModel::Gemini(name)
+            if name.starts_with("gemini-4-argon") || name.starts_with("gemini-4-carbon") =>
+        {
+            Some(if streaming { 65_536 } else { 32_768 })
+        }
+        _ => None,
+    };
+    if let Some(cap) = output_cap {
+        let requested = request["generationConfig"]["maxOutputTokens"]
+            .as_u64()
+            .unwrap_or(cap);
+        request["generationConfig"]["maxOutputTokens"] = Value::from(requested.min(cap));
+    }
     Ok((request, context))
 }
 
@@ -498,7 +544,9 @@ pub fn create_request(
 pub fn response_to_message(response: Value, request_context: RequestContext) -> Result<Message> {
     match request_context.provider() {
         ModelProvider::Anthropic => anthropic::response_to_message(&response),
-        ModelProvider::Google => google::response_to_message(response),
+        ModelProvider::Google => {
+            google::response_to_message_for_model(response, &request_context.model.to_string())
+        }
         ModelProvider::MaaS(_) => google::response_to_message(response),
     }
 }
@@ -528,9 +576,11 @@ where
 {
     match request_context.provider() {
         ModelProvider::Anthropic => Box::pin(anthropic::response_to_streaming_message(stream)),
-        ModelProvider::Google | ModelProvider::MaaS(_) => {
-            Box::pin(google::response_to_streaming_message(stream))
-        }
+        ModelProvider::Google => Box::pin(google::response_to_streaming_message_for_model(
+            stream,
+            &request_context.model.to_string(),
+        )),
+        ModelProvider::MaaS(_) => Box::pin(google::response_to_streaming_message(stream)),
     }
 }
 
@@ -625,13 +675,18 @@ mod tests {
     /// it), or it is routed away from us-central1 before the request is made.
     ///
     /// The classification is checked against the vendor's "Supported regions"
-    /// tables (2026-09-25), one row per advertised id — deriving it from
-    /// `availability()` itself would only restate the code. Adding a model to
+    /// tables (legacy rows checked 2026-09-25, new rows 2026-11-17). Each
+    /// advertised id has its own row; deriving it from `availability()` would
+    /// only restate the code. Adding a model to
     /// KNOWN_MODELS means looking up its regions and adding its row here.
     #[test]
     fn every_listed_model_has_a_route_from_the_default_location() -> Result<()> {
         use ModelAvailability::{GlobalOnly, MultiRegion, Regional};
         let vendor_regions = [
+            ("gemini-4-hydrogen", MultiRegion),
+            ("gemini-4-argon", MultiRegion),
+            ("claude-sonnet-5-5", MultiRegion),
+            ("claude-haiku-5-5", MultiRegion),
             ("gemini-3.8-flash", MultiRegion),
             ("gemini-3.7-flash", MultiRegion),
             ("gemini-3.6-flash", MultiRegion),
@@ -716,5 +771,113 @@ mod tests {
         assert_eq!(model.to_string(), "gemini-4.0-ultra");
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod hosted_refresh_tests {
+    use super::*;
+    use rmcp::model::{CallToolResult, Content};
+    use serde_json::json;
+
+    #[test]
+    fn hosted_refresh_vertex_gemini4_respects_current_v1_output_segments() {
+        for (name, cap) in [("gemini-4-hydrogen", 65536), ("gemini-4-argon", 32768)] {
+            let config = ModelConfig::new_or_fail(name).with_max_tokens(Some(1_000_000));
+            let (request, _) = create_request(
+                &config,
+                "system",
+                &[Message::user().with_text("hello")],
+                &[],
+            )
+            .unwrap();
+            assert_eq!(
+                request["generationConfig"]["maxOutputTokens"], cap,
+                "{name}"
+            );
+            let (streaming, _) = create_streaming_request(
+                &config,
+                "system",
+                &[Message::user().with_text("hello")],
+                &[],
+            )
+            .unwrap();
+            assert_eq!(
+                streaming["generationConfig"]["maxOutputTokens"], 65_536,
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn hosted_refresh_vertex_gemini4_uses_request_model_for_signature_replay() {
+        let response = json!({"candidates":[{"content":{"role":"model","parts":[
+            {"text":"working", "thoughtSignature":"signed-visible-text"},
+            {"functionCall":{"id":"first","name":"lookup","args":{"n":1}},"thoughtSignature":"signed-first-call"},
+            {"functionCall":{"id":"second","name":"lookup","args":{"n":2}}}
+        ]}}]});
+        let assistant =
+            response_to_message(response, RequestContext::new("gemini-4-hydrogen").unwrap())
+                .unwrap();
+        let results = Message::user()
+            .with_tool_response(
+                "second",
+                Ok(CallToolResult::success(vec![Content::text(
+                    "second result",
+                )])),
+            )
+            .with_tool_response(
+                "first",
+                Ok(CallToolResult::success(vec![Content::text("first result")])),
+            );
+        let history = vec![
+            Message::user().with_text("look up both"),
+            assistant,
+            results,
+        ];
+        let (request, _) = create_request(
+            &ModelConfig::new_or_fail("gemini-4-hydrogen"),
+            "system",
+            &history,
+            &[],
+        )
+        .unwrap();
+        let parts: Vec<_> = request["contents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|c| c["parts"].as_array().unwrap())
+            .collect();
+        let text = parts
+            .iter()
+            .find(|p| p["text"] == "working")
+            .expect("signed visible text is history");
+        assert_eq!(text["thoughtSignature"], "signed-visible-text");
+        let calls: Vec<_> = parts
+            .iter()
+            .filter(|p| p.get("functionCall").is_some())
+            .collect();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["functionCall"]["id"], "first");
+        assert_eq!(calls[0]["thoughtSignature"], "signed-first-call");
+        assert_eq!(calls[1]["functionCall"]["id"], "second");
+        assert!(calls[1].get("thoughtSignature").is_none());
+        let replies: Vec<_> = parts
+            .iter()
+            .filter(|p| p.get("functionResponse").is_some())
+            .collect();
+        assert_eq!(replies.len(), 2);
+        assert_eq!(replies[0]["functionResponse"]["id"], "first");
+        assert_eq!(replies[1]["functionResponse"]["id"], "second");
+        assert!(replies.iter().all(|p| p.get("thoughtSignature").is_none()));
+    }
+
+    #[test]
+    fn hosted_refresh_vertex_argon_honors_its_supported_single_regions() {
+        let model = GcpVertexAIModel::try_from("gemini-4-argon").unwrap();
+        for region in ["europe-west2", "asia-southeast1", "us", "eu", "global"] {
+            assert_eq!(model.preferred_location(region), region);
+        }
+        assert_eq!(model.preferred_location("us-central1"), "global");
     }
 }

@@ -242,9 +242,16 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
     mode: 'light' | 'dark',
     forcedColors = false,
     daemon: 'attached' | 'lost' = 'attached',
-    list: { serve?: (url: string) => unknown; height?: number; init?: string; scale?: number } = {}
+    list: {
+      serve?: (url: string) => unknown;
+      height?: number;
+      init?: string;
+      scale?: number;
+      fixedTime?: number;
+    } = {}
   ): Promise<Page> {
     const tab = await browser!.newPage({ viewport: { width: 1200, height: list.height ?? 900 } });
+    if (list.fixedTime !== undefined) await tab.clock.setFixedTime(list.fixedTime);
     if (forcedColors) await tab.emulateMedia({ forcedColors: 'active' });
     if (list.init) await tab.addInitScript(list.init);
     const html =
@@ -922,9 +929,9 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
      */
     const openLongList = (
       total: number,
-      options: { scale?: number; perFolder?: number; groupBy?: 'date' } = {}
+      options: { scale?: number; perFolder?: number; groupBy?: 'date'; fixedTime?: number } = {}
     ) => {
-      const now = oneDayEnd((total - 1) * 1_000);
+      const now = oneDayEnd((total - 1) * 1_000, options.fixedTime);
       const all = Array.from({ length: total }, (_, i) => ({
         id: `s${i + 1}`,
         name: `Chat ${i + 1}`,
@@ -956,6 +963,7 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
       return open('light', false, 'attached', {
         serve,
         scale: options.scale,
+        fixedTime: options.fixedTime,
         init: `localStorage.setItem('biorouter:sidebar-chat-view', ${JSON.stringify(stored)});`,
       });
     };
@@ -1436,7 +1444,10 @@ describe('the app sidebar under the whole stylesheet (R-27)', () => {
      */
     it('fades the list’s top edge once it is scrolled, and only then (V1-R4-2)', async (ctx) => {
       if (!browser) return ctx.skip();
-      const tab = await openLongList(120, { groupBy: 'date' });
+      const tab = await openLongList(120, {
+        groupBy: 'date',
+        fixedTime: new Date(2026, 0, 15, 12).getTime(),
+      });
       const list = '[data-testid="recent-chat-scroll"]';
       const scrolled = () =>
         tab.evaluate((l) => document.querySelector(l)!.getAttribute('data-scrolled'), list);

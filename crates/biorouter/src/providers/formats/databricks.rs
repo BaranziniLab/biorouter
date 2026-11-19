@@ -1,3 +1,4 @@
+use crate::conversation::has_google_native_replay_content;
 use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
 use crate::providers::formats::anthropic as anthropic_format;
@@ -122,6 +123,7 @@ fn format_tool_response(
 fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<DatabricksMessage> {
     let mut result = Vec::new();
     for message in messages.iter().filter(|m| m.is_agent_visible()) {
+        let google_native = has_google_native_replay_content(message);
         let mut converted = DatabricksMessage {
             content: Value::Null,
             role: match message.role {
@@ -145,6 +147,8 @@ fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<Data
                         has_multiple_content |= multi;
                     }
                 }
+                MessageContent::Thinking(_) | MessageContent::RedactedThinking(_)
+                    if google_native => {}
                 MessageContent::Thinking(content) => {
                     has_multiple_content = true;
                     content_array.push(json!({
@@ -748,6 +752,82 @@ mod tests {
     use rmcp::model::CallToolResult;
     use rmcp::object;
     use serde_json::json;
+
+    fn google_native_foreign_fixture(tool_origin: bool) -> Message {
+        let mut parts = vec![serde_json::json!({
+            "text": "GOOGLE-PRIVATE-THOUGHT",
+            "thought": true,
+            "thoughtSignature": "GOOGLE-PRIVATE-SIGNATURE"
+        })];
+        parts.push(if tool_origin {
+            serde_json::json!({"functionCall": {"id": "google-native-call", "name": "read", "args": {"path": "synthetic.txt"}}})
+        } else {
+            serde_json::json!({"text": "visible native answer"})
+        });
+        let mut message = crate::providers::formats::google::response_to_message_for_model(
+            serde_json::json!({"candidates": [{"content": {"role": "model", "parts": parts}}]}),
+            "gemini-4-hydrogen",
+        )
+        .unwrap();
+        if tool_origin {
+            message = message.with_text("visible native answer");
+        }
+        message.with_redacted_thinking("R09PR0xFLVJFREFDVEVE")
+    }
+
+    fn google_native_foreign_signed_control() -> Message {
+        let mut message = Message::assistant()
+            .with_text("visible signed control")
+            .with_thinking("OWN-SIGNED-THOUGHT", "OWN-SIGNED-SIGNATURE")
+            .with_redacted_thinking("T1dOLVJFREFDVEVE");
+        if let MessageContent::Text(text) = &mut message.content[0] {
+            text.meta = Some(rmcp::model::Meta(
+                serde_json::json!({
+                    "mistral_content_provider": "mistral",
+                    "mistral_content": [{"type": "text", "text": "visible signed control"}]
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ));
+        }
+        message
+    }
+
+    #[test]
+    fn google_native_foreign_databricks_omits_native_reasoning() {
+        for tool_origin in [false, true] {
+            let message = google_native_foreign_fixture(tool_origin);
+            let before = message.clone();
+            let serialized = serde_json::to_string(&format_messages(
+                std::slice::from_ref(&message),
+                &ImageFormat::OpenAi,
+            ))
+            .unwrap();
+
+            assert!(serialized.contains("visible native answer"));
+            assert!(!serialized.contains("GOOGLE-PRIVATE-THOUGHT"));
+            assert!(!serialized.contains("GOOGLE-PRIVATE-SIGNATURE"));
+            assert!(!serialized.contains("R09PR0xFLVJFREFDVEVE"));
+
+            assert_eq!(
+                message, before,
+                "outbound projection must not mutate durable history"
+            );
+        }
+    }
+
+    #[test]
+    fn google_native_foreign_databricks_keeps_non_google_signed_reasoning() {
+        let serialized = serde_json::to_string(&format_messages(
+            &[google_native_foreign_signed_control()],
+            &ImageFormat::OpenAi,
+        ))
+        .unwrap();
+        assert!(serialized.contains("OWN-SIGNED-THOUGHT"));
+        assert!(serialized.contains("OWN-SIGNED-SIGNATURE"));
+        assert!(serialized.contains("T1dOLVJFREFDVEVE"));
+    }
 
     const OPENAI_TOOL_USE_RESPONSE: &str = r#"{
         "choices": [{

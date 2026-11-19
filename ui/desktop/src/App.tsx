@@ -673,6 +673,18 @@ export function AppInner() {
     return () => window.removeEventListener('biorouter:open-seeded-chat', handleSeededChat);
   }, [navigate]);
 
+  useEffect(() => {
+    const handleDivergedChat = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId: string; title?: string }>).detail;
+      if (!detail?.sessionId) return;
+      const params = new URLSearchParams({ resumeSessionId: detail.sessionId });
+      if (detail.title) params.set('resumeSessionTitle', detail.title);
+      navigate(`/pair?${params}`);
+    };
+    window.addEventListener('biorouter:open-diverged-chat', handleDivergedChat);
+    return () => window.removeEventListener('biorouter:open-diverged-chat', handleDivergedChat);
+  }, [navigate]);
+
   if (fatalError) {
     return <ErrorUI error={errorMessage(fatalError)} />;
   }

@@ -3022,7 +3022,7 @@ async fn execute_job(
         max_turns: None,
         max_tool_calls: None,
         budget: None,
-        retry_config: None,
+        retry_config: workflow.retry.clone(),
         reasoning_effort: None,
     };
 
@@ -3107,12 +3107,20 @@ async fn execute_job(
     if let Some(error) = stream_error {
         return Err(error);
     }
-    finish_scheduled_run(
+    let session_id = finish_scheduled_run(
         session.id,
         run_token.is_cancelled(),
         agent.usage_limit_interrupted_reply(),
         &conversation,
-    )
+    )?;
+    if agent.workflow_retry_result().await? == crate::agents::retry::RetryResult::MaxAttemptsReached
+    {
+        return Err(anyhow!(
+            "workflow retry limit reached without passing its success checks; \
+             the schedule's last-run cursor was not advanced"
+        ));
+    }
+    Ok(session_id)
 }
 
 /// Why a scheduled run stopped (issue #148B).
@@ -3530,6 +3538,130 @@ mod tests {
             owns_source: None,
             armed_with_private_reach: None,
         }
+    }
+
+    async fn wave3_retry_fixture(recovers: bool) -> (Result<String>, usize, String) {
+        use crate::agents::types::{RetryConfig, SuccessCheck};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let provider = MockServer::start().await;
+        let text = serde_json::json!({
+            "id": "scheduled-retry-fixture",
+            "object": "chat.completion.chunk",
+            "model": "gpt-4o-mini",
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Synthetic completed attempt."}, "finish_reason": null}]
+        });
+        let end = serde_json::json!({
+            "id": "scheduled-retry-fixture",
+            "object": "chat.completion.chunk",
+            "model": "gpt-4o-mini",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14}
+        });
+        Mock::given(method("POST"))
+            .and(path("/v1/chat/completions"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(format!("data: {text}\n\ndata: {end}\n\ndata: [DONE]\n\n")),
+            )
+            .mount(&provider)
+            .await;
+
+        let dir = tempdir().unwrap();
+        let recovery_log = dir.path().join("recovery.log");
+        let required_file = if recovers {
+            recovery_log.clone()
+        } else {
+            dir.path().join("still-missing")
+        };
+        let workflow = Workflow::builder()
+            .title("Scheduled retry fixture")
+            .description("Synthetic retry accounting")
+            .prompt("Finish the synthetic task.")
+            .extensions(Vec::new())
+            .retry(RetryConfig {
+                max_retries: 1,
+                checks: vec![SuccessCheck::FileExists {
+                    path: required_file.to_string_lossy().into_owned(),
+                }],
+                on_failure: Some(format!(
+                    "echo recovery>>\"{}\"",
+                    recovery_log.to_string_lossy()
+                )),
+                timeout_seconds: Some(10),
+                on_failure_timeout_seconds: Some(10),
+            })
+            .build()
+            .unwrap();
+        let workflow_path = dir.path().join("retry.yaml");
+        fs::write(&workflow_path, workflow.to_yaml().unwrap()).unwrap();
+        let job_id = format!("retry-fixture-{}", uuid::Uuid::new_v4().simple());
+        let overrides = HashMap::from([
+            ("BIOROUTER_PROVIDER".to_string(), "openai".to_string()),
+            ("BIOROUTER_MODEL".to_string(), "gpt-4o-mini".to_string()),
+            (
+                "OPENAI_API_KEY".to_string(),
+                "synthetic-fixture-key".to_string(),
+            ),
+            ("OPENAI_HOST".to_string(), provider.uri()),
+            (
+                "OPENAI_BASE_PATH".to_string(),
+                "v1/chat/completions".to_string(),
+            ),
+        ]);
+        let result = tokio::time::timeout(
+            Duration::from_secs(60),
+            crate::config::with_config_overrides(
+                overrides,
+                Box::pin(execute_job(
+                    dormant_job(&job_id, &workflow_path),
+                    Arc::new(Mutex::new(JobsMap::new())),
+                    job_id.clone(),
+                    CancellationToken::new(),
+                )),
+            ),
+        )
+        .await
+        .expect("the loopback scheduled run must settle");
+        let calls = provider.received_requests().await.unwrap().len();
+        let recovery = fs::read_to_string(&recovery_log).unwrap_or_default();
+        let sessions = SessionManager::instance();
+        for session in sessions
+            .list_sessions_by_types_including_empty(&[SessionType::Scheduled])
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|session| session.name == format!("Scheduled job: {job_id}"))
+        {
+            sessions.delete_session(&session.id).await.unwrap();
+        }
+        (result, calls, recovery)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wave3_scheduled_retry_runs_checks_and_failure_recovery() {
+        let (result, calls, recovery) = wave3_retry_fixture(true).await;
+        assert!(result.is_ok(), "the second attempt should pass: {result:?}");
+        assert_eq!(
+            calls, 2,
+            "the failed first check must cause another actual model request"
+        );
+        assert_eq!(recovery.lines().collect::<Vec<_>>(), ["recovery"]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn wave3_scheduled_retry_exhaustion_is_not_success() {
+        let (result, calls, recovery) = wave3_retry_fixture(false).await;
+        assert_eq!(
+            calls, 2,
+            "the configured retry must be attempted before exhaustion"
+        );
+        assert_eq!(recovery.lines().collect::<Vec<_>>(), ["recovery"]);
+        let error =
+            result.expect_err("unmet workflow checks cannot advance the successful-run cursor");
+        assert!(error.to_string().contains("retry"), "{error:#}");
     }
 
     /// The pure half of the arbitrary-write refusal.

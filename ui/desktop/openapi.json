@@ -13173,6 +13173,9 @@
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
           },
+          "403": {
+            "description": "A matching schedule does private work outside this caller's reach. Nothing was changed"
+          },
           "404": {
             "description": "Workflow not found"
           },

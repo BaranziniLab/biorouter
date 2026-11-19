@@ -501,7 +501,7 @@ impl SubAgent {
         if steps >= self.bounds.max_steps {
             return Some(DoneReason::StepBudgetReached);
         }
-        if started.elapsed() > self.bounds.max_wall {
+        if started.elapsed() >= self.bounds.max_wall {
             return Some(DoneReason::TimeBudgetReached);
         }
         if estimated_tokens(&self.system_prompt, messages) > self.bounds.max_tokens {
@@ -1045,6 +1045,43 @@ mod tests {
             "the token bound must bite before the step bound, got {} steps",
             result.steps_used
         );
+    }
+
+    #[test]
+    fn zero_elapsed_at_zero_wall_budget_stops_before_the_first_step() {
+        let mut agent = make_agent(MockCompleter::new(vec![]), 1);
+        agent.bounds.max_wall = Duration::ZERO;
+        // Saturated elapsed time models the controlled same-tick clock boundary.
+        let started = Instant::now() + Duration::from_secs(86_400);
+        assert_eq!(started.elapsed(), Duration::ZERO);
+        assert_eq!(
+            agent.stop_before_step(0, started, &[], None),
+            Some(DoneReason::TimeBudgetReached)
+        );
+    }
+
+    #[tokio::test]
+    async fn zero_wall_budget_never_calls_a_ready_completer() {
+        let received = Arc::new(Mutex::new(vec![]));
+        let agent = SubAgent {
+            completer: Box::new(RecordingCompleter {
+                replies: Mutex::new(vec![text_reply("must not be requested")]),
+                received: Arc::clone(&received),
+            }),
+            tools: vec![],
+            system_prompt: "sys".into(),
+            bounds: SubAgentBounds {
+                max_wall: Duration::ZERO,
+                ..Default::default()
+            },
+        };
+        let result = agent
+            .run("hello", Arc::new(EchoDispatch), None, None)
+            .await
+            .unwrap();
+        assert_eq!(result.reason, DoneReason::TimeBudgetReached);
+        assert_eq!(result.steps_used, 0);
+        assert!(received.lock().await.is_empty());
     }
 
     /// The other half of DR-16b: `max_wall` was checked only *between*

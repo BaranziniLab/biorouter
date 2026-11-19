@@ -45,9 +45,15 @@ function functionBody(name: string): string {
 describe('the bridge and the approval card agree on what `prompt` means', () => {
   const awaitApproval = functionBody('await_approval');
 
-  it('parks its card without inventing a security finding', () => {
-    expect(awaitApproval).toContain('prompt: None');
+  it('uses the actual inspection reason without inventing a security finding', () => {
+    expect(awaitApproval).toContain('approval_prompt_for_request');
+    expect(awaitApproval).toContain('inspection_results');
     expect(awaitApproval).not.toMatch(/prompt:\s*Some\(/);
+  });
+
+  it('keeps proof-backed inspector decisions tied to a person', () => {
+    expect(awaitApproval).toContain('approval_requires_a_human');
+    expect(awaitApproval).not.toContain('requires_user_proof: false');
   });
 
   it('does not dress its own framing up as an inspector verdict', () => {

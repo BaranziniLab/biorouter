@@ -61,8 +61,10 @@ the agent's row under "AI agents · your subscription" offers **Use Claude Code*
 then asks for a model. There is no key to enter. The only setting either provider has is the name or
 path of its executable, which defaults to `claude` and `codex` respectively.
 
-> **Note — which models you can pick depends on your CLI version.** The newest models in each
-> catalogue have a vendor-set version floor, and both defaults are among them:
+> **Note: which models you can pick depends on your CLI version.** The newest models in each
+> catalogue have a vendor-set version floor. Codex uses the signed-in account's recommended default
+> and preserves an explicit saved choice; GPT-6 Astra is its bundled fallback when discovery is
+> unavailable or empty. The table includes that fallback and the Claude Code default:
 >
 > | Model | Needs at least |
 > | --- | --- |
@@ -70,7 +72,7 @@ path of its executable, which defaults to `claude` and `codex` respectively.
 > | `claude-fable-5-1` | `claude` **2.1.257** |
 > | `claude-sonnet-5` | `claude` **2.1.197** |
 > | `claude-sonnet-5-5`, `claude-haiku-5-5` | not measured; both answered on `claude` 2.1.321 |
-> | `gpt-6-astra` (the Codex default) | `codex-cli` **0.153.4** |
+> | `gpt-6-astra` (the Codex bundled fallback) | `codex-cli` **0.153.4** |
 > | `gpt-6-sol`, `gpt-6-luna` | `codex-cli` **0.156.1** |
 >
 > On an older CLI the turn fails with the vendor's own message, which BioRouter shows you verbatim.

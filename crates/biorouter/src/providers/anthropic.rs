@@ -23,66 +23,34 @@ use crate::providers::retry::ProviderRetry;
 use crate::providers::utils::RequestLog;
 use rmcp::model::Tool;
 
-// Stays on Opus 4.8 although Anthropic's models overview now tells new work
-// to start with Claude Opus 5.5 (checked 2026-09-25). This file's rule is to
-// promote a default only after a live smoke test through this provider, and
-// no Anthropic API key was available to run one when Opus 5.5 was added.
-// Two things to weigh when that test runs: Opus 5.5's default effort is
-// `medium` (Opus 4.8's is `high`) and BioRouter sends no `output_config.effort`,
-// so the switch would quietly lower effort; and it is a preserved-thinking
-// model, which only works here because `create_request`'s payload goes
-// through `apply_thinking_block_binding` below.
-pub const ANTHROPIC_DEFAULT_MODEL: &str = "claude-opus-4-8";
-const ANTHROPIC_DEFAULT_FAST_MODEL: &str = "claude-haiku-4-5";
-// Verified against Anthropic's models overview and deprecations pages
-// (2026-09-25): every entry below is Active. The default comes FIRST, and the
-// rest run newest → oldest. ⚠ The desktop picker preselects the first entry
-// when a user switches to this provider (SwitchModelModal
-// `findFirstAvailableModel`), not ANTHROPIC_DEFAULT_MODEL, so the first entry
-// IS the default for a desktop user: listing Opus 5.5 first (as this list did
-// until 2026-09-27) promoted it past the smoke test the comment above holds it
-// back for. Promote a model by changing ANTHROPIC_DEFAULT_MODEL; its position
-// follows. (Key auto-detect asks for the default by name; see
-// `auto_detect::preferred_served_model`.)
+// Anthropic recommends Opus 5.5 for most workloads (models overview,
+// 2026-11-17). Fable 5.2 is an optional tier for demanding work, so it follows
+// the daily 5.5 tiers. Their signed thinking uses the binding controls below.
+pub const ANTHROPIC_DEFAULT_MODEL: &str = "claude-opus-5-5";
+const ANTHROPIC_DEFAULT_FAST_MODEL: &str = "claude-haiku-5-5";
+// Keep the declared default first for callers that select from the catalog.
+// Sonnet 4.5 retires on 2026-11-30 and is no longer advertised; explicit
+// selections remain accepted through `with_unlisted_models`.
 const ANTHROPIC_KNOWN_MODELS: &[&str] = &[
-    // Claude Opus 4.8: the default, see above.
     ANTHROPIC_DEFAULT_MODEL,
-    // Claude Opus 5.5 (GA 2026-09-22 — 1M context, 128K output, $4/$20 per
-    // MTok, cheaper than Opus 5). Thinking cannot be disabled and forced
-    // tool_choice is a 400; BioRouter sends neither. Its thinking blocks are
-    // bound to the conversation, see `apply_thinking_block_binding`.
-    "claude-opus-5-5",
-    // Claude Fable 5.1 (GA 2026-09-01 — tier above Opus, $10/$50, 1M). Same
-    // preserved-thinking rules as Opus 5.5, and it needs 30-day data
-    // retention: an org on zero data retention gets a 400.
-    "claude-fable-5-1",
-    // Claude Sonnet 5.5 ($2/$10) and Haiku 5.5 ($0.10/$0.50 up to a 100K-token
-    // prompt, $0.50/$2.50 above), both 1M context and 128K output. Both are
-    // preserved-thinking models like Opus 5.5 and take no sampling parameters;
-    // BioRouter sends neither a temperature nor a disabled thinking block.
     "claude-sonnet-5-5",
     "claude-haiku-5-5",
-    // Claude Opus 5 (1M context, $5/$25 per MTok).
+    "claude-fable-5-2",
+    "claude-fable-5-1",
     "claude-opus-5",
     "claude-sonnet-5",
-    // Claude Fable 5 (Legacy on Anthropic's overview — still served,
-    // superseded by Fable 5.1 at the same price).
     "claude-fable-5",
-    // Claude 4.7
+    "claude-opus-4-8",
     "claude-opus-4-7",
-    // Claude 4.6
     "claude-opus-4-6",
     "claude-sonnet-4-6",
-    // Claude 4.5
     "claude-opus-4-5",
     "claude-opus-4-5-20251101",
-    "claude-sonnet-4-5",
-    "claude-sonnet-4-5-20250929",
     "claude-haiku-4-5",
     "claude-haiku-4-5-20251001",
 ];
 
-const ANTHROPIC_DOC_URL: &str = "https://platform.claude.com/docs/en/about-claude/models/overview";
+const ANTHROPIC_DOC_URL: &str = "https://platform.claude.com/docs/en/models/overview";
 const ANTHROPIC_API_VERSION: &str = "2023-06-01";
 
 #[derive(serde::Serialize)]
@@ -251,11 +219,11 @@ impl AnthropicProvider {
 impl Provider for AnthropicProvider {
     fn metadata() -> ProviderMetadata {
         // Every current Claude model accepts image input (Anthropic's models
-        // overview, 2026-09-25). If a text-only Claude ships, switch this to a
+        // overview, 2026-11-17). If a text-only Claude ships, switch this to a
         // per-model match.
         //
-        // Context windows are per-model, not a blanket 200k: Opus 5.5, Opus 5,
-        // Fable 5 / 5.1, Sonnet 5 and Opus 4.6+/Sonnet 4.6 are 1M (GA — no beta
+        // Context windows are per-model, not a blanket 200k: the 5.5 tiers,
+        // Fable 5 / 5.1 / 5.2, Sonnet 5 and Opus 4.6+/Sonnet 4.6 are 1M (no beta
         // header), while the 4.5 tier and Haiku 4.5 remain 200k.
         // `context_window_for` is the single source of truth; don't hardcode a
         // number here.
@@ -419,6 +387,136 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn model_refresh_defaults_follow_the_current_daily_and_fast_tiers() {
+        let metadata = AnthropicProvider::metadata();
+        let leading: Vec<&str> = metadata
+            .known_models
+            .iter()
+            .take(4)
+            .map(|model| model.name.as_str())
+            .collect();
+        assert_eq!(metadata.default_model, "claude-opus-5-5");
+        assert_eq!(ANTHROPIC_DEFAULT_FAST_MODEL, "claude-haiku-5-5");
+        assert_eq!(
+            leading,
+            [
+                "claude-opus-5-5",
+                "claude-sonnet-5-5",
+                "claude-haiku-5-5",
+                "claude-fable-5-2",
+            ]
+        );
+        assert!(metadata.allows_unlisted_models);
+        assert!(metadata
+            .known_models
+            .iter()
+            .any(|model| model.name == "claude-opus-4-8"));
+        assert!(!metadata
+            .known_models
+            .iter()
+            .any(|model| model.name.starts_with("claude-sonnet-4-5")));
+    }
+
+    #[tokio::test]
+    async fn model_refresh_fable_5_2_replays_signed_history_after_a_prefix_change() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, Request, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/messages"))
+            .respond_with(|request: &Request| {
+                let body: Value = serde_json::from_slice(&request.body).unwrap();
+                let binding_beta = request
+                    .headers
+                    .get("anthropic-beta")
+                    .and_then(|value| value.to_str().ok());
+                if binding_beta != Some(THINKING_BINDING_CONTROLS_BETA)
+                    || body["thinking"]["block_binding"]["prefix_mismatch_behavior"] != "drop_block"
+                {
+                    return ResponseTemplate::new(400).set_body_json(json!({
+                        "type": "error",
+                        "error": {
+                            "type": "invalid_request_error",
+                            "message": "The block is bound to a different conversation"
+                        }
+                    }));
+                }
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "id": "msg_rebound",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-fable-5-2",
+                    "content": [{ "type": "text", "text": "continued" }],
+                    "stop_reason": "end_turn",
+                    "usage": { "input_tokens": 3, "output_tokens": 1 }
+                }))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let api_client = ApiClient::new(
+            server.uri(),
+            AuthMethod::ApiKey {
+                header_name: "x-api-key".to_string(),
+                key: "test-key".to_string(),
+            },
+        )
+        .unwrap()
+        .with_header("anthropic-version", ANTHROPIC_API_VERSION)
+        .unwrap();
+        let provider = AnthropicProvider {
+            api_client,
+            model: ModelConfig::new_or_fail("claude-opus-4-8"),
+            supports_streaming: true,
+            name: "anthropic".to_string(),
+        };
+        let prior_assistant = response_to_message(&json!({
+            "role": "assistant",
+            "content": [
+                { "type": "thinking", "thinking": "", "signature": "signed-before-prefix-edit" },
+                { "type": "redacted_thinking", "data": "opaque-before-prefix-edit" },
+                { "type": "text", "text": "earlier answer" }
+            ]
+        }))
+        .unwrap();
+        let history = [
+            Message::user().with_text("earlier question"),
+            prior_assistant,
+            Message::user().with_text("continue"),
+        ];
+
+        let (answer, _) = provider
+            .complete_with_model(
+                &ModelConfig::new_or_fail("claude-fable-5-2"),
+                "system with a new timestamp",
+                &history,
+                &[],
+            )
+            .await
+            .expect("a changed prefix must opt into the provider's block-dropping control");
+        assert_eq!(answer.as_concat_text(), "continued");
+
+        let requests = server.received_requests().await.unwrap();
+        let body: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert_eq!(body["model"], "claude-fable-5-2");
+        assert_eq!(body["thinking"]["type"], "adaptive");
+        assert_eq!(
+            body["messages"][1]["content"][0]["signature"],
+            "signed-before-prefix-edit"
+        );
+        assert_eq!(
+            body["messages"][1]["content"][1]["data"],
+            "opaque-before-prefix-edit"
+        );
+        assert_eq!(body["messages"][1]["content"][2]["text"], "earlier answer");
+        assert_eq!(body["messages"][2]["content"][0]["text"], "continue");
+        assert!(body.get("temperature").is_none());
+        assert!(body.get("tool_choice").is_none());
+    }
+
+    #[test]
     fn maps_anthropic_over_limit_response_to_context_length_error() {
         let response = ApiResponse {
             status: StatusCode::BAD_REQUEST,
@@ -436,11 +534,6 @@ mod tests {
         assert!(matches!(error, ProviderError::ContextLengthExceeded(_)));
     }
 
-    /// The default is held on Opus 4.8 until a smoke test clears Opus 5.5 (see
-    /// ANTHROPIC_DEFAULT_MODEL). The desktop picker preselects the FIRST listed
-    /// model, not the default, so the hold only reaches a desktop user while
-    /// the default is listed first. Until 2026-09-27 Opus 5.5 was, and every
-    /// desktop user switching to Anthropic started on it.
     #[test]
     fn the_desktop_picker_preselects_the_shipped_default() {
         let metadata = AnthropicProvider::metadata();
@@ -462,8 +555,6 @@ mod tests {
             1,
             "the default is listed exactly once"
         );
-        // Still offered, one pick away, for a user who wants it now, and the
-        // rest of the Claude 5.5 generation beside it.
         for offered in ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"] {
             assert!(
                 metadata
@@ -475,15 +566,15 @@ mod tests {
         }
     }
 
-    // Opus 5.5 and Fable 5.1 bind each thinking block to the prefix it was
+    // The 5.5 tiers and Fable 5.1/5.2 bind each thinking block to the prefix it was
     // produced under, and BioRouter's prefix moves on every request (hourly
     // system-prompt timestamp, MOIM). Without `drop_block` a new account's
-    // second request 400s. Opus 5.5 sits one pick below the default in the
-    // desktop list, so this is the request a user who picks it sends.
+    // second request 400s.
     #[test]
     fn preserved_thinking_models_opt_into_drop_block_with_the_beta() {
         for model in [
             "claude-opus-5-5",
+            "claude-fable-5-2",
             "claude-fable-5-1",
             "claude-sonnet-5-5",
             "claude-haiku-5-5",
@@ -516,11 +607,11 @@ mod tests {
     #[test]
     fn other_claude_models_send_neither_the_beta_nor_block_binding() {
         for model in [
-            ANTHROPIC_DEFAULT_MODEL,
+            "claude-opus-4-8",
             "claude-opus-5",
             "claude-sonnet-5",
             "claude-fable-5",
-            ANTHROPIC_DEFAULT_FAST_MODEL,
+            "claude-haiku-4-5",
         ] {
             let config = ModelConfig::new_or_fail(model);
             let (payload, beta) = AnthropicProvider::prepare_request(
@@ -594,7 +685,7 @@ mod tests {
         // Built for Opus 4.8, asked for Opus 5.5.
         let provider = AnthropicProvider {
             api_client,
-            model: ModelConfig::new_or_fail(ANTHROPIC_DEFAULT_MODEL),
+            model: ModelConfig::new_or_fail("claude-opus-4-8"),
             supports_streaming: true,
             name: "anthropic".to_string(),
         };

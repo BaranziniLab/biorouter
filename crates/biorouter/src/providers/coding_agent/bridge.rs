@@ -70,7 +70,9 @@ use crate::permission::tool_risk::ToolRiskRegistry;
 use crate::privacy::CallCapability;
 use crate::providers::formats::audience;
 use crate::session::session_manager::Session;
-use crate::tool_inspection::ToolInspectionManager;
+use crate::tool_inspection::{
+    approval_prompt_for_request, approval_requires_a_human, InspectionResult, ToolInspectionManager,
+};
 
 /// What a bridged `tools/call` actually runs, once the gate stack has cleared it.
 ///
@@ -663,7 +665,7 @@ impl BridgeGrant {
                 let Some(pending) = decision.needs_approval.into_iter().next() else {
                     return Err(format!("`{name}` was not approved."));
                 };
-                self.await_approval(&name, &pending).await?;
+                self.await_approval(&name, &pending, &inspections).await?;
                 pending
             }
         };
@@ -741,7 +743,12 @@ impl BridgeGrant {
     ///
     /// Whatever happens, the child gets a **result**, and the text never invites
     /// an answer that has nowhere to land.
-    async fn await_approval(&self, name: &str, pending: &ToolRequest) -> Result<(), String> {
+    async fn await_approval(
+        &self,
+        name: &str,
+        pending: &ToolRequest,
+        inspection_results: &[InspectionResult],
+    ) -> Result<(), String> {
         let Ok(call) = pending.tool_call.as_ref() else {
             return Err(format!("`{name}` needs approval but is not a usable call."));
         };
@@ -762,6 +769,7 @@ impl BridgeGrant {
         };
 
         let arguments = call.arguments.clone().unwrap_or_default();
+        let requires_user_proof = approval_requires_a_human(&pending.id, inspection_results);
         let request = UserActionRequest::ToolApproval(ToolApprovalRequest {
             tool_name: call.name.to_string(),
             arguments: arguments.clone(),
@@ -776,12 +784,12 @@ impl BridgeGrant {
             // own (`requestedBy`) plumbed through `ActionRequiredData` and the
             // OpenAPI client. Until then it is logged rather than dressed up as
             // an inspector's verdict.
-            prompt: None,
+            prompt: approval_prompt_for_request(&pending.id, inspection_results),
             risk: Some(self.tool_risks.risk_for(&call.name)),
             preview: crate::conversation::tool_preview::ToolPreview::for_tool_call(
                 &call.name, &arguments,
             ),
-            requires_user_proof: false,
+            requires_user_proof,
         });
 
         // Owned by the grant's nonce so the lease can release it, scoped to the
@@ -801,7 +809,9 @@ impl BridgeGrant {
                     ?permission,
                     "a bridged tool call was approved by the user"
                 );
-                self.record_lasting_decision(&call.name, &permission).await;
+                if !requires_user_proof {
+                    self.record_lasting_decision(&call.name, &permission).await;
+                }
                 Ok(())
             }
             // `AlwaysDeny` and `DenyOnce` read the same to the child: it may not
@@ -3230,6 +3240,276 @@ mod tests {
         })
         .await
         .expect("an approval card must be published for the session")
+    }
+
+    fn memory_bridge_grant(
+        tool: &'static str,
+        mode: BioRouterMode,
+    ) -> (
+        BridgeGrant,
+        Arc<RecordingBridgeDispatch>,
+        Arc<crate::config::permission::PermissionManager>,
+        tempfile::TempDir,
+    ) {
+        let root = tempfile::tempdir().unwrap();
+        let permissions = Arc::new(crate::config::permission::PermissionManager::new(
+            root.path().to_path_buf(),
+        ));
+        let dispatcher = Arc::new(RecordingBridgeDispatch::default());
+        let mut inspections = ToolInspectionManager::new();
+        inspections.add_inspector(Box::new(
+            crate::security::global_memory::GlobalMemoryInspector,
+        ));
+        inspections.add_inspector(Box::new(
+            crate::permission::permission_inspector::PermissionInspector::new(
+                Arc::new(ToolRiskRegistry::new()),
+                Arc::clone(&permissions),
+                Arc::new(crate::managed::ManagedPolicy::empty()),
+                Arc::new(tokio::sync::Mutex::new(None)),
+            ),
+        ));
+        let grant = BridgeGrant::new(
+            session_named(&format!("memory-bridge-{}", uuid::Uuid::new_v4())),
+            mode,
+            Arc::clone(&dispatcher) as Arc<dyn BridgeToolDispatch>,
+            Arc::new(inspections),
+            test_capability(),
+            vec![Tool::new(
+                tool,
+                "synthetic approval probe",
+                serde_json::Map::new(),
+            )],
+            Conversation::new_unvalidated(vec![]),
+            None,
+            no_hooks(),
+            None,
+            Arc::new(ToolRiskRegistry::new()),
+        );
+        (grant, dispatcher, permissions, root)
+    }
+
+    fn memory_bridge_write_call() -> CallToolRequestParams {
+        CallToolRequestParams {
+            name: "memory__remember_memory".into(),
+            arguments: Some(
+                serde_json::json!({
+                    "category": "release-test",
+                    "data": "synthetic global memory",
+                    "is_global": true,
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            ),
+            meta: None,
+            task: None,
+        }
+    }
+
+    fn memory_bridge_answer(
+        session: &str,
+        id: &str,
+        permission: crate::permission::Permission,
+    ) -> crate::pending_user_action::ResolveOutcome {
+        PendingUserActions::global().resolve_in_session(
+            session,
+            id,
+            UserActionOutcome::Approved { permission },
+            crate::pending_user_action::DecisionAuthority::for_test_proven(),
+        )
+    }
+
+    #[tokio::test]
+    async fn memory_bridge_preserves_the_finding_and_requires_a_persons_proof() {
+        use crate::pending_user_action::{DecisionAuthority, ResolveOutcome};
+        use crate::permission::Permission;
+
+        let _guard = path_jail_lock().await;
+        let (grant, dispatcher, _permissions, _root) =
+            memory_bridge_grant("memory__remember_memory", BioRouterMode::Auto);
+        let session = grant.session.id.clone();
+        let grant = Arc::new(grant);
+        let call = memory_bridge_write_call();
+        let expected = crate::security::global_memory::global_memory_gate(
+            &call.name,
+            call.arguments.as_ref().unwrap(),
+        );
+        let running = tokio::spawn({
+            let grant = Arc::clone(&grant);
+            async move { grant.call(call).await }
+        });
+        let id = approval_card_id(&session).await;
+        let request = PendingUserActions::global().peek(&id).unwrap();
+        let unproven = PendingUserActions::global().resolve_in_session(
+            &session,
+            &id,
+            UserActionOutcome::Approved {
+                permission: Permission::AllowOnce,
+            },
+            DecisionAuthority::unproven(),
+        );
+        let proven = if unproven == ResolveOutcome::Unproven {
+            memory_bridge_answer(&session, &id, Permission::AllowOnce)
+        } else {
+            ResolveOutcome::Unknown
+        };
+        let result = tokio::time::timeout(Duration::from_secs(5), running)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+
+        let UserActionRequest::ToolApproval(request) = request else {
+            panic!("expected a tool approval");
+        };
+        let Some(crate::security::global_memory::GlobalMemoryGate::Ask(reason)) = expected else {
+            panic!("the real inspector must require category-specific consent");
+        };
+        assert_eq!(request.prompt.as_deref(), Some(reason.as_str()));
+        assert!(request.requires_user_proof);
+        assert_eq!(unproven, ResolveOutcome::Unproven);
+        assert_eq!(proven, ResolveOutcome::Delivered);
+        assert_ne!(result.is_error, Some(true));
+        assert_eq!(dispatcher.calls.lock().unwrap().len(), 1);
+        assert!(!PendingUserActions::global().is_pending(&id));
+    }
+
+    #[tokio::test]
+    async fn memory_bridge_always_allow_cannot_become_a_global_memory_rule() {
+        use crate::pending_user_action::ResolveOutcome;
+        use crate::permission::Permission;
+
+        let _guard = path_jail_lock().await;
+        let (grant, dispatcher, permissions, _root) =
+            memory_bridge_grant("memory__remember_memory", BioRouterMode::Auto);
+        let session = grant.session.id.clone();
+        let grant = Arc::new(grant);
+        let mut ids = Vec::new();
+        for permission in [Permission::AlwaysAllow, Permission::AllowOnce] {
+            let running = tokio::spawn({
+                let grant = Arc::clone(&grant);
+                async move { grant.call(memory_bridge_write_call()).await }
+            });
+            let id = approval_card_id(&session).await;
+            assert_eq!(
+                memory_bridge_answer(&session, &id, permission),
+                ResolveOutcome::Delivered
+            );
+            tokio::time::timeout(Duration::from_secs(5), running)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            ids.push(id);
+        }
+        assert_ne!(ids[0], ids[1], "each global write requires its own answer");
+        assert_eq!(dispatcher.calls.lock().unwrap().len(), 2);
+        assert_eq!(
+            permissions.get_user_permission("memory__remember_memory"),
+            None,
+            "a malformed AlwaysAllow answer may authorize this write but must never persist"
+        );
+    }
+
+    #[tokio::test]
+    async fn memory_bridge_ordinary_approvals_still_keep_a_lasting_grant() {
+        use crate::config::permission::PermissionLevel;
+        use crate::pending_user_action::ResolveOutcome;
+        use crate::permission::Permission;
+
+        let _guard = path_jail_lock().await;
+        const TOOL: &str = "approval_probe__ordinary";
+        let (grant, dispatcher, permissions, _root) =
+            memory_bridge_grant(TOOL, BioRouterMode::Approve);
+        let session = grant.session.id.clone();
+        let grant = Arc::new(grant);
+        let call = CallToolRequestParams {
+            name: TOOL.into(),
+            arguments: Some(serde_json::Map::new()),
+            meta: None,
+            task: None,
+        };
+        let running = tokio::spawn({
+            let grant = Arc::clone(&grant);
+            let call = call.clone();
+            async move { grant.call(call).await }
+        });
+        let id = approval_card_id(&session).await;
+        let request = PendingUserActions::global().peek(&id).unwrap();
+        assert_eq!(
+            memory_bridge_answer(&session, &id, Permission::AlwaysAllow),
+            ResolveOutcome::Delivered
+        );
+        tokio::time::timeout(Duration::from_secs(5), running)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        tokio::time::timeout(Duration::from_secs(5), grant.call(call))
+            .await
+            .expect("the ordinary stored grant must not park a second card")
+            .unwrap();
+
+        let UserActionRequest::ToolApproval(request) = request else {
+            panic!("expected a tool approval");
+        };
+        assert_eq!(request.prompt, None, "the bridge must not invent a finding");
+        assert!(!request.requires_user_proof);
+        assert_eq!(
+            permissions.get_user_permission(TOOL),
+            Some(PermissionLevel::AlwaysAllow)
+        );
+        assert_eq!(dispatcher.calls.lock().unwrap().len(), 2);
+        assert!(!PendingUserActions::global().has_pending_in_session(&session));
+    }
+
+    #[tokio::test]
+    async fn memory_bridge_a_cancelled_nonce_cannot_approve_a_later_call() {
+        use crate::pending_user_action::ResolveOutcome;
+        use crate::permission::Permission;
+
+        let _guard = path_jail_lock().await;
+        let (grant, dispatcher, _permissions, _root) =
+            memory_bridge_grant("memory__remember_memory", BioRouterMode::Auto);
+        let session = grant.session.id.clone();
+        let lease = issue_at_base_for_test(grant, "http://127.0.0.1:65535");
+        let nonce = lease.url().rsplit('/').next().unwrap().to_owned();
+        let grant = lookup(&nonce).unwrap();
+        let running = tokio::spawn(async move { grant.call(memory_bridge_write_call()).await });
+        let first = approval_card_id(&session).await;
+        drop(lease);
+        let refusal = tokio::time::timeout(Duration::from_secs(5), running)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap_err();
+        let late = memory_bridge_answer(&session, &first, Permission::AllowOnce);
+        assert!(refusal.contains("cancelled"));
+        assert_eq!(late, ResolveOutcome::Unknown);
+        assert!(!PendingUserActions::global().is_pending(&first));
+        assert!(lookup(&nonce).is_none());
+        assert!(dispatcher.calls.lock().unwrap().is_empty());
+
+        let (mut next, next_dispatcher, _permissions, _root) =
+            memory_bridge_grant("memory__remember_memory", BioRouterMode::Auto);
+        next.session.id = session.clone();
+        let lease = issue_at_base_for_test(next, "http://127.0.0.1:65535");
+        let nonce = lease.url().rsplit('/').next().unwrap().to_owned();
+        let next = lookup(&nonce).unwrap();
+        let running = tokio::spawn(async move { next.call(memory_bridge_write_call()).await });
+        let second = approval_card_id(&session).await;
+        let stale = memory_bridge_answer(&session, &first, Permission::AlwaysAllow);
+        let still_parked = PendingUserActions::global().is_pending(&second);
+        drop(lease);
+        let _ = tokio::time::timeout(Duration::from_secs(5), running)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_ne!(first, second);
+        assert_eq!(stale, ResolveOutcome::Unknown);
+        assert!(still_parked);
+        assert!(next_dispatcher.calls.lock().unwrap().is_empty());
+        assert!(!PendingUserActions::global().has_pending_in_session(&session));
     }
 
     /// A Knowledge-view workflow has no agent loop to render an approval card.

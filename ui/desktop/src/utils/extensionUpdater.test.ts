@@ -29,6 +29,35 @@ import { describe, it, expect, vi, beforeEach, afterEach, beforeAll } from 'vite
 import * as fs from 'fs/promises';
 import { readFileSync, existsSync } from 'fs';
 import * as path from 'path';
+import { setImmediate as nextEventLoopTurn } from 'node:timers/promises';
+import AdmZip from 'adm-zip';
+import { runProbe } from './dependencyChecker';
+
+const immediateFilesystem = vi.hoisted(() => ({ enabled: false }));
+
+vi.mock('fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs/promises')>();
+  const synchronous = await import('fs');
+  const methods = ['cp', 'mkdir', 'mkdtemp', 'readFile', 'readdir', 'rename', 'rm', 'writeFile'];
+  const wrapped = Object.fromEntries(
+    methods.map((name) => [
+      name,
+      (...args: unknown[]) => {
+        if (!immediateFilesystem.enabled)
+          return Reflect.apply(Reflect.get(actual, name), actual, args);
+        // Real fixture I/O, with no worker-pool timing in the overlap schedule.
+        try {
+          return Promise.resolve(
+            Reflect.apply(Reflect.get(synchronous, `${name}Sync`), synchronous, args)
+          );
+        } catch (error) {
+          return Promise.reject(error);
+        }
+      },
+    ])
+  );
+  return { ...actual, ...wrapped };
+});
 
 /** Reassigned per test; every `os` reader below closes over it. */
 let fakeHome: string;
@@ -129,7 +158,9 @@ function restoreEnv(name: string, value: string | undefined) {
 }
 
 beforeEach(async () => {
+  immediateFilesystem.enabled = false;
   sentEvents.length = 0;
+  vi.mocked(runProbe).mockReset().mockRejectedValue(new Error('unexpected dependency probe'));
   delete process.env.BIOROUTER_PATH_ROOT;
   // The platform reading is `$XDG_CONFIG_HOME/biorouter` when that variable is
   // set, so a developer who exports it would otherwise turn every "unset"
@@ -145,6 +176,8 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  immediateFilesystem.enabled = false;
+  vi.unstubAllGlobals();
   if (originalPathRoot === undefined) delete process.env.BIOROUTER_PATH_ROOT;
   else process.env.BIOROUTER_PATH_ROOT = originalPathRoot;
   if (originalXdgConfigHome === undefined) delete process.env.XDG_CONFIG_HOME;
@@ -153,6 +186,302 @@ afterEach(async () => {
   restoreEnv('LOCALAPPDATA', originalLocalAppData);
   await fs.rm(fakeHome, { recursive: true, force: true });
   await fs.rm(redirectRoot, { recursive: true, force: true });
+});
+
+describe('extension update commit reporting and rollback', () => {
+  const successfulProbe = {
+    ok: true,
+    code: 0,
+    stdout: '',
+    stderr: '',
+    timedOut: false,
+    error: null,
+  };
+
+  const failedProbe = {
+    ...successfulProbe,
+    ok: false,
+    code: 19,
+    stderr: 'synthetic sync failure',
+  };
+
+  async function installedPackage(name: string) {
+    process.env.BIOROUTER_PATH_ROOT = redirectRoot;
+    const dir = await seedExtension(path.join(redirectRoot, 'config', 'extensions'), name);
+    const manifest = JSON.parse(await fs.readFile(path.join(dir, 'manifest.json'), 'utf8'));
+    manifest.repository = `https://github.com/l7-fixtures/${name}`;
+    await fs.writeFile(path.join(dir, 'manifest.json'), JSON.stringify(manifest));
+    await fs.writeFile(path.join(dir, 'main.py'), 'working version 1\n');
+    await fs.mkdir(path.join(dir, '.venv', 'bin'), { recursive: true });
+    await fs.writeFile(path.join(dir, '.venv', 'bin', 'fixture'), 'working runtime 1\n');
+    return { name, dir, manifest };
+  }
+
+  function bundle(manifest: Record<string, unknown>, partialExtraction = false, version = '2.0.0') {
+    const zip = new AdmZip();
+    zip.addFile('manifest.json', Buffer.from(JSON.stringify({ ...manifest, version })));
+    zip.addFile('main.py', Buffer.from(`replacement version ${version.split('.')[0]}\n`));
+    if (partialExtraction) {
+      zip.addFile('z-conflict', Buffer.from('file blocks a later parent directory'));
+      zip.addFile('z-conflict/child', Buffer.from('cannot extract'));
+    }
+    return zip.toBuffer();
+  }
+
+  function releases(
+    packages: Array<{ name: string; manifest: Record<string, unknown> }>,
+    partial = false
+  ) {
+    const downloads = new Map(packages.map((pkg) => [pkg.name, bundle(pkg.manifest, partial)]));
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        const pkg = packages.find(({ name }) => url.includes(`/${name}/`));
+        if (!pkg) throw new Error(`unexpected fixture request: ${url}`);
+        if (url.endsWith('/releases/latest')) {
+          return new Response(
+            JSON.stringify({
+              tag_name: 'v2.0.0',
+              assets: [
+                {
+                  name: `${pkg.name}.brxt`,
+                  browser_download_url: `https://downloads.example.invalid/${pkg.name}/fixture.brxt`,
+                  size: downloads.get(pkg.name)!.length,
+                },
+              ],
+            }),
+            { status: 200 }
+          );
+        }
+        const bytes = downloads.get(pkg.name)!;
+        return new Response(new Uint8Array(bytes), {
+          status: 200,
+          headers: { 'content-length': String(bytes.length) },
+        });
+      })
+    );
+  }
+
+  async function packageBytes(root: string): Promise<Record<string, string>> {
+    const files: Record<string, string> = {};
+    async function visit(dir: string) {
+      for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) await visit(full);
+        else files[path.relative(root, full)] = (await fs.readFile(full)).toString('base64');
+      }
+    }
+    await visit(root);
+    return files;
+  }
+
+  it('counts no successful update after uv sync fails', async () => {
+    const pkg = await installedPackage('l7-failed-count');
+    releases([pkg]);
+    vi.mocked(runProbe).mockResolvedValue(failedProbe);
+    const { runExtensionUpdateCheck } = await loadUpdater();
+
+    await runExtensionUpdateCheck();
+
+    expect(sentEvents).toContainEqual(
+      expect.objectContaining({ type: 'update-error', ext: pkg.name })
+    );
+    expect(sentEvents.filter((event) => event.type === 'update-done')).toEqual([]);
+    expect(sentEvents[sentEvents.length - 1]).toEqual({ type: 'all-done', updatedCount: 0 });
+  });
+
+  it('restores the complete working package after a sync changes its runtime and fails', async () => {
+    const pkg = await installedPackage('l7-failed-files');
+    const before = await packageBytes(pkg.dir);
+    releases([pkg]);
+    vi.mocked(runProbe).mockImplementation(async (_command, _args, _timeout, options) => {
+      await fs.mkdir(path.join(options!.cwd!, '.venv', 'bin'), { recursive: true });
+      await fs.writeFile(
+        path.join(options!.cwd!, '.venv', 'bin', 'fixture'),
+        'broken replacement runtime\n'
+      );
+      return failedProbe;
+    });
+    const { runExtensionUpdateCheck } = await loadUpdater();
+
+    await runExtensionUpdateCheck();
+
+    expect(await packageBytes(pkg.dir)).toEqual(before);
+    expect(await fs.readdir(path.dirname(pkg.dir))).toEqual([pkg.name]);
+  });
+
+  it('restores the working package if extraction fails after writing replacement files', async () => {
+    const pkg = await installedPackage('l7-partial-extraction');
+    const before = await packageBytes(pkg.dir);
+    releases([pkg], true);
+    const { runExtensionUpdateCheck } = await loadUpdater();
+
+    await runExtensionUpdateCheck();
+
+    expect(sentEvents).toContainEqual(
+      expect.objectContaining({ type: 'update-error', ext: pkg.name })
+    );
+    expect(runProbe).not.toHaveBeenCalled();
+    expect(await packageBytes(pkg.dir)).toEqual(before);
+    expect(sentEvents[sentEvents.length - 1]).toEqual({ type: 'all-done', updatedCount: 0 });
+  });
+
+  it('counts only the committed package in a mixed success and failure check', async () => {
+    const failed = await installedPackage('l7-mixed-failed');
+    const succeeded = await installedPackage('l7-mixed-success');
+    releases([failed, succeeded]);
+    vi.mocked(runProbe).mockImplementation(async (_command, _args, _timeout, options) =>
+      options!.cwd === succeeded.dir ? successfulProbe : failedProbe
+    );
+    const { runExtensionUpdateCheck } = await loadUpdater();
+
+    await runExtensionUpdateCheck();
+
+    expect(sentEvents.filter((event) => event.type === 'update-done')).toEqual([
+      expect.objectContaining({ type: 'update-done', ext: succeeded.name }),
+    ]);
+    expect(sentEvents[sentEvents.length - 1]).toEqual({ type: 'all-done', updatedCount: 1 });
+    expect(await fs.readFile(path.join(failed.dir, 'main.py'), 'utf8')).toBe('working version 1\n');
+    expect(await fs.readFile(path.join(succeeded.dir, 'main.py'), 'utf8')).toBe(
+      'replacement version 2\n'
+    );
+  });
+
+  it('commits a successful update with its runtime built at the stable install path', async () => {
+    const pkg = await installedPackage('l7-stable-runtime');
+    releases([pkg]);
+    vi.mocked(runProbe).mockImplementation(async (_command, _args, _timeout, options) => {
+      expect(options!.cwd).toBe(pkg.dir);
+      await fs.writeFile(
+        path.join(options!.cwd!, '.venv', 'bin', 'fixture'),
+        `#!${options!.cwd}/.venv/bin/python\n`
+      );
+      return successfulProbe;
+    });
+    const { runExtensionUpdateCheck } = await loadUpdater();
+
+    await runExtensionUpdateCheck();
+
+    expect(sentEvents.filter((event) => event.type === 'update-error')).toEqual([]);
+    expect(sentEvents[sentEvents.length - 1]).toEqual({ type: 'all-done', updatedCount: 1 });
+    expect(await fs.readFile(path.join(pkg.dir, '.venv', 'bin', 'fixture'), 'utf8')).toBe(
+      `#!${pkg.dir}/.venv/bin/python\n`
+    );
+    expect(await fs.readdir(path.dirname(pkg.dir))).toEqual([pkg.name]);
+  });
+
+  it('keeps a committed update when an overlapping older check fails', async () => {
+    immediateFilesystem.enabled = true;
+    const pkg = await installedPackage('l7-overlapping-checks');
+    function deferred<T>() {
+      let resolve!: (value: T) => void;
+      const promise = new Promise<T>((done) => {
+        resolve = done;
+      });
+      return { promise, resolve };
+    }
+    const firstProbeEntered = deferred<void>();
+    const finishFirstProbe = deferred<typeof failedProbe>();
+    const bundles = new Map([
+      ['2.0.0', bundle(pkg.manifest, false, '2.0.0')],
+      ['3.0.0', bundle(pkg.manifest, false, '3.0.0')],
+    ]);
+    let latestVersion = '2.0.0';
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: string | URL | Request) => {
+        const url = String(input);
+        if (url === `https://api.github.com/repos/l7-fixtures/${pkg.name}/releases/latest`) {
+          return new Response(
+            JSON.stringify({
+              tag_name: latestVersion,
+              assets: [
+                {
+                  name: `${pkg.name}.brxt`,
+                  browser_download_url: `https://downloads.example.invalid/${pkg.name}/${latestVersion}.brxt`,
+                  size: bundles.get(latestVersion)!.length,
+                },
+              ],
+            }),
+            { status: 200 }
+          );
+        }
+        const version = url.match(/\/(2\.0\.0|3\.0\.0)\.brxt$/)?.[1];
+        if (!version) throw new Error(`unexpected fixture request: ${url}`);
+        return new Response(new Uint8Array(bundles.get(version)!), { status: 200 });
+      })
+    );
+    let probes = 0;
+    vi.mocked(runProbe).mockImplementation(async (_command, _args, _timeout, options) => {
+      probes++;
+      if (probes === 1) {
+        firstProbeEntered.resolve();
+        return finishFirstProbe.promise;
+      }
+      const manifest = JSON.parse(
+        await fs.readFile(path.join(options!.cwd!, 'manifest.json'), 'utf8')
+      );
+      await fs.mkdir(path.join(options!.cwd!, '.venv', 'bin'), { recursive: true });
+      await fs.writeFile(
+        path.join(options!.cwd!, '.venv', 'bin', 'fixture'),
+        `runtime-${manifest.version}\n`
+      );
+      return successfulProbe;
+    });
+    const { runExtensionUpdateCheck } = await loadUpdater();
+    const firstCheck = runExtensionUpdateCheck();
+    let secondCheck: Promise<void> | undefined;
+    try {
+      await Promise.race([
+        firstProbeEntered.promise,
+        firstCheck.then(() => {
+          throw new Error('first check ended before reaching its dependency probe');
+        }),
+      ]);
+      latestVersion = '3.0.0';
+      secondCheck = runExtensionUpdateCheck();
+      // Drain runnable work without waiting for a second probe: a queued or
+      // coalesced implementation must be allowed to wait for the first check.
+      await nextEventLoopTurn();
+      finishFirstProbe.resolve(failedProbe);
+      await Promise.all([firstCheck, secondCheck]);
+
+      const committed = sentEvents.filter((event) => event.type === 'update-done');
+      if (committed.length > 0) {
+        const current = JSON.parse(await fs.readFile(path.join(pkg.dir, 'manifest.json'), 'utf8'));
+        expect(current.version, 'a failed check reverted a reported successful update').toBe(
+          committed[committed.length - 1].to
+        );
+      } else {
+        // Coalescing may share the first failure. A fresh retry supplies the
+        // positive success oracle instead of requiring a second queued check.
+        await runExtensionUpdateCheck();
+      }
+
+      const current = JSON.parse(await fs.readFile(path.join(pkg.dir, 'manifest.json'), 'utf8'));
+      expect(current.version).toBe('3.0.0');
+      expect(await fs.readFile(path.join(pkg.dir, 'main.py'), 'utf8')).toBe(
+        'replacement version 3\n'
+      );
+      expect(await fs.readFile(path.join(pkg.dir, '.venv', 'bin', 'fixture'), 'utf8')).toBe(
+        'runtime-3.0.0\n'
+      );
+      expect(sentEvents.filter((event) => event.type === 'update-done')).toEqual([
+        expect.objectContaining({ ext: pkg.name, to: '3.0.0' }),
+      ]);
+      expect(sentEvents.filter((event) => event.type === 'update-error')).toHaveLength(1);
+      expect(
+        sentEvents
+          .filter((event) => event.type === 'all-done')
+          .reduce((count, event) => count + Number(event.updatedCount), 0)
+      ).toBe(1);
+      expect(await fs.readdir(path.dirname(pkg.dir))).toEqual([pkg.name]);
+    } finally {
+      finishFirstProbe.resolve(failedProbe);
+      await Promise.allSettled([firstCheck, ...(secondCheck ? [secondCheck] : [])]);
+    }
+  });
 });
 
 describe('extension updater directory resolution (#146)', () => {

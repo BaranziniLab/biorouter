@@ -82,6 +82,8 @@ There are two uninstall tools because there are two ways an extension gets onto 
 
 Both work the same way once you approve them. In one transaction BioRouter detaches the extension from the chat, removes its entry from your configuration, deletes its package directory and any skills that directory contributed, drops the record of where it came from, and clears it from every saved chat that still listed it — so reopening an old conversation does not try to launch a server that is gone. Up to 50 extensions can be named in one batch; the whole batch is validated and shown to you before anything is touched, and if the installed extension changes while the approval is on screen the removal is abandoned rather than applied to something you did not see.
 
+Clearing saved chat lists leaves their last-activity dates and ordering unchanged. If one chat cannot be updated, removal still completes and the result reports that chat's problem while continuing to clean up the others.
+
 **Your credentials are deliberately left alone.** An API key can be shared between extensions — one UCSF credential can unlock more than one connector — so removing an extension never revokes, deletes or overwrites a stored secret. Remove a key you no longer want in Settings, where you can see what else uses it.
 
 Built-in capabilities are not removable by either tool. They are not extensions you installed, they own no package directory, and they are managed in Settings → Chat → Capabilities.

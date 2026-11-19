@@ -1,7 +1,7 @@
 # Baseten provider
 
 > **What this is.** The integration reference for the Baseten provider (`baseten`): the bundled declarative catalog, the live catalog feed that keeps its models and prices current between releases without an API key in the app, the scheduled job that publishes that feed, where Baseten appears in the app, and the checks that verify both.
-> **Status:** Current. Written 2026-10-19 alongside the commit that added the live catalog. Revised 2026-10-20 after review of PR #417: the daemon fetches the feed only while Baseten is configured, the newest data wins, and the feed builder holds to the parser's bounds.
+> **Status:** Current source snapshot, checked 2026-11-18. The bundled cutoff is 2026-11-18 and includes Kimi K3.1 Pro. Its host-specific context and rates were checked against Baseten's read-only primary model list on that date. Feed deployment and key-scope observations below retain their original October dates.
 > **Audience:** maintainers working on LLM providers, and the repo admin who holds the feed's key.
 
 Baseten's **Model APIs** serve open-weight models (GLM, Kimi, DeepSeek, Nemotron, Muse Spark, GPT OSS) behind an OpenAI-compatible endpoint. Biorouter ships them as a bundled declarative provider, and refreshes the model list and prices from a feed it reads with no key.
@@ -9,9 +9,9 @@ Baseten's **Model APIs** serve open-weight models (GLM, Kimi, DeepSeek, Nemotron
 ## How the provider is wired
 
 - **Declarative config:** `crates/biorouter/src/providers/declarative/baseten.json`. Provider id `baseten`, display name **Baseten**, engine `openai`, `BASETEN_API_KEY`, base URL `https://inference.baseten.co/v1`, streaming on. Public tier by default (`providers/tier_tests.rs`).
-- **Default model:** the first entry, `zai-org/GLM-5.3`.
-- **Context windows:** one exact `MODEL_CONTEXT_WINDOWS` row per slug in `crates/biorouter/src/model.rs`. Slugs are case-sensitive and Baseten keeps vendor casing (`moonshotai/Kimi-K3`).
-- **Prices:** `pricing::BASETEN_SYNC_PRICING`, including each model's cached-input rate. The async path takes those cache rates through `with_cache_rates_from`, because declarative JSON has no cache field.
+- **Default model:** the first entry, `zai-org/GLM-5.3`. Kimi K3.1 Pro is an additional explicit choice, not a replacement for Baseten's default.
+- **Context windows:** one exact `MODEL_CONTEXT_WINDOWS` row per slug in `crates/biorouter/src/model.rs`. Slugs are case-sensitive and Baseten keeps vendor casing (`moonshotai/Kimi-K3.1-Pro`). The bundled host row has a 1,048,576-token context. Native Moonshot `kimi-k3.1-pro` has its own 1,000,000-token row; OpenRouter's `moonshotai/kimi-k3.1-pro` is another route. Host context, output limits and rates must be checked separately.
+- **Prices:** `pricing::BASETEN_SYNC_PRICING`, including each model's cached-input rate. The bundled Baseten Kimi K3.1 Pro card is $2 input, $10 output and $0.20 cached input per million tokens, from the host-specific card. The async path takes those cache rates through `with_cache_rates_from`, because declarative JSON has no cache field.
 - **Left out on purpose:** Beam (`reflection/Beam-1.0`) returns HTTP 400 on a multi-turn request whose assistant turns lack `reasoning_content`, which only `moonshot` replays; SID-1 (`sid/sid-1`) has a 32,768-token window, smaller than Biorouter's instructions plus tool schemas.
 
 ## Where Baseten appears
@@ -70,7 +70,7 @@ The bounds are constants in `crates/biorouter/src/providers/live_catalog.rs`, mi
 | The last good copy | `<state dir>/provider-catalogs/baseten.json`, written when a fetch brings a change. Read at first use, which is also how a CLI process with no daemon gets it. |
 | The bundled catalog | When neither of the above exists, when both are older than the bundled catalog, or when the feed advertises no model Biorouter can drive. |
 
-**Newest data wins.** The bundled catalog was read from Baseten on 2026-10-18 (`BUNDLED_CATALOG_AS_OF` in `live_catalog.rs`). A feed or cached copy whose `fetched_at` is older than that date is ignored, so a release always outranks an older feed or cache. A feed that stopped updating (a revoked key, or a response the builder refuses) cannot hide a model a later release ships, or bill its old prices over the new ones. Move the constant in the same change as `baseten.json` or `BASETEN_SYNC_PRICING`. A feed whose `fetched_at` is not RFC 3339 is refused.
+**Newest data wins.** The bundled freshness cutoff is 2026-11-18 (`BUNDLED_CATALOG_AS_OF` in `live_catalog.rs`), advanced with the Kimi K3.1 Pro addition. This is the bundle's version boundary, not a claim that every older rate was remeasured through an authenticated API on that date. A feed or cached copy whose `fetched_at` is older than that date is ignored, so a release always outranks an older feed or cache. A feed that stopped updating (a revoked key, or a response the builder refuses) cannot hide a model a later release ships, or bill its old prices over the new ones. Move the constant in the same change as `baseten.json` or `BASETEN_SYNC_PRICING`. A feed whose `fetched_at` is not RFC 3339 is refused.
 
 #### What the feed changes
 

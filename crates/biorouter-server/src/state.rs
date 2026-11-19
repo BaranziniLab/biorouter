@@ -19,6 +19,13 @@ use biorouter::agents::ExtensionLoadResult;
 type ExtensionLoadingTasks =
     Arc<Mutex<HashMap<String, Arc<Mutex<Option<JoinHandle<Vec<ExtensionLoadResult>>>>>>>>;
 
+struct SessionExtensionLoading {
+    agent: std::sync::Weak<biorouter::agents::Agent>,
+    gate: Arc<Mutex<()>>,
+}
+
+type SessionExtensionLoaders = Arc<Mutex<HashMap<String, Vec<SessionExtensionLoading>>>>;
+
 /// Process-wide monotonic turn id source. Ids are only used to identify the
 /// in-flight turn a rejected concurrent `/reply` collided with.
 static TURN_SEQ: AtomicU64 = AtomicU64::new(1);
@@ -962,6 +969,8 @@ pub struct AppState {
     observer_streams: Arc<AtomicUsize>,
     pub tunnel_manager: Arc<TunnelManager>,
     pub extension_loading_tasks: ExtensionLoadingTasks,
+    /// Weak identities keep eviction from retaining an agent or reusing its loading gate.
+    session_extension_loaders: SessionExtensionLoaders,
     // Used by knowledge route handlers (Task 5+).
     pub knowledge_service: Arc<KnowledgeService>,
     /// Local dictation's open streams, queued segment count and model install
@@ -992,6 +1001,7 @@ impl AppState {
             observer_streams: Arc::new(AtomicUsize::new(0)),
             tunnel_manager,
             extension_loading_tasks: Arc::new(Mutex::new(HashMap::new())),
+            session_extension_loaders: Arc::new(Mutex::new(HashMap::new())),
             knowledge_service,
             dictation: Arc::new(crate::routes::dictation::DictationStreams::default()),
             decision_service: Arc::new(StdRwLock::new(biorouter::decision::global())),
@@ -1069,6 +1079,7 @@ impl AppState {
             observer_streams: Arc::new(AtomicUsize::new(0)),
             tunnel_manager,
             extension_loading_tasks: Arc::new(Mutex::new(HashMap::new())),
+            session_extension_loaders: Arc::new(Mutex::new(HashMap::new())),
             knowledge_service,
             dictation: Arc::new(crate::routes::dictation::DictationStreams::default()),
             decision_service: Arc::new(StdRwLock::new(biorouter::decision::global())),
@@ -1973,7 +1984,16 @@ impl AppState {
             }
         }
         self.workflow_session_tracker.lock().await.clear();
-        self.agent_manager.clear_sessions().await
+        let cleared = self.agent_manager.clear_sessions().await;
+        // A resume can still own an evicted agent and must retain its loading gate.
+        self.session_extension_loaders
+            .lock()
+            .await
+            .retain(|_, loading| {
+                loading.retain(|entry| entry.agent.strong_count() != 0);
+                !loading.is_empty()
+            });
+        cleared
     }
 
     pub async fn set_extension_loading_task(
@@ -2127,6 +2147,39 @@ impl AppState {
     /// caller must say so rather than reporting it as an empty chat.
     pub async fn peek_agent(&self, session_id: &str) -> Option<Arc<biorouter::agents::Agent>> {
         self.agent_manager.peek_agent(session_id).await
+    }
+
+    /// Serialize the saved roster for this live agent. The core loader skips successful
+    /// explicit entries while retaining current resume results and retries of failed entries.
+    pub(crate) async fn load_session_extensions(
+        &self,
+        session: &biorouter::session::Session,
+        agent: &Arc<biorouter::agents::Agent>,
+    ) -> Vec<ExtensionLoadResult> {
+        let gate = {
+            let mut loaders = self.session_extension_loaders.lock().await;
+            loaders.retain(|_, loading| {
+                loading.retain(|entry| entry.agent.strong_count() != 0);
+                !loading.is_empty()
+            });
+            let loading = loaders.entry(session.id.clone()).or_default();
+            match loading
+                .iter()
+                .find(|entry| entry.agent.ptr_eq(&Arc::downgrade(agent)))
+            {
+                Some(entry) => Arc::clone(&entry.gate),
+                None => {
+                    let gate = Arc::new(Mutex::new(()));
+                    loading.push(SessionExtensionLoading {
+                        agent: Arc::downgrade(agent),
+                        gate: Arc::clone(&gate),
+                    });
+                    gate
+                }
+            }
+        };
+        let _loading = gate.lock().await;
+        agent.load_extensions_from_session(session).await
     }
 
     /// The agent for a route that is about to DO something with it.

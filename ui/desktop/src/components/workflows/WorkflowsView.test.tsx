@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   toastSuccess: vi.fn(),
   toastError: vi.fn(),
   workflowToYaml: vi.fn(),
+  deleteWorkflow: vi.fn(),
 }));
 
 vi.mock('../../workflow/workflow_management', () => ({
@@ -30,6 +31,7 @@ vi.mock('../../api', async (importOriginal) => ({
   startAgent: mocks.startAgent,
   scheduleWorkflow: mocks.scheduleWorkflow,
   workflowToYaml: mocks.workflowToYaml,
+  deleteWorkflow: mocks.deleteWorkflow,
 }));
 vi.mock('../../toasts', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../toasts')>()),
@@ -69,6 +71,45 @@ beforeEach(() => {
   mocks.refreshConfig.mockResolvedValue(undefined);
   mocks.setWorkflowSlashCommand.mockResolvedValue({ data: undefined });
   mocks.userActionHeaders.mockResolvedValue({ 'X-User-Action': 'proof-of-user' });
+  mocks.deleteWorkflow.mockResolvedValue({ data: undefined });
+});
+
+describe('WorkflowsView scheduled deletion', () => {
+  it('names the future-schedule consequence and carries the person’s proof before refreshing', async () => {
+    mocks.listSavedWorkflows
+      .mockResolvedValueOnce([
+        {
+          id: 'scheduled-workflow',
+          file_path: '/tmp/scheduled-workflow.yaml',
+          last_modified: '2026-07-11',
+          schedule_cron: '0 0 14 * * *',
+          workflow: { title: 'Scheduled cohort fixture', description: 'Synthetic fixture' },
+        },
+      ])
+      .mockResolvedValueOnce([]);
+    render(
+      <MemoryRouter>
+        <WorkflowsView />
+      </MemoryRouter>
+    );
+    await chooseFromRowMenu('Scheduled cohort fixture', copy.delete);
+    const confirmation = await screen.findByRole('dialog');
+    expect(confirmation).toHaveAccessibleDescription(/future schedules/i);
+    expect(mocks.deleteWorkflow).not.toHaveBeenCalled();
+    fireEvent.click(within(confirmation).getByRole('button', { name: copy.deleteConfirm }));
+    await waitFor(() =>
+      expect(mocks.deleteWorkflow).toHaveBeenCalledWith({
+        body: { id: 'scheduled-workflow' },
+        headers: { 'X-User-Action': 'proof-of-user' },
+        throwOnError: true,
+      })
+    );
+    await waitFor(() => expect(mocks.listSavedWorkflows).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole('heading', { name: copy.emptyTitle })).toBeInTheDocument();
+    expect(mocks.toastSuccess).toHaveBeenCalledWith({
+      title: copy.deleted('Scheduled cohort fixture'),
+    });
+  });
 });
 
 describe('WorkflowsView loading transition', () => {

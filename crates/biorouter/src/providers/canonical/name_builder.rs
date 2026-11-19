@@ -33,6 +33,13 @@ static CLAUDE_PATTERNS: Lazy<Vec<(Regex, Regex, &'static str)>> = Lazy::new(|| {
 /// Build canonical model name from provider and model identifiers
 pub fn canonical_name(provider: &str, model: &str) -> String {
     let provider = canonical_provider(provider);
+    // The direct alias has only a 1M context label and no published output
+    // ceiling; OpenRouter's 4-0 route publishes its own exact limits.
+    let model = if provider == "mistralai" && model == "mistral-large-4-0" {
+        "mistral-large-4"
+    } else {
+        model
+    };
     let model_base = strip_version_suffix(model);
 
     // OpenRouter models are already in canonical format

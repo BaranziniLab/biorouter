@@ -773,9 +773,54 @@ fn absolutize(path: PathBuf) -> Result<PathBuf> {
 /// Delete a workflow file.
 pub fn delete(id: &str) -> Result<PathBuf> {
     let path = resolve_id(id)?;
+    delete_path(path)
+}
+
+fn delete_path(path: PathBuf) -> Result<PathBuf> {
     fs::remove_file(&path).with_context(|| format!("Failed to delete {}", path.display()))?;
     invalidate();
     Ok(path)
+}
+
+/// A resolved deletion whose scheduled work can be checked before any mutation.
+pub struct WorkflowDeletion {
+    path: PathBuf,
+    schedules: Vec<crate::scheduler::ScheduledJob>,
+}
+
+impl WorkflowDeletion {
+    pub fn schedules(&self) -> &[crate::scheduler::ScheduledJob] {
+        &self.schedules
+    }
+
+    /// Remove future registrations, leaving their already running tasks alone.
+    pub async fn execute(
+        self,
+        scheduler: &dyn crate::scheduler_trait::SchedulerTrait,
+    ) -> Result<PathBuf> {
+        for job in self.schedules {
+            match scheduler.remove_scheduled_job(&job.id, false).await {
+                Ok(()) | Err(crate::scheduler::SchedulerError::JobNotFound(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        delete_path(self.path)
+    }
+}
+
+pub async fn prepare_delete(
+    id: &str,
+    scheduler: &dyn crate::scheduler_trait::SchedulerTrait,
+) -> Result<WorkflowDeletion> {
+    let path = resolve_id(id)?;
+    let resolved = fs::canonicalize(&path)?;
+    let schedules = scheduler
+        .list_scheduled_jobs()
+        .await
+        .into_iter()
+        .filter(|job| fs::canonicalize(&job.source).is_ok_and(|source| source == resolved))
+        .collect();
+    Ok(WorkflowDeletion { path, schedules })
 }
 
 /// Read a workflow file's raw bytes as text, for a caller that wants the YAML

@@ -26,43 +26,11 @@ use crate::model::ModelConfig;
 use crate::providers::base::{ConfigKey, MessageStream};
 use rmcp::model::Tool;
 
-// Verified against docs.github.com supported-models and the GitHub changelog
-// (Sep 25, 2026). Copilot API ids spell Claude versions with dots
-// (claude-opus-5.5), not Anthropic's dashes.
-//
-// Default: GitHub made gpt-5.3-codex the Copilot base/LTS model on Mar 18,
-// 2026 with support through Mar 18, 2027. It is the fallback when no other
-// model is enabled and is included on every paid plan.
-//
-// Removed Sep 2026 (retired, or removal already scheduled):
-// - claude-sonnet-4.5, claude-sonnet-4.6: retired Sep 1, 2026 (Sonnet 4.6
-//   survives only on annual Pro/Pro+ plans); GitHub suggests Claude Sonnet 5.
-// - gemini-2.5-pro: retired Jul 31, 2026.
-// - gemini-3.5-flash: removal from every Copilot experience scheduled for
-//   Oct 2, 2026; GitHub suggests Gemini 3.8 Flash.
-// - gpt-5.5, gpt-5.4, gpt-5.4-mini, gpt-5-mini: removal scheduled for Oct 19,
-//   2026; GitHub suggests GPT-5.6 Sol (GPT-5.6 Luna for the two minis).
-// Earlier: gpt-4.1 (Jun 1, 2026), gpt-4o, gpt-5, gpt-5-codex,
-// claude-sonnet-4 and grok-code-fast-1 left Copilot Chat. There is no
-// gpt-6-terra; Terra exists only as gpt-5.6-terra.
-//
-// Plan gating is GitHub's, not ours: Opus 4.8/5.5, Fable 5.1, GPT-6 Astra/Sol
-// and GPT-5.6 Sol are not included on Copilot Pro, and Fable and Kimi K3 are
-// off by default for Business/Enterprise, so `fetch_supported_models` is what
-// a given account can really use.
-//
-// Kimi K3 (GA on Copilot 2026-08-06, GitHub changelog and the copilot-cli
-// changelog; the supported-models page names it the replacement for Kimi K2.7
-// Code, which leaves Copilot on 2026-10-02) is listed from 2026-09-25. It
-// rejects any non-default temperature, which
-// `formats::openai::model_rejects_sampling_params` drops for the bare id.
-//
-// Not listed, each deliberately: grok-4.6 (superseded by 4.7 at the same
-// price and window; its Copilot vision support rests on models.dev alone),
-// claude-opus-5 and claude-fable-5 (superseded by 5.5 and 5.1 at the same
-// price and window; the dotted Opus 5 id has no primary source), and
-// mai-code-1.1-flash (medium confidence, no registry window). Each can still
-// be typed through "Enter a model not listed".
+// Account discovery controls selectable suggestions and the API default. The
+// metadata catalogue also supplies image capabilities for saved model bindings,
+// including names an account no longer offers. It is not an entitlement list.
+// The declared default is only the documented Business/Enterprise LTS fallback.
+// https://docs.github.com/en/copilot/concepts/models/fallback-and-lts-models
 pub const GITHUB_COPILOT_DEFAULT_MODEL: &str = "gpt-5.3-codex";
 pub const GITHUB_COPILOT_KNOWN_MODELS: &[&str] = &[
     "gpt-5.3-codex",
@@ -96,10 +64,8 @@ pub const GITHUB_COPILOT_STREAM_MODELS: &[&str] = &[
     "gemini-3.8-flash",
     "grok-4.7",
     "kimi-k3",
-    // No longer advertised, but Copilot still serves them until their removal
-    // date (gemini-3.5-flash Oct 2, 2026; the GPT-5.x ids Oct 19, 2026), so a
-    // chat already bound to one keeps streaming until then. "gpt-5.4" also
-    // matches gpt-5.4-mini. Drop these once the dates pass.
+    // Retain the transport of existing saved bindings. GitHub decides whether
+    // each binding still works after it leaves the account catalogue.
     "gpt-5.5",
     "gpt-5.4",
     "gpt-5-mini",
@@ -139,6 +105,74 @@ fn github_copilot_model_supports_vision(name: &str) -> bool {
 /// OpenRouter providers.
 fn github_copilot_model_is_png_jpeg_only(name: &str) -> bool {
     name.to_ascii_lowercase().starts_with("grok-")
+}
+
+// Current structured rows must explicitly permit this picker's chat protocol.
+// Legacy string lists retain their historical contract when metadata is absent.
+fn github_copilot_catalogue_models(catalogue: &Value) -> Option<Vec<String>> {
+    let rows = catalogue.get("data")?.as_array()?;
+    let mut models = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut account_default = None;
+
+    for row in rows {
+        let (id, is_default) = if let Some(id) = row.as_str() {
+            (id, false)
+        } else {
+            let Some(id) = row.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            if row.get("model_picker_enabled").and_then(Value::as_bool) != Some(true)
+                || row.pointer("/capabilities/type").and_then(Value::as_str) != Some("chat")
+            {
+                continue;
+            }
+            if row
+                .pointer("/policy/state")
+                .and_then(Value::as_str)
+                .is_some_and(|state| state != "enabled")
+            {
+                continue;
+            }
+            if let Some(endpoints) = row.get("supported_endpoints") {
+                if !endpoints.as_array().is_some_and(|endpoints| {
+                    endpoints
+                        .iter()
+                        .any(|endpoint| endpoint.as_str() == Some("/chat/completions"))
+                }) {
+                    continue;
+                }
+            }
+            (
+                id,
+                row.get("is_chat_default").and_then(Value::as_bool) == Some(true),
+            )
+        };
+
+        if id.trim().is_empty() || id.eq_ignore_ascii_case("auto") {
+            continue;
+        }
+        if is_default && account_default.is_none() {
+            account_default = Some(id);
+        }
+        if seen.insert(id) {
+            models.push(id.to_string());
+        }
+    }
+
+    // CLI daily guidance is only a secondary preference for a model that this
+    // account actually reports eligible; an API default always wins.
+    let preferred = account_default.or_else(|| {
+        models
+            .iter()
+            .any(|model| model == "claude-sonnet-5.5")
+            .then_some("claude-sonnet-5.5")
+    });
+    if let Some(index) = preferred.and_then(|id| models.iter().position(|model| model == id)) {
+        let model = models.remove(index);
+        models.insert(0, model);
+    }
+    Some(models)
 }
 
 #[derive(Debug, Deserialize)]
@@ -578,7 +612,7 @@ impl Provider for GithubCopilotProvider {
 
     async fn fetch_supported_models(&self) -> Result<Option<Vec<String>>, ProviderError> {
         let (endpoint, token) = self.get_api_info().await?;
-        let url = format!("{}/models", endpoint);
+        let url = format!("{}/models", endpoint.trim_end_matches('/'));
 
         let mut headers = http::HeaderMap::new();
         headers.insert(http::header::ACCEPT, "application/json".parse().unwrap());
@@ -593,27 +627,19 @@ impl Provider for GithubCopilotProvider {
         );
 
         let response = self.client.get(url).headers(headers).send().await?;
+        let catalogue = handle_response_openai_compat(response).await?;
+        Ok(github_copilot_catalogue_models(&catalogue))
+    }
 
-        let json: serde_json::Value = response.json().await?;
-
-        let arr = match json.get("data").and_then(|v| v.as_array()) {
-            Some(arr) => arr,
-            None => return Ok(None),
-        };
-        let mut models: Vec<String> = arr
-            .iter()
-            .filter_map(|m| {
-                if let Some(s) = m.as_str() {
-                    Some(s.to_string())
-                } else if let Some(obj) = m.as_object() {
-                    obj.get("id").and_then(|v| v.as_str()).map(str::to_string)
-                } else {
-                    None
-                }
-            })
-            .collect();
-        models.sort();
-        Ok(Some(models))
+    async fn fetch_recommended_models(&self) -> Result<Option<Vec<String>>, ProviderError> {
+        // Account-authoritative IDs must not be lost to the bundled registry.
+        // Expanding capability metadata on unavailable discovery would offer
+        // models this account did not enable. Successful empty stays empty;
+        // credential checks still see the supported-fetch error directly.
+        match self.fetch_supported_models().await {
+            Ok(Some(models)) => Ok(Some(models)),
+            Ok(None) | Err(_) => Ok(Some(vec![GITHUB_COPILOT_DEFAULT_MODEL.to_string()])),
+        }
     }
 
     async fn configure_oauth(&self) -> Result<(), ProviderError> {

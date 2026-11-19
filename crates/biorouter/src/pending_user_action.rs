@@ -2825,6 +2825,7 @@ mod decision_authority_tests {
             if rel == "crates/biorouter/src/pending_user_action.rs"
                 || rel == "crates/biorouter/tests/folder_access_authorization.rs"
                 || rel == "crates/biorouter/tests/folder_analysis_authorization.rs"
+                || rel == "crates/biorouter/tests/knowledge_macro_tool_bridge.rs"
             {
                 continue;
             }

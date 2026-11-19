@@ -1,4 +1,4 @@
-use crate::action_required_manager::ActionRequiredManager;
+use crate::action_required_manager::{ActionRequiredManager, OrdinaryElicitationCancellation};
 use crate::agents::types::SharedProvider;
 use crate::privacy::CallCapability;
 use crate::session_context::SESSION_ID_HEADER;
@@ -240,36 +240,53 @@ fn wire_progress_token(token: &str) -> ProgressToken {
 /// session wins the wake-up race persist the prompt under its own session id.
 /// A `std::sync::Mutex` so the RAII guard can clean up in `Drop` (a cancelled
 /// dispatch drops the `call_tool` future without reaching any `.await`).
-type ActiveCallSessions = Arc<std::sync::Mutex<Vec<String>>>;
+struct ActiveCall {
+    session_id: String,
+    lifetime: CancellationToken,
+}
+
+type ActiveCallSessions = Arc<std::sync::Mutex<Vec<Arc<ActiveCall>>>>;
 
 /// RAII entry in [`ActiveCallSessions`]: registers the dispatching session on
 /// creation, removes ONE occurrence on drop — including when the `call_tool`
 /// future is dropped mid-await by a cancellation.
 struct ActiveCallGuard {
     sessions: ActiveCallSessions,
-    session_id: String,
+    call: Arc<ActiveCall>,
 }
 
 impl ActiveCallGuard {
-    fn register(sessions: &ActiveCallSessions, session_id: &str) -> Self {
+    fn register(
+        sessions: &ActiveCallSessions,
+        session_id: &str,
+        cancel_token: &CancellationToken,
+    ) -> Self {
+        let call = Arc::new(ActiveCall {
+            session_id: session_id.to_string(),
+            lifetime: cancel_token.child_token(),
+        });
         sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push(session_id.to_string());
+            .push(call.clone());
         Self {
             sessions: sessions.clone(),
-            session_id: session_id.to_string(),
+            call,
         }
     }
 }
 
 impl Drop for ActiveCallGuard {
     fn drop(&mut self) {
+        self.call.lifetime.cancel();
         let mut sessions = self
             .sessions
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(pos) = sessions.iter().position(|s| s == &self.session_id) {
+        if let Some(pos) = sessions
+            .iter()
+            .position(|call| Arc::ptr_eq(call, &self.call))
+        {
             sessions.swap_remove(pos);
         }
     }
@@ -287,20 +304,36 @@ impl Drop for ActiveCallGuard {
 ///    running calls for several sessions at once — the request goes out
 ///    unscoped, deliverable by any session's loop (the pre-scoping behavior,
 ///    kept so it still surfaces instead of timing out silently).
-fn elicitation_session_scope(meta: &Meta, active: &ActiveCallSessions) -> Option<String> {
-    if let Some(Value::String(session_id)) = meta
-        .0
-        .iter()
-        .find_map(|(k, v)| k.eq_ignore_ascii_case(SESSION_ID_HEADER).then_some(v))
-    {
-        return Some(session_id.clone());
-    }
+fn elicitation_call_scope(
+    meta: &Meta,
+    active: &ActiveCallSessions,
+) -> (Option<String>, Vec<CancellationToken>) {
     let sessions = active
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut ids = sessions.iter();
-    let first = ids.next()?;
-    ids.all(|s| s == first).then(|| first.clone())
+    let session_scope = meta
+        .0
+        .iter()
+        .find_map(|(key, value)| key.eq_ignore_ascii_case(SESSION_ID_HEADER).then_some(value))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            let first = sessions.first()?;
+            sessions
+                .iter()
+                .all(|call| call.session_id == first.session_id)
+                .then(|| first.session_id.clone())
+        });
+    let lifetimes = sessions
+        .iter()
+        .filter(|call| {
+            session_scope
+                .as_ref()
+                .is_none_or(|session| &call.session_id == session)
+        })
+        .map(|call| call.lifetime.clone())
+        .collect();
+    (session_scope, lifetimes)
 }
 
 #[derive(Clone, Debug)]
@@ -719,6 +752,18 @@ fn progress_token_key(token: &ProgressToken) -> String {
     }
 }
 
+fn sampling_message_for_provider(msg: &SamplingMessage) -> crate::conversation::message::Message {
+    let base = match msg.role {
+        Role::User => crate::conversation::message::Message::user(),
+        Role::Assistant => crate::conversation::message::Message::assistant(),
+    };
+
+    match msg.content.as_text() {
+        Some(text) => base.with_text(&text.text),
+        None => base.with_content(msg.content.clone().into()),
+    }
+}
+
 impl ClientHandler for BioRouterClient {
     async fn on_progress(
         &self,
@@ -760,7 +805,9 @@ impl ClientHandler for BioRouterClient {
                 .active_call_sessions
                 .lock()
                 .map_err(|_| anyhow::anyhow!("MCP sampling attribution is unavailable"))?
-                .clone();
+                .iter()
+                .map(|call| call.session_id.clone())
+                .collect::<Vec<_>>();
             let crew = crate::crew::manager()?;
             for session in sessions {
                 anyhow::ensure!(
@@ -793,17 +840,7 @@ impl ClientHandler for BioRouterClient {
         let provider_ready_messages: Vec<crate::conversation::message::Message> = params
             .messages
             .iter()
-            .map(|msg| {
-                let base = match msg.role {
-                    Role::User => crate::conversation::message::Message::user(),
-                    Role::Assistant => crate::conversation::message::Message::assistant(),
-                };
-
-                match msg.content.as_text() {
-                    Some(text) => base.with_text(&text.text),
-                    None => base.with_content(msg.content.clone().into()),
-                }
-            })
+            .map(sampling_message_for_provider)
             .collect();
 
         let system_prompt = params
@@ -829,8 +866,8 @@ impl ClientHandler for BioRouterClient {
             let first = sessions.first()?;
             sessions
                 .iter()
-                .all(|session| session == first)
-                .then(|| first.clone())
+                .all(|call| call.session_id == first.session_id)
+                .then(|| first.session_id.clone())
         });
         crate::session::session_manager::side_usage::record_side_call_usage(
             sampling_session.as_deref(),
@@ -885,14 +922,16 @@ impl ClientHandler for BioRouterClient {
         // #40: attribute the request to the session whose tool call raised
         // it, so the ActionRequiredManager delivers the prompt to THAT
         // session's loop only — never to a concurrent session's UI.
-        let session_scope = elicitation_session_scope(&context.meta, &self.active_call_sessions);
+        let (session_scope, lifetimes) =
+            elicitation_call_scope(&context.meta, &self.active_call_sessions);
 
         ActionRequiredManager::global()
-            .request_and_wait(
+            .request_and_wait_cancellable(
                 request.message.clone(),
                 schema_value,
                 Duration::from_secs(300),
                 session_scope.as_deref(),
+                OrdinaryElicitationCancellation::new(context.ct, lifetimes),
             )
             .await
             .map(|outcome| match outcome {
@@ -1215,9 +1254,10 @@ impl McpClientTrait for McpClient {
         };
         // #40: record which session this call belongs to for the duration of
         // the dispatch, so an elicitation the server raises mid-call can be
-        // attributed to it (see `elicitation_session_scope`). RAII: the guard
+        // attributed to it (see `elicitation_call_scope`). RAII: the guard
         // also unregisters when a cancellation drops this future mid-await.
-        let _active_call = ActiveCallGuard::register(&self.active_call_sessions, &meta.session_id);
+        let _active_call =
+            ActiveCallGuard::register(&self.active_call_sessions, &meta.session_id, &cancel_token);
         let res = self
             .send_request(
                 ClientRequest::CallToolRequest(CallToolRequest {
@@ -2169,7 +2209,15 @@ mod tests {
 
     fn active(sessions: &[&str]) -> ActiveCallSessions {
         Arc::new(std::sync::Mutex::new(
-            sessions.iter().map(|s| s.to_string()).collect(),
+            sessions
+                .iter()
+                .map(|session| {
+                    Arc::new(ActiveCall {
+                        session_id: session.to_string(),
+                        lifetime: CancellationToken::new(),
+                    })
+                })
+                .collect(),
         ))
     }
 
@@ -2183,22 +2231,22 @@ mod tests {
         let meta = Meta::default();
 
         // No in-flight call: nothing to attribute.
-        assert_eq!(elicitation_session_scope(&meta, &active(&[])), None);
+        assert_eq!(elicitation_call_scope(&meta, &active(&[])).0, None);
         // Exactly one in-flight call: unambiguous.
         assert_eq!(
-            elicitation_session_scope(&meta, &active(&["sess-a"])),
+            elicitation_call_scope(&meta, &active(&["sess-a"])).0,
             Some("sess-a".to_string())
         );
         // Several in-flight calls, all one session (parallel tools in one
         // batch): still unambiguous.
         assert_eq!(
-            elicitation_session_scope(&meta, &active(&["sess-a", "sess-a"])),
+            elicitation_call_scope(&meta, &active(&["sess-a", "sess-a"])).0,
             Some("sess-a".to_string())
         );
         // A shared pooled client running calls for TWO sessions at once:
         // ambiguous, must fall back to unscoped rather than guess.
         assert_eq!(
-            elicitation_session_scope(&meta, &active(&["sess-a", "sess-b"])),
+            elicitation_call_scope(&meta, &active(&["sess-a", "sess-b"])).0,
             None
         );
     }
@@ -2214,7 +2262,7 @@ mod tests {
         );
         let meta = Meta(meta_map);
         assert_eq!(
-            elicitation_session_scope(&meta, &active(&["sess-a", "sess-b"])),
+            elicitation_call_scope(&meta, &active(&["sess-a", "sess-b"])).0,
             Some("sess-echoed".to_string())
         );
     }
@@ -2226,13 +2274,589 @@ mod tests {
     fn active_call_guard_unregisters_on_drop() {
         let sessions = active(&[]);
         {
-            let _a = ActiveCallGuard::register(&sessions, "sess-a");
-            let _b = ActiveCallGuard::register(&sessions, "sess-a");
+            let _a = ActiveCallGuard::register(&sessions, "sess-a", &CancellationToken::new());
+            let _b = ActiveCallGuard::register(&sessions, "sess-a", &CancellationToken::new());
             assert_eq!(sessions.lock().unwrap().len(), 2);
         }
         assert!(
             sessions.lock().unwrap().is_empty(),
             "dropping the guards must remove exactly their entries"
         );
+    }
+
+    #[test]
+    fn active_call_guard_drop_cancels_only_its_exact_child() {
+        let sessions = active(&[]);
+        let supplied = CancellationToken::new();
+        let first = ActiveCallGuard::register(&sessions, "same-session", &supplied);
+        let second = ActiveCallGuard::register(&sessions, "same-session", &supplied);
+        let first_lifetime = first.call.lifetime.clone();
+        let second_lifetime = second.call.lifetime.clone();
+        drop(second);
+        assert!(second_lifetime.is_cancelled());
+        assert!(!first_lifetime.is_cancelled());
+        assert!(!supplied.is_cancelled());
+        let remaining = sessions.lock().unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert!(Arc::ptr_eq(&remaining[0], &first.call));
+        drop(remaining);
+        drop(first);
+        assert!(first_lifetime.is_cancelled());
+        assert!(!supplied.is_cancelled());
+        assert!(sessions.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn elicitation_empty_call_snapshot_does_not_cancel() {
+        let cancellation =
+            OrdinaryElicitationCancellation::new(CancellationToken::new(), Vec::new());
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => {
+                panic!("an unsolicited request keeps its context and timeout lifetime");
+            }
+            _ = tokio::task::yield_now() => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn elicitation_call_snapshot_does_not_absorb_a_successor() {
+        let sessions = active(&[]);
+        let first = ActiveCallGuard::register(&sessions, "same-session", &CancellationToken::new());
+        let (scope, lifetimes) = elicitation_call_scope(&Meta::default(), &sessions);
+        assert_eq!(scope.as_deref(), Some("same-session"));
+        assert_eq!(lifetimes.len(), 1);
+        drop(first);
+        let successor =
+            ActiveCallGuard::register(&sessions, "same-session", &CancellationToken::new());
+        OrdinaryElicitationCancellation::new(CancellationToken::new(), lifetimes)
+            .cancelled()
+            .await;
+        assert!(!successor.call.lifetime.is_cancelled());
+    }
+
+    mod elicitation_lifetime_tests {
+        use super::*;
+        use crate::conversation::message::{ActionRequiredData, MessageContent};
+        use crate::pending_user_action::ResolveOutcome;
+
+        struct ElicitingServer {
+            outcomes: mpsc::UnboundedSender<(String, CreateElicitationResult)>,
+        }
+
+        impl rmcp::ServerHandler for ElicitingServer {
+            async fn call_tool(
+                &self,
+                request: CallToolRequestParams,
+                context: RequestContext<rmcp::RoleServer>,
+            ) -> Result<CallToolResult, ErrorData> {
+                if request.name.as_ref() == "complete_without_input" {
+                    return Ok(CallToolResult::success(vec![Content::text("completed")]));
+                }
+                let session = context
+                    .meta
+                    .0
+                    .get(SESSION_ID_HEADER)
+                    .and_then(Value::as_str)
+                    .expect("the call carries its exact session")
+                    .to_owned();
+                let mut extensions = Extensions::new();
+                extensions.insert(context.meta.clone());
+                let response = context
+                    .peer
+                    .send_request(rmcp::model::ServerRequest::CreateElicitationRequest(
+                        rmcp::model::CreateElicitationRequest {
+                            method: Default::default(),
+                            params: CreateElicitationRequestParams {
+                                meta: None,
+                                message: format!("{session}: Which synthetic cohort?"),
+                                requested_schema: serde_json::from_value(serde_json::json!({
+                                    "type": "object",
+                                    "properties": {"cohort": {"type": "string"}},
+                                    "required": ["cohort"]
+                                }))
+                                .unwrap(),
+                            },
+                            extensions,
+                        },
+                    ))
+                    .await
+                    .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
+                let rmcp::model::ClientResult::CreateElicitationResult(result) = response else {
+                    return Err(ErrorData::internal_error(
+                        "Unexpected elicitation response",
+                        None,
+                    ));
+                };
+                if request.name.as_ref() == "ask_lab_wait_for_call_cancellation" {
+                    context.ct.cancelled().await;
+                }
+                let _ = self.outcomes.send((session, result));
+                Ok(CallToolResult::success(vec![Content::text(
+                    "input settled",
+                )]))
+            }
+        }
+
+        struct ElicitationFixture {
+            client: Arc<McpClient>,
+            server: tokio::task::JoinHandle<()>,
+            pending: std::sync::Mutex<Vec<(String, String)>>,
+        }
+
+        impl Drop for ElicitationFixture {
+            fn drop(&mut self) {
+                for (session, id) in self.pending.get_mut().unwrap().drain(..) {
+                    ActionRequiredManager::global()
+                        .resolve_ordinary_elicitation(&session, &id, None);
+                }
+                self.server.abort();
+            }
+        }
+
+        async fn connect_eliciting() -> (
+            ElicitationFixture,
+            mpsc::UnboundedReceiver<(String, CreateElicitationResult)>,
+        ) {
+            let (outcomes, received) = mpsc::unbounded_channel();
+            let server = ElicitingServer { outcomes };
+            let (server_read, client_write) = tokio::io::duplex(1 << 16);
+            let (client_read, server_write) = tokio::io::duplex(1 << 16);
+            let server = tokio::spawn(async move {
+                if let Ok(running) = server.serve((server_read, server_write)).await {
+                    let _ = running.waiting().await;
+                }
+            });
+            let client = McpClient::connect_routed(
+                (client_read, client_write),
+                Duration::from_secs(30),
+                empty_provider(),
+                true,
+            )
+            .await
+            .expect("the actual MCP connection initializes");
+            (
+                ElicitationFixture {
+                    client: Arc::new(client),
+                    server,
+                    pending: std::sync::Mutex::new(Vec::new()),
+                },
+                received,
+            )
+        }
+
+        async fn next_card(fixture: &ElicitationFixture, session: &str) -> String {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    for message in ActionRequiredManager::global().drain_requests(session) {
+                        for content in message.content {
+                            if let MessageContent::ActionRequired(action) = content {
+                                if let ActionRequiredData::Elicitation { id, .. } = action.data {
+                                    fixture
+                                        .pending
+                                        .lock()
+                                        .unwrap()
+                                        .push((session.to_owned(), id.clone()));
+                                    return id;
+                                }
+                            }
+                        }
+                    }
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the real MCP handler publishes its scoped input form")
+        }
+
+        async fn two_cards(fixture: &ElicitationFixture, session: &str) -> Vec<String> {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let mut ids = Vec::new();
+                loop {
+                    for message in ActionRequiredManager::global().drain_requests(session) {
+                        for content in message.content {
+                            if let MessageContent::ActionRequired(action) = content {
+                                if let ActionRequiredData::Elicitation { id, .. } = action.data {
+                                    fixture
+                                        .pending
+                                        .lock()
+                                        .unwrap()
+                                        .push((session.to_owned(), id.clone()));
+                                    ids.push(id);
+                                }
+                            }
+                        }
+                    }
+                    if ids.len() == 2 {
+                        return ids;
+                    }
+                    assert!(ids.len() < 2, "exactly two synthetic calls publish forms");
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .expect("the real MCP handler publishes both scoped input forms")
+        }
+
+        async fn a_sibling_lifetime_preserves_a_live_form(cancel_sibling: bool) {
+            let (fixture, mut outcomes) = connect_eliciting().await;
+            let session = format!("elicitation-sibling-{}", uuid::Uuid::new_v4());
+            let sibling_token = CancellationToken::new();
+            let mut sibling = Some(ActiveCallGuard::register(
+                &fixture.client.active_call_sessions,
+                &session,
+                &sibling_token,
+            ));
+            let supplied = CancellationToken::new();
+            let call = fixture.client.call_tool(
+                "ask_lab",
+                None,
+                McpMeta::new(&session, CallCapability::for_test_restricted()),
+                supplied.clone(),
+            );
+            let observe = async {
+                let id = next_card(&fixture, &session).await;
+                if cancel_sibling {
+                    sibling_token.cancel();
+                } else {
+                    drop(sibling.take());
+                    assert!(!sibling_token.is_cancelled());
+                }
+                let answer = serde_json::json!({"cohort": "synthetic live sibling control"});
+                assert_eq!(
+                    ActionRequiredManager::global().resolve_ordinary_elicitation(
+                        &session,
+                        &id,
+                        Some(answer.clone()),
+                    ),
+                    ResolveOutcome::Delivered,
+                    "another call's completion or cancellation keeps this live form deliverable",
+                );
+                let (owner, result) = tokio::time::timeout(Duration::from_secs(5), outcomes.recv())
+                    .await
+                    .expect("the real MCP server receives the live answer")
+                    .expect("the MCP server remains alive");
+                assert_eq!(owner, session);
+                assert_eq!(result.action, ElicitationAction::Accept);
+                assert_eq!(result.content, Some(answer));
+            };
+            let (result, ()) = tokio::join!(call, observe);
+            assert!(!result.unwrap().is_error.unwrap_or(false));
+            assert!(!supplied.is_cancelled());
+        }
+
+        #[tokio::test]
+        async fn elicitation_sibling_completion_preserves_a_live_form() {
+            a_sibling_lifetime_preserves_a_live_form(false).await;
+        }
+
+        #[tokio::test]
+        async fn elicitation_sibling_cancellation_preserves_a_live_form() {
+            a_sibling_lifetime_preserves_a_live_form(true).await;
+        }
+
+        #[tokio::test]
+        async fn elicitation_common_parent_stop_cancels_both_same_session_forms() {
+            let (fixture, mut outcomes) = connect_eliciting().await;
+            let session = format!("elicitation-parent-{}", uuid::Uuid::new_v4());
+            let parent = CancellationToken::new();
+            let first = fixture.client.call_tool(
+                "ask_lab_wait_for_call_cancellation",
+                None,
+                McpMeta::new(&session, CallCapability::for_test_restricted()),
+                parent.child_token(),
+            );
+            let second = fixture.client.call_tool(
+                "ask_lab_wait_for_call_cancellation",
+                None,
+                McpMeta::new(&session, CallCapability::for_test_restricted()),
+                parent.child_token(),
+            );
+            let observe = async {
+                let ids = two_cards(&fixture, &session).await;
+                parent.cancel();
+                for _ in 0..2 {
+                    let (owner, result) =
+                        tokio::time::timeout(Duration::from_secs(5), outcomes.recv())
+                            .await
+                            .expect("both real MCP forms settle after the common Stop")
+                            .expect("the MCP server remains alive");
+                    assert_eq!(owner, session);
+                    assert_eq!(result.action, ElicitationAction::Cancel);
+                    assert_eq!(result.content, None);
+                }
+                for id in ids {
+                    assert_eq!(
+                        ActionRequiredManager::global().resolve_ordinary_elicitation(
+                            &session,
+                            &id,
+                            Some(serde_json::json!({"cohort": "synthetic late answer"})),
+                        ),
+                        ResolveOutcome::Unknown,
+                    );
+                }
+            };
+            let (first, second, ()) = tokio::join!(first, second, observe);
+            assert!(first.is_err());
+            assert!(second.is_err());
+        }
+
+        enum SettlementOrder {
+            AnswerThenStop,
+            ClaimThenStopThenDeliver,
+            StopThenClaim,
+            StopThenLegacyAnswer,
+            StopThenLegacyCancellation,
+        }
+
+        async fn first_settlement(order: SettlementOrder) {
+            use std::future::Future as _;
+            use std::task::Poll;
+
+            let (fixture, _outcomes) = connect_eliciting().await;
+            let session = format!("elicitation-first-settlement-{}", uuid::Uuid::new_v4());
+            let supplied = CancellationToken::new();
+            let _active = ActiveCallGuard::register(
+                &fixture.client.active_call_sessions,
+                &session,
+                &supplied,
+            );
+            let handler = BioRouterClient::with_routing(
+                Arc::new(Mutex::new(Vec::new())),
+                Arc::new(std::sync::Mutex::new(HashMap::new())),
+                true,
+                fixture.client.active_call_sessions.clone(),
+                empty_provider(),
+            );
+            let context = RequestContext {
+                ct: CancellationToken::new(),
+                id: RequestId::Number(1),
+                meta: Meta::new(),
+                extensions: Extensions::new(),
+                peer: fixture.client.client.lock().await.peer().clone(),
+            };
+            let form = handler.create_elicitation(
+                CreateElicitationRequestParams {
+                    meta: None,
+                    message: "Which synthetic cohort?".to_owned(),
+                    requested_schema: serde_json::from_value(serde_json::json!({
+                        "type": "object", "properties": {"cohort": {"type": "string"}},
+                        "required": ["cohort"]
+                    }))
+                    .unwrap(),
+                },
+                context,
+            );
+            tokio::pin!(form);
+            assert!(
+                std::future::poll_fn(|cx| Poll::Ready(form.as_mut().poll(cx)))
+                    .await
+                    .is_pending()
+            );
+            let id = next_card(&fixture, &session).await;
+            let answer = serde_json::json!({"cohort": "synthetic acknowledged answer"});
+            let accepted = match order {
+                SettlementOrder::AnswerThenStop => {
+                    assert_eq!(
+                        ActionRequiredManager::global().resolve_ordinary_elicitation(
+                            &session,
+                            &id,
+                            Some(answer.clone()),
+                        ),
+                        ResolveOutcome::Delivered
+                    );
+                    supplied.cancel();
+                    true
+                }
+                SettlementOrder::ClaimThenStopThenDeliver => {
+                    let claim = ActionRequiredManager::global()
+                        .claim_ordinary_elicitation(&session, &id)
+                        .expect("the answer claims this live form before Stop");
+                    supplied.cancel();
+                    assert!(
+                        std::future::poll_fn(|cx| Poll::Ready(form.as_mut().poll(cx)))
+                            .await
+                            .is_pending(),
+                        "a claimed answer keeps its receiver through Stop"
+                    );
+                    assert_eq!(
+                        claim.deliver(Some(answer.clone())),
+                        ResolveOutcome::Delivered
+                    );
+                    true
+                }
+                SettlementOrder::StopThenClaim => {
+                    supplied.cancel();
+                    assert_eq!(
+                        ActionRequiredManager::global().resolve_ordinary_elicitation(
+                            &session,
+                            &id,
+                            Some(answer.clone()),
+                        ),
+                        ResolveOutcome::Unknown
+                    );
+                    false
+                }
+                SettlementOrder::StopThenLegacyAnswer => {
+                    supplied.cancel();
+                    assert!(ActionRequiredManager::global()
+                        .submit_response(&session, id, answer.clone())
+                        .await
+                        .is_err());
+                    false
+                }
+                SettlementOrder::StopThenLegacyCancellation => {
+                    supplied.cancel();
+                    assert!(ActionRequiredManager::global()
+                        .submit_cancellation(&session, id)
+                        .await
+                        .is_err());
+                    false
+                }
+            };
+            let result = form.await.unwrap();
+            if accepted {
+                assert_eq!(result.action, ElicitationAction::Accept);
+                assert_eq!(result.content, Some(answer));
+            } else {
+                assert_eq!(result.action, ElicitationAction::Cancel);
+                assert_eq!(result.content, None);
+            }
+        }
+
+        #[tokio::test]
+        async fn elicitation_an_acknowledged_answer_survives_a_later_stop() {
+            first_settlement(SettlementOrder::AnswerThenStop).await;
+        }
+
+        #[tokio::test]
+        async fn elicitation_an_existing_answer_claim_survives_stop_until_delivery() {
+            first_settlement(SettlementOrder::ClaimThenStopThenDeliver).await;
+        }
+
+        #[tokio::test]
+        async fn elicitation_stop_before_claim_rejects_all_ordinary_delivery_paths() {
+            first_settlement(SettlementOrder::StopThenClaim).await;
+            first_settlement(SettlementOrder::StopThenLegacyAnswer).await;
+            first_settlement(SettlementOrder::StopThenLegacyCancellation).await;
+        }
+
+        async fn cancellation_rejects_a_late_answer(drop_call: bool) {
+            let (fixture, mut outcomes) = connect_eliciting().await;
+            let cancelled_session = format!("elicitation-cancel-{}", uuid::Uuid::new_v4());
+            let other_session = format!("elicitation-other-{}", uuid::Uuid::new_v4());
+            let token = CancellationToken::new();
+            let drop_outward = tokio::sync::Notify::new();
+            let outward_ended = tokio::sync::Notify::new();
+            let call = fixture.client.call_tool(
+                "ask_lab",
+                None,
+                McpMeta::new(&cancelled_session, CallCapability::for_test_restricted()),
+                token.clone(),
+            );
+            let cancelled_call = async {
+                tokio::pin!(call);
+                let result = if drop_call {
+                    tokio::select! {
+                        biased;
+                        _ = drop_outward.notified() => None,
+                        result = &mut call => Some(result),
+                    }
+                } else {
+                    Some(call.await)
+                };
+                outward_ended.notify_one();
+                result
+            };
+            let other_call = fixture.client.call_tool(
+                "ask_lab",
+                None,
+                McpMeta::new(&other_session, CallCapability::for_test_restricted()),
+                CancellationToken::new(),
+            );
+            let observe = async {
+                let cancelled_id = next_card(&fixture, &cancelled_session).await;
+                let other_id = next_card(&fixture, &other_session).await;
+
+                let ordinary = fixture
+                    .client
+                    .call_tool(
+                        "complete_without_input",
+                        None,
+                        McpMeta::new(&cancelled_session, CallCapability::for_test_restricted()),
+                        CancellationToken::new(),
+                    )
+                    .await
+                    .expect("another tool in the same session completes normally");
+                assert!(!ordinary.is_error.unwrap_or(false));
+                assert!(
+                    outcomes.try_recv().is_err(),
+                    "completion cannot cancel parked input"
+                );
+
+                token.cancel();
+                if drop_call {
+                    drop_outward.notify_one();
+                }
+                tokio::time::timeout(Duration::from_secs(5), outward_ended.notified())
+                    .await
+                    .expect("the cancelled outward call ends promptly");
+
+                let other_answer = serde_json::json!({"cohort": "synthetic surviving cohort"});
+                assert_eq!(
+                    ActionRequiredManager::global().resolve_ordinary_elicitation(
+                        &other_session,
+                        &other_id,
+                        Some(other_answer.clone()),
+                    ),
+                    ResolveOutcome::Delivered,
+                    "cancelling one session preserves the other session's waiter"
+                );
+
+                let mut received = HashMap::new();
+                let _ = tokio::time::timeout(Duration::from_secs(5), async {
+                    while received.len() < 2 {
+                        let (session, result) =
+                            outcomes.recv().await.expect("the MCP server remains alive");
+                        received.insert(session, result);
+                    }
+                })
+                .await;
+
+                let late = ActionRequiredManager::global().resolve_ordinary_elicitation(
+                    &cancelled_session,
+                    &cancelled_id,
+                    Some(serde_json::json!({"cohort": "synthetic late answer"})),
+                );
+                assert_eq!(
+                    late,
+                    ResolveOutcome::Unknown,
+                    "a stopped MCP request cannot accept or deliver a late answer"
+                );
+                let stopped = received
+                    .get(&cancelled_session)
+                    .expect("the real MCP server receives cancellation without an answer");
+                assert_eq!(stopped.action, ElicitationAction::Cancel);
+                assert_eq!(stopped.content, None);
+                let other = received
+                    .get(&other_session)
+                    .expect("the other request settles");
+                assert_eq!(other.action, ElicitationAction::Accept);
+                assert_eq!(other.content, Some(other_answer));
+            };
+            let (cancelled, other, ()) = tokio::join!(cancelled_call, other_call, observe);
+            assert!(drop_call || cancelled.is_some_and(|result| result.is_err()));
+            assert!(other.is_ok());
+        }
+
+        #[tokio::test]
+        async fn elicitation_cancelled_call_rejects_late_answer_without_affecting_other_requests() {
+            cancellation_rejects_a_late_answer(false).await;
+        }
+
+        #[tokio::test]
+        async fn elicitation_cancelled_call_and_dropped_future_rejects_late_answer() {
+            cancellation_rejects_a_late_answer(true).await;
+        }
     }
 }

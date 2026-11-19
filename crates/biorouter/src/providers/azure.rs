@@ -27,14 +27,9 @@ use crate::model::ModelConfig;
 use crate::providers::utils::RequestLog;
 use rmcp::model::Tool;
 
-// GPT-6 Sol is the default (2026-09-25). It has been GA on Azure Global
-// Standard since 2026-09-22, costs less than gpt-5.4 ($2 in / $10 out per MTok
-// against $2.50 / $15) with the same 1,050,000-token window, and is the
-// like-for-like successor of the GPT-5.x default tier. Like gpt-5.4 and 5.5
-// before it, the Azure models page notes that "some quota tiers require quota
-// requests for the GPT-6 family", so a low-tier subscription may need one.
-// It posts to the Responses route below, never to Chat Completions.
-pub const AZURE_DEFAULT_MODEL: &str = "gpt-6-sol-2026-09-22";
+// Public Azure flagship version (2026-11-17). The resource deployment alias
+// and quota/region entitlements stay explicit; GPT-6 uses the Responses route.
+pub const AZURE_DEFAULT_MODEL: &str = "gpt-6.2-astra-2026-11-17";
 pub const AZURE_DOC_URL: &str =
     "https://learn.microsoft.com/en-us/azure/foundry/foundry-models/concepts/models-sold-directly-by-azure";
 // Use 2025-01-01-preview to support o-series alongside GPT models. Applies to
@@ -87,9 +82,14 @@ const AZURE_RESPONSES_PATH: &str = "openai/v1/responses";
 //     reasoning. Such a chat has to be switched to the gpt-5.6 id.
 //   * gpt-4.1-2025-04-14 and gpt-4.1-mini-2025-04-14 — retire 2027-04-14.
 //
-// Not offered: gpt-6-terra, which does not exist (Terra exists only as
-// gpt-5.6-terra), and the Responses-only codex and -pro models.
+// Not offered: the nonexistent unsuffixed gpt-6-terra, or deployment-specific
+// codex and -pro models. GPT-6.1 Terra is a separate supported generation.
 pub const AZURE_OPENAI_KNOWN_MODELS: &[&str] = &[
+    // Public Azure versions; the configured deployment alias is independent.
+    "gpt-6.2-astra-2026-11-17",
+    "gpt-6.2-sol-2026-11-17",
+    "gpt-6.1-sol-2026-09-29",
+    "gpt-6.1-terra-2026-10-26",
     // GPT-6 [responses] — Sol and Luna version 2026-09-22, Astra version
     // 2026-09-03 (not the 2026-09-04 aggregators give; Azure deploys by
     // version). All three: 1,050,000-token window (922,000 in / 128,000 out),
@@ -603,6 +603,10 @@ mod tests {
     #[test]
     fn each_catalog_model_takes_the_route_it_needs() {
         let responses = [
+            "gpt-6.2-sol-2026-11-17",
+            "gpt-6.2-astra-2026-11-17",
+            "gpt-6.1-sol-2026-09-29",
+            "gpt-6.1-terra-2026-10-26",
             "gpt-6-sol-2026-09-22",
             "gpt-6-astra-2026-09-03",
             "gpt-6-luna-2026-09-22",
@@ -644,7 +648,7 @@ mod tests {
 
     #[test]
     fn catalog_leads_with_the_default_and_drops_deprecated_models() {
-        assert_eq!(AZURE_DEFAULT_MODEL, "gpt-6-sol-2026-09-22");
+        assert_eq!(AZURE_DEFAULT_MODEL, "gpt-6.2-astra-2026-11-17");
         assert_eq!(
             AZURE_OPENAI_KNOWN_MODELS.first(),
             Some(&AZURE_DEFAULT_MODEL)
@@ -1322,6 +1326,61 @@ mod tests {
             assert_eq!(error.to_string(), RESPONSES_STOP);
             assert!(stream.next().await.is_none());
             assert_eq!(requests(&server).await, 1, "sent once");
+        }
+    }
+}
+
+#[cfg(test)]
+mod hosted_refresh_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn hosted_refresh_azure_catalogue_and_deployment_routing_stay_separate() {
+        let metadata = AzureProvider::metadata();
+        assert_eq!(metadata.default_model, "gpt-6.2-astra-2026-11-17");
+        let offered: Vec<_> = metadata
+            .known_models
+            .iter()
+            .take(4)
+            .map(|m| m.name.as_str())
+            .collect();
+        assert_eq!(
+            offered,
+            [
+                "gpt-6.2-astra-2026-11-17",
+                "gpt-6.2-sol-2026-11-17",
+                "gpt-6.1-sol-2026-09-29",
+                "gpt-6.1-terra-2026-10-26"
+            ]
+        );
+        for model in offered {
+            let provider = AzureProvider {
+                api_client: ApiClient::new(
+                    "https://azure.invalid".to_string(),
+                    AuthMethod::BearerToken("fixture".to_string()),
+                )
+                .unwrap(),
+                deployment_name: "my-existing-deployment".to_string(),
+                api_version: AZURE_DEFAULT_API_VERSION.to_string(),
+                model: ModelConfig::new_or_fail(model).with_temperature(Some(0.0)),
+                name: "azure_openai".to_string(),
+            };
+            let tool: Tool = serde_json::from_value(json!({"name":"lookup","description":"Look up a record","inputSchema":{"type":"object","properties":{}}})).unwrap();
+            let (path, payload) = provider
+                .build_stream_request(
+                    "system",
+                    &[Message::user().with_text("look up record")],
+                    &[tool],
+                )
+                .unwrap();
+            assert_eq!(path, "openai/v1/responses", "{model}");
+            assert_eq!(payload["model"], "my-existing-deployment", "{model}");
+            assert!(
+                payload["tools"].as_array().is_some_and(|t| !t.is_empty()),
+                "{model}"
+            );
+            assert!(payload.get("temperature").is_none(), "{model}");
         }
     }
 }

@@ -10,9 +10,13 @@ use crate::model::ModelConfig;
 use crate::providers::base::{
     ConfigKey, MessageStream, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage,
 };
-use crate::providers::formats::openai::{create_request, get_usage, response_to_message};
+use crate::providers::formats::openai::{
+    add_reasoning_content_to_request, create_request, get_usage, response_to_message,
+    stamp_reasoning_provenance,
+};
 use anyhow::Result;
 use async_trait::async_trait;
+use futures::StreamExt;
 use rmcp::model::Tool;
 use serde_json::Value;
 
@@ -32,9 +36,8 @@ pub const XIAOMI_MIMO_API_HOST: &str = "https://token-plan-sgp.xiaomimimo.com/v1
 // mimo-v2.5 and mimo-v2.5-pro with a shutdown at 2026-10-21 10:00 Beijing
 // time and NO replacement routing — requests to either name fail after that
 // (platform.xiaomimimo.com, read 2026-09-24). The v2-pro / v2-omni names
-// expired on 2026-06-30. Flash is the default because it is the same-price
-// successor to the old default and is on the Token Plan the default host
-// serves ("V2.6 Flagship Model Access").
+// expired on 2026-06-30. Xiaomi recommends Flash's balance for frequent
+// everyday professional work; Pro is the optional complex-task flagship.
 pub const XIAOMI_MIMO_DEFAULT_MODEL: &str = "mimo-v2.6-flash";
 /// Default first: the desktop model switcher preselects entry 0.
 pub const XIAOMI_MIMO_KNOWN_MODELS: &[&str] = &[
@@ -199,7 +202,7 @@ impl Provider for XiaomiMimoProvider {
         let stripped = (!model_supports_vision(&model_config.model_name))
             .then(|| strip_image_content(messages));
         let messages = stripped.as_deref().unwrap_or(messages);
-        let payload = create_request(
+        let mut payload = create_request(
             model_config,
             system,
             messages,
@@ -207,11 +210,13 @@ impl Provider for XiaomiMimoProvider {
             &super::utils::ImageFormat::OpenAi,
             false,
         )?;
+        add_reasoning_content_to_request(&mut payload, messages, &self.name);
 
         let mut log = RequestLog::start(&self.model, &payload)?;
         let response = self.with_retry(|| self.post(payload.clone())).await?;
 
-        let message = response_to_message(&response)?;
+        let mut message = response_to_message(&response)?;
+        stamp_reasoning_provenance(&mut message, &self.name);
         let usage = response.get("usage").map(get_usage).unwrap_or_else(|| {
             tracing::debug!("Failed to get usage data");
             Usage::default()
@@ -234,7 +239,7 @@ impl Provider for XiaomiMimoProvider {
         let stripped =
             (!model_supports_vision(&self.model.model_name)).then(|| strip_image_content(messages));
         let messages = stripped.as_deref().unwrap_or(messages);
-        let payload = create_request(
+        let mut payload = create_request(
             &self.model,
             system,
             messages,
@@ -242,6 +247,7 @@ impl Provider for XiaomiMimoProvider {
             &super::utils::ImageFormat::OpenAi,
             true,
         )?;
+        add_reasoning_content_to_request(&mut payload, messages, &self.name);
         let mut log = RequestLog::start(&self.model, &payload)?;
 
         let response = self
@@ -257,13 +263,169 @@ impl Provider for XiaomiMimoProvider {
                 let _ = log.error(e);
             })?;
 
-        stream_openai_compat(response, log)
+        let stream = stream_openai_compat(response, log)?;
+        let provider_name = self.name.clone();
+        Ok(Box::pin(stream.map(move |item| {
+            item.map(|(message, usage, pending)| {
+                let message = message.map(|mut message| {
+                    stamp_reasoning_provenance(&mut message, &provider_name);
+                    message
+                });
+                (message, usage, pending)
+            })
+        })))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::StreamExt;
+    use serde_json::json;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn synthetic_provider(server: &MockServer) -> XiaomiMimoProvider {
+        XiaomiMimoProvider {
+            api_client: ApiClient::new(
+                server.uri(),
+                AuthMethod::BearerToken("synthetic-mimo-key".to_string()),
+            )
+            .unwrap(),
+            model: ModelConfig::new_or_fail(XIAOMI_MIMO_DEFAULT_MODEL),
+            supports_streaming: true,
+            name: "xiaomi_mimo".to_string(),
+        }
+    }
+
+    fn reasoning_tool_response() -> Value {
+        json!({
+            "model": XIAOMI_MIMO_DEFAULT_MODEL,
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "reasoning_content": "Check the sample count before answering.",
+                    "tool_calls": [{"id": "call_1", "type": "function", "function": {
+                        "name": "sample_count", "arguments": "{}"
+                    }}]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        })
+    }
+
+    async fn synthetic_answer(
+        provider: &XiaomiMimoProvider,
+        messages: &[Message],
+        streamed: bool,
+    ) -> Message {
+        if streamed {
+            let mut stream = provider.stream("system", messages, &[]).await.unwrap();
+            while let Some(item) = stream.next().await {
+                if let Some(message) = item.unwrap().0 {
+                    if message
+                        .content
+                        .iter()
+                        .any(|c| c.as_tool_request().is_some())
+                    {
+                        return message;
+                    }
+                }
+            }
+            panic!("the synthetic stream must contain a tool request");
+        }
+        provider
+            .complete_with_model(&provider.model, "system", messages, &[])
+            .await
+            .unwrap()
+            .0
+    }
+
+    async fn assert_reasoning_tool_history(streamed: bool) {
+        use rmcp::model::{CallToolResult, Content};
+        {
+            let server = MockServer::start().await;
+            let template = if streamed {
+                let event = json!({
+                    "id": "synthetic-mimo", "model": XIAOMI_MIMO_DEFAULT_MODEL,
+                    "choices": [{"index": 0, "delta": {
+                        "reasoning_content": "Check the sample count before answering.",
+                        "tool_calls": [{"index": 0, "id": "call_1", "type": "function",
+                            "function": {"name": "sample_count", "arguments": "{}"}}]
+                    }, "finish_reason": "tool_calls"}]
+                });
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(format!("data: {event}\n\ndata: [DONE]\n\n"))
+            } else {
+                ResponseTemplate::new(200).set_body_json(reasoning_tool_response())
+            };
+            Mock::given(method("POST"))
+                .and(path("/chat/completions"))
+                .respond_with(template)
+                .mount(&server)
+                .await;
+            let provider = synthetic_provider(&server);
+            let mut history = vec![Message::user().with_text("How many samples are there?")];
+            history.push(synthetic_answer(&provider, &history, streamed).await);
+            history.push(Message::user().with_tool_response(
+                "call_1",
+                Ok(CallToolResult {
+                    content: vec![Content::text("12 samples")],
+                    structured_content: None,
+                    is_error: Some(false),
+                    meta: None,
+                }),
+            ));
+            synthetic_answer(&provider, &history, streamed).await;
+            let requests = server.received_requests().await.unwrap();
+            let followup: Value = serde_json::from_slice(&requests[1].body).unwrap();
+            let assistant = followup["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|message| message["role"] == "assistant")
+                .unwrap();
+            assert_eq!(
+                assistant["reasoning_content"], "Check the sample count before answering.",
+                "MiMo requires the complete reasoning on a tool-history turn; streamed={streamed}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn mimo_reasoning_tool_history_replays_after_complete() {
+        assert_reasoning_tool_history(false).await;
+    }
+
+    #[tokio::test]
+    async fn mimo_reasoning_tool_history_replays_after_stream() {
+        assert_reasoning_tool_history(true).await;
+    }
+
+    #[tokio::test]
+    async fn mimo_does_not_replay_another_providers_reasoning() {
+        use crate::providers::formats::openai::stamp_reasoning_provenance;
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(reasoning_tool_response()))
+            .mount(&server)
+            .await;
+        let provider = synthetic_provider(&server);
+        let mut foreign = response_to_message(&reasoning_tool_response()).unwrap();
+        stamp_reasoning_provenance(&mut foreign, "moonshot");
+        synthetic_answer(&provider, &[foreign], false).await;
+        let requests = server.received_requests().await.unwrap();
+        let payload: Value = serde_json::from_slice(&requests[0].body).unwrap();
+        assert!(payload["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|message| message.get("reasoning_content").is_none()));
+    }
 
     #[test]
     fn test_metadata_structure() {
