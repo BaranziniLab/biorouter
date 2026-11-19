@@ -2880,7 +2880,7 @@ const showWindow = async () => {
       height: currentBounds.height,
     });
 
-    if (!win.isVisible()) {
+    if (process.platform === 'darwin' || !win.isVisible()) {
       win.show();
     }
 
