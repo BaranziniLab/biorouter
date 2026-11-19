@@ -76,6 +76,7 @@ function Invoke-PortReleaseTest {
 
         $env:BIOROUTER_PATH_ROOT = $root
         $env:BIOROUTER_DISABLE_KEYRING = 'true'
+        $env:BIOROUTER_DEV_PROFILE_ROOT = [IO.Path]::GetFullPath($root)
         $env:BIOROUTER_PORT = "$Port"
         $env:BIOROUTER_SERVER__SECRET_KEY = $secret
         $env:BIOROUTER_LLAMACPP_BIN = $Sleeper

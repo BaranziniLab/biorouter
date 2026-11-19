@@ -3,9 +3,10 @@ import { ActionRequired } from '../api';
 import JsonSchemaForm from './ui/JsonSchemaForm';
 import type { JsonSchema } from './ui/JsonSchemaForm';
 import { Check, X } from './icons/app-icons';
-import { errorMessage } from '../utils/conversionUtils';
+import { describeRequestFailure } from '../utils/conversionUtils';
+import { isBrowserSurface } from '../utils/surface';
 import { TranscriptRow } from './TranscriptRow';
-import { ELICITATION_COPY } from './toolCallCopy';
+import { APPROVAL_COPY, ELICITATION_COPY } from './toolCallCopy';
 import { Disclosure } from './ui/disclosure';
 import { InfoTip } from './ui/info-tip';
 import { foldForHelp } from '../utils/proseFold';
@@ -28,6 +29,7 @@ export default function ElicitationRequest({
   const settledOutcome = outcome ?? externalOutcome;
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const browserUnavailable = isBrowserSurface();
 
   // Latch Stop at commit, before an in-flight delivery can finish; a delivered
   // answer may precede its transcript event and must keep its earlier outcome.
@@ -44,14 +46,14 @@ export default function ElicitationRequest({
   const { id: elicitationId, message, requested_schema } = actionRequiredContent.data;
 
   const handleSubmit = async (formData: Record<string, unknown>) => {
-    if (submitting || settledOutcome !== null) return;
+    if (browserUnavailable || submitting || settledOutcome !== null) return;
     setSubmitting(true);
     setError(null);
     try {
       await onSubmit(elicitationId, formData);
       setOutcome((current) => current ?? 'sent');
     } catch (failure) {
-      setError(errorMessage(failure));
+      setError(describeRequestFailure(failure));
     } finally {
       setSubmitting(false);
     }
@@ -98,18 +100,30 @@ export default function ElicitationRequest({
           <p className="whitespace-pre-wrap text-body text-text-default">{details}</p>
         </Disclosure>
       ) : null}
-      {error && (
-        <p role="alert" className="text-supporting text-text-danger">
-          {error}
+      {browserUnavailable ? (
+        <p role="status" className="text-body text-text-muted">
+          {APPROVAL_COPY.browserCannotApprove}{' '}
+          <InfoTip
+            label={APPROVAL_COPY.browserCannotApproveName}
+            help={APPROVAL_COPY.browserCannotApproveWhy}
+          />
         </p>
+      ) : (
+        <>
+          {error && (
+            <p role="alert" className="text-supporting text-text-danger">
+              {error}
+            </p>
+          )}
+          <fieldset disabled={submitting} className="min-w-0">
+            <JsonSchemaForm
+              schema={requested_schema as JsonSchema}
+              onSubmit={handleSubmit}
+              submitLabel={submitting ? ELICITATION_COPY.submitting : ELICITATION_COPY.submit}
+            />
+          </fieldset>
+        </>
       )}
-      <fieldset disabled={submitting} className="min-w-0">
-        <JsonSchemaForm
-          schema={requested_schema as JsonSchema}
-          onSubmit={handleSubmit}
-          submitLabel={submitting ? ELICITATION_COPY.submitting : ELICITATION_COPY.submit}
-        />
-      </fieldset>
     </div>
   );
 }
