@@ -294,8 +294,11 @@ pub struct ShellParams {
     /// Run the command in the background instead of waiting for it to finish.
     /// Use this for long-lived commands (dev servers, builds, test suites,
     /// training runs) you need to keep running and observe. Returns a job_id
-    /// immediately; then use shell_status / shell_kill. Do NOT
-    /// append `&` yourself for this — set background=true.
+    /// and a log file holding the job's output and, once it ends, its exit
+    /// status (read it with `tail`); shell_status / shell_kill also manage the
+    /// job when you have them. A job that ends within 2 seconds reports its
+    /// exit status and output at once. Do NOT append `&` yourself for this —
+    /// set background=true.
     #[serde(default)]
     pub background: Option<bool>,
     /// Optional short label for a background job, shown by shell_status.
@@ -336,6 +339,11 @@ const SHELL_PREVIEW_MAX_CHARS: usize = 8_000;
 /// foreground budget then killed. The same 2 s grace the background supervisor
 /// gives its readers (`finish_output` in `background.rs`).
 const FOREGROUND_PIPE_GRACE: Duration = Duration::from_secs(2);
+
+/// How long a `background=true` call waits before answering, so that a job
+/// which fails at once reports its exit status and output instead of
+/// "Started" (P04). A job still running at the end of it costs this much once.
+const BACKGROUND_EARLY_EXIT_WINDOW: Duration = Duration::from_secs(2);
 
 /// The line a foreground call adds when it returned while a process the shell
 /// started still held the output pipe.
@@ -1463,7 +1471,7 @@ impl DeveloperServer {
     /// appending `&`; this returns a job_id you can watch with shell_status / shell_kill.
     #[tool(
         name = "shell",
-        description = "Execute a command in the shell.This will return the output and error concatenated into a single string, as you would see from running on the command line. There will also be an indication of if the command succeeded or failed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. For a long-lived command (dev server, build, test suite, training run) that you need to keep running and observe, set background=true instead of appending `&`: it returns a job_id immediately, and you then use shell_status to peek or wait, or shell_kill to stop it. A foreground command has a wall-clock budget (240s by default; keep each foreground command, any sleep included, under about 200s): if it exceeds it, its whole process group is killed and the call fails, so anything that may run longer belongs in background=true."
+        description = "Execute a command in the shell.This will return the output and error concatenated into a single string, as you would see from running on the command line. There will also be an indication of if the command succeeded or failed. Avoid commands that produce a large amount of output, and consider piping those outputs to files. For a long-lived command (dev server, build, test suite, training run) that you need to keep running and observe, set background=true instead of appending `&`: it returns a job_id and the path of a log file that receives the job's output and ends with its exit status, which you can read with `tail`; if you have shell_status and shell_kill, they also peek at, wait for and stop the job. A foreground command has a wall-clock budget (240s by default; keep each foreground command, any sleep included, under about 200s): if it exceeds it, its whole process group is killed and the call fails, so anything that may run longer belongs in background=true."
     )]
     pub async fn shell(
         &self,
@@ -1521,16 +1529,20 @@ impl DeveloperServer {
         self.snapshot_shell_redirect_targets(command, working_dir.as_deref());
 
         // Background mode: start the command in its own process group, register
-        // it, and return a job_id immediately instead of waiting for it.
+        // it, and return a job_id without waiting for it to finish. A job that
+        // ends inside a short window reports how it ended instead (P04).
         if params.background.unwrap_or(false) {
             let id = self
                 .background_jobs
                 .spawn(command, params.label.clone(), working_dir, session_id)
                 .await
                 .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e, None))?;
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "Started background job {id}. It keeps running across tool calls. Use shell_status with this job_id to peek at new output, add timeout_secs to wait for completion, omit job_id to see every background job, or shell_kill to stop it."
-            ))]));
+            let report = self
+                .background_jobs
+                .start_report(&id, BACKGROUND_EARLY_EXIT_WINDOW)
+                .await
+                .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e, None))?;
+            return self.background_start_result(&id, report);
         }
 
         let cancellation_token = CancellationToken::new();
@@ -2696,6 +2708,83 @@ impl DeveloperServer {
         let user_output = format!("NOTE: Output was {size}, showing only {shown}.\n\n{preview}");
 
         Ok((final_output, user_output))
+    }
+
+    /// The reply to `shell` with `background=true` (P04).
+    ///
+    /// Names the log file before `shell_status`, because a roster may grant
+    /// `shell` alone and the server is never told which tools were granted. A
+    /// job that already ended reports like a foreground command: its output,
+    /// the status line and, when it failed, `is_error` and a `tool_failure`
+    /// envelope.
+    fn background_start_result(
+        &self,
+        id: &str,
+        report: super::background::StartReport,
+    ) -> Result<CallToolResult, ErrorData> {
+        let pid = report
+            .pid
+            .map(|pid| format!(" (pid {pid})"))
+            .unwrap_or_default();
+        let Some(ended) = report.ended else {
+            let observe = match &report.log_path {
+                Some(path) => format!(
+                    "Its output goes to the log file {path}: read it with `tail -n 50 {path}`. \
+                     When the job ends, the file's last line reads \
+                     `[biorouter: background job {id} exited with status N]`. If you have \
+                     shell_status, it can also peek at this job_id's new output or wait for it to \
+                     finish (timeout_secs), and shell_kill stops it.",
+                    path = path.display()
+                ),
+                None => "Its output could not be written to a log file; use shell_status with \
+                         this job_id to read it, and shell_kill to stop it."
+                    .to_string(),
+            };
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "Started background job {id}{pid}. It keeps running across tool calls. {observe}"
+            ))]));
+        };
+
+        let status_line = match ended.exit_code {
+            Some(0) => None,
+            Some(code) => Some(format!("[shell: command exited with status {code}]")),
+            None => Some("[shell: command terminated by a signal]".to_string()),
+        };
+        let (model_output, user_output) = if ended.output.trim().is_empty() {
+            ("(no output)".to_string(), "(no output)".to_string())
+        } else {
+            self.process_shell_output(&ended.output)?
+        };
+        let header = format!(
+            "Background job {id}{pid} ended within {}s, status: {}. Its output:",
+            BACKGROUND_EARLY_EXIT_WINDOW.as_secs(),
+            ended.status
+        );
+        let log = report
+            .log_path
+            .map(|path| format!("\nIts log file is {}.", path.display()))
+            .unwrap_or_default();
+        let render = |body: &str| {
+            let body = body.trim_end();
+            match &status_line {
+                Some(line) => format!("{header}\n{body}\n{line}{log}"),
+                None => format!("{header}\n{body}{log}"),
+            }
+        };
+        let mut result = CallToolResult::success(vec![
+            Content::text(render(&model_output)).with_audience(vec![Role::Assistant]),
+            Content::text(render(&user_output))
+                .with_audience(vec![Role::User])
+                .with_priority(0.0),
+        ]);
+        let failed = status_line.is_some();
+        result.is_error = Some(failed);
+        if let Some(line) = status_line {
+            result.structured_content = Some(serde_json::json!({
+                "error": { "kind": "tool_failure", "message": line }
+            }));
+        }
+        Ok(result)
     }
 }
 
@@ -6762,6 +6851,150 @@ mod tests {
 
             cleanup_test_service(running_service, peer);
         });
+    }
+
+    /// One `background=true` shell call.
+    async fn run_background(
+        server: &DeveloperServer,
+        peer: &rmcp::service::Peer<RoleServer>,
+        request: i64,
+        command: &str,
+    ) -> Result<CallToolResult, ErrorData> {
+        let context = RequestContext {
+            ct: Default::default(),
+            id: NumberOrString::Number(request),
+            meta: Default::default(),
+            extensions: Default::default(),
+            peer: peer.clone(),
+        };
+        server
+            .shell(
+                Parameters(ShellParams {
+                    working_directory: None,
+                    command: command.to_string(),
+                    background: Some(true),
+                    label: None,
+                }),
+                context,
+            )
+            .await
+    }
+
+    /// P04: with `shell` alone a background job must stay observable. The
+    /// start reply keeps the job id in its first sentence, names the pid and
+    /// a log file that `tail` can read, and names that file before
+    /// shell_status, which a roster may not grant.
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn a_background_start_names_a_log_file_the_shell_can_read() {
+        run_shell_test(|| async {
+            let server = create_test_server();
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+
+            let result = run_background(&server, &peer, 7401, "echo bg-start; sleep 30")
+                .await
+                .expect("the job starts");
+            let text = shell_model_text(&result);
+            assert_eq!(result.is_error, Some(false), "{text}");
+            assert!(
+                text.starts_with("Started background job job-1 (pid "),
+                "{text}"
+            );
+            let path = text
+                .split_once("log file ")
+                .and_then(|(_, rest)| rest.split(':').next())
+                .map(PathBuf::from)
+                .expect("the reply names the log file");
+            assert!(path.exists(), "{}", path.display());
+            let tail = text.find("tail -n 50").expect("{text}");
+            let status = text.find("shell_status").expect("{text}");
+            assert!(tail < status, "{text}");
+
+            let deadline = Instant::now() + Duration::from_secs(10);
+            let mut log = String::new();
+            while !log.contains("bg-start") && Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                log = std::fs::read_to_string(&path).unwrap_or_default();
+            }
+            assert_eq!(log, "bg-start\n");
+
+            server
+                .shell_kill(Parameters(JobIdParams {
+                    job_id: "job-1".to_string(),
+                }))
+                .await
+                .expect("the job is killed");
+            let _ = std::fs::remove_file(path);
+            cleanup_test_service(running_service, peer);
+        });
+    }
+
+    /// P04: a background job that fails at once reports its exit status and
+    /// its error inline, the way a foreground failure does, instead of
+    /// "Started background job".
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn a_background_job_that_fails_at_once_reports_its_exit() {
+        run_shell_test(|| async {
+            let server = create_test_server();
+            let running_service = serve_directly(server.clone(), create_test_transport(), None);
+            let peer = running_service.peer().clone();
+
+            let result = run_background(&server, &peer, 7402, "cat /nonexistent-biorouter-p04")
+                .await
+                .expect("the call itself succeeds");
+            let text = shell_model_text(&result);
+            assert_eq!(result.is_error, Some(true), "{text}");
+            assert!(text.starts_with("Background job job-1"), "{text}");
+            assert!(text.contains("nonexistent-biorouter-p04"), "{text}");
+            assert!(
+                text.contains("[shell: command exited with status 1]"),
+                "{text}"
+            );
+            assert!(!text.contains("Started"), "{text}");
+            let envelope = result
+                .structured_content
+                .as_ref()
+                .and_then(|c| c.get("error"))
+                .expect("a failure names its kind");
+            assert_eq!(envelope["kind"], "tool_failure", "{envelope}");
+
+            cleanup_test_service(running_service, peer);
+        });
+    }
+
+    /// P04: every static text that names shell_status first names a way to
+    /// observe the job with the shell alone.
+    #[test]
+    fn texts_that_name_shell_status_name_a_shell_only_route_first() {
+        let tools = DeveloperServer::tool_router().list_all();
+        let shell = tools
+            .iter()
+            .find(|t| t.name == "shell")
+            .expect("the shell tool");
+        let description = shell.description.as_deref().unwrap_or_default().to_string();
+        let background_doc = shell
+            .input_schema
+            .get("properties")
+            .and_then(|p| p.get("background"))
+            .and_then(|b| b.get("description"))
+            .and_then(|d| d.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let killed = foreground_timeout_message(
+            "make all",
+            Duration::from_secs(245),
+            Duration::from_secs(240),
+        );
+        for text in [description, background_doc, killed] {
+            let status = text.find("shell_status").expect(&text);
+            let tail = text.find("`tail`").expect(&text);
+            assert!(tail < status, "{text}");
+            assert!(text.contains("log file"), "{text}");
+        }
     }
 
     #[test]

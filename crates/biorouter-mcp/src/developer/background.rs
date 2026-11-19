@@ -75,6 +75,10 @@ impl JobStatus {
     }
 }
 
+/// Cap on a job's log file. Larger than the in-memory buffer, because the file
+/// never enters the context: the model reads slices of it with `tail`.
+const MAX_LOG_BYTES: u64 = 16 * 1024 * 1024;
+
 /// Captured output plus a per-job read cursor so reads return only what is new
 /// since the previous read.
 #[derive(Default)]
@@ -83,6 +87,112 @@ struct Output {
     cursor: usize,
     truncated: bool,
     capture_incomplete: bool,
+    /// The job's log file, written under the same lock as `buf` so the two
+    /// interleave stdout and stderr the same way.
+    log: Option<JobLog>,
+}
+
+/// A background job's output as a file (P04, BioRouterBench harness review).
+///
+/// The in-memory buffer is readable only through `shell_status`, and a roster
+/// may grant `shell` without it, which left a job's output and exit status
+/// unreadable. The file is readable with the shell alone, and its last line
+/// records how the job ended.
+struct JobLog {
+    file: std::fs::File,
+    written: u64,
+    capped: bool,
+}
+
+impl JobLog {
+    /// A new log in the temp dir, created mode 0600 with a name no other job,
+    /// server or process uses: job ids restart at `job-1` in every
+    /// `DeveloperServer`, and a daemon runs one per chat. The temp dir, not the
+    /// run dir, because it stays writable under the shell sandbox.
+    fn create(id: &str) -> Option<(Self, PathBuf)> {
+        let file = tempfile::Builder::new()
+            .prefix(&format!("biorouter-{}-{id}-", std::process::id()))
+            .suffix(".log")
+            .tempfile()
+            .ok()?;
+        let (file, path) = file.keep().ok()?;
+        Some((
+            Self {
+                file,
+                written: 0,
+                capped: false,
+            },
+            path,
+        ))
+    }
+
+    fn append(&mut self, line: &str) {
+        use std::io::Write;
+        if self.capped {
+            return;
+        }
+        let len = line.len() as u64 + 1;
+        if self.written + len > MAX_LOG_BYTES {
+            self.capped = true;
+            let _ = writeln!(
+                self.file,
+                "[biorouter: log capped at {} MB; later output is not written here]",
+                MAX_LOG_BYTES / (1024 * 1024)
+            );
+            return;
+        }
+        let mut bytes = Vec::with_capacity(line.len() + 1);
+        bytes.extend_from_slice(line.as_bytes());
+        bytes.push(b'\n');
+        if self.file.write_all(&bytes).is_ok() {
+            self.written += len;
+        }
+    }
+
+    /// The last line, written once the job's status is final. A pid shows only
+    /// whether a process is alive, and the OS may hand a reaped pid to another,
+    /// so the exit status has to be in the file.
+    fn finish(&mut self, id: &str, status: &JobStatus, capture_incomplete: bool) {
+        use std::io::Write;
+        if capture_incomplete {
+            let _ = writeln!(
+                self.file,
+                "[biorouter: output capture incomplete: a process the job started still held its output when it exited]"
+            );
+        }
+        let _ = writeln!(self.file, "{}", job_end_line(id, status));
+    }
+}
+
+/// `[biorouter: background job job-1 exited with status 0]`, the line a job's
+/// log ends with.
+fn job_end_line(id: &str, status: &JobStatus) -> String {
+    let how = match status {
+        JobStatus::Exited(code) => format!("exited with status {code}"),
+        JobStatus::Ended(why) => format!("ended ({why})"),
+        JobStatus::Killed => "was killed".to_string(),
+        JobStatus::Running => "is still running".to_string(),
+    };
+    format!("[biorouter: background job {id} {how}]")
+}
+
+/// What `shell` tells the model about a background job it just started.
+pub struct StartReport {
+    pub pid: Option<u32>,
+    pub log_path: Option<PathBuf>,
+    /// Set when the job ended inside the early-exit window.
+    pub ended: Option<EarlyEnd>,
+}
+
+/// A job that ended before `shell` answered (P04): its status and output go
+/// back inline instead of a "started" that hides an instant failure.
+pub struct EarlyEnd {
+    /// As `shell_status` reports it, e.g. `exited(1), non-zero`.
+    pub status: String,
+    /// The exit code, when the job exited normally.
+    pub exit_code: Option<i32>,
+    /// What it printed, as the next `shell_status` would have returned it.
+    pub output: String,
 }
 
 struct Job {
@@ -98,6 +208,8 @@ struct Job {
     identity: Arc<JobIdentity>,
     status: Arc<Mutex<JobStatus>>,
     output: Arc<Mutex<Output>>,
+    /// Where the job's output is also written, when the file could be made.
+    log_path: Option<PathBuf>,
     /// Set before signalling so the supervisor records `Killed` rather than
     /// `Ended` when `wait()` returns.
     killed: Arc<AtomicBool>,
@@ -174,7 +286,16 @@ impl BackgroundJobs {
         }
 
         let status = Arc::new(Mutex::new(JobStatus::Running));
-        let output = Arc::new(Mutex::new(Output::default()));
+        // Best effort: a job whose log cannot be made still runs, and the
+        // start reply says the file is missing.
+        let (log, log_path) = match JobLog::create(&id) {
+            Some((log, path)) => (Some(log), Some(path)),
+            None => (None, None),
+        };
+        let output = Arc::new(Mutex::new(Output {
+            log,
+            ..Output::default()
+        }));
         let killed = Arc::new(AtomicBool::new(false));
         let process_exited = Arc::new(AtomicBool::new(false));
         let (done_tx, done_rx) = watch::channel(false);
@@ -217,6 +338,7 @@ impl BackgroundJobs {
         let reg_id_for_sup = reg_id.clone();
         let output_for_sup = output.clone();
         let exited_for_sup = process_exited.clone();
+        let id_for_sup = id.clone();
         tokio::spawn(async move {
             let wait_result = child.wait().await;
             exited_for_sup.store(true, Ordering::SeqCst);
@@ -236,6 +358,15 @@ impl BackgroundJobs {
                 std::time::Duration::from_secs(2),
             )
             .await;
+            // The readers are joined or stopped, so this is the log's last line.
+            {
+                let final_status = status_for_sup.lock().await.clone();
+                let mut out = output_for_sup.lock().await;
+                let incomplete = out.capture_incomplete;
+                if let Some(log) = out.log.as_mut() {
+                    log.finish(&id_for_sup, &final_status, incomplete);
+                }
+            }
             // The job reached a terminal state under our supervision, so it is
             // no longer an orphan candidate — drop its run-dir record — and it is
             // no longer "active work".
@@ -254,12 +385,48 @@ impl BackgroundJobs {
             identity,
             status,
             output,
+            log_path,
             killed,
             process_exited,
             done_rx,
         });
         self.jobs.lock().await.insert(id.clone(), job);
         Ok(id)
+    }
+
+    /// What to tell the model about a job `spawn` just started: its pid and
+    /// log file, and, when it ends within `window`, how it ended and what it
+    /// printed (P04). A job that dies at once used to answer "Started" anyway.
+    ///
+    /// `finish_output` gives the pipes a 2 s grace after the process exits, so
+    /// a job whose own children keep its output open does not look ended
+    /// inside a short window.
+    pub async fn start_report(
+        &self,
+        id: &str,
+        window: std::time::Duration,
+    ) -> Result<StartReport, String> {
+        let job = self.job(id).await?;
+        let mut rx = job.done_rx.clone();
+        let _ = tokio::time::timeout(window, rx.wait_for(|done| *done)).await;
+        let status = job.status.lock().await.clone();
+        let ended = if status.is_terminal() {
+            Some(EarlyEnd {
+                status: status.describe(),
+                exit_code: match status {
+                    JobStatus::Exited(code) => Some(code),
+                    _ => None,
+                },
+                output: Self::drain_new_output(&job).await,
+            })
+        } else {
+            None
+        };
+        Ok(StartReport {
+            pid: job.pid,
+            log_path: job.log_path.clone(),
+            ended,
+        })
     }
 
     async fn job(&self, id: &str) -> Result<Arc<Job>, String> {
@@ -405,6 +572,11 @@ where
     let mut lines = BufReader::new(reader).lines();
     while let Ok(Some(line)) = lines.next_line().await {
         let mut out = output.lock().await;
+        // The log has its own, larger cap, so it keeps going after the
+        // in-memory buffer is full.
+        if let Some(log) = out.log.as_mut() {
+            log.append(&line);
+        }
         if out.buf.len() >= MAX_OUTPUT_BYTES {
             out.truncated = true;
             continue;
@@ -1130,6 +1302,7 @@ mod tests {
             }),
             status: Arc::new(Mutex::new(JobStatus::Running)),
             output: Arc::new(Mutex::new(Output::default())),
+            log_path: None,
             killed: Arc::new(AtomicBool::new(false)),
             process_exited: Arc::new(AtomicBool::new(true)),
             done_rx,
@@ -1258,6 +1431,157 @@ mod tests {
             JobStatus::Killed,
             "a successful kill must already have an OS-confirmed terminal state"
         );
+    }
+
+    // ── log file and early exit (P04) ───────────────────────────────────────
+
+    async fn log_path_of(jobs: &BackgroundJobs, id: &str) -> PathBuf {
+        jobs.job(id)
+            .await
+            .unwrap()
+            .log_path
+            .clone()
+            .expect("a job gets a log file")
+    }
+
+    async fn wait_for_log(path: &Path, needle: &str) -> String {
+        let deadline = Instant::now() + std::time::Duration::from_millis(JOB_WAIT_MS);
+        loop {
+            let text = std::fs::read_to_string(path).unwrap_or_default();
+            if text.contains(needle) || Instant::now() > deadline {
+                return text;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+
+    /// The log receives output while the job runs, and its last line says how
+    /// the job ended, so `tail` alone answers both questions `shell_status`
+    /// used to be the only way to ask.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_job_log_grows_while_it_runs_and_ends_with_the_status() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let jobs = new_jobs();
+        let id = jobs
+            .spawn("echo first; sleep 1; echo second; exit 3", None, None, None)
+            .await
+            .unwrap();
+        let path = log_path_of(&jobs, &id).await;
+        assert!(path.starts_with(std::env::temp_dir()), "{}", path.display());
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the log may hold secrets a command printed");
+
+        let early = wait_for_log(&path, "first").await;
+        assert!(early.contains("first"), "{early}");
+        assert!(
+            !early.contains("second"),
+            "read before the job ended: {early}"
+        );
+
+        assert_eq!(
+            wait_terminal(&jobs, &id, JOB_WAIT_MS).await,
+            JobStatus::Exited(3)
+        );
+        let done = wait_for_log(&path, "[biorouter:").await;
+        assert!(
+            done.ends_with(&format!(
+                "second\n[biorouter: background job {id} exited with status 3]\n"
+            )),
+            "{done}"
+        );
+        // The in-memory buffer still serves shell_status.
+        let snap = jobs.snapshot(&id).await.unwrap();
+        assert!(snap.contains("second"), "{snap}");
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// Job ids restart at job-1 in every registry, and a daemon has one
+    /// registry per chat, so the log name must not be built from the id alone.
+    #[tokio::test]
+    async fn two_registries_never_share_a_log_file() {
+        let first = new_jobs();
+        let second = new_jobs();
+        let a = first.spawn("echo a", None, None, None).await.unwrap();
+        let b = second.spawn("echo b", None, None, None).await.unwrap();
+        assert_eq!(a, b, "both registries start at the same id");
+        let (pa, pb) = (
+            log_path_of(&first, &a).await,
+            log_path_of(&second, &b).await,
+        );
+        assert_ne!(pa, pb);
+        wait_terminal(&first, &a, JOB_WAIT_MS).await;
+        wait_terminal(&second, &b, JOB_WAIT_MS).await;
+        assert!(wait_for_log(&pa, "[biorouter:").await.starts_with("a\n"));
+        assert!(wait_for_log(&pb, "[biorouter:").await.starts_with("b\n"));
+        let _ = std::fs::remove_file(pa);
+        let _ = std::fs::remove_file(pb);
+    }
+
+    #[test]
+    fn the_log_stops_at_its_cap_but_still_records_the_end() {
+        let (mut log, path) = JobLog::create("job-cap").unwrap();
+        log.append("kept");
+        log.written = MAX_LOG_BYTES - 3;
+        log.append("this line would pass the cap");
+        log.append("and so would this one");
+        log.finish("job-cap", &JobStatus::Exited(0), false);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            text,
+            "kept\n[biorouter: log capped at 16 MB; later output is not written here]\n\
+             [biorouter: background job job-cap exited with status 0]\n"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// A job that dies at once is reported as such instead of "started".
+    #[tokio::test]
+    async fn start_report_returns_an_instant_failure_inline() {
+        let jobs = new_jobs();
+        let command = if cfg!(windows) {
+            "Get-Content C:\\nonexistent-biorouter-p04; exit 1"
+        } else {
+            "cat /nonexistent-biorouter-p04"
+        };
+        let id = jobs.spawn(command, None, None, None).await.unwrap();
+        let report = jobs
+            .start_report(&id, std::time::Duration::from_millis(JOB_WAIT_MS))
+            .await
+            .unwrap();
+        let ended = report.ended.expect("the job ended inside the window");
+        assert_eq!(ended.exit_code, Some(1));
+        assert!(ended.status.contains("exited(1)"), "{}", ended.status);
+        assert!(
+            ended.output.contains("nonexistent-biorouter-p04"),
+            "{}",
+            ended.output
+        );
+        assert!(report.log_path.is_some());
+        let _ = report.log_path.map(std::fs::remove_file);
+    }
+
+    /// …and a job still running at the end of the window is left running.
+    #[tokio::test]
+    async fn start_report_leaves_a_running_job_running() {
+        let jobs = new_jobs();
+        let id = jobs.spawn("sleep 30", None, None, None).await.unwrap();
+        let report = jobs
+            .start_report(&id, std::time::Duration::from_millis(200))
+            .await
+            .unwrap();
+        assert!(report.ended.is_none());
+        assert!(report.pid.is_some());
+        assert_eq!(
+            *jobs.job(&id).await.unwrap().status.lock().await,
+            JobStatus::Running
+        );
+        jobs.kill(&id).await.unwrap();
+        let path = report.log_path.expect("a job gets a log file");
+        let killed = wait_for_log(&path, "[biorouter:").await;
+        assert!(killed.ends_with("was killed]\n"), "{killed}");
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]

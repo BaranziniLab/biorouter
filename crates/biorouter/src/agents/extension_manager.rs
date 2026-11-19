@@ -1377,6 +1377,17 @@ fn generate_extension_name(
     format!("{base}_{suffix}")
 }
 
+/// Whether a builtin's roster lists the developer `shell` but not
+/// `shell_status` (P04, BioRouterBench harness review). That is a legitimate
+/// restriction, so nothing is granted silently, but it leaves a background job
+/// observable only through the log file its start reply names, which an
+/// operator should be able to see in the log.
+fn grants_shell_without_job_tools(name: &str, available_tools: &[String]) -> bool {
+    name == "developer"
+        && available_tools.iter().any(|t| t == "shell")
+        && !available_tools.iter().any(|t| t == "shell_status")
+}
+
 fn resolve_command(cmd: &str) -> PathBuf {
     SearchPaths::builder()
         .with_npm()
@@ -2003,7 +2014,19 @@ impl ExtensionManager {
                         .await?;
                         Box::new(client)
                     }
-                    ExtensionConfig::Builtin { name, timeout, .. } => {
+                    ExtensionConfig::Builtin {
+                        name,
+                        timeout,
+                        available_tools,
+                        ..
+                    } => {
+                        if grants_shell_without_job_tools(name, available_tools) {
+                            tracing::warn!(
+                                "extension '{name}' grants `shell` without `shell_status`: \
+                                 background jobs can then be observed only through their \
+                                 log files"
+                            );
+                        }
                         let timeout_duration = Duration::from_secs(timeout.unwrap_or(300));
                         let def = biorouter_mcp::BUILTIN_EXTENSIONS
                             .get(name.as_str())
@@ -4759,6 +4782,34 @@ mod tests {
     use rmcp::model::CallToolResult;
     use rmcp::model::{InitializeResult, JsonObject};
     use rmcp::{object, ServiceError as Error};
+
+    #[test]
+    fn a_shell_only_developer_roster_is_flagged() {
+        let tools = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert!(grants_shell_without_job_tools(
+            "developer",
+            &tools(&["shell"])
+        ));
+        assert!(grants_shell_without_job_tools(
+            "developer",
+            &tools(&["shell", "shell_kill", "text_editor"])
+        ));
+        // Every tool (an empty roster), or the job tools listed too.
+        assert!(!grants_shell_without_job_tools("developer", &[]));
+        assert!(!grants_shell_without_job_tools(
+            "developer",
+            &tools(&["shell", "shell_status", "shell_kill"])
+        ));
+        // No shell, or another extension.
+        assert!(!grants_shell_without_job_tools(
+            "developer",
+            &tools(&["text_editor"])
+        ));
+        assert!(!grants_shell_without_job_tools(
+            "memory",
+            &tools(&["shell"])
+        ));
+    }
 
     /// Phase C, F-6: a private knowledge base refused in a turn whose chat was switched to a
     /// private model, or made public by a decision model, says why; every other error, and

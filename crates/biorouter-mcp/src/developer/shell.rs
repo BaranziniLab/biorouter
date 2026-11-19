@@ -770,9 +770,10 @@ pub fn foreground_timeout_message(
          foreground limit: {}\n\
          Its whole process group was terminated, so nothing is left running, and the same \
          command will be killed again.\n\
-         If it legitimately takes that long, start it with background=true, or with its output \
-         in a file (`cmd > log 2>&1 &`), and read the file with short commands; shell_status \
-         can wait on a background job if you have it. Otherwise narrow it (a smaller search \
+         If it legitimately takes that long, start it with background=true, whose reply names a \
+         log file that receives its output and exit status, or with its output in a file \
+         (`cmd > log 2>&1 &`), and read the file with short commands such as `tail`; \
+         shell_status can wait on a background job if you have it. Otherwise narrow it (a smaller search \
          root, a more specific pattern) and try again. Do not wait with one long `sleep`: keep \
          each foreground command well under {}s. Operators can change the limit with {} \
          (seconds; 0 disables it).",
