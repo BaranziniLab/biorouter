@@ -24431,4 +24431,224 @@ mod issue549_storage_full_tests {
         )));
         dir.close().unwrap();
     }
+
+    struct Issue549AnswerOnce {
+        manager: Arc<SessionManager>,
+        fail_after_answer_is_requested: bool,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::providers::base::Provider for Issue549AnswerOnce {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::empty()
+        }
+
+        fn get_name(&self) -> &str {
+            "issue549-answer-once"
+        }
+
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("issue549-model")
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model: &crate::model::ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[rmcp::model::Tool],
+        ) -> std::result::Result<
+            (Message, crate::providers::base::ProviderUsage),
+            crate::providers::errors::ProviderError,
+        > {
+            if self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) != 0 {
+                return Err(crate::providers::errors::ProviderError::NotImplemented(
+                    "the finite fixture permits only one completion".to_string(),
+                ));
+            }
+            if self.fail_after_answer_is_requested {
+                sqlx::query("UPDATE issue549_fault SET enabled = 1")
+                    .execute(self.manager.storage().pool().await.map_err(|_| {
+                        crate::providers::errors::ProviderError::ExecutionError(
+                            "the private fixture pool was unavailable".to_string(),
+                        )
+                    })?)
+                    .await
+                    .map_err(|_| {
+                        crate::providers::errors::ProviderError::ExecutionError(
+                            "the private fixture trigger could not be enabled".to_string(),
+                        )
+                    })?;
+            }
+            let mut usage = crate::providers::base::ProviderUsage::new(
+                "issue549-model".to_string(),
+                crate::providers::base::Usage::new(Some(10), Some(5), Some(15)),
+            );
+            usage.finish_reason = Some("stop".to_string());
+            Ok((
+                Message::assistant().with_text("issue549 finite answer"),
+                usage,
+            ))
+        }
+    }
+
+    async fn characterize_agent_store_failure(fail_after_provider: bool) {
+        use crate::agents::{Agent, AgentConfig, AgentEvent, SessionConfig};
+        use crate::config::permission::PermissionManager;
+        use crate::config::BioRouterMode;
+        use futures::StreamExt;
+        use std::sync::atomic::Ordering;
+
+        let (dir, manager, id) = store().await;
+        let manager = Arc::new(manager);
+        manager
+            .update(&id)
+            .user_provided_name("Issue549 explicitly named fixture")
+            .apply()
+            .await
+            .unwrap();
+        let permissions = tempfile::tempdir().unwrap();
+        let agent = Agent::with_config(
+            AgentConfig::new(
+                manager.clone(),
+                Arc::new(PermissionManager::new(permissions.path().to_path_buf())),
+                None,
+                BioRouterMode::Auto,
+            )
+            .with_project_hooks(false),
+        );
+        let provider = Arc::new(Issue549AnswerOnce {
+            manager: manager.clone(),
+            fail_after_answer_is_requested: fail_after_provider,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        agent.update_provider(provider.clone(), &id).await.unwrap();
+        bind_private_quota(&manager).await;
+        let config = SessionConfig {
+            id: id.clone(),
+            schedule_id: None,
+            max_turns: Some(2),
+            max_tool_calls: Some(1),
+            budget: None,
+            retry_config: None,
+            reasoning_effort: None,
+        };
+        let observed = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            let mut stream = agent
+                .reply(Message::user().with_text("answer once"), config, None)
+                .await
+                .expect("the capacity fault is disabled throughout reply construction");
+            let mut events = Vec::new();
+            let mut failure = None;
+            while let Some(event) = stream.next().await {
+                match event {
+                    Ok(event) => {
+                        if events.len() == 64 {
+                            failure = Some(anyhow::anyhow!(
+                                "the finite fixture event bound was exceeded"
+                            ));
+                            break;
+                        }
+                        events.push(event);
+                    }
+                    Err(error) => {
+                        failure = Some(error);
+                        break;
+                    }
+                }
+            }
+            (events, failure)
+        })
+        .await;
+        let timed_out = observed.is_err();
+        let (events, failure) = observed.unwrap_or_else(|_| (Vec::new(), None));
+        let calls = provider.calls.load(Ordering::SeqCst);
+        let ledger_rows = count(&manager, "SELECT count(*) FROM token_events").await;
+        let growth = count(&manager, "SELECT count(*) FROM issue549_growth").await;
+        let answer_seen = events.iter().any(|event| match event {
+            AgentEvent::Message(message) => message.as_concat_text() == "issue549 finite answer",
+            _ => false,
+        });
+        restore_private_quota(&manager).await;
+        let stored = manager.get_session(&id, true).await.unwrap();
+        let conversation = stored.conversation.unwrap();
+        let assistant_rows = conversation
+            .messages()
+            .iter()
+            .filter(|message| message.role == rmcp::model::Role::Assistant)
+            .count();
+        let answer_rows = conversation
+            .messages()
+            .iter()
+            .filter(|message| message.as_concat_text() == "issue549 finite answer")
+            .count();
+        let mut published_row_counts = Vec::new();
+        for event in &events {
+            if let AgentEvent::MessagesPersisted(rows) = event {
+                for row in rows {
+                    let actual: i64 = sqlx::query_scalar(
+                        "SELECT count(*) FROM messages WHERE session_id = ? AND msg_uid = ?",
+                    )
+                    .bind(&id)
+                    .bind(&row.id)
+                    .fetch_one(manager.storage().pool().await.unwrap())
+                    .await
+                    .unwrap();
+                    published_row_counts.push(actual);
+                }
+            }
+        }
+        close_bounded(&manager, dir.path()).await;
+        drop(agent);
+        drop(provider);
+        drop(manager);
+        dir.close().unwrap();
+        assert!(
+            !timed_out,
+            "one finite provider request and the real store failure must settle"
+        );
+        assert_eq!(calls, 1);
+        assert!(
+            answer_seen,
+            "the real reply released the finite answer before storing its usage"
+        );
+        if fail_after_provider {
+            let error = failure
+                .as_ref()
+                .expect("ordinary Agent::reply retains strict store failure");
+            assert_eq!(sqlite_code(error), Some(13), "must be actual SQLITE_FULL");
+            let abort = classify_agent_error(error);
+            assert_eq!(abort, TurnAbortCode::SessionStore);
+            assert_eq!(abort.exit_code(), 78);
+            assert_eq!(
+                ledger_rows, 0,
+                "failed usage transaction must not leave a ledger row"
+            );
+            assert_eq!(growth, 0, "failed trigger allocation must roll back");
+        } else {
+            assert!(
+                failure.is_none(),
+                "fault-disabled same-quota reply failed: {failure:?}"
+            );
+            assert_eq!(ledger_rows, 1);
+            assert_eq!(growth, 0);
+        }
+        assert_eq!(assistant_rows, usize::from(!fail_after_provider));
+        assert_eq!(answer_rows, usize::from(!fail_after_provider));
+        assert!(
+            published_row_counts.iter().all(|count| *count == 1),
+            "every published persisted id must exist in the private store"
+        );
+    }
+
+    #[tokio::test]
+    async fn issue549_agent_same_quota_control_completes_one_real_reply() {
+        characterize_agent_store_failure(false).await;
+    }
+
+    #[tokio::test]
+    async fn issue549_agent_real_full_after_answer_stays_typed_and_non_durable() {
+        characterize_agent_store_failure(true).await;
+    }
 }
