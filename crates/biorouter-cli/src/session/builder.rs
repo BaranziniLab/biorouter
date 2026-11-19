@@ -1522,10 +1522,15 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
         tracing::warn!("Failed to save extension state: {}", e);
     }
 
-    // Add CLI-specific system prompt extension
+    // Add CLI-specific system prompt extension: the terminal block for an
+    // interactive session, the headless block otherwise. It is an extra, so it
+    // still applies under BIOROUTER_SYSTEM_PROMPT_FILE_PATH below.
     session
         .agent
-        .extend_system_prompt(super::prompt::get_cli_prompt())
+        .extend_system_prompt(super::prompt::session_prompt_extension(
+            session_config.interactive,
+            &session_config.output_format,
+        ))
         .await;
 
     if let Some(additional_prompt) = session_config.additional_system_prompt {

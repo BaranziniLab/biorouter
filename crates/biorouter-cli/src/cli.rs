@@ -3587,10 +3587,13 @@ fn parse_run_input(
                 );
                 std::process::exit(1);
             });
+            // `--system` adds to the stock prompt whatever the input source;
+            // the stdin and `--text` arms pass it, and this arm used to drop it
+            // silently.
             Ok(Some((
                 InputConfig {
                     contents: Some(contents),
-                    additional_system_prompt: None,
+                    additional_system_prompt: input_opts.system.clone(),
                 },
                 None,
             )))
@@ -5877,6 +5880,46 @@ mod cli_tests {
                 .unwrap_or_else(|e| panic!("`biorouter {name} list` does not parse: {e}"));
             assert!(matches!(parsed.command, Some(Command::Session { .. })));
         }
+    }
+
+    /// `--instructions FILE --system TEXT`: clap accepts the pair, so the file
+    /// arm must carry the system text as the `--text` arm does, not drop it.
+    #[test]
+    fn an_instruction_file_run_keeps_its_system_text() {
+        let mut file = tempfile::NamedTempFile::new().expect("temp instruction file");
+        std::io::Write::write_all(&mut file, b"Write /app/answer.txt.").expect("write it");
+        let path = file.path().display().to_string();
+
+        let from_file = InputOptions {
+            instructions: Some(path),
+            system: Some("MARKER".into()),
+            ..Default::default()
+        };
+        let (config, workflow) = parse_run_input(&from_file, true)
+            .expect("parses")
+            .expect("an input");
+        assert!(workflow.is_none());
+        assert_eq!(config.contents.as_deref(), Some("Write /app/answer.txt."));
+        assert_eq!(config.additional_system_prompt.as_deref(), Some("MARKER"));
+
+        let from_text = InputOptions {
+            input_text: Some("Write /app/answer.txt.".into()),
+            system: Some("MARKER".into()),
+            ..Default::default()
+        };
+        let (config, _) = parse_run_input(&from_text, true)
+            .expect("parses")
+            .expect("an input");
+        assert_eq!(config.additional_system_prompt.as_deref(), Some("MARKER"));
+
+        let without_system = InputOptions {
+            instructions: Some(file.path().display().to_string()),
+            ..Default::default()
+        };
+        let (config, _) = parse_run_input(&without_system, true)
+            .expect("parses")
+            .expect("an input");
+        assert_eq!(config.additional_system_prompt, None);
     }
 }
 
