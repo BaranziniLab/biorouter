@@ -670,12 +670,8 @@ pub fn export_scaffold(
 // Building the folder
 // ---------------------------------------------------------------------------
 
-/// Validate the id, load the app, lint-free or not, and freshen its bundle.
-fn prepare(
-    store_root: &Path,
-    id: &str,
-    mode: ExportMode,
-) -> Result<(ArtifactStore, Manifest, PathBuf, ExportReport), ExportError> {
+/// The store an export reads, once `id` is a valid id that names an application in it.
+fn open_store(store_root: &Path, id: &str) -> Result<ArtifactStore, ExportError> {
     validate_artifact_id(id)
         .map_err(|_| ExportError::BadRequest(format!("'{id}' is not an application id.")))?;
     let store = ArtifactStore::new(store_root.to_path_buf());
@@ -684,6 +680,16 @@ fn prepare(
             "There is no application '{id}'."
         )));
     }
+    Ok(store)
+}
+
+/// Validate the id, load the app, lint-free or not, and freshen its bundle.
+fn prepare(
+    store_root: &Path,
+    id: &str,
+    mode: ExportMode,
+) -> Result<(ArtifactStore, Manifest, PathBuf, ExportReport), ExportError> {
+    let store = open_store(store_root, id)?;
     let mut manifest = store.load_manifest(id).map_err(|e| {
         ExportError::Unexportable(format!("The manifest of '{id}' could not be read: {e}"))
     })?;
@@ -730,14 +736,7 @@ fn build_export(
     access: &dyn PayloadAccess,
     out: &Path,
 ) -> Result<ExportReport, ExportError> {
-    validate_artifact_id(id)
-        .map_err(|_| ExportError::BadRequest(format!("'{id}' is not an application id.")))?;
-    let store = ArtifactStore::new(store_root.to_path_buf());
-    if !store.exists(id) {
-        return Err(ExportError::NotFound(format!(
-            "There is no application '{id}'."
-        )));
-    }
+    let store = open_store(store_root, id)?;
     // The lint runs before anything is built or written: an app the harness
     // refuses is not exported unless a person chose to export it anyway.
     let app_dir = open_app_dir(&store, id)?;
