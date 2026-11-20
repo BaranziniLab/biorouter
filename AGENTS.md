@@ -105,6 +105,16 @@ Errors: Don't add error context that doesn't add useful information (e.g., `.con
 Simplicity: Avoid overly defensive code - trust Rust's type system
 Logging: Clean up existing logs, don't add more unless for errors or security events
 
+## Development Resource Watchdogs
+
+Use the existing resource monitors and job supervisors for long builds, tests, packaging, and live verification. Do not launch an unbounded background job or add a duplicate monitoring framework.
+
+- Check CPU/load, memory pressure, current swap reads and writes, free disk, and thermal state before increasing concurrency and periodically while jobs run. Accumulated swap usage alone does not establish current paging pressure.
+- Track each job's PID/process group or container ID, working directory, start time, deadline, and progress. Detect stalled jobs, enforce bounded timeouts, and clean up only verified owned processes and containers. Never stop unrelated jobs by name.
+- Inspect application and VM memory footprints, including compressed memory; resident memory alone can hide a large idle Docker VM. When no active work depends on it, gracefully recycle an idle campaign runtime and verify recovery before resuming. Preserve its files and unrelated workloads.
+- Bound and rotate temporary development logs. Remove verified-unused compilation caches, temporary outputs, and expired transient logs as work proceeds. Retain active caches, source, user data, release artifacts, and the logs needed to diagnose failures or substantiate verification; archive that evidence before expiring it.
+- Keep the disk watchdog's protected/active paths current. Record before-and-after resource readings and cleanup results, and adjust concurrency to the live host state rather than allowing stale jobs or growing caches to stall development.
+
 ## Pull Request Review Before Merge
 
 Apply the same review standard to every contributor PR, including later PRs from a contributor whose earlier work passed review:
