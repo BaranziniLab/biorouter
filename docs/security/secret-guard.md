@@ -7,7 +7,9 @@
 > 2026-09-11, fixing QA-C finding H1; the sections below describe that code. Seven well-known
 > password and token stores joined the floor on 2026-09-25 (Crew live QA round 4, Q4-56). On
 > 2026-11-17 the symlink budget began to fail closed (SG-30) and the served page's two file routes
-> began to apply the floor and the redaction (SG-27).
+> began to apply the floor and the redaction (SG-27). On 2026-11-19 conventional `.env` templates
+> were reopened, and the dispatch scan began to leave out the free text of the Todo tools and the
+> source of `execute_code` (issue #522).
 > **Audience:** developers working on tool dispatch, the Developer and Biorouter Copilot
 > extensions or the guardrails, and anyone reviewing what BioRouter promises about secrets.
 
@@ -56,11 +58,30 @@ slash is anchored, so reopening a store at any depth takes `**/`: `!**/.kube/con
 file reopens every kubeconfig, for the agent and for Crew, and leaves the rest of the floor
 standing (`q4_56_a_negation_reopens_one_store`).
 
+### Templates
+
+`.env.*` also matches the templates a repository commits next to its `.env`, which hold variable
+names and no values. Since issue #522 the floor reopens them by exact name
+(`DEFAULT_SECRET_TEMPLATE_EXCEPTIONS`): `.env.example`, `.env.sample`, `.env.template`,
+`.env.dist`, `.env.tpl`, `.env.defaults` and `.env.<anything>.example`, at any depth. Both guard
+constructors add these negations right after the floor and before any `.biorouterignore`, so a
+project or the global file can deny a template again with an ordinary pattern
+(`issue522_explicit_project_policy_can_still_deny_a_template`). What stays refused:
+
+- every other `.env` name, including `.env.local`, `.env.production` and `.env.example.bak`;
+- a template that is a symlink, which is judged as the file it reaches, so a link from
+  `.env.example` to `.env` is refused (`issue522_template_alias_cannot_reopen_a_real_secret`);
+- a glob that could reach a secret beside the template: with `.env.local` in the folder,
+  `cat config/.e*` is refused, while `cat config/.[e]nv.example` is not;
+- the destination of `cp config/.env.example config/.env`, which the refusal names on its own;
+- a spelling the matcher does not fold to a template, such as `.env.Example`, which stays
+  refused (`.ENV.EXAMPLE` folds to `.env.example` and is read like it).
+
 ## Where it runs
 
 | Place | What it checks |
 |---|---|
-| `ExtensionManager::dispatch_tool_call` (`secret_guard_denial`) | Every tool call's arguments, for every extension. The one choke point every call passes. |
+| `ExtensionManager::dispatch_tool_call` (`secret_guard_denial`) | Every tool call's arguments, for every extension. The one choke point every call passes. The free text of the shipped Todo tools and the source of `execute_code` are left out; see "Free text" below. |
 | Developer server, `validate_shell_command` | `developer__shell`'s command, from the directory it will actually run in. |
 | Developer server, `is_ignored` | `text_editor` and `image_processor` paths, after symlinks are resolved. |
 | `call_tool_withholding_secrets`, inside the dispatched future | Every tool **result** and error, before any model sees it. |
@@ -130,6 +151,10 @@ worth knowing:
   always refused that; the shell now agrees with it.
 - A command that merely *names* a protected file — a commit message, an `echo` into
   `.gitignore`, `ls -l ~/.ssh/id_ed25519` — is refused, because the literal pass sees the name.
+  The literal pass judges each word of a command line, script or prose value. It takes the
+  whole value as one more path only for a path argument or a single word: until issue #522 it
+  also took a whole command line as one path, so `cat config/.env.example | head` was refused
+  because the text after its last `/` matches `.env.*`.
 - A project `.biorouterignore` rule applies to files that do not exist yet: with `*.log` in it,
   `cmd > build.log` is refused.
 
@@ -151,11 +176,39 @@ unaffected: `cat .git/config`, `cat src/config.json`, `cat inventory/hosts.yml` 
 recognises the `gh[pousr]_` token it can hold, and is the entry to revisit first if the collateral
 proves expensive.
 
+### Free text
+
+The scan cannot tell which tool a key belongs to, so a slash path in prose (`text`, `content`,
+`message`, `code`, any key it does not know) is judged as a possible file access. That has to
+hold for `code`: under Compute or an external runner it is a program that can open the path.
+
+The dispatch boundary does know the tool, and since issue #522 it leaves out the free text of
+two shipped Platform extensions (`FreeTextFields` in
+[`crates/biorouter/src/agents/extension_manager.rs`](../../crates/biorouter/src/agents/extension_manager.rs)):
+
+- **Todo**: `todo_write`'s `content`, the `items` of `todo_add` and `todo_expand`,
+  `todo_update`'s `text` (top level and in each `updates` entry), and `plan_write`'s `plan`.
+  The text is stored in the checklist and shown back to the model; the Todo handlers never
+  open it. A todo item such as "configuration/.env copy still needs the user" is admitted.
+- **Code Execution**: `execute_code`'s `code`, and the `description` of each `tool_graph`
+  node. The script runs in a sandbox with no file or process access of its own. Every tool
+  call it makes is dispatched back through `dispatch_tool_call` with its evaluated arguments
+  and judged there, which is also the only place a path the script assembles at run time
+  (`"configuration/" + ".env"`) can be seen.
+
+Only a string in exactly those places is left out, and only from the copy the scan reads; the
+tool receives the original arguments. Every other field of those calls, a value of the wrong
+JSON type, a client injected under the same name instead of built by the Platform registry,
+a nested key such as `todo__x`, and every other extension, Compute included, is scanned as
+before.
+
 ### Paths that cannot be known before the command runs
 
 - When part of a path is a hole, the path is refused if the directory it would be read from
   directly holds a protected file (`cat ~/.ssh/$(ls ~/.ssh | head -1)`), or if its known end could
-  complete a deny pattern (`cd "$(…)" && cat credentials`).
+  complete a deny pattern (`cd "$(…)" && cat credentials`). A known final name that is a
+  template the guard reopens is not such an end, so
+  `cat "$(git rev-parse --show-toplevel)/config/.env.example"` runs.
 - A glob that cannot be expanded — too many entries, or a walk past its budget — is refused if
   the directory it would expand in holds a protected file.
 - A word that is *entirely* unknown (`cat "$(ls *.csv)"`) is not refused: refusing it would
@@ -251,6 +304,9 @@ BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-mcp --lib -- secret_guard
 BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter --lib -- secret_output extension_manager guardrails::tool_output
 BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-server --lib -- crew::local_files
 BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-server --lib -- routes::shell
+BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-mcp --lib issue522
+BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter-mcp --test developer_guard_execution issue522
+BIOROUTER_DISABLE_KEYRING=true cargo test -p biorouter --features local-dictation --lib issue522
 ```
 
 The H1 tables run every measured spelling — and the families around them — against a throwaway
@@ -259,7 +315,11 @@ HOME holding made-up credentials, through the dispatch scan, through the resolve
 name, by case and through the H1 spellings (`~`, `$HOME`, a glob, `cd`, `bash -c`,
 `find -name`), keep their neighbours readable, and prove a negation still reopens one;
 `crew::local_files` holds Crew's registration to the same floor, and `routes::shell` holds the
-served page's two file routes to it and to the redaction. The fake key material is
+served page's two file routes to it and to the redaction. The `issue522` tests hold the
+templates open through both guard constructors, the resolver and the real Developer tools, keep
+their symlinked, globbed and differently named neighbours refused, and, at the dispatch boundary,
+admit the Todo and `execute_code` free text while every other field, lookalike client and
+Compute's `code` stay refused. The fake key material is
 assembled at run time so no key-shaped literal sits in the source. None of the tests reads the
 real `~/.aws`, `~/.ssh` or `~/.config/biorouter`.
 

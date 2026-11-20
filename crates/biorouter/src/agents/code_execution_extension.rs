@@ -4970,25 +4970,17 @@ mod tests {
                 None,
             )
             .await;
-        let code_client = CodeExecutionClient::new(PlatformExtensionContext {
-            extension_manager: Some(Arc::downgrade(&manager)),
-            session_manager,
-        })
-        .unwrap();
+        // The shipped Code Execution, built by the Platform registry: only that
+        // one's source is left out of the outer scan (issue #522).
         manager
-            .add_client(
-                "code_execution".into(),
-                crate::agents::extension::ExtensionConfig::Platform {
-                    name: "code_execution".into(),
-                    description: "Code execution".into(),
-                    bundled: Some(true),
-                    available_tools: Vec::new(),
-                },
-                Arc::new(code_client),
-                None,
-                None,
-            )
-            .await;
+            .add_extension(crate::agents::extension::ExtensionConfig::Platform {
+                name: "code_execution".into(),
+                description: "Code execution".into(),
+                bundled: Some(true),
+                available_tools: Vec::new(),
+            })
+            .await
+            .unwrap();
         let result = manager.dispatch_tool_call(&session.id, CallToolRequestParams {
             task: None, name: "code_execution__execute_code".into(),
             arguments: Some(object!({"code": "import { run } from \"fixture\";\n// configuration/.env still needs the user\nrecord_result(run({note: \"benign\"}));"})), meta: None,
