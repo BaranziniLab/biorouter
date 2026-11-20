@@ -169,10 +169,12 @@ impl Output {
         let Some(tail) = self.streams.get_mut(stream) else {
             return;
         };
+        // Only the new bytes can hold a line break: the held line has none.
+        let held = tail.pending.len();
         tail.pending.extend_from_slice(bytes);
-        let lines = match tail.pending.iter().rposition(|byte| *byte == b'\n') {
+        let lines = match bytes.iter().rposition(|byte| *byte == b'\n') {
             Some(end) => {
-                let complete: Vec<u8> = tail.pending.drain(..=end).collect();
+                let complete: Vec<u8> = tail.pending.drain(..=held + end).collect();
                 let mut text = String::from_utf8_lossy(&complete).into_owned();
                 // A line already shown while it was unterminated, and finished
                 // without changing, is not shown a second time.
@@ -775,40 +777,15 @@ impl BackgroundJobs {
     }
 
     async fn snapshot_receipt(id: &str, job: &Job) -> SnapshotReceipt {
-        let diagnostic_pid = if !job.process_exited.load(Ordering::SeqCst)
-            && matches!(*job.status.lock().await, JobStatus::Running)
-        {
-            job.pid
+        // Status before output: a terminal status is published only after the
+        // readers are done, so the output drained next is then complete.
+        let status = job.status.lock().await.clone();
+        let new_output = Self::drain_new_output(job).await;
+        let advisory = if new_output.trim().is_empty() {
+            Self::quiet_job_advisory(job, &status).await
         } else {
             None
         };
-
-        let advisory: Option<String> = match diagnostic_pid {
-            Some(pid) => {
-                #[cfg(any(target_os = "macos", target_os = "linux"))]
-                {
-                    process_group_advisory(pid).await
-                }
-                #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-                {
-                    let _ = pid;
-                    None
-                }
-            }
-            None => None,
-        };
-
-        let new_output = Self::drain_new_output(job).await;
-        let status = job.status.lock().await.clone();
-        let terminal = status.is_terminal();
-        // The job may have ended while the process table was read; then the
-        // advisory no longer describes it.
-        let advisory =
-            if matches!(status, JobStatus::Running) && !job.process_exited.load(Ordering::SeqCst) {
-                advisory
-            } else {
-                None
-            };
         let elapsed = job.started.elapsed().as_secs();
         let body = if new_output.trim().is_empty() {
             "(no new output)".to_string()
@@ -826,7 +803,33 @@ impl BackgroundJobs {
             job.label,
             status.describe()
         );
-        SnapshotReceipt { text, terminal }
+        SnapshotReceipt {
+            text,
+            terminal: status.is_terminal(),
+        }
+    }
+
+    /// The process-group advisory (issue #523) for a running job that printed
+    /// nothing new: a pipeline stage held open by a process that outlived its
+    /// parent produces no output, and a job still printing needs no
+    /// explanation, so the process table is not read for it.
+    async fn quiet_job_advisory(job: &Job, status: &JobStatus) -> Option<String> {
+        if !matches!(status, JobStatus::Running) || job.process_exited.load(Ordering::SeqCst) {
+            return None;
+        }
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        let advisory = match job.pid {
+            Some(pid) => process_group_advisory(pid).await,
+            None => None,
+        };
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let advisory = None;
+        // The job may have ended while the process table was read; then the
+        // advisory no longer describes it.
+        if job.process_exited.load(Ordering::SeqCst) || job.status.lock().await.is_terminal() {
+            return None;
+        }
+        advisory
     }
 
     /// Watch a job for up to `dur_secs`, returning early when it exits.
