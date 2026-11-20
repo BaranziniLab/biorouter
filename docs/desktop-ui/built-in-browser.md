@@ -321,9 +321,9 @@ name and title split the workspace extension uses. It is a platform extension ra
 `workspace_read_panel` does.
 
 - Tool names all start with `browser_`, so the advertised names are `browser__browser_open` and so
-  on. No bare name equals one of Copilot's (`list_apps`, `get_app_state`, `click`,
+  on. No bare name equals one of Copilot's thirteen (`list_apps`, `get_app_state`, `click`,
   `perform_secondary_action`, `scroll`, `drag`, `type_text`, `press_key`, `set_value`,
-  `screen_capture`) or any other built in tool, which keeps routing unambiguous for the model and for
+  `screen_capture`, `find_elements`, `wait_for`, `open_app`) or any other built in tool, which keeps routing unambiguous for the model and for
   text tool call recovery, which matches bare names (`formats/text_tool_calls.rs`).
 - It is enabled by default, like Copilot. Being enabled offers the tools; using them still needs the
   grants of BB-17. Its Settings capability row (`settings/capabilities/capabilities.ts`) reads
@@ -339,7 +339,7 @@ name and title split the workspace extension uses. It is a platform extension ra
 
 ### Tool set
 
-Fifteen tools, a subset of agent-browser's command set chosen for reliability. Each row names the
+Sixteen tools, a subset of agent-browser's command set chosen for reliability. Each row names the
 grant it needs (BB-17).
 
 | Tool | What it does | Grant |
@@ -359,9 +359,10 @@ grant it needs (BB-17).
 | `browser_press` | Press a key or chord (`Enter`, `Meta+A`) | Act, except `Escape`, `Tab`, arrows, `PageUp`, `PageDown`, `Home`, `End` |
 | `browser_select` | Choose options in a `select` or listbox | Act |
 | `browser_dialog` | Accept or dismiss an open JavaScript dialog, with text for `prompt` | Act |
+| `browser_drag` | Drag a reference to another reference or a point in the page (AD-17 in [Copilot on agent-desktop](../design/copilot-agent-desktop.md)): mouse events through `webContents.debugger` with `Input.setInterceptDrags`, so a native HTML drag is finished with `Input.dispatchDragEvent`; the system pointer never moves and no file from disk is dropped | Act |
 
 Not in this version: arbitrary JavaScript evaluation, cookie and storage tools, network
-interception, device emulation, uploads (BB-26), and drag. agent-browser treats evaluation as a
+interception, device emulation and uploads (BB-26). agent-browser treats evaluation as a
 policy gated command; here it is absent, because a model that can run page script can read any value
 on the page, including the ones BB-13 keeps away from it.
 

@@ -61,6 +61,7 @@ pub const TOOLS: &[&str] = &[
     "browser_press",
     "browser_select",
     "browser_dialog",
+    "browser_drag",
 ];
 
 /// `browser__<tool>` for one of [`TOOLS`].
@@ -149,9 +150,8 @@ pub fn press_is_observation(key: &str) -> bool {
 pub fn grant_for_call(tool: &str, arguments: Option<&JsonObject>) -> BrowserGrant {
     let bare = tool.strip_prefix("browser__").unwrap_or(tool);
     match bare {
-        "browser_open" | "browser_fill" | "browser_type" | "browser_select" | "browser_dialog" => {
-            BrowserGrant::Act
-        }
+        "browser_open" | "browser_fill" | "browser_type" | "browser_select" | "browser_dialog"
+        | "browser_drag" => BrowserGrant::Act,
         "browser_navigate" => {
             let action = arguments
                 .and_then(|args| args.get("action"))
@@ -734,6 +734,7 @@ mod tests {
             "browser_type",
             "browser_select",
             "browser_dialog",
+            "browser_drag",
         ] {
             assert_eq!(grant_for_call(tool, None), BrowserGrant::Act, "{tool}");
         }

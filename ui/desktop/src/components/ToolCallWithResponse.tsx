@@ -1584,6 +1584,11 @@ function summarizeBiorouterBrowserCall(
     }
     case 'browser_hover':
       return ref ? `Hovering ${ref}` : 'Hovering an element';
+    case 'browser_drag': {
+      const from = namedArgument(args, ['from']);
+      const to = namedArgument(args, ['to']);
+      return from && to ? `Dragging ${from} to ${to}` : 'Dragging on the page';
+    }
     case 'browser_wait':
       return 'Waiting for the page';
     case 'browser_click':

@@ -21,7 +21,8 @@ export type BrowserAgentOp =
   | 'type'
   | 'press'
   | 'select'
-  | 'dialog';
+  | 'dialog'
+  | 'drag';
 
 export const BROWSER_AGENT_OPS: ReadonlySet<string> = new Set<BrowserAgentOp>([
   'open',
@@ -39,6 +40,7 @@ export const BROWSER_AGENT_OPS: ReadonlySet<string> = new Set<BrowserAgentOp>([
   'press',
   'select',
   'dialog',
+  'drag',
 ]);
 
 export type BrowserAgentGrant = 'observe' | 'act';

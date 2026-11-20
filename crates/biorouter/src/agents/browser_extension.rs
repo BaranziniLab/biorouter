@@ -63,18 +63,18 @@ pub const NOT_AVAILABLE: &str = "The Biorouter Browser runs in the Biorouter des
      is not hosting this chat. Use webdocuments web_scrape for the plain text of a public page, \
      or tell the person the browser is not available here.";
 
-/// The routing rule both tool sets repeat (BB-19).
-pub const COPILOT_ROUTING_SENTENCE: &str = "Biorouter Copilot is for native apps, the operating \
-     system and file dialogs. For web pages use the Biorouter Browser; use Copilot on a browser \
-     only when the person asks for their own browser window or its logins.";
+/// The routing rule both tool sets repeat (BB-19, reworded by AD-16). Defined once, beside
+/// Copilot's tools, so the two sides can never word it differently.
+pub use biorouter_mcp::computer_use::contract::ROUTING_SENTENCE as COPILOT_ROUTING_SENTENCE;
 
 /// The server instructions, held under the 2,800 character budget the workspace and decisions
 /// extensions are tested against.
 pub const INSTRUCTIONS: &str = "Biorouter Browser: a real browser in this chat's side panel, with \
 the person's logins. Use it for anything on a web page: open URLs, search, read rendered pages, \
-follow links, fill and submit forms. It is not the person's own Chrome and not the desktop: for \
-native apps, the operating system, file dialogs, or the person's own browser window, use \
-Biorouter Copilot. For the plain text of a public page, webdocuments web_scrape is cheaper. Do \
+follow links, fill and submit forms, drag and drop on a page. It is not the person's own Chrome \
+and not the desktop: for native apps, the operating system, file dialogs, or the person's own \
+browser window, use Biorouter Copilot. For the plain text of a public page, webdocuments \
+web_scrape is cheaper. Do \
 not work on the same site through both at once, and do not drive Biorouter's own browser panel \
 with Copilot.
 
@@ -217,6 +217,25 @@ struct RefParams {
     /// An @e reference from the latest browser_snapshot.
     #[serde(rename = "ref")]
     reference: String,
+}
+
+// browser_drag (AD-17): from one reference to another reference, or to a point in the page.
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct DragParams {
+    /// The @e reference to pick up, from the latest browser_snapshot.
+    from: String,
+    /// The @e reference to drop it on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    to: Option<String>,
+    /// Or the point to drop it at, in CSS pixels of the visible page, with to_y.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    to_x: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    to_y: Option<f64>,
+    /// Pointer moves between the two ends, 1 to 50. Default 10.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    steps: Option<u32>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize, JsonSchema)]
@@ -390,6 +409,7 @@ fn build_operation(tool: &str, arguments: Option<JsonObject>) -> Result<Operatio
         "browser_press" => press_operation(arguments),
         "browser_select" => select_operation(arguments),
         "browser_dialog" => dialog_operation(arguments),
+        "browser_drag" => drag_operation(arguments),
         other => Err(format!("{other} is not a Biorouter Browser tool")),
     }
 }
@@ -514,6 +534,34 @@ fn hover_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
     Ok(Operation {
         op: "hover",
         args: json!({ "ref": reference(&params.reference)? }),
+        deadline: ACTION_DEADLINE,
+    })
+}
+
+/// AD-17: page drag and drop with page events only (CDP mouse events, with Chromium's drag
+/// interception for a native HTML drag), never the system pointer and never a file from disk.
+fn drag_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
+    let params: DragParams = parse(arguments)?;
+    let from = reference(&params.from)?;
+    let to = optional_reference(params.to)?;
+    let point = match (params.to_x, params.to_y) {
+        (Some(x), Some(y)) if x.is_finite() && y.is_finite() && x >= 0.0 && y >= 0.0 => {
+            Some(json!({ "x": x, "y": y }))
+        }
+        (None, None) => None,
+        _ => return Err("pass both to_x and to_y, as CSS pixels of the visible page".into()),
+    };
+    if to.is_some() == point.is_some() {
+        return Err("pass to (an @e reference) or to_x and to_y, not both".into());
+    }
+    Ok(Operation {
+        op: "drag",
+        args: json!({
+            "from": from,
+            "to": to,
+            "point": point,
+            "steps": params.steps.unwrap_or(10).clamp(1, 50),
+        }),
         deadline: ACTION_DEADLINE,
     })
 }
@@ -896,7 +944,7 @@ impl BrowserClient {
         })
     }
 
-    /// The fifteen tools. Each description says what the tool does on a web page, so the model
+    /// The sixteen tools. Each description says what the tool does on a web page, so the model
     /// reading only this list still routes desktop work to Copilot.
     pub fn tools() -> Vec<Tool> {
         vec![
@@ -935,6 +983,11 @@ impl BrowserClient {
             Self::tool::<PressParams>("browser_press", "Press a key or chord in the web page, such as Enter or Meta+A.", false),
             Self::tool::<SelectParams>("browser_select", "Choose options in a select element by value or label.", false),
             Self::tool::<DialogParams>("browser_dialog", "Accept or dismiss the web page's open alert, confirm or prompt dialog.", false),
+            Self::tool::<DragParams>(
+                "browser_drag",
+                "Drag an @e reference on the web page and drop it on another reference or a point: reorder a list, move a card, fill a drop zone. It never moves the person's pointer and never drops a file from disk. Needs the person's permission to act. For native apps use Biorouter Copilot's drag.",
+                false,
+            ),
         ]
     }
 
@@ -1133,7 +1186,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_roster_is_the_fifteen_tools_of_the_design() {
+    fn the_roster_is_the_sixteen_tools_of_the_design() {
         let names: Vec<String> = BrowserClient::tools()
             .into_iter()
             .map(|tool| tool.name.to_string())
@@ -1152,6 +1205,7 @@ mod tests {
                     | "browser_press"
                     | "browser_select"
                     | "browser_dialog"
+                    | "browser_drag"
             );
             assert_eq!(read_only, Some(!acting), "{}", tool.name);
         }
@@ -1322,8 +1376,45 @@ mod tests {
     }
 
     #[test]
+    fn a_drag_names_its_source_and_exactly_one_destination() {
+        let args = |value: Value| value.as_object().cloned();
+        let to_ref =
+            build_operation("browser_drag", args(json!({"from":"@e3","to":"e7"}))).unwrap();
+        assert_eq!(to_ref.op, "drag");
+        assert_eq!(to_ref.args["from"], "@e3");
+        assert_eq!(to_ref.args["to"], "@e7");
+        assert_eq!(to_ref.args["steps"], 10);
+        let to_point = build_operation(
+            "browser_drag",
+            args(json!({"from":"@e3","to_x":120.5,"to_y":40,"steps":99})),
+        )
+        .unwrap();
+        assert_eq!(to_point.args["point"], json!({"x":120.5,"y":40.0}));
+        assert_eq!(to_point.args["steps"], 50);
+        for bad in [
+            json!({"from":"@e3"}),
+            json!({"from":"@e3","to":"@e4","to_x":1,"to_y":1}),
+            json!({"from":"@e3","to_x":1}),
+            json!({"from":"@e3","to_x":-1,"to_y":1}),
+            json!({"from":"button","to":"@e4"}),
+            json!({"from":"@e3","to":"@e4","file":"/etc/passwd"}),
+        ] {
+            assert!(
+                build_operation("browser_drag", args(bad.clone())).is_err(),
+                "{bad}"
+            );
+        }
+        assert_eq!(
+            crate::security::browser_use::grant_for_call("browser_drag", None),
+            crate::security::browser_use::BrowserGrant::Act
+        );
+    }
+
+    #[test]
     fn the_routing_sentence_is_shared_with_copilot() {
-        assert!(COPILOT_ROUTING_SENTENCE.contains("For web pages use the Biorouter Browser"));
+        assert!(COPILOT_ROUTING_SENTENCE.contains("use the Biorouter Browser (browser_* tools)"));
+        assert!(COPILOT_ROUTING_SENTENCE.contains("their own browser window, tabs or profile"));
+        assert!(INSTRUCTIONS.contains("do not drive Biorouter's own browser panel"));
     }
 
     // --- The client against a stand-in daemon: what crosses the socket, and what comes back.
@@ -1498,7 +1589,7 @@ mod tests {
             .list_tools(None, CancellationToken::new())
             .await
             .unwrap();
-        assert_eq!(all.tools.len(), 15);
+        assert_eq!(all.tools.len(), 16);
         set_available_for_tests(None);
     }
 

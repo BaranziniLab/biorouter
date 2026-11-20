@@ -1260,6 +1260,7 @@ const CODING_AGENT_BRIDGE_ALLOWED_BROWSER_TOOLS: &[&str] = &[
     "browser__browser_press",
     "browser__browser_select",
     "browser__browser_dialog",
+    "browser__browser_drag",
 ];
 
 const CODING_AGENT_BRIDGE_REQUIRED_COLLECTOR_TOOLS: &[&str] = &[
