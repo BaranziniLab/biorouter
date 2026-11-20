@@ -1,0 +1,15 @@
+[package]
+name = "biorouter-fnkey"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The macOS fn key listener behind Biorouter's dictation gestures"
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "biorouter-fnkey"
+path = "src/main.rs"
