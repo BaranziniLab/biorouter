@@ -2676,24 +2676,28 @@ All skills are published as releases of **`BaranziniLab/biorouter-skills`** (ass
 
 ### Native Biorouter Copilot
 
-**Upstream is VENDORED, not cloned.** `vendor/computer-use/source/` is a
-complete copy of the MIT-licensed upstream at `pin.json`'s commit, committed here, and a
-build reads it with **no network** — an upstream repository that disappears or changes
-cannot affect a BioRouter build. The tree is *pristine*; `patches/` is applied to a
-throwaway copy at build time, which is what keeps an upstream update tractable.
-`source-manifest.json` hashes every file and the build verifies it (both directions)
-before the bytes become build input. `scripts/check-vendored-computer-use.sh` is the CI
-guard and also asserts every vendored file is **committable** — repo-wide `.gitignore`
-rules matched 15 of them on the first attempt. Ten upstream files are deliberately
-excluded as third-party extracted artwork that MIT does not cover; they are docs, not
-build inputs, and the build is byte-identical without them.
-⚠ The staged copy gets its own `git init`, and that line is load-bearing: `git apply`
-resolves against the repository containing the working directory, and the staging
-directory lives inside BioRouter's, where `target/` is ignored. Without it the edits to
-tracked files landed while every `new file mode` hunk was silently dropped, and the build
-happily produced a helper 28,672 bytes smaller from effectively unpatched upstream.
-`scripts/check-computer-use-upstream.py` reports what changed upstream and, more usefully,
-which of those files our patches also touch.
+**The engine is agent-desktop, VENDORED, not cloned** (since 1.94.6;
+[design](docs/design/copilot-agent-desktop.md), AD-01 to AD-06). `vendor/agent-desktop/source/`
+is the Apache-2.0 upstream at `pin.json`'s tag and commit, **unmodified** (no `patches/`),
+limited to what a build reads (`INCLUDED` in `scripts/vendor-computer-use-source.py`;
+`crates/ffi` is in it because the workspace lists it as a member). `source-manifest.json`
+hashes every file and the build verifies it both ways before and after cargo runs;
+`scripts/check-vendored-computer-use.sh` (the CI guard) also checks committability,
+`-text`, that `Cargo.lock` locks no network client (AD-20) and that `DEPENDENCIES.txt` lists
+exactly the locked crates. `scripts/computer-use-runtime.py build <target>` runs cargo with the
+repository's 1.92 (`RUSTUP_TOOLCHAIN`), `--locked` and path remapping; darwin builds on macOS
+(`Biorouter Copilot.app`, bundle id `org.biorouter.computer-use`, minimum macOS 13.0), and
+linux and win32 build in the pinned `rust:1.92-bullseye` container through
+`scripts/build-computer-use-helper-cross.sh` (`cross_copilot_helper` in `cross-env.sh`; no Go,
+no Swift). ⚠ At the 13.0 floor one upstream Objective-C deprecation fails the bridges'
+`-Werror`; the build keeps it a warning with clang's `CCC_OVERRIDE_OPTIONS` rather than
+patching the vendored tree. `verify` reads the binaries themselves (Mach-O minimum, ELF glibc
+floor and libraries, PE subsystem and MinGW imports), and `contract` runs `version` and a
+refused bare reference with no desktop access. ⚠ Until the wrapper phase lands,
+`crates/biorouter-mcp/src/computer_use/runtime.rs` still speaks the retired engine's MCP
+protocol, so a packaged build's Copilot reports an incompatible runtime; the old
+`vendor/computer-use/` tree and its OCU-only test scripts are unused and go in the retirement
+phase (AD-18).
 
 
 `computercontroller` — the extension key Biorouter Copilot kept for config
