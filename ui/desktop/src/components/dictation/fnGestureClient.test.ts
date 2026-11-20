@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const session = vi.hoisted(() => ({
   snapshot: { key: null as string | null, activity: 'idle' as string },
   token: null as object | null,
+  quiet: true,
   stop: vi.fn(),
   cancel: vi.fn(),
 }));
@@ -10,8 +11,13 @@ const session = vi.hoisted(() => ({
 vi.mock('./dictationSession', () => ({
   getDictationSnapshot: () => session.snapshot,
   activeDictationToken: () => session.token,
+  canStartDictationQuietly: () => session.quiet,
   stopDictation: (key?: string) => session.stop(key),
-  cancelDictation: (key?: string) => session.cancel(key),
+  cancelDictation: (key?: string) => {
+    session.cancel(key);
+    session.snapshot = { key: null, activity: 'idle' };
+    session.token = null;
+  },
 }));
 
 import {
@@ -37,6 +43,7 @@ beforeEach(() => {
   resetFnGestureClientForTests();
   session.snapshot = { key: null, activity: 'idle' };
   session.token = null;
+  session.quiet = true;
   session.stop.mockClear();
   session.cancel.mockClear();
   document.body.innerHTML = '';
@@ -118,7 +125,73 @@ describe('the fn intents in a window', () => {
     expect(session.stop).toHaveBeenCalledTimes(1);
   });
 
+  it('fn down starts capturing at once, and the hold keeps that recording', () => {
+    const a = composer('a');
+    handleFnIntent('prime');
+    expect(a.press).toHaveBeenCalledTimes(1);
+    session.snapshot = { key: 'a', activity: 'recording' };
+    handleFnIntent('start-hold');
+    expect(a.press).toHaveBeenCalledTimes(1);
+    expect(session.cancel).not.toHaveBeenCalled();
+    handleFnIntent('end-hold');
+    expect(session.stop).toHaveBeenCalledWith('a');
+  });
+
+  it('a tap or fn with another key discards what fn down captured', () => {
+    const a = composer('a');
+    handleFnIntent('prime');
+    handleFnIntent('cancel-hold');
+    expect(session.cancel).toHaveBeenCalledWith('a');
+    expect(session.stop).not.toHaveBeenCalled();
+    expect(a.press).toHaveBeenCalledTimes(1);
+  });
+
+  it('fn down opens nothing when a press would ask first; the hold then presses as before', () => {
+    const a = composer('a');
+    session.quiet = false;
+    handleFnIntent('prime');
+    expect(a.press).not.toHaveBeenCalled();
+    // A tap: nothing was started, so nothing is cancelled.
+    handleFnIntent('cancel-hold');
+    expect(session.cancel).not.toHaveBeenCalled();
+    // A hold: the press happens at the threshold, setup popover and all.
+    handleFnIntent('prime');
+    handleFnIntent('start-hold');
+    expect(a.press).toHaveBeenCalledTimes(1);
+  });
+
+  it('fn down while the microphone records starts nothing, and its tap cancels nothing', () => {
+    const a = composer('a');
+    session.snapshot = { key: 'a', activity: 'recording' };
+    session.token = { started: 'by the microphone' };
+    handleFnIntent('prime');
+    handleFnIntent('cancel-hold');
+    expect(a.press).not.toHaveBeenCalled();
+    expect(session.cancel).not.toHaveBeenCalled();
+  });
+
+  it('a double-tap keeps the recording its second press started, hands-free', () => {
+    const a = composer('a');
+    handleFnIntent('prime');
+    handleFnIntent('cancel-hold');
+    handleFnIntent('prime');
+    expect(a.press).toHaveBeenCalledTimes(2);
+    session.snapshot = { key: 'a', activity: 'recording' };
+    handleFnIntent('toggle');
+    expect(session.stop).not.toHaveBeenCalled();
+    expect(session.cancel).toHaveBeenCalledTimes(1);
+    expect(a.press).toHaveBeenCalledTimes(2);
+    // The next double-tap's presses start nothing, and its toggle stops that recording.
+    handleFnIntent('prime');
+    handleFnIntent('cancel-hold');
+    handleFnIntent('prime');
+    handleFnIntent('toggle');
+    expect(session.stop).toHaveBeenCalledWith('a');
+    expect(a.press).toHaveBeenCalledTimes(2);
+  });
+
   it('does nothing in a window with no composer', () => {
+    handleFnIntent('prime');
     handleFnIntent('start-hold');
     handleFnIntent('toggle');
     handleFnIntent('end-hold');

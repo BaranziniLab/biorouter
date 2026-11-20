@@ -1261,6 +1261,21 @@ function startDictationBody(options: StartDictationOptions): Promise<StartOutcom
   return run();
 }
 
+/**
+ * Whether a press now would start recording with nothing shown first: no dictation runs or waits,
+ * the speech model is ready, the status has loaded, and no notice, consent or permission prompt
+ * would come before the microphone opens. The fn gestures start capture the moment fn goes down
+ * only then (`fnGestureClient.ts`), so a press that turns out to be a tap never opens anything.
+ */
+export function canStartDictationQuietly(): boolean {
+  if (active || pendingRemoteStart) return false;
+  if (snapshot.activity !== 'idle' && snapshot.activity !== 'error') return false;
+  if (remoteHttpBackend() || needsSharedOriginNotice()) return false;
+  const status = deps.statusSnapshot();
+  if (status.load !== 'loaded' || deps.phase().phase !== 'idle') return false;
+  return !(window.electron?.platform === 'darwin' && status.micStatus === 'not-determined');
+}
+
 /** Stop and insert (the recording pill, Enter while recording). */
 export function stopDictation(key?: string): void {
   if (pendingRemoteStart && (key === undefined || pendingRemoteStart.key === key))

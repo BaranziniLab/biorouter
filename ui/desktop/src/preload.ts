@@ -964,6 +964,7 @@ const electronAPI: ElectronAPI = {
   onDictationFnIntent: (callback: (intent: FnIntent) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, intent: unknown) => {
       if (
+        intent === 'prime' ||
         intent === 'start-hold' ||
         intent === 'end-hold' ||
         intent === 'cancel-hold' ||

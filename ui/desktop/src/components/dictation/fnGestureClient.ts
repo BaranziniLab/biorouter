@@ -12,6 +12,7 @@
 import type { FnIntent } from '../../utils/fnGesture';
 import {
   activeDictationToken,
+  canStartDictationQuietly,
   cancelDictation,
   getDictationSnapshot,
   stopDictation,
@@ -25,7 +26,10 @@ export interface FnGestureTarget {
 
 const targets = new Map<string, FnGestureTarget>();
 let lastFocused: string | null = null;
-/** The recording the current hold started, so its release stops that one and no other. */
+/**
+ * The recording the current press started (at fn down, or at the hold threshold), so its release,
+ * a tap or another key acts on that one and no other.
+ */
 let holdToken: object | null = null;
 let focusListening = false;
 
@@ -75,9 +79,24 @@ function startInTarget(): boolean {
   return true;
 }
 
+/** The recording this press started is still the one running. */
+const holdIsLive = (token: object | null): boolean =>
+  token !== null && activeDictationToken() === token && recordingNow();
+
 export function handleFnIntent(intent: FnIntent): void {
   switch (intent) {
+    case 'prime': {
+      // fn went down: start capturing now, so the first words of a hold are kept, but only when
+      // that opens nothing (no setup popover, notice or prompt) for a press that may be a tap.
+      holdToken = null;
+      if (recordingNow() || !canStartDictationQuietly()) return;
+      if (startInTarget()) holdToken = activeDictationToken();
+      return;
+    }
     case 'start-hold': {
+      // The hold is confirmed. A capture its press started goes on; otherwise it starts now, as
+      // the microphone button would, setup popover and all.
+      if (holdIsLive(holdToken)) return;
       holdToken = null;
       if (recordingNow()) return;
       if (startInTarget()) holdToken = activeDictationToken();
@@ -87,9 +106,9 @@ export function handleFnIntent(intent: FnIntent): void {
     case 'cancel-hold': {
       const token = holdToken;
       holdToken = null;
-      // Only the recording this hold started: the microphone may have stopped it and started
-      // another while fn was held.
-      if (!token || activeDictationToken() !== token || !recordingNow()) return;
+      // Only the recording this press started: the microphone may have stopped it and started
+      // another while fn was held. A tap's release and fn with another key discard it.
+      if (!holdIsLive(token)) return;
       const { key } = getDictationSnapshot();
       if (!key) return;
       if (intent === 'end-hold') stopDictation(key);
@@ -97,7 +116,10 @@ export function handleFnIntent(intent: FnIntent): void {
       return;
     }
     case 'toggle': {
+      const token = holdToken;
       holdToken = null;
+      // The double-tap's second press already started a recording: it goes on, hands-free.
+      if (holdIsLive(token)) return;
       const { key, activity } = getDictationSnapshot();
       if ((activity === 'arming' || activity === 'recording') && key) {
         stopDictation(key);

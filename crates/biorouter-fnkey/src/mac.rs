@@ -172,7 +172,7 @@ extern "C" fn on_event(
                 )
             };
             let signals = match TRACKER.lock() {
-                Ok(mut tracker) => tracker.flags_changed(key_code, flags),
+                Ok(mut tracker) => tracker.flags_changed(key_code, flags, at_ms),
                 Err(_) => Vec::new(),
             };
             for signal in signals {
@@ -180,13 +180,13 @@ extern "C" fn on_event(
             }
         }
         EVENT_KEY_DOWN => {
+            // SAFETY: as above.
+            let at_ms = unsafe { CGEventGetTimestamp(event) } / 1_000_000;
             let signal = TRACKER
                 .lock()
                 .ok()
-                .and_then(|mut tracker| tracker.key_down());
+                .and_then(|mut tracker| tracker.key_down(at_ms));
             if let Some(signal) = signal {
-                // SAFETY: as above.
-                let at_ms = unsafe { CGEventGetTimestamp(event) } / 1_000_000;
                 emit(&signal_line(signal, at_ms));
             }
         }
