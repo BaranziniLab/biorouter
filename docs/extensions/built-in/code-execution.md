@@ -94,8 +94,8 @@ The line-oriented terminal (`biorouter run`, `biorouter session`) and the full-s
 
 - Each call is one line, its arguments cut at 200 characters. With `--debug` every argument is printed in full on its own lines and a failed call's error is added. With `--debug` the line-oriented terminal also prints the script's source under the graph before it runs, and there `/r` (full tool output) does what `--debug` does.
 - A command built while the script runs (from a variable, a loop or another call's result) appears as it was run, not as the script spells it.
-- Credential values are withheld with the same detector that screens tool output (`[REDACTED:api-token]`), even with `--debug`. Control characters are dropped, so an argument cannot recolour the terminal or hide part of a command.
-- The extension records at most 64 calls per script and cuts each call's arguments at 2 KB. Calls past that are counted (`5 additional calls not recorded`), and cut arguments are shown as recorded.
+- Credential values are withheld with the same detector that screens tool output (`[REDACTED:api-token]`), even with `--debug`. Control characters are dropped, so an argument cannot recolour the terminal or hide part of a command. The call lines above the result get the same treatment: the full-screen view's argument lines and the graph's labels are the model's own words.
+- The extension records at most 64 calls per script and cuts each call's arguments at 2 KB. It withholds credentials from the whole arguments before the cut, reading both the JSON text and each string inside it, so a credential the cut would split leaves no prefix in the record, on the desktop or in the terminal. Calls past that are counted (`5 additional calls not recorded`), and cut arguments are shown as recorded.
 
 ## Waiting on a job
 
