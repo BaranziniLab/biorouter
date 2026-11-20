@@ -312,28 +312,56 @@ pub async fn binaries_report(bin_dir: &Path, version: &str) -> Result<()> {
     Ok(())
 }
 
+/// How many more times [`binary_version`] starts a binary the kernel reported busy.
+///
+/// On Linux a just-written executable can still be open for writing in a process that
+/// another thread forked in the instant before the writer closed it; until that child
+/// reaches its own exec, starting the file fails with ETXTBSY ("Text file busy"). It
+/// clears within milliseconds, so a few short retries tell it from a binary that cannot
+/// run. Seen in CI (PR #551, `a_binary_that_reports_another_version_is_caught`).
+const BUSY_RETRIES: u32 = 5;
+
 /// What `binary --version` says.
 pub async fn binary_version(binary: &Path) -> Result<String> {
-    let mut command = tokio::process::Command::new(binary);
-    command
-        .arg("--version")
-        .stdin(Stdio::null())
-        .kill_on_drop(true);
-    no_console_window(&mut command);
-    strip_daemon_private_env(&mut command);
-    let output = tokio::time::timeout(VERSION_TIMEOUT, command.output())
-        .await
-        .map_err(|_| {
-            anyhow!(
+    let mut busy = 0;
+    let output = loop {
+        let mut command = tokio::process::Command::new(binary);
+        command
+            .arg("--version")
+            .stdin(Stdio::null())
+            .kill_on_drop(true);
+        no_console_window(&mut command);
+        strip_daemon_private_env(&mut command);
+        match tokio::time::timeout(VERSION_TIMEOUT, command.output()).await {
+            Err(_) => bail!(
                 "it did not answer --version within {}s",
                 VERSION_TIMEOUT.as_secs()
-            )
-        })??;
+            ),
+            Ok(Err(error)) if is_text_file_busy(&error) && busy < BUSY_RETRIES => {
+                busy += 1;
+                tokio::time::sleep(Duration::from_millis(20 * u64::from(busy))).await;
+            }
+            Ok(result) => break result?,
+        }
+    };
     if !output.status.success() {
         bail!("{}", last_lines(&output.stderr, 3));
     }
     super::version_from_output(&String::from_utf8_lossy(&output.stdout))
         .ok_or_else(|| anyhow!("it printed no version"))
+}
+
+/// Whether starting a program failed only because its file is still open for writing.
+fn is_text_file_busy(error: &std::io::Error) -> bool {
+    #[cfg(unix)]
+    {
+        error.raw_os_error() == Some(libc::ETXTBSY)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = error;
+        false
+    }
 }
 
 /// The command [`run_package_manager`] runs, apart so a test can read it.
@@ -559,6 +587,20 @@ mod tests {
         assert!(bundle.join("old").exists());
         assert!(!bundle.join("new").exists());
         assert!(!backup.exists());
+    }
+
+    #[test]
+    fn only_a_busy_file_is_started_again() {
+        #[cfg(unix)]
+        assert!(is_text_file_busy(&std::io::Error::from_raw_os_error(
+            libc::ETXTBSY
+        )));
+        assert!(!is_text_file_busy(&std::io::Error::from(
+            std::io::ErrorKind::NotFound
+        )));
+        assert!(!is_text_file_busy(&std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied
+        )));
     }
 
     #[tokio::test]
