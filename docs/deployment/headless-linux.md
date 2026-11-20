@@ -114,7 +114,10 @@ that server reads its settings (that account's `~/.config/biorouter` by default)
 now goes to this account's settings folder instead, and the `sudo -H -u <account>` line to run.
 `--secret-stdin` repeats the point after saving. They find the server in the process list, from
 each process's owner and command line only, never another account's environment or files, so a
-host that hides other accounts' processes (`/proc` mounted with `hidepid`) shows nothing.
+host that hides other accounts' processes (`/proc` mounted with `hidepid`) shows nothing. Because
+they cannot read which settings folder or port a server uses, any other account's
+`biorouter serve` matches. On a shared host the server named may be someone else's, which the
+warning says: if it is not the server you mean, ignore it.
 
 ### Credentials on a host with no desktop keyring
 
