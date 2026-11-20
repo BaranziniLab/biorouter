@@ -2310,6 +2310,9 @@ mod tests {
     /// `res$IHS[…]` is refused whenever the body is read as a script this
     /// command runs, which makes it a probe for whether a body was classified
     /// as data.
+    const ISSUE546_R_BODY: &str =
+        "res <- data.frame(IHS = c(1, Inf))\nres$IHS[is.finite(res$IHS)]\n";
+
     /// Item 5 of #546: a refusal for a word inside a here-document body says
     /// so, and says how the body was read, so a model that wrote the body as
     /// text is not left looking for the word among its commands.
@@ -2357,9 +2360,6 @@ mod tests {
             assert!(!outside.contains("here-document"), "{command:?}: {outside}");
         }
     }
-
-    const ISSUE546_R_BODY: &str =
-        "res <- data.frame(IHS = c(1, Inf))\nres$IHS[is.finite(res$IHS)]\n";
 
     /// A Windows host reads the input under both grammars, and the Windows
     /// reading keeps `\` literal. The delimiter is still read the POSIX way, so
