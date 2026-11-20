@@ -173,6 +173,14 @@ pub(crate) fn denied_response_text(
         {
             result.reason.clone()
         }
+        // #545: a bare tool name that matched no offered tool, or several. Nobody
+        // declined it, and the reason names the offered tools it could mean.
+        Some(result)
+            if result.inspector_name
+                == crate::agents::reply_parts::OFFERED_ROSTER_INSPECTOR_NAME =>
+        {
+            result.reason.clone()
+        }
         _ => DECLINED_RESPONSE.to_string(),
     }
 }

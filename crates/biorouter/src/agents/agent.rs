@@ -2455,6 +2455,10 @@ pub struct ToolCategorizeResult {
     pub frontend_requests: Vec<ToolRequest>,
     pub remaining_requests: Vec<ToolRequest>,
     pub filtered_response: Message,
+    /// #545: refusals for bare tool names that match no offered tool or
+    /// several. Their requests are in `remaining_requests`; these join the
+    /// inspection results so the denial path answers them and nothing runs.
+    pub admission_denials: Vec<InspectionResult>,
 }
 
 /// The per-batch lookup tables one round of tool calls needs, built in one
@@ -8643,13 +8647,14 @@ impl Agent {
         tools: &[rmcp::model::Tool],
     ) -> ToolCategorizeResult {
         // Categorize tool requests
-        let (frontend_requests, remaining_requests, filtered_response) =
+        let (frontend_requests, remaining_requests, filtered_response, admission_denials) =
             self.categorize_tool_requests(response, tools).await;
 
         ToolCategorizeResult {
             frontend_requests,
             remaining_requests,
             filtered_response,
+            admission_denials,
         }
     }
 
@@ -8749,6 +8754,7 @@ impl Agent {
     async fn inspect_and_gate_tool_requests(
         &self,
         remaining_requests: &mut Vec<ToolRequest>,
+        admission_denials: Vec<InspectionResult>,
         conversation: &Conversation,
         biorouter_mode: BioRouterMode,
         session: &Session,
@@ -8797,6 +8803,13 @@ impl Agent {
             });
             inspection_results.append(&mut revalidated);
         }
+
+        // #545: a bare tool name that matched no offered tool, or several, was
+        // refused when the calls were first matched against the offered roster.
+        // First, so the denial text is that refusal (`denied_response_text`
+        // takes the first Deny), and after the rewrite revalidation above, which
+        // keeps only the hook inspector's results.
+        inspection_results.splice(0..0, admission_denials);
 
         // The planning gate's once-per-turn redirect, added as inspection
         // results so the permission merge, the denial path and the transcript
@@ -16300,7 +16313,17 @@ impl Agent {
                                     // persisted, and handed to the PostToolUse hooks.
                                     mut remaining_requests,
                                     filtered_response,
-                                } = self.categorize_tools(&response, &tools).await;
+                                    admission_denials,
+                                } = self
+                                    .categorize_tools(
+                                        &response,
+                                        // #545: the roster this turn offered. The
+                                        // toolshim empties `tools` for transport and
+                                        // offers its own copy, so a shim turn is
+                                        // matched against `toolshim_tools`.
+                                        if tools.is_empty() { &toolshim_tools } else { &tools },
+                                    )
+                                    .await;
 
                                 yield AgentEvent::Message(filtered_response.clone());
                                 tokio::task::yield_now().await;
@@ -16432,6 +16455,7 @@ impl Agent {
                                     ) = {
                                         let gate = self.inspect_and_gate_tool_requests(
                                             &mut remaining_requests,
+                                            admission_denials,
                                             &conversation,
                                             biorouter_mode,
                                             &session,
