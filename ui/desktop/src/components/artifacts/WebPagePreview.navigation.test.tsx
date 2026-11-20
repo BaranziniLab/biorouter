@@ -187,6 +187,10 @@ describe('the address field', () => {
       await userEvent.type(address, `${typed}{Enter}`);
       const line = await screen.findByTestId('embedded-browser-address-refused');
       expect(line.textContent).toContain('addresses do not open in the Biorouter Browser');
+      // The sentence wraps rather than being cut at the panel's default width.
+      const sentence = line.querySelector('p');
+      expect(sentence?.className).not.toContain('truncate');
+      expect(sentence?.className).toContain('whitespace-normal');
     }
     expect(browser.navigate).not.toHaveBeenCalled();
     // Typing again clears the line, and an ordinary address opens.

@@ -875,6 +875,7 @@ export default function WebPagePreview({
         <BrowserLine
           testId="embedded-browser-address-refused"
           text={addressRefusal}
+          wrap
           onDismiss={() => setAddressRefusal(null)}
         />
       )}
@@ -1075,24 +1076,38 @@ function importedBookmarkGroups(
   return [...groups];
 }
 
-/** One quiet line under the bar: an error, a note or a download, with its one action. */
+/**
+ * One quiet line under the bar: an error, a note or a download, with its one action.
+ *
+ * `wrap` lets a sentence the person has to read in full (the address field's refusal) run onto a
+ * second line instead of being cut at the panel's width; the others stay one line, with the full
+ * text in the tooltip.
+ */
 function BrowserLine({
   testId,
   text,
+  wrap = false,
   children,
   onDismiss,
 }: {
   testId: string;
   text: string;
+  wrap?: boolean;
   children?: React.ReactNode;
   onDismiss?: () => void;
 }) {
   return (
     <div
       data-testid={testId}
-      className="flex flex-none items-center gap-2 bg-background-fill px-3 py-1 text-supporting text-text-muted"
+      className={cn(
+        'flex flex-none gap-2 bg-background-fill px-3 py-1 text-supporting text-text-muted',
+        wrap ? 'items-start' : 'items-center'
+      )}
     >
-      <p className="min-w-0 flex-1 truncate" title={text}>
+      <p
+        className={cn('min-w-0 flex-1', wrap ? 'whitespace-normal break-words' : 'truncate')}
+        title={wrap ? undefined : text}
+      >
         {text}
       </p>
       {children}
