@@ -566,7 +566,7 @@ Start or resume interactive chat sessions.
 - **`--path <path>`**: Legacy parameter for specifying session by file path
 - **`-r, --resume`**: Resume a previous session
 - **`--history`**: Show previous messages when resuming a session
-- **`--debug`**: Enable debug mode to output complete tool responses, detailed parameter values, and full file paths
+- **`--debug`**: Enable debug mode to output complete tool responses, detailed parameter values, and full file paths. An `execute_code` call also shows its script and every argument of each call the script made (see [Code Execution](../extensions/built-in/code-execution.md#what-the-terminal-shows))
 - **`--max-tool-repetitions <NUMBER>`**: Set the maximum number of times the same tool can be called consecutively with identical parameters. Helps prevent infinite loops.
 - **`--max-turns <NUMBER>`**: Set the maximum number of turns allowed without user input (`0` means Unlimited, the default)
 
@@ -1378,7 +1378,7 @@ Execute commands from an instruction file or stdin.
 
 **Control Options:**
 
-- **`--debug`**: Output complete tool responses, detailed parameter values, and full file paths
+- **`--debug`**: Output complete tool responses, detailed parameter values, and full file paths. An `execute_code` call also shows its script and every argument of each call the script made (see [Code Execution](../extensions/built-in/code-execution.md#what-the-terminal-shows))
 - **`--max-tool-repetitions <NUMBER>`**: Maximum number of times the same tool can be called consecutively with identical parameters. Helps prevent infinite loops
 - **`--max-turns <NUMBER>`**: Maximum number of turns allowed without user input (`0` means Unlimited, the default)
 - **`--explain`**: Show a workflow's title, description, and parameters, and a "Supervision:" section when it declares monitors or a phase plan. It first runs the same checks `run` and an import run, so a workflow `run` would refuse is refused here too, with the same sentence after "This workflow would not start: ". `run` prints that sentence as it is, without a "Template rendering failed:" prefix. See [What `--explain` prints](#what---explain-prints)
