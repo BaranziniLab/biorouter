@@ -19,6 +19,19 @@ pub fn custom_providers_dir() -> std::path::PathBuf {
     Paths::config_dir().join("custom_providers")
 }
 
+/// Where custom provider `id` is defined. An id that would name a file outside
+/// the custom providers folder is refused rather than joined.
+fn custom_provider_definition_path(id: &str) -> Result<std::path::PathBuf> {
+    if id.is_empty()
+        || id
+            .chars()
+            .any(|character| matches!(character, '/' | '\\' | ':'))
+    {
+        anyhow::bail!("Invalid custom provider id");
+    }
+    Ok(custom_providers_dir().join(format!("{}.json", id)))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderEngine {
@@ -100,81 +113,85 @@ pub fn create_custom_provider(
 ) -> Result<DeclarativeProviderConfig> {
     let _credential_guard = PROVIDER_CREDENTIAL_LOCK.lock().unwrap();
     let id = generate_id(&display_name);
+    let file_path = custom_provider_definition_path(&id)?;
     let api_key_name = generate_api_key_name(&id);
-
-    let config = Config::global();
-    config.set_secret(&api_key_name, &api_key)?;
-
-    let model_infos: Vec<ModelInfo> = models
-        .into_iter()
-        .map(|name| ModelInfo::new(name, 128000))
-        .collect();
-
     let provider_config = DeclarativeProviderConfig {
         name: id.clone(),
         engine: engine_named(engine)?,
         display_name: display_name.clone(),
         description: Some(format!("Custom {} provider", display_name)),
-        api_key_env: api_key_name,
+        api_key_env: api_key_name.clone(),
         base_url: api_url,
-        models: model_infos,
+        models: models
+            .into_iter()
+            .map(|name| ModelInfo::new(name, 128000))
+            .collect(),
         headers,
         timeout_seconds: None,
         supports_streaming,
     };
-
-    let custom_providers_dir = custom_providers_dir();
-    std::fs::create_dir_all(&custom_providers_dir)?;
-
-    let json_content = serde_json::to_string_pretty(&provider_config)?;
-    let file_path = custom_providers_dir.join(format!("{}.json", id));
-    std::fs::write(file_path, json_content)?;
-
+    let json_content = serde_json::to_vec_pretty(&provider_config)?;
+    Config::global().commit_custom_provider(
+        &file_path,
+        None,
+        Some(&json_content),
+        Some((&api_key_name, &api_key)),
+    )?;
     Ok(provider_config)
 }
 
+/// An update of a declarative or custom provider, prepared before anything is
+/// written: `candidate` is the provider the update would register (what a typed
+/// key is checked against), and the definition file is remembered as it was
+/// read. [`update_custom_provider`] writes only if that file is still the same
+/// when it commits, so a check never approves a provider that has since changed.
+#[derive(Clone)]
+pub struct CheckedProviderUpdate {
+    pub candidate: DeclarativeProviderConfig,
+    /// The editable definition's bytes as read; `None` for a bundled provider,
+    /// which has no file to edit.
+    saved_definition: Option<Vec<u8>>,
+}
+
+/// Write a provider update prepared by [`checked_provider_update`]. Its engine
+/// and URL are the candidate's, the ones a typed key was checked against. A
+/// blank `api_key` keeps the saved key and never reads or writes the secret
+/// store; a new key and the definition are committed together, and a failure
+/// puts back the saved key and definition (see `Config::commit_custom_provider`).
 pub fn update_custom_provider(
     id: &str,
-    provider_type: &str,
     display_name: String,
-    api_url: String,
     api_key: String,
     models: Vec<String>,
     supports_streaming: Option<bool>,
+    checked: CheckedProviderUpdate,
 ) -> Result<()> {
-    let _credential_guard = PROVIDER_CREDENTIAL_LOCK.lock().unwrap();
-    let loaded_provider = load_provider(id)?;
-    let existing_config = loaded_provider.config;
-    let editable = loaded_provider.is_editable;
-
-    let config = Config::global();
-    if !api_key.is_empty() {
-        config.set_secret(&existing_config.api_key_env, &api_key)?;
-    }
-
+    let file_path = custom_provider_definition_path(id)?;
+    let editable = checked.saved_definition.is_some();
+    let mut updated_config = checked.candidate;
     if editable {
-        let model_infos: Vec<ModelInfo> = models
+        updated_config.name = id.to_string();
+        updated_config.display_name = display_name;
+        updated_config.models = models
             .into_iter()
             .map(|name| ModelInfo::new(name, 128000))
             .collect();
-
-        let updated_config = DeclarativeProviderConfig {
-            name: id.to_string(),
-            engine: engine_named(provider_type)?,
-            display_name,
-            description: existing_config.description,
-            api_key_env: existing_config.api_key_env,
-            base_url: api_url,
-            models: model_infos,
-            headers: existing_config.headers,
-            timeout_seconds: existing_config.timeout_seconds,
-            supports_streaming,
-        };
-
-        let file_path = custom_providers_dir().join(format!("{}.json", id));
-        let json_content = serde_json::to_string_pretty(&updated_config)?;
-        std::fs::write(file_path, json_content)?;
+        updated_config.supports_streaming = supports_streaming;
     }
+    let replacement = if editable {
+        Some(serde_json::to_vec_pretty(&updated_config)?)
+    } else {
+        None
+    };
+    let secret =
+        (!api_key.is_empty()).then_some((updated_config.api_key_env.as_str(), api_key.as_str()));
+    let _credential_guard = PROVIDER_CREDENTIAL_LOCK.lock().unwrap();
+    Config::global().commit_custom_provider(
+        &file_path,
+        checked.saved_definition.as_deref(),
+        replacement.as_deref(),
+        secret,
+    )?;
     Ok(())
 }
 
@@ -223,13 +240,34 @@ pub fn config_for_updated_provider(
     engine: &str,
     api_url: String,
 ) -> Result<DeclarativeProviderConfig> {
-    let loaded = load_provider(id)?;
-    let mut config = loaded.config;
-    if loaded.is_editable {
-        config.engine = engine_named(engine)?;
-        config.base_url = api_url;
+    checked_provider_update(id, engine, api_url).map(|checked| checked.candidate)
+}
+
+/// Read provider `id` and prepare its update with `engine` and `api_url` (see
+/// [`CheckedProviderUpdate`]). An editable provider takes both; a bundled one
+/// keeps its own. An invalid engine is refused here, before any write.
+pub fn checked_provider_update(
+    id: &str,
+    engine: &str,
+    api_url: String,
+) -> Result<CheckedProviderUpdate> {
+    let file_path = custom_provider_definition_path(id)?;
+    if file_path.exists() {
+        let saved_definition = std::fs::read(&file_path)?;
+        let mut candidate: DeclarativeProviderConfig = serde_json::from_slice(&saved_definition)?;
+        candidate.engine = engine_named(engine)?;
+        candidate.base_url = api_url;
+        return Ok(CheckedProviderUpdate {
+            candidate,
+            saved_definition: Some(saved_definition),
+        });
     }
-    Ok(config)
+
+    let loaded = load_provider(id)?;
+    Ok(CheckedProviderUpdate {
+        candidate: loaded.config,
+        saved_definition: None,
+    })
 }
 
 /// The name the typed key is handed to a key check under, so a check never
@@ -387,7 +425,7 @@ pub(crate) fn bundled_models(provider: &str) -> Vec<crate::providers::base::Mode
 
 /// Read every declarative credential reference without relying on the cached
 /// registry, which may predate a provider configuration edit.
-pub(super) fn credential_references() -> Result<Vec<(String, String)>> {
+pub fn credential_references() -> Result<Vec<(String, String)>> {
     let mut providers: Vec<DeclarativeProviderConfig> = Vec::new();
     let directory = custom_providers_dir();
     match std::fs::read_dir(directory) {

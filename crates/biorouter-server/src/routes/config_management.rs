@@ -84,12 +84,6 @@ pub struct ConfigKeyQuery {
     pub is_secret: bool,
 }
 
-#[derive(Deserialize, ToSchema)]
-pub struct PreviewProviderSecretRequest {
-    pub provider: String,
-    pub key: String,
-}
-
 #[derive(Serialize, ToSchema)]
 pub struct ConfigResponse {
     pub config: HashMap<String, Value>,
@@ -1092,6 +1086,139 @@ fn mask_secret(_secret: &Value) -> String {
     SECRET_MASK.to_string()
 }
 
+/// How many `/config/read` classifications read the disk at once. Each one
+/// reads `config.yaml` and the custom provider definitions on a blocking
+/// thread, and a settings page asks for a dozen keys together.
+static CONFIG_READ_CLASSIFICATION_LIMIT: tokio::sync::Semaphore =
+    tokio::sync::Semaphore::const_new(4);
+
+/// What `/config/read` may answer for a key the caller asked for as plaintext.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ConfigKeyClassification {
+    /// A setting the app reads back as itself.
+    Plaintext,
+    /// A credential: answered with the fixed mask, never the value.
+    Secret,
+    /// Nothing declares it, so nothing says it is safe to show: answered `null`.
+    Unknown,
+}
+
+/// The app's own settings, read back as themselves. Every other plaintext key
+/// must be declared by a provider: an undeclared key could be anything,
+/// including a credential exported in the environment the daemon started in.
+const PLAINTEXT_SETTINGS: &[&str] = &[
+    "BIOROUTER_PROVIDER",
+    "BIOROUTER_MODEL",
+    "BIOROUTER_MODE",
+    "BIOROUTER_MAX_TURNS",
+    "WORKSPACE_ANNOUNCE_ONLY",
+    "BIOROUTER_WORKSPACE_OPEN_SUBAGENT_TABS",
+    "BIOROUTER_WORKER_PROVIDER",
+    "BIOROUTER_WORKER_MODEL",
+    "CREW_TASK_MODEL",
+    "BIOROUTER_ONBOARDING_SKIPPED",
+    "BIOROUTER_AUTO_COMPACT_THRESHOLD",
+    "BIOROUTER_AUTO_COMPACT_MAX_TOKENS",
+];
+
+/// The built-in providers' declared keys, upper-cased: `(secret, plaintext)`.
+/// Compiled in, so read once per process.
+fn builtin_declared_keys() -> &'static (
+    std::collections::HashSet<String>,
+    std::collections::HashSet<String>,
+) {
+    static DECLARED: std::sync::OnceLock<(
+        std::collections::HashSet<String>,
+        std::collections::HashSet<String>,
+    )> = std::sync::OnceLock::new();
+    DECLARED.get_or_init(|| {
+        let mut secret = std::collections::HashSet::new();
+        let mut plaintext = std::collections::HashSet::new();
+        for provider in biorouter::providers::builtin_provider_metadata() {
+            for key in provider.config_keys {
+                let name = key.name.to_uppercase();
+                if key.secret {
+                    secret.insert(name);
+                } else {
+                    plaintext.insert(name);
+                }
+            }
+        }
+        (secret, plaintext)
+    })
+}
+
+/// Every key an extension in `config.yaml` names as a credential (`env_keys`),
+/// read from the file itself rather than the cache, enabled or not. An entry
+/// this version cannot load still counts: its `env_keys`, when it has a list of
+/// names, are taken as they are. An `env_keys` that is not a list of names
+/// leaves the references unknown, which is an error, never "none".
+fn extension_credential_references(config: &Config) -> Result<Vec<String>, StatusCode> {
+    let bytes = match std::fs::read(config.path_ref()) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+    let saved: serde_yaml::Value =
+        serde_yaml::from_slice(&bytes).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let extensions = match saved.get("extensions") {
+        None | Some(serde_yaml::Value::Null) => return Ok(Vec::new()),
+        Some(serde_yaml::Value::Mapping(extensions)) => extensions,
+        Some(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+    };
+
+    let mut references = Vec::new();
+    for entry in extensions.values() {
+        match serde_yaml::from_value::<ExtensionEntry>(entry.clone()) {
+            Ok(entry) => match entry.config {
+                ExtensionConfig::Stdio { env_keys, .. }
+                | ExtensionConfig::StreamableHttp { env_keys, .. } => references.extend(env_keys),
+                _ => {}
+            },
+            Err(_) => match entry.get("env_keys") {
+                None | Some(serde_yaml::Value::Null) => {}
+                Some(serde_yaml::Value::Sequence(names)) => {
+                    for name in names {
+                        let serde_yaml::Value::String(name) = name else {
+                            return Err(StatusCode::INTERNAL_SERVER_ERROR);
+                        };
+                        references.push(name.clone());
+                    }
+                }
+                Some(_) => return Err(StatusCode::INTERNAL_SERVER_ERROR),
+            },
+        }
+    }
+    Ok(references)
+}
+
+/// Decide what `/config/read` may answer for `key` when the caller asked for
+/// it as plaintext. Secret wins over every plaintext declaration: a built-in
+/// secret field, a custom provider's key, or an extension's credential, read
+/// fresh from disk, so a definition added since the provider registry was
+/// cached still counts. Metadata that cannot be read is an error, never
+/// "not a secret".
+fn classify_config_key(config: &Config, key: &str) -> Result<ConfigKeyClassification, StatusCode> {
+    let canonical = key.to_uppercase();
+    let (builtin_secret, builtin_plaintext) = builtin_declared_keys();
+
+    let secret = builtin_secret.contains(&canonical)
+        || biorouter::config::declarative_providers::credential_references()
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
+            .into_iter()
+            .any(|(name, _)| name.to_uppercase() == canonical)
+        || extension_credential_references(config)?
+            .into_iter()
+            .any(|name| name.to_uppercase() == canonical);
+    if secret {
+        return Ok(ConfigKeyClassification::Secret);
+    }
+    if PLAINTEXT_SETTINGS.contains(&canonical.as_str()) || builtin_plaintext.contains(&canonical) {
+        return Ok(ConfigKeyClassification::Plaintext);
+    }
+    Ok(ConfigKeyClassification::Unknown)
+}
+
 #[utoipa::path(
     post,
     path = "/config/read",
@@ -1133,10 +1260,32 @@ pub async fn read_config(
     }
 
     let config = Config::global();
+    let is_secret = if query.is_secret {
+        true
+    } else {
+        let key = query.key.clone();
+        let permit = CONFIG_READ_CLASSIFICATION_LIMIT
+            .acquire()
+            .await
+            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        let classification = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            classify_config_key(config, &key)
+        })
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)??;
+        match classification {
+            ConfigKeyClassification::Plaintext => false,
+            ConfigKeyClassification::Secret => true,
+            ConfigKeyClassification::Unknown => {
+                return Ok(Json(ConfigValueResponse::Value(Value::Null)));
+            }
+        }
+    };
 
-    let response_value = match config.get(&query.key, query.is_secret) {
+    let response_value = match config.get(&query.key, is_secret) {
         Ok(value) => {
-            if query.is_secret {
+            if is_secret {
                 ConfigValueResponse::MaskedValue(MaskedSecret {
                     masked_value: mask_secret(&value),
                 })
@@ -1150,61 +1299,6 @@ pub async fn read_config(
         }
     };
     Ok(Json(response_value))
-}
-
-#[utoipa::path(
-    post,
-    path = "/config/provider-secret/preview",
-    request_body = PreviewProviderSecretRequest,
-    responses(
-        (status = 200, description = "A masked provider secret preview", body = String),
-        (status = 403, description = "The request did not prove a desktop user action"),
-        (status = 404, description = "The provider secret is unavailable"),
-        (status = 500, description = "The provider secret could not be read"),
-    )
-)]
-pub async fn preview_provider_secret(
-    headers: http::HeaderMap,
-    Json(query): Json<PreviewProviderSecretRequest>,
-) -> Result<(http::HeaderMap, Json<String>), StatusCode> {
-    if !is_user_action(&headers) {
-        return Err(StatusCode::FORBIDDEN);
-    }
-
-    let declared = get_providers().await.into_iter().any(|(metadata, _)| {
-        metadata.name == query.provider
-            && metadata
-                .config_keys
-                .iter()
-                .any(|key| key.name == query.key && key.secret && !key.oauth_flow)
-    });
-    if !declared {
-        return Err(StatusCode::NOT_FOUND);
-    }
-
-    let value: String = Config::global()
-        .get_secret(&query.key)
-        .map_err(|error| match error {
-            ConfigError::NotFound(_) => StatusCode::NOT_FOUND,
-            _ => StatusCode::INTERNAL_SERVER_ERROR,
-        })?;
-    let mut response_headers = http::HeaderMap::new();
-    response_headers.insert(
-        http::header::CACHE_CONTROL,
-        http::HeaderValue::from_static("no-store"),
-    );
-    let chars: Vec<char> = value.chars().collect();
-    let preview = if chars.len() <= 8 {
-        SECRET_MASK.to_string()
-    } else {
-        format!(
-            "{}{}{}",
-            chars[..4].iter().collect::<String>(),
-            SECRET_MASK,
-            chars[chars.len() - 4..].iter().collect::<String>(),
-        )
-    };
-    Ok((response_headers, Json(preview)))
 }
 
 #[utoipa::path(
@@ -2253,29 +2347,33 @@ pub async fn update_custom_provider(
             return Err(refusal);
         }
     }
-    // T3-SH-3: a new key is checked before it replaces the saved one. After the
-    // move refusal, so a check never carries a saved key or header to a URL an
-    // unproven caller chose. A provider that cannot be loaded is left for the
-    // update to report.
+    // T3-SH-3: build the exact destination-bearing candidate before any write.
+    // The checked state is compared again under commit exclusion after the live
+    // check, so changed saved headers or definitions make the save stale.
+    let checked = biorouter::config::declarative_providers::checked_provider_update(
+        &id,
+        &request.engine,
+        request.api_url.clone(),
+    )
+    .map_err(|_| {
+        (
+            StatusCode::BAD_REQUEST,
+            "Invalid custom provider update".to_string(),
+        )
+    })?;
     if !request.api_key.is_empty() {
-        if let Ok(candidate) = biorouter::config::declarative_providers::config_for_updated_provider(
-            &id,
-            &request.engine,
-            request.api_url.clone(),
-        ) {
-            if let Some(refusal) = typed_key_refusal(candidate, &request.api_key).await {
-                return Err((StatusCode::UNPROCESSABLE_ENTITY, refusal));
-            }
+        if let Some(refusal) = typed_key_refusal(checked.candidate.clone(), &request.api_key).await
+        {
+            return Err((StatusCode::UNPROCESSABLE_ENTITY, refusal));
         }
     }
     biorouter::config::declarative_providers::update_custom_provider(
         &id,
-        &request.engine,
         request.display_name,
-        request.api_url,
         request.api_key,
         request.models,
         request.supports_streaming,
+        checked,
     )
     .map_err(|_| {
         (
@@ -3037,10 +3135,6 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/config/upsert", post(upsert_config))
         .route("/config/remove", post(remove_config))
         .route("/config/read", post(read_config))
-        .route(
-            "/config/provider-secret/preview",
-            post(preview_provider_secret),
-        )
         .route("/config/extensions", get(get_extensions))
         .route("/config/extensions", post(add_extension))
         .route("/config/extensions/{name}", delete(remove_extension))

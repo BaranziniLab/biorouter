@@ -63,6 +63,23 @@ export default function ProviderConfigurationModal({
       submissionGenerationRef.current += 1;
     };
   }, []);
+  // The same dialog handed a different provider starts clean: a draft key, a pending check or an
+  // error belongs to the provider it was made for, and a late check result must not land on this one.
+  const shownProviderRef = useRef(provider.name);
+  useEffect(() => {
+    if (shownProviderRef.current === provider.name) return;
+    shownProviderRef.current = provider.name;
+    submissionGenerationRef.current += 1;
+    submittingRef.current = false;
+    setIsSubmitting(false);
+    setValidationErrors({});
+    setConfigValues({});
+    setError(null);
+    setCheckedAgents(undefined);
+    setShowDeleteConfirmation(false);
+    setSetFromEnvironment(null);
+  }, [provider.name]);
+
   const codingAgentKind = CODING_AGENT_ORDER.includes(provider.name as CodingAgentKind)
     ? (provider.name as CodingAgentKind)
     : null;
@@ -424,10 +441,18 @@ export default function ProviderConfigurationModal({
         {!showDeleteConfirmation && !setFromEnvironment && (
           <div className="flex flex-col gap-3 py-3">
             <DefaultProviderSetupForm
+              key={provider.name}
               configValues={configValues}
               setConfigValues={setConfigValues}
               provider={provider}
               validationErrors={validationErrors}
+              disabled={isSubmitting}
+              onSecretDraftCancel={(key) =>
+                setValidationErrors((current) => {
+                  const { [key]: _discarded, ...rest } = current;
+                  return rest;
+                })
+              }
             />
             {provider.metadata.config_keys.some((parameter) => parameter.secret) && (
               <SecureStorageNotice />

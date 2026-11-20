@@ -83,8 +83,10 @@ fn launch_posture() {
     config
         .set_secret("S14_SENTINEL", &"s14-unchanged-secret")
         .unwrap();
+    // A key a built-in provider declares plaintext: `/config/read` answers only
+    // declared settings as themselves, and an undeclared key as `null` (#532).
     config
-        .set_param("S14_NONSECRET_CONTROL", "visible control")
+        .set_param("OPENAI_PROJECT", "visible control")
         .unwrap();
     install_served_operator(BROWSER_TOKEN.into(), ProviderTier::Public);
     biorouter_server::auth::adopt_served_operator_capability(ProviderTier::Public);
@@ -365,7 +367,7 @@ async fn serve_secret_tool_dispatch_allows_nonsecret_configuration_read() {
     let output = dispatch_shell(curl_command(
         &gate,
         "/config/read",
-        r#"{"key":"S14_NONSECRET_CONTROL","is_secret":false}"#,
+        r#"{"key":"OPENAI_PROJECT","is_secret":false}"#,
         false,
     ))
     .await;

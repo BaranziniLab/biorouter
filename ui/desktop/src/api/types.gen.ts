@@ -6023,11 +6023,6 @@ export type PreviewBody = {
     path: string;
 };
 
-export type PreviewProviderSecretRequest = {
-    key: string;
-    provider: string;
-};
-
 /**
  * An image attachment to preview (`POST /crew/transfers/preview`).
  */
@@ -10875,37 +10870,6 @@ export type GetPricingResponses = {
 };
 
 export type GetPricingResponse = GetPricingResponses[keyof GetPricingResponses];
-
-export type PreviewProviderSecretData = {
-    body: PreviewProviderSecretRequest;
-    path?: never;
-    query?: never;
-    url: '/config/provider-secret/preview';
-};
-
-export type PreviewProviderSecretErrors = {
-    /**
-     * The request did not prove a desktop user action
-     */
-    403: unknown;
-    /**
-     * The provider secret is unavailable
-     */
-    404: unknown;
-    /**
-     * The provider secret could not be read
-     */
-    500: unknown;
-};
-
-export type PreviewProviderSecretResponses = {
-    /**
-     * A masked provider secret preview
-     */
-    200: string;
-};
-
-export type PreviewProviderSecretResponse = PreviewProviderSecretResponses[keyof PreviewProviderSecretResponses];
 
 export type GetProviderSetupAccessData = {
     body?: never;

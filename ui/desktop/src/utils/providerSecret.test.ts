@@ -52,8 +52,6 @@ describe('removing a saved provider key', () => {
   it('does not claim the key is removed when the environment still supplies it', async () => {
     mocks.remove.mockResolvedValue({ data: 'removed' });
     mocks.read.mockResolvedValue({ data: { maskedValue: '••••••••' } });
-    await expect(removeProviderSecret('GOOGLE_API_KEY')).rejects.toThrow(
-      'Key is still present'
-    );
+    await expect(removeProviderSecret('GOOGLE_API_KEY')).rejects.toThrow('Key is still present');
   });
 });

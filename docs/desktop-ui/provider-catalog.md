@@ -140,6 +140,13 @@ actions in ModalShell's footer under its rule.
   everything typed. Remove calls `DELETE /config/custom-providers/{id}`. A bundled declarative provider
   (DeepSeek, Groq, Baseten) is not removable there, since it is part of the app. The "This is a local model" tick
   is on Add provider only, and on an edit a blank key keeps the saved one.
+- **A saved key is a fixed mask with Edit, Cancel and Remove key.** In the Configure dialog and a custom
+  provider's edit, a saved key shows eight dots whatever its length, read only, with an Edit pencil beside it
+  (`SavedProviderSecret.tsx`). Edit turns the field into an empty password field and focuses it; its Cancel
+  clears what was typed, puts the dots back and returns focus to the pencil. While Save checks a new key, the
+  field and its buttons are disabled and the footer's Cancel still closes the dialog without a late write. The
+  app never asks for the saved key back; see
+  [How Settings shows a saved key](../security/secret-storage.md#how-settings-shows-a-saved-key).
 - **Choose model opens on the provider just added.** After Create provider, as after an edit or a Configure, the
   model dialog opens on the new provider (W1-34). The id comes from the end of the create route's answer,
   "Custom provider added - ID: custom_x" (`createdCustomProviderId`).

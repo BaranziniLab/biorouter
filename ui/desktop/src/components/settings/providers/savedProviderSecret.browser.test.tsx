@@ -42,7 +42,14 @@ const fixtures: Plugin = {
       const modules: Record<string, string> = {
         ConfigContext: `export const useConfig = () => ({ read: async (key, secret) => secret ? {maskedValue:'••••••••'} : null, upsert: async () => {}, remove: async () => {}, getProviders: async () => [] });`,
         ModelAndProviderContext: `export const useModelAndProvider = () => ({ getCurrentModelAndProvider: async () => ({provider:'other'}) });`,
-        providerSecret: `export const SECRET_MASK = '••••••••'; export const loadProviderSecretPreview = async () => 'sk-t••••••••1234'; export const removeProviderSecret = async () => {};`,
+        providerSecret: `
+          export const SECRET_MASK = '••••••••';
+          export const loadProviderSecretPreview = async () => {
+            globalThis.__providerSecretPreviewCalls = (globalThis.__providerSecretPreviewCalls || 0) + 1;
+            throw new Error('Saved-key retrieval is forbidden.');
+          };
+          export const removeProviderSecret = async () => {};
+        `,
         providerSetupAccess: `export const providersAreHostManaged = () => false; export const useProvidersAreHostManaged = () => false;`,
       };
       return { contents: modules[path], loader: 'js' };
@@ -88,7 +95,7 @@ describe('saved provider key in the real configuration dialog', () => {
     await browser?.close();
   }, 30_000);
 
-  it('keeps the saved key read-only and explains and confirms removal', async () => {
+  it('keeps the fixed saved-key mask read-only and explains and confirms removal', async () => {
     const page = await browser.newPage({
       viewport: { width: 900, height: 650 },
       deviceScaleFactor: 2,
@@ -98,24 +105,25 @@ describe('saved provider key in the real configuration dialog', () => {
     );
     await page.addScriptTag({ content: script });
     const key = page.locator('#provider-config-GOOGLE_API_KEY');
-    await expect.poll(() => key.inputValue()).toBe('sk-t••••••••1234');
+    await expect.poll(() => key.inputValue()).toBe('••••••••');
     expect(await key.getAttribute('readonly')).not.toBeNull();
     expect(await page.getByRole('button', { name: 'Show Google API key' }).count()).toBe(0);
+    expect(await page.evaluate('globalThis.__providerSecretPreviewCalls || 0')).toBe(0);
     await key.press('Backspace');
-    expect(await key.inputValue()).toBe('sk-t••••••••1234');
+    expect(await key.inputValue()).toBe('••••••••');
     if (shots) await page.screenshot({ path: resolve(shots, '01-saved-key.png') });
 
     await key.hover();
     await page
       .locator('[data-slot="tooltip-content"]')
-      .filter({ hasText: 'To change this key' })
+      .filter({ hasText: 'Edit to replace this saved key. The saved value is never shown.' })
       .waitFor({ state: 'visible' });
     if (shots) await page.screenshot({ path: resolve(shots, '02-hover-help.png') });
 
     await page.getByRole('button', { name: 'Remove Google API key' }).click();
     await page
       .locator('[data-slot="tooltip-content"]')
-      .filter({ hasText: 'To change this key' })
+      .filter({ hasText: 'Edit to replace this saved key. The saved value is never shown.' })
       .waitFor({ state: 'hidden' });
     await page.getByText(/provider may stop working/).waitFor({ state: 'visible' });
     if (shots) await page.screenshot({ path: resolve(shots, '03-remove-confirm.png') });
@@ -123,6 +131,8 @@ describe('saved provider key in the real configuration dialog', () => {
     await page.getByRole('button', { name: 'Remove Google API key' }).click();
     await expect.poll(() => key.getAttribute('type')).toBe('password');
     expect(await key.getAttribute('readonly')).toBeNull();
+    expect(await key.inputValue()).toBe('');
+    expect(await page.evaluate('globalThis.__providerSecretPreviewCalls || 0')).toBe(0);
     if (shots) await page.screenshot({ path: resolve(shots, '04-add-new.png') });
     await page.close();
   }, 90_000);

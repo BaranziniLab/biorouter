@@ -70,9 +70,7 @@ function providerDetails(configured = true): ProviderDetails {
       default_model: '',
       known_models: [],
       model_doc_link: '',
-      config_keys: [
-        { name: KEY, required: true, secret: true, oauth_flow: false, default: null },
-      ],
+      config_keys: [{ name: KEY, required: true, secret: true, oauth_flow: false, default: null }],
     },
   } as ProviderDetails;
 }
@@ -209,22 +207,25 @@ afterEach(() => {
 });
 
 describe.each(['desktop', 'serve'] as const)('%s saved-key display', (surface) => {
-  it.each(savedCases)('uses only the same fixed mask for %s, without retrieval', async (_, value) => {
-    saved.set(KEY, value);
-    if (surface === 'serve') {
-      document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
-      await loadProviderSetupAccess();
-      mocks.headers.mockResolvedValue({ 'X-Caller-Provider': 'anthropic' });
-    }
-    const { input } = await openProvider();
-    await act(async () => {});
+  it.each(savedCases)(
+    'uses only the same fixed mask for %s, without retrieval',
+    async (_, value) => {
+      saved.set(KEY, value);
+      if (surface === 'serve') {
+        document.documentElement.dataset.biorouterSurface = BROWSER_SURFACE_MARKER;
+        await loadProviderSetupAccess();
+        mocks.headers.mockResolvedValue({ 'X-Caller-Provider': 'anthropic' });
+      }
+      const { input } = await openProvider();
+      await act(async () => {});
 
-    expect(input.value || input.placeholder).toBe(MASK);
-    expect(mocks.previewProviderSecret).not.toHaveBeenCalled();
-    expect(screen.queryByRole('alert')).toBeNull();
-    expect(saved.get(KEY)).toBe(value);
-    expectNoCredentialMutation();
-  });
+      expect(input.value || input.placeholder).toBe(MASK);
+      expect(mocks.previewProviderSecret).not.toHaveBeenCalled();
+      expect(screen.queryByRole('alert')).toBeNull();
+      expect(saved.get(KEY)).toBe(value);
+      expectNoCredentialMutation();
+    }
+  );
 });
 
 describe('local replacement of a saved key', () => {
@@ -328,6 +329,77 @@ describe('local replacement of a saved key', () => {
         expect(onConfigured).not.toHaveBeenCalled();
       } finally {
         await act(async () => release());
+      }
+    }
+  );
+});
+
+describe('pending replacement header preflight', () => {
+  it.each(['Cancel', 'Escape'] as const)(
+    'invalidates a pending replacement on modal %s without a late write',
+    async (close) => {
+      let releaseHeaders!: () => void;
+      let markHeadersReached!: () => void;
+      const headersPending = new Promise<void>((resolve) => {
+        releaseHeaders = resolve;
+      });
+      const headersReached = new Promise<void>((resolve) => {
+        markHeadersReached = resolve;
+      });
+      mocks.headers.mockImplementationOnce(async () => {
+        markHeadersReached();
+        await headersPending;
+        return { 'X-User-Action': 'synthetic-user-action' };
+      });
+
+      try {
+        const { user, opener, onClose, onConfigured } = await openProvider();
+        const masked = screen.getByLabelText(LABEL) as HTMLInputElement;
+        expect(masked.value).toBe(MASK);
+        expect(masked).toHaveAttribute('readonly');
+        expect(mocks.previewProviderSecret).not.toHaveBeenCalled();
+
+        await user.click(screen.getByRole('button', { name: `Edit ${LABEL}` }));
+        const candidate = (await screen.findByLabelText(LABEL)) as HTMLInputElement;
+        expect(candidate).toHaveValue('');
+        await user.type(candidate, CANDIDATE);
+        await user.click(screen.getByRole('button', { name: 'Save' }));
+        await headersReached;
+
+        expect(mocks.checkProvider).not.toHaveBeenCalled();
+        expect(screen.getByRole('button', { name: 'Checking…' })).toBeDisabled();
+        expect(candidate).toBeDisabled();
+        expect(screen.getByRole('button', { name: `Show ${LABEL}` })).toBeDisabled();
+        expect(
+          within(keyField(candidate)).getByRole('button', { name: /^Cancel$/ })
+        ).toBeDisabled();
+        expect(
+          within(keyField(candidate)).getByRole('button', { name: `Remove ${LABEL}` })
+        ).toBeDisabled();
+        expect(modalCancel(candidate)).toBeEnabled();
+
+        if (close === 'Cancel') {
+          await user.click(modalCancel(candidate));
+        } else {
+          await user.keyboard('{Escape}');
+        }
+        await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+        expect(onClose).toHaveBeenCalledOnce();
+        await waitFor(() => expect(opener).toHaveFocus());
+
+        await act(async () => {
+          releaseHeaders();
+          await Promise.resolve();
+        });
+        await waitFor(() => expect(mocks.checkProvider).toHaveBeenCalledOnce());
+        expect(saved.get(KEY)).toBe(WORKING_KEY);
+        expectNoCredentialMutation();
+        expect(onConfigured).not.toHaveBeenCalled();
+        expect(screen.queryByRole('dialog')).toBeNull();
+        expect(screen.queryByRole('alert')).toBeNull();
+        expect(mocks.previewProviderSecret).not.toHaveBeenCalled();
+      } finally {
+        await act(async () => releaseHeaders());
       }
     }
   );

@@ -118,10 +118,8 @@ fn register_builtin_providers(registry: &mut ProviderRegistry) {
 }
 
 /// Every built-in provider's metadata from a fresh registry — no declarative or
-/// user-written providers, so a test that reads it sees the same set on every
-/// machine.
-#[cfg(test)]
-pub(crate) fn builtin_provider_metadata() -> Vec<ProviderMetadata> {
+/// user-written providers, so each caller sees the same compiled-in set.
+pub fn builtin_provider_metadata() -> Vec<ProviderMetadata> {
     let mut registry = ProviderRegistry::new();
     register_builtin_providers(&mut registry);
     registry

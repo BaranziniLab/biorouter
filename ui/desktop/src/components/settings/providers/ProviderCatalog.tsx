@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ProviderCard } from './subcomponents/ProviderCard';
 import ProviderConfigurationModal from './modal/ProviderConfiguationModal';
@@ -369,6 +369,13 @@ export default function ProviderCatalog({
     /** Set up already, so a blank key keeps the saved one (W2-PRV-13). */
     isConfigured: boolean;
   } | null>(null);
+  const customDialogGenerationRef = useRef(0);
+  /**
+   * Which provider the custom dialog was last opened for. Its `key`, so opening it for another
+   * provider starts from that provider's own state, and set only on open, so closing keeps the key
+   * and the dialog's exit motion.
+   */
+  const [customDialogFor, setCustomDialogFor] = useState('new');
 
   const handleProviderReady = useCallback((providerId: string, model?: string | null) => {
     setSwitchModelProvider(providerId);
@@ -583,10 +590,13 @@ export default function ProviderCatalog({
 
   const configureProviderViaModal = useCallback(
     async (provider: ProviderDetails) => {
+      const generation = ++customDialogGenerationRef.current;
       if (provider.provider_type === 'Custom' || provider.provider_type === 'Declarative') {
         const result = await getCustomProvider({ path: { id: provider.name }, throwOnError: true });
+        if (generation !== customDialogGenerationRef.current) return;
 
         if (result.data) {
+          setCustomDialogFor(provider.name);
           setEditingProvider({
             id: provider.name,
             config: result.data.config,
@@ -605,16 +615,18 @@ export default function ProviderCatalog({
   const handleUpdateCustomProvider = useCallback(
     async (data: UpdateCustomProviderRequest) => {
       if (!editingProvider) return;
+      const generation = customDialogGenerationRef.current;
+      const providerId = editingProvider.id;
 
       await updateCustomProvider({
-        path: { id: editingProvider.id },
+        path: { id: providerId },
         body: data,
         // An update that moves the provider's URL keeps its saved key, so the
         // daemon asks for the proof that a person made it.
         headers: await userActionHeaders(),
         throwOnError: true,
       });
-      const providerId = editingProvider.id;
+      if (generation !== customDialogGenerationRef.current) return;
       setShowCustomProviderModal(false);
       setEditingProvider(null);
       refreshProviders?.();
@@ -626,8 +638,10 @@ export default function ProviderCatalog({
 
   const handleCreateCustomProvider = useCallback(
     async (data: UpdateCustomProviderRequest) => {
+      const generation = customDialogGenerationRef.current;
       const { createCustomProvider } = await import('../../../api');
       const created = await createCustomProvider({ body: data, throwOnError: true });
+      if (generation !== customDialogGenerationRef.current) return;
       setShowCustomProviderModal(false);
       refreshProviders?.();
       // Choose model opens on the provider just added, as it does after an edit or a configure
@@ -658,6 +672,7 @@ export default function ProviderCatalog({
   }, [editingProvider, read, refreshProviders]);
 
   const handleCloseCustomModal = useCallback(() => {
+    customDialogGenerationRef.current += 1;
     setShowCustomProviderModal(false);
     setEditingProvider(null);
     if (editingProvider) refreshProviders?.();
@@ -859,7 +874,16 @@ export default function ProviderCatalog({
           </div>
         )}
         {section.providers.map((provider) => renderRow(provider, primaryPanel))}
-        {isApiSection && <AddCustomProviderRow onClick={() => setShowCustomProviderModal(true)} />}
+        {isApiSection && (
+          <AddCustomProviderRow
+            onClick={() => {
+              customDialogGenerationRef.current += 1;
+              setCustomDialogFor('new');
+              setEditingProvider(null);
+              setShowCustomProviderModal(true);
+            }}
+          />
+        )}
       </>
     );
 
@@ -1041,6 +1065,7 @@ export default function ProviderCatalog({
       </Tabs>
 
       <CustomProviderDialog
+        key={customDialogFor}
         open={showCustomProviderModal}
         onOpenChange={(open) => {
           if (!open) handleCloseCustomModal();
