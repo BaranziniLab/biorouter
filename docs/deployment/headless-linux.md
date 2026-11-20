@@ -82,6 +82,32 @@ Run it as the user Biorouter will run as, because it writes into that user's con
 directory. If you are setting this up as a service, create the service account first — see
 [Run it as a service](#run-it-as-a-service) — and configure as that account.
 
+### Entering a key without echo
+
+To enter only a provider's API key on the host, name the provider and let Biorouter ask for the
+key:
+
+```bash
+biorouter configure --provider <provider> --secret-stdin
+```
+
+At a terminal it asks for each required key at a hidden prompt, so the key is never typed at the
+shell's own prompt, never shown, and never kept in shell history or on a command line. Without a
+terminal it reads `NAME=value` lines from stdin, for example from a file only you can read:
+
+```bash
+biorouter configure --provider openai --secret-stdin < ~/openai.env   # OPENAI_API_KEY=...
+```
+
+It takes only the provider's secret settings (an endpoint or a region is set with
+`biorouter configure`), checks the key with the provider, and writes it only when the check
+passes; a rejected key, an unreachable provider or a 30-second timeout leaves the saved settings as
+they were. It does not change which provider or model is the default. It prints where the key went
+(the system keychain, or the `secrets.yaml` file) and which settings folder that is, so a key saved
+for the wrong account is easy to see. Run it as the service account, then restart the service so
+the running `serve` reads the new key. It refuses in an agent's shell: a key typed for an agent
+would pass through its model.
+
 ### Credentials on a host with no desktop keyring
 
 Biorouter stores secrets in the operating system's credential store. A Linux host with no desktop
@@ -134,7 +160,10 @@ sudo useradd --create-home --shell /usr/sbin/nologin biorouter
 ```
 
 Then configure as that account — `sudo -u biorouter -H biorouter configure` — so the provider and
-credentials land in the home directory the service reads.
+credentials land in the home directory the service reads. To enter only a key, use
+`sudo -u biorouter -H env BIOROUTER_DISABLE_KEYRING=true biorouter configure --provider <provider> --secret-stdin`
+([Entering a key without echo](#entering-a-key-without-echo)); the variable matches the one the
+service's environment file sets, so the key lands in the store the service reads.
 
 For a service, the token must be stable across restarts — nobody is watching the terminal for a new
 one. Put it in an environment file rather than on the command line, where `ps` would show it to

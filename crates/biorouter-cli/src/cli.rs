@@ -10,7 +10,7 @@ use clap_complete::{generate, Shell as ClapShell};
 
 use crate::commands::apps::{handle_apps_list, handle_apps_open, handle_apps_serve};
 use crate::commands::bench::agent_generator;
-use crate::commands::configure::handle_configure;
+use crate::commands::configure::{handle_configure, handle_configure_command};
 use crate::commands::info::handle_info;
 use crate::commands::models::{
     handle_models_current, handle_models_list, handle_models_providers, handle_models_set,
@@ -2256,7 +2256,27 @@ enum Command {
     Crew(crate::commands::crew::CrewOptions),
     /// Configure Biorouter settings
     #[command(about = "Configure Biorouter settings")]
-    Configure {},
+    Configure {
+        /// The provider whose API key `--secret-stdin` enters (issue #526)
+        #[arg(
+            long,
+            value_name = "PROVIDER",
+            requires = "secret_stdin",
+            help = "The provider whose API key --secret-stdin enters (`biorouter models \
+                    providers` lists them)"
+        )]
+        provider: Option<String>,
+
+        /// Enter the provider's API key with no echo, from a hidden prompt or from stdin
+        #[arg(
+            long,
+            requires = "provider",
+            help = "Enter --provider's API key and nothing else: at a hidden prompt on a \
+                    terminal, or as NAME=value lines on stdin. It is checked with the provider \
+                    before it is saved, and never appears on the command line."
+        )]
+        secret_stdin: bool,
+    },
 
     /// Display Biorouter configuration information
     #[command(about = "Display Biorouter information")]
@@ -2814,7 +2834,7 @@ pub struct InputConfig {
 fn get_command_name(command: &Option<Command>) -> &'static str {
     match command {
         Some(Command::Crew(_)) => "crew",
-        Some(Command::Configure {}) => "configure",
+        Some(Command::Configure { .. }) => "configure",
         Some(Command::Info { .. }) => "info",
         Some(Command::Mcp { .. }) => "mcp",
         Some(Command::Acp { .. }) => "acp",
@@ -4369,7 +4389,7 @@ async fn dispatch(command: Option<Command>) -> anyhow::Result<()> {
             generate(shell, &mut cmd, bin_name, &mut std::io::stdout());
             Ok(())
         }
-        Some(Command::Configure {}) => handle_configure().await,
+        Some(Command::Configure { provider, .. }) => handle_configure_command(provider).await,
         Some(Command::Info { verbose }) => handle_info(verbose),
         Some(Command::Mcp { server }) => handle_mcp_command(server).await,
         Some(Command::Acp { builtins, ws }) => match ws {

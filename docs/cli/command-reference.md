@@ -60,7 +60,28 @@ biorouter configure
 anywhere else without one, it changes nothing and exits with status `2`, naming
 the non-interactive route instead: choose the model with
 `biorouter models set --provider <provider> --model <model>` and pass the
-provider's API key in its environment variable (for example `OPENAI_API_KEY`).
+provider's API key in its environment variable (for example `OPENAI_API_KEY`),
+or save it with `--secret-stdin` below.
+
+**Entering a provider's key without echo:**
+
+```bash
+biorouter configure --provider <provider> --secret-stdin
+```
+
+Saves that provider's API key and nothing else, so a key is never typed at the shell's own prompt,
+put on a command line or kept in shell history. At a terminal it asks for each required key at a
+hidden prompt. Otherwise it reads `NAME=value` lines from stdin, for example from a file only your
+account can read (`< keys.env`); blank lines and lines starting with `#` are skipped, and at most
+64 KiB is read. It takes only the provider's secret settings: a setting that decides where a key is
+sent, such as an endpoint, is set with `biorouter configure`. A refused line is named by its number
+and never repeated. The key is checked with the provider before anything is written (a provider
+with no way to check a key until it is used is only set up with it), and a rejected, unreachable
+or slow provider (30 seconds) leaves the saved settings as they were. The
+provider and model choice does not change. Run it as the account that runs `biorouter serve`, and
+restart `serve` so it reads the new key. In an agent's shell (`BIOROUTER_TERMINAL` set) it refuses
+with status `2`, because a key typed for an agent would pass through its model. The two options
+are used together; either alone is a usage error.
 
 The provider list, and the provider list of the default worker model, leave out the two
 decision-model providers (`ollama_decision`, `baseten_decision`), as the desktop's provider

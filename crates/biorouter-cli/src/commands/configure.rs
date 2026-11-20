@@ -32,6 +32,7 @@ use cliclack::spinner;
 use console::style;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::io::IsTerminal;
 
 // useful for light themes where there is no dicernible colour contrast between
 // cursor-selected and cursor-unselected items.
@@ -45,10 +46,422 @@ pub(crate) const CONFIGURE_NEEDS_A_TERMINAL: &str =
     "`biorouter configure` is interactive and needs a terminal; without one, choose a model \
      with `biorouter models set --provider <provider> --model <model>` (`biorouter models \
      providers` lists the providers) and pass the provider's API key in its environment \
-     variable, e.g. `OPENAI_API_KEY`.";
+     variable, e.g. `OPENAI_API_KEY`, or save it with `biorouter configure --provider \
+     <provider> --secret-stdin`, which reads `NAME=value` lines from stdin.";
 
 pub async fn handle_configure() -> anyhow::Result<()> {
     configure(Config::global(), super::needs_terminal::prompt_can_run()).await
+}
+
+/// `biorouter configure`, or with `--provider` (which clap allows only beside
+/// `--secret-stdin`, and it beside `--provider`) the no-echo key entry of
+/// [`handle_configure_provider_secret`].
+pub async fn handle_configure_command(provider: Option<String>) -> anyhow::Result<()> {
+    match provider {
+        Some(provider) => handle_configure_provider_secret(provider).await,
+        None => handle_configure().await,
+    }
+}
+
+/// The most `biorouter configure --secret-stdin` reads from a pipe or a file
+/// (issue #526). A provider's keys are a few hundred bytes; the bound keeps a
+/// mistaken redirect (a log, a binary) from being read whole.
+const SECRET_INPUT_MAX_BYTES: u64 = 64 * 1024;
+
+/// How long the provider gets to answer the check before anything is saved.
+const SECRET_CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Why `--secret-stdin` does not run in an agent's shell.
+const SECRET_ENTRY_IS_A_PERSONS: &str =
+    "`biorouter configure --secret-stdin` enters a provider's key for a person, and this is an \
+     agent's shell, so a key typed for it would pass through the model. Run it yourself, at a \
+     terminal on this computer.";
+
+/// Why `--secret-stdin` at a keyboard needs a terminal for its hidden prompt.
+const SECRET_PROMPT_NEEDS_A_TERMINAL: &str =
+    "`biorouter configure --secret-stdin` asks for the key at a hidden prompt, which needs a \
+     terminal on stdin and stderr. Without one, send `NAME=value` lines on stdin instead, for \
+     example from a file only you can read: `biorouter configure --provider <provider> \
+     --secret-stdin < keys.env`.";
+
+/// `biorouter configure --provider <provider> --secret-stdin` (issue #526):
+/// save that provider's API key on this computer without it ever being echoed,
+/// put on a command line, or kept in shell history.
+///
+/// At a terminal the key is asked for at a hidden prompt, one step after the
+/// command, so there is no moment where a person pastes a key at the shell's own
+/// prompt. Otherwise stdin is read as `NAME=value` lines (a file only the
+/// account can read, or a secrets manager's output). Only the provider's own
+/// secret settings are taken, never the ones that decide where a key is sent
+/// (those stay with `biorouter configure` and, in a served page, the person's
+/// proof, SD-18). The key is checked with the provider while it is held in
+/// memory, and written only once the check passed; a refused, unreachable or
+/// slow provider leaves the saved settings exactly as they were. The provider
+/// and model choice is not changed.
+pub async fn handle_configure_provider_secret(provider: String) -> anyhow::Result<()> {
+    if super::needs_terminal::in_agent_shell() {
+        super::needs_terminal::require(false, SECRET_ENTRY_IS_A_PERSONS)?;
+    }
+    let available = chat_providers().await;
+    let metadata = available
+        .iter()
+        .map(|(metadata, _)| metadata)
+        .find(|metadata| metadata.name == provider)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "`{provider}` is not a chat provider this build knows. `biorouter models \
+                 providers` lists them."
+            )
+        })?;
+    let accepted = secret_settings_taken(metadata)?;
+
+    let mut typed = if std::io::stdin().is_terminal() {
+        super::needs_terminal::require(
+            super::needs_terminal::prompt_can_run(),
+            SECRET_PROMPT_NEEDS_A_TERMINAL,
+        )?;
+        prompt_for_secret_settings(metadata, &accepted)?
+    } else {
+        let input = read_secret_input(std::io::stdin().lock())?;
+        parse_secret_lines(&input, metadata, &accepted)?
+    };
+
+    let config = Config::global();
+    let model = config
+        .get_biorouter_provider()
+        .ok()
+        .filter(|current| *current == metadata.name)
+        .and_then(|_| config.get_biorouter_model().ok())
+        .unwrap_or_else(|| metadata.default_model.clone());
+    let saved = save_checked_secrets(
+        config,
+        metadata,
+        &typed,
+        check_typed_credentials(&metadata.name, model),
+    )
+    .await;
+    for setting in &mut typed {
+        zeroize::Zeroize::zeroize(&mut setting.value);
+    }
+    let saved = saved?;
+
+    for (name, home) in &saved {
+        println!("Saved {name} for {} in {home}.", metadata.display_name);
+    }
+    println!(
+        "These are the Biorouter settings in {}. A `biorouter serve` running as this account \
+         reads the new key once it restarts.",
+        Paths::config_dir().display()
+    );
+    if config.get_biorouter_provider().ok().as_deref() != Some(metadata.name.as_str()) {
+        println!(
+            "To use {}, choose it in the browser, or run `biorouter models set --provider {} \
+             --model <model>`.",
+            metadata.display_name, metadata.name
+        );
+    }
+    Ok(())
+}
+
+/// The settings `--secret-stdin` takes for `metadata`: its secrets, other than
+/// one a browser sign-in fills. Refused, with what to do instead, when there are
+/// none.
+fn secret_settings_taken(
+    metadata: &biorouter::providers::base::ProviderMetadata,
+) -> anyhow::Result<Vec<&biorouter::providers::base::ConfigKey>> {
+    let taken: Vec<_> = metadata
+        .config_keys
+        .iter()
+        .filter(|key| key.secret && !key.oauth_flow)
+        .collect();
+    if !taken.is_empty() {
+        return Ok(taken);
+    }
+    if metadata.config_keys.iter().any(|key| key.oauth_flow) {
+        anyhow::bail!(
+            "{} signs in through a browser rather than with a key. Run `biorouter configure` at \
+             a terminal to sign in.",
+            metadata.display_name
+        );
+    }
+    anyhow::bail!(
+        "{} takes no API key. Choose it in the browser, or run `biorouter models set --provider \
+         {} --model <model>`.",
+        metadata.display_name,
+        metadata.name
+    )
+}
+
+/// Ask for each setting in `accepted` at a hidden prompt: the required ones, or
+/// every one when none is required, in which case a blank answer skips it.
+fn prompt_for_secret_settings(
+    metadata: &biorouter::providers::base::ProviderMetadata,
+    accepted: &[&biorouter::providers::base::ConfigKey],
+) -> anyhow::Result<Vec<TypedSetting>> {
+    let required: Vec<_> = accepted.iter().filter(|key| key.required).collect();
+    let asked: Vec<_> = if required.is_empty() {
+        accepted.iter().collect()
+    } else {
+        required
+    };
+    let optional = asked.iter().all(|key| !key.required);
+    let mut typed = Vec::new();
+    for key in asked {
+        let mut prompt = cliclack::password(format!(
+            "{} for {} (hidden as you type)",
+            key.name, metadata.display_name
+        ))
+        .mask('▪');
+        if optional {
+            prompt = prompt.allow_empty();
+        }
+        let value = zeroize::Zeroizing::new(prompt.interact()?);
+        let value = value.trim();
+        if value.is_empty() {
+            continue;
+        }
+        if value.chars().any(char::is_control) {
+            anyhow::bail!(
+                "{} holds a control character, which no key does; nothing was saved.",
+                key.name
+            );
+        }
+        typed.push(TypedSetting {
+            name: key.name.clone(),
+            secret: true,
+            value: value.to_string(),
+        });
+    }
+    if typed.is_empty() {
+        anyhow::bail!("No key was entered; nothing was saved.");
+    }
+    Ok(typed)
+}
+
+/// Read all of `input`, refusing more than [`SECRET_INPUT_MAX_BYTES`].
+///
+/// ⚠ A pipe whose writer never closes it is waited for: the bound is on size,
+/// not time.
+fn read_secret_input(input: impl std::io::Read) -> anyhow::Result<zeroize::Zeroizing<Vec<u8>>> {
+    use std::io::Read;
+    let mut bytes = zeroize::Zeroizing::new(Vec::new());
+    input
+        .take(SECRET_INPUT_MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| anyhow::anyhow!("could not read the keys from stdin: {error}"))?;
+    if bytes.len() as u64 > SECRET_INPUT_MAX_BYTES {
+        anyhow::bail!(
+            "stdin holds more than {} KiB, more than any provider's keys; nothing was saved.",
+            SECRET_INPUT_MAX_BYTES / 1024
+        );
+    }
+    Ok(bytes)
+}
+
+/// `NAME=value` lines, one per setting in `accepted`. Blank lines and lines
+/// starting with `#` are skipped, and space around a name or a value is not
+/// part of it.
+///
+/// ⚠ A refusal names a line by its number and never repeats what it held: a
+/// line that is not a setting this provider takes may be a key with an `=` in
+/// it.
+fn parse_secret_lines(
+    input: &[u8],
+    metadata: &biorouter::providers::base::ProviderMetadata,
+    accepted: &[&biorouter::providers::base::ConfigKey],
+) -> anyhow::Result<Vec<TypedSetting>> {
+    let names = accepted
+        .iter()
+        .map(|key| key.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let text = std::str::from_utf8(input)
+        .map_err(|_| anyhow::anyhow!("stdin is not UTF-8 text; nothing was saved."))?;
+    let mut typed: Vec<TypedSetting> = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let number = index + 1;
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((name, value)) = line.split_once('=') else {
+            anyhow::bail!(
+                "line {number} of stdin is not NAME=value. {} takes {names}; nothing was saved.",
+                metadata.display_name
+            );
+        };
+        let Some(key) = accepted.iter().find(|key| key.name == name.trim()) else {
+            anyhow::bail!(
+                "line {number} of stdin names a setting this command does not take for {}. It \
+                 takes {names}; nothing was saved.",
+                metadata.display_name
+            );
+        };
+        let value = value.trim();
+        if value.is_empty() {
+            anyhow::bail!(
+                "line {number} of stdin gives {} no value; nothing was saved.",
+                key.name
+            );
+        }
+        if value.chars().any(char::is_control) {
+            anyhow::bail!(
+                "line {number} of stdin gives {} a control character, which no key holds; \
+                 nothing was saved.",
+                key.name
+            );
+        }
+        if typed.iter().any(|setting| setting.name == key.name) {
+            anyhow::bail!(
+                "{} is given more than once on stdin; nothing was saved.",
+                key.name
+            );
+        }
+        typed.push(TypedSetting {
+            name: key.name.clone(),
+            secret: true,
+            value: value.to_string(),
+        });
+    }
+    if typed.is_empty() {
+        anyhow::bail!(
+            "stdin gave no key; nothing was saved. Send NAME=value lines: {} takes {names}.",
+            metadata.display_name
+        );
+    }
+    Ok(typed)
+}
+
+/// Why the provider did not accept the typed key, in words that never repeat
+/// anything the provider sent back: an error from a provider can carry the
+/// request's address, and some providers put the key in it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SecretCheckFailure {
+    /// The provider could not be set up with the typed key and the saved
+    /// settings. The text is the provider's own, with every typed value hidden.
+    Unbuildable(String),
+    Rejected,
+    Unreachable,
+    TimedOut,
+}
+
+impl SecretCheckFailure {
+    fn sentence(&self, display_name: &str) -> String {
+        match self {
+            SecretCheckFailure::Unbuildable(reason) => format!(
+                "{display_name} could not be set up with this key and the saved settings \
+                 ({reason}). Set its other settings with `biorouter configure`; nothing was \
+                 saved."
+            ),
+            SecretCheckFailure::Rejected => {
+                format!("{display_name} rejected this key; nothing was saved.")
+            }
+            SecretCheckFailure::Unreachable => format!(
+                "{display_name} could not be reached to check this key, so nothing was saved. \
+                 Check the network and the provider's settings, then try again."
+            ),
+            SecretCheckFailure::TimedOut => format!(
+                "{display_name} did not answer within {} seconds, so nothing was saved.",
+                SECRET_CHECK_TIMEOUT.as_secs()
+            ),
+        }
+    }
+}
+
+/// Build `provider` and ask it to check its credentials, with the typed values
+/// in force (`with_config_overrides`, set by the caller) and none of them saved.
+async fn check_typed_credentials(provider: &str, model: String) -> Result<(), SecretCheckFailure> {
+    let model = ModelConfig::new(&model)
+        .map_err(|error| SecretCheckFailure::Unbuildable(error.to_string()))?;
+    let built = create(provider, model)
+        .await
+        .map_err(|error| SecretCheckFailure::Unbuildable(format!("{error:#}")))?;
+    match tokio::time::timeout(SECRET_CHECK_TIMEOUT, built.check_credentials()).await {
+        Err(_) => Err(SecretCheckFailure::TimedOut),
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(biorouter::providers::errors::ProviderError::Authentication(_))) => {
+            Err(SecretCheckFailure::Rejected)
+        }
+        Ok(Err(_)) => Err(SecretCheckFailure::Unreachable),
+    }
+}
+
+/// `text` with every typed value replaced, for a message that quotes a
+/// provider.
+fn without_typed_values(text: &str, typed: &[TypedSetting]) -> String {
+    typed
+        .iter()
+        .filter(|setting| !setting.value.is_empty())
+        .fold(text.to_string(), |text, setting| {
+            text.replace(&setting.value, "[hidden]")
+        })
+}
+
+/// Run `check` with `typed` in force and nothing written, then save `typed`
+/// once it passed, and say where each one went. Nothing is written when the
+/// check fails or the saved settings cannot be read first; a write that fails
+/// part-way puts back what was there before (`PreviousProviderSettings`).
+async fn save_checked_secrets<F>(
+    config: &'static Config,
+    metadata: &biorouter::providers::base::ProviderMetadata,
+    typed: &[TypedSetting],
+    check: F,
+) -> anyhow::Result<Vec<(String, String)>>
+where
+    F: std::future::Future<Output = Result<(), SecretCheckFailure>>,
+{
+    let display_name = metadata.display_name.as_str();
+    if let Err(failure) =
+        biorouter::config::with_config_overrides(typed_overrides(typed), check).await
+    {
+        let failure = match failure {
+            SecretCheckFailure::Unbuildable(reason) => {
+                SecretCheckFailure::Unbuildable(without_typed_values(&reason, typed))
+            }
+            other => other,
+        };
+        anyhow::bail!(failure.sentence(display_name));
+    }
+
+    let keys: Vec<_> = metadata
+        .config_keys
+        .iter()
+        .filter(|key| typed.iter().any(|setting| setting.name == key.name))
+        .cloned()
+        .collect();
+    let mut previous = PreviousProviderSettings::capture(config, &keys);
+    if previous.keys.len() != keys.len() {
+        previous.keep();
+        anyhow::bail!(
+            "the saved {display_name} settings could not be read, so nothing was saved: a key \
+             that cannot be put back is not replaced."
+        );
+    }
+    let file_before_write = std::env::var("BIOROUTER_DISABLE_KEYRING").is_ok();
+    let mut saved = Vec::new();
+    for setting in typed {
+        let home = match config.set_secret(&setting.name, &setting.value) {
+            Ok(()) => secret_home(file_before_write, false),
+            Err(ConfigError::FallbackToFileStorage) => secret_home(file_before_write, true),
+            Err(error) => {
+                let restored = previous.restore();
+                anyhow::bail!(
+                    "{} could not be saved ({error}). {}",
+                    setting.name,
+                    match restored {
+                        Ok(_) => format!("The saved {display_name} settings are as they were."),
+                        Err(_) => format!(
+                            "The saved {display_name} settings could not all be put back; run \
+                             `biorouter configure` to check them."
+                        ),
+                    }
+                );
+            }
+        };
+        saved.push((setting.name.clone(), home));
+    }
+    previous.keep();
+    Ok(saved)
 }
 
 /// [`handle_configure`] over an explicit config, so the refusal can be pinned
@@ -3711,5 +4124,201 @@ mod unlisted_provider_model_tests {
                 "{dialog}"
             );
         }
+    }
+}
+
+/// Issue #526: `biorouter configure --provider <provider> --secret-stdin`, the
+/// host-side way to enter a provider's key that never echoes it, never puts it
+/// on a command line, and saves it only once the provider accepted it.
+#[cfg(test)]
+mod issue_526_secret_entry_tests {
+    use super::{
+        handle_configure_provider_secret, parse_secret_lines, read_secret_input,
+        save_checked_secrets, secret_settings_taken, SecretCheckFailure, TypedSetting,
+        SECRET_ENTRY_IS_A_PERSONS, SECRET_INPUT_MAX_BYTES,
+    };
+    use crate::commands::needs_terminal::{NeedsTerminal, AGENT_SHELL_MARKER};
+    use biorouter::config::Config;
+    use biorouter::providers::base::{ConfigKey, ProviderMetadata};
+
+    const KEY: &str = "ISSUE526_PROBE_API_KEY";
+    const ORG: &str = "ISSUE526_PROBE_ORG_KEY";
+    const HOST: &str = "ISSUE526_PROBE_HOST";
+
+    fn provider() -> ProviderMetadata {
+        let mut metadata = ProviderMetadata::empty();
+        metadata.name = "issue526_probe".into();
+        metadata.display_name = "Probe".into();
+        metadata.config_keys = vec![
+            ConfigKey::new(KEY, true, true, None),
+            ConfigKey::new(ORG, false, true, None),
+            ConfigKey::new(HOST, true, false, Some("https://probe.example.test")),
+        ];
+        metadata
+    }
+
+    fn parse(input: &str) -> anyhow::Result<Vec<TypedSetting>> {
+        let metadata = provider();
+        let accepted = secret_settings_taken(&metadata).unwrap();
+        parse_secret_lines(input.as_bytes(), &metadata, &accepted)
+    }
+
+    fn leaked_config(dir: &tempfile::TempDir) -> &'static Config {
+        Box::leak(Box::new(
+            Config::new_with_file_secrets(
+                dir.path().join("config.yaml"),
+                dir.path().join("secrets.yaml"),
+            )
+            .unwrap(),
+        ))
+    }
+
+    #[test]
+    fn issue_526_name_value_lines_give_the_providers_secrets() {
+        let typed = parse(&format!(
+            "# from a file only this account reads\n\n  {KEY} = sk-one=two  \r\n{ORG}=org-7\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            typed,
+            vec![
+                TypedSetting {
+                    name: KEY.into(),
+                    secret: true,
+                    value: "sk-one=two".into(),
+                },
+                TypedSetting {
+                    name: ORG.into(),
+                    secret: true,
+                    value: "org-7".into(),
+                },
+            ]
+        );
+    }
+
+    /// Only the provider's secrets: a setting that decides where a key is sent
+    /// stays with `biorouter configure` (and a served page's proof, SD-18), and
+    /// a refusal never repeats the line, which may be a key holding an `=`.
+    #[test]
+    fn issue_526_a_refused_line_is_named_by_number_and_never_repeated() {
+        for (input, expect) in [
+            (format!("{HOST}=https://elsewhere.example"), "line 1"),
+            ("sk-live-AbC=def".to_string(), "line 1"),
+            ("# note\nsk-live-AbCdef".to_string(), "line 2"),
+            (format!("{KEY}=   "), "no value"),
+            (format!("{KEY}=a\u{7}b"), "control character"),
+            (format!("{KEY}=one\n{KEY}=two"), "more than once"),
+            ("\n# only a comment\n".to_string(), "gave no key"),
+        ] {
+            let error = parse(&input).unwrap_err().to_string();
+            assert!(error.contains(expect), "{input:?}: {error}");
+            assert!(error.contains("nothing was saved"), "{error}");
+            for leaked in ["elsewhere", "sk-live", "AbC", "def"] {
+                assert!(!error.contains(leaked), "{input:?} leaked into: {error}");
+            }
+        }
+        let error = parse(&format!("{HOST}=x")).unwrap_err().to_string();
+        assert!(error.contains(KEY) && error.contains(ORG), "{error}");
+        assert!(!error.contains(HOST), "{error}");
+    }
+
+    #[test]
+    fn issue_526_input_is_bounded_and_must_be_text() {
+        let limit = SECRET_INPUT_MAX_BYTES as usize;
+        assert_eq!(
+            read_secret_input(&vec![b'#'; limit][..]).unwrap().len(),
+            limit
+        );
+        let error = read_secret_input(&vec![b'#'; limit + 1][..])
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("64 KiB"), "{error}");
+
+        let metadata = provider();
+        let accepted = secret_settings_taken(&metadata).unwrap();
+        let error = parse_secret_lines(&[0xff, 0xfe, b'\n'], &metadata, &accepted)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("UTF-8"), "{error}");
+    }
+
+    #[test]
+    fn issue_526_a_provider_without_a_key_says_what_to_do_instead() {
+        let mut keyless = provider();
+        keyless.config_keys = vec![ConfigKey::new(HOST, true, false, None)];
+        let error = secret_settings_taken(&keyless).unwrap_err().to_string();
+        assert!(error.contains("takes no API key"), "{error}");
+        assert!(error.contains("biorouter models set --provider issue526_probe"));
+
+        let mut signed_in = provider();
+        signed_in.config_keys = vec![ConfigKey::new_oauth(KEY, true, true, None)];
+        let error = secret_settings_taken(&signed_in).unwrap_err().to_string();
+        assert!(error.contains("signs in through a browser"), "{error}");
+    }
+
+    /// The check sees the typed key in force; a refusal, an unreachable
+    /// provider or a timeout writes nothing, and the sentence never carries the
+    /// typed key, even where it quotes the provider.
+    #[tokio::test]
+    async fn issue_526_nothing_is_saved_unless_the_provider_check_passes() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let config = leaked_config(&dir);
+        config.set_secret(KEY, &"working-key").unwrap();
+        let metadata = provider();
+        let typed = vec![TypedSetting {
+            name: KEY.into(),
+            secret: true,
+            value: "typed-526-key".into(),
+        }];
+
+        for failure in [
+            SecretCheckFailure::Rejected,
+            SecretCheckFailure::Unreachable,
+            SecretCheckFailure::TimedOut,
+            SecretCheckFailure::Unbuildable("bad url https://x.test/?key=typed-526-key".into()),
+        ] {
+            let error = save_checked_secrets(config, &metadata, &typed, async {
+                let seen: String = Config::global().get_secret(KEY).unwrap();
+                assert_eq!(seen, "typed-526-key", "the check runs with the typed key");
+                Err(failure.clone())
+            })
+            .await
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("nothing was saved"), "{error}");
+            assert!(!error.contains("typed-526-key"), "{failure:?}: {error}");
+            assert_eq!(
+                config.get_secret::<String>(KEY).unwrap(),
+                "working-key",
+                "{failure:?} replaced the working key"
+            );
+        }
+
+        let saved = save_checked_secrets(config, &metadata, &typed, async { Ok(()) })
+            .await
+            .unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].0, KEY);
+        assert!(!saved[0].1.contains("typed-526-key"));
+        assert_eq!(config.get_secret::<String>(KEY).unwrap(), "typed-526-key");
+        assert!(
+            config.get_param::<String>(HOST).is_err(),
+            "nothing but the typed secret is written"
+        );
+    }
+
+    /// Accident prevention, as `biorouter crew` does it: a key typed for an
+    /// agent would pass through its model, so the command refuses in an
+    /// agent's shell before it reads anything.
+    #[tokio::test]
+    async fn issue_526_an_agent_shell_is_refused_before_anything_is_read() {
+        let _env = env_lock::lock_env([(AGENT_SHELL_MARKER, Some("1"))]);
+        let error = handle_configure_provider_secret("issue526_probe".into())
+            .await
+            .unwrap_err();
+        let refusal = error
+            .downcast_ref::<NeedsTerminal>()
+            .expect("the typed refusal main maps to exit 2");
+        assert_eq!(refusal.to_string(), SECRET_ENTRY_IS_A_PERSONS);
     }
 }

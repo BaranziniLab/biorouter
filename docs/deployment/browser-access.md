@@ -372,7 +372,11 @@ configuration), the same place `biorouter configure` puts them, and are never sh
 
 **At the terminal.** `biorouter configure` works as before, before or while `serve` runs. A change
 made there reaches new chats after `serve` is restarted; a change made in the browser applies at
-once.
+once. To enter only a provider's key, run `biorouter configure --provider <provider> --secret-stdin`
+on the serving machine, as the account that runs `serve`: it asks at a hidden prompt, or reads
+`NAME=value` lines from a file you redirect into it, checks the key with the provider, and saves it
+only when the check passes. The key never appears on the screen, on a command line or in shell
+history. See [the command reference](../cli/command-reference.md#configure).
 
 Three limits, each with a reason:
 
@@ -382,7 +386,10 @@ Three limits, each with a reason:
   [decision SD-18](serve-decisions.md#sd-18-the-person-in-the-served-page-sets-up-providers-and-an-agent-still-cannot).
 - **Only over a secure address.** The browser adds those headers only for an `https` address or
   this machine, so a key typed in the page never crosses a network unencrypted. A page opened at a
-  plain `http://` network address says so and points you to `biorouter configure`.
+  plain `http://` network address says so, and points you first to opening it over `https` or
+  through an SSH or SSM tunnel to a loopback address (`ssh -N -L 8765:127.0.0.1:8765 <host>`, then
+  `http://127.0.0.1:8765/`), where the page can set up the provider, and otherwise to
+  `biorouter configure` on the serving machine.
 - **Not with `--no-token`.** Without a token the daemon cannot tell its own page from any other
   program on the machine, so the page tells you to run `biorouter configure` on the host.
 
