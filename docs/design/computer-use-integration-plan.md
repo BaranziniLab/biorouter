@@ -2,6 +2,8 @@
 
 Status: implementation in progress. Revised 2026-09-17 for the user-approved clean replacement: one native Biorouter Copilot capability, no legacy desktop tools or compatibility aliases. See [implementation status](computer-use-implementation-status.md) for evidence and remaining gates.
 
+Superseded in part on 2026-11-20: for 1.94.6 the engine is agent-desktop, not Open Computer Use. [Biorouter Copilot on agent-desktop](copilot-agent-desktop.md) records that decision and the ones it revises (AD-01, AD-07, AD-08, AD-10). The consent, isolation and distribution rules below still apply where it does not revise them.
+
 ## Recommendation
 
 Make Open Computer Use (OCU) the default desktop-automation engine of one unified **Biorouter Copilot** capability. Keep `computercontroller` as its internal capability ID, with an entirely native tool contract. Ship a pinned native helper with every release package. Users should not need npm, Node, Go, Swift, git, or an extension-install step to use the shipped feature.
