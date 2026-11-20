@@ -2592,11 +2592,28 @@ async fn issue_542_empty_and_whitespace_replies_get_one_hidden_corrective_attemp
             .iter()
             .any(|message| message.as_concat_text().contains("finished")));
         let sent = provider.sent.lock().unwrap();
-        assert!(sent[1].iter().any(|message| !message.is_user_visible()
+        // The request normalizer merges consecutive user turns (Bedrock
+        // Converse, for one, requires alternating roles), so when the empty
+        // reply answered the person's own message the note reaches the model
+        // inside that turn. What keeps it hidden is the row it is stored as.
+        assert!(sent[1].iter().any(|message| message
+            .as_concat_text()
+            .to_ascii_lowercase()
+            .contains("empty")));
+        assert!(reply.stored.iter().any(|message| !message.is_user_visible()
+            && message.is_agent_visible()
             && message
                 .as_concat_text()
                 .to_ascii_lowercase()
                 .contains("empty")));
+        assert!(reply
+            .stored
+            .iter()
+            .filter(|message| message.is_user_visible())
+            .all(|message| !message
+                .as_concat_text()
+                .to_ascii_lowercase()
+                .contains("reply was empty")));
     }
 }
 
@@ -2769,3 +2786,4 @@ async fn issue_542_already_cancelled_reply_never_enters_the_provider() {
     .expect("already-cancelled reply must settle");
     assert_eq!(provider.calls.load(Ordering::SeqCst), 0);
 }
+

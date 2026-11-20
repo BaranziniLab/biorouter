@@ -1845,6 +1845,20 @@ mod tests {
                 {
                     break;
                 }
+                // The capture client answers one request with an empty stream,
+                // which the loop now asks about once more (#542). Stop before
+                // that second request reaches a client that takes only one.
+                Ok(AgentEvent::Message(message))
+                    if message.content.iter().any(|content| {
+                        matches!(
+                            content,
+                            MessageContent::SystemNotification(notice)
+                                if notice.msg.contains("empty reply")
+                        )
+                    }) =>
+                {
+                    break;
+                }
                 Ok(_) => {}
             }
         }

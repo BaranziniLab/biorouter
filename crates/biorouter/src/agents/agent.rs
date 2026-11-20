@@ -130,6 +130,40 @@ const MAX_ZERO_PROGRESS_TRUNCATION_CONTINUATIONS: u32 = 3;
 /// Injected when auto-continuing a length-truncated turn, so the model resumes
 /// instead of the agent ending the turn on a half-finished response.
 const TRUNCATION_CONTINUATION_MESSAGE: &str = "Your previous response was cut off because it reached the output length limit (finish_reason=\"length\"). Continue exactly where you left off, and do not repeat what you already wrote.";
+/// Corrective attempts one user reply gets for an empty provider reply (#542):
+/// a request that completed with no text, no thinking and no tool call. Never
+/// reset inside the reply, so a tool call between two empty replies does not
+/// buy a second attempt. `MistakeTracker`'s provider-error budget cannot bound
+/// this: an empty reply is a completed request, which resets that budget.
+const MAX_EMPTY_REPLY_RETRIES: u32 = 1;
+/// Model-only note for the corrective attempt. Without it the request is the
+/// one that just came back empty.
+const EMPTY_REPLY_NOTE: &str = "Your previous reply was empty: it had no text and no tool call, so nothing reached the person. Continue the task now. Answer in text, or call the tool you need.";
+/// Shown while the corrective attempt runs, as a transient notice.
+const EMPTY_REPLY_RETRY_NOTICE: &str = "The model sent an empty reply. Asking it once more…";
+/// Stored when the corrective attempt came back empty too, and the turn ends.
+const EMPTY_REPLY_STOP_NOTICE: &str = "The model sent an empty reply again, with no text and no tool call, so Biorouter stopped this turn. The conversation is saved. You can ask again, or switch to another model if this repeats.";
+
+/// Whether a reply message says anything: text that is not only whitespace,
+/// thinking, a tool call, an image, a record of work a coding agent already
+/// did. Only whitespace text and system notifications say nothing.
+fn message_says_something(message: &Message) -> bool {
+    message.content.iter().any(|content| match content {
+        MessageContent::Text(text) => !text.text.trim().is_empty(),
+        MessageContent::SystemNotification(_) => false,
+        _ => true,
+    })
+}
+
+/// Whether a natural-looking stop is one an empty reply can come back with.
+/// A refusal, a filtered reply or a length cut is not an upstream fault, and
+/// a retry would only repeat it.
+fn finish_allows_empty_reply_retry(finish_reason: Option<&str>) -> bool {
+    matches!(
+        finish_reason,
+        None | Some("stop" | "end_turn" | "tool_calls" | "tool_use" | "stop_sequence")
+    )
+}
 
 #[derive(Default)]
 struct MirroredCatalogRefresh {
@@ -15326,6 +15360,9 @@ impl Agent {
             let mut mid_turn_compaction = MidTurnCompaction::default();
             let mut truncation_recovery = TruncationRecoveryBudget::default();
             let mut ever_made_user_visible_progress = false;
+            // #542: corrective attempts spent on empty replies, for the whole
+            // reply (see `MAX_EMPTY_REPLY_RETRIES`).
+            let mut empty_reply_retries = 0u32;
             // Everything this reply reads from config, resolved once — see
             // `ReplyLoopPolicy` for what each field is and why the resolution is
             // not written out here.
@@ -16000,6 +16037,10 @@ impl Agent {
                 // not: it is needed for model continuity, but gives the user no
                 // partial answer to read.
                 let mut made_user_visible_progress = false;
+                // #542: whether this request's reply carried anything at all
+                // (thinking, a tool call, a coding agent's record of work), so
+                // an empty reply can be told from a reply with nothing to show.
+                let mut reply_said_something = false;
                 // The turn's usage, recorded ONCE when the stream ends.
                 //
                 // It used to be written on every usage-bearing chunk, which (a) lost
@@ -16235,6 +16276,7 @@ impl Agent {
                                 made_user_visible_progress |=
                                     message_has_user_visible_progress(&response);
                                 ever_made_user_visible_progress |= made_user_visible_progress;
+                                reply_said_something |= message_says_something(&response);
                                 // #59: name the reply BEFORE it is yielded, so the
                                 // copy the client sees carries the id the row it
                                 // becomes is stored under. A provider that stamps
@@ -17417,6 +17459,42 @@ impl Agent {
                         // manager, whose job is a *completed* response that failed
                         // validation). Bounded by `provider_error_retries`, and by
                         // `max_turns` like every other iteration.
+                        } else if !made_user_visible_progress
+                            && !reply_said_something
+                            && !is_token_cancelled(&cancel_token)
+                            && finish_allows_empty_reply_retry(last_finish_reason.as_deref())
+                        {
+                        // #542: the request completed with no text, no thinking and
+                        // no tool call. That is an upstream fault, not an answer:
+                        // ended as a normal finish, it exited 0 with the answer
+                        // missing. Nothing reached the person and nothing ran, so
+                        // one corrective attempt is safe; a second empty reply ends
+                        // the turn as the provider failure it is.
+                        if empty_reply_retries < MAX_EMPTY_REPLY_RETRIES {
+                            empty_reply_retries += 1;
+                            warn!(
+                                attempt = empty_reply_retries,
+                                limit = MAX_EMPTY_REPLY_RETRIES,
+                                finish_reason = ?last_finish_reason,
+                                "Provider returned an empty reply; asking once more"
+                            );
+                            yield AgentEvent::Message(thinking_notice(EMPTY_REPLY_RETRY_NOTICE));
+                            messages_to_add.push(named(model_only_user_text(EMPTY_REPLY_NOTE)));
+                        } else {
+                            warn!(
+                                finish_reason = ?last_finish_reason,
+                                "Provider returned an empty reply again; ending the turn"
+                            );
+                            let message = named(assistant_text(EMPTY_REPLY_STOP_NOTICE));
+                            yield AgentEvent::Message(message.clone());
+                            messages_to_add.push(message);
+                            pending_turn_abort = Some((
+                                TurnAbortCode::ProviderFailure {
+                                    kind: crate::providers::errors::ProviderErrorKind::Server,
+                                },
+                                EMPTY_REPLY_STOP_NOTICE.to_string(),
+                            ));
+                        }
                         } else {
                         match self.handle_retry_logic(&mut conversation, &session_config, initial_messages.messages()).await {
                             Ok(should_retry) => {
