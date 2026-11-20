@@ -489,6 +489,14 @@
   --pane-min-width: 360px;
   --pane-min-height: 270px;
 
+  /* The width of the two popovers that open from the composer: the `+` popover
+     (Add, Extensions, Skills, Knowledge; composer.css) and the model menu
+     (`.br-model-menu`, pickers.css). One value, so the pair always reads as one
+     family (owner, 2026-11-19: the model menu's 288px is the right width).
+     `composer/composerPopovers.browser.test.tsx` measures both. Panel geometry,
+     so the Text size preference does not scale it. */
+  --composer-popover-width: 288px;
+
   /* The height of a scroller's top scroll-edge fade (`.biorouter-scroll-fade-top`,
      authored below). 10px is the middle of the 8-12px band: tall enough that a
      row clipped to its last pixel is gone rather than reduced to a hairline,

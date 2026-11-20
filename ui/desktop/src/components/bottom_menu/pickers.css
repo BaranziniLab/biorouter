@@ -102,6 +102,13 @@
   display: inline-flex;
 }
 
+/* The model chip's menu (`ModelsBottomBar`), at the width the `+` popover takes
+   too (`--composer-popover-width`, main.css): the composer's two popovers are one
+   family. */
+.br-model-menu {
+  width: var(--composer-popover-width);
+}
+
 /*
  * The Tools popover: one column, the list on top and the segmented control on
  * the bottom edge, directly above the chip (R-25). Radix pins a `side="top"`

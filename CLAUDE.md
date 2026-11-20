@@ -1523,7 +1523,13 @@ value's *location* is as load-bearing as the number.
     LAST child. A click on `+` always opens on Add (attach files, mention,
     commands, decision monitors: the menu recipe's rows); the other three are the
     tool lists (a search field, a scope line saying where a change applies with
-    Enable all or Disable all, the switch rows). The control rides the
+    Enable all or Disable all, the switch rows). It is the model menu's width
+    (owner, 2026-11-19): ONE token, `--composer-popover-width` (288px, `main.css`),
+    sets both (`.br-plus-popover`, `.br-model-menu`); never write a second literal.
+    At 288px four equal columns cut "Knowledge", so the control runs in `fit` mode,
+    each segment its label plus 4px a side plus an equal share of the room
+    (`composer/composerPopovers.browser.test.tsx` measures both widths and every
+    label whole at the three Text sizes). The control rides the
     popover's bottom edge, 6px above the `+` (`sideOffset`): Radix places a `side="top"` popover by its bottom, so a
     longer or shorter list grows or shrinks it upward. ⚠ `avoidCollisions={false}`
     is load-bearing (collision handling would flip the popover below the chip or
