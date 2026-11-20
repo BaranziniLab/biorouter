@@ -33,6 +33,12 @@ describe('the menu bar icon brings chat windows forward', () => {
     expect(showWindow).not.toMatch(/\.(show|focus)\(\)/);
   });
 
+  // Each click moved window N by 30 × N px from where it already was, so with two windows open
+  // every click walked the second one further toward the bottom-right corner.
+  it('never moves a window', () => {
+    expect(showWindow).not.toMatch(/setBounds|setPosition/);
+  });
+
   it('gives the tray menu the same chat windows', () => {
     const createTray = between('const createTray = () => {', '\n};\n');
     expect(createTray).toContain(`setTrayRef(tray, ${isChatWindow})`);

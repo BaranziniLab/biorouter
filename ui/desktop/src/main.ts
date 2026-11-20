@@ -2865,24 +2865,7 @@ const showWindow = async () => {
     return;
   }
 
-  const initialOffsetX = 30;
-  const initialOffsetY = 30;
-
-  // Iterate over all windows
-  windows.forEach((win, index) => {
-    const currentBounds = win.getBounds();
-    const newX = currentBounds.x + initialOffsetX * index;
-    const newY = currentBounds.y + initialOffsetY * index;
-
-    win.setBounds({
-      x: newX,
-      y: newY,
-      width: currentBounds.width,
-      height: currentBounds.height,
-    });
-
-    revealFromMenuBar(win, process.platform);
-  });
+  windows.forEach((win) => revealFromMenuBar(win, process.platform));
 };
 
 const buildRecentFilesMenu = () => {

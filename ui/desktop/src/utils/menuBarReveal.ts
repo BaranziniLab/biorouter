@@ -10,6 +10,7 @@
  *   the app in front (#550); `show()` activates Biorouter as well. Elsewhere only a hidden window
  *   is shown, as before.
  * - A minimized window is restored first, on every platform.
+ * - Nothing is moved. The icon's click used to shift window N by 30 × N px on every click.
  */
 export interface MenuBarWindow {
   isDestroyed(): boolean;
