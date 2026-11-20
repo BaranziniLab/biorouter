@@ -501,6 +501,11 @@ mod persisted_ordering {
     {
         let published: Vec<PersistedMessage> = messages
             .into_iter()
+            // #549: a row a headless run holds in memory because its store is
+            // out of space is not durable, so it is not named.
+            .filter(|message| {
+                !crate::session::session_manager::deferred_writes::is_pending(message)
+            })
             .filter_map(PersistedMessage::of)
             .collect();
         (!published.is_empty()).then_some(AgentEvent::MessagesPersisted(published))
