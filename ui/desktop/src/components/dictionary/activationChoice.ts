@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { activateDictionary, readAllConfig, type DictionarySettings } from '../../api';
 import { toastError } from '../../toasts';
 import { userActionHeaders } from '../../utils/userAction';
@@ -9,10 +9,20 @@ import { loadDictionarySettings, refreshDictionary } from './useDictionary';
 const ACTIVATION_KEY = 'dictation_dictionary_activation_version';
 type ActivationState = 'loading' | 'first' | 'completed' | 'unavailable';
 
+/** A failed install job's identity (the status gives a job no id), or null when there is none. */
+function failedJobKey(status: DictationStatus | null): string | null {
+  const job = status?.install_job;
+  if (!job || job.phase !== 'failed') return null;
+  return [job.model, job.bytes_done, job.bytes_total, job.error ?? ''].join('\n');
+}
+
 /** The first verified model install is the person's activation choice (DD-56). */
 export function useDictionaryActivationChoice(status: DictationStatus | null) {
   const [checked, setChecked] = useState(true);
   const [pendingModel, setPendingModel] = useState<string | null>(null);
+  // The failed job the status still showed when the install was armed: the attempt before this
+  // one. Only a failure other than that one ends the armed install.
+  const staleFailure = useRef<string | null>(null);
   const [settings, setSettings] = useState<DictionarySettings | null>(null);
   const [activationState, setActivationState] = useState<ActivationState>('loading');
   const [activationFailed, setActivationFailed] = useState(false);
@@ -98,7 +108,9 @@ export function useDictionaryActivationChoice(status: DictationStatus | null) {
       return;
     }
     const failed =
-      status.install_job?.model === pendingModel && status.install_job.phase === 'failed';
+      status.install_job?.model === pendingModel &&
+      status.install_job.phase === 'failed' &&
+      failedJobKey(status) !== staleFailure.current;
     if (failed) {
       setPendingModel(null);
       return;
@@ -109,7 +121,11 @@ export function useDictionaryActivationChoice(status: DictationStatus | null) {
   }, [pendingModel, showChoice, status, submitActivation]);
 
   const startInstall = (model: string, firstInstall: boolean) => {
-    if (firstInstall && showChoice) setPendingModel(model);
+    if (!firstInstall || !showChoice) return;
+    // Install pressed again after a failed or cancelled attempt: the status still holds that
+    // attempt's failed job until the daemon reports the new one, and it must not disarm this one.
+    staleFailure.current = failedJobKey(status);
+    setPendingModel(model);
   };
   const changeChecked = (value: boolean) => {
     if (pendingChoice === null) setChecked(value);
