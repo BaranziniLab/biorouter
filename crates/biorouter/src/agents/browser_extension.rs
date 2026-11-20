@@ -374,240 +374,266 @@ fn refuse_secret_text(text: &str) -> Result<(), String> {
 
 fn build_operation(tool: &str, arguments: Option<JsonObject>) -> Result<Operation, String> {
     let bare = tool.strip_prefix("browser__").unwrap_or(tool);
-    let operation = match bare {
-        "browser_open" => {
-            let params: OpenParams = parse(arguments)?;
-            Operation {
-                op: "open",
-                args: json!({ "url": open_url(&params.url)?, "new_tab": params.new_tab.unwrap_or(false) }),
-                deadline: NAVIGATION_DEADLINE,
-            }
+    match bare {
+        "browser_open" => open_operation(arguments),
+        "browser_navigate" => navigate_operation(arguments),
+        "browser_tabs" => tabs_operation(arguments),
+        "browser_snapshot" => snapshot_operation(arguments),
+        "browser_read" => read_operation(arguments),
+        "browser_screenshot" => screenshot_operation(arguments),
+        "browser_scroll" => scroll_operation(arguments),
+        "browser_hover" => hover_operation(arguments),
+        "browser_wait" => wait_operation(arguments),
+        "browser_click" => click_operation(arguments),
+        "browser_fill" => fill_operation(arguments),
+        "browser_type" => type_operation(arguments),
+        "browser_press" => press_operation(arguments),
+        "browser_select" => select_operation(arguments),
+        "browser_dialog" => dialog_operation(arguments),
+        other => Err(format!("{other} is not a Biorouter Browser tool")),
+    }
+}
+
+fn open_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
+    let params: OpenParams = parse(arguments)?;
+    Ok(Operation {
+        op: "open",
+        args: json!({ "url": open_url(&params.url)?, "new_tab": params.new_tab.unwrap_or(false) }),
+        deadline: NAVIGATION_DEADLINE,
+    })
+}
+
+fn navigate_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
+    let params: NavigateParams = parse(arguments)?;
+    let action = params.action.trim().to_ascii_lowercase();
+    if !matches!(action.as_str(), "back" | "forward" | "reload" | "stop") {
+        return Err("action must be \"back\", \"forward\", \"reload\" or \"stop\"".into());
+    }
+    Ok(Operation {
+        op: "navigate",
+        args: json!({ "action": action }),
+        deadline: NAVIGATION_DEADLINE,
+    })
+}
+
+fn tabs_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
+    let params: TabsParams = parse(arguments)?;
+    let action = params
+        .action
+        .unwrap_or_else(|| "list".into())
+        .to_ascii_lowercase();
+    if !matches!(action.as_str(), "list" | "switch" | "close") {
+        return Err("action must be \"list\", \"switch\" or \"close\"".into());
+    }
+    if action != "list" && params.tab.as_deref().is_none_or(str::is_empty) {
+        return Err(format!("{action} needs the tab id from browser_tabs"));
+    }
+    Ok(Operation {
+        op: "tabs",
+        args: json!({ "action": action, "tab": params.tab }),
+        deadline: READ_DEADLINE,
+    })
+}
+
+fn snapshot_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
+    let params: SnapshotParams = parse(arguments)?;
+    let scope = match params.scope {
+        Some(scope)
+            if scope.trim().starts_with('@')
+                || scope.trim().starts_with('e') && reference(&scope).is_ok() =>
+        {
+            json!({ "ref": reference(&scope)? })
         }
-        "browser_navigate" => {
-            let params: NavigateParams = parse(arguments)?;
-            let action = params.action.trim().to_ascii_lowercase();
-            if !matches!(action.as_str(), "back" | "forward" | "reload" | "stop") {
-                return Err("action must be \"back\", \"forward\", \"reload\" or \"stop\"".into());
-            }
-            Operation {
-                op: "navigate",
-                args: json!({ "action": action }),
-                deadline: NAVIGATION_DEADLINE,
-            }
+        Some(selector) => {
+            json!({ "selector": selector.chars().take(512).collect::<String>() })
         }
-        "browser_tabs" => {
-            let params: TabsParams = parse(arguments)?;
-            let action = params
-                .action
-                .unwrap_or_else(|| "list".into())
-                .to_ascii_lowercase();
-            if !matches!(action.as_str(), "list" | "switch" | "close") {
-                return Err("action must be \"list\", \"switch\" or \"close\"".into());
-            }
-            if action != "list" && params.tab.as_deref().is_none_or(str::is_empty) {
-                return Err(format!("{action} needs the tab id from browser_tabs"));
-            }
-            Operation {
-                op: "tabs",
-                args: json!({ "action": action, "tab": params.tab }),
-                deadline: READ_DEADLINE,
-            }
-        }
-        "browser_snapshot" => {
-            let params: SnapshotParams = parse(arguments)?;
-            let scope = match params.scope {
-                Some(scope)
-                    if scope.trim().starts_with('@')
-                        || scope.trim().starts_with('e') && reference(&scope).is_ok() =>
-                {
-                    json!({ "ref": reference(&scope)? })
-                }
-                Some(selector) => {
-                    json!({ "selector": selector.chars().take(512).collect::<String>() })
-                }
-                None => Value::Null,
-            };
-            Operation {
-                op: "snapshot",
-                args: json!({
-                    "interactive_only": params.interactive_only.unwrap_or(true),
-                    "max_depth": params.max_depth,
-                    "scope": scope,
-                    "include_urls": params.include_urls.unwrap_or(false),
-                    "max_chars": params.max_chars.map(|n| n.clamp(1_000, 40_000)).unwrap_or(12_000),
-                }),
-                deadline: READ_DEADLINE,
-            }
-        }
-        "browser_read" => {
-            let params: ReadParams = parse(arguments)?;
-            Operation {
-                op: "read",
-                args: json!({
-                    "ref": optional_reference(params.reference)?,
-                    "max_chars": params.max_chars.map(|n| n.clamp(500, 40_000)).unwrap_or(20_000),
-                }),
-                deadline: READ_DEADLINE,
-            }
-        }
-        "browser_screenshot" => {
-            let params: ScreenshotParams = parse(arguments)?;
-            Operation {
-                op: "screenshot",
-                args: json!({
-                    "full_page": params.full_page.unwrap_or(false),
-                    "ref": optional_reference(params.reference)?,
-                }),
-                deadline: READ_DEADLINE,
-            }
-        }
-        "browser_scroll" => {
-            let params: ScrollParams = parse(arguments)?;
-            let direction = params.direction.map(|d| d.trim().to_ascii_lowercase());
-            if let Some(direction) = direction.as_deref() {
-                if !matches!(direction, "up" | "down" | "left" | "right") {
-                    return Err("direction must be \"up\", \"down\", \"left\" or \"right\"".into());
-                }
-            }
-            let reference = optional_reference(params.reference)?;
-            if direction.is_none() && reference.is_none() {
-                return Err("pass direction, or ref to bring an element into view".into());
-            }
-            Operation {
-                op: "scroll",
-                args: json!({
-                    "direction": direction,
-                    "amount": params.amount.map(|n| n.clamp(1, 100_000)),
-                    "ref": reference,
-                }),
-                deadline: READ_DEADLINE,
-            }
-        }
-        "browser_hover" => {
-            let params: RefParams = parse(arguments)?;
-            Operation {
-                op: "hover",
-                args: json!({ "ref": reference(&params.reference)? }),
-                deadline: ACTION_DEADLINE,
-            }
-        }
-        "browser_wait" => {
-            let params: WaitParams = parse(arguments)?;
-            let timeout = params
-                .timeout_ms
-                .unwrap_or(DEFAULT_WAIT_MS)
-                .clamp(100, MAX_WAIT_MS);
-            let time_ms = params.time_ms.map(|n| n.min(MAX_WAIT_MS));
-            let reference = optional_reference(params.reference)?;
-            if params.text.is_none()
-                && reference.is_none()
-                && params.url.is_none()
-                && params.load.is_none()
-                && time_ms.is_none()
-            {
-                return Err("pass text, ref, url, load or time_ms".into());
-            }
-            if let Some(state) = params.state.as_deref() {
-                if !matches!(
-                    state,
-                    "visible" | "hidden" | "enabled" | "disabled" | "detached"
-                ) {
-                    return Err(
-                        "state must be \"visible\", \"hidden\", \"enabled\", \"disabled\" or \"detached\""
-                            .into(),
-                    );
-                }
-            }
-            if let Some(load) = params.load.as_deref() {
-                if !matches!(load, "load" | "domcontentloaded") {
-                    return Err("load must be \"load\" or \"domcontentloaded\"".into());
-                }
-            }
-            let budget = time_ms.unwrap_or(timeout).max(timeout);
-            Operation {
-                op: "wait",
-                args: json!({
-                    "text": params.text.map(|t| t.chars().take(1_000).collect::<String>()),
-                    "ref": reference,
-                    "state": params.state,
-                    "url": params.url.map(|u| u.chars().take(2_000).collect::<String>()),
-                    "load": params.load,
-                    "time_ms": time_ms,
-                    "timeout_ms": timeout,
-                }),
-                deadline: Duration::from_millis(u64::from(budget) + 5_000),
-            }
-        }
-        "browser_click" => {
-            let params: RefParams = parse(arguments)?;
-            Operation {
-                op: "click",
-                args: json!({ "ref": reference(&params.reference)? }),
-                deadline: ACTION_DEADLINE,
-            }
-        }
-        "browser_fill" => {
-            let params: FillParams = parse(arguments)?;
-            refuse_secret_text(&params.value)?;
-            Operation {
-                op: "fill",
-                args: json!({ "ref": reference(&params.reference)?, "value": params.value }),
-                deadline: ACTION_DEADLINE,
-            }
-        }
-        "browser_type" => {
-            let params: TypeParams = parse(arguments)?;
-            refuse_secret_text(&params.text)?;
-            if params.text.chars().count() > 10_000 {
-                return Err(
-                    "type at most 10000 characters at a time; use browser_fill for long text"
-                        .into(),
-                );
-            }
-            Operation {
-                op: "type",
-                args: json!({ "ref": optional_reference(params.reference)?, "text": params.text }),
-                deadline: ACTION_DEADLINE,
-            }
-        }
-        "browser_press" => {
-            let params: PressParams = parse(arguments)?;
-            if params.key.trim().is_empty() || params.key.len() > 64 {
-                return Err(
-                    "key must name one key or chord, such as \"Enter\" or \"Meta+A\"".into(),
-                );
-            }
-            Operation {
-                op: "press",
-                args: json!({ "key": params.key.trim(), "ref": optional_reference(params.reference)? }),
-                deadline: ACTION_DEADLINE,
-            }
-        }
-        "browser_select" => {
-            let params: SelectParams = parse(arguments)?;
-            if params.values.is_empty() {
-                return Err("values must name at least one option".into());
-            }
-            Operation {
-                op: "select",
-                args: json!({ "ref": reference(&params.reference)?, "values": params.values }),
-                deadline: ACTION_DEADLINE,
-            }
-        }
-        "browser_dialog" => {
-            let params: DialogParams = parse(arguments)?;
-            if let Some(text) = params.prompt_text.as_deref() {
-                refuse_secret_text(text)?;
-            }
-            Operation {
-                op: "dialog",
-                args: json!({ "accept": params.accept, "prompt_text": params.prompt_text }),
-                deadline: ACTION_DEADLINE,
-            }
-        }
-        other => return Err(format!("{other} is not a Biorouter Browser tool")),
+        None => Value::Null,
     };
-    Ok(operation)
+    Ok(Operation {
+        op: "snapshot",
+        args: json!({
+            "interactive_only": params.interactive_only.unwrap_or(true),
+            "max_depth": params.max_depth,
+            "scope": scope,
+            "include_urls": params.include_urls.unwrap_or(false),
+            "max_chars": params.max_chars.map(|n| n.clamp(1_000, 40_000)).unwrap_or(12_000),
+        }),
+        deadline: READ_DEADLINE,
+    })
+}
+
+fn read_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
+    let params: ReadParams = parse(arguments)?;
+    Ok(Operation {
+        op: "read",
+        args: json!({
+            "ref": optional_reference(params.reference)?,
+            "max_chars": params.max_chars.map(|n| n.clamp(500, 40_000)).unwrap_or(20_000),
+        }),
+        deadline: READ_DEADLINE,
+    })
+}
+
+fn screenshot_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
+    let params: ScreenshotParams = parse(arguments)?;
+    Ok(Operation {
+        op: "screenshot",
+        args: json!({
+            "full_page": params.full_page.unwrap_or(false),
+            "ref": optional_reference(params.reference)?,
+        }),
+        deadline: READ_DEADLINE,
+    })
+}
+
+fn scroll_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
+    let params: ScrollParams = parse(arguments)?;
+    let direction = params.direction.map(|d| d.trim().to_ascii_lowercase());
+    if let Some(direction) = direction.as_deref() {
+        if !matches!(direction, "up" | "down" | "left" | "right") {
+            return Err("direction must be \"up\", \"down\", \"left\" or \"right\"".into());
+        }
+    }
+    let reference = optional_reference(params.reference)?;
+    if direction.is_none() && reference.is_none() {
+        return Err("pass direction, or ref to bring an element into view".into());
+    }
+    Ok(Operation {
+        op: "scroll",
+        args: json!({
+            "direction": direction,
+            "amount": params.amount.map(|n| n.clamp(1, 100_000)),
+            "ref": reference,
+        }),
+        deadline: READ_DEADLINE,
+    })
+}
+
+fn hover_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
+    let params: RefParams = parse(arguments)?;
+    Ok(Operation {
+        op: "hover",
+        args: json!({ "ref": reference(&params.reference)? }),
+        deadline: ACTION_DEADLINE,
+    })
+}
+
+fn wait_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
+    let params: WaitParams = parse(arguments)?;
+    let timeout = params
+        .timeout_ms
+        .unwrap_or(DEFAULT_WAIT_MS)
+        .clamp(100, MAX_WAIT_MS);
+    let time_ms = params.time_ms.map(|n| n.min(MAX_WAIT_MS));
+    let reference = optional_reference(params.reference)?;
+    if params.text.is_none()
+        && reference.is_none()
+        && params.url.is_none()
+        && params.load.is_none()
+        && time_ms.is_none()
+    {
+        return Err("pass text, ref, url, load or time_ms".into());
+    }
+    if let Some(state) = params.state.as_deref() {
+        if !matches!(
+            state,
+            "visible" | "hidden" | "enabled" | "disabled" | "detached"
+        ) {
+            return Err(
+                "state must be \"visible\", \"hidden\", \"enabled\", \"disabled\" or \"detached\""
+                    .into(),
+            );
+        }
+    }
+    if let Some(load) = params.load.as_deref() {
+        if !matches!(load, "load" | "domcontentloaded") {
+            return Err("load must be \"load\" or \"domcontentloaded\"".into());
+        }
+    }
+    let budget = time_ms.unwrap_or(timeout).max(timeout);
+    Ok(Operation {
+        op: "wait",
+        args: json!({
+            "text": params.text.map(|t| t.chars().take(1_000).collect::<String>()),
+            "ref": reference,
+            "state": params.state,
+            "url": params.url.map(|u| u.chars().take(2_000).collect::<String>()),
+            "load": params.load,
+            "time_ms": time_ms,
+            "timeout_ms": timeout,
+        }),
+        deadline: Duration::from_millis(u64::from(budget) + 5_000),
+    })
+}
+
+fn click_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
+    let params: RefParams = parse(arguments)?;
+    Ok(Operation {
+        op: "click",
+        args: json!({ "ref": reference(&params.reference)? }),
+        deadline: ACTION_DEADLINE,
+    })
+}
+
+fn fill_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
+    let params: FillParams = parse(arguments)?;
+    refuse_secret_text(&params.value)?;
+    Ok(Operation {
+        op: "fill",
+        args: json!({ "ref": reference(&params.reference)?, "value": params.value }),
+        deadline: ACTION_DEADLINE,
+    })
+}
+
+fn type_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
+    let params: TypeParams = parse(arguments)?;
+    refuse_secret_text(&params.text)?;
+    if params.text.chars().count() > 10_000 {
+        return Err(
+            "type at most 10000 characters at a time; use browser_fill for long text".into(),
+        );
+    }
+    Ok(Operation {
+        op: "type",
+        args: json!({ "ref": optional_reference(params.reference)?, "text": params.text }),
+        deadline: ACTION_DEADLINE,
+    })
+}
+
+fn press_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
+    let params: PressParams = parse(arguments)?;
+    if params.key.trim().is_empty() || params.key.len() > 64 {
+        return Err("key must name one key or chord, such as \"Enter\" or \"Meta+A\"".into());
+    }
+    Ok(Operation {
+        op: "press",
+        args: json!({ "key": params.key.trim(), "ref": optional_reference(params.reference)? }),
+        deadline: ACTION_DEADLINE,
+    })
+}
+
+fn select_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
+    let params: SelectParams = parse(arguments)?;
+    if params.values.is_empty() {
+        return Err("values must name at least one option".into());
+    }
+    Ok(Operation {
+        op: "select",
+        args: json!({ "ref": reference(&params.reference)?, "values": params.values }),
+        deadline: ACTION_DEADLINE,
+    })
+}
+
+fn dialog_operation(arguments: Option<JsonObject>) -> Result<Operation, String> {
+    let params: DialogParams = parse(arguments)?;
+    if let Some(text) = params.prompt_text.as_deref() {
+        refuse_secret_text(text)?;
+    }
+    Ok(Operation {
+        op: "dialog",
+        args: json!({ "accept": params.accept, "prompt_text": params.prompt_text }),
+        deadline: ACTION_DEADLINE,
+    })
 }
 
 /// A page-chosen label (title, URL, element name, the detail line that quotes them), safe to
@@ -648,6 +674,78 @@ fn human_bytes(bytes: u64) -> String {
     } else {
         format!("{bytes} bytes")
     }
+}
+
+/// The line a finished, cancelled or refused download adds to a result.
+fn download_line(download: &Value) -> String {
+    let name = label(
+        download
+            .get("filename")
+            .and_then(Value::as_str)
+            .unwrap_or("file"),
+        256,
+    );
+    let state = download
+        .get("state")
+        .and_then(Value::as_str)
+        .unwrap_or("finished");
+    let size = download.get("bytes").and_then(Value::as_u64).unwrap_or(0);
+    let mime = label(
+        download
+            .get("mime")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown"),
+        128,
+    );
+    let source = label(
+        download
+            .get("origin")
+            .and_then(Value::as_str)
+            .unwrap_or("unknown"),
+        512,
+    );
+    let path = download
+        .get("path")
+        .and_then(Value::as_str)
+        .map(|p| label(p, 4_096));
+    let reason = download
+        .get("reason")
+        .and_then(Value::as_str)
+        .map(|r| label(r, 512));
+    match (state, path, reason) {
+        ("completed", Some(path), _) => format!(
+            "Downloaded {name} ({}, {mime}) from {source} to {path}. It was not opened.",
+            human_bytes(size)
+        ),
+        (_, _, Some(reason)) => format!("The download of {name} did not happen: {reason}"),
+        (state, _, None) => format!("The download of {name} is {state}."),
+    }
+}
+
+/// One tab of a `browser_tabs` listing, its page-chosen title and address defanged.
+fn tab_line(tab: &Value) -> String {
+    format!(
+        "{} {} · {} · {}{}",
+        if tab.get("active").and_then(Value::as_bool) == Some(true) {
+            "*"
+        } else {
+            "-"
+        },
+        label(tab.get("tab").and_then(Value::as_str).unwrap_or("?"), 32),
+        label(
+            tab.get("title").and_then(Value::as_str).unwrap_or_default(),
+            TITLE_MAX_CHARS
+        ),
+        label(
+            tab.get("url").and_then(Value::as_str).unwrap_or_default(),
+            URL_MAX_CHARS
+        ),
+        if tab.get("opened_by").and_then(Value::as_str) == Some("agent") {
+            ""
+        } else {
+            " (opened by the person, shared)"
+        },
+    )
 }
 
 /// Render main's reply as the tool's model-visible text (BB-14). Everything a page chose is
@@ -719,77 +817,13 @@ pub(crate) fn render_reply(reply: &Value) -> (bool, String) {
         ));
     }
     if let Some(download) = field(reply, "download") {
-        let name = label(
-            download
-                .get("filename")
-                .and_then(Value::as_str)
-                .unwrap_or("file"),
-            256,
-        );
-        let state = download
-            .get("state")
-            .and_then(Value::as_str)
-            .unwrap_or("finished");
-        let size = download.get("bytes").and_then(Value::as_u64).unwrap_or(0);
-        let mime = label(
-            download
-                .get("mime")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown"),
-            128,
-        );
-        let source = label(
-            download
-                .get("origin")
-                .and_then(Value::as_str)
-                .unwrap_or("unknown"),
-            512,
-        );
-        let path = download
-            .get("path")
-            .and_then(Value::as_str)
-            .map(|p| label(p, 4_096));
-        let reason = download
-            .get("reason")
-            .and_then(Value::as_str)
-            .map(|r| label(r, 512));
-        lines.push(match (state, path, reason) {
-            ("completed", Some(path), _) => format!(
-                "Downloaded {name} ({}, {mime}) from {source} to {path}. It was not opened.",
-                human_bytes(size)
-            ),
-            (_, _, Some(reason)) => format!("The download of {name} did not happen: {reason}"),
-            (state, _, None) => format!("The download of {name} is {state}."),
-        });
+        lines.push(download_line(download));
     }
     if field(reply, "person_interacted").and_then(Value::as_bool) == Some(true) {
         lines.push("The person interacted with the page during this action.".into());
     }
     if let Some(tabs) = field(reply, "tabs").and_then(Value::as_array) {
-        for tab in tabs.iter().take(50) {
-            lines.push(format!(
-                "{} {} · {} · {}{}",
-                if tab.get("active").and_then(Value::as_bool) == Some(true) {
-                    "*"
-                } else {
-                    "-"
-                },
-                label(tab.get("tab").and_then(Value::as_str).unwrap_or("?"), 32),
-                label(
-                    tab.get("title").and_then(Value::as_str).unwrap_or_default(),
-                    TITLE_MAX_CHARS
-                ),
-                label(
-                    tab.get("url").and_then(Value::as_str).unwrap_or_default(),
-                    URL_MAX_CHARS
-                ),
-                if tab.get("opened_by").and_then(Value::as_str) == Some("agent") {
-                    ""
-                } else {
-                    " (opened by the person, shared)"
-                },
-            ));
-        }
+        lines.extend(tabs.iter().take(50).map(tab_line));
     }
     let body = text_field(reply, "snapshot").or_else(|| text_field(reply, "content"));
     if let Some(body) = body {

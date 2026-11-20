@@ -1805,6 +1805,30 @@ impl ExtensionManager {
         ))
     }
 
+    /// Biorouter Copilot's admission and the Biorouter Browser's, each `None` for every other
+    /// extension. One call in `dispatch_tool_call`, which the `clippy::too_many_lines` baseline
+    /// caps.
+    async fn admit_agent_capabilities(
+        &self,
+        session_id: &str,
+        config: &ExtensionConfig,
+        prefixed_name: &str,
+        arguments: Option<&rmcp::model::JsonObject>,
+        cap: crate::privacy::CallCapability,
+        cancel: &CancellationToken,
+    ) -> Result<(
+        Option<crate::security::computer_use::ComputerUsePermit>,
+        Option<crate::security::browser_use::BrowserPermit>,
+    )> {
+        let computer = self
+            .admit_computer_use(session_id, config, prefixed_name, cap, cancel)
+            .await?;
+        let browser = self
+            .admit_browser(session_id, config, prefixed_name, arguments, cap, cancel)
+            .await?;
+        Ok((computer, browser))
+    }
+
     /// The Biorouter Browser's consent for this chat, for the status poll (BB-17).
     pub async fn browser_use_status(
         &self,
@@ -3964,17 +3988,8 @@ impl ExtensionManager {
                 "Crew tools must resolve to the built-in scoped extension, not an external tool with a similar name.");
         }
         let computer_use = matches!(&client_config, ExtensionConfig::Builtin { name, .. } if name == "computercontroller");
-        let computer_permit = self
-            .admit_computer_use(
-                session_id,
-                &client_config,
-                &prefixed_name,
-                cap,
-                &cancellation_token,
-            )
-            .await?;
-        let browser_permit = self
-            .admit_browser(
+        let (computer_permit, browser_permit) = self
+            .admit_agent_capabilities(
                 session_id,
                 &client_config,
                 &prefixed_name,
@@ -5109,7 +5124,7 @@ mod tests {
             )
             .await;
         crate::agents::browser_extension::set_available_for_tests(None);
-        let error = refused.err().expect("refused").to_string();
+        let error = refused.expect_err("refused").to_string();
         assert_eq!(
             error,
             crate::agents::browser_extension::UNKNOWN_CHAT_REFUSAL,
