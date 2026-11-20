@@ -16,12 +16,15 @@ afterEach(() => {
 
 describe('openInBrowser', () => {
   it('says why an app link could not be opened, in the main process’s words', async () => {
-    openExternal.mockResolvedValueOnce({ ok: false, message: 'This app no longer exists.' });
+    openExternal.mockResolvedValueOnce({
+      ok: false,
+      message: 'This application no longer exists.',
+    });
     await openInBrowser('http://127.0.0.1:51851/apps/cohort-explorer/');
     expect(openExternal).toHaveBeenCalledWith('http://127.0.0.1:51851/apps/cohort-explorer/');
     expect(toastError).toHaveBeenCalledWith({
       title: OPEN_IN_BROWSER_COPY.failedTitle,
-      msg: 'This app no longer exists.',
+      msg: 'This application no longer exists.',
     });
   });
 

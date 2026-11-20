@@ -700,7 +700,7 @@ pub async fn run(exit_with_parent: Option<u32>) -> Result<()> {
     let listener = biorouter::net::bind_non_inheritable(settings.socket_addr()).await?;
     let local_addr = listener.local_addr()?;
     info!("listening on {}", local_addr);
-    // Publish the base URL so in-process MCP tools (e.g. Agent Drafter's
+    // Publish the base URL so in-process MCP tools (e.g. Application Drafter's
     // `launch_app`) can emit absolute http://host:port/apps/<id>/ URLs.
     std::env::set_var("BIOROUTER_APP_BASE_URL", format!("http://{local_addr}"));
     // Publish the same base to the coding-agent tool bridge, so a bridged child

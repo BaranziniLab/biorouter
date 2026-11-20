@@ -53,7 +53,7 @@ struct PinnedAgent {
 pub struct AgentManager {
     sessions: Arc<RwLock<LruCache<String, Arc<Agent>>>>,
     /// BR-71 decision 10: agents that must NOT be evicted while they run —
-    /// glass-box subagents (Task 33) and consulted Agent Drafter workers
+    /// glass-box subagents (Task 33) and consulted Application Drafter workers
     /// (Task 41). The LRU is a memory bound for *idle* agents; an agent with a
     /// live turn is not idle, and evicting it would restore the very bug
     /// `register_agent` exists to fix.
@@ -318,7 +318,7 @@ impl AgentManager {
     }
 
     /// BR-71: put an externally-built, fully-configured agent (a glass-box
-    /// subagent, or a consulted Agent Drafter worker) into the registry under
+    /// subagent, or a consulted Application Drafter worker) into the registry under
     /// its session id, so every server resolution path — `POST /interrupt`,
     /// `POST /reply`, workspace steer — returns the LIVE instance instead of
     /// minting a default agent that no running loop drains.
@@ -337,7 +337,7 @@ impl AgentManager {
     /// (`a_registration_shadows_a_racing_placeholder_it_does_not_replace_it`):
     ///
     /// - Not evicting is *required*. From in here a placeholder is
-    ///   indistinguishable from the entry a consulted Agent Drafter worker got
+    ///   indistinguishable from the entry a consulted Application Drafter worker got
     ///   from an ordinary `get_agent` (`routes/apps.rs:1663`), which
     ///   `deregistering_does_not_evict_a_cache_entry_it_did_not_create` requires
     ///   survive — evicting would nuke a cached worker on every consult.
@@ -356,7 +356,7 @@ impl AgentManager {
         let mut pinned = self.pinned.write().await;
         match pinned.get_mut(&session_id) {
             // REFCOUNTED, not overwritten. Two runs can legitimately register
-            // the same `Arc` back to back — a durable Agent Drafter worker
+            // the same `Arc` back to back — a durable Application Drafter worker
             // consulted twice in quick succession does exactly this (Task 41),
             // because `build_worker` reuses its cached `WorkerHandle.agent`. If
             // the second registration merely overwrote, the FIRST run's
@@ -380,7 +380,7 @@ impl AgentManager {
     /// Note what this deliberately does NOT do: it does not touch the `sessions`
     /// LRU. `register_agent` does not put anything there either, so there is
     /// nothing of ours to remove — and an entry that IS there was put there by
-    /// an ordinary `get_or_create_agent`, which is how a consulted Agent Drafter
+    /// an ordinary `get_or_create_agent`, which is how a consulted Application Drafter
     /// worker gets its agent (`routes/apps.rs:1663`). Popping it would evict a
     /// cached worker this run never created, on every consult.
     pub async fn deregister_agent_if_same(&self, session_id: &str, agent: &Arc<Agent>) {
@@ -739,7 +739,7 @@ mod tests {
     /// Registration is REFCOUNTED, so overlapping runs on the same agent cannot
     /// unregister each other.
     ///
-    /// The case this exists for is Task 41: a durable Agent Drafter worker is
+    /// The case this exists for is Task 41: a durable Application Drafter worker is
     /// consulted twice in quick succession and `build_worker` hands back the
     /// SAME `Arc` both times. Consult #1's deregistration is `tokio::spawn`ed
     /// and can land after consult #2 has already registered and started its

@@ -121,6 +121,8 @@ describe('artifact title helpers', () => {
     expect(titleFromResourceUri('ui://histogram/chart')).toBe('Histogram Chart');
     expect(titleFromResourceUri('ui://chart/interactive')).toBe('Interactive Chart');
     expect(titleFromResourceUri('ui://map/visualization')).toBe('Map Visualization');
+    // An application's card is titled by the application, not by the legacy address host.
+    expect(titleFromResourceUri('ui://agent-drafter/lab-notebook')).toBe('Lab Notebook');
   });
 
   it('uses descriptive UI resource titles for embedded artifacts', () => {

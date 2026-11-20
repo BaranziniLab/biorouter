@@ -9,7 +9,7 @@
 //! `CREATE_NO_WINDOW` makes Windows allocate a **new, visible console window**
 //! for the lifetime of that child. Tool calls are short, so the user sees a black
 //! window flash open and shut — once per shell call, per background-job poll, per
-//! `git` probe, per Agent Drafter build.
+//! `git` probe, per Application Drafter build.
 //!
 //! The flag had existed in the tree for a long time and was reached from six
 //! spawn sites. Sixty-nine others never called it, including
@@ -987,7 +987,7 @@ fn the_known_hot_paths_are_covered() {
             "crates/biorouter-mcp/src/computer_use/windows_job.rs",
             "CREATE_NO_WINDOW",
         ),
-        // Agent Drafter builds run node/npx on every app build.
+        // Application Drafter builds run node/npx on every app build.
         (
             "crates/biorouter-mcp/src/agent_drafter/mod.rs",
             "no_console_window_std",

@@ -2237,7 +2237,7 @@ mod tests {
 
     /// What the reporter's Code Execution chat offered the model directly:
     /// Code Execution's three tools (schemas mirroring its parameter structs),
-    /// a todo tool, and the real workspace tools. Developer and Agent Drafter
+    /// a todo tool, and the real workspace tools. Developer and Application Drafter
     /// were reachable only from a script.
     fn reporter_code_execution_roster() -> Vec<Tool> {
         let mut tools = vec![

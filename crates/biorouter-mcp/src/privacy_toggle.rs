@@ -5,7 +5,7 @@
 //! and several enforcement points are inside this crate: the knowledge-base read
 //! barrier (`knowledge::tier::assert_reachable`), the classification ratchet
 //! (`knowledge::tier::raise_unlocked`), the forced export location
-//! (`knowledge::server::KnowledgeServer::kb_export`) and the Agent Drafter
+//! (`knowledge::server::KnowledgeServer::kb_export`) and the Application Drafter
 //! catalog (`agent_drafter::catalog`). A `privacy_tiers_enabled()` defined in
 //! `crates/biorouter/src/privacy/mod.rs` would be *unreachable* from every one
 //! of them, so the honest outcomes would be either "those are not opt-outable" —

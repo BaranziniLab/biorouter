@@ -94,7 +94,7 @@ function IncludeGroup({
 type LintAnswer = { message: string; findings: string[]; request: AppExportRequest };
 
 /**
- * The Built apps export dialog (Apps SDK v2, design §3.9): launcher or full export, with every
+ * The Applications export dialog (Apps SDK v2, design §3.9): launcher or full export, with every
  * item the app references pre-checked. Confirm runs the export through `onExport` and the dialog
  * stays open, busy, until it answers; Cancel sends nothing.
  *

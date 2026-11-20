@@ -38,7 +38,7 @@ A `/` at the start of the text or after a space opens the command list, and an `
 
 ## Built-in capabilities and contexts, per chat
 
-The shipped capabilities (Developer, Biorouter Copilot, Web & Documents, Auto Visualiser, Memory, Knowledge, Agent Drafter and the rest of Settings > Chat > Capabilities) and the shipped Contexts (Word, PowerPoint, Excel, PDF, Biorouter overview, the Develop Biorouter guides, Knowledge) follow Settings for every new chat. Each one can also be switched for one chat:
+The shipped capabilities (Developer, Biorouter Copilot, Web & Documents, Auto Visualiser, Memory, Knowledge, Application Drafter and the rest of Settings > Chat > Capabilities) and the shipped Contexts (Word, PowerPoint, Excel, PDF, Biorouter overview, the Develop Biorouter guides, Knowledge) follow Settings for every new chat. Each one can also be switched for one chat:
 
 - The Extensions list ends with a folded **Built-in capabilities** group. A switch there adds or removes that capability for this chat only, through the same per-chat path as an installed extension, and the change is saved with the chat.
 - The Skills list ends with a folded **Built-in contexts** group. A switch there writes the chat's own skill override (`workspace_skills/v1`).

@@ -28,7 +28,7 @@ Unlimited does not disable loop recovery. Repeated failures and repeated actions
 
 Stop remains available throughout the task. Explicit time, token and cost budgets still apply when configured. Usage limits for a chat, for every chat by default, and for the month stop a chat before its next model request; see [Usage limits](usage-limits.md). Context compaction still lets the task continue as its history grows; Unlimited does not enlarge the model's context window or guarantee that every task will finish.
 
-Subagents, Crew task workers and built apps keep their separately configured limits.
+Subagents, Crew task workers and applications keep their separately configured limits.
 
 ## Keeping a long task affordable
 

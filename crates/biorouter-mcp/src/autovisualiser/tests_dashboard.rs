@@ -409,7 +409,7 @@ async fn test_a_failed_panel_names_render_figure_not_the_retired_tool() {
     assert!(!text.text.contains("render_volcano"), "{}", text.text);
 }
 
-/// The dashboard is not the only door into the dispatcher: Agent Drafter's
+/// The dashboard is not the only door into the dispatcher: Application Drafter's
 /// `ui_figure` takes a model-written tool name and calls
 /// `render_standalone_figure` with it. Putting the unwrap in `call_figure_tool`
 /// rather than in the panel path is what makes that door accept `render_figure`
@@ -1860,7 +1860,7 @@ fn first_call_chart_data() -> Value {
 /// had a DERIVED `Deserialize`, so `rmcp` refused the arguments with
 /// "missing field `data`" — no kind, no `describe_figure` pointer — before a
 /// line of Auto Visualiser ran, while the lenient `render_figure_call` sat one
-/// door over, wired only to dashboard panels and Agent Drafter's `ui_figure`.
+/// door over, wired only to dashboard panels and Application Drafter's `ui_figure`.
 /// Through the `code_execution` sandbox (default-enabled) the model sees
 /// `data: any` and one line of description, so it cannot read the shape off the
 /// schema either.

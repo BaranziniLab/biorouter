@@ -41,7 +41,7 @@ export function artifactCardKind(source: ArtifactSource, uri?: string): Artifact
 }
 
 /**
- * A `ui://` resource — an Auto Visualiser figure, an Agent Drafter app card —
+ * A `ui://` resource — an Auto Visualiser figure, an application card —
  * has exactly one display surface: the artifact side panel. In the transcript it
  * is only ever a card you click to open it there. It is never rendered inline,
  * and there is no second "expand" destination.

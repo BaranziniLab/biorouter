@@ -16,7 +16,7 @@ import { join } from 'node:path';
  * WHAT THESE ASSERTIONS ARE, AND ARE NOT. They read source text. A CSP cannot
  * be exercised in jsdom — it has no CSP engine — so this is a proxy for "the
  * emitted policy is this narrow", and the narrowing itself was measured in the
- * running dev app (an Auto Visualiser figure, an Agent Drafter preview card, a
+ * running dev app (an Auto Visualiser figure, an Application Drafter preview card, a
  * PDF, a notebook and a workbook all rendered with zero
  * `securitypolicyviolation` reports). What these assertions add is the thing a
  * one-off measurement cannot: they fail when someone re-widens the directive,

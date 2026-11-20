@@ -475,7 +475,7 @@ describe.sequential('shared daemon runtime and pinned Unix proxy', () => {
   });
 
   /**
-   * W2-HRD-1: a built app's browser traffic never goes through the proxy. The proxy adds the
+   * W2-HRD-1: an application's browser traffic never goes through the proxy. The proxy adds the
    * daemon's secret to what it forwards, so admitting an app's page, launch link or agent socket
    * here would hand any local page that app's socket token and an authenticated agent, with no
    * cookie at all. "Launch in browser" is fixed by sending the browser to the daemon's own

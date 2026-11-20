@@ -3,7 +3,7 @@
  * grant given to the shell (dictation PR-03, DD-79, SD-17 in
  * docs/deployment/serve-decisions.md).
  *
- * On `serve`, every Agent Drafter app is served on the shell's own origin
+ * On `serve`, every application is served on the shell's own origin
  * (SD-14), and a browser grants the microphone to an origin, not to a page. So
  * the daemon sends `Permissions-Policy: microphone=(self)` on the shell and
  * `microphone=(), camera=(), display-capture=()` on every app document. This

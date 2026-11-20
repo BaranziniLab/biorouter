@@ -2923,7 +2923,7 @@ fn take_typed_line(
 /// live, and steer it from stdin.
 ///
 /// The stdin reader, the observer stream and ctrl-c are three sources in one
-/// `select!` — the same shape `handle_agent_socket` uses for Agent Drafter's
+/// `select!` — the same shape `handle_agent_socket` uses for Application Drafter's
 /// `ui_ask`, and for the same reason: a blocking read on any one of them makes
 /// the other two unresponsive.
 pub async fn handle_session_attach(

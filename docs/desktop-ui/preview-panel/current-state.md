@@ -161,7 +161,7 @@ apps proxy iframe, which ran at the daemon's origin and was removed in September
 because a policy assertion alone is satisfied by a policy nobody can use: the day a component
 frames a URL instead of `srcdoc`, the failure belongs at the frame rather than in a bug report
 about a preview that renders blank. The narrowing itself was measured in the running dev app — an
-Auto Visualiser figure, an Agent Drafter preview card, a PDF, a notebook and a workbook all
+Auto Visualiser figure, an Application Drafter preview card, a PDF, a notebook and a workbook all
 rendered with zero `securitypolicyviolation` reports — because jsdom has no CSP engine and can
 prove nothing about a policy.
 
@@ -189,7 +189,7 @@ Not introduced by any planned work, and worth fixing on their own schedule:
 - `read-file` and `delete-file` call `isAllowedFilePath()`; **`write-file` (main.ts:3076),
   `ensure-directory` (:3099), `list-files` (:3111), `list-skill-dirs` (:3153) and
   `open-directory-in-explorer` (:5374) do not.**
-- The launcher window (main.ts:1917) and the Agent-Drafter app window (main.ts:5513) carry the
+- The launcher window (main.ts:1917) and the application window (main.ts:5513) carry the
   full preload with **no** `setWindowOpenHandler`, `will-navigate` or `will-frame-navigate`
   guard. There is no `app.on('web-contents-created')` catch-all, so guards are per-window.
 - `window.electron.on(channel, cb)` (preload.ts:585) accepts any channel with no allowlist.

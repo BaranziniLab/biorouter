@@ -284,7 +284,7 @@ describe('managed app preview handoff', () => {
     createEmbeddedBrowser(owner, 'gone', `${context.baseUrl}/apps/removed-app/`, onState, context);
     await vi.waitFor(() =>
       expect(onState).toHaveBeenCalledWith(
-        expect.objectContaining({ error: 'This app no longer exists.' })
+        expect.objectContaining({ error: 'This application no longer exists.' })
       )
     );
     expect(electron.views[0].webContents.loadURL).not.toHaveBeenCalled();
@@ -518,7 +518,7 @@ describe('managed app preview handoff', () => {
 
   // W2-HRD-1: the preview holds the app's access cookie, set when it opened the
   // app's one-time launch link. "Clear site data" is followed by a reload, and a
-  // cleared cookie made that reload answer "Open this app from Biorouter".
+  // cleared cookie made that reload answer "Open this application from Biorouter".
   it('clears what the app stored but keeps its access cookie for the reload', async () => {
     const context = backend();
     const appUrl = `${context.baseUrl}/apps/queue-workbench/`;
@@ -643,11 +643,11 @@ describe('managed app preview handoff', () => {
 });
 
 /**
- * Dictate into this app (S15) asks the preview whether a text field is focused before main
+ * Dictate into this application (S15) asks the preview whether a text field is focused before main
  * inserts dictated text. World 0 is the page's own main world, where the app's script can
  * redefine `document.activeElement` or `instanceof` and answer for itself.
  */
-describe('the Dictate into this app focus check', () => {
+describe('the Dictate into this application focus check', () => {
   async function openApp(viewId: string) {
     const context = backend();
     createEmbeddedBrowser(

@@ -1,4 +1,4 @@
-//! End-to-end checks for the Agent Drafter builtin: it is registered in the
+//! End-to-end checks for the Application Drafter builtin: it is registered in the
 //! builtin registry, and it serves its tools correctly over a real MCP transport
 //! (the same duplex path `extension_manager` uses to spawn builtins).
 
@@ -33,7 +33,7 @@ async fn agent_drafter_serves_tools_over_mcp() {
 
     let client = ().serve((client_read, client_write)).await.unwrap();
 
-    // All Agent Drafter tools are advertised.
+    // All Application Drafter tools are advertised.
     let tools = client.list_all_tools().await.unwrap();
     let names: Vec<String> = tools.iter().map(|t| t.name.to_string()).collect();
     for expected in [

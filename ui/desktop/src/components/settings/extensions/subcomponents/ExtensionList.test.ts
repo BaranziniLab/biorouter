@@ -4,7 +4,7 @@ import { formatExtensionName } from './ExtensionList';
 describe('formatExtensionName', () => {
   it('formats ordinary extension identifiers', () => {
     expect(formatExtensionName('code_execution')).toBe('Code Execution');
-    expect(formatExtensionName('agent-drafter')).toBe('Agent Drafter');
+    expect(formatExtensionName('auto-visualiser')).toBe('Auto Visualiser');
   });
 
   it('uses the proper display name for Chat Recall', () => {

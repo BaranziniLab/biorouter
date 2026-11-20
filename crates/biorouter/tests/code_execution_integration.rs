@@ -963,7 +963,7 @@ async fn case23_agent_drafter_preview_and_launch_metadata_survive_execute_code()
         biorouter_mcp::AgentDrafterServer::with_root(temp_dir.path().join("apps")),
     )
     .await
-    .expect("add agent drafter");
+    .expect("add application drafter");
     m.add_extension(ExtensionConfig::Platform {
         name: "code_execution".to_string(),
         description: "Execute JavaScript code in a sandboxed environment".to_string(),
@@ -1007,14 +1007,14 @@ async fn case23_agent_drafter_preview_and_launch_metadata_survive_execute_code()
             .content
             .iter()
             .any(|content| matches!(&content.raw, RawContent::Resource(_))),
-        "Agent Drafter preview resources should be appended"
+        "Application Drafter preview resources should be appended"
     );
     assert!(
         result
             .content
             .iter()
             .any(|content| matches!(&content.raw, RawContent::ResourceLink(_))),
-        "Agent Drafter launch link should be appended"
+        "Application Drafter launch link should be appended"
     );
     let meta = result.meta.expect("launch metadata");
     assert_eq!(

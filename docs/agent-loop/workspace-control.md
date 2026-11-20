@@ -40,7 +40,7 @@ All of the following must hold:
 - **The session is not itself a subagent.** A child cannot spawn grandchildren, which is the same rule that stops a child being granted workspace control. This is a *lineage* rule and it survives; it is not the retired §7 write rule, which no longer looks at lineage at all.
 - **At least one ordinary extension is loaded.** The auto-injected `workspace` entry is deliberately not counted — otherwise one turn's grant would justify the next one's, and an agent that dropped its last real extension would keep delegating forever off a grant it derived from itself. The `decisions` extension (the `decide` and `decision_models` tools) is not counted either: it is on by default, so it is not a capability you granted, and a chat whose only extension is `decisions` has no spawn tool (`ExtensionManager::is_not_counted_by_the_delegation_gate`).
 - **The active model name does not begin with `gemini`.** This is a flat exclusion in the gate, with no rationale recorded in the source, so treat it as observed behaviour rather than a rule with a reason: on a Gemini model, delegation is off whatever your mode says.
-- **The session is not a BioRouter app that delegates through `consult`.** Apps with worker profiles route delegation through their own mechanism and have the generic tool withdrawn so the two cannot both be offered.
+- **The session is not a Biorouter application that delegates through `consult`.** Apps with worker profiles route delegation through their own mechanism and have the generic tool withdrawn so the two cannot both be offered.
 
 ## Running several conversations side by side
 

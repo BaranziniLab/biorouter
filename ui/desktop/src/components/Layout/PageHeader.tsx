@@ -51,7 +51,7 @@ export type PageHeaderProps = {
 };
 
 /**
- * The one page header for every top-level view: Workflows, the Scheduler, Built apps,
+ * The one page header for every top-level view: Workflows, the Scheduler, Applications,
  * Extensions, Skills, Chat history, Settings, the not-found page, and the drill-ins that pass
  * `onBack`.
  *

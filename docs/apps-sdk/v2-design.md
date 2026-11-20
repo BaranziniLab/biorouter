@@ -1,11 +1,11 @@
 # BioRouter Apps SDK v2 design
 
-> **What this is.** The design of record for Apps SDK v2 — nine pillars that evolve Agent Drafter from "apps that are mostly chatbots with a run button" into a real application SDK, with a component catalog, shared reactive state, platform APIs behind `br.*`, capability-gated security, and multi-agent worker profiles.
+> **What this is.** The design of record for Apps SDK v2 — nine pillars that evolve Application Drafter from "apps that are mostly chatbots with a run button" into a real application SDK, with a component catalog, shared reactive state, platform APIs behind `br.*`, capability-gated security, and multi-agent worker profiles.
 > **Status:** Current. Authored 2026-07-12 after an adversarial review (feasibility against the code, security, completeness) with the findings incorporated; no later revision is recorded in this file. It remains the live design for work still in flight — some pillars have shipped, some are landing, some are still design-only.
-> **Audience:** developers working on Agent Drafter and the Apps SDK.
+> **Audience:** developers working on Application Drafter and the Apps SDK.
 > **Which parts are real.** This document describes *intent*. [The SDK reference](sdk-reference.md) documents what actually ships and flags every Partial / Design-only item; read it whenever you need to know whether something exists today. See the [pillar map](#the-nine-pillars-at-a-glance) below.
 
-**Scope.** Evolve Agent Drafter so its apps expose the *whole* BioRouter platform — any provider, knowledge bases, MCP extensions, skills — through diverse, agent-driven, aesthetically distinct, secure user interfaces, including BioOKF-Studio-class experiences (live network viewers, avatar and scene control, workbenches) that today cannot be expressed at all.
+**Scope.** Evolve Application Drafter so its apps expose the *whole* BioRouter platform — any provider, knowledge bases, MCP extensions, skills — through diverse, agent-driven, aesthetically distinct, secure user interfaces, including BioOKF-Studio-class experiences (live network viewers, avatar and scene control, workbenches) that today cannot be expressed at all.
 
 ## Terms and shorthand used here
 
@@ -27,7 +27,7 @@ This design draws on an industry and research survey, and uses its vocabulary th
 
 | Token | What it governs |
 |---|---|
-| **v1** | The shipped Agent Drafter shape this design evolves: controls flattened into one English prompt, markdown streamed back into one `<div>`. Every v1 frame, tool and API is preserved — v2 is additive. |
+| **v1** | The shipped Application Drafter shape this design evolves: controls flattened into one English prompt, markdown streamed back into one `<div>`. Every v1 frame, tool and API is preserved — v2 is additive. |
 | **v2** | This design: the typed surface, catalog, shared state, platform APIs and profiles below. |
 | **v2.1** | Work deliberately deferred out of v2 — see [scope decisions](#scope-decisions). |
 | `catalog_version` | Stamped on the `ready` frame and every `ui` frame. Lets an older client ignore newer component kinds instead of erroring ([Pillar 3](#pillar-3-catalog-v2)). |
@@ -35,9 +35,9 @@ This design draws on an industry and research survey, and uses its vocabulary th
 
 ## What v2 is trying to make possible
 
-BioRouter's strength is integration: 43+ providers (institutional, local, commercial), personal knowledge bases with git history and graph derivation, pluggable MCP extensions, and ~85 skills — all behind one agent loop. Agent Drafter already wires a *real* per-app agent to a generated front-end. But the front-ends it produces are almost all the same shape: controls → `buildPrompt()` → one English string → markdown streamed into one `<div>`.
+BioRouter's strength is integration: 43+ providers (institutional, local, commercial), personal knowledge bases with git history and graph derivation, pluggable MCP extensions, and ~85 skills — all behind one agent loop. Application Drafter already wires a *real* per-app agent to a generated front-end. But the front-ends it produces are almost all the same shape: controls → `buildPrompt()` → one English string → markdown streamed into one `<div>`.
 
-The exemplar of what we want instead is **BioOKF Studio**: a network-viewer application where the agent *drives* the GUI through a small semantic API (`selectNode`, `search`, `narrate`, `getState`), the user sees an ambient "AI agent is doing X" presence, selection stays synchronized across canvas, panels and citations, and the picture encodes domain meaning (negated edges are red and struck-through; uncurated entities look tentative). Nothing about that app is a chatbot — and nothing about it is expressible in today's Agent Drafter SDK.
+The exemplar of what we want instead is **BioOKF Studio**: a network-viewer application where the agent *drives* the GUI through a small semantic API (`selectNode`, `search`, `narrate`, `getState`), the user sees an ambient "AI agent is doing X" presence, selection stays synchronized across canvas, panels and citations, and the picture encodes domain meaning (negated edges are red and struck-through; uncurated entities look tentative). Nothing about that app is a chatbot — and nothing about it is expressible in today's Application Drafter SDK.
 
 **SDK v2's contract:** an app is a typed, three-party contract between the *author-agent* (writes the app once), the *runtime-agent* (drives it live, turn by turn), and the *user* (owns attention and data) — with the BioRouter platform (models, knowledge, extensions, skills) available as first-class, capability-gated APIs on both sides.
 
@@ -54,7 +54,7 @@ The load-bearing conclusions are below. The full reports were produced during th
 | **C. Model emits declarative UI DSL from a catalog** | Google A2UI, Flutter GenUI, Thesys C1 | Model, per turn, constrained to catalog | Safe by construction; novel compositions | Bounded by catalog |
 | **D. App owns UI; agent streamed in via events + shared state** | AG-UI/CopilotKit | App author; agent drives | Strongest bidirectionality (JSON-Patch shared state, HITL) | App must be pre-built for it |
 
-**The "author once, drive live" requirement is a hybrid: A at author time, C+D at runtime, over B's transport discipline.** Agent Drafter v1 already has this skeleton (authored TS bundle + `ui_*` frames + blocking `ui_ask` + rebindable bridge) — the survey validates the shape and tells us exactly which pieces are missing: a real component **catalog** with **flat ID-keyed nodes**, **shared reactive state** (snapshot + RFC-6902 patches + data binding), **typed bidirectional RPC**, **version stamping with unknown-component fallback** (Airbnb's hardest-won lesson), and **morphing instead of innerHTML-replace** (Phoenix LiveView/Idiomorph).
+**The "author once, drive live" requirement is a hybrid: A at author time, C+D at runtime, over B's transport discipline.** Application Drafter v1 already has this skeleton (authored TS bundle + `ui_*` frames + blocking `ui_ask` + rebindable bridge) — the survey validates the shape and tells us exactly which pieces are missing: a real component **catalog** with **flat ID-keyed nodes**, **shared reactive state** (snapshot + RFC-6902 patches + data binding), **typed bidirectional RPC**, **version stamping with unknown-component fallback** (Airbnb's hardest-won lesson), and **morphing instead of innerHTML-replace** (Phoenix LiveView/Idiomorph).
 
 ### What BioOKF Studio teaches
 
@@ -451,6 +451,6 @@ Evals before features (Townie).
 
 - [Apps SDK v2 reference](sdk-reference.md) — what actually ships today, and the authority whenever this design and the code disagree.
 - [Apps SDK v2 phase roadmap](v2-phase-roadmap.md) — the six-phase execution plan derived from these pillars, with per-phase acceptance gates.
-- [BioRouter Apps platform design](../agent-drafter/apps-platform-design.md) — the Agent Drafter subsystem overview this design extends.
-- [Agent Drafter SDK strategy RFC (2026-06)](../history/apps-sdk-rfc-2026-06/strategy-and-openai-comparison.md) — the earlier RFC comparing OpenAI's Agents SDK, which framed the layered-SDK direction.
-- [Agent Drafter SDK implementation design (2026-06)](../history/apps-sdk-rfc-2026-06/implementation-design.md) — the code-level companion to that RFC, with the first protocol-v2 sketch.
+- [BioRouter Apps platform design](../agent-drafter/apps-platform-design.md) — the Application Drafter subsystem overview this design extends.
+- [Application Drafter SDK strategy RFC (2026-06)](../history/apps-sdk-rfc-2026-06/strategy-and-openai-comparison.md) — the earlier RFC comparing OpenAI's Agents SDK, which framed the layered-SDK direction.
+- [Application Drafter SDK implementation design (2026-06)](../history/apps-sdk-rfc-2026-06/implementation-design.md) — the code-level companion to that RFC, with the first protocol-v2 sketch.

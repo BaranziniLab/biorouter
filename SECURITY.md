@@ -27,7 +27,7 @@ Updating is not uniform across platforms, so an old install can stay old indefin
 - The secret guard, the always-on refusal that keeps credential files (`~/.aws/credentials`, SSH private keys, `secrets.yaml`, `.env`) out of tool arguments and tool output in every chat, mode and tier. See [secret guard](docs/security/secret-guard.md).
 - The Biorouter Copilot consent gate, the per-task approval that must be granted before any of the ten desktop observation and control tools (`list_apps`, `get_app_state`, `click`, `perform_secondary_action`, `scroll`, `drag`, `type_text`, `press_key`, `set_value`, `screen_capture`) runs, and the native helper it drives.
 - MCP extension execution and the `.brxt` extension install path.
-- The `serve.mjs` server shipped with an exported Agent Drafter app.
+- The `serve.mjs` server shipped with an exported application.
 - The `biorouter://` URL scheme handler.
 - Permission modes and managed policy failing to constrain the agent as documented — see [permission modes](docs/security/permission-modes.md) and [managed enterprise policy](docs/security/managed-policy.md).
 

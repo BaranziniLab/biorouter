@@ -107,16 +107,14 @@ const DICTIONARY_PATH = '/dictionary';
 
 /**
  * The seven destinations behind the `Components` disclosure. **Dictionary**
- * (DD-67) sits after Knowledge and before Built apps; it is hidden on a `serve`
+ * (DD-67) sits after Knowledge and before Applications; it is hidden on a `serve`
  * browser until PR-21 and wherever managed policy turns the dictionary off.
  *
- * ⚠ `/applications` is labelled "Built apps", by its SOURCE rather than by a
- * bare noun. It used to read "Applications" and sit one word away from a
- * second row, "Apps" (`/apps`), which listed the UI resources installed MCP
- * extensions advertised — a wholly separate feature, present since the first
- * commit and never requested, that was removed in September 2026. Only Agent
- * Drafter's own `GET /apps` remains, so "Built apps" now has nothing to be
- * confused with; the name is kept because it says what the list holds.
+ * `/applications` is labelled "Applications", the noun for what Application
+ * Drafter builds (owner ruling, 2026-11-19). It read "Built apps" for a while,
+ * to keep it apart from a second row, "Apps" (`/apps`), which listed the UI
+ * resources installed MCP extensions advertised. That feature was removed in
+ * September 2026, so the plain noun has nothing left to be confused with.
  */
 const componentItems: NavigationItem[] = [
   {
@@ -158,7 +156,7 @@ const componentItems: NavigationItem[] = [
   {
     type: 'item' as const,
     path: '/applications',
-    label: 'Built apps',
+    label: 'Applications',
     icon: ENTITY_ICONS.application,
   },
 ];

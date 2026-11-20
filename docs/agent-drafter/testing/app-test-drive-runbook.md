@@ -1,19 +1,19 @@
-# Agent Drafter 100-app test-drive runbook
+# Application Drafter 100-app test-drive runbook
 
-> **What this is.** The operational runbook for driving BioRouter's Agent Drafter across the 100 app specs in the companion corpus: bring a daemon up, make the agent author each app, drive the result in a browser against a functional and an aesthetic rubric, and log every defect, gap and friction point.
+> **What this is.** The operational runbook for driving BioRouter's Application Drafter across the 100 app specs in the companion corpus: bring a daemon up, make the agent author each app, drive the result in a browser against a functional and an aesthetic rubric, and log every defect, gap and friction point.
 > **Status:** Current, with one rotted section named here. The runbook was written 2026-07-12 against a `feat/apps-sdk-v2` git worktree at `/Users/wanjun/Desktop/biorouter-sdk-v2-wt`, which no longer exists and is not a registered worktree. The Apps SDK v2 primitives it depends on now live in the main tree (`crates/biorouter-mcp/src/agent_drafter/`), so the worktree requirement in "Where the code lives" (§0.1) is void — run everything else from an ordinary checkout. The campaign this runbook drove is recorded in [the 100-app test-drive archive](../../history/agent-drafter-testdrive-100/README.md).
-> **Audience:** coding agents running an Agent Drafter test campaign, and the maintainers supervising them.
+> **Audience:** coding agents running an Application Drafter test campaign, and the maintainers supervising them.
 
-Agent Drafter is BioRouter's app-authoring MCP extension: it builds **BioRouter apps**, each a served TypeScript front-end wired to its own per-app BioRouter agent over a WebSocket. This runbook tests it end to end — not by hand-writing apps, but by making the agent author them from a spec and then checking whether what came out is the app the spec asked for.
+Application Drafter is BioRouter's app-authoring MCP extension: it builds **Biorouter applications**, each a served TypeScript front-end wired to its own per-app BioRouter agent over a WebSocket. This runbook tests it end to end — not by hand-writing apps, but by making the agent author them from a spec and then checking whether what came out is the app the spec asked for.
 
 **Identifier scheme used throughout.** Sections are numbered (`§0`–`§10`) and individual rubric checks carry the section number as an ID (`5.2` = "It is not a chatbot", `6.1` = "Theme pack applied"). Those check IDs are cited by the per-app result files the executed run produced, so they are kept verbatim. `spec-NNN` refers to a numbered brief in the corpus — spec 1 is `spec-001`; app ids follow `spec-NNN-<slug>`, for example `spec-001-variant-tribunal`.
 
 **Prerequisites.** You need shell access and a computer-use / browser-automation tool (Playwright MCP or equivalent). Your job is to take each of the **100 app specs** in [the 100 agentic app test specs](hundred-app-test-specs.md) and, for each one:
 
-1. **Make Agent Drafter author the app** — do not hand-write the app yourself; the whole point is to test Agent Drafter, so the *BioRouter agent* must build it via its `create_app` / `build_app` tools while you converse with it.
+1. **Make Application Drafter author the app** — do not hand-write the app yourself; the whole point is to test Application Drafter, so the *BioRouter agent* must build it via its `create_app` / `build_app` tools while you converse with it.
 2. **Iterate conversationally** with that agent — ask it questions, answer its questions, grow its capabilities, and keep refining until the app matches the spec (functionally *and* aesthetically).
 3. **Verify with computer-use** — drive the running app in a browser, confirm it is functionally correct and aesthetically aligned with the spec, exercising the agent-driven loop end to end.
-4. **Keep a comprehensive findings log** — record every bug, inconsistency, missing capability, and inefficient back-and-forth, so the team can improve Agent Drafter later. This log is a primary deliverable, not an afterthought.
+4. **Keep a comprehensive findings log** — record every bug, inconsistency, missing capability, and inefficient back-and-forth, so the team can improve Application Drafter later. This log is a primary deliverable, not an afterthought.
 
 Read this whole document before you start. It encodes hard-won operational detail (ports, keys, gotchas) from a real run.
 
@@ -26,7 +26,7 @@ The Apps SDK v2 primitives — declared `surface`, `ui_patch`, `app_call`, `sign
 Two reference documents are your background material — read them:
 
 - [Apps SDK reference](../../apps-sdk/sdk-reference.md) — the human-facing SDK reference (manifest surface, every `br.*` API, all `ui_*` tools, the widget catalog, the frame protocol, capability matrix, export).
-- [Agent Drafter apps platform design](../apps-platform-design.md) — the design plus the "SDK v2" section.
+- [Applications platform design](../apps-platform-design.md) — the design plus the "SDK v2" section.
 
 ### 0.1 As originally written — no longer applicable
 
@@ -146,7 +146,7 @@ exact header from `crates/biorouter-server/src/auth.rs` or the generated client
 
 ---
 
-## 2. Mental model — what "an Agent Drafter app" is
+## 2. Mental model — what "an application" is
 
 Knowing this is how you know what "correct" means. An app is a **served web front-end plus a per-app BioRouter agent**, wired by the Apps SDK v2. When you open `/apps/<id>/`, the page connects a WebSocket to that app's agent. The agent doesn't just chat — it **drives the page**:
 
@@ -191,7 +191,7 @@ Store layout for each authored app (inspect it directly):
 ## 3. The authoring loop — make the agent build it, and iterate until it's right
 
 **Golden rule: you do not write the app. You make the BioRouter agent write it, and you keep the
-conversation going until it matches the spec.** This is what tests Agent Drafter.
+conversation going until it matches the spec.** This is what tests Application Drafter.
 
 ### 3.1 Pick an authoring channel
 
@@ -236,7 +236,7 @@ a recorded finding (§7).
 **Round 0 — kick-off.** Send the *entire spec block* as the first `user_message`, framed as a build
 order, e.g.:
 
-> "Build a BioRouter app to this exact specification. Use the archetype that best fits (canvas /
+> "Build a Biorouter application to this exact specification. Use the archetype that best fits (canvas /
 > explorer / dashboard / workbench / wizard). Declare every action, signal, and component the spec
 > lists in the manifest surface. Wire the layout regions exactly as described. Set up the multi-agent
 > profiles named in the spec. Then build it and tell me the app id.
@@ -465,7 +465,7 @@ Record an aesthetic verdict: **ALIGNED / PARTIAL / OFF**, with the specific mism
 
 ## 7. The findings log — a primary deliverable
 
-**Everything that goes wrong, is awkward, or takes too many rounds must be captured so Agent Drafter
+**Everything that goes wrong, is awkward, or takes too many rounds must be captured so Application Drafter
 can be improved.** Keep two artifacts under `/tmp/br-testdrive/` (or a repo path you choose), and keep
 them current as you go — do not reconstruct from memory at the end.
 
@@ -512,10 +512,10 @@ and **severity**, with enough to reproduce. Suggested taxonomy:
 | `AUTHORING-INEFFICIENCY` | The agent needed too many rounds, kept undoing its own work, misread the spec, or produced a chatbot on the first pass. *Capture the prompt→response that was wasteful and what finally worked.* This is exactly the "inefficient back-and-forth" the team wants surfaced. |
 | `SPEC-GAP` | The agent silently dropped a spec requirement (a region, an action, a profile). |
 | `SDK-LIMITATION` | The SDK genuinely can't express what the spec needs (a missing widget kind, no way to do a real-time frame loop, a layout the grammar can't produce, a theme that won't go dark, a multi-agent pattern that isn't supported). These ambitious specs are *designed* to surface these — distinguish them clearly from app bugs. |
-| `FUNCTIONAL-BUG` | The built app misbehaves (a `ui_patch` targets a nonexistent region, a signal never fires, `app_call` errors, state doesn't bind, the agent stalls). |
+| `FUNCTIONAL-BUG` | The application misbehaves (a `ui_patch` targets a nonexistent region, a signal never fires, `app_call` errors, state doesn't bind, the agent stalls). |
 | `AESTHETIC-DRIFT` | The look diverges from the spec/design language (pack not applied, decorative accent, wrong density, bouncy motion, cold neutrals). |
 | `SECURITY/ROBUSTNESS` | CSP violation, ws-token/auth issue, sanitizer bypass, a crash, an uncaught console error, a hang. |
-| `ERGONOMICS` | Anything clunky in the loop itself (unclear tool errors, no lint signal, opaque build failures, the agent not narrating, `ui_ask` not surfacing) that made *driving* Agent Drafter harder than it should be. |
+| `ERGONOMICS` | Anything clunky in the loop itself (unclear tool errors, no lint signal, opaque build failures, the agent not narrating, `ui_ask` not surfacing) that made *driving* Application Drafter harder than it should be. |
 
 Entry template:
 
@@ -532,7 +532,7 @@ Entry template:
 ```
 
 **Also keep a top-of-file dashboard** in the rollup: counts by type/severity, the median authoring
-rounds to acceptance, the top 10 most-common failure modes, and a "what would most improve Agent
+rounds to acceptance, the top 10 most-common failure modes, and a "what would most improve Application
 Drafter" shortlist. That rollup is the point of the whole exercise.
 
 ---
@@ -543,11 +543,11 @@ Drafter" shortlist. That rollup is the point of the whole exercise.
   across the batch.
 - **Iteration budget:** cap authoring rounds (roughly 6–8). If an app still fails, stop, record the app as
   `partial`/`fail` with the blocking finding, and move on — don't burn unbounded effort on one spec.
-  A stuck app is *data* about Agent Drafter, not a personal failure.
-- **Do not lower the bar.** These specs are intentionally ambitious. If Agent Drafter can't build one,
+  A stuck app is *data* about Application Drafter, not a personal failure.
+- **Do not lower the bar.** These specs are intentionally ambitious. If Application Drafter can't build one,
   that is an `SDK-LIMITATION` finding, not a reason to simplify the spec.
 - **Never hand-author the app to "make it pass."** If you edit `main.ts`/`manifest.json` yourself to
-  fix something, you've stopped testing Agent Drafter. The only permitted human edits are the ids you
+  fix something, you've stopped testing Application Drafter. The only permitted human edits are the ids you
   assign and reading/deleting store files. All app content must come from the agent.
 - **Keep secrets out of logs.** Don't print the provider key; don't paste `/tmp/br-daemon.log` (it
   contains the spawn env) anywhere shared.
@@ -592,7 +592,7 @@ pkill -f "biorouterd agent"; pkill -9 -f mcp-chrome; rm -f /tmp/br-testdrive.env
 You are done when, for all 100 specs, you have: an authored app (or a recorded reason it couldn't be
 built), a per-app result file with functional + aesthetic verdicts and screenshots, and a
 **findings rollup** that tells the BioRouter team, concretely and with reproductions, **where
-Agent Drafter is inefficient, where it silently drops requirements, where the SDK is genuinely
+Application Drafter is inefficient, where it silently drops requirements, where the SDK is genuinely
 limited, and what to improve first.** That findings document — not a pile of passing apps — is the real
 output.
 
@@ -602,4 +602,4 @@ output.
 - [100-app test-drive archive](../../history/agent-drafter-testdrive-100/README.md) — the evidence, per-app results and blockers from the run executed under this runbook.
 - [Audit findings register](../../history/agent-drafter-testdrive-100/audit-findings-register.md) — the findings rollup this runbook's §7 asks you to produce, as it was actually written.
 - [Apps SDK reference](../../apps-sdk/sdk-reference.md) — every `br.*` and `ui_*` signature you check an authored app against.
-- [Agent Drafter apps platform design](../apps-platform-design.md) — why apps are shaped the way they are, and what the SDK v2 contract promises.
+- [Applications platform design](../apps-platform-design.md) — why apps are shaped the way they are, and what the SDK v2 contract promises.

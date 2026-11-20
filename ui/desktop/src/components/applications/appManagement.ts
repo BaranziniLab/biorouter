@@ -24,7 +24,7 @@ export interface AppThemeConfig {
   tokens?: Record<string, string>;
 }
 
-/** An Agent-Drafter-built app, as returned by biorouterd `GET /apps`. */
+/** An application built by Application Drafter, as returned by biorouterd `GET /apps`. */
 export interface AppManifest {
   id: string;
   title: string;
@@ -221,7 +221,7 @@ export async function requireOk(res: Response): Promise<void> {
   throw new Error(`HTTP ${res.status}${detail ? `: ${detail}` : ''}`);
 }
 
-export async function deleteAgentDrafterApp(id: string): Promise<void> {
+export async function deleteApplication(id: string): Promise<void> {
   const baseUrl = await resolveBaseUrl();
   if (!baseUrl) {
     throw new Error('Backend URL unavailable. Is biorouterd running?');

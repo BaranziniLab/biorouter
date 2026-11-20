@@ -144,7 +144,7 @@ describe('toolGlyphKind: every real tool draws its own glyph', () => {
 describe('the ladder', () => {
   /**
    * ⚠ The defect the full-name match exists for: `toolIconMapping.tsx` keyed on
-   * the bare name, so Agent Drafter's `list_apps` drew Copilot's Monitor.
+   * the bare name, so Application Drafter's `list_apps` drew Copilot's Monitor.
    */
   it('keeps two extensions with the same tool name apart', () => {
     expect(toolGlyphKind('agent_drafter__list_apps')).toBe('app');
@@ -362,7 +362,7 @@ describe('one glyph per concept', () => {
     expect(extensionGlyphFor('Biorouter Copilot').kind).toBe('copilot');
     expect(extensionGlyphFor('Web & Documents').kind).toBe('web');
     expect(extensionGlyphFor('Auto Visualiser').kind).toBe('figure');
-    expect(extensionGlyphFor('Agent Drafter').kind).toBe('app');
+    expect(extensionGlyphFor('Application Drafter').kind).toBe('app');
     expect(extensionGlyphFor('Workspace Control').kind).toBe('workspace');
     expect(extensionGlyphFor('Code Execution').kind).toBe('code');
     expect(extensionGlyphFor('Chat Recall').kind).toBe('recall');

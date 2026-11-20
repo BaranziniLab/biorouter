@@ -91,7 +91,7 @@
 //! A task-local is unreachable across a `tokio::spawn`, so "no gate on this
 //! task" is evidence of nothing by itself. It is equally the shape of
 //!
-//! * a **person** running a script — `POST /agent/call_tool`, an Agent Drafter
+//! * a **person** running a script — `POST /agent/call_tool`, an Application Drafter
 //!   app, the coding-agent bridge (which judges with its own `BridgeGrant`).
 //!   No agent loop dispatched it, every inspector was bypassed for the outer
 //!   call too, and there is no model decision to gate: benign, and behaves
@@ -1837,7 +1837,7 @@ mod tests {
     /// An absent judge is two situations, and only one of them may run.
     ///
     /// The benign half is a **person** dispatching a script through a door that
-    /// judges nothing — `POST /agent/call_tool`, an Agent Drafter app, the
+    /// judges nothing — `POST /agent/call_tool`, an application, the
     /// coding-agent bridge. It runs, exactly as it always has.
     ///
     /// The other half is the agent loop's OWN dispatch arriving with its scope

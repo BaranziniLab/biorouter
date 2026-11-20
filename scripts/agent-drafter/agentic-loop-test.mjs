@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /*
- * Agent Drafter — agentic-loop test kit.
+ * Application Drafter — agentic-loop test kit.
  *
  * Verifies the loop that powers agentic artifacts end-to-end: it launches the
  * Biorouter ACP agent over a WebSocket (`biorouter acp --ws`), connects as an

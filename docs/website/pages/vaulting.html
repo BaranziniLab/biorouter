@@ -36,8 +36,8 @@
 <p>To open one protected file on purpose, add a negation to <code>.biorouterignore</code>: the project's own file for paths inside the project, or <code>~/.config/biorouter/.biorouterignore</code> for every path. For example, <code>!**/.env.example</code> in the project's file reopens its example env files. Any other pattern you add there keeps those files from the agent too.</p>
 <div class="note"><p>The guard stops mistakes, not a determined attacker. It cannot see a path a program builds while it runs, a recursive read of a parent folder such as <code>grep -r key ~/.aws</code>, or text inside a screenshot.</p></div>
 
-<h2 id="vaulting-app-vault">Secrets for built apps</h2>
-<p>A <a href="#apps">built app</a> can hold its own secrets, apart from your provider keys. Its <code>vault</code> capability is off unless the app's manifest names each secret, for example <code>"vault": { "encrypted": ["SPOKEAGENT_PASSCODE"] }</code>. The values are stored encrypted in the app's <code>.vault/</code> folder, and the app refers to each one by name as <code>{{vault:NAME}}</code>. Biorouter fills in the value when a tool runs, so the value never reaches the model. An exported app leaves <code>.vault/</code> behind.</p>
+<h2 id="vaulting-app-vault">Secrets for applications</h2>
+<p>An <a href="#apps">application</a> can hold its own secrets, apart from your provider keys. Its <code>vault</code> capability is off unless the application's manifest names each secret, for example <code>"vault": { "encrypted": ["SPOKEAGENT_PASSCODE"] }</code>. The values are stored encrypted in the application's <code>.vault/</code> folder, and the application refers to each one by name as <code>{{vault:NAME}}</code>. Biorouter fills in the value when a tool runs, so the value never reaches the model. An exported application leaves <code>.vault/</code> behind.</p>
 
 <h2 id="vaulting-dictation">Dictation</h2>
 <div class="note"><p><strong>Next release.</strong> Local dictation arrives in the release after v1.94.1.</p></div>

@@ -89,12 +89,12 @@ describe('ResetPanel', () => {
   it('keeps each category’s meaning as help its checkbox hears', async () => {
     render(<ResetPanel />);
     const dialog = openDialog();
-    const apps = within(dialog).getByRole('checkbox', { name: 'Built apps' });
-    expect(within(dialog).getByRole('button', { name: 'About Built apps' })).toBeInTheDocument();
+    const apps = within(dialog).getByRole('checkbox', { name: 'Applications' });
+    expect(within(dialog).getByRole('button', { name: 'About Applications' })).toBeInTheDocument();
     // The sentence is not on the page as a paragraph: only the hidden description carries it.
-    expect(within(dialog).getByText('Delete every app created with Agent Drafter.')).toHaveClass(
-      'sr-only'
-    );
+    expect(
+      within(dialog).getByText('Delete every application created with Application Drafter.')
+    ).toHaveClass('sr-only');
     expect(apps).not.toBeChecked();
   });
 
@@ -106,7 +106,7 @@ describe('ResetPanel', () => {
     const confirm = within(dialog).getByRole('button', { name: resetCopy.reset });
     expect(confirm).toBeDisabled();
 
-    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Built apps' }));
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: 'Applications' }));
     expect(confirm).toBeEnabled();
     expect(within(dialog).getByText(resetCopy.selectedCount(1, 7))).toBeInTheDocument();
 

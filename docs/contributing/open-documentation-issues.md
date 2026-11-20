@@ -101,7 +101,7 @@ page will configure the wrong provider.
 
 ### `export_app` does ship Windows launchers — CLAUDE.md is the stale side
 
-[Agent Drafter](../agent-drafter/apps-platform-design.md) claims exports ship launchers for all
+[Application Drafter](../agent-drafter/apps-platform-design.md) claims exports ship launchers for all
 three OSes; the root `CLAUDE.md` describes only `biorouter-launch.sh` + `run.sh`/`run.command`.
 **Verified: the doc is right.** `crates/biorouter-mcp/src/agent_drafter/render.rs:953-954`
 writes both `run.ps1` (`run_ps1()`) and `run.bat` (`run_bat()`, a thin PowerShell wrapper

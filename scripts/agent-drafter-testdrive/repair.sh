@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Repair a test-drive app IN Biorouter, using the fixed platform's own agent.
 #
-# This is the end-to-end proof of the remediation: the same Agent Drafter that
+# This is the end-to-end proof of the remediation: the same Application Drafter that
 # produced these broken apps is pointed at one of them and asked to fix it — with
 # no hand-editing. Everything it needs to succeed is now a tool or a rejection,
 # not a paragraph of prose it can ignore:

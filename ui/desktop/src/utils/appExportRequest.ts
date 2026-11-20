@@ -216,10 +216,10 @@ export async function lintRefusal(
     const message =
       typeof parsed.error === 'string' && parsed.error
         ? parsed.error
-        : 'The app has problems that block its export.';
+        : 'The application has problems that block its export.';
     return { message, findings: strings(parsed.findings) };
   } catch {
-    return { message: 'The app has problems that block its export.', findings: [] };
+    return { message: 'The application has problems that block its export.', findings: [] };
   }
 }
 
@@ -239,7 +239,7 @@ export async function exportAppInThisBrowser(
   extraHeaders: Record<string, string> = {}
 ): Promise<AppExportResult> {
   if (typeof appId !== 'string' || !APP_ID_PATTERN.test(appId)) {
-    return { status: 'failed', message: 'That is not an app name.' };
+    return { status: 'failed', message: 'That is not an application name.' };
   }
   const request = parseExportRequest(raw);
   if (typeof request === 'string') return { status: 'failed', message: request };

@@ -477,7 +477,7 @@ pub fn asset_html(assets: &[Asset]) -> String {
 ///
 /// The Rust twin of the desktop's `artifactCdnAssets.ts`, for a figure that
 /// was rendered in CDN mode and is about to be shown where no rewriter runs: an
-/// Agent Drafter app's figure frame, whose policy allows inline scripts and no
+/// application's figure frame, whose policy allows inline scripts and no
 /// remote host (`routes::apps::FIGURE_FRAME_CSP` in `biorouter-server`). A
 /// figure rendered in this process matches the tags [`asset_html`] writes byte
 /// for byte; anything else is left as it is.

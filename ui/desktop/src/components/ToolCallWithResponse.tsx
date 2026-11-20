@@ -615,7 +615,7 @@ function ToolCallWithResponseContent({
           }}
         />
       </div>
-      {/* A `ui://` resource — an Auto Visualiser figure, an Agent Drafter app
+      {/* A `ui://` resource — an Auto Visualiser figure, an application
           card. It is NEVER drawn here: MCPUIResourceRenderer emits a
           click-to-open card and the artifact side panel is the only surface
           that renders the thing itself. */}
@@ -754,7 +754,7 @@ const toolGraphNodeLabel = ({ tool, description }: ToolGraphNode): string => {
  * active KB", the way every other row reads (V2-R2-4). Models write steps as
  * imperatives, so the step's own verb is that verb ({@link stepActionPhrase}):
  * a "Running " put in front of one read "Ran run ls -la". A step named only by
- * its tool runs that tool ("Running Agent Drafter build app").
+ * its tool runs that tool ("Running Application Drafter build app").
  */
 const summarizeToolGraph = (graph: ToolGraphNode[]): string => {
   const steps = graph.map((node) => {

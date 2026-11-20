@@ -395,8 +395,8 @@ export default function PrivacyPanel() {
             </li>
           </ul>
           <p className="text-supporting text-text-default">
-            Reading your saved chats, memories and Biorouter apps off the disk through the shell is
-            not blocked either way.
+            Reading your saved chats, memories and Biorouter applications off the disk through the
+            shell is not blocked either way.
           </p>
           <label className="block text-supporting text-text-muted" htmlFor="privacy-disable-phrase">
             Type <code>{DISABLE_PHRASE}</code> to continue.

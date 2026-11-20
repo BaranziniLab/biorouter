@@ -320,7 +320,7 @@ describe('dictation anywhere', () => {
   });
 });
 
-// Owner decision, 2026-11-10: Dictate into this app works whether or not Dictate into other
+// Owner decision, 2026-11-10: Dictate into this application works whether or not Dictate into other
 // apps is on. The switch governs the tray item and the global shortcut only.
 describe('the Dictate into other apps switch', () => {
   it('governs the tray item and the global shortcut, not the preview button', () => {

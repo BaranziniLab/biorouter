@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Fills before lines in the Workflows, Scheduler and Built apps surfaces (owner message 13,
+ * Fills before lines in the Workflows, Scheduler and Applications surfaces (owner message 13,
  * R-27, design.md 9.11), held at the source. The paint is measured in Chromium by
  * `viewsFill.browser.test.tsx`; this file is the cheap half, the part that fails the moment
  * someone writes an outline back or forgets to opt a new list out of its hairlines.

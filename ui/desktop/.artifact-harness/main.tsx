@@ -274,10 +274,10 @@ const ARTIFACTS: { label: string; make: () => Promise<ArtifactSource> }[] = [
     }),
   },
   {
-    label: 'agent drafter app',
+    label: 'application',
     make: async () => ({
       kind: 'html',
-      title: 'Agent Drafter Cohort Explorer',
+      title: 'Cohort Explorer',
       sourceUri: 'ui://agent-drafter/cohort-explorer',
       html: await (await fetch('/fixtures/agent-drafter-card.html')).text(),
     }),

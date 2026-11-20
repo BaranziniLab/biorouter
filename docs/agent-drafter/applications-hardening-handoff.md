@@ -1,4 +1,4 @@
-# Built apps hardening: handoff
+# Applications hardening: handoff
 
 Status: implementation and native acceptance complete, October 11, 2026. Current CI and artifact
 verification are recorded in the linked PR checks and final PR verification record.
@@ -10,7 +10,7 @@ periodically; inspect `git status`, `git log` and the PR head before resuming. T
 and the original QA profile have been preserved.
 
 The authoritative acceptance status is the
-[verification ledger](built-apps-hardening-verification.md). A source fix, a partial test run,
+[verification ledger](applications-hardening-verification.md). A source fix, a partial test run,
 a past agent report or a successful earlier CI head does not establish final acceptance.
 
 ## What changed
@@ -47,10 +47,10 @@ configured HTTPS remain supported.
 All 21 findings from the three interrupted reviews have implementation dispositions in these
 reports. They also cover the small followups named in the original handoff:
 
-- [Security and lifecycle](built-apps-security-followup.md)
-- [Export and recipient synchronization](built-apps-export-followup.md)
-- [Build and browser serving](built-apps-build-followup.md)
-- [Desktop navigation, authentication and file writes](built-apps-desktop-followup.md)
+- [Security and lifecycle](applications-security-followup.md)
+- [Export and recipient synchronization](applications-export-followup.md)
+- [Build and browser serving](applications-build-followup.md)
+- [Desktop navigation, authentication and file writes](applications-desktop-followup.md)
 
 The original audit and reports remain at `/Users/wgu/biorouter-runs/built-apps-qa/notes/`.
 Those private notes are historical evidence; their open-finding lists predate the followups.

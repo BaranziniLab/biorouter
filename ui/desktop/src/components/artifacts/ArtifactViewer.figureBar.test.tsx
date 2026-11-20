@@ -87,7 +87,7 @@ describe('a figure in the panel', () => {
   it.each([
     ['a figure', 'ui://autovisualiser/donut', 'Figure'],
     ['a report', 'ui://dashboard/report', 'Report'],
-    ['an app', 'ui://agent-drafter/app-1', 'App'],
+    ['an application', 'ui://agent-drafter/app-1', 'Application'],
     ['a figure with no address', undefined, 'Figure'],
   ])('has %s say what it is in the bar, in its card’s word', async (_name, uri, word) => {
     mount(figure(uri));

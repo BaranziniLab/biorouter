@@ -1,6 +1,6 @@
-# Built apps desktop followup
+# Applications desktop followup
 
-Coordinator acceptance completed October 11, 2026; see the [integrated verification ledger](built-apps-hardening-verification.md). The lane checkpoints below preserve investigation history; their pending integration checks are superseded by that ledger.
+Coordinator acceptance completed October 11, 2026; see the [integrated verification ledger](applications-hardening-verification.md). The lane checkpoints below preserve investigation history; their pending integration checks are superseded by that ledger.
 
 Completed in `/Users/wgu/Desktop/BioRouter/.claude/worktrees/built-apps-desktop-followup`,
 branch `codex/built-apps-desktop-followup`, based on the hardening handoff commit `a423670d5`.

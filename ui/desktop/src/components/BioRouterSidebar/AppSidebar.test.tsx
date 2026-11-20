@@ -534,7 +534,7 @@ describe('New chat’s shortcut hint', () => {
 });
 
 /**
- * DD-67: **Dictionary** sits in the Components group after Knowledge and before Built apps. The
+ * DD-67: **Dictionary** sits in the Components group after Knowledge and before Applications. The
  * group is collapsed by default, so the first verified speech model opens it once; a later
  * collapse sticks. While suggestions wait the row shows their count and a collapsed group a dot.
  * The sidebar reads the dictation status store but never loads it, so it sends nothing on mount.
@@ -579,7 +579,7 @@ describe('AppSidebar: Dictionary', () => {
     delete document.documentElement.dataset.biorouterSurface;
   });
 
-  it('sits after Knowledge and before Built apps, with its own glyph and test id', () => {
+  it('sits after Knowledge and before Applications, with its own glyph and test id', () => {
     window.localStorage.setItem('biorouter:sidebar-components-expanded', 'true');
     renderSidebar();
     expect(componentLabels()).toEqual([
@@ -589,7 +589,7 @@ describe('AppSidebar: Dictionary', () => {
       'Skills',
       'Knowledge',
       'Dictionary',
-      'Built apps',
+      'Applications',
     ]);
     expect(screen.getByTestId('sidebar-dictionary-button')).toHaveClass('br-nav-row');
     // Reading the status store is not loading it: nothing went out when the sidebar mounted.

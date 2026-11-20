@@ -374,7 +374,7 @@ describe('the routes PR #184 retired', () => {
    *
    * They go to Home rather than to the not-found page — a link to a feature
    * that existed is not a typo — and deliberately NOT to `/applications`, which
-   * is Built apps, a different feature that merely reads alike.
+   * is Applications, a different feature that merely reads alike.
    */
   it.each(['/apps', '/standalone-app'])('sends %s to Home', async (path) => {
     renderAt(path);

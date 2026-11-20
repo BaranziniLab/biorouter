@@ -12,13 +12,13 @@ export type OpenExternalResult = { ok: true } | { ok: false; message: string } |
 /**
  * The failure toast's words, shared by the three surfaces that open a link in the browser (the
  * transcript's artifact card, the preview panel's header and external-page card, a live page's
- * toolbar). They are the words Built apps' Launch uses for the same failure, so an app that will
- * not open reads the same wherever it was clicked. The title is the one line; the main process's
+ * toolbar). They are the words Applications' Launch uses for the same failure, so an application
+ * that will not open reads the same wherever it was clicked. The title is the one line; the main process's
  * own sentence, when it gave one, is the message.
  */
 export const OPEN_IN_BROWSER_COPY = {
-  failedTitle: 'Couldn’t open the app',
-  failed: 'Couldn’t open the app in your browser.',
+  failedTitle: 'Couldn’t open the application',
+  failed: 'Couldn’t open the application in your browser.',
   bridgeFailed: 'Biorouter couldn’t open that link.',
 } as const;
 

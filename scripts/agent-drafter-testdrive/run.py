@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Drive Agent Drafter through the locked 100-app Apps SDK v2 corpus.
+"""Drive Application Drafter through the locked 100-app Apps SDK v2 corpus.
 
 The script never authors app files. It sends complete specs and review findings
-to Biorouter's Agent Drafter, which must use create_app/update_app/configure_app/
+to Biorouter's Application Drafter, which must use create_app/update_app/configure_app/
 build_app. All persistent runtime state is rooted under .br-testdrive/.
 """
 
@@ -102,7 +102,7 @@ def env() -> dict[str, str]:
     result.update(
         {
             "BIOROUTER_PATH_ROOT": str(RUNTIME),
-            # Agent Drafter's default_root() currently bypasses Paths and reads
+            # Application Drafter's default_root() currently bypasses Paths and reads
             # etcetera/XDG directly, so both variables are required for a truly
             # isolated store. This is audited as an SDK ergonomics finding.
             "XDG_CONFIG_HOME": str(RUNTIME / "config"),
@@ -123,7 +123,7 @@ BUILD_ORDER = """Build one Biorouter Apps SDK v2 application to the exact specif
 NON-NEGOTIABLE AUTHORING RULES:
 - Use the exact app id: {id}
 - The app must be kind=agentic and must use a non-chat archetype fitting the spec.
-- You, Biorouter Agent Drafter, must author every app file through create_app,
+- You, Biorouter Application Drafter, must author every app file through create_app,
   update_app, configure_app, and build_app. Do not use shell/file tools and do
   not merely explain how to build it.
 - Preserve the complete ambitious specification. Do not simplify it.
@@ -182,12 +182,12 @@ FULL LOCKED SPECIFICATION:
 """
 
 
-FIX_ORDER = """Continue refining app {id} in this same Agent Drafter conversation.
+FIX_ORDER = """Continue refining app {id} in this same Application Drafter conversation.
 The static/browser reviewer found the following exact gaps:
 
 {issues}
 
-Fix every gap through Agent Drafter tools only. Preserve working features and the
+Fix every gap through Application Drafter tools only. Preserve working features and the
 full locked spec. Re-read manifest.json/index.html/src/main.ts as needed, update
 them through update_app/configure_app, then build_app and fix every lint ERROR.
 If the app is absent, first create a valid starter with create_app using the exact

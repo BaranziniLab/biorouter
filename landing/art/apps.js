@@ -1,4 +1,4 @@
-/* apps: Built apps (Agent Drafter).
+/* apps: Applications (Application Drafter).
    A small app window, "Cohort explorer", with one author region
    (data-br-region="results"). The agent drives it with the real appcontrol
    tools: ui_chart draws bars into the region; ui_ask shows a form card (a

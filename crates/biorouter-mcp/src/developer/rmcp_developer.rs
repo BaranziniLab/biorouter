@@ -57,7 +57,7 @@ use std::time::Duration;
 /// The `_meta` key Biorouter's MCP client writes the dispatching chat's id
 /// under, on every tool call (`McpMeta` / `session_context::SESSION_ID_HEADER`
 /// in the `biorouter` crate, which this crate cannot name). The knowledge and
-/// Agent Drafter servers read the same key.
+/// Application Drafter servers read the same key.
 const SESSION_ID_META_KEY: &str = "biorouter-session-id";
 
 /// The chat a tool call was dispatched from, when a Biorouter client sent it.

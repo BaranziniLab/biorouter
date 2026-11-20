@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Drive MiMo (via the biorouter CLI) to author one app through the Agent Drafter
+# Drive MiMo (via the biorouter CLI) to author one app through the Application Drafter
 # tools. Usage: author.sh "<instruction>"
 set -euo pipefail
 cd /Users/wanjun/Desktop/biorouter-apps-wt

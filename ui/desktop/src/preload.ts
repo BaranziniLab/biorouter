@@ -477,7 +477,7 @@ type ElectronAPI = {
   // app on this machine is opened through a fresh launch link instead, and answers whether it
   // opened (`utils/openInBrowser.ts`).
   openExternal: (url: string) => Promise<{ ok: true } | { ok: false; message: string } | void>;
-  /** Open a built app in the system browser; main mints and hands over its launch link. */
+  /** Open an application in the system browser; main mints and hands over its launch link. */
   openAppInBrowser: (appId: string) => Promise<void>;
   /**
    * Applications ▸ Export: main asks for a folder first, has this window's daemon build the

@@ -74,7 +74,7 @@ export const chatSectionsCopy = {
     'Skills that ship with Biorouter. Office instructions load only for the tasks that need them.',
   appSdk: 'App SDK',
   appSdkHelp:
-    'Opt-in safety frameworks for Agent Drafter apps. They are off by default and never apply to normal chat.',
+    'Opt-in safety frameworks for applications made with Application Drafter. They are off by default and never apply to normal chat.',
 } as const;
 
 export const projectCopy = {

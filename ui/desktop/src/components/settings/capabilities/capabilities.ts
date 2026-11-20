@@ -93,9 +93,9 @@ export const CAPABILITIES: CapabilityMeta[] = [
   },
   {
     key: 'agent_drafter',
-    label: 'Agent Drafter',
+    label: 'Application Drafter',
     description:
-      'Build interactive artifacts, static pages or apps with an embedded Biorouter agent, and export them as standalone projects.',
+      'Build static pages or interactive applications with an embedded Biorouter agent, and export them as standalone projects.',
     defaultEnabled: true,
   },
   {

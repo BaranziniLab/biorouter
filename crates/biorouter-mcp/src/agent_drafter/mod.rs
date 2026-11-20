@@ -1,7 +1,7 @@
-//! Agent Drafter — author interactive **Biorouter apps**: TypeScript front-ends
+//! Application Drafter — author interactive **Biorouter applications**: TypeScript front-ends
 //! wired to a *real* Biorouter agent backend.
 //!
-//! An Agent-Drafter app is a self-contained project the assistant builds for the
+//! An application is a self-contained project the assistant builds for the
 //! user. The UI is authored in TypeScript (bundled with esbuild) and the app
 //! talks to Biorouter over a per-app WebSocket: when the user sends a message,
 //! the Biorouter backend runs the **full agent loop** — the app's own model,
@@ -905,7 +905,7 @@ pub struct ExportAppParams {
 // Server
 // ---------------------------------------------------------------------------
 
-/// Agent Drafter MCP server.
+/// Application Drafter MCP server.
 #[derive(Clone)]
 pub struct AgentDrafterServer {
     tool_router: ToolRouter<Self>,
@@ -933,7 +933,7 @@ pub fn default_root() -> PathBuf {
 /// styles — the three things the remaining findings depend on. jsdom cannot see any
 /// of them, which is exactly why the audit could not either.
 ///
-/// **Environment (issue #62).** This is the one Agent Drafter path that
+/// **Environment (issue #62).** This is the one Application Drafter path that
 /// *executes* agent-authored application code — the siblings only parse it
 /// (`bundle.rs` runs esbuild, `render.rs` runs `node --check`). The Node harness
 /// serves the app to a chromium launched with `--no-sandbox`, so the daemon's
@@ -986,7 +986,7 @@ fn run_smoke(dir: &Path) -> Result<String, String> {
     }
 }
 
-/// The environment every Agent Drafter child is spawned with (issue #62).
+/// The environment every Application Drafter child is spawned with (issue #62).
 ///
 /// One named seam for both spawns — [`run_smoke`]'s node harness and
 /// `bundle::run_esbuild` — so neither can drift and a third one has an obvious
@@ -1104,7 +1104,7 @@ fn decode_agent_field<T: DeserializeOwned>(
     serde_json::from_value(value).map_err(|e| {
         err(
             ErrorCode::INVALID_PARAMS,
-            format!("{field} must match the Agent Drafter manifest schema: {e}"),
+            format!("{field} must match the Application Drafter manifest schema: {e}"),
         )
     })
 }
@@ -1832,9 +1832,11 @@ impl AgentDrafterServer {
     #[allow(clippy::too_many_lines)]
     pub fn with_root(root: PathBuf) -> Self {
         let instructions = formatdoc! {r#"
-            Agent Drafter builds interactive **Biorouter apps** for the user:
-            TypeScript front-ends wired to a real Biorouter agent. Think "Claude
-            artifacts", but each app embeds a genuine Biorouter backend: when the
+            Application Drafter builds interactive **Biorouter applications** for the
+            user: TypeScript front-ends wired to a real Biorouter agent. Say
+            "application" to the user; "app" below and in the tool names is the short
+            form of the same thing. Think "Claude artifacts", but each app embeds a
+            genuine Biorouter backend: when the
             user sends a message, Biorouter runs the full agent loop (the app's own
             model, enabled capabilities, installed extensions, skills, and knowledge base) and streams the answer back
             into the app. The GUI presents a clickable preview and the CLI prints
@@ -2242,7 +2244,7 @@ impl AgentDrafterServer {
 
     #[tool(
         name = "create_app",
-        description = "Create a new Biorouter app: a TypeScript UI wired to a live Biorouter agent (kind 'agentic', default) or a static page. Returns a preview card."
+        description = "Create a new Biorouter application: a TypeScript UI wired to a live Biorouter agent (kind 'agentic', default) or a static page. Returns a preview card."
     )]
     pub async fn create_app(
         &self,
@@ -2562,7 +2564,7 @@ impl AgentDrafterServer {
                 err(
                     ErrorCode::INVALID_PARAMS,
                     format!(
-                        "manifest.json must be valid Agent Drafter manifest JSON: {e}. \
+                        "manifest.json must be valid Application Drafter manifest JSON: {e}. \
                          Read it back with `read_app` (the default resolved view shows every \
                          field, including ones holding their default) and edit that."
                     ),
@@ -2751,7 +2753,7 @@ impl AgentDrafterServer {
 
     #[tool(
         name = "launch_app",
-        description = "Build (if needed) and launch a Biorouter app. Returns a browser URL. The GUI shows a clickable preview and the CLI prints the URL."
+        description = "Build (if needed) and launch a Biorouter application. Returns a browser URL. The GUI shows a clickable preview and the CLI prints the URL."
     )]
     pub async fn launch_app(
         &self,
@@ -2837,7 +2839,7 @@ impl AgentDrafterServer {
         let mut content = vec![Content::resource_link(link).with_audience(vec![Role::User])];
         content.push(
             Content::text(format!(
-                "App '{}' can be opened at {}{build_warning}\nBrowser-free page check passed; runtime behavior was not verified.\n(A browser can open this address only through a one-time launch link: the user opens the app from its preview in this chat or with \"Launch in browser\" in Applications. Pasted on its own, the address answers \"Open this app from Biorouter\". In a terminal, run `biorouter apps open {}`.)",
+                "App '{}' can be opened at {}{build_warning}\nBrowser-free page check passed; runtime behavior was not verified.\n(A browser can open this address only through a one-time launch link: the user opens the app from its preview in this chat or with \"Launch in browser\" in Applications. Pasted on its own, the address answers \"Open this application from Biorouter\". In a terminal, run `biorouter apps open {}`.)",
                 manifest.id, browser_url, manifest.id
             ))
             .with_audience(vec![Role::Assistant]),
@@ -3180,7 +3182,7 @@ impl AgentDrafterServer {
 
     #[tool(
         name = "list_apps",
-        description = "List all Biorouter apps (optionally filtered by kind)."
+        description = "List all Biorouter applications (optionally filtered by kind)."
     )]
     pub async fn list_apps(
         &self,
@@ -3490,7 +3492,7 @@ impl ServerHandler for AgentDrafterServer {
             server_info: Implementation {
                 name: "biorouter-agent-drafter".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_owned(),
-                title: Some("Agent Drafter".to_string()),
+                title: Some("Application Drafter".to_string()),
                 icons: None,
                 website_url: None,
             },
@@ -3583,7 +3585,7 @@ mod tests {
         let instructions = server
             .get_info()
             .instructions
-            .expect("Agent Drafter must advertise authoring instructions");
+            .expect("Application Drafter must advertise authoring instructions");
         let normalized = instructions
             .split_whitespace()
             .collect::<Vec<_>>()
@@ -6031,7 +6033,7 @@ br.run("hello", "#missing");
             ("workbench", "Workbench", "open_row"),
             ("wizard", "Wizard", "go_to_step"),
             ("canvas", "Canvas", "move_avatar"),
-            ("chat", "Biorouter App", "createApp();"),
+            ("chat", "Biorouter Application", "createApp();"),
         ];
         for (arch, badge, marker) in cases {
             let id = format!("app-{arch}");
@@ -6200,7 +6202,7 @@ br.run("hello", "#missing");
     ///
     /// `smoke_app` boots the agent-authored application in a real browser
     /// (chromium, launched with `--no-sandbox`) driven by a Node harness. That
-    /// makes it the one Agent Drafter path that **executes** model-authored
+    /// makes it the one Application Drafter path that **executes** model-authored
     /// code rather than parsing it, so the daemon's auth secret must not be in
     /// the environment those processes are launched with — holding it makes the
     /// holder a fully authenticated client of `biorouterd`'s REST API (issue

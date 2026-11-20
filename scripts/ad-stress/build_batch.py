@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Iteratively build Agent-Drafter apps by driving GPT-5.5 through the drafter tools.
+"""Iteratively build applications by driving GPT-5.5 through the drafter tools.
 
 Each app is built inside ONE named session ("ad-<id>") so follow-up fixes land in
 the SAME conversation — build -> review -> report problems -> it fixes -> repeat,

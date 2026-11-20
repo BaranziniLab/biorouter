@@ -177,7 +177,7 @@ instructions: |
 
   {% if test_depth != "fixture_only" and (test_phases == "all" or "apps" in test_phases) %}
   ### Phase 2B: Apps SDK v2 Testing
-  Exercise Agent Drafter's typed app contract end to end:
+  Exercise Application Drafter's typed app contract end to end:
   - Create one isolated dashboard app with the configured self-test id
   - Read its resolved manifest and verify the declared surface
   - Build and lint the app
@@ -192,7 +192,7 @@ instructions: |
   ### Phase 2C: Artifact Preview Handoff
   Validate artifact-producing tools through the JavaScript execution extension:
   - Render one Auto Visualiser chart through `execute_code`
-  - Create and launch one static Agent Drafter app with the configured preview id through `execute_code`
+  - Create and launch one static application with the configured preview id through `execute_code`
   - Verify both previews survive the nested tool call and the app launch returns its `/apps/<id>/` path
   - Change an already-open report and app; verify same-tab updates and preserved user edits
   - Keep the existing preview attached to its active pane across compact/restore; preserve drafts, selected text and unsaved embedded content
@@ -399,10 +399,10 @@ extensions:
 
   - type: builtin
     name: agent_drafter
-    display_name: Agent Drafter
+    display_name: Application Drafter
     timeout: 600
     bundled: true
-    description: Typed authoring, build, lint, and browser smoke tools for BioRouter apps
+    description: Typed authoring, build, lint, and browser smoke tools for Biorouter applications
 
   - type: builtin
     name: autovisualiser
@@ -775,8 +775,8 @@ prompt: |
   First call `agent_drafter__list_apps`. If that exact app id already exists or matches the dashboard id `{{ sdk_app_id }}`, stop this phase and report the collision without modifying any app. Do not overwrite, reuse, or remove a prior run's app.
 
   1. In one `execute_code` script, import an Auto Visualiser chart tool, render a small bar chart, and record its textual result. The outer call must also emit a user-facing HTML resource block for the client.
-  2. In one `execute_code` script, import Agent Drafter's `create_app` and `launch_app`, create a static app with id `{{ preview_app_id }}`, launch it, and record the launch result.
-  3. Require the nested Agent Drafter call to return its preview resource and launch metadata containing exactly `/apps/{{ preview_app_id }}/`. Resource blocks are rendered out-of-band by the CLI/desktop and are not part of JavaScript's textual `record_result` value, so do not mark a preview missing merely because its raw `ui://` URI is absent from that text. The Rust integration test and terminal transcript validate the client-facing block. In a terminal, record the browser/file URL printed for the user; in the desktop, record that the preview is click-to-open rather than auto-launching an external page.
+  2. In one `execute_code` script, import Application Drafter's `create_app` and `launch_app`, create a static app with id `{{ preview_app_id }}`, launch it, and record the launch result.
+  3. Require the nested Application Drafter call to return its preview resource and launch metadata containing exactly `/apps/{{ preview_app_id }}/`. Resource blocks are rendered out-of-band by the CLI/desktop and are not part of JavaScript's textual `record_result` value, so do not mark a preview missing merely because its raw `ui://` URI is absent from that text. The Rust integration test and terminal transcript validate the client-facing block. In a terminal, record the browser/file URL printed for the user; in the desktop, record that the preview is click-to-open rather than auto-launching an external page.
   4. Create a small fictional queue-option report at {{ workspace_dir }}/preview-links/reports/summary.md. Resolve and verify its absolute path, then include a clickable link to that exact file in the response. In a later response, refer to the same unique `summary.md`; verify that the desktop opens the same file. A qualified relative link must instead resolve from the actual session working directory. An ambiguous basename must not silently open a different file.
   5. With the report open, update a numeric value using the same byte width and recompute its comparison. Require the existing preview to update after the successful write, without opening another tab. Update the existing self-test app's visible title through the current tool schema and include a small editable notes field for the next check, rebuilding if necessary; require its existing managed preview to update at the same URL.
   6. In the desktop, type an unsaved form value and blur the field before another app update. Require an explicit Update ready action, with the typed value intact. Annotation, resize, and active or reconnecting app work must also defer automatic reload. Explicit refresh must retain app IndexedDB state. External websites must not reload because a local tool finished. Do not broaden network or private-file permissions to pass these checks.

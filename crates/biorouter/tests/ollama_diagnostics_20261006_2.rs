@@ -78,7 +78,7 @@ fn tool(name: &str, schema: Value) -> Tool {
 
 /// What the reporter's chat offered the model directly with Code Execution
 /// on: its three tools (schemas mirroring its parameter structs), a todo tool,
-/// and the real workspace tools. Developer and Agent Drafter were reachable
+/// and the real workspace tools. Developer and Application Drafter were reachable
 /// only from a script.
 fn code_execution_roster() -> Vec<Tool> {
     let mut tools = vec![

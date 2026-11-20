@@ -73,7 +73,7 @@ Work with papers, genes, diseases, drugs, cohorts, and experimental data in the 
 | **Connect biological evidence** | Use SPOKEAgent to explore relationships among genes, diseases, drugs, and pathways. |
 | **Analyze and visualize** | Write and run R or Python, fit machine-learning models, and create figures and interactive dashboards. |
 | **Work with desktop software** | Biorouter Copilot can inspect and operate applications on the backend computer, with your approval for each request. |
-| **Build and reuse tools** | Create small research apps with Agent Drafter, run parallel chats, and save or schedule recurring tasks as workflows. |
+| **Build and reuse tools** | Create small research applications with Application Drafter, run parallel chats, and save or schedule recurring tasks as workflows. |
 | **Work with your lab** | In Crew, chat in channels, share files and give AI agents tasks the whole channel can see, in a workspace one lab member hosts on a shared Linux server. |
 | **Dictate and keep your words** | Speak into the composer, the terminal (`Ctrl+T`) or a `biorouter serve` browser. A speech model that Biorouter's own engine runs on the computer hosting your session turns the speech into text, and nothing goes to a third-party speech service. The model is a one-time download of the one you choose from the Baranzini Lab's GitHub, and the Dictionary teaches it your lab's terms. In a browser the microphone needs `localhost` or HTTPS. See [voice dictation](docs/dictation/README.md). |
 | **Set a spending limit** | Cap a chat, every chat or the month, in tokens or dollars. A chat stops before the request that would pass the limit. All limits are off until you set one. See [usage limits](docs/agent-loop/usage-limits.md). |

@@ -30,5 +30,5 @@ and version in `agentInfo`.
 
 - [Extensions, skills, and MCP agents](../extensions/extensions-and-skills-guide.md) — the other direction: giving the Biorouter agent new tools rather than giving another host the agent
 - [biorouter CLI command reference](../cli/command-reference.md) — `biorouter acp`, the subcommand every ACP integration launches
-- [Agent Drafter](../agent-drafter/README.md) — when you want Biorouter to *build* an interactive app rather than live inside someone else's
+- [Application Drafter](../agent-drafter/README.md) — when you want Biorouter to *build* an interactive application rather than live inside someone else's
 - [Headless Linux deployment](../deployment/headless-linux.md) — hosting the daemon for shared or remote use, rather than embedding the agent in a desktop tool

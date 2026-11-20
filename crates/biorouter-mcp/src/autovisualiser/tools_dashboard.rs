@@ -435,7 +435,7 @@ impl AutoVisualiserRouter {
         // (#142).
         //
         // Two callers reach this branch: a dashboard panel, and
-        // `render_standalone_figure` (Agent Drafter's `ui_figure`, whose `tool`
+        // `render_standalone_figure` (Application Drafter's `ui_figure`, whose `tool`
         // argument a model also fills in). The declared `render_figure` does
         // NOT — it resolves its own `kind` and calls in as `kind.tool_name()`,
         // which is why one unwrap is always enough: `tool_name()` never returns
@@ -828,7 +828,7 @@ const ASSET_ORDER: [Asset; 5] = [
 /// legitimate. `args` are exactly the arguments the tool takes on its own
 /// (e.g. `{"data": …}`).
 ///
-/// ⚠ The caller here is Agent Drafter's `ui_figure`, and an app agent's
+/// ⚠ The caller here is Application Drafter's `ui_figure`, and an app agent's
 /// vocabulary is the per-kind TOOL NAMES its description lists
 /// (`render_volcano`, `render_manhattan`, …). It has neither `render_figure` nor
 /// `describe_figure`: `configure_agent` never injects autovisualiser into an app
@@ -891,7 +891,7 @@ pub async fn render_standalone_figure(tool: &str, args: Value) -> Result<String,
 //
 // Three other callers reach the figures without going through the declaration,
 // and none of them changes: `call_figure_tool` (dashboard panels),
-// `render_standalone_figure` (Agent Drafter's `ui_figure`), and every unit test
+// `render_standalone_figure` (Application Drafter's `ui_figure`), and every unit test
 // via the `ok_render!`/`err_render!` macros, which call the inherent methods.
 
 /// The one table. The `kind` enum, its slug, and the tool it dispatches to are
@@ -1205,7 +1205,7 @@ enum FigureVocabulary {
     /// figures are named by `kind`, and the per-kind tool names are back-compat
     /// it cannot look up.
     RenderFigure,
-    /// Agent Drafter's `ui_figure`, whose own description hands the app agent
+    /// Application Drafter's `ui_figure`, whose own description hands the app agent
     /// the per-kind tool names (`render_volcano`, `render_manhattan`, …) and
     /// which has neither `render_figure` nor `describe_figure` to call.
     ToolName,
@@ -1297,7 +1297,7 @@ pub struct RenderFigureParams {
 ///
 /// Meanwhile `render_figure_call` — which unwraps exactly the shapes models are
 /// recorded sending — sat one door over, wired only to dashboard panels and
-/// Agent Drafter's `ui_figure`. Two doors, two behaviours, and the lenient one
+/// Application Drafter's `ui_figure`. Two doors, two behaviours, and the lenient one
 /// was not the door a chat agent uses. Measured on Versa GPT-5.5: "render a bar
 /// chart of three values" cost four or five tool-call cards, two or three of
 /// them rejections, before the model gave in and called `describe_figure`.

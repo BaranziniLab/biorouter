@@ -1,4 +1,4 @@
-//! HTTP + WebSocket routes for **Biorouter apps** (built by Agent Drafter).
+//! HTTP + WebSocket routes for **Biorouter applications** (built by Application Drafter).
 //!
 //! `biorouterd` serves each app's static bundle and exposes a per-app WebSocket
 //! that runs the *real* agent loop configured with that app's model, extensions,
@@ -475,9 +475,9 @@ fn launch_bounce(cookie: Option<String>) -> Response {
     // reverse proxy's path prefix the daemon never sees (issue #402).
     let page = "<!doctype html><meta charset=utf-8>\
          <meta http-equiv=\"refresh\" content=\"0;url=./\">\
-         <title>Opening Biorouter app</title>\
+         <title>Opening Biorouter application</title>\
          <body style=\"font:15px system-ui;margin:3rem auto;max-width:32rem\">\
-         <p>Opening the app. If nothing happens, <a href=\"./\">open it here</a>.</p>";
+         <p>Opening the application. If nothing happens, <a href=\"./\">open it here</a>.</p>";
     let mut bounce = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
@@ -847,7 +847,11 @@ async fn export_zip_response(
         Err(message) => return (StatusCode::BAD_REQUEST, message).into_response(),
     };
     if validate_artifact_id(&id).is_err() {
-        return (StatusCode::BAD_REQUEST, format!("'{id}' is not an app id.")).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("'{id}' is not an application id."),
+        )
+            .into_response();
     }
     let zip_id = id.clone();
     // A stale bundle is rebuilt, a fat export copies a ~100 MB binary, and the
@@ -3307,7 +3311,7 @@ fn append_orchestration_guidance(prompt: &mut String, cfg: &AgentConfig) {
 
 fn main_agent_prompt(manifest: &Manifest, cfg: &AgentConfig, report: &CapabilityReport) -> String {
     let mut prompt = format!(
-        "You are the agent powering the Biorouter app \"{}\".",
+        "You are the agent powering the Biorouter application \"{}\".",
         manifest.title
     );
     if !manifest.description.is_empty() {
@@ -4176,7 +4180,7 @@ async fn inject_worker_servers(
 /// machine's composed skill catalog, not against what this profile named.
 fn worker_system_prompt(manifest: &Manifest, profile_name: &str, cfg: &AgentConfig) -> String {
     let mut prompt = format!(
-        "You are the \"{profile_name}\" worker agent for the Biorouter app \"{}\".",
+        "You are the \"{profile_name}\" worker agent for the Biorouter application \"{}\".",
         manifest.title
     );
     if !cfg.system_prompt.trim().is_empty() {
@@ -5649,7 +5653,7 @@ async fn handle_kb_frame(
 // ─────────────────── tool ui:// resource → results-region figure ────────────
 
 /// Decode the first `ui://` embedded HTML resource in a successful tool result
-/// (Auto Visualiser figures, Agent Drafter previews return one). Returns the
+/// (Auto Visualiser figures, Application Drafter previews return one). Returns the
 /// decoded HTML, or `None` when the result carries no `ui://` resource or its
 /// blob won't decode. Pure + unit-tested.
 fn ui_resource_html(result: &rmcp::model::CallToolResult) -> Option<String> {

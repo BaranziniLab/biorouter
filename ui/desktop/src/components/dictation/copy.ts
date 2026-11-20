@@ -100,7 +100,7 @@ export const DICTATION_MESSAGES = {
   'MSG-INSECURE':
     'Dictation needs a secure address. Your browser blocks the microphone on http://<host>. Open Biorouter through an SSH tunnel (then it is localhost) or through an HTTPS address.',
   'MSG-SHARED-ORIGIN':
-    "Your browser's microphone permission covers every page at <origin>, including pages that code or an agent wrote there, such as Biorouter apps and notebook outputs. Choose Allow this time unless you trust every page there.",
+    "Your browser's microphone permission covers every page at <origin>, including pages that code or an agent wrote there, such as Biorouter applications and notebook outputs. Choose Allow this time unless you trust every page there.",
   'MSG-413':
     'The proxy in front of Biorouter refused the audio upload (413). Its request size limit is below 64 KB.',
   'MSG-WAIT': 'Waiting for a free connection to Biorouter',
@@ -115,7 +115,7 @@ export const DICTATION_MESSAGES = {
   'MSG-NO-AUDIO-YET': 'No audio detected. Check that your microphone is not muted.',
   'MSG-TOO-SHORT': 'That recording was under half a second, so nothing was transcribed.',
   'MSG-APPS':
-    "Apps cannot use the microphone themselves. Click into the app's text field, then use Dictate into this app, or use Dictate to clipboard in the Biorouter app (or `biorouter dictate --copy`) and paste. Your system's own dictation also works, without your Biorouter dictionary.",
+    "Applications cannot use the microphone themselves. Click into the application's text field, then use Dictate into this application, or use Dictate to clipboard in the Biorouter app (or `biorouter dictate --copy`) and paste. Your system's own dictation also works, without your Biorouter dictionary.",
   'MSG-GNOME':
     "GNOME on Wayland does not let Biorouter set a keyboard shortcut that works in other apps. Use Dictate to clipboard in Biorouter's tray menu (GNOME shows it with the AppIndicator extension), or the microphone button in Biorouter's own composer.",
   'MSG-WINDOW-OPEN':
@@ -205,8 +205,8 @@ export const DICTATION_ACTIONS = {
   include: 'Include',
   publicTermsOnly: 'Public terms only',
   includePrivateTerms: 'Include my private terms',
-  /** The live preview's toolbar button for a Biorouter app's focused field (S15). */
-  dictateIntoThisApp: 'Dictate into this app',
+  /** The live preview's toolbar button for a Biorouter application's focused field (S15). */
+  dictateIntoThisApp: 'Dictate into this application',
   /** The Settings switch for the tray item and the global shortcut (S18). */
   dictateIntoOtherApps: 'Dictate into other apps',
   setUp: 'Set up dictation',

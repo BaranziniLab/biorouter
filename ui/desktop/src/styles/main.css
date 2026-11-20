@@ -4244,7 +4244,7 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
 
 /* @ws WS-VIEWS-A begin: busy action */
 /* AN ACTION WHOSE REQUEST IS OUT (`PageHeaderAction busy`, and the primary `IconAction` of a
-   Scheduler or Built apps row). It dims and shows the progress cursor, and it STAYS ENABLED:
+   Scheduler or Applications row). It dims and shows the progress cursor, and it STAYS ENABLED:
    `disabled` would dim it the same way, but Chromium hands focus to <body> the moment a focused
    button turns `disabled`, so a keyboard user who pressed Pause, Resume, Stop, Refresh or Launch
    lost their place after every press (vision round 2, V3-R2-1). The press is ignored in the
@@ -4347,7 +4347,7 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
    keeps its wash and its own focus edge. Forced colours repaint every fill as Canvas, so the wash
    that told a row from the next is gone there: the line comes back (a border, which forced colours
    draw), and the `:last-child` rule after this, at the same specificity, still leaves the last
-   row without one. One definition: Workflows, the Scheduler and its runs, Built apps and the
+   row without one. One definition: Workflows, the Scheduler and its runs, Applications and the
    Settings dialogs named this class before it lived here. */
 .br-rows-flat :is(.biorouter-list-row, .biorouter-settings-row)::after {
   content: none;
@@ -6368,7 +6368,7 @@ body:has(.biorouter-modal-surface [data-slot='select-content'][data-state='open'
    describe, the root has nothing to scroll, and `ui/scroll-area.tsx` puts the root back if
    anything ever scrolls it again. The transcripts' viewports already ran this way after their
    first find (`SearchHighlighter` sets it inline, and never unsets it), and the component views
-   (Workflows, the Scheduler, Built apps, Extensions, Skills, Chat history) wrap their content in a
+   (Workflows, the Scheduler, Applications, Extensions, Skills, Chat history) wrap their content in a
    positioned box of their own, so neither moves. `settings/pageHeadroom.browser.test.tsx` opens
    Settings at a section and wheels back to the top. */
 .br-scroll-viewport {

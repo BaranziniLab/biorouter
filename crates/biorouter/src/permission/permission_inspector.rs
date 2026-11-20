@@ -569,7 +569,7 @@ impl PermissionInspector {
 pub const APP_ALWAYS_CONFIRM_REASON: &str =
     "This app asks for your approval each time it uses this tool.";
 
-/// rq2-193/198/211: the chat's always-confirm set (an Agent Drafter app's
+/// rq2-193/198/211: the chat's always-confirm set (an application's
 /// `guardrails.needs_approval`, [`crate::config::permission::set_session_always_confirm`])
 /// raises an approval for a listed tool in every mode that runs tools, Auto
 /// included. It only ever raises: a denial stands, an ask keeps its own

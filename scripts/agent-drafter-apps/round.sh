@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Author a batch of Biorouter apps by driving MiMo through the Agent Drafter
+# Author a batch of Biorouter applications by driving MiMo through the Application Drafter
 # tools, then verify each against the checklist. Apps are defined below as
 # id|title|extensions|persona. Authoring runs in parallel batches of 4.
 #
@@ -39,7 +39,7 @@ author_one() {
   local spec="$1"; IFS='|' read -r id title exts persona <<< "$spec"
   local extline=""
   if [ "$exts" != "-" ]; then extline=", extensions [\"${exts//,/\",\"}\"]"; fi
-  local instr="Use the Agent Drafter tools to build a Biorouter app. (1) Call create_app with title \"$title\", a one-sentence description, kind \"agentic\"$extline, and system_prompt: \"$persona\". (2) Call build_app on the new app. (3) Call launch_app and report the URL. Keep the default chat UI; do not write custom HTML."
+  local instr="Use the Application Drafter tools to build a Biorouter app. (1) Call create_app with title \"$title\", a one-sentence description, kind \"agentic\"$extline, and system_prompt: \"$persona\". (2) Call build_app on the new app. (3) Call launch_app and report the URL. Keep the default chat UI; do not write custom HTML."
   echo "[author] $id"
   "$HERE/author.sh" "$instr" > "/tmp/author-$id.log" 2>&1
   echo "[done] $id (exit $?)"

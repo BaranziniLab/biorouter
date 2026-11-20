@@ -248,5 +248,5 @@ Estimated ~2–3 weeks plus ongoing work.
 - [Apps SDK v2 design](v2-design.md) — the nine pillars this roadmap sequences, and the rationale behind each acceptance gate.
 - [Apps SDK v2 reference](sdk-reference.md) — what has actually shipped, which is how you tell a phase's plan from its outcome.
 - [BioRouter Apps platform design](../agent-drafter/apps-platform-design.md) — the subsystem doc several phases here schedule updates to.
-- [Agent Drafter SDK strategy RFC (2026-06)](../history/apps-sdk-rfc-2026-06/strategy-and-openai-comparison.md) — the earlier phased SDK proposal this roadmap supersedes; useful for the pre-v2 framing.
-- [Agent Drafter 100-app test-drive runbook](../agent-drafter/testing/app-test-drive-runbook.md) — how the authored-app corpus that gates every phase is actually driven.
+- [Application Drafter SDK strategy RFC (2026-06)](../history/apps-sdk-rfc-2026-06/strategy-and-openai-comparison.md) — the earlier phased SDK proposal this roadmap supersedes; useful for the pre-v2 framing.
+- [Application Drafter 100-app test-drive runbook](../agent-drafter/testing/app-test-drive-runbook.md) — how the authored-app corpus that gates every phase is actually driven.

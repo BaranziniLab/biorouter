@@ -142,13 +142,13 @@ describe('exportAppInThisBrowser', () => {
   });
 
   it('says what the daemon said when it refuses', async () => {
-    fetchMock.mockResolvedValue(new Response("There is no app 'demo'.", { status: 404 }));
+    fetchMock.mockResolvedValue(new Response("There is no application 'demo'.", { status: 404 }));
     expect(
       await exportAppInThisBrowser('http://host', 's', 'demo', {
         mode: 'launcher',
         bundleDaemon: false,
         allowLintErrors: false,
       })
-    ).toEqual({ status: 'failed', message: "There is no app 'demo'." });
+    ).toEqual({ status: 'failed', message: "There is no application 'demo'." });
   });
 });

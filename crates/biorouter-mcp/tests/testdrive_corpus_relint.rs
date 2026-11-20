@@ -1,8 +1,8 @@
 //! Re-lint the real apps the 100-app test drive produced.
 //!
 //! This is the regression corpus. Every app under
-//! `.br-testdrive/runtime/config/biorouter/agent_drafter/` was authored by Agent
-//! Drafter during the audit, and every one of them shipped with at least one of
+//! `.br-testdrive/runtime/config/biorouter/agent_drafter/` was authored by Application
+//! Drafter (then Agent Drafter) during the audit, and every one of them shipped with at least one of
 //! the defects this campaign fixes. The audit's verdict was 0/18 full functional
 //! passes.
 //!

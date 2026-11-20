@@ -309,7 +309,7 @@ location /user/a/biorouter/ {
 ```
 
 The page warns once per browser origin before its first microphone recording. The permission
-covers every page at that origin, including Biorouter apps and notebook outputs. Choose a grant
+covers every page at that origin, including Biorouter applications and notebook outputs. Choose a grant
 for one visit unless you trust every page there. Chromium applies Biorouter's app-page microphone
 header to each app document, but a same-origin popup can still use a lasting grant. Firefox and
 Safari do not enforce that header. The notice applies behind a path prefix too, where other pages
@@ -552,7 +552,7 @@ set `X-Forwarded-Proto: https`, and a chain of proxies that appends `http` to th
 every live view. The daemon logs each refusal as
 `rejected workspace WS: cross-origin connect rejected`, with the origin it was given.
 
-**Behind a proxy, a built app says "No Biorouter backend" and suggests `biorouterd agent`.**
+**Behind a proxy, an application says "No Biorouter backend" and suggests `biorouterd agent`.**
 Biorouter is running: it served the app's page. What failed is the app's live connection, a
 WebSocket, which the daemon refused for the reason in the entry above. JupyterHub's chain causes
 it when `serve` has no `--public-url`, because the scheme reaches the daemon as `https,http`. Pass

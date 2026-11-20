@@ -1,7 +1,7 @@
 /**
  * Deterministic harness for the agent-driven UI runtime.
  *
- * Serves a built Agent Drafter app and stands in for `biorouterd`'s per-app
+ * Serves a built application and stands in for `biorouterd`'s per-app
  * agent socket, speaking the real wire protocol. That lets us exercise every
  * `ui` command (and the `ui_ask` round-trip) against the real `sdk.ts` in a real
  * browser, with none of an LLM's nondeterminism.

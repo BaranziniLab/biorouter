@@ -1334,7 +1334,7 @@ const CODING_AGENT_BRIDGE_POLICIES: &[CodingAgentBridgePolicy] = &[
         tools: CODING_AGENT_BRIDGE_ALLOWED_WEBDOCUMENTS_TOOLS,
     },
     CodingAgentBridgePolicy {
-        capability_name: "Agent Drafter",
+        capability_name: "Application Drafter",
         target_name: "agent_drafter",
         tools: CODING_AGENT_BRIDGE_ALLOWED_AGENT_DRAFTER_TOOLS,
     },
@@ -1577,7 +1577,7 @@ fn prepare_coding_agent_bridge_tool(tool: &Tool) -> Tool {
                  Do not delegate SQLite/database creation, file creation, shell commands, or \
                  build/test execution without corresponding child tools. A child may instead review \
                  a specification or calculate expected results; label that reasoning-only, not \
-                 executed or verified. For an app-building task, if Agent Drafter is callable here, \
+                 executed or verified. For an application-building task, if Application Drafter is callable here, \
                  build directly in this parent rather than delegating to a child without that grant. Otherwise \
                  explain the limitation and ask for a supported alternative or provider before \
                  starting a child. Do not silently substitute analysis for a requested executable result."
@@ -5254,7 +5254,7 @@ pub struct Agent {
     pub(super) subagent_runtime_sessions: Mutex<HashSet<String>>,
     /// Whether the generic `subagent` tool is offered at all.
     ///
-    /// Default `true` (every existing caller). An Agent-Drafter app that declares
+    /// Default `true` (every existing caller). An application that declares
     /// worker profiles sets this `false`, because otherwise TWO delegation
     /// mechanisms are armed at once and the generic one is easier to reach: the
     /// `subagent` tool's description auto-lists the very worker names the author
@@ -11809,7 +11809,7 @@ impl Agent {
 
     /// Offer (or withhold) the generic `subagent` tool.
     ///
-    /// Agent-Drafter apps with declared worker profiles call this with `false`, so
+    /// Applications with declared worker profiles call this with `false`, so
     /// `consult` is the ONE delegation mechanism. Two armed mechanisms is what let
     /// the main agent bypass the profiles the author declared.
     pub fn set_subagent_tool_enabled(&self, enabled: bool) {
@@ -25228,7 +25228,7 @@ mod tests {
             "SQLite",
             "file creation",
             "build/test execution",
-            "Agent Drafter",
+            "Application Drafter",
             "reasoning-only",
         ] {
             assert!(
@@ -28256,7 +28256,7 @@ mod tests {
     /// Skipping the injection on a later turn is not enough: the extension is
     /// already loaded, and `get_prefixed_tools` reads the manager
     /// unconditionally. Without a revocation the grant is permanent — an
-    /// Agent-Drafter app that turns delegation off (so `consult` is the one
+    /// application that turns delegation off (so `consult` is the one
     /// delegation mechanism, the whole point of `set_subagent_tool_enabled`),
     /// a switch to a Gemini model, or a mode change to Chat all leave
     /// `workspace__subagent` advertised, and the dispatch gate keys on

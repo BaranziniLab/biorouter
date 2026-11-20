@@ -9,7 +9,7 @@ import { Input } from './input';
 import { Tooltip, TooltipContent, TooltipTrigger } from './Tooltip';
 
 /**
- * FilterInput: the one list filter for every view band (spec 2.6): Workflows, Built apps,
+ * FilterInput: the one list filter for every view band (spec 2.6): Workflows, Applications,
  * Extensions, Skills, History (and Scheduler if it ever needs one).
  *
  * A 28px `Input` with a leading 16px search glyph, placeholder "Filter" (History passes its own,

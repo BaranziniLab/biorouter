@@ -2025,8 +2025,8 @@ fn configure_builtin_extension() -> anyhow::Result<()> {
         ),
         (
             "agent_drafter",
-            "Agent Drafter",
-            "Build interactive artifacts, static pages or apps with an embedded Biorouter agent, and export them as standalone projects.",
+            "Application Drafter",
+            "Build static pages or interactive applications with an embedded Biorouter agent, and export them as standalone projects.",
         ),
     ];
 
