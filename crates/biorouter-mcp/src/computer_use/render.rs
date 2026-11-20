@@ -168,6 +168,9 @@ pub fn snapshot(
     if data.get("complete").and_then(Value::as_bool) == Some(false) {
         body.push_str("[The app answered only part of its window in time; observe again or read one part with root.]\n");
     }
+    if data.get("identity_unproven").and_then(Value::as_bool) == Some(true) {
+        body.push_str("[The window could not be read in full in time to prove these references unique, so acting on one may be refused; observe again before acting.]\n");
+    }
     if lines.is_empty() {
         body.push_str("[No elements. The window may be empty, still loading (use wait_for), or not accessible.]\n");
     }
@@ -406,6 +409,17 @@ mod tests {
         assert!(text.contains("more lines not shown. Read one part with root"));
         assert!(text.contains("answered only part of its window"));
         assert_eq!(refs.len(), 2000);
+    }
+
+    #[test]
+    fn a_snapshot_that_could_not_prove_its_references_says_so() {
+        let mut data = tree();
+        data["identity_unproven"] = json!(true);
+        let mut refs = HashMap::new();
+        let text = snapshot(&data, "TextEdit", DEFAULT_TEXT_LIMIT, &mut refs);
+        assert!(text.contains("could not be read in full in time to prove these references"));
+        let text = snapshot(&tree(), "TextEdit", DEFAULT_TEXT_LIMIT, &mut refs);
+        assert!(!text.contains("prove these references"));
     }
 
     #[test]

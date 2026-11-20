@@ -451,21 +451,35 @@ async fn copilot_drives_the_fixture_app_through_its_own_tools() {
     fixture.expect("dropped", json!(DRAG_TEXT)).await;
     println!("PASS drag between windows: the dragged text lands in the other window");
 
-    // Scroll a long text by reference.
-    let window = copilot
-        .ok(
-            generation,
-            "get_app_state",
-            json!({"app": app, "max_depth": 30}),
-        )
-        .await;
-    copilot
-        .ok(
-            generation,
-            "scroll",
-            json!({"ref": scroll_reference(&window), "direction": "down", "amount": 10}),
-        )
-        .await;
+    // Scroll a long text by reference. A snapshot that could not prove its references unique
+    // in time is refused as ambiguous, and the advice is to observe again: do that, twice at most.
+    let mut attempt = 0;
+    loop {
+        let window = copilot
+            .ok(
+                generation,
+                "get_app_state",
+                json!({"app": app, "max_depth": 30}),
+            )
+            .await;
+        let scrolled = copilot
+            .call(
+                generation,
+                "scroll",
+                json!({"ref": scroll_reference(&window), "direction": "down", "amount": 10}),
+            )
+            .await;
+        if !scrolled.refused {
+            break;
+        }
+        println!("scroll refused on attempt {attempt}; the whole observation was:\n{window}");
+        attempt += 1;
+        assert!(
+            scrolled.text.contains("AMBIGUOUS_TARGET") && attempt < 3,
+            "scroll was refused: {}",
+            scrolled.text
+        );
+    }
     let deadline = Instant::now() + Duration::from_secs(10);
     while fixture.state()["scroll"].as_f64().unwrap_or(0.0) <= 0.0 {
         assert!(Instant::now() < deadline, "scrolling never moved the text");
