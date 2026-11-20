@@ -1365,7 +1365,7 @@ As built in PR-20:
 
 ### Page layout
 
-The Skills page is the template [C `ui/desktop/src/components/skills/SkillsView.tsx`]: `MainPanelLayout`, `ReadableContent size="chat"`, and a `PageHeader` band with the title **Dictionary**, the count, an InfoTip, `FilterInput` ("Filter terms", ⌘F), a ghost **Export…**, one primary **Add** menu (**Add a term…**, **Paste a list…**, **Import a file…**), and a `⋯` menu with **Delete all terms…**. Rows are `biorouter-list-row` in `br-rows-flat`, with `RowActions` and `RowContextMenu`; skeletons show only for an empty first load. The only accent is the band's **Add** button. Copy lives in `components/dictionary/copy.ts`; load bearing CSS in `components/dictionary/dictionary.css`. As built in PR-20 the InfoTip is MSG-DICTIONARY-HELP; **Import a file…** opens the system file chooser at once and then **Paste a list…** with the file's text and name; and mounting the page calls `noteDictationInterest()`, as the surfaces' status store expects.
+The Skills page is the template [C `ui/desktop/src/components/skills/SkillsView.tsx`]: `MainPanelLayout`, `ReadableContent size="chat"`, and a `PageHeader` band with the title **Dictionary**, the count, an InfoTip, `FilterInput` ("Filter terms", ⌘F), a ghost **Export…**, one primary **Add terms** menu (**Add a term…**, **Paste a list…**, **Import a file…**), and a `⋯` menu with **Delete all terms…**. Rows are `biorouter-list-row` in `br-rows-flat`, with `RowActions` and `RowContextMenu`; skeletons show only for an empty first load. The only accent is the band's **Add terms** button. Copy lives in `components/dictionary/copy.ts`; load bearing CSS in `components/dictionary/dictionary.css`. As built in PR-20 the InfoTip is MSG-DICTIONARY-HELP; **Import a file…** opens the system file chooser at once and then **Paste a list…** with the file's text and name; and mounting the page calls `noteDictationInterest()`, as the surfaces' status store expects.
 
 The page draws only the rows near the viewport (`DictionaryList.tsx`, `rowWindow.ts`), the sidebar chat list's approach (R-28) for a list whose rows share one height. Every group's header is drawn; the rows in view and 12 lines of overscan on each side are drawn; every run of rows outside them is one placeholder exactly their height, so the scroll height and every drawn row's place are what the real rows would give. The pitch is read off a drawn row, because the Text size preference scales it. From a scroll the new rows are committed before the frame paints, so a placeholder never shows where a row is about to be; the row that last held focus stays drawn wherever the list is scrolled. `DictionaryRow` is memoized and the page hands every row one object of callbacks that keep their identity, so opening a menu or a dialog renders no row again. Before this, all rows were mounted, each with a context menu, a dropdown and two tooltips: PR-20's live check imported 4,980 terms and measured [M] a first render of 7.9 s with a 6 s main thread block, 85,527 DOM nodes and a 2.1 GB heap, 12 s from **Add term** to the row, 14.4 s to apply the paste, and 4 to 5 s to open any menu or dialog.
 
@@ -1443,7 +1443,7 @@ In `components/ToolCallWithResponse.tsx`, for a `dictionary__add_terms` row, fro
 
 ### Empty state
 
-MSG-EMPTY: "No terms yet. Add the words dictation should spell your way, such as UCSF or EPAS1." with the **Add** menu.
+MSG-EMPTY: "No terms yet. Add the words dictation should spell your way, such as UCSF or EPAS1." with the **Add terms** menu.
 
 ### Files and guard updates
 

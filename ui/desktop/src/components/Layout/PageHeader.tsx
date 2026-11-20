@@ -20,15 +20,18 @@ export type PageHeaderProps = {
   /** A count or a state beside the title, in `text-supporting` muted tabular figures. */
   adornment?: React.ReactNode;
   /**
-   * The page's actions, at the band's trailing edge: ghost round 32px icon buttons
-   * (`PageHeaderAction`), at most ONE primary `Button` at the default size, and an optional
-   * `FilterInput`. Every control here is `no-drag`; the band authors that rule.
+   * The page's actions, at the band's trailing edge: ghost round icon buttons
+   * (`PageHeaderAction`, `PageHeaderMenu`), at most ONE primary `Button`, and an optional
+   * `FilterInput`. Pass every control at its default size: the band draws all of them 28px (the
+   * `sm` rung, `.biorouter-page-header-bar` in `main.css`), so a view never sizes one. A primary
+   * is a verb and its object: "New <thing>" to make one, "Add <thing>" to bring one in. Every
+   * control here is `no-drag`; the band authors that rule.
    */
   actions?: React.ReactNode;
   /** Underline tabs rendered inline after the title, filling the band's height. */
   tabs?: React.ReactNode;
   /**
-   * A drill-in's way back. Renders a ghost round 32px back button before the title, and the
+   * A drill-in's way back. Renders a ghost round 28px back button before the title, and the
    * mouse's Back key does the same thing (`useMouseBackButton`), so a page passes it once and
    * must not call that hook itself: two mounted callers both leave.
    */
@@ -167,8 +170,9 @@ export type PageHeaderActionProps = Omit<
 };
 
 /**
- * One band action: a ghost round 32px icon button with a `Tooltip` and an `aria-label`, the
- * Crew channel header's right-cluster control. Exported so every view's band uses one shape.
+ * One band action: a ghost round icon button with a `Tooltip` and an `aria-label`, the Crew
+ * channel header's right-cluster control. It is 28px square in the band, like every band control,
+ * because the band points the default rung at `sm`. Exported so every view's band uses one shape.
  */
 export const PageHeaderAction = React.forwardRef<HTMLButtonElement, PageHeaderActionProps>(
   ({ icon: Icon, label, tooltip, busy, onClick, className, ...props }, ref) => (

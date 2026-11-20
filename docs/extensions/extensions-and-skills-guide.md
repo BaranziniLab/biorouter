@@ -45,7 +45,7 @@ Additional in-process capabilities:
 
 Open **Extensions** in the sidebar to see every installed extension in two groups, **Enabled** and **Available**. Each row shows the extension's name, a **Public** or **Private** badge, and one line of description. For an extension you installed, that line also says where it came from: the Biorouter marketplace or a file. The switch on the right turns the extension on or off for new chats. Hover a row to reveal its **⋯** menu, or right-click the row, to **Configure…** it or **Remove…** it. Built-in extensions can be turned off and configured, but not removed.
 
-Type in the filter at the top right (**Ctrl+F**, or **⌘F** on a Mac) to narrow the list. The **Add** button next to it opens a menu with three ways to add an extension: **Browse marketplace**, **Install from file (.brxt)** and **Custom extension…**.
+Type in the filter at the top right (**Ctrl+F**, or **⌘F** on a Mac) to narrow the list. The **Add extension** button next to it opens a menu with three ways to add an extension: **Browse marketplace**, **Install from file (.brxt)** and **Custom extension…**.
 
 ### Adding an external extension
 
@@ -53,7 +53,7 @@ Any MCP server can be added as a Biorouter extension. Pick whichever of the thre
 
 #### From the desktop app
 
-1. Open the sidebar, then **Extensions** → **Add** → **Custom extension…**.
+1. Open the sidebar, then **Extensions** → **Add extension** → **Custom extension…**.
 2. Enter a name, choose **Command** or **HTTP**, and give the command (or the endpoint URL). Add any environment variables or request headers the server needs.
 3. Click **Add extension**.
 
@@ -113,9 +113,9 @@ Extensions enabled dynamically during a session (via the Extension Manager) are 
 
 BAAM is the Biorouter agent, extension, and skill marketplace. Its catalog is the machine-readable [`landing/registry.json`](../../landing/registry.json), published at <https://biorouter.ucsf.edu/registry.json> and browsable at <https://biorouter.ucsf.edu/baam.html>. Biorouter reads that registry to list and one-click-install extensions (`.brxt` bundles) and skills (`.zip`), so the marketplace is the shortest path to a curated extension — reach for the manual steps above when you are adding something that is not in the catalog.
 
-Marketplace installs never ask you for a file. **Extensions** → **Add** → **Browse marketplace**, then **Add** on an entry, downloads the bundle, shows you what it contains — name, version, publisher, privacy tier, tool and skill counts, and how many environment variables it needs — and then either installs it or opens a configuration form, depending on what its manifest declares. If the download or the bundle itself fails, the same screen offers **Retry** and **Back to marketplace**. An extension you already have shows **Configure**, which opens its credentials without reinstalling anything.
+Marketplace installs never ask you for a file. **Extensions** → **Add extension** → **Browse marketplace**, then **Add** on an entry, downloads the bundle, shows you what it contains — name, version, publisher, privacy tier, tool and skill counts, and how many environment variables it needs — and then either installs it or opens a configuration form, depending on what its manifest declares. If the download or the bundle itself fails, the same screen offers **Retry** and **Back to marketplace**. An extension you already have shows **Configure**, which opens its credentials without reinstalling anything.
 
-**Extensions** → **Add** → **Install from file (.brxt)** is the local route, and that one does take a file: drop a `.brxt` on the drop zone, or click it to choose one.
+**Extensions** → **Add extension** → **Install from file (.brxt)** is the local route, and that one does take a file: drop a `.brxt` on the drop zone, or click it to choose one.
 
 Both marketplace browsers, **Browse marketplace** on the **Extensions** page and on the **Skills** page, search word by word: a phrase such as `R scripting ggplot visualization` lists every entry that matches any of its words, best match first, ranked the way the agent's own marketplace search ranks them. Clear the search box to browse the whole catalog again.
 

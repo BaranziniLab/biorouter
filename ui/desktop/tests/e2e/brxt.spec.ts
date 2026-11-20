@@ -152,8 +152,8 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
   // Helper: open the BrxtInstallModal from the band's Add menu ("Install from file")
   // -------------------------------------------------------------------------
   async function openBrxtModal(): Promise<void> {
-    // The three labelled buttons became one "Add" menu in the 44px band (spec 3.11).
-    const addBtn = page.getByRole('button', { name: 'Add', exact: true });
+    // The three labelled buttons became one "Add extension" menu in the 44px band (spec 3.11).
+    const addBtn = page.getByRole('button', { name: 'Add extension', exact: true });
     await addBtn.waitFor({ timeout: 10000, state: 'visible' });
     await addBtn.click();
     await page.getByRole('menuitem', { name: 'Install from file (.brxt)' }).click();
@@ -186,10 +186,10 @@ test.describe('BrxtInstallModal — .brxt extension bundle feature', () => {
     await expect(page.locator('button:has-text("Add custom extension")')).toHaveCount(0);
 
     // The band's action cluster (`PageHeader`'s `.biorouter-page-header-actions`, spec 3.10)
-    // holds the filter and the Add button.
+    // holds the filter and the Add extension button.
     const cluster = page.locator('.biorouter-page-header-actions');
     await expect(cluster.getByRole('searchbox', { name: 'Filter extensions' })).toBeVisible();
-    const addBtn = cluster.getByRole('button', { name: 'Add', exact: true });
+    const addBtn = cluster.getByRole('button', { name: 'Add extension', exact: true });
     await expect(addBtn).toBeVisible();
     await addBtn.click();
 

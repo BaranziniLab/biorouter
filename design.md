@@ -1892,7 +1892,7 @@ stay at `--row-height` 40px, because A-03's 36px is not part of this pass.
 ### 9.2 · Principles
 
 1. **One reading column, quiet chrome.** Every surface has one 44px band holding a 14px title and a
-   cluster of 32px icon actions. Content sits in the 760px measure. Every band is a window drag region
+   cluster of actions. Content sits in the 760px measure. Every band is a window drag region
    and every interactive thing in it is `no-drag`. Home is the one exception.
 2. **Say it once, then hide the explanation.** A visible line is a label, a value or a state word.
    Explanations live in an `InfoTip`. These always stay visible: errors, refusals, privacy disclosures,
@@ -2134,6 +2134,13 @@ opens on focus only after a Tab.
   `--accent-bar` underline and a 20px gap; the underline is one indicator that travels (175ms).
 - **Filter field.** One 28px list filter for every view band, with a leading 16px `Search` glyph, the
   placeholder "Filter", and ⌘F to focus it.
+- **Page band controls** (owner, 2026-11-19). Every control in a page band (`PageHeader`) is 28px, the
+  `sm` rung: the one coral primary, a ghost or secondary text button, every icon button and the filter
+  field, at radius 8 with a 16px glyph, 12px side padding and a 6px glyph-to-label gap on a labelled
+  button, 8px apart and centred in the band. The band points the default rung at `sm` for its own
+  controls, so a view passes no size. The primary is a verb and its object in sentence case: "New
+  schedule" and "New workflow" make one from scratch, "Add extension", "Add skill" and "Add terms"
+  bring one in. The chat header and Crew's channel header keep their 32px ghost icon buttons.
 - **Message actions.** They float: a compact cluster (24px icon buttons and the time in 12px muted tabular
   figures) sits 12px above the message's top right on the popover ground with the popover shadow, so no row
   is reserved for it. It shows when its own message is hovered, holds keyboard focus or has its menu open,
