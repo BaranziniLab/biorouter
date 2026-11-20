@@ -2089,17 +2089,20 @@ impl ExtensionManager {
             .await
     }
 
+    /// The person's answer on Biorouter Copilot's card: `Act` (Allow) or `Observe` (Only let it
+    /// look) for this request (AD-10).
     pub async fn approve_computer_use(
         &self,
         session_id: &str,
         challenge_id: &str,
+        level: crate::security::computer_use::ComputerUseGrant,
     ) -> Result<crate::security::computer_use::ComputerUseStatus> {
         anyhow::ensure!(
             self.is_extension_enabled("computercontroller").await,
             "Enable Biorouter Copilot for this chat before allowing control"
         );
         self.computer_use
-            .approve(session_id, challenge_id, &self.provider)
+            .approve_with(session_id, challenge_id, level, &self.provider)
             .await
     }
 
@@ -10586,7 +10589,11 @@ mod tests {
         );
         let status = manager.computer_use_status("isolated-chat").await.unwrap();
         manager
-            .approve_computer_use("isolated-chat", &status.challenge_id)
+            .approve_computer_use(
+                "isolated-chat",
+                &status.challenge_id,
+                crate::security::computer_use::ComputerUseGrant::Act,
+            )
             .await
             .unwrap();
         let mut admitted = admission.await.unwrap();

@@ -1881,6 +1881,72 @@ async fn doctor() -> Result<Value, String> {
     }))
 }
 
+/// Ask the operating system to let Biorouter Copilot in (AD-04), then read readiness again.
+///
+/// On macOS this runs `permissions --request` through the same disclaimed spawn as every command,
+/// so the system prompts name Biorouter Copilot and the grants land on its bundle, never on
+/// Biorouter. The engine also asks about Automation for System Events, which Copilot does not use;
+/// the person may refuse that one. Elsewhere there is nothing to request: Windows needs no grant
+/// and Linux reads the session's accessibility bus. Called only from the setup route after a
+/// person's press, never from a tool call.
+pub async fn request_permissions() -> Value {
+    #[cfg(target_os = "macos")]
+    {
+        let asked = tokio::time::timeout(
+            plan::REQUEST_PERMISSIONS + Duration::from_secs(15),
+            request_os_permissions(),
+        )
+        .await;
+        let failure = match asked {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(error),
+            Err(_) => Some("The system's permission prompts did not finish in time.".to_owned()),
+        };
+        let mut readiness = probe_readiness(true).await;
+        if let Some(failure) = failure {
+            readiness["request_error"] = json!(failure);
+        }
+        readiness
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        probe_readiness(true).await
+    }
+}
+
+#[cfg(target_os = "macos")]
+async fn request_os_permissions() -> Result<(), String> {
+    let payload = tokio::task::spawn_blocking(manifest::locate)
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| e.to_string())?;
+    let home = tempfile::Builder::new()
+        .prefix("biorouter-copilot-request-")
+        .tempdir()
+        .map_err(|e| e.to_string())?;
+    let engine = runner::Engine {
+        executable: payload.executable,
+        home: home.path().to_owned(),
+        temp: home.path().to_owned(),
+    };
+    let ctx = plan::Ctx {
+        platform: Platform::current(),
+        session: "readiness".into(),
+    };
+    let envelope = runner::run(
+        &engine,
+        &plan::request_permissions(&ctx),
+        &CancellationToken::new(),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    if envelope.ok {
+        Ok(())
+    } else {
+        Err(render::error(&envelope.error))
+    }
+}
+
 /// The readiness probe's own bound. It must EXCEED the bound of the command it supervises (the
 /// permission read's deadline plus the runner's grace): an outer bound that does not exceed the
 /// inner one always wins, because it starts earlier, and the engine's own answer is never

@@ -40,6 +40,37 @@ pub use biorouter_mcp::computer_use::contract::Grant as ComputerUseGrant;
 /// Said when a call needs control and the person allowed looking only. No second card.
 pub use biorouter_mcp::computer_use::LOOK_ONLY_REFUSAL;
 
+/// The person's answer on the card, as the status and the consent route carry it (AD-10).
+///
+/// A typed twin of [`ComputerUseGrant`], which lives in `biorouter-mcp` and carries no schema, so
+/// the generated client names the two answers instead of an open string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ComputerUseGrantLevel {
+    /// Only let it look.
+    Observe,
+    /// Look and control.
+    Act,
+}
+
+impl From<ComputerUseGrantLevel> for ComputerUseGrant {
+    fn from(level: ComputerUseGrantLevel) -> Self {
+        match level {
+            ComputerUseGrantLevel::Observe => ComputerUseGrant::Observe,
+            ComputerUseGrantLevel::Act => ComputerUseGrant::Act,
+        }
+    }
+}
+
+impl From<ComputerUseGrant> for ComputerUseGrantLevel {
+    fn from(grant: ComputerUseGrant) -> Self {
+        match grant {
+            ComputerUseGrant::Observe => ComputerUseGrantLevel::Observe,
+            ComputerUseGrant::Act => ComputerUseGrantLevel::Act,
+        }
+    }
+}
+
 /// The grant a Copilot call needs, decided before the dispatch gate waits for consent. One
 /// definition, shared with the wrapper that checks it again (AD-10).
 pub fn grant_for_call(tool: &str, arguments: Option<&rmcp::model::JsonObject>) -> ComputerUseGrant {
@@ -96,6 +127,10 @@ pub struct ComputerUseStatus {
     /// The most recent actual Biorouter Copilot request, independent of routine task cleanup.
     #[serde(default)]
     pub activity_id: Option<String>,
+    /// What the person allowed while `state` is `active`: `observe` (look only) or `act` (look
+    /// and control). Absent in every other state (AD-10).
+    #[serde(default)]
+    pub grant: Option<ComputerUseGrantLevel>,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -335,10 +370,8 @@ impl ComputerUseConsent {
     }
 
     fn describe(&self, scope: &Scope, state: &State, desktop: &Desktop) -> ComputerUseStatus {
-        let active = state
-            .grant
-            .as_ref()
-            .is_some_and(|g| !g.cancel.is_cancelled());
+        let live = state.grant.as_ref().filter(|g| !g.cancel.is_cancelled());
+        let active = live.is_some();
         // Other backend processes and human activity may leave private content
         // visible even when this process has never owned the desktop.
         let switching = desktop
@@ -383,6 +416,7 @@ impl ComputerUseConsent {
             handoff_required: handoff,
             requested: state.requested,
             activity_id: state.activity_id.clone(),
+            grant: live.map(|grant| grant.level.into()),
         }
     }
 
@@ -1031,7 +1065,11 @@ pub(crate) mod tests {
         );
         let status = consent.status("chat", &provider).await.unwrap();
         assert_eq!(status.state, "approval_required");
-        consent
+        assert_eq!(
+            status.grant, None,
+            "nothing is allowed while the card waits"
+        );
+        let approved = consent
             .approve_with(
                 "chat",
                 &status.challenge_id,
@@ -1040,6 +1078,8 @@ pub(crate) mod tests {
             )
             .await
             .unwrap();
+        // The card and the CLI read what was allowed from the status, not from the button pressed.
+        assert_eq!(approved.grant, Some(ComputerUseGrantLevel::Observe));
         let permit = waiting.await.unwrap();
         assert_eq!(permit.grant, ComputerUseGrant::Observe);
         // An act call is refused at once, and the grant stays for looking.
@@ -1092,13 +1132,36 @@ pub(crate) mod tests {
         drop(_task);
         let _task = consent.task_guard();
         consent.bind_task("chat", &provider).await.unwrap();
-        grant(&consent, "chat", &provider).await;
+        let approved = grant(&consent, "chat", &provider).await;
+        assert_eq!(approved.grant, Some(ComputerUseGrantLevel::Act));
         let permit = consent.permit("chat", &provider, &cancel).await.unwrap();
         assert_eq!(permit.grant, ComputerUseGrant::Act);
         assert!(consent
             .permit_for("chat", &provider, ComputerUseGrant::Observe, &cancel)
             .await
             .is_ok());
+        consent.revoke();
+        let stopped = consent.status("chat", &provider).await.unwrap();
+        assert_eq!(stopped.state, "stopped");
+        assert_eq!(stopped.grant, None, "Stop leaves nothing allowed");
+    }
+
+    #[test]
+    fn the_grant_level_names_the_two_answers_on_the_wire() {
+        for (level, wire) in [
+            (ComputerUseGrantLevel::Observe, "observe"),
+            (ComputerUseGrantLevel::Act, "act"),
+        ] {
+            assert_eq!(serde_json::to_value(level).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_value::<ComputerUseGrantLevel>(wire.into()).unwrap(),
+                level
+            );
+            let grant: ComputerUseGrant = level.into();
+            assert_eq!(grant.as_str(), wire);
+            assert_eq!(ComputerUseGrantLevel::from(grant), level);
+        }
+        assert!(serde_json::from_value::<ComputerUseGrantLevel>("control".into()).is_err());
     }
 
     #[test]

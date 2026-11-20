@@ -900,8 +900,17 @@ export type CommitResponse = {
 
 export type ComputerUseConsentRequest = {
     challenge_id: string;
+    grant?: ComputerUseGrantLevel | null;
     session_id: string;
 };
+
+/**
+ * The person's answer on the card, as the status and the consent route carry it (AD-10).
+ *
+ * A typed twin of [`ComputerUseGrant`], which lives in `biorouter-mcp` and carries no schema, so
+ * the generated client names the two answers instead of an open string.
+ */
+export type ComputerUseGrantLevel = 'observe' | 'act';
 
 export type ComputerUseSessionRequest = {
     session_id: string;
@@ -916,6 +925,7 @@ export type ComputerUseStatus = {
     destination: string;
     disclosure: string;
     enabled: boolean;
+    grant?: ComputerUseGrantLevel | null;
     handoff_required: boolean;
     model: string;
     provider: string;
@@ -9966,6 +9976,24 @@ export type ComputerUseSetupData = {
 };
 
 export type ComputerUseSetupResponses = {
+    200: unknown;
+};
+
+export type ComputerUseRequestPermissionsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/agent/computer_use/setup/request';
+};
+
+export type ComputerUseRequestPermissionsErrors = {
+    /**
+     * Human proof required
+     */
+    403: unknown;
+};
+
+export type ComputerUseRequestPermissionsResponses = {
     200: unknown;
 };
 

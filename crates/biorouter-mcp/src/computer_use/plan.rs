@@ -413,6 +413,18 @@ pub fn permissions(ctx: &Ctx) -> Invocation {
     Builder::observe(ctx, "permissions", OBSERVE).build(None)
 }
 
+/// How long the operating system's permission prompts may stay open. macOS's Automation prompt
+/// waits for the person's answer, so this is generous.
+pub const REQUEST_PERMISSIONS: Duration = Duration::from_secs(120);
+
+/// `permissions --request` (AD-04): the operating system asks the person to allow Biorouter
+/// Copilot. Built only for the setup button a person pressed, never from a tool call.
+pub fn request_permissions(ctx: &Ctx) -> Invocation {
+    Builder::observe(ctx, "permissions", REQUEST_PERMISSIONS)
+        .switch("request")
+        .build(None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -477,6 +489,7 @@ mod tests {
                 Duration::from_millis(500),
             ),
             permissions(&c),
+            request_permissions(&c),
         ];
         out.extend(
             [
@@ -616,6 +629,27 @@ mod tests {
             )
         }) {
             assert!(!headed(&observe), "{:?}", observe.args);
+        }
+    }
+
+    #[test]
+    fn only_the_setup_request_asks_the_system_for_permissions() {
+        let c = ctx(Platform::MacOs);
+        assert!(!permissions(&c).args.contains(&"--request".to_string()));
+        let request = request_permissions(&c);
+        assert_eq!(request.args[0], "permissions");
+        assert!(request.args.contains(&"--request".to_string()));
+        assert!(!request.args.contains(&"--guide".to_string()));
+        assert!(!request.physical);
+        assert_eq!(request.deadline, REQUEST_PERMISSIONS);
+        for invocation in all_invocations(Platform::MacOs)
+            .into_iter()
+            .filter(|i| i.args.contains(&"--request".to_string()))
+        {
+            assert_eq!(
+                invocation.args, request.args,
+                "only one builder may request"
+            );
         }
     }
 
