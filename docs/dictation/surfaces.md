@@ -71,9 +71,9 @@ The condensed form of the plan's matrix. **Bias** says which dictionary entries 
 | S2 desktop app, macOS Intel | As S1 | `biorouterd` worker, CPU, `x86-64-v3` | As S1; default `whisper-small.en-q8_0` | As S1 | As S1 | MSG-CPU with MSG-CPU-DESKTOP, MSG-CPU-ROSETTA, MSG-TURBO-CPU | PR-19 |
 | S3 desktop app, Windows x64 | As S1 (WASAPI through Chromium) | `biorouterd.exe` worker, static mingw, CPU | `%LOCALAPPDATA%\UCSF\biorouter\data\dictation\models\<id>\` | As S1 | As S1 with Ctrl+Shift+D; tray while a window is open | MSG-MIC-DENIED-WIN, MSG-WINDOW-OPEN, MSG-CPU, MSG-CPU-DESKTOP | PR-19 (clipboard PR-28) |
 | S4 desktop app, Linux deb and rpm | As S1 (PulseAudio or PipeWire through Chromium) | `biorouterd` worker, CPU | Per user folder, or `/var/lib/biorouter/dictation/models` | As S1 | As S1; tray in place of the shortcut on GNOME Wayland | MSG-NO-DEVICE, MSG-MIC-BUSY, MSG-GNOME, MSG-WINDOW-OPEN, MSG-CPU | PR-19 (clipboard PR-28) |
-| S5 `serve`, browser on the same machine | Browser at the printed `http://127.0.0.1:8765/?t=…` address | Host's `biorouterd` worker | Host account; browser installs on the secret unless locked (O-2) | Private only for a private target with standing | Served microphone and **Dictionary** page | MSG-MIC-BROWSER, MSG-INSTALL-LOCKED, MSG-DISCLOSE-HOST, MSG-CPU-SERVER | PR-21 |
+| S5 `serve`, browser on the same machine | Browser at `http://127.0.0.1:8765/?t=…`, the address `biorouter serve url` shows (the banner prints it whole only for a token made for this launch at a terminal, or with `--print-url`, #524) | Host's `biorouterd` worker | Host account; browser installs on the secret unless locked (O-2) | Private only for a private target with standing | Served microphone and **Dictionary** page | MSG-MIC-BROWSER, MSG-INSTALL-LOCKED, MSG-DISCLOSE-HOST, MSG-CPU-SERVER | PR-21 |
 | S6 `serve` behind an HTTPS proxy | Browser over HTTPS, also under a JupyterHub prefix | Per user `biorouterd` worker | Per account, `--system`, or managed `models_dir` | As S5 | As S5 | MSG-SHARED-ORIGIN, MSG-413, MSG-WAIT, MSG-SERVER-BUSY, MSG-SERVER-MEMORY | PR-21 |
-| S7 `serve` at a plain HTTP address | None (insecure origin) | Not reached; tunnel to S5, or `transcribe` on the host | Host account | n/a | `ssh -N -L 8765:127.0.0.1:8765 <host>`, then the printed address with 127.0.0.1 as its host, keeping its `?t=` part | Existing 403; MSG-INSECURE; MSG-SERVE-TUNNEL in the banner | PR-21 |
+| S7 `serve` at a plain HTTP address | None (insecure origin) | Not reached; tunnel to S5, or `transcribe` on the host | Host account | n/a | `ssh -N -L 8765:127.0.0.1:8765 <host>`, then the full address, `?t=` part included, that `biorouter serve url` shows on the host | Existing 403; MSG-INSECURE; MSG-SERVE-TUNNEL in the banner | PR-21 |
 | S8 CLI only Linux packages on a server | None on the server; the browser through S5 or S6 | `/usr/bin/biorouterd` worker; `/usr/bin/biorouter transcribe` | Service account's folder, or `--system` | As S5; `transcribe` under DD-77 | Served microphone; `biorouter transcribe <file>` | Over SSH: MSG-LINUX-NOAUDIO, then MSG-SSH-SERVICE when the service runs, else MSG-SSH-ROUTES; at a local console or in any other terminal on the host outside SSH: MSG-LINUX-NOAUDIO then MSG-LINUX-ROUTES; MSG-OTHER-ACCOUNT, MSG-CPU-SERVER, MSG-CPU-VM | PR-11, PR-12, PR-21 |
 | S9 interactive CLI, local | Capture child | `biorouter` worker, in process | Per user folder; `dictation install` or `/dictate install` | Session tier (TUI, REPL); stored tier (shared prompt, attach) | Ctrl+T, `/dictate`, `biorouter dictate` | MSG-TCC-ZERO, MSG-WIN-ZERO, MSG-NO-MODEL-CLI, MSG-TOO-SHORT | PR-25, PR-26 |
 | S10 CLI over SSH or in a container | None; refused before a device opens | Remote worker (`serve`, `transcribe`), or the laptop's | Remote account, or the laptop's | Remote as S5; clipboard routes public | `serve` and a tunnel; paste; `transcribe` | MSG-SSH-ROUTES, MSG-SSH-SERVICE, MSG-SSH-MAC, MSG-CONTAINER, MSG-SYNC-HINT | PR-25 (messages), PR-21 (served route) |
@@ -710,11 +710,11 @@ For a non loopback bind, `print_banner` prints the block "From another machine o
 
 | Bind and flags | What the banner prints in place of the LAN block |
 |---|---|
-| Non loopback, no `--public-url`, not in a container | MSG-SERVE-TUNNEL, with the port, the token and this machine's name filled in |
-| Non loopback, no `--public-url`, in a container (`/.dockerenv`, `/run/.containerenv` or `KUBERNETES_SERVICE_HOST`) | MSG-SERVE-CONTAINER, with the container port and the token filled in |
+| Non loopback, no `--public-url`, not in a container | MSG-SERVE-TUNNEL, with the port and this machine's name filled in, and the token only when the banner shows it (#524) |
+| Non loopback, no `--public-url`, in a container (`/.dockerenv`, `/run/.containerenv` or `KUBERNETES_SERVICE_HOST`) | MSG-SERVE-CONTAINER, with the container port filled in, and the token only when the banner shows it (#524) |
 | Non loopback with `--public-url` (a proxy on another machine or pod, such as a Kubernetes ingress or a JupyterHub single user pod) | nothing: the existing proxied lines already name the address to open |
 
-The banner knows the port and the token, so both messages name the full address to open, `?t=` part included (without it when `serve` runs with `--no-token`). The shell answers an address without its token with a 401, "This link needs its access token" [C `web_ui.rs` `unauthorized`], so no message in this document names a bare `http://127.0.0.1:8765`.
+Both messages name the address to open, and a network bind always has a token (`--no-token` is refused there). Since #524 the banner prints the token only when it was made for this launch and the output is a terminal, or when `serve` runs with `--print-url` [C `serve.rs` `TokenDisplay::shows`]. Otherwise the address ends in `/ with its access token` in place of `?t=<token>`, and a line under it names `biorouter serve url` (`biorouter serve url --port <port>` off the default port), which prints the full address, `?t=` part included, to the account that runs `serve`. The shell answers an address without its token with a 401, "This link needs its access token" [C `web_ui.rs` `unauthorized`], so no message in this document names a bare `http://127.0.0.1:8765` as the address to open.
 
 The readiness line checks managed live-capture policy before model inventory. When capture is denied, it gives the managed capture reason even if a model is installed. When no model is usable and managed policy forbids downloads, it gives the administrator and allowed-folder reason instead of an install command.
 
@@ -750,7 +750,7 @@ M-17 runs the upload ladder through CHP, `jupyter-server-proxy`, `ingress-nginx`
 
 | Part | Design |
 |---|---|
-| Capture | The person's browser at the address `serve` prints, `http://127.0.0.1:8765/?t=<token>` (`DEFAULT_PORT` in `commands/serve.rs` [C]). `http://127.0.0.1` and `http://localhost` are secure contexts with `getUserMedia` and `audioWorklet` in Chromium 145, Firefox 146 and WebKit 26 [M]; the browser prompts once per origin |
+| Capture | The person's browser at `http://127.0.0.1:8765/?t=<token>` (`DEFAULT_PORT` in `commands/serve.rs` [C]), which the banner prints whole at a terminal and `biorouter serve url` shows otherwise (#524). `http://127.0.0.1` and `http://localhost` are secure contexts with `getUserMedia` and `audioWorklet` in Chromium 145, Firefox 146 and WebKit 26 [M]; the browser prompts once per origin |
 | Transport | The chunked stream, same origin |
 | Transcription | The host's `biorouterd` worker |
 | Models | The account that runs `serve`; the browser's Settings installs there unless locked, or `biorouter dictation install` on the host |
@@ -783,7 +783,7 @@ No microphone is possible here: browsers expose none on an insecure origin [M], 
 | Part | Design |
 |---|---|
 | Capture | None in the browser |
-| Working paths | An SSH tunnel turns this into S5: `ssh -N -L 8765:127.0.0.1:8765 <host>`, then open the address `serve` printed with 127.0.0.1 as its host, keeping its `?t=` part (MSG-SERVE-TUNNEL prints it whole); `biorouter transcribe <file>` on the host handles recordings |
+| Working paths | An SSH tunnel turns this into S5: `ssh -N -L 8765:127.0.0.1:8765 <host>`, then open the full address, `?t=` part included, that `biorouter serve url` shows on the host (MSG-SERVE-TUNNEL prints it whole only when the banner shows the token, #524); `biorouter transcribe <file>` on the host handles recordings |
 | Messages | The existing 403: `Open Biorouter through localhost or HTTPS. Use an SSH tunnel, or an HTTPS reverse proxy that passes the browser's Sec-Fetch-* headers through, and a current browser that sends them.` Behind a proxy that rewrites `Host` to loopback, the shell renders but the page is insecure, and the composer shows MSG-INSECURE before any click. The banner prints MSG-SERVE-TUNNEL for a non loopback bind without `--public-url` |
 | Docs | `docs/deployment/headless-linux.md` stops handing users a plain HTTP LAN address (`http://<host>:8765/?t=…` today [C]) and gives the tunnel and the HTTPS proxy instead |
 | Release | PR-21 (banner and docs; the alternative) |
@@ -1069,7 +1069,7 @@ docker run --rm -v "$PWD:/data" -v biorouter-data:/home/biorouter/.local/share/b
   <image> transcribe /data/memo.wav
 ```
 
-The `serve` banner inside the container prints MSG-SERVE-CONTAINER with the token filled in: the address to open on the computer that runs Docker is `http://127.0.0.1:<published port>/?t=<token>`, not the container's own address.
+The `serve` banner inside the container prints MSG-SERVE-CONTAINER: the address to open on the computer that runs Docker is `http://127.0.0.1:<published port>/?t=<token>`, not the container's own address. A container started without a terminal writes its output to a log, so the banner leaves the token out (#524) and names `biorouter serve url`. Run it inside the container as the account that runs `serve` (`docker exec <container> biorouter serve url`), and open the address it prints with the published port in place of the container port.
 
 An administrator can build their own image with a model. The image ends with `USER biorouter` [C `Dockerfile`], and `--system` needs root, so the derived image switches back and forth:
 
@@ -1086,9 +1086,9 @@ USER biorouter
 | Transcription | The container's `biorouterd` worker, or `biorouter transcribe` |
 | Models | A data volume at `/home/biorouter/.local/share/biorouter`, or a read only mount at `/var/lib/biorouter/dictation/models` |
 | Bias | As S5; `transcribe` public only |
-| Messages | `biorouter dictate` inside the container: MSG-CONTAINER. The `serve` banner for the `0.0.0.0` bind prints MSG-SERVE-CONTAINER, never MSG-SERVE-TUNNEL, so the person opens the published `http://127.0.0.1:8765/?t=<token>` with the token the banner shows |
+| Messages | `biorouter dictate` inside the container: MSG-CONTAINER. The `serve` banner for the `0.0.0.0` bind prints MSG-SERVE-CONTAINER, never MSG-SERVE-TUNNEL, so the person opens the published `http://127.0.0.1:8765/?t=<token>`, with the token the banner shows or, when the banner leaves it out (#524), the one `biorouter serve url` shows inside the container |
 | Release | PR-12 (`transcribe`, once PR-09 builds the engine in the image), PR-31 (`serve`) |
-| Acceptance | `docker build` on amd64 and arm64 (nightly and on dispatch, O-24); inside the container the self test exits 0 and `biorouter dictation status` reports no model; a Playwright Chromium page at the published, tokened address the banner names reports `isSecureContext` and completes one fake microphone dictation (M-16); a banner snapshot inside a container shows MSG-SERVE-CONTAINER |
+| Acceptance | `docker build` on amd64 and arm64 (nightly and on dispatch, O-24); inside the container the self test exits 0 and `biorouter dictation status` reports no model; a Playwright Chromium page at the published, tokened address (from the banner, or from `biorouter serve url` when the banner leaves the token out) reports `isSecureContext` and completes one fake microphone dictation (M-16); a banner snapshot inside a container shows MSG-SERVE-CONTAINER |
 
 ### S17 desktop app against an external or remote backend
 
@@ -1502,8 +1502,8 @@ Two groups of message ids were retired on 2026-11-05 and are not reused: the Cop
 | MSG-TOOL-EXISTS | 1 term was already in Dictionary. · \<n> terms were already in Dictionary. | `dictionary__add_terms` result for visible existing rows; singular for one, plural otherwise |
 | MSG-TOOL-UNCHANGED | Some terms could not be recorded. | `dictionary__add_terms` result for skipped terms or existing rows hidden from the caller; names no row or count |
 | MSG-TOOL-REVIEW-HINT | Review them with `biorouter dictionary review` on this computer, or in Dictionary in Biorouter. | Appended on ACP and the CLI |
-| MSG-SERVE-TUNNEL | Browsers refuse the microphone and this page on http://\<lan addr>:\<port>. On your own computer run `ssh -N -L <port>:127.0.0.1:<port> <host>`, then open http://127.0.0.1:\<port>/?t=\<token>. | `serve` banner: a non loopback bind without `--public-url`, outside a container; the port, token and host filled in, and no `?t=` part under `--no-token` |
-| MSG-SERVE-CONTAINER | This runs in a container. On the computer that publishes its port, open http://127.0.0.1:\<host port>/?t=\<token>, where \<host port> is the port published for container port \<port> (with Docker: -p 127.0.0.1:\<host port>:\<port>). Browsers refuse the microphone on other plain http addresses. | `serve` banner: a non loopback bind without `--public-url`, inside a container; the token and \<port> filled in, \<host port> left as written |
+| MSG-SERVE-TUNNEL | Browsers refuse the microphone and this page on http://\<lan addr>:\<port>. On your own computer run `ssh -N -L <port>:127.0.0.1:<port> <host>`, then open http://127.0.0.1:\<port>/?t=\<token>. | `serve` banner: a non loopback bind without `--public-url`, outside a container; the port and host filled in. The token is filled in only when the banner shows it (#524); otherwise `/?t=\<token>` reads `/ with its access token`, and the line under the banner names `biorouter serve url` |
+| MSG-SERVE-CONTAINER | This runs in a container. On the computer that publishes its port, open http://127.0.0.1:\<host port>/?t=\<token>, where \<host port> is the port published for container port \<port> (with Docker: -p 127.0.0.1:\<host port>:\<port>). Browsers refuse the microphone on other plain http addresses. | `serve` banner: a non loopback bind without `--public-url`, inside a container; \<port> filled in, \<host port> left as written. The token is filled in only when the banner shows it (#524); otherwise `/?t=\<token>` reads `/ with its access token`, and the line under the banner names `biorouter serve url` |
 | MSG-CREW-TIP | Dictate. The text goes into the box for you to check; nothing is posted until you press Send. | Crew microphone tooltip |
 | MSG-RESTART-BUSY | Dictation in progress. Restart anyway? | **Restart & update** while dictating |
 | Existing 403, unchanged (`web_ui.rs` `insecure_address`) | `Open Biorouter through localhost or HTTPS. Use an SSH tunnel, or an HTTPS reverse proxy that passes the browser's Sec-Fetch-* headers through, and a current browser that sends them.` | S7 |
